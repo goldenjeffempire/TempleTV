@@ -4,6 +4,7 @@ import {
   Platform,
   Pressable,
   ScrollView,
+  Share,
   StatusBar,
   StyleSheet,
   Text,
@@ -16,44 +17,72 @@ import * as WebBrowser from "expo-web-browser";
 import * as Haptics from "expo-haptics";
 import { LinearGradient } from "expo-linear-gradient";
 import { useColors } from "@/hooks/useColors";
+import { useFavorites } from "@/hooks/useFavorites";
+import { useWatchHistory } from "@/hooks/useWatchHistory";
 import { YoutubePlayer } from "@/components/YoutubePlayer";
 import { SermonCard } from "@/components/SermonCard";
 import { LiveBadge } from "@/components/LiveBadge";
 import { GlassCard } from "@/components/GlassCard";
 import { usePlayer } from "@/context/PlayerContext";
 import { SERMONS } from "@/data/sermons";
+import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
 import type { Sermon } from "@/types";
 
 export default function PlayerScreen() {
   const c = useColors();
   const insets = useSafeAreaInsets();
-  const { videoId, live, title: paramTitle, preacher: paramPreacher, duration: paramDuration, thumbnail } =
-    useLocalSearchParams<{
-      videoId?: string;
-      live?: string;
-      title?: string;
-      preacher?: string;
-      duration?: string;
-      thumbnail?: string;
-    }>();
+  const params = useLocalSearchParams<{
+    videoId?: string;
+    live?: string;
+    title?: string;
+    preacher?: string;
+    duration?: string;
+    thumbnail?: string;
+    category?: string;
+  }>();
+  const { videoId, live, title: paramTitle, preacher: paramPreacher, duration: paramDuration, thumbnail, category: paramCategory } = params;
   const { playSermon } = usePlayer();
+  const { isFavorite, toggleFavorite } = useFavorites();
+  const { addToHistory } = useWatchHistory();
+  const { sermons } = useYouTubeChannel();
+  const fadeAnim = useRef(new Animated.Value(0)).current;
 
   const isLive = live === "true";
-  const currentSermon = SERMONS.find((s) => s.youtubeId === videoId) ?? null;
+  const localSermon = SERMONS.find((s) => s.youtubeId === videoId);
+  const rssSermon = sermons.find((s) => s.youtubeId === videoId);
+  const currentSermon = localSermon ?? rssSermon ?? null;
+
   const displayTitle = paramTitle ?? currentSermon?.title ?? "Temple TV";
   const displayPreacher = paramPreacher ?? currentSermon?.preacher ?? "JCTM";
   const displayDuration = paramDuration ?? currentSermon?.duration ?? "";
+  const displayCategory = paramCategory ?? currentSermon?.category ?? "";
   const thumbnailUrl = thumbnail ?? currentSermon?.thumbnailUrl ?? (videoId ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` : undefined);
 
-  const relatedSermons = SERMONS.filter(
-    (s) => s.youtubeId !== videoId && (currentSermon ? s.category === currentSermon.category : true),
-  ).slice(0, 4);
+  const relatedSermons = sermons
+    .filter((s) => s.youtubeId !== videoId && (currentSermon ? s.category === currentSermon.category : true))
+    .slice(0, 5);
 
   const webTopPad = Platform.OS === "web" ? 67 : 0;
-  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const favorited = videoId ? isFavorite(videoId) : false;
 
+  // Track watch history on mount
   useEffect(() => {
     Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: true }).start();
+    if (currentSermon) {
+      addToHistory(currentSermon);
+    } else if (videoId && displayTitle) {
+      addToHistory({
+        id: `player_${videoId}`,
+        title: displayTitle,
+        description: "",
+        youtubeId: videoId,
+        thumbnailUrl: thumbnailUrl ?? "",
+        duration: displayDuration,
+        category: (displayCategory as Sermon["category"]) || "Faith",
+        preacher: displayPreacher,
+        date: new Date().toISOString().slice(0, 10),
+      });
+    }
   }, []);
 
   const openOnYouTube = async () => {
@@ -67,8 +96,41 @@ export default function PlayerScreen() {
       await WebBrowser.openBrowserAsync(url, {
         toolbarColor: "#000000",
         controlsColor: "#6A0DAD",
+        presentationStyle: WebBrowser.WebBrowserPresentationStyle.FULL_SCREEN,
       });
     }
+  };
+
+  const handleShare = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const url = isLive
+      ? "https://www.youtube.com/@templetvjctm/live"
+      : `https://youtu.be/${videoId}`;
+    if (Platform.OS === "web") {
+      if (navigator.share) {
+        await navigator.share({ title: displayTitle, url });
+      } else {
+        await navigator.clipboard?.writeText(url);
+      }
+    } else {
+      await Share.share({ message: `Watch "${displayTitle}" on Temple TV JCTM: ${url}` });
+    }
+  };
+
+  const handleToggleFavorite = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    const sermon = currentSermon ?? {
+      id: `player_${videoId}`,
+      title: displayTitle,
+      description: "",
+      youtubeId: videoId ?? "",
+      thumbnailUrl: thumbnailUrl ?? "",
+      duration: displayDuration,
+      category: (displayCategory as Sermon["category"]) || "Faith",
+      preacher: displayPreacher,
+      date: "",
+    };
+    toggleFavorite(sermon);
   };
 
   const navigateToRelated = (sermon: Sermon) => {
@@ -80,6 +142,7 @@ export default function PlayerScreen() {
         preacher: sermon.preacher,
         duration: sermon.duration,
         thumbnail: sermon.thumbnailUrl,
+        category: sermon.category,
       },
     });
   };
@@ -95,7 +158,7 @@ export default function PlayerScreen() {
           thumbnailUrl={thumbnailUrl}
         />
         <LinearGradient
-          colors={["rgba(0,0,0,0.6)", "transparent"]}
+          colors={["rgba(0,0,0,0.7)", "transparent"]}
           style={[styles.topGradient, { paddingTop: insets.top + webTopPad + 12 }]}
           pointerEvents="box-none"
         >
@@ -110,6 +173,7 @@ export default function PlayerScreen() {
             >
               <Feather name="chevron-down" size={26} color="#FFF" />
             </Pressable>
+            <View style={{ flex: 1 }} />
             {isLive && <LiveBadge size="medium" />}
           </View>
         </LinearGradient>
@@ -119,33 +183,42 @@ export default function PlayerScreen() {
         <ScrollView
           contentContainerStyle={[
             styles.info,
-            { paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 0) + 32 },
+            { paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 0) + 40 },
           ]}
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.titleSection}>
-            <View style={styles.categoryRow}>
-              {currentSermon?.category && (
+            <View style={styles.topMeta}>
+              {!!displayCategory && (
                 <View style={[styles.categoryBadge, { backgroundColor: c.secondary }]}>
-                  <Text style={[styles.categoryText, { color: c.accent }]}>
-                    {currentSermon.category}
-                  </Text>
+                  <Text style={[styles.categoryText, { color: c.accent }]}>{displayCategory}</Text>
                 </View>
               )}
               {isLive && <LiveBadge size="small" />}
+              <View style={{ flex: 1 }} />
+              <Pressable onPress={handleToggleFavorite} hitSlop={12}>
+                <Feather
+                  name="heart"
+                  size={22}
+                  color={favorited ? "#FF0040" : c.mutedForeground}
+                />
+              </Pressable>
             </View>
+
             <Text style={[styles.title, { color: c.foreground }]}>{displayTitle}</Text>
+
             <View style={styles.metaRow}>
-              <Feather name="user" size={14} color={c.mutedForeground} />
+              <Feather name="user" size={13} color={c.mutedForeground} />
               <Text style={[styles.meta, { color: c.mutedForeground }]}>{displayPreacher}</Text>
               {!!displayDuration && (
                 <>
                   <Text style={{ color: c.border }}> · </Text>
-                  <Feather name="clock" size={14} color={c.mutedForeground} />
+                  <Feather name="clock" size={13} color={c.mutedForeground} />
                   <Text style={[styles.meta, { color: c.mutedForeground }]}>{displayDuration}</Text>
                 </>
               )}
             </View>
+
             {currentSermon?.description ? (
               <Text style={[styles.desc, { color: c.mutedForeground }]}>
                 {currentSermon.description}
@@ -156,7 +229,7 @@ export default function PlayerScreen() {
           <View style={styles.actionRow}>
             <Pressable
               onPress={openOnYouTube}
-              style={({ pressed }) => [styles.primaryBtn, { backgroundColor: "#FF0000", opacity: pressed ? 0.8 : 1 }]}
+              style={({ pressed }) => [styles.primaryBtn, { backgroundColor: "#FF0000", opacity: pressed ? 0.85 : 1 }]}
             >
               <Feather name="youtube" size={18} color="#FFF" />
               <Text style={styles.primaryBtnText}>Watch on YouTube</Text>
@@ -177,6 +250,7 @@ export default function PlayerScreen() {
 
             <Pressable
               style={({ pressed }) => [styles.iconBtn, { backgroundColor: c.muted, opacity: pressed ? 0.7 : 1 }]}
+              onPress={handleShare}
               hitSlop={8}
             >
               <Feather name="share-2" size={20} color={c.foreground} />
@@ -203,9 +277,7 @@ export default function PlayerScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
+  container: { flex: 1 },
   playerContainer: {
     width: "100%",
     aspectRatio: 16 / 9,
@@ -218,7 +290,7 @@ const styles = StyleSheet.create({
     top: 0,
     left: 0,
     right: 0,
-    height: 100,
+    height: 110,
   },
   topControls: {
     flexDirection: "row",
@@ -234,82 +306,33 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "rgba(0,0,0,0.4)",
   },
-  info: {
-    padding: 16,
-    gap: 16,
-  },
-  titleSection: {
-    gap: 8,
-  },
-  categoryRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  categoryBadge: {
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  categoryText: {
-    fontSize: 12,
-    fontFamily: "Inter_700Bold",
-    letterSpacing: 0.5,
-  },
-  title: {
-    fontSize: 22,
-    fontFamily: "Inter_700Bold",
-    lineHeight: 28,
-  },
-  metaRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    flexWrap: "wrap",
-  },
-  meta: {
-    fontSize: 14,
-    fontFamily: "Inter_400Regular",
-  },
-  desc: {
-    fontSize: 14,
-    fontFamily: "Inter_400Regular",
-    lineHeight: 22,
-    marginTop: 4,
-  },
-  actionRow: {
-    flexDirection: "row",
-    gap: 10,
-    alignItems: "center",
-  },
+  info: { padding: 16, gap: 16 },
+  titleSection: { gap: 8 },
+  topMeta: { flexDirection: "row", alignItems: "center", gap: 8 },
+  categoryBadge: { paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12 },
+  categoryText: { fontSize: 12, fontFamily: "Inter_700Bold", letterSpacing: 0.5 },
+  title: { fontSize: 22, fontFamily: "Inter_700Bold", lineHeight: 28 },
+  metaRow: { flexDirection: "row", alignItems: "center", gap: 5, flexWrap: "wrap" },
+  meta: { fontSize: 14, fontFamily: "Inter_400Regular" },
+  desc: { fontSize: 14, fontFamily: "Inter_400Regular", lineHeight: 22, marginTop: 4 },
+  actionRow: { flexDirection: "row", gap: 10, alignItems: "center" },
   primaryBtn: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    paddingVertical: 12,
+    paddingVertical: 13,
     borderRadius: 24,
   },
-  primaryBtnText: {
-    color: "#FFFFFF",
-    fontSize: 15,
-    fontFamily: "Inter_700Bold",
-  },
+  primaryBtnText: { color: "#FFFFFF", fontSize: 15, fontFamily: "Inter_700Bold" },
   iconBtn: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     alignItems: "center",
     justifyContent: "center",
   },
-  relatedSection: {
-    gap: 10,
-    marginTop: 4,
-  },
-  relatedTitle: {
-    fontSize: 18,
-    fontFamily: "Inter_700Bold",
-    marginBottom: 2,
-  },
+  relatedSection: { gap: 10, marginTop: 4 },
+  relatedTitle: { fontSize: 18, fontFamily: "Inter_700Bold", marginBottom: 2 },
 });
