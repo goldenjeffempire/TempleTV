@@ -88,26 +88,32 @@ export default function SettingsScreen() {
   const { favorites } = useFavorites();
   const webTopPad = Platform.OS === "web" ? 67 : 0;
   const [notifPermission, setNotifPermission] = useState<string | null>(null);
-  const [notifEnabled, setNotifEnabled] = useState(false);
+  const [liveAlertsEnabled, setLiveAlertsEnabled] = useState(false);
+  const [newSermonAlertsEnabled, setNewSermonAlertsEnabled] = useState(false);
 
   useEffect(() => {
     if (Platform.OS === "web") return;
     getNotificationPermissionStatus().then((status) => {
       setNotifPermission(status);
-      setNotifEnabled(status === "granted");
+      const granted = status === "granted";
+      setLiveAlertsEnabled(granted);
+      setNewSermonAlertsEnabled(granted);
     });
   }, []);
 
-  const handleNotifToggle = async () => {
+  const requestAndToggle = async (
+    enabled: boolean,
+    setter: (v: boolean) => void,
+  ) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    if (!notifEnabled) {
+    if (!enabled) {
       const granted = await requestNotificationPermissions();
-      setNotifEnabled(granted);
+      setter(granted);
       setNotifPermission(granted ? "granted" : "denied");
       if (!granted) {
         Alert.alert(
           "Notifications Blocked",
-          "Please enable notifications for Temple TV in your device Settings to receive live service alerts.",
+          "Please enable notifications for Temple TV in your device Settings to receive alerts.",
           [
             { text: "Cancel", style: "cancel" },
             { text: "Open Settings", onPress: () => Linking.openSettings() },
@@ -115,7 +121,7 @@ export default function SettingsScreen() {
         );
       }
     } else {
-      setNotifEnabled(false);
+      setter(false);
     }
   };
 
@@ -203,14 +209,28 @@ export default function SettingsScreen() {
                     ? "Blocked — tap to open Settings"
                     : "Get notified when Temple TV goes live"
                 }
-                right={<ToggleSwitch value={notifEnabled} onToggle={handleNotifToggle} />}
+                right={
+                  <ToggleSwitch
+                    value={liveAlertsEnabled}
+                    onToggle={() => requestAndToggle(liveAlertsEnabled, setLiveAlertsEnabled)}
+                  />
+                }
               />
               <Divider />
               <Row
                 icon="calendar"
-                label="New Sermon Notifications"
-                description="Alerts when new content is published"
-                right={<ToggleSwitch value={notifEnabled} onToggle={handleNotifToggle} />}
+                label="New Sermon Alerts"
+                description={
+                  notifPermission === "denied"
+                    ? "Blocked — tap to open Settings"
+                    : "Alerts when new content is published"
+                }
+                right={
+                  <ToggleSwitch
+                    value={newSermonAlertsEnabled}
+                    onToggle={() => requestAndToggle(newSermonAlertsEnabled, setNewSermonAlertsEnabled)}
+                  />
+                }
               />
             </GlassCard>
           </>
@@ -254,6 +274,20 @@ export default function SettingsScreen() {
             description="Watch when Temple TV is broadcasting"
             onPress={() => Linking.openURL(APP_CONFIG.channelLiveUrl)}
           />
+          <Divider />
+          <Row
+            icon="share-2"
+            label="Share This App"
+            description="Invite others to watch Temple TV"
+            onPress={async () => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              const { Share } = await import("react-native");
+              Share.share({
+                message: "Watch sermons & live worship on Temple TV JCTM. Download the app: https://templetv.jctm",
+                title: "Temple TV JCTM",
+              });
+            }}
+          />
         </GlassCard>
 
         <Text style={[styles.sectionLabel, { color: c.mutedForeground }]}>ABOUT</Text>
@@ -262,7 +296,14 @@ export default function SettingsScreen() {
           <Divider />
           <Row icon="globe" label="Channel" value="@templetvjctm" />
           <Divider />
-          <Row icon="code" label="Version" value="1.0.0" />
+          <Row icon="code" label="Version" value="1.0.0 (1)" />
+          <Divider />
+          <Row
+            icon="mail"
+            label="Contact & Support"
+            description="Reach out for help or feedback"
+            onPress={() => Linking.openURL("mailto:support@templetv.jctm")}
+          />
         </GlassCard>
 
         <Text style={[styles.sectionLabel, { color: c.mutedForeground }]}>PLAYBACK CONTROL</Text>

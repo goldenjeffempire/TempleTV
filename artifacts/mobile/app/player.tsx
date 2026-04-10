@@ -84,7 +84,8 @@ export default function PlayerScreen() {
         date: new Date().toISOString().slice(0, 10),
       });
     }
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoId]);
 
   const handleVideoEnd = useCallback(() => {
     if (upNextSermon) {
@@ -180,8 +181,7 @@ export default function PlayerScreen() {
         />
         <LinearGradient
           colors={["rgba(0,0,0,0.7)", "transparent"]}
-          style={[styles.topGradient, { paddingTop: insets.top + webTopPad + 12 }]}
-          pointerEvents="box-none"
+          style={[styles.topGradient, { paddingTop: insets.top + webTopPad + 12, pointerEvents: "box-none" }]}
         >
           <View style={styles.topControls}>
             <Pressable

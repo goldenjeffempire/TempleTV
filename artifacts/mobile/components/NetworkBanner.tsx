@@ -20,7 +20,6 @@ export function NetworkBanner({ visible }: NetworkBannerProps) {
   return (
     <Animated.View
       style={[styles.container, { transform: [{ translateY: slideAnim }] }]}
-      pointerEvents="none"
     >
       <Feather name="wifi-off" size={14} color="#FFF" />
       <Text style={styles.text}>No connection — showing cached content</Text>
@@ -41,6 +40,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     gap: 8,
     zIndex: 100,
+    pointerEvents: "none",
   },
   text: {
     color: "#FFFFFF",

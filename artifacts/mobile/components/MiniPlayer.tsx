@@ -3,6 +3,7 @@ import { Pressable, StyleSheet, Text, View, Platform } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
 import * as Haptics from "expo-haptics";
+import { router } from "expo-router";
 import { useColors } from "@/hooks/useColors";
 import { LiveBadge } from "@/components/LiveBadge";
 import { usePlayer } from "@/context/PlayerContext";
@@ -21,8 +22,32 @@ export function MiniPlayer() {
     togglePlay();
   };
 
+  const handlePress = () => {
+    if (isLive) {
+      router.push({
+        pathname: "/player",
+        params: { live: "true", title: "Temple TV Live", preacher: "Temple TV JCTM" },
+      });
+    } else if (currentSermon) {
+      router.push({
+        pathname: "/player",
+        params: {
+          videoId: currentSermon.youtubeId,
+          title: currentSermon.title,
+          preacher: currentSermon.preacher,
+          duration: currentSermon.duration,
+          thumbnail: currentSermon.thumbnailUrl,
+          category: currentSermon.category,
+        },
+      });
+    }
+  };
+
   const content = (
-    <View style={styles.inner}>
+    <Pressable
+      onPress={handlePress}
+      style={({ pressed }) => [styles.inner, { opacity: pressed ? 0.85 : 1 }]}
+    >
       <View style={styles.info}>
         {isLive && <LiveBadge size="small" />}
         {isRadioMode && !isLive && (
@@ -42,7 +67,7 @@ export function MiniPlayer() {
       <Pressable onPress={handleToggle} hitSlop={12} style={styles.playBtn}>
         <Feather name={isPlaying ? "pause" : "play"} size={24} color={c.foreground} />
       </Pressable>
-    </View>
+    </Pressable>
   );
 
   if (Platform.OS === "ios") {

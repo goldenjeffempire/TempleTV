@@ -50,12 +50,13 @@ export default function WatchScreen() {
     checkLiveStatus()
       .then((status) => {
         setLiveStatus(status);
-        if (status.isLive && !liveBannerDismissed) {
+        if (status.isLive) {
           setShowLiveBanner(true);
           sendLiveServiceNotification(status.title ?? "Temple TV JCTM is LIVE!");
         }
       })
       .finally(() => setCheckingLive(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const webTopPad = Platform.OS === "web" ? 67 : 0;

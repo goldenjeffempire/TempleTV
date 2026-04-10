@@ -78,38 +78,52 @@ export default function RadioScreen() {
   const waveAnim3 = useRef(new Animated.Value(0.7)).current;
 
   useEffect(() => {
-    if (isPlaying && isRadioMode) {
-      const rotate = Animated.loop(
-        Animated.timing(rotateAnim, { toValue: 1, duration: 10000, useNativeDriver: true }),
-      );
-      const pulse = Animated.loop(
+    if (!isPlaying || !isRadioMode) {
+      rotateAnim.stopAnimation();
+      pulseAnim.setValue(1);
+      waveAnim1.setValue(0.3);
+      waveAnim2.setValue(0.5);
+      waveAnim3.setValue(0.7);
+      return;
+    }
+
+    const rotate = Animated.loop(
+      Animated.timing(rotateAnim, { toValue: 1, duration: 10000, useNativeDriver: true }),
+    );
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, { toValue: 1.08, duration: 2000, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1, duration: 2000, useNativeDriver: true }),
+      ]),
+    );
+    const makeWave = (anim: Animated.Value, delay: number) =>
+      Animated.loop(
         Animated.sequence([
-          Animated.timing(pulseAnim, { toValue: 1.08, duration: 2000, useNativeDriver: true }),
-          Animated.timing(pulseAnim, { toValue: 1, duration: 2000, useNativeDriver: true }),
+          Animated.delay(delay),
+          Animated.timing(anim, { toValue: 1, duration: 500, useNativeDriver: true }),
+          Animated.timing(anim, { toValue: 0.2, duration: 500, useNativeDriver: true }),
         ]),
       );
-      const makeWave = (anim: Animated.Value, delay: number) =>
-        Animated.loop(
-          Animated.sequence([
-            Animated.delay(delay),
-            Animated.timing(anim, { toValue: 1, duration: 500, useNativeDriver: true }),
-            Animated.timing(anim, { toValue: 0.2, duration: 500, useNativeDriver: true }),
-          ]),
-        );
-      rotate.start();
-      pulse.start();
-      makeWave(waveAnim1, 0).start();
-      makeWave(waveAnim2, 200).start();
-      makeWave(waveAnim3, 400).start();
-      return () => {
-        rotate.stop();
-        pulse.stop();
-        waveAnim1.setValue(0.3);
-        waveAnim2.setValue(0.5);
-        waveAnim3.setValue(0.7);
-      };
-    }
-  }, [isPlaying, isRadioMode]);
+    rotate.start();
+    pulse.start();
+    const w1 = makeWave(waveAnim1, 0);
+    const w2 = makeWave(waveAnim2, 200);
+    const w3 = makeWave(waveAnim3, 400);
+    w1.start();
+    w2.start();
+    w3.start();
+
+    return () => {
+      rotate.stop();
+      pulse.stop();
+      w1.stop();
+      w2.stop();
+      w3.stop();
+      waveAnim1.setValue(0.3);
+      waveAnim2.setValue(0.5);
+      waveAnim3.setValue(0.7);
+    };
+  }, [isPlaying, isRadioMode, rotateAnim, pulseAnim, waveAnim1, waveAnim2, waveAnim3]);
 
   const spin = rotateAnim.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
   const nowPlaying = currentSermon ?? filteredQueue[0];

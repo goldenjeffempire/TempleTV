@@ -5,7 +5,6 @@ import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
 import { GlassCard } from "@/components/GlassCard";
 import type { Sermon } from "@/types";
-import colors from "@/constants/colors";
 
 const PLACEHOLDER = require("@/assets/images/sermon-placeholder.png");
 
@@ -54,8 +53,12 @@ export function SermonCard({ sermon, onPress, variant = "vertical" }: SermonCard
             </Text>
             <Text style={[styles.meta, { color: c.mutedForeground }]}>{sermon.preacher}</Text>
             <View style={styles.metaRow}>
-              <Feather name="clock" size={11} color={c.mutedForeground} />
-              <Text style={[styles.duration, { color: c.mutedForeground }]}>{sermon.duration}</Text>
+              {!!sermon.duration && (
+                <>
+                  <Feather name="clock" size={11} color={c.mutedForeground} />
+                  <Text style={[styles.duration, { color: c.mutedForeground }]}>{sermon.duration}</Text>
+                </>
+              )}
               <View style={[styles.categoryBadge, { backgroundColor: c.secondary }]}>
                 <Text style={[styles.categoryText, { color: c.accent }]}>{sermon.category}</Text>
               </View>
@@ -74,7 +77,7 @@ export function SermonCard({ sermon, onPress, variant = "vertical" }: SermonCard
         { opacity: pressed ? 0.8 : 1, transform: [{ scale: pressed ? 0.97 : 1 }] },
       ]}
     >
-      <View style={[styles.thumbContainer, { borderRadius: colors.radius }]}>
+      <View style={[styles.thumbContainer, { borderRadius: c.radius }]}>
         <SmartImage uri={sermon.thumbnailUrl} style={styles.verticalThumb} />
         {!!sermon.duration && (
           <View style={styles.durationBadge}>
