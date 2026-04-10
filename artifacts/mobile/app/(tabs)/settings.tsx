@@ -160,7 +160,7 @@ export default function SettingsScreen() {
           <View style={styles.profileInfo}>
             <Text style={[styles.profileName, { color: c.foreground }]}>Temple TV</Text>
             <Text style={[styles.profileSub, { color: c.mutedForeground }]}>
-              Jerusalem Christian Television Ministry
+              Jesus Christ Temple Ministry
             </Text>
           </View>
         </GlassCard>
@@ -295,6 +295,13 @@ export default function SettingsScreen() {
           <Row icon="info" label="App Name" value="Temple TV" />
           <Divider />
           <Row icon="globe" label="Channel" value="@templetvjctm" />
+          <Divider />
+          <Row
+            icon="external-link"
+            label="Visit Our Website"
+            description="jctm.org.ng"
+            onPress={() => Linking.openURL("https://jctm.org.ng")}
+          />
           <Divider />
           <Row icon="code" label="Version" value="1.0.0 (1)" />
           <Divider />
