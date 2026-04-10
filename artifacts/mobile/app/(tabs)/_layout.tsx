@@ -26,6 +26,10 @@ function NativeTabLayout() {
           <Icon sf={{ default: "radio", selected: "radio.fill" }} />
           <Label>Radio</Label>
         </NativeTabs.Trigger>
+        <NativeTabs.Trigger name="settings">
+          <Icon sf={{ default: "gearshape", selected: "gearshape.fill" }} />
+          <Label>Settings</Label>
+        </NativeTabs.Trigger>
       </NativeTabs>
       <MiniPlayer />
     </>
@@ -65,7 +69,11 @@ function ClassicTabLayout() {
               <View
                 style={[
                   StyleSheet.absoluteFill,
-                  { backgroundColor: "rgba(0,0,0,0.95)", borderTopWidth: 1, borderTopColor: "rgba(106,13,173,0.2)" },
+                  {
+                    backgroundColor: "rgba(0,0,0,0.95)",
+                    borderTopWidth: 1,
+                    borderTopColor: "rgba(106,13,173,0.25)",
+                  },
                 ]}
               />
             ) : null,
@@ -104,6 +112,18 @@ function ClassicTabLayout() {
                 <SymbolView name="radio" tintColor={color} size={24} />
               ) : (
                 <Feather name="radio" size={22} color={color} />
+              ),
+          }}
+        />
+        <Tabs.Screen
+          name="settings"
+          options={{
+            title: "Settings",
+            tabBarIcon: ({ color }) =>
+              isIOS ? (
+                <SymbolView name="gearshape" tintColor={color} size={24} />
+              ) : (
+                <Feather name="settings" size={22} color={color} />
               ),
           }}
         />

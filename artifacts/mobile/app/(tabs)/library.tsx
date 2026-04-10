@@ -8,19 +8,19 @@ import {
   View,
 } from "react-native";
 import { Feather } from "@expo/vector-icons";
+import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
 import { CategoryPills } from "@/components/CategoryPills";
 import { SermonCard } from "@/components/SermonCard";
-import { usePlayer } from "@/context/PlayerContext";
 import { SERMONS } from "@/data/sermons";
 import type { SermonCategory } from "@/types";
-import colors from "@/constants/colors";
+import type { Sermon } from "@/types";
 
 export default function LibraryScreen() {
   const c = useColors();
   const insets = useSafeAreaInsets();
-  const { playSermon } = usePlayer();
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState<SermonCategory>("All");
   const webTopPad = Platform.OS === "web" ? 67 : 0;
@@ -42,22 +42,43 @@ export default function LibraryScreen() {
     return results;
   }, [search, category]);
 
+  const handleSermonPress = (sermon: Sermon) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push({
+      pathname: "/player",
+      params: {
+        videoId: sermon.youtubeId,
+        title: sermon.title,
+        preacher: sermon.preacher,
+        duration: sermon.duration,
+      },
+    });
+  };
+
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
       <View style={{ paddingTop: insets.top + webTopPad }}>
         <Text style={[styles.header, { color: c.foreground }]}>Sermon Library</Text>
+        <Text style={[styles.count, { color: c.mutedForeground }]}>
+          {filtered.length} sermon{filtered.length !== 1 ? "s" : ""}
+        </Text>
 
         <View style={[styles.searchContainer, { backgroundColor: c.muted, borderColor: c.border }]}>
           <Feather name="search" size={18} color={c.mutedForeground} />
           <TextInput
             style={[styles.searchInput, { color: c.foreground }]}
-            placeholder="Search sermons..."
+            placeholder="Search sermons, preachers..."
             placeholderTextColor={c.mutedForeground}
             value={search}
             onChangeText={setSearch}
           />
           {search.length > 0 && (
-            <Feather name="x" size={18} color={c.mutedForeground} onPress={() => setSearch("")} />
+            <Feather
+              name="x"
+              size={18}
+              color={c.mutedForeground}
+              onPress={() => setSearch("")}
+            />
           )}
         </View>
 
@@ -70,13 +91,14 @@ export default function LibraryScreen() {
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
         renderItem={({ item }) => (
-          <SermonCard sermon={item} onPress={playSermon} variant="horizontal" />
+          <SermonCard sermon={item} onPress={handleSermonPress} variant="horizontal" />
         )}
         ListEmptyComponent={
           <View style={styles.emptyState}>
-            <Feather name="inbox" size={48} color={c.mutedForeground} />
+            <Feather name="search" size={48} color={c.mutedForeground} />
+            <Text style={[styles.emptyTitle, { color: c.foreground }]}>No sermons found</Text>
             <Text style={[styles.emptyText, { color: c.mutedForeground }]}>
-              No sermons found
+              Try a different search or category
             </Text>
           </View>
         }
@@ -94,7 +116,13 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_700Bold",
     paddingHorizontal: 16,
     paddingTop: 12,
-    paddingBottom: 12,
+  },
+  count: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    paddingHorizontal: 16,
+    marginTop: 2,
+    marginBottom: 12,
   },
   searchContainer: {
     flexDirection: "row",
@@ -123,10 +151,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     paddingTop: 80,
-    gap: 12,
+    gap: 10,
+  },
+  emptyTitle: {
+    fontSize: 18,
+    fontFamily: "Inter_600SemiBold",
   },
   emptyText: {
-    fontSize: 16,
-    fontFamily: "Inter_500Medium",
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
   },
 });
