@@ -1,6 +1,7 @@
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Animated,
   Image,
   Linking,
   Platform,
@@ -49,23 +50,70 @@ export function YoutubePlayer({
   const [playing, setPlaying] = useState(autoPlay);
   const [playerReady, setPlayerReady] = useState(false);
   const [playerError, setPlayerError] = useState(false);
+  const [activeVideoId, setActiveVideoId] = useState(videoId);
+  const transitionOpacity = useRef(new Animated.Value(0)).current;
+  const isMountedRef = useRef(true);
 
-  const playerHeight = Math.min(Math.round(width * (9 / 16)), 260);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (videoId && videoId !== activeVideoId) {
+      setPlayerReady(false);
+      setPlayerError(false);
+      setPlaying(false);
+
+      transitionOpacity.setValue(1);
+      setActiveVideoId(videoId);
+
+      requestAnimationFrame(() => {
+        if (isMountedRef.current) {
+          setPlaying(true);
+        }
+      });
+    } else if (videoId && !activeVideoId) {
+      setActiveVideoId(videoId);
+      setPlaying(autoPlay);
+    }
+  }, [videoId]);
+
+  const onPlayerReady = useCallback(() => {
+    if (!isMountedRef.current) return;
+    setPlayerReady(true);
+    Animated.timing(transitionOpacity, {
+      toValue: 0,
+      duration: 350,
+      useNativeDriver: true,
+    }).start();
+  }, [transitionOpacity]);
 
   const onChangeState = useCallback(
     (state: string) => {
+      if (!isMountedRef.current) return;
       if (state === "ended") {
         setPlaying(false);
         onEnd?.();
       } else if (state === "playing") {
         setPlaying(true);
         onPlay?.();
+        if (!playerReady) {
+          setPlayerReady(true);
+          Animated.timing(transitionOpacity, {
+            toValue: 0,
+            duration: 350,
+            useNativeDriver: true,
+          }).start();
+        }
       } else if (state === "paused") {
         setPlaying(false);
         onPause?.();
       }
     },
-    [onEnd, onPlay, onPause],
+    [onEnd, onPlay, onPause, playerReady, transitionOpacity],
   );
 
   const openExternal = async () => {
@@ -75,16 +123,16 @@ export function YoutubePlayer({
       let url: string;
       if (isLive) {
         url = `https://www.youtube.com/@${channelHandle}/live`;
-      } else if (videoId) {
+      } else if (activeVideoId) {
         if (Platform.OS !== "web") {
-          const ytUrl = `youtube://watch?v=${videoId}`;
+          const ytUrl = `youtube://watch?v=${activeVideoId}`;
           const canOpen = await Linking.canOpenURL(ytUrl);
           if (canOpen) {
             await Linking.openURL(ytUrl);
             return;
           }
         }
-        url = `https://www.youtube.com/watch?v=${videoId}`;
+        url = `https://www.youtube.com/watch?v=${activeVideoId}`;
       } else {
         url = `https://www.youtube.com/@${channelHandle}`;
       }
@@ -99,31 +147,27 @@ export function YoutubePlayer({
         });
       }
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) setLoading(false);
     }
   };
 
-  const thumb = thumbnailUrl ?? (videoId ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` : null);
+  const playerHeight = Math.min(Math.round(width * (9 / 16)), 260);
+  const thumb =
+    thumbnailUrl ?? (activeVideoId ? `https://img.youtube.com/vi/${activeVideoId}/hqdefault.jpg` : null);
 
-  if (Platform.OS !== "web" && YoutubeIframe && videoId && !playerError) {
+  if (Platform.OS !== "web" && YoutubeIframe && activeVideoId && !playerError) {
     return (
       <View style={[styles.container, { height: playerHeight }]}>
-        {!playerReady && (
-          <View style={[styles.loadingOverlay, { backgroundColor: "#0a0a0a" }]}>
-            {thumb && <Image source={{ uri: thumb }} style={styles.thumbnail} resizeMode="cover" />}
-            <View style={styles.loadingCenter}>
-              <ActivityIndicator color={c.primary} size="large" />
-              <Text style={[styles.loadingText, { color: "rgba(255,255,255,0.6)" }]}>Loading player...</Text>
-            </View>
-          </View>
-        )}
         <YoutubeIframe
-          videoId={videoId}
+          key={activeVideoId}
+          videoId={activeVideoId}
           height={playerHeight}
           play={playing}
           onChangeState={onChangeState}
-          onReady={() => setPlayerReady(true)}
-          onError={() => setPlayerError(true)}
+          onReady={onPlayerReady}
+          onError={() => {
+            if (isMountedRef.current) setPlayerError(true);
+          }}
           initialPlayerParams={{
             modestbranding: true,
             rel: false,
@@ -139,6 +183,24 @@ export function YoutubePlayer({
             bounces: false,
           }}
         />
+
+        <Animated.View
+          style={[
+            styles.transitionOverlay,
+            { opacity: transitionOpacity },
+          ]}
+          pointerEvents="none"
+        >
+          {thumb && (
+            <Image source={{ uri: thumb }} style={styles.thumbnail} resizeMode="cover" />
+          )}
+          <View style={[styles.loadingCenter, { backgroundColor: "rgba(0,0,0,0.5)" }]}>
+            <ActivityIndicator color={c.primary} size="large" />
+            <Text style={[styles.loadingText, { color: "rgba(255,255,255,0.6)" }]}>
+              Loading next video...
+            </Text>
+          </View>
+        </Animated.View>
       </View>
     );
   }
@@ -214,17 +276,17 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: "Inter_400Regular",
   },
-  loadingOverlay: {
+  transitionOverlay: {
     ...StyleSheet.absoluteFillObject,
-    zIndex: 1,
+    zIndex: 10,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: "#0a0a0a",
   },
   loadingCenter: {
     position: "absolute",
     alignItems: "center",
     gap: 10,
-    backgroundColor: "rgba(0,0,0,0.5)",
     padding: 20,
     borderRadius: 12,
   },

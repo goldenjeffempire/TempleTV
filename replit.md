@@ -58,14 +58,27 @@ A mobile broadcasting platform for Temple TV (JCTM) built with Expo/React Native
 
 ## Key Features Implemented
 1. **In-app video player** — react-native-youtube-iframe with play/pause/fullscreen/quality
-2. **Auto-play next** — Video end triggers automatic next sermon
-3. **Continuous streaming engine** — Queue with shuffle and loop modes
-4. **Push notifications** — Live service alerts and new sermon alerts (separate toggles)
-5. **Sermon Library** — Search by title/keyword/speaker, filter by category, sort by newest/oldest/popular
-6. **Radio Mode** — Background audio, category filter, shuffle/loop with proper animation lifecycle
+2. **Continuous Streaming Engine** — Zero dead-air auto-advance; PlayerContext is single source of truth:
+   - Pre-computed `nextSermon` available before current video ends
+   - Sequential and shuffle playback (Fisher-Yates stable shuffled queue)
+   - Loop modes: None / Loop All / Loop One
+   - `advanceToNext()` swaps video in-place — no screen navigation on auto-advance
+   - Animated fade transition overlay between videos on native
+3. **Push notifications** — Live service alerts and new sermon alerts (separate toggles)
+4. **Sermon Library** — Search by title/keyword/speaker, filter by category, sort by newest/oldest/popular
+5. **Radio Mode** — Background audio, category filter, shuffle/loop with proper animation lifecycle
+6. **Player controls bar** — Skip forward/back, shuffle toggle, loop cycle — all in the player screen
 7. **User personalization** — Favorites (AsyncStorage), watch history, history tracking
 8. **MiniPlayer navigation** — Tap mini-player to open full player
 9. **Share & Support** — Share app, contact support from Settings
+
+## Continuous Streaming Engine Details
+- **`PlayerContext.tsx`** manages: `currentSermon`, `nextSermon` (pre-computed), `queue`, `shuffledQueue`, `shufflePosition`, `loopMode`
+- **`playNext()`** advances `shufflePosition` in shuffle mode (stable, avoids repeats); restarts shuffled queue when exhausted
+- **`advanceToNext()`** — alias of `playNext()`, called from the player screen's `onEnd` callback
+- **`playSermon(sermon, newQueue?)`** — registers a sermon and optionally replaces the queue
+- **`YoutubePlayer.native.tsx`** uses `key={videoId}` to force clean iframe reinitialize; animated overlay fades in/out during transitions
+- **`player.tsx`** watches `PlayerContext.currentSermon` via `useEffect` and updates `activeSermon` state in-place with a 150ms title fade animation
 
 ## App Store Configuration (`app.json`)
 - **iOS bundle ID**: `com.templetv.jctm`

@@ -40,76 +40,152 @@ export default function PlayerScreen() {
     thumbnail?: string;
     category?: string;
   }>();
-  const { videoId, live, title: paramTitle, preacher: paramPreacher, duration: paramDuration, thumbnail, category: paramCategory } = params;
-  const { playSermon, playNext } = usePlayer();
+
+  const {
+    videoId: paramVideoId,
+    live,
+    title: paramTitle,
+    preacher: paramPreacher,
+    duration: paramDuration,
+    thumbnail: paramThumbnail,
+    category: paramCategory,
+  } = params;
+
+  const {
+    currentSermon: ctxSermon,
+    nextSermon,
+    playSermon,
+    playNext,
+    playPrevious,
+    advanceToNext,
+    shuffleMode,
+    loopMode,
+    toggleShuffle,
+    cycleLoopMode,
+  } = usePlayer();
+
   const { isFavorite, toggleFavorite } = useFavorites();
   const { addToHistory } = useWatchHistory();
-  const { sermons } = useYouTubeChannel();
-  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const { sermons: rssSermons } = useYouTubeChannel();
 
   const isLive = live === "true";
-  const localSermon = SERMONS.find((s) => s.youtubeId === videoId);
-  const rssSermon = sermons.find((s) => s.youtubeId === videoId);
-  const currentSermon = localSermon ?? rssSermon ?? null;
+  const scrollRef = useRef<ScrollView>(null);
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const titleFade = useRef(new Animated.Value(1)).current;
+  const initializedRef = useRef(false);
+  const isMountedRef = useRef(true);
 
-  const displayTitle = paramTitle ?? currentSermon?.title ?? "Temple TV";
-  const displayPreacher = paramPreacher ?? currentSermon?.preacher ?? "JCTM";
-  const displayDuration = paramDuration ?? currentSermon?.duration ?? "";
-  const displayCategory = paramCategory ?? currentSermon?.category ?? "";
-  const thumbnailUrl = thumbnail ?? currentSermon?.thumbnailUrl ?? (videoId ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` : undefined);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
-  const allSermons = sermons.length > 0 ? sermons : SERMONS;
-  const relatedSermons = allSermons
-    .filter((s) => s.youtubeId !== videoId && (currentSermon ? s.category === currentSermon.category : true))
-    .slice(0, 6);
-  const upNextSermon = relatedSermons[0];
+  const allSermons = rssSermons.length > 0 ? rssSermons : SERMONS;
 
-  const webTopPad = Platform.OS === "web" ? 67 : 0;
-  const favorited = videoId ? isFavorite(videoId) : false;
+  const resolveSermon = useCallback(
+    (id?: string): Sermon | null => {
+      if (!id) return null;
+      return (
+        SERMONS.find((s) => s.youtubeId === id) ??
+        rssSermons.find((s) => s.youtubeId === id) ??
+        null
+      );
+    },
+    [rssSermons],
+  );
+
+  const makeParamSermon = useCallback((): Sermon | null => {
+    if (!paramVideoId) return null;
+    return {
+      id: `player_${paramVideoId}`,
+      title: paramTitle ?? "Temple TV",
+      description: "",
+      youtubeId: paramVideoId,
+      thumbnailUrl:
+        paramThumbnail ??
+        `https://img.youtube.com/vi/${paramVideoId}/hqdefault.jpg`,
+      duration: paramDuration ?? "",
+      category: (paramCategory as Sermon["category"]) || "Faith",
+      preacher: paramPreacher ?? "JCTM",
+      date: new Date().toISOString().slice(0, 10),
+    };
+  }, [paramVideoId, paramTitle, paramPreacher, paramDuration, paramThumbnail, paramCategory]);
+
+  const [activeSermon, setActiveSermon] = useState<Sermon | null>(() => {
+    if (isLive) return null;
+    return resolveSermon(paramVideoId) ?? makeParamSermon();
+  });
 
   useEffect(() => {
     Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: true }).start();
-    if (currentSermon) {
-      addToHistory(currentSermon);
-    } else if (videoId && displayTitle) {
-      addToHistory({
-        id: `player_${videoId}`,
-        title: displayTitle,
-        description: "",
-        youtubeId: videoId,
-        thumbnailUrl: thumbnailUrl ?? "",
-        duration: displayDuration,
-        category: (displayCategory as Sermon["category"]) || "Faith",
-        preacher: displayPreacher,
-        date: new Date().toISOString().slice(0, 10),
-      });
+  }, []);
+
+  useEffect(() => {
+    if (isLive || initializedRef.current) return;
+    initializedRef.current = true;
+
+    const sermon = resolveSermon(paramVideoId) ?? makeParamSermon();
+    if (sermon) {
+      playSermon(sermon, allSermons);
+      setActiveSermon(sermon);
+      addToHistory(sermon);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoId]);
+  }, []);
+
+  useEffect(() => {
+    if (!ctxSermon || isLive) return;
+    if (ctxSermon.youtubeId === activeSermon?.youtubeId) return;
+
+    Animated.timing(titleFade, { toValue: 0, duration: 150, useNativeDriver: true }).start(() => {
+      if (!isMountedRef.current) return;
+      setActiveSermon(ctxSermon);
+      addToHistory(ctxSermon);
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+      Animated.timing(titleFade, { toValue: 1, duration: 250, useNativeDriver: true }).start();
+    });
+  }, [ctxSermon?.youtubeId]);
 
   const handleVideoEnd = useCallback(() => {
-    if (upNextSermon) {
-      router.replace({
-        pathname: "/player",
-        params: {
-          videoId: upNextSermon.youtubeId,
-          title: upNextSermon.title,
-          preacher: upNextSermon.preacher,
-          duration: upNextSermon.duration,
-          thumbnail: upNextSermon.thumbnailUrl,
-          category: upNextSermon.category,
-        },
-      });
-    } else {
-      playNext();
+    advanceToNext();
+  }, [advanceToNext]);
+
+  const handlePlayNext = useCallback(() => {
+    if (Platform.OS !== "web") {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
-  }, [upNextSermon, playNext]);
+    playNext();
+  }, [playNext]);
+
+  const handlePlayPrevious = useCallback(() => {
+    if (Platform.OS !== "web") {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+    playPrevious();
+  }, [playPrevious]);
+
+  const navigateToRelated = useCallback((sermon: Sermon) => {
+    router.replace({
+      pathname: "/player",
+      params: {
+        videoId: sermon.youtubeId,
+        title: sermon.title,
+        preacher: sermon.preacher,
+        duration: sermon.duration,
+        thumbnail: sermon.thumbnailUrl,
+        category: sermon.category,
+      },
+    });
+  }, []);
 
   const openOnYouTube = async () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (Platform.OS !== "web") {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
     const url = isLive
       ? "https://www.youtube.com/@templetvjctm/live"
-      : `https://www.youtube.com/watch?v=${videoId}`;
+      : `https://www.youtube.com/watch?v=${activeSermon?.youtubeId ?? paramVideoId}`;
     if (Platform.OS === "web") {
       window.open(url, "_blank");
     } else {
@@ -122,50 +198,71 @@ export default function PlayerScreen() {
   };
 
   const handleShare = async () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    const url = isLive
-      ? "https://www.youtube.com/@templetvjctm/live"
-      : `https://youtu.be/${videoId}`;
+    if (Platform.OS !== "web") {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+    const vid = activeSermon?.youtubeId ?? paramVideoId;
+    const url = isLive ? "https://www.youtube.com/@templetvjctm/live" : `https://youtu.be/${vid}`;
+    const title = activeSermon?.title ?? paramTitle ?? "Temple TV";
     if (Platform.OS === "web") {
       if (navigator.share) {
-        await navigator.share({ title: displayTitle, url });
+        await navigator.share({ title, url });
       } else {
         await navigator.clipboard?.writeText(url);
       }
     } else {
-      await Share.share({ message: `Watch "${displayTitle}" on Temple TV JCTM: ${url}` });
+      await Share.share({ message: `Watch "${title}" on Temple TV JCTM: ${url}` });
     }
   };
 
   const handleToggleFavorite = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    const sermon = currentSermon ?? {
-      id: `player_${videoId}`,
-      title: displayTitle,
-      description: "",
-      youtubeId: videoId ?? "",
-      thumbnailUrl: thumbnailUrl ?? "",
-      duration: displayDuration,
-      category: (displayCategory as Sermon["category"]) || "Faith",
-      preacher: displayPreacher,
-      date: "",
-    };
+    if (Platform.OS !== "web") {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }
+    const sermon =
+      activeSermon ??
+      makeParamSermon() ?? {
+        id: `player_${paramVideoId}`,
+        title: paramTitle ?? "Temple TV",
+        description: "",
+        youtubeId: paramVideoId ?? "",
+        thumbnailUrl:
+          paramThumbnail ??
+          `https://img.youtube.com/vi/${paramVideoId}/hqdefault.jpg`,
+        duration: paramDuration ?? "",
+        category: (paramCategory as Sermon["category"]) || "Faith",
+        preacher: paramPreacher ?? "JCTM",
+        date: "",
+      };
     toggleFavorite(sermon);
   };
 
-  const navigateToRelated = (sermon: Sermon) => {
-    router.replace({
-      pathname: "/player",
-      params: {
-        videoId: sermon.youtubeId,
-        title: sermon.title,
-        preacher: sermon.preacher,
-        duration: sermon.duration,
-        thumbnail: sermon.thumbnailUrl,
-        category: sermon.category,
-      },
-    });
-  };
+  const displayVideoId = isLive ? undefined : (activeSermon?.youtubeId ?? paramVideoId);
+  const displayTitle = activeSermon?.title ?? paramTitle ?? "Temple TV";
+  const displayPreacher = activeSermon?.preacher ?? paramPreacher ?? "JCTM";
+  const displayDuration = activeSermon?.duration ?? paramDuration ?? "";
+  const displayCategory = activeSermon?.category ?? paramCategory ?? "";
+  const thumbnailUrl =
+    activeSermon?.thumbnailUrl ??
+    paramThumbnail ??
+    (displayVideoId ? `https://img.youtube.com/vi/${displayVideoId}/hqdefault.jpg` : undefined);
+
+  const favorited = displayVideoId ? isFavorite(displayVideoId) : false;
+
+  const relatedSermons = allSermons
+    .filter(
+      (s) =>
+        s.youtubeId !== displayVideoId &&
+        (activeSermon ? s.category === activeSermon.category : true),
+    )
+    .slice(0, 6);
+
+  const webTopPad = Platform.OS === "web" ? 67 : 0;
+
+  const loopIcon =
+    loopMode === "one" ? "repeat" : loopMode === "all" ? "repeat" : "minus-circle";
+  const loopColor =
+    loopMode === "none" ? c.mutedForeground : c.primary;
 
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
@@ -173,7 +270,7 @@ export default function PlayerScreen() {
 
       <View style={styles.playerContainer}>
         <YoutubePlayer
-          videoId={isLive ? undefined : videoId}
+          videoId={displayVideoId}
           isLive={isLive}
           thumbnailUrl={thumbnailUrl}
           autoPlay
@@ -181,12 +278,17 @@ export default function PlayerScreen() {
         />
         <LinearGradient
           colors={["rgba(0,0,0,0.7)", "transparent"]}
-          style={[styles.topGradient, { paddingTop: insets.top + webTopPad + 12, pointerEvents: "box-none" }]}
+          style={[
+            styles.topGradient,
+            { paddingTop: insets.top + webTopPad + 12, pointerEvents: "box-none" },
+          ]}
         >
           <View style={styles.topControls}>
             <Pressable
               onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                if (Platform.OS !== "web") {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                }
                 router.back();
               }}
               style={styles.backBtn}
@@ -202,17 +304,20 @@ export default function PlayerScreen() {
 
       <Animated.View style={{ opacity: fadeAnim, flex: 1 }}>
         <ScrollView
+          ref={scrollRef}
           contentContainerStyle={[
             styles.info,
             { paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 0) + 40 },
           ]}
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.titleSection}>
+          <Animated.View style={[styles.titleSection, { opacity: titleFade }]}>
             <View style={styles.topMeta}>
               {!!displayCategory && (
                 <View style={[styles.categoryBadge, { backgroundColor: c.secondary }]}>
-                  <Text style={[styles.categoryText, { color: c.accent }]}>{displayCategory}</Text>
+                  <Text style={[styles.categoryText, { color: c.accent }]}>
+                    {displayCategory}
+                  </Text>
                 </View>
               )}
               {isLive && <LiveBadge size="small" />}
@@ -240,37 +345,30 @@ export default function PlayerScreen() {
               )}
             </View>
 
-            {currentSermon?.description ? (
+            {activeSermon?.description ? (
               <Text style={[styles.desc, { color: c.mutedForeground }]}>
-                {currentSermon.description}
+                {activeSermon.description}
               </Text>
             ) : null}
-          </View>
+          </Animated.View>
 
           <View style={styles.actionRow}>
             <Pressable
               onPress={openOnYouTube}
-              style={({ pressed }) => [styles.primaryBtn, { backgroundColor: "#FF0000", opacity: pressed ? 0.85 : 1 }]}
+              style={({ pressed }) => [
+                styles.primaryBtn,
+                { backgroundColor: "#FF0000", opacity: pressed ? 0.85 : 1 },
+              ]}
             >
               <Feather name="youtube" size={18} color="#FFF" />
               <Text style={styles.primaryBtnText}>Watch on YouTube</Text>
             </Pressable>
 
-            {!isLive && currentSermon && (
-              <Pressable
-                style={({ pressed }) => [styles.iconBtn, { backgroundColor: c.muted, opacity: pressed ? 0.7 : 1 }]}
-                onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                  playSermon(currentSermon);
-                }}
-                hitSlop={8}
-              >
-                <Feather name="radio" size={20} color={c.primary} />
-              </Pressable>
-            )}
-
             <Pressable
-              style={({ pressed }) => [styles.iconBtn, { backgroundColor: c.muted, opacity: pressed ? 0.7 : 1 }]}
+              style={({ pressed }) => [
+                styles.iconBtn,
+                { backgroundColor: c.muted, opacity: pressed ? 0.7 : 1 },
+              ]}
               onPress={handleShare}
               hitSlop={8}
             >
@@ -278,22 +376,98 @@ export default function PlayerScreen() {
             </Pressable>
           </View>
 
-          {upNextSermon && (
+          {!isLive && (
+            <GlassCard style={styles.controlsCard}>
+              <Pressable
+                onPress={() => {
+                  if (Platform.OS !== "web") {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  }
+                  toggleShuffle();
+                }}
+                style={styles.controlBtn}
+                hitSlop={8}
+              >
+                <Feather
+                  name="shuffle"
+                  size={20}
+                  color={shuffleMode ? c.primary : c.mutedForeground}
+                />
+                <Text
+                  style={[
+                    styles.controlLabel,
+                    { color: shuffleMode ? c.primary : c.mutedForeground },
+                  ]}
+                >
+                  Shuffle
+                </Text>
+              </Pressable>
+
+              <Pressable onPress={handlePlayPrevious} style={styles.controlBtn} hitSlop={8}>
+                <Feather name="skip-back" size={24} color={c.foreground} />
+              </Pressable>
+
+              <Pressable onPress={handlePlayNext} style={styles.controlBtn} hitSlop={8}>
+                <Feather name="skip-forward" size={24} color={c.foreground} />
+              </Pressable>
+
+              <Pressable
+                onPress={() => {
+                  if (Platform.OS !== "web") {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  }
+                  cycleLoopMode();
+                }}
+                style={styles.controlBtn}
+                hitSlop={8}
+              >
+                <Feather name={loopIcon} size={20} color={loopColor} />
+                <Text style={[styles.controlLabel, { color: loopColor }]}>
+                  {loopMode === "one" ? "Loop 1" : loopMode === "all" ? "Loop All" : "No Loop"}
+                </Text>
+              </Pressable>
+            </GlassCard>
+          )}
+
+          {nextSermon && !isLive && (
             <GlassCard style={styles.autoPlayBanner}>
               <View style={styles.autoPlayLeft}>
                 <Feather name="skip-forward" size={16} color={c.primary} />
-                <View>
+                <View style={{ flex: 1 }}>
                   <Text style={[styles.autoPlayLabel, { color: c.mutedForeground }]}>Up Next</Text>
-                  <Text style={[styles.autoPlayTitle, { color: c.foreground }]} numberOfLines={1}>
-                    {upNextSermon.title}
+                  <Text
+                    style={[styles.autoPlayTitle, { color: c.foreground }]}
+                    numberOfLines={1}
+                  >
+                    {nextSermon.title}
                   </Text>
                 </View>
               </View>
               <Pressable
-                onPress={() => navigateToRelated(upNextSermon)}
+                onPress={handlePlayNext}
                 style={[styles.autoPlayBtn, { backgroundColor: c.primary }]}
               >
                 <Text style={styles.autoPlayBtnText}>Play</Text>
+              </Pressable>
+            </GlassCard>
+          )}
+
+          {!nextSermon && !isLive && loopMode === "none" && (
+            <GlassCard style={styles.autoPlayBanner}>
+              <View style={styles.autoPlayLeft}>
+                <Feather name="check-circle" size={16} color={c.mutedForeground} />
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.autoPlayLabel, { color: c.mutedForeground }]}>Queue</Text>
+                  <Text style={[styles.autoPlayTitle, { color: c.mutedForeground }]}>
+                    End of playlist
+                  </Text>
+                </View>
+              </View>
+              <Pressable
+                onPress={() => cycleLoopMode()}
+                style={[styles.autoPlayBtn, { backgroundColor: c.secondary }]}
+              >
+                <Text style={[styles.autoPlayBtnText, { color: c.primary }]}>Loop</Text>
               </Pressable>
             </GlassCard>
           )}
@@ -374,6 +548,23 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  controlsCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-around",
+    paddingVertical: 14,
+    paddingHorizontal: 8,
+  },
+  controlBtn: {
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+  },
+  controlLabel: {
+    fontSize: 10,
+    fontFamily: "Inter_600SemiBold",
+    letterSpacing: 0.3,
+  },
   autoPlayBanner: {
     flexDirection: "row",
     alignItems: "center",
@@ -382,7 +573,12 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   autoPlayLeft: { flexDirection: "row", alignItems: "center", gap: 10, flex: 1 },
-  autoPlayLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 0.5, marginBottom: 2 },
+  autoPlayLabel: {
+    fontSize: 11,
+    fontFamily: "Inter_600SemiBold",
+    letterSpacing: 0.5,
+    marginBottom: 2,
+  },
   autoPlayTitle: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
   autoPlayBtn: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20 },
   autoPlayBtnText: { color: "#FFF", fontSize: 13, fontFamily: "Inter_700Bold" },
