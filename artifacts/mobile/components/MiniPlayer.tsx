@@ -10,24 +10,37 @@ import { usePlayer } from "@/context/PlayerContext";
 
 export function MiniPlayer() {
   const c = useColors();
-  const { currentSermon, isPlaying, isLive, isRadioMode, togglePlay } = usePlayer();
+  const {
+    currentSermon,
+    isPlaying,
+    isLive,
+    isRadioMode,
+    togglePlay,
+    playNext,
+    currentTime,
+    duration,
+  } = usePlayer();
 
   if (!currentSermon && !isLive) return null;
 
   const title = isLive ? "Temple TV Live" : currentSermon?.title ?? "";
   const subtitle = isLive ? "Watch Now" : isRadioMode ? "Radio Mode" : currentSermon?.preacher ?? "";
+  const progress = duration > 0 ? Math.min(1, currentTime / duration) : 0;
+  const showProgress = !isLive && duration > 0;
 
   const handleToggle = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     togglePlay();
+  };
+
+  const handleNext = () => {
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    playNext();
   };
 
   const handlePress = () => {
     if (isLive) {
-      router.push({
-        pathname: "/player",
-        params: { live: "true", title: "Temple TV Live", preacher: "Temple TV JCTM" },
-      });
+      router.push({ pathname: "/player", params: { live: "true", title: "Temple TV Live", preacher: "Temple TV JCTM" } });
     } else if (currentSermon) {
       router.push({
         pathname: "/player",
@@ -44,30 +57,49 @@ export function MiniPlayer() {
   };
 
   const content = (
-    <Pressable
-      onPress={handlePress}
-      style={({ pressed }) => [styles.inner, { opacity: pressed ? 0.85 : 1 }]}
-    >
-      <View style={styles.info}>
-        {isLive && <LiveBadge size="small" />}
-        {isRadioMode && !isLive && (
-          <View style={[styles.radioBadge, { backgroundColor: c.primary }]}>
-            <Feather name="radio" size={10} color="#FFF" />
-          </View>
-        )}
-        <View style={styles.textContainer}>
-          <Text style={[styles.title, { color: c.foreground }]} numberOfLines={1}>
-            {title}
-          </Text>
-          <Text style={[styles.subtitle, { color: c.mutedForeground }]} numberOfLines={1}>
-            {subtitle}
-          </Text>
+    <View>
+      {showProgress && (
+        <View style={[styles.progressTrack, { backgroundColor: c.border }]}>
+          <View
+            style={[
+              styles.progressFill,
+              { backgroundColor: c.primary, width: `${Math.round(progress * 100)}%` as any },
+            ]}
+          />
         </View>
-      </View>
-      <Pressable onPress={handleToggle} hitSlop={12} style={styles.playBtn}>
-        <Feather name={isPlaying ? "pause" : "play"} size={24} color={c.foreground} />
+      )}
+      <Pressable
+        onPress={handlePress}
+        style={({ pressed }) => [styles.inner, { opacity: pressed ? 0.85 : 1 }]}
+      >
+        <View style={styles.info}>
+          {isLive && <LiveBadge size="small" />}
+          {isRadioMode && !isLive && (
+            <View style={[styles.radioBadge, { backgroundColor: c.primary }]}>
+              <Feather name="radio" size={10} color="#FFF" />
+            </View>
+          )}
+          <View style={styles.textContainer}>
+            <Text style={[styles.title, { color: c.foreground }]} numberOfLines={1}>
+              {title}
+            </Text>
+            <Text style={[styles.subtitle, { color: c.mutedForeground }]} numberOfLines={1}>
+              {subtitle}
+            </Text>
+          </View>
+        </View>
+        <View style={styles.controls}>
+          <Pressable onPress={handleToggle} hitSlop={12} style={styles.controlBtn}>
+            <Feather name={isPlaying ? "pause" : "play"} size={22} color={c.foreground} />
+          </Pressable>
+          {!isLive && (
+            <Pressable onPress={handleNext} hitSlop={12} style={styles.controlBtn}>
+              <Feather name="skip-forward" size={20} color={c.mutedForeground} />
+            </Pressable>
+          )}
+        </View>
       </Pressable>
-    </Pressable>
+    </View>
   );
 
   if (Platform.OS === "ios") {
@@ -95,6 +127,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     overflow: "hidden",
   },
+  progressTrack: {
+    height: 2,
+    width: "100%",
+  },
+  progressFill: {
+    height: 2,
+    borderRadius: 1,
+  },
   inner: {
     flexDirection: "row",
     alignItems: "center",
@@ -102,12 +142,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
   },
-  info: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
+  info: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10 },
   radioBadge: {
     width: 24,
     height: 24,
@@ -115,20 +150,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  textContainer: {
-    flex: 1,
-  },
-  title: {
-    fontSize: 14,
-    fontFamily: "Inter_600SemiBold",
-  },
-  subtitle: {
-    fontSize: 12,
-    fontFamily: "Inter_400Regular",
-  },
-  playBtn: {
-    width: 40,
-    height: 40,
+  textContainer: { flex: 1 },
+  title: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  subtitle: { fontSize: 12, fontFamily: "Inter_400Regular" },
+  controls: { flexDirection: "row", alignItems: "center", gap: 4 },
+  controlBtn: {
+    width: 36,
+    height: 36,
     alignItems: "center",
     justifyContent: "center",
   },

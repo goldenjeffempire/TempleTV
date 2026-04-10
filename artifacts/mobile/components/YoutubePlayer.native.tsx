@@ -15,6 +15,7 @@ import { Feather } from "@expo/vector-icons";
 import * as WebBrowser from "expo-web-browser";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
+import { usePlayer } from "@/context/PlayerContext";
 
 let YoutubeIframe: any = null;
 try {
@@ -46,6 +47,7 @@ export function YoutubePlayer({
 }: YoutubePlayerProps) {
   const c = useColors();
   const { width } = useWindowDimensions();
+  const { updatePlayback, playerPlayRef, playerPauseRef, playerSeekRef } = usePlayer();
   const [loading, setLoading] = useState(false);
   const [playing, setPlaying] = useState(autoPlay);
   const [playerReady, setPlayerReady] = useState(false);
@@ -53,27 +55,34 @@ export function YoutubePlayer({
   const [activeVideoId, setActiveVideoId] = useState(videoId);
   const transitionOpacity = useRef(new Animated.Value(0)).current;
   const isMountedRef = useRef(true);
+  const playerRef = useRef<any>(null);
+  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
+      if (tickRef.current) clearInterval(tickRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    playerPlayRef.current = () => { if (isMountedRef.current) setPlaying(true); };
+    playerPauseRef.current = () => { if (isMountedRef.current) setPlaying(false); };
+    playerSeekRef.current = (t: number) => {
+      if (isMountedRef.current) playerRef.current?.seekTo?.(t, true);
+    };
+  }, [playerPlayRef, playerPauseRef, playerSeekRef]);
 
   useEffect(() => {
     if (videoId && videoId !== activeVideoId) {
       setPlayerReady(false);
       setPlayerError(false);
       setPlaying(false);
-
       transitionOpacity.setValue(1);
       setActiveVideoId(videoId);
-
       requestAnimationFrame(() => {
-        if (isMountedRef.current) {
-          setPlaying(true);
-        }
+        if (isMountedRef.current) setPlaying(true);
       });
     } else if (videoId && !activeVideoId) {
       setActiveVideoId(videoId);
@@ -81,14 +90,27 @@ export function YoutubePlayer({
     }
   }, [videoId]);
 
-  const onPlayerReady = useCallback(() => {
+  const startTick = useCallback(() => {
+    if (tickRef.current) clearInterval(tickRef.current);
+    tickRef.current = setInterval(async () => {
+      if (!isMountedRef.current || !playerRef.current) return;
+      try {
+        const t = await playerRef.current.getCurrentTime?.();
+        const d = await playerRef.current.getDuration?.();
+        if (isMountedRef.current) updatePlayback(t ?? 0, d ?? 0);
+      } catch { clearInterval(tickRef.current!); }
+    }, 1000);
+  }, [updatePlayback]);
+
+  const stopTick = useCallback(() => {
+    if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
+  }, []);
+
+  const onPlayerReady = useCallback((ref: any) => {
     if (!isMountedRef.current) return;
+    playerRef.current = ref;
     setPlayerReady(true);
-    Animated.timing(transitionOpacity, {
-      toValue: 0,
-      duration: 350,
-      useNativeDriver: true,
-    }).start();
+    Animated.timing(transitionOpacity, { toValue: 0, duration: 350, useNativeDriver: true }).start();
   }, [transitionOpacity]);
 
   const onChangeState = useCallback(
@@ -96,24 +118,23 @@ export function YoutubePlayer({
       if (!isMountedRef.current) return;
       if (state === "ended") {
         setPlaying(false);
+        stopTick();
         onEnd?.();
       } else if (state === "playing") {
         setPlaying(true);
+        startTick();
         onPlay?.();
         if (!playerReady) {
           setPlayerReady(true);
-          Animated.timing(transitionOpacity, {
-            toValue: 0,
-            duration: 350,
-            useNativeDriver: true,
-          }).start();
+          Animated.timing(transitionOpacity, { toValue: 0, duration: 350, useNativeDriver: true }).start();
         }
       } else if (state === "paused") {
         setPlaying(false);
+        stopTick();
         onPause?.();
       }
     },
-    [onEnd, onPlay, onPause, playerReady, transitionOpacity],
+    [onEnd, onPlay, onPause, playerReady, transitionOpacity, startTick, stopTick],
   );
 
   const openExternal = async () => {
@@ -127,10 +148,7 @@ export function YoutubePlayer({
         if (Platform.OS !== "web") {
           const ytUrl = `youtube://watch?v=${activeVideoId}`;
           const canOpen = await Linking.canOpenURL(ytUrl);
-          if (canOpen) {
-            await Linking.openURL(ytUrl);
-            return;
-          }
+          if (canOpen) { await Linking.openURL(ytUrl); return; }
         }
         url = `https://www.youtube.com/watch?v=${activeVideoId}`;
       } else {
@@ -165,9 +183,8 @@ export function YoutubePlayer({
           play={playing}
           onChangeState={onChangeState}
           onReady={onPlayerReady}
-          onError={() => {
-            if (isMountedRef.current) setPlayerError(true);
-          }}
+          onError={() => { if (isMountedRef.current) setPlayerError(true); }}
+          ref={playerRef}
           initialPlayerParams={{
             modestbranding: true,
             rel: false,
@@ -185,10 +202,7 @@ export function YoutubePlayer({
         />
 
         <Animated.View
-          style={[
-            styles.transitionOverlay,
-            { opacity: transitionOpacity },
-          ]}
+          style={[styles.transitionOverlay, { opacity: transitionOpacity }]}
           pointerEvents="none"
         >
           {thumb && (
@@ -215,11 +229,7 @@ export function YoutubePlayer({
           onPress={openExternal}
           style={({ pressed }) => [
             styles.playButton,
-            {
-              backgroundColor: loading ? c.primary : "#FF0000",
-              opacity: pressed ? 0.8 : 1,
-              transform: [{ scale: pressed ? 0.92 : 1 }],
-            },
+            { backgroundColor: loading ? c.primary : "#FF0000", opacity: pressed ? 0.8 : 1, transform: [{ scale: pressed ? 0.92 : 1 }] },
           ]}
         >
           {loading ? (
@@ -237,22 +247,9 @@ export function YoutubePlayer({
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#0a0a0a",
-    position: "relative",
-  },
-  thumbnail: {
-    ...StyleSheet.absoluteFillObject,
-    width: "100%",
-    height: "100%",
-  },
-  overlay: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 10,
-  },
+  container: { flex: 1, backgroundColor: "#0a0a0a", position: "relative" },
+  thumbnail: { ...StyleSheet.absoluteFillObject, width: "100%", height: "100%" },
+  overlay: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", gap: 10 },
   playButton: {
     width: 72,
     height: 72,
@@ -261,21 +258,12 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingLeft: 4,
     ...Platform.select({
-      ios: {
-        shadowColor: "#000",
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.5,
-        shadowRadius: 12,
-      },
+      ios: { shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.5, shadowRadius: 12 },
       android: { elevation: 8 },
       web: { boxShadow: "0 4px 12px rgba(0,0,0,0.5)" },
     }),
   },
-  tapHint: {
-    color: "rgba(255,255,255,0.5)",
-    fontSize: 12,
-    fontFamily: "Inter_400Regular",
-  },
+  tapHint: { color: "rgba(255,255,255,0.5)", fontSize: 12, fontFamily: "Inter_400Regular" },
   transitionOverlay: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 10,
@@ -283,15 +271,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "#0a0a0a",
   },
-  loadingCenter: {
-    position: "absolute",
-    alignItems: "center",
-    gap: 10,
-    padding: 20,
-    borderRadius: 12,
-  },
-  loadingText: {
-    fontSize: 13,
-    fontFamily: "Inter_400Regular",
-  },
+  loadingCenter: { position: "absolute", alignItems: "center", gap: 10, padding: 20, borderRadius: 12 },
+  loadingText: { fontSize: 13, fontFamily: "Inter_400Regular" },
 });

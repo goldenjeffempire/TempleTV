@@ -21,6 +21,9 @@ interface PlayerContextType {
   dataSaver: boolean;
   shuffleMode: boolean;
   loopMode: LoopMode;
+  volume: number;
+  currentTime: number;
+  duration: number;
   playSermon: (sermon: Sermon, newQueue?: Sermon[]) => void;
   playLive: () => void;
   togglePlay: () => void;
@@ -33,6 +36,13 @@ interface PlayerContextType {
   advanceToNext: () => void;
   setQueue: (sermons: Sermon[]) => void;
   stopPlayback: () => void;
+  setVolume: (v: number) => void;
+  seekTo: (time: number) => void;
+  updatePlayback: (time: number, duration: number) => void;
+  playerPlayRef: React.MutableRefObject<(() => void) | null>;
+  playerPauseRef: React.MutableRefObject<(() => void) | null>;
+  playerSeekRef: React.MutableRefObject<((t: number) => void) | null>;
+  playerVolumeRef: React.MutableRefObject<((v: number) => void) | null>;
 }
 
 const PlayerContext = createContext<PlayerContextType | undefined>(undefined);
@@ -74,6 +84,14 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     buildShuffledQueue(SERMONS),
   );
   const [shufflePosition, setShufflePosition] = useState(0);
+  const [volume, setVolumeState] = useState(100);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+
+  const playerPlayRef = useRef<(() => void) | null>(null);
+  const playerPauseRef = useRef<(() => void) | null>(null);
+  const playerSeekRef = useRef<((t: number) => void) | null>(null);
+  const playerVolumeRef = useRef<((v: number) => void) | null>(null);
 
   const queueRef = useRef(queue);
   queueRef.current = queue;
@@ -89,13 +107,6 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   shufflePosRef.current = shufflePosition;
   const currentSermonRef = useRef(currentSermon);
   currentSermonRef.current = currentSermon;
-
-  useEffect(() => {
-    const rebuilt = buildShuffledQueue(queue, currentSermon?.youtubeId);
-    setShuffledQueue(rebuilt);
-    const pos = rebuilt.findIndex((s) => s.youtubeId === currentSermon?.youtubeId);
-    setShufflePosition(pos >= 0 ? pos : 0);
-  }, [shuffleMode]);
 
   useEffect(() => {
     if (shuffleMode) {
@@ -146,6 +157,8 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     setCurrentSermon(sermon);
     setIsPlaying(true);
     setIsLive(false);
+    setCurrentTime(0);
+    setDuration(0);
 
     const idx = q.findIndex((s) => s.id === sermon.id);
     if (idx >= 0) setCurrentIndex(idx);
@@ -161,10 +174,20 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     setIsLive(true);
     setIsPlaying(true);
     setCurrentSermon(null);
+    setCurrentTime(0);
+    setDuration(0);
   }, []);
 
   const togglePlay = useCallback(() => {
-    setIsPlaying((prev) => !prev);
+    setIsPlaying((prev) => {
+      const next = !prev;
+      if (next) {
+        playerPlayRef.current?.();
+      } else {
+        playerPauseRef.current?.();
+      }
+      return next;
+    });
   }, []);
 
   const toggleRadioMode = useCallback(() => {
@@ -199,12 +222,14 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     const shuffle = shuffleRef.current;
 
     if (loop === "one") {
-      setIsPlaying(false);
-      requestAnimationFrame(() => setIsPlaying(true));
+      playerSeekRef.current?.(0);
+      playerPlayRef.current?.();
       return;
     }
 
     setIsLive(false);
+    setCurrentTime(0);
+    setDuration(0);
 
     if (shuffle) {
       const sq = shuffledQueueRef.current;
@@ -260,6 +285,8 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     const loop = loopRef.current;
     const shuffle = shuffleRef.current;
     setIsLive(false);
+    setCurrentTime(0);
+    setDuration(0);
 
     if (shuffle) {
       const prevPos = Math.max(0, shufflePosRef.current - 1);
@@ -294,6 +321,25 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     setIsPlaying(false);
     setCurrentSermon(null);
     setIsLive(false);
+    setCurrentTime(0);
+    setDuration(0);
+    playerPauseRef.current?.();
+  }, []);
+
+  const setVolume = useCallback((v: number) => {
+    const clamped = Math.max(0, Math.min(100, v));
+    setVolumeState(clamped);
+    playerVolumeRef.current?.(clamped);
+  }, []);
+
+  const seekTo = useCallback((time: number) => {
+    setCurrentTime(time);
+    playerSeekRef.current?.(time);
+  }, []);
+
+  const updatePlayback = useCallback((time: number, dur: number) => {
+    setCurrentTime(time);
+    if (dur > 0) setDuration(dur);
   }, []);
 
   const value = useMemo(
@@ -308,6 +354,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       dataSaver,
       shuffleMode,
       loopMode,
+      volume,
+      currentTime,
+      duration,
       playSermon,
       playLive,
       togglePlay,
@@ -320,6 +369,13 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       advanceToNext,
       setQueue,
       stopPlayback,
+      setVolume,
+      seekTo,
+      updatePlayback,
+      playerPlayRef,
+      playerPauseRef,
+      playerSeekRef,
+      playerVolumeRef,
     }),
     [
       currentSermon,
@@ -332,6 +388,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       dataSaver,
       shuffleMode,
       loopMode,
+      volume,
+      currentTime,
+      duration,
       playSermon,
       playLive,
       togglePlay,
@@ -344,6 +403,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       advanceToNext,
       setQueue,
       stopPlayback,
+      setVolume,
+      seekTo,
+      updatePlayback,
     ],
   );
 

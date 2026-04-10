@@ -34,7 +34,7 @@ import type { Sermon } from "@/types";
 export default function WatchScreen() {
   const c = useColors();
   const insets = useSafeAreaInsets();
-  const { currentSermon, isLive } = usePlayer();
+  const { currentSermon, isLive: playerIsLive, playSermon, playLive, setQueue } = usePlayer();
   const { sermons, loading, refresh, isFromRss } = useYouTubeChannel();
   const { isOnline } = useNetworkStatus();
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -43,6 +43,7 @@ export default function WatchScreen() {
   const [showLiveBanner, setShowLiveBanner] = useState(false);
   const [liveBannerDismissed, setLiveBannerDismissed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const autoStartedRef = useRef(false);
 
   useEffect(() => {
     Animated.timing(fadeAnim, { toValue: 1, duration: 500, useNativeDriver: true }).start();
@@ -53,11 +54,26 @@ export default function WatchScreen() {
         if (status.isLive) {
           setShowLiveBanner(true);
           sendLiveServiceNotification(status.title ?? "Temple TV JCTM is LIVE!");
+          if (!autoStartedRef.current && !currentSermon && !playerIsLive) {
+            autoStartedRef.current = true;
+            playLive();
+          }
         }
       })
       .finally(() => setCheckingLive(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (autoStartedRef.current || loading || sermons.length === 0) return;
+    if (currentSermon || playerIsLive) { autoStartedRef.current = true; return; }
+    autoStartedRef.current = true;
+    const first = sermons[0];
+    if (first) {
+      setQueue(sermons);
+      playSermon(first, sermons);
+    }
+  }, [loading, sermons]);
 
   const webTopPad = Platform.OS === "web" ? 67 : 0;
   const topPad = insets.top + webTopPad;
@@ -200,10 +216,10 @@ export default function WatchScreen() {
             </Pressable>
           )}
 
-          {(currentSermon || isLive) && (
+          {(currentSermon || playerIsLive) && (
             <NowPlayingBar
-              title={isLive ? "Temple TV Live" : currentSermon?.title ?? ""}
-              isLive={isLive}
+              title={playerIsLive ? "Temple TV Live" : currentSermon?.title ?? ""}
+              isLive={playerIsLive}
             />
           )}
 
