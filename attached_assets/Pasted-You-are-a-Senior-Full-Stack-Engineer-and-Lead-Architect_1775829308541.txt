@@ -1,0 +1,53 @@
+You are a Senior Full-Stack Engineer and Lead Architect. Your task is to build a high-performance, futuristic 3-in-1 broadcasting platform (Live TV, Video-on-Demand, and 24/7 Radio) for "Temple TV" (JCTM).
+
+Core Technical Stack:
+
+Mobile: React Native (Expo) with NativeWind (Tailwind CSS) for a Glassmorphism/Dark-Mode UI.
+
+Backend: Django (Python) with Django Channels (WebSockets) and FastAPI for high-speed metadata processing.
+
+Real-time/Streaming: Integration with YouTube Data API v3 and HLS (.m3u8) playback.
+
+Database & Cache: PostgreSQL for metadata; Redis for the "Auto-Loop" queue and live-status caching.
+
+Infrastructure: Firebase for Push Notifications and Auth; Cloudinary or AWS S3 for asset storage.
+
+Phase 1: The Streaming Engine & UI Foundation
+Task: Build the "Zero-Friction" Frontend.
+
+Launch Logic: Implement a "Splash-to-Player" transition where the 24/7 stream begins playing immediately on app launch.
+
+The Switcher: Create logic that detects if the JCTM YouTube channel is "Live."
+
+If Live: Force the player to the Live Stream with a "Neon Pulse" UI indicator.
+
+If Offline: Pull from the "Auto-Loop" playlist managed by the Django backend.
+
+UI Design: Follow a "Netflix-meets-Cyberpunk" aesthetic. Use deep blacks (#000000), Royal Purples (#6A0DAD), and semi-transparent glass containers.
+
+Phase 2: The "Continuous Streaming" Backend
+Task: Build the Django Admin & Auto-Loop Logic.
+
+Sermon CMS: Create a dashboard where admins can add YouTube links. Use yt-dlp or API calls to auto-fetch titles, durations, and thumbnails.
+
+The Scheduler: Build a Python-based worker that manages the "Now Playing" queue. It must calculate the end-time of the current video and pre-broadcast the "Up Next" metadata to all connected apps via WebSockets.
+
+Radio Mode: Implement a background-service toggle. If the user switches to Radio, kill the video render but maintain the audio stream using expo-av background playback permissions.
+
+Phase 3: Engagement & Intelligence Features
+Task: Implement Notifications and Library Search.
+
+Firebase Integration: Set up automated triggers. When the Admin toggles the "Live" switch in the dashboard, send a high-priority push notification: "🚨 Prophet Amos is LIVE! Tap to join the fire."
+
+Smart Library: Build the VOD section with categories (Faith, Healing, Deliverance). Implement a search bar using Django's ICONTANS or PostgreSQL Full-Text Search.
+
+Data Saver: Include a setting to toggle between "High Quality" and "Data Saver (Audio Only)" to accommodate Nigerian network conditions.
+
+Strict Operational Rules for the AI Agent:
+No Dead Air: If a stream fails, the player must immediately fallback to a "Default Worship Loop" stored locally or on a stable CDN.
+
+Performance: Optimize for low-end Android devices common in West Africa. Use FlashList for the sermon library to ensure smooth scrolling.
+
+Security: Protect the Admin Dashboard with JWT and Multi-Factor Authentication.
+
+Next Action: "Start by generating the Django models for Video, Playlist, and LiveSession, then create the React Native Navigation structure including the background audio player."

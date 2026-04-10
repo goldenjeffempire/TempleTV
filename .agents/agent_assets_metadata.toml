@@ -1,0 +1,20 @@
+uploads = []
+outputs = []
+
+[[generated]]
+id = "5mK1s76B6zorv-nQWniZB"
+uri = "file://artifacts/mobile/assets/images/icon.png"
+type = "image"
+title = "generated_image"
+
+[[generated]]
+id = "zjU9gYw6B3vE6-U2Y63DY"
+uri = "file://artifacts/mobile/assets/images/worship-default.png"
+type = "image"
+title = "generated_image"
+
+[[generated]]
+id = "BpGvyOjjz7lNOPUEVPLw3"
+uri = "file://artifacts/mobile/assets/images/live-banner.png"
+type = "image"
+title = "generated_image"
