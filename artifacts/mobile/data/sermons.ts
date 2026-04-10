@@ -15,6 +15,7 @@ export const SERMONS: Sermon[] = [
     category: "Faith",
     preacher: "Prophet Amos",
     date: "2026-03-15",
+    views: 15420,
   },
   {
     id: "2",
@@ -27,6 +28,7 @@ export const SERMONS: Sermon[] = [
     category: "Healing",
     preacher: "Prophet Amos",
     date: "2026-03-08",
+    views: 12300,
   },
   {
     id: "3",
@@ -39,6 +41,7 @@ export const SERMONS: Sermon[] = [
     category: "Deliverance",
     preacher: "Prophet Amos",
     date: "2026-02-28",
+    views: 18900,
   },
   {
     id: "4",
@@ -51,6 +54,7 @@ export const SERMONS: Sermon[] = [
     category: "Worship",
     preacher: "Temple TV Worship Team",
     date: "2026-02-20",
+    views: 9800,
   },
   {
     id: "5",
@@ -63,6 +67,7 @@ export const SERMONS: Sermon[] = [
     category: "Prophecy",
     preacher: "Prophet Amos",
     date: "2026-02-14",
+    views: 22100,
   },
   {
     id: "6",
@@ -75,6 +80,7 @@ export const SERMONS: Sermon[] = [
     category: "Faith",
     preacher: "Prophet Amos",
     date: "2026-02-07",
+    views: 11500,
   },
   {
     id: "7",
@@ -87,6 +93,7 @@ export const SERMONS: Sermon[] = [
     category: "Healing",
     preacher: "Prophet Amos",
     date: "2026-01-30",
+    views: 8700,
   },
   {
     id: "8",
@@ -99,6 +106,7 @@ export const SERMONS: Sermon[] = [
     category: "Deliverance",
     preacher: "Prophet Amos",
     date: "2026-01-22",
+    views: 14200,
   },
   {
     id: "9",
@@ -111,6 +119,7 @@ export const SERMONS: Sermon[] = [
     category: "Prophecy",
     preacher: "Prophet Amos",
     date: "2026-01-15",
+    views: 31000,
   },
   {
     id: "10",
@@ -123,9 +132,84 @@ export const SERMONS: Sermon[] = [
     category: "Worship",
     preacher: "Temple TV Worship Team",
     date: "2026-01-08",
+    views: 7600,
+  },
+  {
+    id: "11",
+    title: "Understanding the Kingdom of God",
+    description:
+      "A deep Bible teaching on the nature, principles, and laws of the Kingdom of God. Equip yourself with kingdom understanding that transforms your daily living.",
+    youtubeId: "MCNxWsGMR7c",
+    thumbnailUrl: makeThumb("MCNxWsGMR7c"),
+    duration: "1:50:00",
+    category: "Teachings",
+    preacher: "Prophet Amos",
+    date: "2025-12-28",
+    views: 19300,
+  },
+  {
+    id: "12",
+    title: "Prayer & Fasting: The Power Duo",
+    description:
+      "An in-depth teaching on combining prayer and fasting for spiritual breakthrough. Learn the biblical principles that unlock extraordinary results.",
+    youtubeId: "ZbZSe6N_BXs",
+    thumbnailUrl: makeThumb("ZbZSe6N_BXs"),
+    duration: "2:00:00",
+    category: "Teachings",
+    preacher: "Prophet Amos",
+    date: "2025-12-15",
+    views: 16800,
+  },
+  {
+    id: "13",
+    title: "Temple TV Annual Thanksgiving Service",
+    description:
+      "Join us for our annual thanksgiving service celebrating the faithfulness of God over the past year. A night of praise, testimonies, and prophetic declarations.",
+    youtubeId: "kffacxfA7G4",
+    thumbnailUrl: makeThumb("kffacxfA7G4"),
+    duration: "4:30:00",
+    category: "Special Programs",
+    preacher: "Prophet Amos",
+    date: "2025-12-01",
+    views: 45600,
+  },
+  {
+    id: "14",
+    title: "New Year Crossover Night",
+    description:
+      "Cross into the new year with prayer, prophecy, and praise. A landmark service marking the transition into a new season of divine glory.",
+    youtubeId: "iYYRH4apXDo",
+    thumbnailUrl: makeThumb("iYYRH4apXDo"),
+    duration: "5:00:00",
+    category: "Special Programs",
+    preacher: "Prophet Amos",
+    date: "2025-11-15",
+    views: 62000,
+  },
+  {
+    id: "15",
+    title: "The Holy Spirit: Teacher and Guide",
+    description:
+      "Understand the person and ministry of the Holy Spirit in the life of a believer. This teaching will revolutionize your relationship with the Spirit of God.",
+    youtubeId: "vNqNnQ79S_8",
+    thumbnailUrl: makeThumb("vNqNnQ79S_8"),
+    duration: "1:35:00",
+    category: "Teachings",
+    preacher: "Prophet Amos",
+    date: "2025-11-01",
+    views: 24700,
   },
 ];
 
-export const CATEGORIES = ["All", "Faith", "Healing", "Deliverance", "Worship", "Prophecy"] as const;
+export const CATEGORIES = [
+  "All",
+  "Faith",
+  "Healing",
+  "Deliverance",
+  "Worship",
+  "Prophecy",
+  "Teachings",
+  "Special Programs",
+] as const;
 
 export const JCTM_CHANNEL_ID = "UCsXVk37biltHxV1aGl-AAxg";

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -8,11 +8,19 @@ import {
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import * as WebBrowser from "expo-web-browser";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
+
+let YoutubeIframe: any = null;
+try {
+  YoutubeIframe = require("react-native-youtube-iframe").default;
+} catch {
+  YoutubeIframe = null;
+}
 
 interface YoutubePlayerProps {
   videoId?: string;
@@ -30,15 +38,37 @@ export function YoutubePlayer({
   isLive,
   thumbnailUrl,
   channelHandle = "templetvjctm",
-  autoPlay,
+  autoPlay = true,
   onEnd,
   onPlay,
   onPause,
 }: YoutubePlayerProps) {
   const c = useColors();
+  const { width } = useWindowDimensions();
   const [loading, setLoading] = useState(false);
+  const [playing, setPlaying] = useState(autoPlay);
+  const [playerReady, setPlayerReady] = useState(false);
+  const [playerError, setPlayerError] = useState(false);
 
-  const openVideo = async () => {
+  const playerHeight = Math.min(Math.round(width * (9 / 16)), 260);
+
+  const onChangeState = useCallback(
+    (state: string) => {
+      if (state === "ended") {
+        setPlaying(false);
+        onEnd?.();
+      } else if (state === "playing") {
+        setPlaying(true);
+        onPlay?.();
+      } else if (state === "paused") {
+        setPlaying(false);
+        onPause?.();
+      }
+    },
+    [onEnd, onPlay, onPause],
+  );
+
+  const openExternal = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setLoading(true);
     try {
@@ -47,10 +77,10 @@ export function YoutubePlayer({
         url = `https://www.youtube.com/@${channelHandle}/live`;
       } else if (videoId) {
         if (Platform.OS !== "web") {
-          const youtubeApp = `youtube://watch?v=${videoId}`;
-          const canOpen = await Linking.canOpenURL(youtubeApp);
+          const ytUrl = `youtube://watch?v=${videoId}`;
+          const canOpen = await Linking.canOpenURL(ytUrl);
           if (canOpen) {
-            await Linking.openURL(youtubeApp);
+            await Linking.openURL(ytUrl);
             return;
           }
         }
@@ -75,14 +105,52 @@ export function YoutubePlayer({
 
   const thumb = thumbnailUrl ?? (videoId ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` : null);
 
+  if (Platform.OS !== "web" && YoutubeIframe && videoId && !playerError) {
+    return (
+      <View style={[styles.container, { height: playerHeight }]}>
+        {!playerReady && (
+          <View style={[styles.loadingOverlay, { backgroundColor: "#0a0a0a" }]}>
+            {thumb && <Image source={{ uri: thumb }} style={styles.thumbnail} resizeMode="cover" />}
+            <View style={styles.loadingCenter}>
+              <ActivityIndicator color={c.primary} size="large" />
+              <Text style={[styles.loadingText, { color: "rgba(255,255,255,0.6)" }]}>Loading player...</Text>
+            </View>
+          </View>
+        )}
+        <YoutubeIframe
+          videoId={videoId}
+          height={playerHeight}
+          play={playing}
+          onChangeState={onChangeState}
+          onReady={() => setPlayerReady(true)}
+          onError={() => setPlayerError(true)}
+          initialPlayerParams={{
+            modestbranding: true,
+            rel: false,
+            preventFullScreen: false,
+            cc_load_policy: false,
+            iv_load_policy: 3,
+          }}
+          webViewProps={{
+            allowsFullscreenVideo: true,
+            allowsInlineMediaPlayback: true,
+            mediaPlaybackRequiresUserAction: false,
+            javaScriptEnabled: true,
+            bounces: false,
+          }}
+        />
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       {thumb && (
         <Image source={{ uri: thumb }} style={styles.thumbnail} resizeMode="cover" />
       )}
-      <View style={[styles.overlay, { backgroundColor: "rgba(0,0,0,0.35)" }]}>
+      <View style={[styles.overlay, { backgroundColor: "rgba(0,0,0,0.38)" }]}>
         <Pressable
-          onPress={openVideo}
+          onPress={openExternal}
           style={({ pressed }) => [
             styles.playButton,
             {
@@ -98,7 +166,9 @@ export function YoutubePlayer({
             <Feather name="play" size={28} color="#FFF" />
           )}
         </Pressable>
-        <Text style={styles.tapHint}>Opens on YouTube</Text>
+        <Text style={styles.tapHint}>
+          {Platform.OS === "web" ? "Opens on YouTube" : "Opens in YouTube app"}
+        </Text>
       </View>
     </View>
   );
@@ -137,6 +207,24 @@ const styles = StyleSheet.create({
   tapHint: {
     color: "rgba(255,255,255,0.5)",
     fontSize: 12,
+    fontFamily: "Inter_400Regular",
+  },
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  loadingCenter: {
+    position: "absolute",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    padding: 20,
+    borderRadius: 12,
+  },
+  loadingText: {
+    fontSize: 13,
     fontFamily: "Inter_400Regular",
   },
 });

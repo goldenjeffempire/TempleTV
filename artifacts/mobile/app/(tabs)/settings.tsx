@@ -1,6 +1,7 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Alert,
+  Animated,
   Linking,
   Platform,
   Pressable,
@@ -18,6 +19,10 @@ import { usePlayer } from "@/context/PlayerContext";
 import { useWatchHistory } from "@/hooks/useWatchHistory";
 import { useFavorites } from "@/hooks/useFavorites";
 import { APP_CONFIG } from "@/constants/config";
+import {
+  requestNotificationPermissions,
+  getNotificationPermissionStatus,
+} from "@/services/notifications";
 
 function ToggleSwitch({ value, onToggle }: { value: boolean; onToggle: () => void }) {
   const c = useColors();
@@ -33,8 +38,6 @@ function ToggleSwitch({ value, onToggle }: { value: boolean; onToggle: () => voi
     </Pressable>
   );
 }
-
-import { Animated } from "react-native";
 
 interface RowProps {
   icon: string;
@@ -80,11 +83,41 @@ function Divider() {
 export default function SettingsScreen() {
   const c = useColors();
   const insets = useSafeAreaInsets();
-  const { isRadioMode, dataSaver, toggleRadioMode, toggleDataSaver, stopPlayback } = usePlayer();
+  const { isRadioMode, dataSaver, shuffleMode, loopMode, toggleRadioMode, toggleDataSaver, toggleShuffle, cycleLoopMode, stopPlayback } = usePlayer();
   const { clearHistory, history } = useWatchHistory();
   const { favorites } = useFavorites();
   const webTopPad = Platform.OS === "web" ? 67 : 0;
-  const [qualityMode, setQualityMode] = useState<"high" | "low">(dataSaver ? "low" : "high");
+  const [notifPermission, setNotifPermission] = useState<string | null>(null);
+  const [notifEnabled, setNotifEnabled] = useState(false);
+
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    getNotificationPermissionStatus().then((status) => {
+      setNotifPermission(status);
+      setNotifEnabled(status === "granted");
+    });
+  }, []);
+
+  const handleNotifToggle = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (!notifEnabled) {
+      const granted = await requestNotificationPermissions();
+      setNotifEnabled(granted);
+      setNotifPermission(granted ? "granted" : "denied");
+      if (!granted) {
+        Alert.alert(
+          "Notifications Blocked",
+          "Please enable notifications for Temple TV in your device Settings to receive live service alerts.",
+          [
+            { text: "Cancel", style: "cancel" },
+            { text: "Open Settings", onPress: () => Linking.openSettings() },
+          ],
+        );
+      }
+    } else {
+      setNotifEnabled(false);
+    }
+  };
 
   const confirmClearHistory = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
@@ -104,10 +137,7 @@ export default function SettingsScreen() {
     }
   };
 
-  const confirmStopPlayback = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-    stopPlayback();
-  };
+  const loopLabels = { none: "Off", all: "Loop All", one: "Loop One" };
 
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
@@ -134,7 +164,7 @@ export default function SettingsScreen() {
           <Row
             icon="radio"
             label="Radio Mode"
-            description="Audio-only background playback"
+            description="Background audio — works with screen off"
             right={<ToggleSwitch value={isRadioMode} onToggle={toggleRadioMode} />}
           />
           <Divider />
@@ -144,7 +174,47 @@ export default function SettingsScreen() {
             description="Lower quality stream — ideal for slow networks"
             right={<ToggleSwitch value={dataSaver} onToggle={toggleDataSaver} />}
           />
+          <Divider />
+          <Row
+            icon="shuffle"
+            label="Shuffle Mode"
+            description="Play sermons in random order"
+            right={<ToggleSwitch value={shuffleMode} onToggle={toggleShuffle} />}
+          />
+          <Divider />
+          <Row
+            icon="repeat"
+            label="Loop Mode"
+            description="Control repeat behaviour"
+            value={loopLabels[loopMode]}
+            onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); cycleLoopMode(); }}
+          />
         </GlassCard>
+
+        {Platform.OS !== "web" && (
+          <>
+            <Text style={[styles.sectionLabel, { color: c.mutedForeground }]}>NOTIFICATIONS</Text>
+            <GlassCard style={styles.group}>
+              <Row
+                icon="bell"
+                label="Live Service Alerts"
+                description={
+                  notifPermission === "denied"
+                    ? "Blocked — tap to open Settings"
+                    : "Get notified when Temple TV goes live"
+                }
+                right={<ToggleSwitch value={notifEnabled} onToggle={handleNotifToggle} />}
+              />
+              <Divider />
+              <Row
+                icon="calendar"
+                label="New Sermon Notifications"
+                description="Alerts when new content is published"
+                right={<ToggleSwitch value={notifEnabled} onToggle={handleNotifToggle} />}
+              />
+            </GlassCard>
+          </>
+        )}
 
         <Text style={[styles.sectionLabel, { color: c.mutedForeground }]}>YOUR CONTENT</Text>
         <GlassCard style={styles.group}>
@@ -201,7 +271,7 @@ export default function SettingsScreen() {
             icon="stop-circle"
             label="Stop Current Playback"
             description="Stop the active radio/stream"
-            onPress={confirmStopPlayback}
+            onPress={stopPlayback}
             danger
           />
         </GlassCard>

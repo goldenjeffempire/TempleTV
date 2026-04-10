@@ -8,9 +8,18 @@ export interface Sermon {
   category: SermonCategory;
   preacher: string;
   date: string;
+  views?: number;
 }
 
-export type SermonCategory = "Faith" | "Healing" | "Deliverance" | "Worship" | "Prophecy" | "All";
+export type SermonCategory =
+  | "Faith"
+  | "Healing"
+  | "Deliverance"
+  | "Worship"
+  | "Prophecy"
+  | "Teachings"
+  | "Special Programs"
+  | "All";
 
 export interface PlaybackState {
   currentSermon: Sermon | null;
@@ -26,3 +35,6 @@ export interface LiveStatus {
   liveVideoId: string | null;
   liveTitle: string | null;
 }
+
+export type SortMode = "newest" | "oldest" | "popular";
+export type LoopMode = "none" | "one" | "all";

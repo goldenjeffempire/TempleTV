@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
   FlatList,
@@ -11,17 +11,29 @@ import {
   View,
 } from "react-native";
 import { Feather } from "@expo/vector-icons";
-import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
 import { GlassCard } from "@/components/GlassCard";
-import { NowPlayingBar } from "@/components/NowPlayingBar";
 import { usePlayer } from "@/context/PlayerContext";
 import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
-import type { Sermon } from "@/types";
+import type { LoopMode, Sermon, SermonCategory } from "@/types";
 
 const PLACEHOLDER = require("@/assets/images/sermon-placeholder.png");
+
+const LOOP_ICONS: Record<LoopMode, string> = {
+  none: "minus-circle",
+  all: "repeat",
+  one: "repeat",
+};
+
+const LOOP_LABELS: Record<LoopMode, string> = {
+  none: "No Loop",
+  all: "Loop All",
+  one: "Loop One",
+};
+
+const RADIO_CATEGORIES: SermonCategory[] = ["All", "Worship", "Teachings", "Faith", "Healing", "Deliverance", "Prophecy", "Special Programs"];
 
 export default function RadioScreen() {
   const c = useColors();
@@ -31,9 +43,13 @@ export default function RadioScreen() {
     isPlaying,
     isRadioMode,
     dataSaver,
+    shuffleMode,
+    loopMode,
     togglePlay,
     toggleRadioMode,
     toggleDataSaver,
+    toggleShuffle,
+    cycleLoopMode,
     playSermon,
     playNext,
     playPrevious,
@@ -43,11 +59,17 @@ export default function RadioScreen() {
   } = usePlayer();
   const { sermons } = useYouTubeChannel();
   const webTopPad = Platform.OS === "web" ? 67 : 0;
+  const [radioCategory, setRadioCategory] = useState<SermonCategory>("All");
 
-  // Sync queue with real sermon data
+  const filteredQueue = useMemo(() => {
+    if (radioCategory === "All") return sermons.length > 0 ? sermons : queue;
+    const base = sermons.length > 0 ? sermons : queue;
+    return base.filter((s) => s.category === radioCategory);
+  }, [sermons, queue, radioCategory]);
+
   useEffect(() => {
-    if (sermons.length > 0) setQueue(sermons);
-  }, [sermons]);
+    if (filteredQueue.length > 0) setQueue(filteredQueue);
+  }, [filteredQueue]);
 
   const rotateAnim = useRef(new Animated.Value(0)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -90,21 +112,21 @@ export default function RadioScreen() {
   }, [isPlaying, isRadioMode]);
 
   const spin = rotateAnim.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
-  const nowPlaying = currentSermon ?? sermons[0];
+  const nowPlaying = currentSermon ?? filteredQueue[0];
   const thumbUri = nowPlaying?.thumbnailUrl;
 
   const handlePlayToggle = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    if (!currentSermon && sermons.length > 0) {
-      playSermon(sermons[0]);
+    if (!currentSermon && filteredQueue.length > 0) {
+      playSermon(filteredQueue[0]);
       if (!isRadioMode) toggleRadioMode();
     } else {
       togglePlay();
     }
   };
 
-  const upNext = queue
-    .slice(currentIndex + 1, currentIndex + 5)
+  const upNext = filteredQueue
+    .slice(currentIndex + 1, currentIndex + 6)
     .filter((s) => s.youtubeId !== nowPlaying?.youtubeId);
 
   return (
@@ -113,10 +135,14 @@ export default function RadioScreen() {
         contentContainerStyle={{ paddingTop: insets.top + webTopPad, paddingBottom: 150 }}
         showsVerticalScrollIndicator={false}
       >
-        <Text style={[styles.header, { color: c.foreground }]}>Radio</Text>
-        <Text style={[styles.desc, { color: c.mutedForeground }]}>
-          Listen with screen off — Temple TV audio mode
-        </Text>
+        <View style={styles.headerRow}>
+          <View>
+            <Text style={[styles.header, { color: c.foreground }]}>Radio</Text>
+            <Text style={[styles.desc, { color: c.mutedForeground }]}>
+              Listen with screen off — background audio mode
+            </Text>
+          </View>
+        </View>
 
         <View style={styles.playerSection}>
           <Animated.View style={{ transform: [{ rotate: spin }, { scale: pulseAnim }] }}>
@@ -179,6 +205,70 @@ export default function RadioScreen() {
               <Feather name="skip-forward" size={30} color={c.foreground} />
             </Pressable>
           </View>
+
+          <View style={styles.modeControls}>
+            <Pressable
+              onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); toggleShuffle(); }}
+              style={[
+                styles.modeBtn,
+                {
+                  backgroundColor: shuffleMode ? c.primary : c.muted,
+                  borderColor: shuffleMode ? c.primary : c.border,
+                },
+              ]}
+            >
+              <Feather name="shuffle" size={15} color={shuffleMode ? "#FFF" : c.mutedForeground} />
+              <Text style={[styles.modeBtnText, { color: shuffleMode ? "#FFF" : c.mutedForeground }]}>
+                Shuffle
+              </Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); cycleLoopMode(); }}
+              style={[
+                styles.modeBtn,
+                {
+                  backgroundColor: loopMode !== "none" ? c.primary : c.muted,
+                  borderColor: loopMode !== "none" ? c.primary : c.border,
+                },
+              ]}
+            >
+              <Feather
+                name={LOOP_ICONS[loopMode] as any}
+                size={15}
+                color={loopMode !== "none" ? "#FFF" : c.mutedForeground}
+              />
+              <Text style={[styles.modeBtnText, { color: loopMode !== "none" ? "#FFF" : c.mutedForeground }]}>
+                {LOOP_LABELS[loopMode]}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+
+        <View style={styles.categorySection}>
+          <Text style={[styles.categoryTitle, { color: c.mutedForeground }]}>FILTER BY CATEGORY</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryScroll}>
+            {RADIO_CATEGORIES.map((cat) => (
+              <Pressable
+                key={cat}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setRadioCategory(cat);
+                }}
+                style={[
+                  styles.catPill,
+                  {
+                    backgroundColor: radioCategory === cat ? c.primary : c.muted,
+                    borderColor: radioCategory === cat ? c.primary : c.border,
+                  },
+                ]}
+              >
+                <Text style={[styles.catPillText, { color: radioCategory === cat ? "#FFF" : c.mutedForeground }]}>
+                  {cat}
+                </Text>
+              </Pressable>
+            ))}
+          </ScrollView>
         </View>
 
         <View style={styles.togglesSection}>
@@ -190,7 +280,7 @@ export default function RadioScreen() {
               <View>
                 <Text style={[styles.toggleLabel, { color: c.foreground }]}>Radio Mode</Text>
                 <Text style={[styles.toggleDesc, { color: c.mutedForeground }]}>
-                  Background audio playback
+                  Background audio — works with screen off
                 </Text>
               </View>
             </View>
@@ -258,9 +348,16 @@ export default function RadioScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  header: { fontSize: 28, fontFamily: "Inter_700Bold", paddingHorizontal: 16, paddingTop: 12 },
-  desc: { fontSize: 13, fontFamily: "Inter_400Regular", paddingHorizontal: 16, marginTop: 4, marginBottom: 28 },
-  playerSection: { alignItems: "center", paddingHorizontal: 16, gap: 16 },
+  headerRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    paddingHorizontal: 16,
+    paddingTop: 12,
+  },
+  header: { fontSize: 28, fontFamily: "Inter_700Bold" },
+  desc: { fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 4, marginBottom: 24 },
+  playerSection: { alignItems: "center", paddingHorizontal: 16, gap: 14 },
   discOuter: {
     width: 210,
     height: 210,
@@ -289,9 +386,30 @@ const styles = StyleSheet.create({
   waveBar: { width: 3, height: 20, borderRadius: 2 },
   nowTitle: { fontSize: 19, fontFamily: "Inter_700Bold", textAlign: "center", paddingHorizontal: 24, lineHeight: 26 },
   nowPreacher: { fontSize: 14, fontFamily: "Inter_400Regular" },
-  controls: { flexDirection: "row", alignItems: "center", gap: 36, marginTop: 8 },
+  controls: { flexDirection: "row", alignItems: "center", gap: 36, marginTop: 4 },
   playButton: { width: 68, height: 68, borderRadius: 34, alignItems: "center", justifyContent: "center", paddingLeft: 3 },
-  togglesSection: { paddingHorizontal: 16, marginTop: 32, gap: 10 },
+  modeControls: { flexDirection: "row", gap: 10, marginTop: 4 },
+  modeBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+  },
+  modeBtnText: { fontSize: 12, fontFamily: "Inter_600SemiBold" },
+  categorySection: { paddingHorizontal: 16, marginTop: 28, gap: 8 },
+  categoryTitle: { fontSize: 11, fontFamily: "Inter_700Bold", letterSpacing: 1.5 },
+  categoryScroll: { gap: 8, paddingVertical: 4 },
+  catPill: {
+    paddingHorizontal: 16,
+    paddingVertical: 7,
+    borderRadius: 20,
+    borderWidth: 1,
+  },
+  catPillText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  togglesSection: { paddingHorizontal: 16, marginTop: 20, gap: 10 },
   toggleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 14, gap: 12 },
   toggleLeft: { flexDirection: "row", alignItems: "center", gap: 12, flex: 1 },
   toggleIcon: { width: 36, height: 36, borderRadius: 10, alignItems: "center", justifyContent: "center" },

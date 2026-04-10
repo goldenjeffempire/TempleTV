@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Animated,
   Platform,
@@ -41,11 +41,12 @@ export default function PlayerScreen() {
     category?: string;
   }>();
   const { videoId, live, title: paramTitle, preacher: paramPreacher, duration: paramDuration, thumbnail, category: paramCategory } = params;
-  const { playSermon } = usePlayer();
+  const { playSermon, playNext } = usePlayer();
   const { isFavorite, toggleFavorite } = useFavorites();
   const { addToHistory } = useWatchHistory();
   const { sermons } = useYouTubeChannel();
   const fadeAnim = useRef(new Animated.Value(0)).current;
+  const [autoPlayNext, setAutoPlayNext] = useState(false);
 
   const isLive = live === "true";
   const localSermon = SERMONS.find((s) => s.youtubeId === videoId);
@@ -58,14 +59,15 @@ export default function PlayerScreen() {
   const displayCategory = paramCategory ?? currentSermon?.category ?? "";
   const thumbnailUrl = thumbnail ?? currentSermon?.thumbnailUrl ?? (videoId ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` : undefined);
 
-  const relatedSermons = sermons
+  const allSermons = sermons.length > 0 ? sermons : SERMONS;
+  const relatedSermons = allSermons
     .filter((s) => s.youtubeId !== videoId && (currentSermon ? s.category === currentSermon.category : true))
-    .slice(0, 5);
+    .slice(0, 6);
+  const upNextSermon = relatedSermons[0];
 
   const webTopPad = Platform.OS === "web" ? 67 : 0;
   const favorited = videoId ? isFavorite(videoId) : false;
 
-  // Track watch history on mount
   useEffect(() => {
     Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: true }).start();
     if (currentSermon) {
@@ -84,6 +86,24 @@ export default function PlayerScreen() {
       });
     }
   }, []);
+
+  const handleVideoEnd = useCallback(() => {
+    if (upNextSermon) {
+      router.replace({
+        pathname: "/player",
+        params: {
+          videoId: upNextSermon.youtubeId,
+          title: upNextSermon.title,
+          preacher: upNextSermon.preacher,
+          duration: upNextSermon.duration,
+          thumbnail: upNextSermon.thumbnailUrl,
+          category: upNextSermon.category,
+        },
+      });
+    } else {
+      playNext();
+    }
+  }, [upNextSermon, playNext]);
 
   const openOnYouTube = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -156,6 +176,8 @@ export default function PlayerScreen() {
           videoId={isLive ? undefined : videoId}
           isLive={isLive}
           thumbnailUrl={thumbnailUrl}
+          autoPlay
+          onEnd={handleVideoEnd}
         />
         <LinearGradient
           colors={["rgba(0,0,0,0.7)", "transparent"]}
@@ -257,9 +279,29 @@ export default function PlayerScreen() {
             </Pressable>
           </View>
 
+          {upNextSermon && (
+            <GlassCard style={styles.autoPlayBanner}>
+              <View style={styles.autoPlayLeft}>
+                <Feather name="skip-forward" size={16} color={c.primary} />
+                <View>
+                  <Text style={[styles.autoPlayLabel, { color: c.mutedForeground }]}>Up Next</Text>
+                  <Text style={[styles.autoPlayTitle, { color: c.foreground }]} numberOfLines={1}>
+                    {upNextSermon.title}
+                  </Text>
+                </View>
+              </View>
+              <Pressable
+                onPress={() => navigateToRelated(upNextSermon)}
+                style={[styles.autoPlayBtn, { backgroundColor: c.primary }]}
+              >
+                <Text style={styles.autoPlayBtnText}>Play</Text>
+              </Pressable>
+            </GlassCard>
+          )}
+
           {relatedSermons.length > 0 && (
             <View style={styles.relatedSection}>
-              <Text style={[styles.relatedTitle, { color: c.foreground }]}>Up Next</Text>
+              <Text style={[styles.relatedTitle, { color: c.foreground }]}>Related Sermons</Text>
               {relatedSermons.map((sermon) => (
                 <SermonCard
                   key={sermon.id}
@@ -333,6 +375,18 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  autoPlayBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: 14,
+    gap: 12,
+  },
+  autoPlayLeft: { flexDirection: "row", alignItems: "center", gap: 10, flex: 1 },
+  autoPlayLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 0.5, marginBottom: 2 },
+  autoPlayTitle: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  autoPlayBtn: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20 },
+  autoPlayBtnText: { color: "#FFF", fontSize: 13, fontFamily: "Inter_700Bold" },
   relatedSection: { gap: 10, marginTop: 4 },
   relatedTitle: { fontSize: 18, fontFamily: "Inter_700Bold", marginBottom: 2 },
 });

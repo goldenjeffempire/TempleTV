@@ -28,6 +28,7 @@ import { NetworkBanner } from "@/components/NetworkBanner";
 import { LiveNotificationBanner } from "@/components/LiveNotificationBanner";
 import { usePlayer } from "@/context/PlayerContext";
 import { checkLiveStatus, type LiveCheckResult } from "@/services/youtube";
+import { sendLiveServiceNotification } from "@/services/notifications";
 import type { Sermon } from "@/types";
 
 export default function WatchScreen() {
@@ -49,7 +50,10 @@ export default function WatchScreen() {
     checkLiveStatus()
       .then((status) => {
         setLiveStatus(status);
-        if (status.isLive && !liveBannerDismissed) setShowLiveBanner(true);
+        if (status.isLive && !liveBannerDismissed) {
+          setShowLiveBanner(true);
+          sendLiveServiceNotification(status.title ?? "Temple TV JCTM is LIVE!");
+        }
       })
       .finally(() => setCheckingLive(false));
   }, []);
@@ -99,6 +103,9 @@ export default function WatchScreen() {
     ]);
     setRefreshing(false);
   };
+
+  const teachingsSermons = sermons.filter((s) => s.category === "Teachings").slice(0, 3);
+  const specialSermons = sermons.filter((s) => s.category === "Special Programs").slice(0, 3);
 
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
@@ -266,6 +273,28 @@ export default function WatchScreen() {
               <SectionHeader title="Worship" onSeeAll={() => router.push("/(tabs)/library")} />
               <View style={styles.listContainer}>
                 {worshipSermons.map((s) => (
+                  <SermonCard key={s.id} sermon={s} onPress={handleSermonPress} variant="horizontal" />
+                ))}
+              </View>
+            </View>
+          )}
+
+          {!loading && teachingsSermons.length > 0 && (
+            <View style={styles.section}>
+              <SectionHeader title="Teachings" onSeeAll={() => router.push("/(tabs)/library")} />
+              <View style={styles.listContainer}>
+                {teachingsSermons.map((s) => (
+                  <SermonCard key={s.id} sermon={s} onPress={handleSermonPress} variant="horizontal" />
+                ))}
+              </View>
+            </View>
+          )}
+
+          {!loading && specialSermons.length > 0 && (
+            <View style={styles.section}>
+              <SectionHeader title="Special Programs" onSeeAll={() => router.push("/(tabs)/library")} />
+              <View style={styles.listContainer}>
+                {specialSermons.map((s) => (
                   <SermonCard key={s.id} sermon={s} onPress={handleSermonPress} variant="horizontal" />
                 ))}
               </View>
