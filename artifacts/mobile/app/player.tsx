@@ -46,7 +46,6 @@ export default function PlayerScreen() {
   const { addToHistory } = useWatchHistory();
   const { sermons } = useYouTubeChannel();
   const fadeAnim = useRef(new Animated.Value(0)).current;
-  const [autoPlayNext, setAutoPlayNext] = useState(false);
 
   const isLive = live === "true";
   const localSermon = SERMONS.find((s) => s.youtubeId === videoId);

@@ -69,7 +69,7 @@ export default function RadioScreen() {
 
   useEffect(() => {
     if (filteredQueue.length > 0) setQueue(filteredQueue);
-  }, [filteredQueue]);
+  }, [filteredQueue, setQueue]);
 
   const rotateAnim = useRef(new Animated.Value(0)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;

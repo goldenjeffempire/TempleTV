@@ -76,9 +76,11 @@ export function SermonCard({ sermon, onPress, variant = "vertical" }: SermonCard
     >
       <View style={[styles.thumbContainer, { borderRadius: colors.radius }]}>
         <SmartImage uri={sermon.thumbnailUrl} style={styles.verticalThumb} />
-        <View style={styles.durationBadge}>
-          <Text style={styles.durationBadgeText}>{sermon.duration}</Text>
-        </View>
+        {!!sermon.duration && (
+          <View style={styles.durationBadge}>
+            <Text style={styles.durationBadgeText}>{sermon.duration}</Text>
+          </View>
+        )}
       </View>
       <Text style={[styles.title, { color: c.foreground }]} numberOfLines={2}>
         {sermon.title}

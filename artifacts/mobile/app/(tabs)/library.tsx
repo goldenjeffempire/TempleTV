@@ -354,7 +354,7 @@ const styles = StyleSheet.create({
   },
   watchedBadge: {
     position: "absolute",
-    left: 109,
+    right: 48,
     bottom: 10,
     width: 16,
     height: 16,
