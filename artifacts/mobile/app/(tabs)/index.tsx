@@ -156,8 +156,12 @@ export default function WatchScreen() {
       >
         <Animated.View style={{ opacity: fadeAnim }}>
           <View style={styles.header}>
-            <View>
-              <Text style={[styles.logo, { color: c.primary }]}>TEMPLE TV</Text>
+            <View style={styles.headerLogoWrap}>
+              <Image
+                source={require("@/assets/images/logo.png")}
+                style={styles.headerLogo}
+                resizeMode="contain"
+              />
               <View style={styles.logoMeta}>
                 <Text style={[styles.subtitle, { color: c.mutedForeground }]}>JCTM Broadcasting</Text>
                 {isFromRss && (
@@ -344,6 +348,8 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   logo: { fontSize: 28, fontFamily: "Inter_700Bold", letterSpacing: 3 },
+  headerLogoWrap: { flexDirection: "column", justifyContent: "center" },
+  headerLogo: { width: 140, height: 44 },
   logoMeta: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 2 },
   subtitle: { fontSize: 12, fontFamily: "Inter_400Regular", letterSpacing: 1 },
   liveDot: { width: 6, height: 6, borderRadius: 3 },

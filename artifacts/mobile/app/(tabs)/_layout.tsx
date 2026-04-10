@@ -44,7 +44,7 @@ function ClassicTabLayout() {
   const isWeb = Platform.OS === "web";
 
   return (
-    <View style={{ flex: 1, backgroundColor: "#000" }}>
+    <View style={{ flex: 1, backgroundColor: colors.background }}>
       <Tabs
         screenOptions={{
           tabBarActiveTintColor: colors.primary,
@@ -52,7 +52,7 @@ function ClassicTabLayout() {
           headerShown: false,
           tabBarStyle: {
             position: "absolute",
-            backgroundColor: isIOS ? "transparent" : "rgba(0,0,0,0.95)",
+            backgroundColor: isIOS ? "transparent" : colors.surfaceGlass,
             borderTopWidth: 0,
             borderTopColor: colors.border,
             elevation: 0,
@@ -61,8 +61,8 @@ function ClassicTabLayout() {
           tabBarBackground: () =>
             isIOS ? (
               <BlurView
-                intensity={100}
-                tint="dark"
+                intensity={80}
+                tint="light"
                 style={StyleSheet.absoluteFill}
               />
             ) : isWeb ? (
@@ -70,9 +70,9 @@ function ClassicTabLayout() {
                 style={[
                   StyleSheet.absoluteFill,
                   {
-                    backgroundColor: "rgba(0,0,0,0.95)",
+                    backgroundColor: colors.surfaceGlass,
                     borderTopWidth: 1,
-                    borderTopColor: "rgba(106,13,173,0.25)",
+                    borderTopColor: colors.border,
                   },
                 ]}
               />

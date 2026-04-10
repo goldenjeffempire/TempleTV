@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import {
   Alert,
   Animated,
+  Image,
   Linking,
   Platform,
   Pressable,
@@ -154,9 +155,11 @@ export default function SettingsScreen() {
         <Text style={[styles.header, { color: c.foreground }]}>Settings</Text>
 
         <GlassCard style={styles.profileCard} intensity="high">
-          <View style={[styles.logoCircle, { backgroundColor: c.primary }]}>
-            <Feather name="tv" size={28} color="#FFF" />
-          </View>
+          <Image
+            source={require("@/assets/images/logo.png")}
+            style={styles.logoImage}
+            resizeMode="contain"
+          />
           <View style={styles.profileInfo}>
             <Text style={[styles.profileName, { color: c.foreground }]}>Temple TV</Text>
             <Text style={[styles.profileSub, { color: c.mutedForeground }]}>
@@ -339,7 +342,7 @@ const styles = StyleSheet.create({
     gap: 14,
     marginBottom: 20,
   },
-  logoCircle: { width: 56, height: 56, borderRadius: 28, alignItems: "center", justifyContent: "center" },
+  logoImage: { width: 80, height: 56 },
   profileInfo: { flex: 1 },
   profileName: { fontSize: 17, fontFamily: "Inter_700Bold" },
   profileSub: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 3, lineHeight: 16 },

@@ -1,68 +1,68 @@
 const colors = {
   light: {
-    text: "#FFFFFF",
+    text: "#0A0014",
     tint: "#6A0DAD",
 
-    background: "#000000",
-    foreground: "#FFFFFF",
+    background: "#F8F5FF",
+    foreground: "#0A0014",
 
-    card: "rgba(106, 13, 173, 0.12)",
-    cardForeground: "#FFFFFF",
+    card: "rgba(106, 13, 173, 0.06)",
+    cardForeground: "#0A0014",
 
     primary: "#6A0DAD",
     primaryForeground: "#FFFFFF",
 
-    secondary: "rgba(106, 13, 173, 0.25)",
-    secondaryForeground: "#E0D0F0",
+    secondary: "rgba(106, 13, 173, 0.10)",
+    secondaryForeground: "#4A0080",
 
-    muted: "rgba(255, 255, 255, 0.08)",
-    mutedForeground: "rgba(255, 255, 255, 0.5)",
+    muted: "rgba(0, 0, 0, 0.05)",
+    mutedForeground: "rgba(0, 0, 0, 0.48)",
 
     accent: "#9B30FF",
     accentForeground: "#FFFFFF",
 
-    destructive: "#FF3B3B",
+    destructive: "#E53E3E",
     destructiveForeground: "#FFFFFF",
 
-    border: "rgba(106, 13, 173, 0.3)",
-    input: "rgba(255, 255, 255, 0.1)",
+    border: "rgba(106, 13, 173, 0.18)",
+    input: "rgba(0, 0, 0, 0.06)",
 
     glow: "#9B30FF",
     liveRed: "#FF0040",
-    surfaceGlass: "rgba(106, 13, 173, 0.08)",
+    surfaceGlass: "rgba(255, 255, 255, 0.85)",
   },
 
   dark: {
-    text: "#FFFFFF",
-    tint: "#9B30FF",
+    text: "#0A0014",
+    tint: "#6A0DAD",
 
-    background: "#000000",
-    foreground: "#FFFFFF",
+    background: "#F8F5FF",
+    foreground: "#0A0014",
 
-    card: "rgba(106, 13, 173, 0.12)",
-    cardForeground: "#FFFFFF",
+    card: "rgba(106, 13, 173, 0.06)",
+    cardForeground: "#0A0014",
 
-    primary: "#9B30FF",
+    primary: "#6A0DAD",
     primaryForeground: "#FFFFFF",
 
-    secondary: "rgba(106, 13, 173, 0.25)",
-    secondaryForeground: "#E0D0F0",
+    secondary: "rgba(106, 13, 173, 0.10)",
+    secondaryForeground: "#4A0080",
 
-    muted: "rgba(255, 255, 255, 0.08)",
-    mutedForeground: "rgba(255, 255, 255, 0.5)",
+    muted: "rgba(0, 0, 0, 0.05)",
+    mutedForeground: "rgba(0, 0, 0, 0.48)",
 
-    accent: "#B041FF",
+    accent: "#9B30FF",
     accentForeground: "#FFFFFF",
 
-    destructive: "#FF3B3B",
+    destructive: "#E53E3E",
     destructiveForeground: "#FFFFFF",
 
-    border: "rgba(106, 13, 173, 0.3)",
-    input: "rgba(255, 255, 255, 0.1)",
+    border: "rgba(106, 13, 173, 0.18)",
+    input: "rgba(0, 0, 0, 0.06)",
 
-    glow: "#B041FF",
+    glow: "#9B30FF",
     liveRed: "#FF0040",
-    surfaceGlass: "rgba(106, 13, 173, 0.08)",
+    surfaceGlass: "rgba(255, 255, 255, 0.85)",
   },
 
   radius: 16,

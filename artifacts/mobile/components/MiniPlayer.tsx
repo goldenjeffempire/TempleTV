@@ -111,7 +111,7 @@ export function MiniPlayer() {
   }
 
   return (
-    <View style={[styles.container, { backgroundColor: "rgba(10, 0, 20, 0.95)", borderColor: c.border }]}>
+    <View style={[styles.container, { backgroundColor: c.surfaceGlass, borderColor: c.border }]}>
       {content}
     </View>
   );
