@@ -47,7 +47,43 @@ function inferCategory(title: string, desc: string): SermonCategory {
   return "Faith";
 }
 
-function rssVideoToSermon(v: RssVideo, index: number): Sermon {
+interface ApiVideo {
+  videoId: string;
+  title: string;
+  description: string;
+  publishedAt: string;
+  thumbnailUrl: string;
+  channelName: string;
+  duration: string;
+  viewCount: string;
+}
+
+function apiVideoToSermon(v: ApiVideo): Sermon {
+  return {
+    id: `yt_${v.videoId}`,
+    title: v.title,
+    description: v.description,
+    youtubeId: v.videoId,
+    thumbnailUrl: v.thumbnailUrl,
+    duration: formatDuration(v.duration),
+    category: inferCategory(v.title, v.description),
+    preacher: v.channelName || "Prophet Amos",
+    date: v.publishedAt ? v.publishedAt.slice(0, 10) : "",
+  };
+}
+
+function formatDuration(iso: string): string {
+  if (!iso) return "";
+  const match = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!match) return "";
+  const h = parseInt(match[1] ?? "0");
+  const m = parseInt(match[2] ?? "0");
+  const s = parseInt(match[3] ?? "0");
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function rssVideoToSermon(v: RssVideo): Sermon {
   return {
     id: `rss_${v.videoId}`,
     title: v.title,
@@ -76,9 +112,8 @@ export function useYouTubeChannel(): UseYouTubeChannelResult {
   const [isFromRss, setIsFromRss] = useState(false);
   const fetchedRef = useRef(false);
 
-  const fetchRss = useCallback(async (force = false) => {
+  const fetchVideos = useCallback(async (force = false) => {
     try {
-      // Check cache first
       if (!force) {
         const cached = await AsyncStorage.getItem(STORAGE_KEYS.rssCache);
         if (cached) {
@@ -93,10 +128,37 @@ export function useYouTubeChannel(): UseYouTubeChannelResult {
         }
       }
 
-      // On web, route through our API proxy to avoid CORS. On native, fetch directly.
+      const domain = process.env.EXPO_PUBLIC_DOMAIN;
+      const apiBase = domain ? `https://${domain}` : "";
+
+      if (Platform.OS === "web" && apiBase) {
+        try {
+          const res = await fetch(`${apiBase}/api/youtube/videos`, {
+            signal: AbortSignal.timeout(15000),
+          });
+          if (res.ok) {
+            const json = (await res.json()) as { videos: ApiVideo[]; total: number };
+            if (json.videos?.length > 0) {
+              const allSermons = json.videos.map(apiVideoToSermon);
+              setSermons(allSermons);
+              setIsFromRss(true);
+              setError(null);
+              await AsyncStorage.setItem(
+                STORAGE_KEYS.rssCache,
+                JSON.stringify({ data: allSermons, timestamp: Date.now() })
+              );
+              setLoading(false);
+              return;
+            }
+          }
+        } catch {
+          // fall through to RSS
+        }
+      }
+
       const rssEndpoint =
-        Platform.OS === "web"
-          ? `https://${process.env.EXPO_PUBLIC_DOMAIN}/api/youtube/rss`
+        Platform.OS === "web" && apiBase
+          ? `${apiBase}/api/youtube/rss`
           : APP_CONFIG.rssUrl;
 
       const res = await fetch(rssEndpoint, {
@@ -111,19 +173,18 @@ export function useYouTubeChannel(): UseYouTubeChannelResult {
 
       if (videos.length === 0) throw new Error("No videos found in RSS feed");
 
-      const rssSermons = videos.map((v, i) => rssVideoToSermon(v, i));
+      const rssSermons = videos.map(rssVideoToSermon);
       setSermons(rssSermons);
       setIsFromRss(true);
       setError(null);
 
       await AsyncStorage.setItem(
         STORAGE_KEYS.rssCache,
-        JSON.stringify({ data: rssSermons, timestamp: Date.now() }),
+        JSON.stringify({ data: rssSermons, timestamp: Date.now() })
       );
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Network error";
       setError(message);
-      // Keep showing local data on error
       setSermons(SERMONS);
       setIsFromRss(false);
     } finally {
@@ -134,14 +195,14 @@ export function useYouTubeChannel(): UseYouTubeChannelResult {
   useEffect(() => {
     if (!fetchedRef.current) {
       fetchedRef.current = true;
-      fetchRss();
+      fetchVideos();
     }
-  }, [fetchRss]);
+  }, [fetchVideos]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
-    await fetchRss(true);
-  }, [fetchRss]);
+    await fetchVideos(true);
+  }, [fetchVideos]);
 
   return { sermons, loading, error, refresh, isFromRss };
 }

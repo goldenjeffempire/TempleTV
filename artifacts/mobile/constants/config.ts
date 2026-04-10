@@ -3,7 +3,7 @@ export const APP_CONFIG = {
   channelName: "Temple TV JCTM",
   channelUrl: "https://www.youtube.com/@templetvjctm",
   channelLiveUrl: "https://www.youtube.com/@templetvjctm/live",
-  rssUrl: "https://www.youtube.com/feeds/videos.xml?channel_id=UCsXVk37biltHxV1aGl-AAxg",
+  rssUrl: "https://www.youtube.com/feeds/videos.xml?channel_id=UCPFFvkE-KGpR37qJgvYriJg",
   defaultHlsStream: "https://www.youtube.com/@templetvjctm/live",
   fallbackStreamUrl: "https://www.youtube.com/@templetvjctm",
   maxHistoryItems: 50,

@@ -2,13 +2,10 @@ import { Router } from "express";
 
 const router = Router();
 
-const CHANNEL_ID = "UCsXVk37biltHxV1aGl-AAxg";
+const CHANNEL_ID = "UCPFFvkE-KGpR37qJgvYriJg";
 const CHANNEL_HANDLE = "templetvjctm";
-
-const DIRECT_RSS_URLS = [
-  `https://www.youtube.com/feeds/videos.xml?channel_id=${CHANNEL_ID}`,
-  `https://www.youtube.com/feeds/videos.xml?user=${CHANNEL_HANDLE}`,
-];
+const UPLOADS_PLAYLIST_ID = "UUPFFvkE-KGpR37qJgvYriJg";
+const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY ?? "";
 
 const BROWSER_HEADERS = {
   Accept: "application/xml, text/xml, */*",
@@ -18,8 +15,150 @@ const BROWSER_HEADERS = {
   "Cache-Control": "no-cache",
 };
 
-let rssCache: { xml: string; timestamp: number } | null = null;
-const RSS_CACHE_MS = 10 * 60 * 1000;
+const CACHE_MS = 10 * 60 * 1000;
+
+interface VideoItem {
+  videoId: string;
+  title: string;
+  description: string;
+  publishedAt: string;
+  thumbnailUrl: string;
+  channelName: string;
+  duration: string;
+  viewCount: string;
+}
+
+let videosCache: { videos: VideoItem[]; timestamp: number } | null = null;
+
+async function fetchAllVideosFromApi(): Promise<VideoItem[] | null> {
+  if (!YOUTUBE_API_KEY) return null;
+
+  try {
+    const videos: VideoItem[] = [];
+    let pageToken: string | undefined;
+
+    do {
+      const params = new URLSearchParams({
+        key: YOUTUBE_API_KEY,
+        playlistId: UPLOADS_PLAYLIST_ID,
+        part: "snippet",
+        maxResults: "50",
+      });
+      if (pageToken) params.set("pageToken", pageToken);
+
+      const res = await fetch(
+        `https://www.googleapis.com/youtube/v3/playlistItems?${params.toString()}`,
+        { signal: AbortSignal.timeout(10000) }
+      );
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error("YouTube playlistItems API error:", errText);
+        return null;
+      }
+
+      const data = (await res.json()) as {
+        nextPageToken?: string;
+        items?: Array<{
+          snippet: {
+            title: string;
+            description: string;
+            publishedAt: string;
+            channelTitle: string;
+            resourceId: { videoId: string };
+            thumbnails: {
+              high?: { url: string };
+              medium?: { url: string };
+              default?: { url: string };
+            };
+          };
+        }>;
+      };
+
+      const items = data.items ?? [];
+      const videoIds = items
+        .map((i) => i.snippet?.resourceId?.videoId)
+        .filter(Boolean) as string[];
+
+      let detailsMap: Record<string, { duration: string; viewCount: string }> = {};
+      if (videoIds.length > 0) {
+        const detailParams = new URLSearchParams({
+          key: YOUTUBE_API_KEY,
+          id: videoIds.join(","),
+          part: "contentDetails,statistics",
+        });
+        const detailRes = await fetch(
+          `https://www.googleapis.com/youtube/v3/videos?${detailParams.toString()}`,
+          { signal: AbortSignal.timeout(10000) }
+        );
+        if (detailRes.ok) {
+          const detailData = (await detailRes.json()) as {
+            items?: Array<{
+              id: string;
+              contentDetails: { duration: string };
+              statistics: { viewCount?: string };
+            }>;
+          };
+          for (const d of detailData.items ?? []) {
+            detailsMap[d.id] = {
+              duration: d.contentDetails?.duration ?? "",
+              viewCount: d.statistics?.viewCount ?? "0",
+            };
+          }
+        }
+      }
+
+      for (const item of items) {
+        const s = item.snippet;
+        const vid = s?.resourceId?.videoId;
+        if (!vid) continue;
+        const thumb =
+          s.thumbnails?.high?.url ||
+          s.thumbnails?.medium?.url ||
+          s.thumbnails?.default?.url ||
+          `https://img.youtube.com/vi/${vid}/hqdefault.jpg`;
+        videos.push({
+          videoId: vid,
+          title: s.title,
+          description: s.description,
+          publishedAt: s.publishedAt,
+          thumbnailUrl: thumb,
+          channelName: s.channelTitle || "Temple TV JCTM",
+          duration: detailsMap[vid]?.duration ?? "",
+          viewCount: detailsMap[vid]?.viewCount ?? "0",
+        });
+      }
+
+      pageToken = data.nextPageToken;
+    } while (pageToken);
+
+    return videos.length > 0 ? videos : null;
+  } catch (err) {
+    console.error("fetchAllVideosFromApi error:", err);
+    return null;
+  }
+}
+
+function videosToXml(videos: VideoItem[]): string {
+  const entries = videos
+    .map((v) => {
+      const safeTitle = v.title
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+      return `
+  <entry>
+    <yt:videoId>${v.videoId}</yt:videoId>
+    <title>${safeTitle}</title>
+    <published>${v.publishedAt}</published>
+    <media:thumbnail url="${v.thumbnailUrl}"/>
+    <media:description><![CDATA[${v.description}]]></media:description>
+    <name>${v.channelName}</name>
+  </entry>`;
+    })
+    .join("\n");
+
+  return `<?xml version="1.0" encoding="UTF-8"?><feed xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns:media="http://search.yahoo.com/mrss/">${entries}</feed>`;
+}
 
 async function fetchDirect(url: string): Promise<string | null> {
   try {
@@ -63,7 +202,6 @@ async function fetchViaRss2Json(rssUrl: string): Promise<string | null> {
         thumbnail: string;
         author: string;
       }>;
-      feed?: { title?: string };
     };
     if (json.status !== "ok" || !json.items?.length) return null;
 
@@ -94,29 +232,70 @@ async function fetchViaRss2Json(rssUrl: string): Promise<string | null> {
   }
 }
 
+router.get("/youtube/videos", async (req, res) => {
+  try {
+    if (videosCache && Date.now() - videosCache.timestamp < CACHE_MS) {
+      res.setHeader("X-Cache", "HIT");
+      return res.json({ videos: videosCache.videos, total: videosCache.videos.length });
+    }
+
+    const videos = await fetchAllVideosFromApi();
+    if (!videos || videos.length === 0) {
+      return res.status(502).json({ error: "Could not fetch videos from YouTube API." });
+    }
+
+    videosCache = { videos, timestamp: Date.now() };
+    res.setHeader("Cache-Control", "public, max-age=600");
+    res.setHeader("X-Source", "youtube-api");
+    return res.json({ videos, total: videos.length });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+let rssCache: { xml: string; timestamp: number } | null = null;
+
 router.get("/youtube/rss", async (req, res) => {
   try {
-    if (rssCache && Date.now() - rssCache.timestamp < RSS_CACHE_MS) {
+    if (rssCache && Date.now() - rssCache.timestamp < CACHE_MS) {
       res.setHeader("Content-Type", "application/xml; charset=utf-8");
       res.setHeader("X-Cache", "HIT");
       return res.send(rssCache.xml);
     }
 
-    let xml: string | null = null;
-
-    for (const url of DIRECT_RSS_URLS) {
-      xml = await fetchDirect(url);
-      if (xml) {
-        res.setHeader("X-Source", "direct");
-        break;
+    if (YOUTUBE_API_KEY) {
+      if (videosCache && Date.now() - videosCache.timestamp < CACHE_MS) {
+        const xml = videosToXml(videosCache.videos);
+        res.setHeader("Content-Type", "application/xml; charset=utf-8");
+        res.setHeader("X-Source", "youtube-api-cached");
+        return res.send(xml);
+      }
+      const videos = await fetchAllVideosFromApi();
+      if (videos && videos.length > 0) {
+        videosCache = { videos, timestamp: Date.now() };
+        const xml = videosToXml(videos);
+        rssCache = { xml, timestamp: Date.now() };
+        res.setHeader("Content-Type", "application/xml; charset=utf-8");
+        res.setHeader("X-Source", "youtube-api");
+        return res.send(xml);
       }
     }
 
+    const DIRECT_RSS_URLS = [
+      `https://www.youtube.com/feeds/videos.xml?channel_id=${CHANNEL_ID}`,
+      `https://www.youtube.com/feeds/videos.xml?user=${CHANNEL_HANDLE}`,
+    ];
+
+    let xml: string | null = null;
+    for (const url of DIRECT_RSS_URLS) {
+      xml = await fetchDirect(url);
+      if (xml) { res.setHeader("X-Source", "direct"); break; }
+    }
     if (!xml) {
       xml = await fetchViaAllOrigins(DIRECT_RSS_URLS[0]!);
       if (xml) res.setHeader("X-Source", "allorigins");
     }
-
     if (!xml) {
       xml = await fetchViaRss2Json(DIRECT_RSS_URLS[0]!);
       if (xml) res.setHeader("X-Source", "rss2json");
