@@ -50,19 +50,34 @@ export default function WatchScreen() {
   useEffect(() => {
     Animated.timing(fadeAnim, { toValue: 1, duration: 500, useNativeDriver: Platform.OS !== "web" }).start();
 
-    checkLiveStatus()
-      .then((status) => {
+    let lastSeenVideoId: string | null = null;
+
+    const doLiveCheck = async (useCached = false) => {
+      try {
+        const status = await checkLiveStatus(useCached);
         setLiveStatus(status);
+        setCheckingLive(false);
         if (status.isLive) {
-          setShowLiveBanner(true);
-          sendLiveServiceNotification(status.title ?? "Temple TV JCTM is LIVE!");
+          if (!liveBannerDismissed) setShowLiveBanner(true);
+          if (status.videoId !== lastSeenVideoId) {
+            lastSeenVideoId = status.videoId;
+            sendLiveServiceNotification(status.title ?? "Temple TV JCTM is LIVE!");
+          }
           if (!autoStartedRef.current && !currentSermon && !playerIsLive) {
             autoStartedRef.current = true;
             playLive();
           }
+        } else {
+          setShowLiveBanner(false);
         }
-      })
-      .finally(() => setCheckingLive(false));
+      } catch {
+        setCheckingLive(false);
+      }
+    };
+
+    doLiveCheck(false);
+    const interval = setInterval(() => doLiveCheck(true), 60000);
+    return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

@@ -2,6 +2,9 @@ import { Router } from "express";
 import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, pushTokensTable } from "@workspace/db";
 import { eq, ilike, or, count, sql, desc } from "drizzle-orm";
 import { randomUUID } from "crypto";
+import path from "path";
+import { fileURLToPath } from "url";
+import multer from "multer";
 import {
   ImportVideoBody,
   UpdateAdminVideoBody,
@@ -25,6 +28,27 @@ import {
   SendPushNotificationBody,
   GetAnalyticsQueryParams,
 } from "@workspace/api-zod";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: path.join(__dirname, "..", "uploads"),
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname);
+      cb(null, `${randomUUID()}${ext}`);
+    },
+  }),
+  limits: { fileSize: 5 * 1024 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype.startsWith("video/") || file.mimetype.startsWith("image/")) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only video and image files are allowed"));
+    }
+  },
+});
+
 const router = Router();
 
 const EXPO_PUSH_API = "https://exp.host/--/api/v2/push/send";
@@ -179,6 +203,62 @@ router.get("/admin/videos", async (req, res) => {
       page,
       totalPages: Math.ceil(total / limit),
     });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/admin/videos/upload", upload.fields([{ name: "video", maxCount: 1 }, { name: "thumbnail", maxCount: 1 }]), async (req, res) => {
+  try {
+    const files = req.files as Record<string, Express.Multer.File[]> | undefined;
+    const videoFile = files?.video?.[0];
+    const thumbnailFile = files?.thumbnail?.[0];
+
+    if (!videoFile) {
+      return res.status(400).json({ error: "Video file is required" });
+    }
+
+    const { title, category, preacher, featured } = req.body as {
+      title?: string;
+      category?: string;
+      preacher?: string;
+      featured?: string;
+    };
+
+    if (!title?.trim()) {
+      return res.status(400).json({ error: "Title is required" });
+    }
+
+    const baseUrl = process.env.API_BASE_URL ?? "";
+    const localVideoUrl = `${baseUrl}/uploads/${videoFile.filename}`;
+    const thumbnailUrl = thumbnailFile
+      ? `${baseUrl}/uploads/${thumbnailFile.filename}`
+      : "";
+
+    const id = randomUUID();
+    const pseudoYoutubeId = `local-${id}`;
+
+    const [video] = await db
+      .insert(videosTable)
+      .values({
+        id,
+        youtubeId: pseudoYoutubeId,
+        title: title.trim(),
+        description: "",
+        thumbnailUrl,
+        duration: "",
+        category: category ?? "sermon",
+        preacher: preacher ?? "",
+        publishedAt: null,
+        featured: featured === "true",
+        viewCount: 0,
+        videoSource: "local",
+        localVideoUrl,
+      })
+      .returning();
+
+    res.status(201).json(video);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });

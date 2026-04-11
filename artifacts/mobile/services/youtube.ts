@@ -46,6 +46,22 @@ async function checkLiveViaOembed(): Promise<LiveCheckResult> {
   return { isLive: !!videoId, videoId, title: data.title ?? null };
 }
 
+async function checkLiveViaCachedStatus(): Promise<LiveCheckResult | null> {
+  const domain = process.env.EXPO_PUBLIC_DOMAIN;
+  if (!domain) return null;
+  try {
+    const res = await fetch(`https://${domain}/api/youtube/live/status`, {
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as LiveCheckResult & { staleSec?: number };
+    if ((data.staleSec ?? 999) > 120) return null;
+    return { isLive: data.isLive, videoId: data.videoId, title: data.title };
+  } catch {
+    return null;
+  }
+}
+
 async function checkLiveViaApiServer(): Promise<LiveCheckResult | null> {
   const domain = process.env.EXPO_PUBLIC_DOMAIN;
   if (!domain) return null;
@@ -61,13 +77,14 @@ async function checkLiveViaApiServer(): Promise<LiveCheckResult | null> {
   }
 }
 
-export async function checkLiveStatus(): Promise<LiveCheckResult> {
+export async function checkLiveStatus(useCached = false): Promise<LiveCheckResult> {
   try {
-    // On web, try API server first (it has better extraction logic)
-    if (Platform.OS === "web") {
-      const apiResult = await checkLiveViaApiServer();
-      if (apiResult !== null) return apiResult;
+    if (useCached) {
+      const cached = await checkLiveViaCachedStatus();
+      if (cached !== null) return cached;
     }
+    const apiResult = await checkLiveViaApiServer();
+    if (apiResult !== null) return apiResult;
     return await checkLiveViaOembed();
   } catch {
     return { isLive: false, videoId: null, title: null };

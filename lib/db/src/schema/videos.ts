@@ -15,6 +15,8 @@ export const videosTable = pgTable("managed_videos", {
   importedAt: timestamp("imported_at", { withTimezone: true }).notNull().defaultNow(),
   viewCount: integer("view_count").notNull().default(0),
   featured: boolean("featured").notNull().default(false),
+  videoSource: text("video_source").notNull().default("youtube"),
+  localVideoUrl: text("local_video_url"),
 });
 
 export const insertVideoSchema = createInsertSchema(videosTable).omit({ importedAt: true });

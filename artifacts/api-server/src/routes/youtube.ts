@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { db, pushTokensTable, notificationsTable } from "@workspace/db";
+import { randomUUID } from "crypto";
 
 const router = Router();
 
@@ -16,6 +18,119 @@ const BROWSER_HEADERS = {
 };
 
 const CACHE_MS = 10 * 60 * 1000;
+const LIVE_POLL_MS = 60 * 1000;
+const EXPO_PUSH_API = "https://exp.host/--/api/v2/push/send";
+
+interface LiveStatus {
+  isLive: boolean;
+  videoId: string | null;
+  title: string | null;
+  checkedAt: number;
+}
+
+let cachedLiveStatus: LiveStatus = {
+  isLive: false,
+  videoId: null,
+  title: null,
+  checkedAt: 0,
+};
+
+let lastNotifiedVideoId: string | null = null;
+
+async function checkYouTubeLive(): Promise<{ isLive: boolean; videoId: string | null; title: string | null }> {
+  try {
+    const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/@${CHANNEL_HANDLE}/live&format=json`;
+    const response = await fetch(oembedUrl, {
+      signal: AbortSignal.timeout(5000),
+      headers: BROWSER_HEADERS,
+    });
+    if (!response.ok) return { isLive: false, videoId: null, title: null };
+    const data = (await response.json()) as { title?: string; thumbnail_url?: string };
+    const title = data.title ?? null;
+    const thumbnailUrl = data.thumbnail_url ?? "";
+    const videoIdMatch = thumbnailUrl.match(/\/vi\/([^/]+)\//);
+    const videoId = videoIdMatch ? videoIdMatch[1] : null;
+    const isLive = !!videoId && !!title;
+    return { isLive, videoId, title };
+  } catch {
+    return { isLive: false, videoId: null, title: null };
+  }
+}
+
+async function sendLiveAutoNotification(title: string, videoId: string | null) {
+  try {
+    const tokenRows = await db.select({ token: pushTokensTable.token }).from(pushTokensTable);
+    const tokens = tokenRows.map((r) => r.token);
+    if (tokens.length === 0) return;
+
+    const messages = tokens.map((token) => ({
+      to: token,
+      title: "🔴 Temple TV is LIVE!",
+      body: title,
+      sound: "default",
+      data: { type: "live", ...(videoId ? { videoId } : {}) },
+    }));
+
+    let sent = 0;
+    let failed = 0;
+    const CHUNK_SIZE = 100;
+    for (let i = 0; i < messages.length; i += CHUNK_SIZE) {
+      const chunk = messages.slice(i, i + CHUNK_SIZE);
+      try {
+        const res = await fetch(EXPO_PUSH_API, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify(chunk),
+          signal: AbortSignal.timeout(15000),
+        });
+        if (res.ok) {
+          const result = (await res.json()) as { data?: Array<{ status: string }> };
+          for (const s of result.data ?? []) {
+            if (s.status === "ok") sent++;
+            else failed++;
+          }
+        } else {
+          failed += chunk.length;
+        }
+      } catch {
+        failed += chunk.length;
+      }
+    }
+
+    await db.insert(notificationsTable).values({
+      id: randomUUID(),
+      title: "Temple TV is LIVE!",
+      body: title,
+      type: "live",
+      videoId: videoId ?? null,
+      sentCount: sent,
+    });
+
+    console.log(`[LivePoller] Auto-notification sent: ${sent}/${tokens.length} devices`);
+  } catch (err) {
+    console.error("[LivePoller] Failed to send auto-notification:", err);
+  }
+}
+
+async function pollLiveStatus() {
+  const result = await checkYouTubeLive();
+  const wasLive = cachedLiveStatus.isLive;
+  const previousVideoId = cachedLiveStatus.videoId;
+
+  cachedLiveStatus = { ...result, checkedAt: Date.now() };
+
+  const justWentLive = result.isLive && (!wasLive || result.videoId !== previousVideoId);
+  const isNewStream = result.isLive && result.videoId && result.videoId !== lastNotifiedVideoId;
+
+  if (justWentLive && isNewStream && result.title) {
+    lastNotifiedVideoId = result.videoId;
+    console.log(`[LivePoller] New live stream detected: "${result.title}" (${result.videoId})`);
+    await sendLiveAutoNotification(result.title, result.videoId);
+  }
+}
+
+pollLiveStatus();
+setInterval(pollLiveStatus, LIVE_POLL_MS);
 
 interface VideoItem {
   videoId: string;
@@ -364,27 +479,22 @@ router.get("/youtube/rss", async (req, res) => {
 
 router.get("/youtube/live", async (req, res) => {
   try {
-    const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/@${CHANNEL_HANDLE}/live&format=json`;
-    const response = await fetch(oembedUrl, {
-      signal: AbortSignal.timeout(5000),
-      headers: BROWSER_HEADERS,
-    });
-    if (!response.ok) {
-      return res.json({ isLive: false, videoId: null, title: null });
-    }
-    const data = (await response.json()) as {
-      title?: string;
-      thumbnail_url?: string;
-    };
-    const title = data.title ?? null;
-    const thumbnailUrl = data.thumbnail_url ?? "";
-    const videoIdMatch = thumbnailUrl.match(/\/vi\/([^/]+)\//);
-    const videoId = videoIdMatch ? videoIdMatch[1] : null;
-    const isLive = !!videoId && !!title;
-    res.json({ isLive, videoId, title });
+    const result = await checkYouTubeLive();
+    cachedLiveStatus = { ...result, checkedAt: Date.now() };
+    res.json(result);
   } catch {
     res.json({ isLive: false, videoId: null, title: null });
   }
+});
+
+router.get("/youtube/live/status", (_req, res) => {
+  res.json({
+    isLive: cachedLiveStatus.isLive,
+    videoId: cachedLiveStatus.videoId,
+    title: cachedLiveStatus.title,
+    checkedAt: cachedLiveStatus.checkedAt,
+    staleSec: Math.floor((Date.now() - cachedLiveStatus.checkedAt) / 1000),
+  });
 });
 
 export default router;
