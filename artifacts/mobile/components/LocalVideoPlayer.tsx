@@ -48,7 +48,7 @@ export function LocalVideoPlayer({
 }: LocalVideoPlayerProps) {
   const c = useColors();
   const { width } = useWindowDimensions();
-  const { updatePlayback, playerPlayRef, playerPauseRef, playerSeekRef } = usePlayer();
+  const { updatePlayback, playerPlayRef, playerPauseRef, playerSeekRef, dataSaver, isRadioMode } = usePlayer();
   const [status, setStatus] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const videoRef = useRef<any>(null);
@@ -128,6 +128,7 @@ export function LocalVideoPlayer({
           onPlaybackStatusUpdate={onPlaybackStatusUpdate}
           useNativeControls
           isLooping={false}
+          progressUpdateIntervalMillis={dataSaver || isRadioMode ? 2000 : 500}
         />
         <Animated.View
           style={[styles.overlay, { opacity: transitionOpacity, pointerEvents: "none" }]}
@@ -138,10 +139,16 @@ export function LocalVideoPlayer({
           <View style={[styles.loadingCenter, { backgroundColor: "rgba(0,0,0,0.5)" }]}>
             <ActivityIndicator color={c.primary} size="large" />
             <Text style={[styles.loadingText, { color: "rgba(255,255,255,0.6)" }]}>
-              Loading...
+              {dataSaver || isRadioMode ? "Loading low-data playback..." : "Loading..."}
             </Text>
           </View>
         </Animated.View>
+        {(dataSaver || isRadioMode) && (
+          <View style={styles.modeBadge}>
+            <Feather name={isRadioMode ? "radio" : "wifi-off"} size={12} color="#FFF" />
+            <Text style={styles.modeBadgeText}>{isRadioMode ? "Audio focus" : "Data saver"}</Text>
+          </View>
+        )}
       </View>
     );
   }
@@ -208,4 +215,17 @@ const styles = StyleSheet.create({
     paddingLeft: 4,
   },
   tapHint: { color: "rgba(255,255,255,0.5)", fontSize: 12, fontFamily: "Inter_400Regular" },
+  modeBadge: {
+    position: "absolute",
+    left: 12,
+    bottom: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "rgba(0,0,0,0.62)",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 16,
+  },
+  modeBadgeText: { color: "#FFF", fontSize: 11, fontFamily: "Inter_600SemiBold" },
 });

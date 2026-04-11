@@ -280,6 +280,11 @@ export default function WatchScreen() {
                       ? "Continuous broadcast — tap to watch"
                       : "Live worship & preaching 24/7"}
                   </Text>
+                  {showBroadcast && broadcastCurrent?.nextItem && (
+                    <Text style={styles.broadcastNext} numberOfLines={1}>
+                      Up next: {broadcastCurrent.nextItem.title}
+                    </Text>
+                  )}
                   <Pressable
                     onPress={showBroadcast ? handleBroadcastPress : handleLivePress}
                     style={[styles.watchBtn, { backgroundColor: liveStatus.isLive ? "#FF0040" : c.primary }]}
@@ -476,6 +481,7 @@ const styles = StyleSheet.create({
   offlineTagText: { color: "rgba(255,255,255,0.85)", fontSize: 12, fontFamily: "Inter_600SemiBold" },
   liveTitle: { color: "#FFFFFF", fontSize: 22, fontFamily: "Inter_700Bold" },
   liveSubtitle: { color: "rgba(255,255,255,0.7)", fontSize: 13, fontFamily: "Inter_400Regular" },
+  broadcastNext: { color: "rgba(255,255,255,0.62)", fontSize: 12, fontFamily: "Inter_500Medium" },
   watchBtn: {
     flexDirection: "row",
     alignItems: "center",

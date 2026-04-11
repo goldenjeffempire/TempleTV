@@ -7,8 +7,10 @@ import React, {
   useRef,
   useState,
 } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { LoopMode, Sermon } from "@/types";
 import { SERMONS } from "@/data/sermons";
+import { STORAGE_KEYS } from "@/constants/config";
 
 interface PlayerContextType {
   currentSermon: Sermon | null;
@@ -49,6 +51,14 @@ const PlayerContext = createContext<PlayerContextType | undefined>(undefined);
 
 const LOOP_CYCLE: LoopMode[] = ["none", "all", "one"];
 
+interface PersistedPlaybackSettings {
+  dataSaver?: boolean;
+  isRadioMode?: boolean;
+  shuffleMode?: boolean;
+  loopMode?: LoopMode;
+  volume?: number;
+}
+
 function fisherYatesShuffle<T>(arr: T[]): T[] {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -87,6 +97,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [volume, setVolumeState] = useState(100);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const loadedSettingsRef = useRef(false);
 
   const playerPlayRef = useRef<(() => void) | null>(null);
   const playerPauseRef = useRef<(() => void) | null>(null);
@@ -107,6 +118,39 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   shufflePosRef.current = shufflePosition;
   const currentSermonRef = useRef(currentSermon);
   currentSermonRef.current = currentSermon;
+
+  useEffect(() => {
+    let mounted = true;
+    AsyncStorage.getItem(STORAGE_KEYS.playbackSettings)
+      .then((raw) => {
+        if (!mounted || !raw) return;
+        const parsed = JSON.parse(raw) as PersistedPlaybackSettings;
+        if (typeof parsed.dataSaver === "boolean") setDataSaver(parsed.dataSaver);
+        if (typeof parsed.isRadioMode === "boolean") setIsRadioMode(parsed.isRadioMode);
+        if (typeof parsed.shuffleMode === "boolean") setShuffleMode(parsed.shuffleMode);
+        if (parsed.loopMode && LOOP_CYCLE.includes(parsed.loopMode)) setLoopMode(parsed.loopMode);
+        if (typeof parsed.volume === "number") setVolumeState(Math.max(0, Math.min(100, parsed.volume)));
+      })
+      .catch(() => {})
+      .finally(() => {
+        loadedSettingsRef.current = true;
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!loadedSettingsRef.current) return;
+    const payload: PersistedPlaybackSettings = {
+      dataSaver,
+      isRadioMode,
+      shuffleMode,
+      loopMode,
+      volume,
+    };
+    AsyncStorage.setItem(STORAGE_KEYS.playbackSettings, JSON.stringify(payload)).catch(() => {});
+  }, [dataSaver, isRadioMode, shuffleMode, loopMode, volume]);
 
   useEffect(() => {
     if (shuffleMode) {

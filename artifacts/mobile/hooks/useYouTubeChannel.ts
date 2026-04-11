@@ -176,7 +176,10 @@ interface UseYouTubeChannelResult {
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
+  clearCache: () => Promise<void>;
   isFromRss: boolean;
+  cacheUpdatedAt: number | null;
+  cacheAgeMinutes: number | null;
 }
 
 export function useYouTubeChannel(): UseYouTubeChannelResult {
@@ -184,26 +187,31 @@ export function useYouTubeChannel(): UseYouTubeChannelResult {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isFromRss, setIsFromRss] = useState(false);
+  const [cacheUpdatedAt, setCacheUpdatedAt] = useState<number | null>(null);
   const fetchedRef = useRef(false);
 
   const fetchVideos = useCallback(async (force = false) => {
+    let cachedData: Sermon[] | null = null;
+    let cachedTimestamp: number | null = null;
     try {
-      if (!force) {
-        try {
-          const cached = await AsyncStorage.getItem(STORAGE_KEYS.rssCache);
-          if (cached) {
-            const { data, timestamp } = JSON.parse(cached) as { data: Sermon[]; timestamp: number };
+      try {
+        const cached = await AsyncStorage.getItem(STORAGE_KEYS.rssCache);
+        if (cached) {
+          const { data, timestamp } = JSON.parse(cached) as { data: Sermon[]; timestamp: number };
+          if (Array.isArray(data) && data.length > 0 && typeof timestamp === "number") {
+            cachedData = data;
+            cachedTimestamp = timestamp;
+            setCacheUpdatedAt(timestamp);
             const ageMs = Date.now() - timestamp;
-            if (ageMs < APP_CONFIG.rssCacheMinutes * 60 * 1000 && data.length > 0) {
+            if (!force && ageMs < APP_CONFIG.rssCacheMinutes * 60 * 1000) {
               setSermons(data);
               setIsFromRss(true);
               setLoading(false);
               return;
             }
           }
-        } catch {
-          // Cache read failed — continue to fetch
         }
+      } catch {
       }
 
       const domain = process.env.EXPO_PUBLIC_DOMAIN;
@@ -227,6 +235,7 @@ export function useYouTubeChannel(): UseYouTubeChannelResult {
                   STORAGE_KEYS.rssCache,
                   JSON.stringify({ data: allSermons, timestamp: Date.now() })
                 );
+                setCacheUpdatedAt(Date.now());
               } catch {}
               setLoading(false);
               return;
@@ -260,16 +269,23 @@ export function useYouTubeChannel(): UseYouTubeChannelResult {
       setError(null);
 
       try {
+        const timestamp = Date.now();
         await AsyncStorage.setItem(
           STORAGE_KEYS.rssCache,
-          JSON.stringify({ data: rssSermons, timestamp: Date.now() })
+          JSON.stringify({ data: rssSermons, timestamp })
         );
+        setCacheUpdatedAt(timestamp);
       } catch {}
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Network error";
-      setError(message);
-      // Keep showing fallback sermons (don't clear them)
-      setIsFromRss(false);
+      if (cachedData && cachedData.length > 0) {
+        setSermons(cachedData);
+        setIsFromRss(true);
+        setError(`Showing offline sermon cache${cachedTimestamp ? ` from ${new Date(cachedTimestamp).toLocaleDateString()}` : ""}.`);
+      } else {
+        setError(message);
+        setIsFromRss(false);
+      }
     } finally {
       setLoading(false);
     }
@@ -287,5 +303,12 @@ export function useYouTubeChannel(): UseYouTubeChannelResult {
     await fetchVideos(true);
   }, [fetchVideos]);
 
-  return { sermons, loading, error, refresh, isFromRss };
+  const clearCache = useCallback(async () => {
+    await AsyncStorage.removeItem(STORAGE_KEYS.rssCache);
+    setCacheUpdatedAt(null);
+  }, []);
+
+  const cacheAgeMinutes = cacheUpdatedAt ? Math.max(0, Math.floor((Date.now() - cacheUpdatedAt) / 60000)) : null;
+
+  return { sermons, loading, error, refresh, clearCache, isFromRss, cacheUpdatedAt, cacheAgeMinutes };
 }

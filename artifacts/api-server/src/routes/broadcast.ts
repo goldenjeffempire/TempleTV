@@ -13,20 +13,45 @@ router.get("/broadcast/current", async (_req, res) => {
     .orderBy(asc(broadcastQueueTable.sortOrder));
 
   if (items.length === 0) {
-    return res.json({ item: null, index: 0, positionSecs: 0, totalSecs: 0, queueLength: 0 });
+    return res.json({
+      item: null,
+      nextItem: null,
+      index: 0,
+      positionSecs: 0,
+      totalSecs: 0,
+      queueLength: 0,
+      progressPercent: 0,
+      syncedAt: new Date().toISOString(),
+      failoverReason: "Broadcast queue is empty.",
+    });
   }
 
-  const totalSecs = items.reduce((acc, i) => acc + i.durationSecs, 0);
+  const playableItems = items.filter((item) => item.durationSecs > 0);
+  if (playableItems.length === 0) {
+    return res.json({
+      item: null,
+      nextItem: null,
+      index: 0,
+      positionSecs: 0,
+      totalSecs: 0,
+      queueLength: 0,
+      progressPercent: 0,
+      syncedAt: new Date().toISOString(),
+      failoverReason: "No active broadcast items have a valid duration.",
+    });
+  }
+
+  const totalSecs = playableItems.reduce((acc, i) => acc + i.durationSecs, 0);
   const epochSecs = Math.floor(Date.now() / 1000);
   const position = totalSecs > 0 ? epochSecs % totalSecs : 0;
 
   let cumulative = 0;
-  let currentItem = items[0]!;
+  let currentItem = playableItems[0]!;
   let positionSecs = 0;
   let index = 0;
 
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i]!;
+  for (let i = 0; i < playableItems.length; i++) {
+    const item = playableItems[i]!;
     if (position < cumulative + item.durationSecs) {
       currentItem = item;
       positionSecs = position - cumulative;
@@ -36,7 +61,18 @@ router.get("/broadcast/current", async (_req, res) => {
     cumulative += item.durationSecs;
   }
 
-  res.json({ item: currentItem, index, positionSecs, totalSecs, queueLength: items.length });
+  const nextItem = playableItems[(index + 1) % playableItems.length] ?? null;
+  res.json({
+    item: currentItem,
+    nextItem,
+    index,
+    positionSecs,
+    totalSecs,
+    queueLength: playableItems.length,
+    progressPercent: currentItem.durationSecs > 0 ? Math.round((positionSecs / currentItem.durationSecs) * 100) : 0,
+    syncedAt: new Date().toISOString(),
+    failoverReason: null,
+  });
 });
 
 router.get("/admin/broadcast", async (_req, res) => {

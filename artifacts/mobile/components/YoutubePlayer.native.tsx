@@ -47,11 +47,12 @@ export function YoutubePlayer({
 }: YoutubePlayerProps) {
   const c = useColors();
   const { width } = useWindowDimensions();
-  const { updatePlayback, playerPlayRef, playerPauseRef, playerSeekRef } = usePlayer();
+  const { updatePlayback, playerPlayRef, playerPauseRef, playerSeekRef, dataSaver, isRadioMode } = usePlayer();
   const [loading, setLoading] = useState(false);
   const [playing, setPlaying] = useState(autoPlay);
   const [playerReady, setPlayerReady] = useState(false);
   const [playerError, setPlayerError] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
   const [activeVideoId, setActiveVideoId] = useState(videoId);
   const transitionOpacity = useRef(new Animated.Value(0)).current;
   const isMountedRef = useRef(true);
@@ -78,6 +79,7 @@ export function YoutubePlayer({
     if (videoId && videoId !== activeVideoId) {
       setPlayerReady(false);
       setPlayerError(false);
+      setRetryCount(0);
       setPlaying(false);
       transitionOpacity.setValue(1);
       setActiveVideoId(videoId);
@@ -169,6 +171,20 @@ export function YoutubePlayer({
     }
   };
 
+  const handlePlayerError = useCallback(() => {
+    if (!isMountedRef.current) return;
+    if (retryCount < 2) {
+      setRetryCount((count) => count + 1);
+      setPlayerReady(false);
+      setPlaying(false);
+      setTimeout(() => {
+        if (isMountedRef.current) setPlaying(true);
+      }, 900);
+      return;
+    }
+    setPlayerError(true);
+  }, [retryCount]);
+
   const playerHeight = Math.min(Math.round(width * (9 / 16)), 260);
   const thumb =
     thumbnailUrl ?? (activeVideoId ? `https://img.youtube.com/vi/${activeVideoId}/hqdefault.jpg` : null);
@@ -183,7 +199,7 @@ export function YoutubePlayer({
           play={playing}
           onChangeState={onChangeState}
           onReady={onPlayerReady}
-          onError={() => { if (isMountedRef.current) setPlayerError(true); }}
+          onError={handlePlayerError}
           ref={playerRef}
           initialPlayerParams={{
             modestbranding: true,
@@ -191,6 +207,7 @@ export function YoutubePlayer({
             preventFullScreen: false,
             cc_load_policy: false,
             iv_load_policy: 3,
+            suggestedQuality: dataSaver || isRadioMode ? "small" : "auto",
           }}
           webViewProps={{
             allowsFullscreenVideo: true,
@@ -210,7 +227,7 @@ export function YoutubePlayer({
           <View style={[styles.loadingCenter, { backgroundColor: "rgba(0,0,0,0.5)" }]}>
             <ActivityIndicator color={c.primary} size="large" />
             <Text style={[styles.loadingText, { color: "rgba(255,255,255,0.6)" }]}>
-              Loading next video...
+              {retryCount > 0 ? "Reconnecting stream..." : dataSaver || isRadioMode ? "Loading low-data stream..." : "Loading next video..."}
             </Text>
           </View>
         </Animated.View>
@@ -238,7 +255,7 @@ export function YoutubePlayer({
           )}
         </Pressable>
         <Text style={styles.tapHint}>
-          {Platform.OS === "web" ? "Opens on YouTube" : "Opens in YouTube app"}
+          {playerError ? "Playback failed here — open in YouTube to continue" : Platform.OS === "web" ? "Opens on YouTube" : "Opens in YouTube app"}
         </Text>
       </View>
     </View>

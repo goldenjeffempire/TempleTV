@@ -8,10 +8,22 @@ export interface BroadcastCurrentResult {
     localVideoUrl: string | null;
     videoSource: string;
   } | null;
+  nextItem: {
+    id: string;
+    youtubeId: string;
+    title: string;
+    thumbnailUrl: string;
+    durationSecs: number;
+    localVideoUrl: string | null;
+    videoSource: string;
+  } | null;
   index: number;
   positionSecs: number;
   totalSecs: number;
   queueLength: number;
+  progressPercent?: number;
+  syncedAt?: string;
+  failoverReason?: string | null;
 }
 
 export async function checkBroadcastCurrent(): Promise<BroadcastCurrentResult | null> {

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Animated,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -209,6 +210,8 @@ export default function PlayerScreen() {
     cycleLoopMode,
     togglePlay,
     volume,
+    dataSaver,
+    isRadioMode,
     currentTime,
     duration,
     seekTo,
@@ -333,6 +336,22 @@ export default function PlayerScreen() {
     else { await WebBrowser.openBrowserAsync(url, { toolbarColor: "#000000", controlsColor: "#6A0DAD", presentationStyle: WebBrowser.WebBrowserPresentationStyle.FULL_SCREEN }); }
   };
 
+  const openCastHandoff = async () => {
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const vid = activeSermon?.youtubeId ?? paramVideoId;
+    const url = isLive ? "https://www.youtube.com/@templetvjctm/live" : `https://www.youtube.com/watch?v=${vid}`;
+    if (Platform.OS !== "web" && vid) {
+      const appUrl = `youtube://watch?v=${vid}`;
+      const canOpen = await Linking.canOpenURL(appUrl);
+      if (canOpen) {
+        await Linking.openURL(appUrl);
+        return;
+      }
+    }
+    if (Platform.OS === "web") window.open(url, "_blank");
+    else await WebBrowser.openBrowserAsync(url, { toolbarColor: "#000000", controlsColor: "#6A0DAD" });
+  };
+
   const handleShare = async () => {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     const vid = activeSermon?.youtubeId ?? paramVideoId;
@@ -442,6 +461,14 @@ export default function PlayerScreen() {
             {activeSermon?.description ? (
               <Text style={[styles.desc, { color: c.mutedForeground }]}>{activeSermon.description}</Text>
             ) : null}
+            {(dataSaver || isRadioMode) && (
+              <View style={[styles.playbackModeBadge, { backgroundColor: c.secondary }]}>
+                <Feather name={isRadioMode ? "radio" : "wifi-off"} size={13} color={c.primary} />
+                <Text style={[styles.playbackModeText, { color: c.primary }]}>
+                  {isRadioMode ? "Audio/radio focus enabled" : "Data saver requests lower quality playback"}
+                </Text>
+              </View>
+            )}
           </Animated.View>
 
           {showSeekBar && (
@@ -467,6 +494,13 @@ export default function PlayerScreen() {
               hitSlop={8}
             >
               <Feather name="share-2" size={20} color={c.foreground} />
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.iconBtn, { backgroundColor: c.muted, opacity: pressed ? 0.7 : 1 }]}
+              onPress={openCastHandoff}
+              hitSlop={8}
+            >
+              <Feather name="cast" size={20} color={c.foreground} />
             </Pressable>
           </View>
 
@@ -567,6 +601,8 @@ const styles = StyleSheet.create({
   metaRow: { flexDirection: "row", alignItems: "center", gap: 5, flexWrap: "wrap" },
   meta: { fontSize: 14, fontFamily: "Inter_400Regular" },
   desc: { fontSize: 14, fontFamily: "Inter_400Regular", lineHeight: 22, marginTop: 4 },
+  playbackModeBadge: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", gap: 6, borderRadius: 14, paddingHorizontal: 10, paddingVertical: 5, marginTop: 4 },
+  playbackModeText: { fontSize: 12, fontFamily: "Inter_600SemiBold" },
   seekCard: { paddingVertical: 14, paddingHorizontal: 16, gap: 12 },
   actionRow: { flexDirection: "row", gap: 10, alignItems: "center" },
   primaryBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 13, borderRadius: 24 },

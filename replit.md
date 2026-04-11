@@ -47,7 +47,7 @@ A mobile broadcasting platform for Temple TV (JCTM) built with Expo/React Native
 - **Notifications** (`services/notifications.native.ts`) — Push token registration (APNs/FCM), Android notification channel setup, local notifications for live alerts and new sermons; web-safe stub in `notifications.ts`
 
 ### Context
-- **PlayerContext** — Queue management, shuffle mode, loop mode (none/one/all), play/pause/next/previous, data saver
+- **PlayerContext** — Queue management, shuffle mode, loop mode (none/one/all), play/pause/next/previous, persisted data saver/radio/shuffle/loop/volume settings
 
 ### Hooks
 - `useNotificationPreferences` — Persists live/sermon notification preferences to AsyncStorage
@@ -142,6 +142,7 @@ Faith, Healing, Deliverance, Worship, Prophecy, Teachings, Special Programs
 - **Web**: Proxies through API server at `/api/youtube/rss` to avoid CORS; tries `/api/youtube/videos` (YouTube Data API v3) first
 - **Fallback**: Local `data/sermons.ts` fallback if RSS or network fails
 - **Cache**: AsyncStorage caches RSS results for 10 minutes
+- **Offline metadata**: The app keeps stale sermon metadata as an offline fallback and exposes refresh/clear controls in Settings
 - **Error indicator**: Amber dot in Watch tab header when using fallback data
 
 ### Category Auto-Detection
@@ -152,5 +153,13 @@ When view counts are unavailable (RSS-only sermons), popular sort falls back to 
 
 ### Notification Deep Linking
 Root layout (`app/_layout.tsx`) registers a `addNotificationResponseReceivedListener` on native. Tap on a `live_service` notification → Watch tab; `new_sermon` → Library tab.
+
+## Features Added (Session 4)
+- **Persistent playback settings**: Radio mode, data saver, shuffle, loop and volume are stored locally and restored on launch.
+- **Offline sermon metadata hardening**: YouTube/RSS sermon metadata now falls back to stale AsyncStorage cache when the network is unavailable; Settings shows cache count/age with refresh and clear controls.
+- **Data saver behavior**: YouTube playback requests lower quality in data saver/radio mode, local playback reduces progress update frequency, and UI badges show the active low-data/audio mode.
+- **Player failover**: YouTube player retries transient playback errors before showing the external YouTube handoff fallback.
+- **Cast/AirPlay handoff**: Player screen includes a cast button that opens the YouTube app/browser so users can use YouTube’s Chromecast/AirPlay device picker without adding native-only SDKs.
+- **Broadcast engine metadata**: `/api/broadcast/current` now returns `nextItem`, progress percent, sync timestamp, and explicit failover reasons for empty/invalid queues.
 
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.

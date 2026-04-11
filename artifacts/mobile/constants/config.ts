@@ -14,6 +14,7 @@ export const STORAGE_KEYS = {
   watchHistory: "@temple_tv/watch_history",
   favorites: "@temple_tv/favorites",
   settings: "@temple_tv/settings",
+  playbackSettings: "@temple_tv/playback_settings",
   lastLiveCheck: "@temple_tv/last_live_check",
   rssCache: "@temple_tv/rss_cache",
 };

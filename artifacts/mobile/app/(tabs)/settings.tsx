@@ -20,6 +20,7 @@ import { usePlayer } from "@/context/PlayerContext";
 import { useWatchHistory } from "@/hooks/useWatchHistory";
 import { useFavorites } from "@/hooks/useFavorites";
 import { useNotificationPreferences } from "@/hooks/useNotificationPreferences";
+import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
 import { APP_CONFIG } from "@/constants/config";
 import {
   requestNotificationPermissions,
@@ -88,9 +89,11 @@ export default function SettingsScreen() {
   const { isRadioMode, dataSaver, shuffleMode, loopMode, toggleRadioMode, toggleDataSaver, toggleShuffle, cycleLoopMode, stopPlayback } = usePlayer();
   const { clearHistory, history } = useWatchHistory();
   const { favorites } = useFavorites();
+  const { sermons, refresh, clearCache, cacheAgeMinutes, loading: cacheLoading } = useYouTubeChannel();
   const { prefs: notifPrefs, save: saveNotifPrefs, syncWithPermissionStatus } = useNotificationPreferences();
   const webTopPad = Platform.OS === "web" ? 67 : 0;
   const [notifPermission, setNotifPermission] = useState<string | null>(null);
+  const [cacheRefreshing, setCacheRefreshing] = useState(false);
 
   useEffect(() => {
     if (Platform.OS === "web") return;
@@ -140,6 +143,32 @@ export default function SettingsScreen() {
         [
           { text: "Cancel", style: "cancel" },
           { text: "Clear", style: "destructive", onPress: clearHistory },
+        ],
+      );
+    }
+  };
+
+  const refreshSermonCache = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setCacheRefreshing(true);
+    await refresh();
+    setCacheRefreshing(false);
+  };
+
+  const confirmClearSermonCache = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    const clear = async () => {
+      await clearCache();
+    };
+    if (Platform.OS === "web") {
+      if (window.confirm("Clear offline sermon metadata cache?")) clear();
+    } else {
+      Alert.alert(
+        "Clear Sermon Cache",
+        "This removes locally cached sermon metadata. The app will fetch fresh sermon details the next time it is online.",
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Clear", style: "destructive", onPress: clear },
         ],
       );
     }
@@ -260,6 +289,27 @@ export default function SettingsScreen() {
             description={history.length === 0 ? "No history to clear" : `Remove ${history.length} entries`}
             onPress={history.length > 0 ? confirmClearHistory : undefined}
             danger={history.length > 0}
+          />
+          <Divider />
+          <Row
+            icon="download-cloud"
+            label="Offline Sermon Metadata"
+            description="Cached titles, categories and thumbnails for offline browsing"
+            value={`${sermons.length} cached${cacheAgeMinutes === null ? "" : ` · ${cacheAgeMinutes}m old`}`}
+          />
+          <Divider />
+          <Row
+            icon="refresh-cw"
+            label="Refresh Sermon Cache"
+            description={cacheRefreshing || cacheLoading ? "Updating cached metadata..." : "Preload the latest sermon list"}
+            onPress={cacheRefreshing ? undefined : refreshSermonCache}
+          />
+          <Divider />
+          <Row
+            icon="trash"
+            label="Clear Sermon Cache"
+            description="Remove offline metadata cache"
+            onPress={confirmClearSermonCache}
           />
         </GlassCard>
 
