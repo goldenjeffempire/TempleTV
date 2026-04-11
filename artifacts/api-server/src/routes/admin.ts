@@ -8,7 +8,7 @@ import { randomUUID } from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs/promises";
-import { createWriteStream, existsSync } from "fs";
+import { createWriteStream, createReadStream, existsSync } from "fs";
 import multer from "multer";
 import {
   ImportVideoBody,
@@ -611,27 +611,26 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
     const finalPath = path.join(__dirname, "..", "uploads", finalFilename);
     const writeStream = createWriteStream(finalPath);
 
-    await new Promise<void>((resolve, reject) => {
-      writeStream.on("error", reject);
-      writeStream.on("finish", resolve);
-
-      const writeChunks = async () => {
-        try {
-          for (let i = 0; i < session.totalChunks; i++) {
-            const chunkPath = path.join(session.tmpDir, `chunk-${String(i).padStart(6, "0")}`);
-            const data = await fs.readFile(chunkPath);
-            await new Promise<void>((r, e) => {
-              writeStream.write(data, (err) => { if (err) e(err); else r(); });
-            });
-          }
-          writeStream.end();
-        } catch (err) {
-          reject(err);
-        }
-      };
-
-      writeChunks();
-    });
+    try {
+      for (let i = 0; i < session.totalChunks; i++) {
+        const chunkPath = path.join(session.tmpDir, `chunk-${String(i).padStart(6, "0")}`);
+        await new Promise<void>((resolve, reject) => {
+          const readStream = createReadStream(chunkPath);
+          readStream.on("error", reject);
+          readStream.on("end", resolve);
+          readStream.pipe(writeStream, { end: false });
+        });
+      }
+      await new Promise<void>((resolve, reject) => {
+        writeStream.end();
+        writeStream.on("finish", resolve);
+        writeStream.on("error", reject);
+      });
+    } catch (err) {
+      writeStream.destroy();
+      await fs.unlink(finalPath).catch(() => {});
+      throw err;
+    }
 
     await fs.rm(session.tmpDir, { recursive: true, force: true });
 
@@ -1281,38 +1280,24 @@ router.get("/admin/live/events", async (req, res) => {
 
 router.get("/admin/live", async (_req, res) => {
   try {
-    let ytLive = false;
-    let ytVideoId: string | null = null;
-    let ytTitle: string | null = null;
-
     const [liveOverride, deviceCountResult] = await Promise.all([
       getActiveLiveOverride(),
       db.select({ count: count() }).from(pushTokensTable),
     ]);
     const deviceCount = Number(deviceCountResult[0]?.count ?? 0);
 
-    try {
-      const oembedRes = await fetch(
-        "https://www.youtube.com/oembed?url=https://www.youtube.com/@templetvjctm/live&format=json",
-        { signal: AbortSignal.timeout(4000) }
-      );
-      if (oembedRes.ok) {
-        const data = (await oembedRes.json()) as { title?: string; thumbnail_url?: string };
-        const vidMatch = (data.thumbnail_url ?? "").match(/\/vi\/([^/]+)\//);
-        ytLive = !!(vidMatch?.[1] && data.title);
-        if (ytLive) {
-          ytVideoId = vidMatch![1];
-          ytTitle = data.title ?? null;
-        }
-      }
-    } catch {}
+    const ytStatus = getLiveStatus();
+    const ytLive = ytStatus.isLive;
+    const ytVideoId = ytStatus.videoId;
+    const ytTitle = ytStatus.title;
 
     const isLive = !!(liveOverride || ytLive);
+    const now = Date.now();
     const elapsedSecs = liveOverride
-      ? Math.floor((Date.now() - liveOverride.startedAt.getTime()) / 1000)
+      ? Math.floor((now - liveOverride.startedAt.getTime()) / 1000)
       : null;
     const remainingSecs = liveOverride?.endsAt
-      ? Math.max(0, Math.floor((liveOverride.endsAt.getTime() - Date.now()) / 1000))
+      ? Math.max(0, Math.floor((liveOverride.endsAt.getTime() - now) / 1000))
       : null;
 
     res.json({
@@ -1321,6 +1306,7 @@ router.get("/admin/live", async (_req, res) => {
       ytLive,
       ytVideoId,
       ytTitle,
+      checkedAt: ytStatus.checkedAt,
       liveOverride: liveOverride ? {
         id: liveOverride.id,
         title: liveOverride.title,

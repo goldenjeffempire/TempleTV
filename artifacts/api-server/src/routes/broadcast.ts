@@ -247,6 +247,8 @@ router.get("/broadcast/guide", async (_req, res) => {
 
 router.get("/broadcast/current", async (_req, res) => {
   const nowMs = Date.now();
+  const syncedAt = new Date(nowMs).toISOString();
+
   const activeLiveOverride = await getActiveLiveOverride();
   if (activeLiveOverride) {
     return res.json({
@@ -257,7 +259,7 @@ router.get("/broadcast/current", async (_req, res) => {
       totalSecs: 0,
       queueLength: 0,
       progressPercent: 0,
-      syncedAt: new Date(nowMs).toISOString(),
+      syncedAt,
       serverTimeMs: nowMs,
       failoverReason: null,
       activeSchedule: null,
@@ -288,7 +290,7 @@ router.get("/broadcast/current", async (_req, res) => {
       totalSecs: 0,
       queueLength: 0,
       progressPercent: 0,
-      syncedAt: new Date(nowMs).toISOString(),
+      syncedAt,
       serverTimeMs: nowMs,
       failoverReason: null,
       liveOverride: null,
@@ -309,7 +311,8 @@ router.get("/broadcast/current", async (_req, res) => {
       const calculated = calculateCurrentFromItems(scheduledItems);
       return res.json({
         ...calculated,
-        syncedAt: new Date().toISOString(),
+        syncedAt,
+        serverTimeMs: nowMs,
         activeSchedule: {
           id: activeSchedule.id,
           title: activeSchedule.title,
@@ -337,25 +340,21 @@ router.get("/broadcast/current", async (_req, res) => {
       totalSecs: 0,
       queueLength: 0,
       progressPercent: 0,
-      syncedAt: new Date().toISOString(),
+      syncedAt,
+      serverTimeMs: nowMs,
       failoverReason: "Broadcast queue is empty.",
       activeSchedule,
+      liveOverride: null,
     });
   }
 
   const calculated = calculateCurrentFromItems(items);
-  if (!calculated.item) {
-    return res.json({
-      ...calculated,
-      syncedAt: new Date().toISOString(),
-      activeSchedule,
-    });
-  }
-
   res.json({
     ...calculated,
-    syncedAt: new Date().toISOString(),
+    syncedAt,
+    serverTimeMs: nowMs,
     activeSchedule,
+    liveOverride: null,
   });
 });
 

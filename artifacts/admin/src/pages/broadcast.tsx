@@ -253,8 +253,59 @@ export default function Broadcast() {
 
   useEffect(() => {
     loadAll();
-    const interval = setInterval(loadAll, 15000);
+    const interval = setInterval(loadAll, 30000);
     return () => clearInterval(interval);
+  }, [loadAll]);
+
+  /* ── SSE real-time live status ───────────────────────────────── */
+  useEffect(() => {
+    let es: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let attempt = 0;
+    let destroyed = false;
+
+    const connect = () => {
+      if (destroyed) return;
+      try {
+        es = new EventSource("/api/admin/live/events");
+
+        es.addEventListener("status", (e: MessageEvent) => {
+          try {
+            const ls = JSON.parse(e.data) as LiveStatus;
+            setLiveStatus(ls);
+            if (ls.liveOverride?.remainingSecs != null) {
+              setCountdown(ls.liveOverride.remainingSecs);
+            } else if (!ls.liveOverride) {
+              setCountdown(null);
+            }
+            attempt = 0;
+          } catch {}
+        });
+
+        es.addEventListener("override-expired", () => {
+          loadAll();
+        });
+
+        es.onopen = () => { attempt = 0; };
+
+        es.onerror = () => {
+          es?.close();
+          es = null;
+          if (destroyed) return;
+          const delay = Math.min(1000 * Math.pow(2, attempt), 30_000);
+          attempt++;
+          reconnectTimer = setTimeout(connect, delay);
+        };
+      } catch {}
+    };
+
+    connect();
+
+    return () => {
+      destroyed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      es?.close();
+    };
   }, [loadAll]);
 
   // Position ticker

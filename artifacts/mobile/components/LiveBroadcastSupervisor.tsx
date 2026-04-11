@@ -1,6 +1,5 @@
 import { router } from "expo-router";
 import React, { useEffect, useRef } from "react";
-import { Platform } from "react-native";
 import { usePlayer } from "@/context/PlayerContext";
 import { checkBroadcastCurrent } from "@/services/broadcast";
 import { checkLiveStatus } from "@/services/youtube";
@@ -43,7 +42,7 @@ export function LiveBroadcastSupervisor() {
     };
 
     checkForInterrupt();
-    const interval = setInterval(checkForInterrupt, Platform.OS === "web" ? 90000 : 60000);
+    const interval = setInterval(checkForInterrupt, 20000);
     return () => {
       cancelled = true;
       clearInterval(interval);

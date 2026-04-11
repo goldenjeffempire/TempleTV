@@ -47,21 +47,45 @@ async function uploadChunk(
   chunkIndex: number,
   data: ArrayBuffer,
   signal: AbortSignal,
-  onProgress?: (bytes: number) => void
+  onProgress?: (incrementalBytes: number) => void
 ): Promise<void> {
-  const formData = new FormData();
-  formData.append("chunk", new Blob([data]));
-  formData.append("chunkIndex", String(chunkIndex));
-  const res = await fetch(`/api/admin/videos/upload/${sessionId}/chunk`, {
-    method: "POST",
-    body: formData,
-    signal,
+  return new Promise<void>((resolve, reject) => {
+    const formData = new FormData();
+    formData.append("chunk", new Blob([data]));
+    formData.append("chunkIndex", String(chunkIndex));
+
+    const xhr = new XMLHttpRequest();
+    let lastLoaded = 0;
+
+    xhr.upload.onprogress = (e) => {
+      if (onProgress && e.lengthComputable) {
+        const delta = e.loaded - lastLoaded;
+        lastLoaded = e.loaded;
+        if (delta > 0) onProgress(delta);
+      }
+    };
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve();
+      } else {
+        try {
+          const err = JSON.parse(xhr.responseText) as { error?: string };
+          reject(new Error(err.error ?? `HTTP ${xhr.status}`));
+        } catch {
+          reject(new Error(`HTTP ${xhr.status}`));
+        }
+      }
+    };
+
+    xhr.onerror = () => reject(new Error("Network error"));
+    xhr.onabort = () => reject(Object.assign(new Error("AbortError"), { name: "AbortError" }));
+
+    signal.addEventListener("abort", () => xhr.abort(), { once: true });
+
+    xhr.open("POST", `/api/admin/videos/upload/${sessionId}/chunk`);
+    xhr.send(formData);
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({})) as { error?: string };
-    throw new Error(err.error ?? `HTTP ${res.status}`);
-  }
-  onProgress?.(data.byteLength);
 }
 
 function exponentialBackoff(attempt: number): number {
@@ -342,9 +366,8 @@ export default function Videos() {
 
       while (attempt <= MAX_RETRIES) {
         try {
-          await uploadChunk(sid, chunk.index, sliceBuffer, abortCtrl.signal);
+          await uploadChunk(sid, chunk.index, sliceBuffer, abortCtrl.signal, updateSpeedAndEta);
           chunk.status = "done";
-          updateSpeedAndEta(sliceBuffer.byteLength);
 
           setChunksDone((prev) => {
             const next = prev + 1;

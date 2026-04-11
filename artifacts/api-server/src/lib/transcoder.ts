@@ -3,9 +3,10 @@ import { promises as fs } from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { randomUUID } from "crypto";
-import { db, videosTable, transcodingJobsTable } from "@workspace/db";
+import { db, videosTable, transcodingJobsTable, broadcastQueueTable } from "@workspace/db";
 import { eq, and, desc, asc } from "drizzle-orm";
 import { logger } from "./logger";
+import { broadcastLiveEvent } from "./liveEvents";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, "..", "uploads");
@@ -103,6 +104,25 @@ function runFFmpeg(
   });
 }
 
+async function probeDuration(inputPath: string): Promise<number> {
+  return new Promise((resolve) => {
+    const proc = spawn("ffprobe", [
+      "-v", "error",
+      "-show_entries", "format=duration",
+      "-of", "default=noprint_wrappers=1:nokey=1",
+      inputPath,
+    ], { stdio: ["ignore", "pipe", "ignore"] });
+
+    let output = "";
+    proc.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+    proc.on("close", () => {
+      const val = parseFloat(output.trim());
+      resolve(Number.isFinite(val) && val > 0 ? Math.round(val) : 0);
+    });
+    proc.on("error", () => resolve(0));
+  });
+}
+
 async function transcodeQuality(
   inputPath: string,
   outputDir: string,
@@ -197,6 +217,13 @@ async function processNextJob(): Promise<boolean> {
     .set({ transcodingStatus: "processing" })
     .where(eq(videosTable.id, job.videoId));
 
+  broadcastLiveEvent("transcoding-update", {
+    jobId: job.id,
+    videoId: job.videoId,
+    status: "processing",
+    progress: 0,
+  });
+
   try {
     const hlsVideoDir = path.join(HLS_DIR, job.videoId);
     await fs.mkdir(hlsVideoDir, { recursive: true });
@@ -210,12 +237,24 @@ async function processNextJob(): Promise<boolean> {
       const profileBaseProgress = Math.round((i / QUALITY_PROFILES.length) * 100);
       const profileProgressRange = Math.round(100 / QUALITY_PROFILES.length);
 
+      let lastBroadcastPct = -1;
+
       await transcodeQuality(job.videoPath, qualityOutputDir, profile, async (pct) => {
         const overall = profileBaseProgress + Math.round((pct / 100) * profileProgressRange);
         await db
           .update(transcodingJobsTable)
           .set({ progress: overall })
           .where(eq(transcodingJobsTable.id, job.id));
+
+        if (overall - lastBroadcastPct >= 5) {
+          lastBroadcastPct = overall;
+          broadcastLiveEvent("transcoding-update", {
+            jobId: job.id,
+            videoId: job.videoId,
+            status: "processing",
+            progress: overall,
+          });
+        }
       });
     }
 
@@ -225,17 +264,40 @@ async function processNextJob(): Promise<boolean> {
     const baseUrl = process.env.API_BASE_URL ?? (devDomain ? `https://${devDomain}` : "");
     const hlsMasterUrl = `${baseUrl}/api/hls/${job.videoId}/master.m3u8`;
 
+    const probedDuration = await probeDuration(job.videoPath);
+
     await db
       .update(transcodingJobsTable)
       .set({ status: "done", progress: 100, completedAt: new Date() })
       .where(eq(transcodingJobsTable.id, job.id));
 
+    const videoUpdates: Partial<typeof videosTable.$inferInsert> = {
+      transcodingStatus: "done",
+      hlsMasterUrl,
+    };
+    if (probedDuration > 0) {
+      videoUpdates.duration = String(probedDuration);
+    }
+
     await db
       .update(videosTable)
-      .set({ transcodingStatus: "done", hlsMasterUrl })
+      .set(videoUpdates)
       .where(eq(videosTable.id, job.videoId));
 
+    await db
+      .update(broadcastQueueTable)
+      .set({ localVideoUrl: hlsMasterUrl, videoSource: "local" })
+      .where(eq(broadcastQueueTable.videoId, job.videoId));
+
     logger.info({ jobId: job.id, videoId: job.videoId, hlsMasterUrl }, "Transcoding complete");
+
+    broadcastLiveEvent("transcoding-update", {
+      jobId: job.id,
+      videoId: job.videoId,
+      status: "done",
+      progress: 100,
+      hlsMasterUrl,
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error({ jobId: job.id, err: msg }, "Transcoding job failed");
@@ -249,6 +311,13 @@ async function processNextJob(): Promise<boolean> {
       .update(videosTable)
       .set({ transcodingStatus: "failed" })
       .where(eq(videosTable.id, job.videoId));
+
+    broadcastLiveEvent("transcoding-update", {
+      jobId: job.id,
+      videoId: job.videoId,
+      status: "failed",
+      error: msg,
+    });
   }
 
   return true;
