@@ -17,6 +17,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { LiveBroadcastSupervisor } from "@/components/LiveBroadcastSupervisor";
 import { PlayerProvider } from "@/context/PlayerContext";
+import { setupTrackPlayer } from "@/services/nowPlaying";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -99,10 +100,11 @@ export default function RootLayout() {
     if (fontsLoaded || fontError) {
       SplashScreen.hideAsync();
 
-      // Set up audio session for background playback
       setupAudioSession();
 
       if (Platform.OS !== "web") {
+        setupTrackPlayer().catch(() => {});
+
         import("@/services/notifications")
           .then(({ registerForPushTokenAsync }) => {
             if (typeof registerForPushTokenAsync === "function") {
