@@ -174,9 +174,10 @@ export default function PlayerScreen() {
   const c = useColors();
   const insets = useSafeAreaInsets();
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
+  const availableHeight = screenHeight - insets.top - insets.bottom;
   const videoPlayerHeight = Math.min(
     Math.round(screenWidth * (9 / 16)),
-    Math.round(screenHeight * 0.42),
+    Math.round(availableHeight * 0.45),
   );
   const params = useLocalSearchParams<{
     videoId?: string;
@@ -399,6 +400,11 @@ export default function PlayerScreen() {
     <View style={[styles.container, { backgroundColor: c.background }]}>
       {Platform.OS !== "web" && <StatusBar barStyle="light-content" backgroundColor="#000" />}
 
+      {/* Black safe-area spacer — keeps video below notch / Dynamic Island */}
+      {Platform.OS !== "web" && insets.top > 0 && (
+        <View style={{ height: insets.top, backgroundColor: "#000" }} />
+      )}
+
       <View
         style={[
           styles.playerContainer,
@@ -433,7 +439,7 @@ export default function PlayerScreen() {
         )}
         <LinearGradient
           colors={["rgba(0,0,0,0.7)", "transparent"]}
-          style={[styles.topGradient, { paddingTop: insets.top + webTopPad + 12, pointerEvents: "box-none" }]}
+          style={[styles.topGradient, { paddingTop: webTopPad + 12, pointerEvents: "box-none" }]}
         >
           <View style={styles.topControls}>
             <Pressable
