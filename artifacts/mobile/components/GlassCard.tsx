@@ -1,5 +1,5 @@
 import React from "react";
-import { StyleSheet, View, type ViewStyle } from "react-native";
+import { StyleSheet, View, useColorScheme, type ViewStyle } from "react-native";
 import { useColors } from "@/hooks/useColors";
 import colors from "@/constants/colors";
 
@@ -11,14 +11,21 @@ interface GlassCardProps {
 
 export function GlassCard({ children, style, intensity = "medium" }: GlassCardProps) {
   const c = useColors();
-  const opacityMap = { low: 0.04, medium: 0.08, high: 0.15 };
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme === "dark";
+
+  const opacityMap = { low: 0.05, medium: 0.10, high: 0.18 };
+  const opacity = opacityMap[intensity];
+
+  const primaryRgb = isDark ? "155, 48, 255" : "106, 13, 173";
+  const bgColor = `rgba(${primaryRgb}, ${opacity})`;
 
   return (
     <View
       style={[
         styles.container,
         {
-          backgroundColor: `rgba(106, 13, 173, ${opacityMap[intensity]})`,
+          backgroundColor: bgColor,
           borderColor: c.border,
           borderRadius: colors.radius,
         },

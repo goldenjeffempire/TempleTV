@@ -6,7 +6,7 @@
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "templetv",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "description": "Stream live worship, sermons, and teachings from Temple TV JCTM Broadcasting — Jesus Christ Temple Ministry.",
     "assetBundlePatterns": ["**/*"],

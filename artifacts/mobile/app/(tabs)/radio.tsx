@@ -24,7 +24,7 @@ const PLACEHOLDER = require("@/assets/images/sermon-placeholder.png");
 const LOOP_ICONS: Record<LoopMode, string> = {
   none: "minus-circle",
   all: "repeat",
-  one: "repeat",
+  one: "rotate-cw",
 };
 
 const LOOP_LABELS: Record<LoopMode, string> = {

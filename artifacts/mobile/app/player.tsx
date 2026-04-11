@@ -351,9 +351,9 @@ export default function PlayerScreen() {
   const favorited = displayVideoId ? isFavorite(displayVideoId) : false;
   const relatedSermons = allSermons.filter((s) => s.youtubeId !== displayVideoId && (activeSermon ? s.category === activeSermon.category : true)).slice(0, 6);
   const webTopPad = Platform.OS === "web" ? 67 : 0;
-  const loopIcon = loopMode === "one" ? "repeat" : loopMode === "all" ? "repeat" : "minus-circle";
+  const loopIcon = loopMode === "one" ? "rotate-cw" : loopMode === "all" ? "repeat" : "minus-circle";
   const loopColor = loopMode === "none" ? c.mutedForeground : c.primary;
-  const showSeekBar = !isLive && duration > 0 && Platform.OS === "web";
+  const showSeekBar = !isLive && duration > 0;
   const showVolume = !isLive && Platform.OS === "web";
 
   return (

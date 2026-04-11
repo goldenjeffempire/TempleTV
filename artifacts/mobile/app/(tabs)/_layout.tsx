@@ -62,7 +62,7 @@ function ClassicTabLayout() {
             isIOS ? (
               <BlurView
                 intensity={80}
-                tint="light"
+                tint={isDark ? "dark" : "light"}
                 style={StyleSheet.absoluteFill}
               />
             ) : isWeb ? (

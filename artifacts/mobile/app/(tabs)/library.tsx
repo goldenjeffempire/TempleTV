@@ -68,7 +68,11 @@ function applySortAndFilter(
     } else if (sortMode === "oldest") {
       results.sort((a, b) => (a.date || "").localeCompare(b.date || ""));
     } else if (sortMode === "popular") {
-      results.sort((a, b) => (b.views ?? 0) - (a.views ?? 0));
+      results.sort((a, b) => {
+        const viewDiff = (b.views ?? 0) - (a.views ?? 0);
+        if (viewDiff !== 0) return viewDiff;
+        return (b.date || "").localeCompare(a.date || "");
+      });
     }
   }
 

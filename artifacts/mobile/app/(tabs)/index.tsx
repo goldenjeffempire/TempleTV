@@ -35,7 +35,7 @@ export default function WatchScreen() {
   const c = useColors();
   const insets = useSafeAreaInsets();
   const { currentSermon, isLive: playerIsLive, playSermon, playLive, setQueue } = usePlayer();
-  const { sermons, loading, refresh, isFromRss } = useYouTubeChannel();
+  const { sermons, loading, refresh, isFromRss, error: feedError } = useYouTubeChannel();
   const { isOnline } = useNetworkStatus();
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const [liveStatus, setLiveStatus] = useState<LiveCheckResult>({ isLive: false, videoId: null, title: null });
@@ -164,8 +164,11 @@ export default function WatchScreen() {
               />
               <View style={styles.logoMeta}>
                 <Text style={[styles.subtitle, { color: c.mutedForeground }]}>JCTM Broadcasting</Text>
-                {isFromRss && (
+                {isFromRss && !feedError && (
                   <View style={[styles.liveDot, { backgroundColor: "#22c55e" }]} />
+                )}
+                {!!feedError && !loading && (
+                  <View style={[styles.liveDot, { backgroundColor: "#f59e0b" }]} />
                 )}
               </View>
             </View>

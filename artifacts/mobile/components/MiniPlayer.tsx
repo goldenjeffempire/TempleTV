@@ -1,5 +1,5 @@
 import React from "react";
-import { Pressable, StyleSheet, Text, View, Platform } from "react-native";
+import { Pressable, StyleSheet, Text, View, Platform, useColorScheme } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
 import * as Haptics from "expo-haptics";
@@ -10,6 +10,8 @@ import { usePlayer } from "@/context/PlayerContext";
 
 export function MiniPlayer() {
   const c = useColors();
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme === "dark";
   const {
     currentSermon,
     isPlaying,
@@ -104,7 +106,11 @@ export function MiniPlayer() {
 
   if (Platform.OS === "ios") {
     return (
-      <BlurView intensity={80} tint="dark" style={[styles.container, { borderColor: c.border }]}>
+      <BlurView
+        intensity={80}
+        tint={isDark ? "dark" : "light"}
+        style={[styles.container, { borderColor: c.border }]}
+      >
         {content}
       </BlurView>
     );

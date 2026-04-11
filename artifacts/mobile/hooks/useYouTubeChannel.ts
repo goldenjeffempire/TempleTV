@@ -8,19 +8,63 @@ import type { Sermon, SermonCategory } from "@/types";
 
 const CATEGORY_KEYWORDS: Record<string, SermonCategory> = {
   heal: "Healing",
+  healer: "Healing",
+  healing: "Healing",
   miracle: "Healing",
+  miracles: "Healing",
+  sick: "Healing",
+  sickness: "Healing",
+  cancer: "Healing",
+  health: "Healing",
+  wellness: "Healing",
+  disease: "Healing",
+
   deliverance: "Deliverance",
+  deliver: "Deliverance",
   free: "Deliverance",
+  freedom: "Deliverance",
   chain: "Deliverance",
+  bondage: "Deliverance",
+  oppression: "Deliverance",
+  captive: "Deliverance",
+  captivity: "Deliverance",
+  curse: "Deliverance",
+  demon: "Deliverance",
+  generational: "Deliverance",
+
   worship: "Worship",
   praise: "Worship",
+  glorify: "Worship",
+  adoration: "Worship",
+  hymn: "Worship",
+  anthem: "Worship",
+  hallelujah: "Worship",
+  hosanna: "Worship",
+
   prophet: "Prophecy",
   prophetic: "Prophecy",
+  prophecy: "Prophecy",
   vision: "Prophecy",
   reveal: "Prophecy",
+  revelation: "Prophecy",
+  oracle: "Prophecy",
+  declare: "Prophecy",
+  foretell: "Prophecy",
+  anointing: "Prophecy",
+
   faith: "Faith",
   believe: "Faith",
+  belief: "Faith",
   trust: "Faith",
+  hope: "Faith",
+  salvation: "Faith",
+  saved: "Faith",
+  grace: "Faith",
+  gospel: "Faith",
+  righteousness: "Faith",
+  justified: "Faith",
+  redemption: "Faith",
+
   teaching: "Teachings",
   teach: "Teachings",
   bible: "Teachings",
@@ -28,6 +72,15 @@ const CATEGORY_KEYWORDS: Record<string, SermonCategory> = {
   lesson: "Teachings",
   doctrine: "Teachings",
   scripture: "Teachings",
+  sermon: "Teachings",
+  word: "Teachings",
+  kingdom: "Teachings",
+  discipleship: "Teachings",
+  prayer: "Teachings",
+  fasting: "Teachings",
+  baptism: "Teachings",
+  holy: "Teachings",
+
   annual: "Special Programs",
   thanksgiving: "Special Programs",
   crossover: "Special Programs",
@@ -37,6 +90,11 @@ const CATEGORY_KEYWORDS: Record<string, SermonCategory> = {
   crusade: "Special Programs",
   revival: "Special Programs",
   convention: "Special Programs",
+  concert: "Special Programs",
+  summit: "Special Programs",
+  congress: "Special Programs",
+  rally: "Special Programs",
+  festival: "Special Programs",
 };
 
 function inferCategory(title: string, desc: string): SermonCategory {
@@ -59,6 +117,7 @@ interface ApiVideo {
 }
 
 function apiVideoToSermon(v: ApiVideo): Sermon {
+  const views = v.viewCount ? parseInt(v.viewCount, 10) : undefined;
   return {
     id: `yt_${v.videoId}`,
     title: v.title,
@@ -69,6 +128,7 @@ function apiVideoToSermon(v: ApiVideo): Sermon {
     category: inferCategory(v.title, v.description),
     preacher: v.channelName || "Prophet Amos",
     date: v.publishedAt ? v.publishedAt.slice(0, 10) : "",
+    views: !isNaN(views as number) ? views : undefined,
   };
 }
 
