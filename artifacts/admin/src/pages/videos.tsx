@@ -2,7 +2,7 @@ import { useListAdminVideos, useImportVideo, useUpdateAdminVideo, useDeleteAdmin
 import { useState, useRef, useCallback, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Search, Plus, Loader2, MoreVertical, Trash2, Youtube, ExternalLink, Video, Star, Edit, Upload, HardDrive, Play, Pause, X, CheckCircle2, AlertCircle, Zap, RotateCcw, Clock, Activity } from "lucide-react";
+import { Search, Plus, Loader2, MoreVertical, Trash2, Youtube, ExternalLink, Video, Star, Edit, Upload, HardDrive, Play, Pause, X, CheckCircle2, AlertCircle, Zap, RotateCcw, Clock, Activity, Cpu, Layers } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   DropdownMenu,
@@ -85,6 +85,8 @@ type VideoRow = {
   importedAt: string | Date;
   videoSource?: string;
   localVideoUrl?: string | null;
+  hlsMasterUrl?: string | null;
+  transcodingStatus?: string;
 };
 
 function formatFileSize(bytes: number) {
@@ -684,6 +686,32 @@ export default function Videos() {
                           {v.viewCount?.toLocaleString() || 0} views
                         </span>
                       )}
+                      {isLocal && v.transcodingStatus && v.transcodingStatus !== "none" && (
+                        <>
+                          <span>•</span>
+                          {v.transcodingStatus === "done" ? (
+                            <span className="flex items-center gap-1 text-green-600 font-medium">
+                              <Layers className="w-3.5 h-3.5" />
+                              HLS Ready
+                            </span>
+                          ) : v.transcodingStatus === "processing" ? (
+                            <span className="flex items-center gap-1 text-blue-600">
+                              <Cpu className="w-3.5 h-3.5 animate-pulse" />
+                              Encoding…
+                            </span>
+                          ) : v.transcodingStatus === "queued" ? (
+                            <span className="flex items-center gap-1 text-amber-600">
+                              <Clock className="w-3.5 h-3.5" />
+                              In queue
+                            </span>
+                          ) : v.transcodingStatus === "failed" ? (
+                            <span className="flex items-center gap-1 text-red-500">
+                              <AlertCircle className="w-3.5 h-3.5" />
+                              Encode failed
+                            </span>
+                          ) : null}
+                        </>
+                      )}
                       <span>•</span>
                       <span>Imported {new Date(v.importedAt).toLocaleDateString()}</span>
                     </div>
@@ -702,12 +730,26 @@ export default function Videos() {
                           Edit Details
                         </DropdownMenuItem>
                         {isLocal && v.localVideoUrl ? (
-                          <DropdownMenuItem asChild>
-                            <a href={v.localVideoUrl} target="_blank" rel="noopener noreferrer" className="cursor-pointer">
-                              <Play className="h-4 w-4 mr-2" />
-                              Play Local Video
-                            </a>
-                          </DropdownMenuItem>
+                          <>
+                            <DropdownMenuItem asChild>
+                              <a href={v.localVideoUrl} target="_blank" rel="noopener noreferrer" className="cursor-pointer">
+                                <Play className="h-4 w-4 mr-2" />
+                                Play Local Video
+                              </a>
+                            </DropdownMenuItem>
+                            {(v.transcodingStatus === "failed" || v.transcodingStatus === "none") && (
+                              <DropdownMenuItem
+                                className="cursor-pointer"
+                                onClick={async () => {
+                                  await fetch(`/api/admin/transcoding/requeue/${v.id}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ priority: 1 }) });
+                                  toast({ title: "Video queued for re-encoding" });
+                                }}
+                              >
+                                <Cpu className="h-4 w-4 mr-2" />
+                                Re-encode (HLS)
+                              </DropdownMenuItem>
+                            )}
+                          </>
                         ) : (
                           <DropdownMenuItem asChild>
                             <a href={`https://youtube.com/watch?v=${v.youtubeId}`} target="_blank" rel="noopener noreferrer" className="cursor-pointer">

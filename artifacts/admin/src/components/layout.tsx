@@ -11,6 +11,7 @@ import {
   Tv2,
   Moon,
   Sun,
+  Cpu,
 } from "lucide-react";
 import { useGetLiveStatus } from "@workspace/api-client-react";
 import { getLocalTimeZone, isMidnightHour } from "@/lib/theme";
@@ -29,6 +30,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
     { href: "/schedule", label: "Schedule", icon: Calendar },
     { href: "/notifications", label: "Notifications", icon: BellRing },
     { href: "/analytics", label: "Analytics", icon: BarChart2 },
+    { href: "/transcoding", label: "Transcoding Queue", icon: Cpu },
   ];
 
   return (

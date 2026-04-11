@@ -1,6 +1,7 @@
 import { Router } from "express";
-import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, pushTokensTable, liveOverridesTable } from "@workspace/db";
-import { eq, ilike, or, count, sql, desc } from "drizzle-orm";
+import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, pushTokensTable, liveOverridesTable, transcodingJobsTable } from "@workspace/db";
+import { eq, ilike, or, count, sql, desc, asc, and } from "drizzle-orm";
+import { queueTranscodingJob, retryTranscodingJob } from "../lib/transcoder";
 import { randomUUID } from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -534,6 +535,9 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
       .returning();
 
     uploadSessions.delete(sessionId);
+
+    queueTranscodingJob(id, finalPath, 1).catch(() => {});
+
     res.status(201).json(video);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -676,6 +680,10 @@ router.get("/videos/featured", async (req, res) => {
       preacher: v.preacher,
       publishedAt: v.publishedAt,
       views: v.viewCount,
+      videoSource: v.videoSource,
+      localVideoUrl: v.localVideoUrl,
+      hlsMasterUrl: v.hlsMasterUrl,
+      transcodingStatus: v.transcodingStatus,
     })));
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -1235,6 +1243,123 @@ router.post("/admin/live/override/extend", async (req, res) => {
       .where(eq(liveOverridesTable.id, active.id))
       .returning();
     res.json({ ok: true, override: updated });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.get("/admin/transcoding/queue", async (_req, res) => {
+  try {
+    const jobs = await db
+      .select({
+        job: transcodingJobsTable,
+        videoTitle: videosTable.title,
+        videoThumbnail: videosTable.thumbnailUrl,
+      })
+      .from(transcodingJobsTable)
+      .leftJoin(videosTable, eq(transcodingJobsTable.videoId, videosTable.id))
+      .orderBy(desc(transcodingJobsTable.priority), asc(transcodingJobsTable.createdAt));
+
+    const activeCount = jobs.filter((j) => j.job.status === "processing").length;
+    const queuedCount = jobs.filter((j) => j.job.status === "queued").length;
+    const failedCount = jobs.filter((j) => j.job.status === "failed").length;
+    const doneCount = jobs.filter((j) => j.job.status === "done").length;
+
+    res.json({
+      jobs: jobs.map((r) => ({
+        ...r.job,
+        videoTitle: r.videoTitle ?? "Unknown",
+        videoThumbnail: r.videoThumbnail ?? "",
+      })),
+      stats: { activeCount, queuedCount, failedCount, doneCount, total: jobs.length },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.get("/admin/transcoding/jobs/:jobId", async (req, res) => {
+  try {
+    const { jobId } = req.params as { jobId: string };
+    const rows = await db
+      .select({
+        job: transcodingJobsTable,
+        videoTitle: videosTable.title,
+        videoThumbnail: videosTable.thumbnailUrl,
+      })
+      .from(transcodingJobsTable)
+      .leftJoin(videosTable, eq(transcodingJobsTable.videoId, videosTable.id))
+      .where(eq(transcodingJobsTable.id, jobId));
+
+    const row = rows[0];
+    if (!row) return res.status(404).json({ error: "Job not found" });
+
+    res.json({ ...row.job, videoTitle: row.videoTitle ?? "Unknown", videoThumbnail: row.videoThumbnail ?? "" });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/admin/transcoding/retry/:jobId", async (req, res) => {
+  try {
+    const { jobId } = req.params as { jobId: string };
+    await retryTranscodingJob(jobId);
+    res.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.delete("/admin/transcoding/:jobId", async (req, res) => {
+  try {
+    const { jobId } = req.params as { jobId: string };
+    const rows = await db
+      .select()
+      .from(transcodingJobsTable)
+      .where(and(eq(transcodingJobsTable.id, jobId), eq(transcodingJobsTable.status, "queued")));
+
+    if (rows.length === 0) {
+      return res.status(400).json({ error: "Only queued jobs can be cancelled" });
+    }
+
+    await db
+      .update(transcodingJobsTable)
+      .set({ status: "cancelled" })
+      .where(eq(transcodingJobsTable.id, jobId));
+
+    const job = rows[0];
+    if (job) {
+      await db.update(videosTable).set({ transcodingStatus: "none" }).where(eq(videosTable.id, job.videoId));
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/admin/transcoding/requeue/:videoId", async (req, res) => {
+  try {
+    const { videoId } = req.params as { videoId: string };
+    const videos = await db.select().from(videosTable).where(eq(videosTable.id, videoId));
+    const video = videos[0];
+    if (!video) return res.status(404).json({ error: "Video not found" });
+    if (video.videoSource !== "local" || !video.localVideoUrl) {
+      return res.status(400).json({ error: "Only locally uploaded videos can be transcoded" });
+    }
+
+    const urlPath = video.localVideoUrl.split("/api/uploads/")[1];
+    if (!urlPath) return res.status(400).json({ error: "Could not determine local file path" });
+
+    const localFilePath = path.join(__dirname, "..", "uploads", urlPath);
+    const { priority = 0 } = req.body as { priority?: number };
+    const jobId = await queueTranscodingJob(videoId, localFilePath, priority);
+    res.status(201).json({ jobId });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });

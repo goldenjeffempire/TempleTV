@@ -173,6 +173,7 @@ export default function GuideScreen() {
         params: {
           broadcastMode: "true",
           localVideoUrl: item.localVideoUrl,
+          hlsMasterUrl: (item as any).hlsMasterUrl ?? undefined,
           title: item.title,
           thumbnail: item.thumbnailUrl,
           startPositionMs: startMs,

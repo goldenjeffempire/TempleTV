@@ -192,6 +192,7 @@ export default function PlayerScreen() {
     thumbnail?: string;
     category?: string;
     localVideoUrl?: string;
+    hlsMasterUrl?: string;
     startPositionMs?: string;
     broadcastMode?: string;
   }>();
@@ -205,6 +206,7 @@ export default function PlayerScreen() {
     thumbnail: paramThumbnail,
     category: paramCategory,
     localVideoUrl: paramLocalVideoUrl,
+    hlsMasterUrl: paramHlsMasterUrl,
     startPositionMs: paramStartPositionMs,
     broadcastMode: paramBroadcastMode,
   } = params;
@@ -377,6 +379,7 @@ export default function PlayerScreen() {
           };
           if (bcIsLocal) {
             nextParams.localVideoUrl = item.localVideoUrl!;
+            if ((item as any).hlsMasterUrl) nextParams.hlsMasterUrl = (item as any).hlsMasterUrl;
           } else {
             nextParams.videoId = item.youtubeId;
           }
@@ -407,6 +410,7 @@ export default function PlayerScreen() {
           };
           if (item.videoSource === "local" && item.localVideoUrl) {
             nextParams.localVideoUrl = item.localVideoUrl;
+            if ((item as any).hlsMasterUrl) nextParams.hlsMasterUrl = (item as any).hlsMasterUrl;
           } else {
             nextParams.videoId = item.youtubeId;
           }
@@ -528,6 +532,7 @@ export default function PlayerScreen() {
         {paramLocalVideoUrl ? (
           <LocalVideoPlayer
             videoUrl={paramLocalVideoUrl}
+            hlsMasterUrl={paramHlsMasterUrl}
             thumbnailUrl={paramThumbnail}
             title={displayTitle}
             autoPlay

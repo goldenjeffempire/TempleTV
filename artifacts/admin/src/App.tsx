@@ -11,6 +11,7 @@ import Schedule from "@/pages/schedule";
 import Notifications from "@/pages/notifications";
 import Analytics from "@/pages/analytics";
 import Broadcast from "@/pages/broadcast";
+import Transcoding from "@/pages/transcoding";
 import { applyAutoTheme } from "@/lib/theme";
 import { useEffect } from "react";
 
@@ -34,6 +35,7 @@ function Router() {
         <Route path="/broadcast" component={Broadcast} />
         <Route path="/notifications" component={Notifications} />
         <Route path="/analytics" component={Analytics} />
+        <Route path="/transcoding" component={Transcoding} />
         <Route component={NotFound} />
       </Switch>
     </Layout>

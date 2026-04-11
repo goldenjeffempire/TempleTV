@@ -1,5 +1,6 @@
 import app from "./app";
 import { logger } from "./lib/logger";
+import { resumePendingJobsOnStartup } from "./lib/transcoder";
 
 const rawPort = process.env["PORT"];
 
@@ -22,4 +23,8 @@ app.listen(port, (err) => {
   }
 
   logger.info({ port }, "Server listening");
+
+  resumePendingJobsOnStartup().catch((err) => {
+    logger.error({ err }, "Failed to resume pending transcoding jobs");
+  });
 });

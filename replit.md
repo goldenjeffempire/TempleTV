@@ -189,6 +189,18 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 - **Low data optimized**: Audio mode forces `suggestedQuality: "small"` on the YouTube player, minimizing bandwidth consumption
 - **Library.tsx playlistItemRow fix**: Added missing `playlistItemRow` style that was causing a TypeScript error
 
+## Features Added (Session 9) — Production-Grade Video Pipeline
+- **FFmpeg HLS transcoding queue**: Uploaded local videos are automatically queued for transcoding into three quality variants (1080p/720p/480p) using FFmpeg with libx264 + AAC, 6-second HLS segments
+- **Adaptive bitrate streaming (ABR)**: A master HLS playlist (`master.m3u8`) is generated per video; the mobile player automatically selects quality based on network conditions via `expo-av`'s native HLS stack
+- **`transcoding_jobs` DB table**: Persistent queue backed by PostgreSQL with status (queued/processing/done/failed/cancelled), priority, progress %, error messages, and timestamps
+- **Transcoding worker**: In-process async worker picks the highest-priority queued job, processes each quality variant sequentially, and reports per-profile progress (0–100%) back to the DB
+- **Startup recovery**: On server boot, any stuck `processing` jobs are reset to `queued` so crashed jobs auto-resume — no manual intervention needed
+- **HLS static serving**: API serves HLS playlists and .ts segments via `/api/hls/:videoId/master.m3u8` with correct MIME types and CORS headers for cross-origin player use
+- **Admin Transcoding Queue page**: New `/transcoding` admin page shows live stats (Processing/Queued/Completed/Failed), real-time job list grouped by status, progress bars for active jobs, one-click Retry for failed jobs, cancel for queued jobs
+- **Transcoding status on Video Library**: Local uploads show contextual inline badges — `Encoding…`, `In queue`, `HLS Ready`, or `Encode failed` — with an "ABR" badge in the mobile player when streaming via HLS
+- **Re-encode option**: Video card dropdown menu includes "Re-encode (HLS)" for any local video that failed or has no HLS yet, allowing priority re-queuing
+- **Mobile HLS integration**: `LocalVideoPlayer` accepts `hlsMasterUrl` prop and prefers it over the raw upload URL; broadcasts and navigation routes pass the HLS URL through all navigation params
+
 ## Features Added (Session 6)
 - **Admin schedule targeting**: Schedule entries for playlist/video content now include selectors for imported playlists and videos so scheduled programming points to real content.
 - **App-wide live interrupt**: Mobile now polls for YouTube live status and scheduled live slots globally, not only on the Watch tab, and opens the live player when a service begins.

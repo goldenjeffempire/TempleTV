@@ -17,6 +17,8 @@ export const videosTable = pgTable("managed_videos", {
   featured: boolean("featured").notNull().default(false),
   videoSource: text("video_source").notNull().default("youtube"),
   localVideoUrl: text("local_video_url"),
+  hlsMasterUrl: text("hls_master_url"),
+  transcodingStatus: text("transcoding_status").notNull().default("none"),
 });
 
 export const insertVideoSchema = createInsertSchema(videosTable).omit({ importedAt: true });

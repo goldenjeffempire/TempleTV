@@ -35,6 +35,18 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use("/api/uploads", express.static(path.join(__dirname, "..", "uploads")));
 
+app.use("/api/hls", (req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Cache-Control", "public, max-age=3600");
+  if (req.path.endsWith(".m3u8")) {
+    res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+    res.setHeader("Cache-Control", "public, max-age=30");
+  } else if (req.path.endsWith(".ts")) {
+    res.setHeader("Content-Type", "video/mp2t");
+  }
+  next();
+}, express.static(path.join(__dirname, "..", "uploads", "hls")));
+
 app.use("/api", router);
 
 export default app;

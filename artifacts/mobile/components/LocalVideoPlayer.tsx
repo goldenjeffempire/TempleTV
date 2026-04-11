@@ -27,6 +27,7 @@ try {
 
 interface LocalVideoPlayerProps {
   videoUrl: string;
+  hlsMasterUrl?: string;
   thumbnailUrl?: string;
   title?: string;
   autoPlay?: boolean;
@@ -38,6 +39,7 @@ interface LocalVideoPlayerProps {
 
 export function LocalVideoPlayer({
   videoUrl,
+  hlsMasterUrl,
   thumbnailUrl,
   title,
   autoPlay = true,
@@ -46,6 +48,7 @@ export function LocalVideoPlayer({
   onPause,
   startPositionMs = 0,
 }: LocalVideoPlayerProps) {
+  const effectiveUrl = hlsMasterUrl || videoUrl;
   const c = useColors();
   const { width } = useWindowDimensions();
   const { updatePlayback, playerPlayRef, playerPauseRef, playerSeekRef, dataSaver, isRadioMode } = usePlayer();
@@ -120,7 +123,7 @@ export function LocalVideoPlayer({
       <View style={[styles.container, { height: playerHeight }]}>
         <VideoComponent
           ref={videoRef}
-          source={{ uri: videoUrl }}
+          source={{ uri: effectiveUrl }}
           style={{ width: "100%", height: playerHeight }}
           resizeMode={ResizeMode?.CONTAIN ?? "contain"}
           shouldPlay={autoPlay}
@@ -143,6 +146,12 @@ export function LocalVideoPlayer({
             </Text>
           </View>
         </Animated.View>
+        {hlsMasterUrl && !loading && (
+          <View style={[styles.modeBadge, { right: 12, left: undefined }]}>
+            <Feather name="layers" size={12} color="#FFF" />
+            <Text style={styles.modeBadgeText}>ABR</Text>
+          </View>
+        )}
         {(dataSaver || isRadioMode) && (
           <View style={styles.modeBadge}>
             <Feather name={isRadioMode ? "radio" : "wifi-off"} size={12} color="#FFF" />
