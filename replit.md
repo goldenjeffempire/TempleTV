@@ -95,6 +95,7 @@ Faith, Healing, Deliverance, Worship, Prophecy, Teachings, Special Programs
 ## Running Services (Workflows)
 - **Start application** — Expo dev server on port 18115 (mobile app)
 - **API Server** — Express API server on port 8080 (YouTube RSS proxy for web; falls back to RSS when YouTube quota is exceeded via `fetchVideosFromRss()`)
+- **Admin Dashboard** — Vite dev server on port 5173 at `/admin/` (React admin panel for content management)
 
 ## Bug Fixes Applied (Session 2)
 - **Channel ID fix**: `JCTM_CHANNEL_ID` in `data/sermons.ts` corrected to `UCPFFvkE-KGpR37qJgvYriJg` everywhere (was wrong before)
