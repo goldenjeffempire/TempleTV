@@ -1,6 +1,13 @@
 import { Router } from "express";
 import { db, pushTokensTable, notificationsTable } from "@workspace/db";
 import { randomUUID } from "crypto";
+import {
+  broadcastLiveEvent,
+  addSSEClient,
+  removeSSEClient,
+  startSSEHeartbeat,
+  type LiveStatusSnapshot,
+} from "../lib/liveEvents";
 
 const router = Router();
 
@@ -18,14 +25,17 @@ const BROWSER_HEADERS = {
 };
 
 const CACHE_MS = 10 * 60 * 1000;
-const LIVE_POLL_MS = 60 * 1000;
+const LIVE_POLL_NORMAL_MS = 60 * 1000;
+const LIVE_POLL_BURST_MS = 15 * 1000;
+const BURST_WINDOW_MS = 10 * 60 * 1000;
 const EXPO_PUSH_API = "https://exp.host/--/api/v2/push/send";
 
-interface LiveStatus {
+export interface LiveStatus {
   isLive: boolean;
   videoId: string | null;
   title: string | null;
   checkedAt: number;
+  detectionMethod?: string;
 }
 
 let cachedLiveStatus: LiveStatus = {
@@ -35,26 +45,68 @@ let cachedLiveStatus: LiveStatus = {
   checkedAt: 0,
 };
 
+let lastStateChangeAt = 0;
 let lastNotifiedVideoId: string | null = null;
+let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
-async function checkYouTubeLive(): Promise<{ isLive: boolean; videoId: string | null; title: string | null }> {
-  try {
-    const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/@${CHANNEL_HANDLE}/live&format=json`;
-    const response = await fetch(oembedUrl, {
-      signal: AbortSignal.timeout(5000),
-      headers: BROWSER_HEADERS,
-    });
-    if (!response.ok) return { isLive: false, videoId: null, title: null };
-    const data = (await response.json()) as { title?: string; thumbnail_url?: string };
-    const title = data.title ?? null;
-    const thumbnailUrl = data.thumbnail_url ?? "";
-    const videoIdMatch = thumbnailUrl.match(/\/vi\/([^/]+)\//);
-    const videoId = videoIdMatch ? videoIdMatch[1] : null;
-    const isLive = !!videoId && !!title;
-    return { isLive, videoId, title };
-  } catch {
-    return { isLive: false, videoId: null, title: null };
+export function getLiveStatus(): LiveStatus {
+  return { ...cachedLiveStatus };
+}
+
+async function checkViaOembed(): Promise<{ isLive: boolean; videoId: string | null; title: string | null }> {
+  const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/@${CHANNEL_HANDLE}/live&format=json`;
+  const response = await fetch(oembedUrl, {
+    signal: AbortSignal.timeout(6000),
+    headers: BROWSER_HEADERS,
+  });
+  if (!response.ok) return { isLive: false, videoId: null, title: null };
+  const data = (await response.json()) as { title?: string; thumbnail_url?: string };
+  const title = data.title ?? null;
+  const thumbnailUrl = data.thumbnail_url ?? "";
+  const videoIdMatch = thumbnailUrl.match(/\/vi\/([^/]+)\//);
+  const videoId = videoIdMatch ? videoIdMatch[1] : null;
+  const isLive = !!videoId && !!title;
+  return { isLive, videoId, title };
+}
+
+async function checkViaYouTubeLivePage(): Promise<{ isLive: boolean; videoId: string | null; title: string | null }> {
+  const url = `https://www.youtube.com/@${CHANNEL_HANDLE}/live`;
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(8000),
+    headers: {
+      ...BROWSER_HEADERS,
+      Accept: "text/html,application/xhtml+xml",
+    },
+  });
+  if (!response.ok) return { isLive: false, videoId: null, title: null };
+  const html = await response.text();
+
+  const isLiveMatch = html.match(/"isLiveNow"\s*:\s*true/);
+  const videoIdMatch = html.match(/"videoId"\s*:\s*"([A-Za-z0-9_-]{11})"/);
+  const titleMatch = html.match(/"title"\s*:\s*\{\s*"runs"\s*:\s*\[\s*\{\s*"text"\s*:\s*"([^"]+)"/);
+
+  if (isLiveMatch && videoIdMatch) {
+    return {
+      isLive: true,
+      videoId: videoIdMatch[1] ?? null,
+      title: titleMatch?.[1] ?? "Live Stream",
+    };
   }
+  return { isLive: false, videoId: null, title: null };
+}
+
+async function checkYouTubeLive(): Promise<{ isLive: boolean; videoId: string | null; title: string | null; method: string }> {
+  try {
+    const result = await checkViaOembed();
+    if (result.isLive) return { ...result, method: "oembed" };
+  } catch {}
+
+  try {
+    const result = await checkViaYouTubeLivePage();
+    if (result.isLive) return { ...result, method: "live-page" };
+  } catch {}
+
+  return { isLive: false, videoId: null, title: null, method: "all-failed" };
 }
 
 async function sendLiveAutoNotification(title: string, videoId: string | null) {
@@ -117,20 +169,44 @@ async function pollLiveStatus() {
   const wasLive = cachedLiveStatus.isLive;
   const previousVideoId = cachedLiveStatus.videoId;
 
-  cachedLiveStatus = { ...result, checkedAt: Date.now() };
+  const stateChanged = result.isLive !== wasLive || result.videoId !== previousVideoId;
+
+  cachedLiveStatus = {
+    isLive: result.isLive,
+    videoId: result.videoId,
+    title: result.title,
+    checkedAt: Date.now(),
+    detectionMethod: result.method,
+  };
+
+  if (stateChanged) {
+    lastStateChangeAt = Date.now();
+    broadcastLiveEvent("yt-status", {
+      isLive: result.isLive,
+      videoId: result.videoId,
+      title: result.title,
+      checkedAt: cachedLiveStatus.checkedAt,
+    });
+  }
 
   const justWentLive = result.isLive && (!wasLive || result.videoId !== previousVideoId);
   const isNewStream = result.isLive && result.videoId && result.videoId !== lastNotifiedVideoId;
 
   if (justWentLive && isNewStream && result.title) {
     lastNotifiedVideoId = result.videoId;
-    console.log(`[LivePoller] New live stream detected: "${result.title}" (${result.videoId})`);
+    console.log(`[LivePoller] New live stream detected via ${result.method}: "${result.title}" (${result.videoId})`);
     await sendLiveAutoNotification(result.title, result.videoId);
   }
+
+  const isInBurstWindow = Date.now() - lastStateChangeAt < BURST_WINDOW_MS;
+  const nextPoll = isInBurstWindow ? LIVE_POLL_BURST_MS : LIVE_POLL_NORMAL_MS;
+
+  if (pollTimer) clearTimeout(pollTimer);
+  pollTimer = setTimeout(pollLiveStatus, nextPoll);
 }
 
 pollLiveStatus();
-setInterval(pollLiveStatus, LIVE_POLL_MS);
+startSSEHeartbeat();
 
 interface VideoItem {
   videoId: string;
@@ -480,8 +556,14 @@ router.get("/youtube/rss", async (req, res) => {
 router.get("/youtube/live", async (req, res) => {
   try {
     const result = await checkYouTubeLive();
-    cachedLiveStatus = { ...result, checkedAt: Date.now() };
-    res.json(result);
+    cachedLiveStatus = {
+      isLive: result.isLive,
+      videoId: result.videoId,
+      title: result.title,
+      checkedAt: Date.now(),
+      detectionMethod: result.method,
+    };
+    res.json({ isLive: result.isLive, videoId: result.videoId, title: result.title });
   } catch {
     res.json({ isLive: false, videoId: null, title: null });
   }
@@ -494,7 +576,28 @@ router.get("/youtube/live/status", (_req, res) => {
     title: cachedLiveStatus.title,
     checkedAt: cachedLiveStatus.checkedAt,
     staleSec: Math.floor((Date.now() - cachedLiveStatus.checkedAt) / 1000),
+    detectionMethod: cachedLiveStatus.detectionMethod,
   });
+});
+
+router.get("/youtube/live/events", (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  const client = addSSEClient(res);
+
+  res.write(`event: connected\ndata: ${JSON.stringify({
+    isLive: cachedLiveStatus.isLive,
+    videoId: cachedLiveStatus.videoId,
+    title: cachedLiveStatus.title,
+    checkedAt: cachedLiveStatus.checkedAt,
+    ts: Date.now(),
+  })}\n\n`);
+
+  req.on("close", () => removeSSEClient(client));
 });
 
 export default router;

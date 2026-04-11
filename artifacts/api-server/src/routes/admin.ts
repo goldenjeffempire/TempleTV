@@ -2,6 +2,8 @@ import { Router } from "express";
 import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, pushTokensTable, liveOverridesTable, transcodingJobsTable } from "@workspace/db";
 import { eq, ilike, or, count, sql, desc, asc, and } from "drizzle-orm";
 import { queueTranscodingJob, retryTranscodingJob } from "../lib/transcoder";
+import { broadcastLiveEvent, addSSEClient, removeSSEClient, getSSEClientCount } from "../lib/liveEvents";
+import { getLiveStatus } from "./youtube";
 import { randomUUID } from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -94,6 +96,73 @@ interface ChunkedSession {
 
 const uploadSessions = new Map<string, ChunkedSession>();
 
+const SESSION_META_FILE = "session.json";
+
+async function writeSessionToDisk(session: ChunkedSession): Promise<void> {
+  try {
+    const meta = {
+      id: session.id,
+      ext: session.ext,
+      totalChunks: session.totalChunks,
+      uploadedChunks: Array.from(session.uploadedChunks),
+      tmpDir: session.tmpDir,
+      totalBytes: session.totalBytes,
+      receivedBytes: session.receivedBytes,
+      metadata: session.metadata,
+      thumbnailPath: session.thumbnailPath,
+      createdAt: session.createdAt.toISOString(),
+      lastActivity: session.lastActivity.toISOString(),
+    };
+    await fs.writeFile(path.join(session.tmpDir, SESSION_META_FILE), JSON.stringify(meta));
+  } catch {}
+}
+
+async function recoverSessionsFromDisk(): Promise<void> {
+  try {
+    const tmpRoot = path.join(__dirname, "..", "uploads", "tmp");
+    await fs.mkdir(tmpRoot, { recursive: true });
+    const entries = await fs.readdir(tmpRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const metaPath = path.join(tmpRoot, entry.name, SESSION_META_FILE);
+      try {
+        const raw = await fs.readFile(metaPath, "utf-8");
+        const meta = JSON.parse(raw) as {
+          id: string; ext: string; totalChunks: number; uploadedChunks: number[];
+          tmpDir: string; totalBytes: number; receivedBytes: number;
+          metadata: ChunkedSession["metadata"]; thumbnailPath?: string;
+          createdAt: string; lastActivity: string;
+        };
+        const lastActivity = new Date(meta.lastActivity);
+        const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
+        if (lastActivity < sixHoursAgo) {
+          await fs.rm(meta.tmpDir, { recursive: true, force: true }).catch(() => {});
+          continue;
+        }
+        const session: ChunkedSession = {
+          id: meta.id,
+          ext: meta.ext,
+          totalChunks: meta.totalChunks,
+          uploadedChunks: new Set(meta.uploadedChunks),
+          tmpDir: meta.tmpDir,
+          totalBytes: meta.totalBytes,
+          receivedBytes: meta.receivedBytes,
+          metadata: meta.metadata,
+          thumbnailPath: meta.thumbnailPath,
+          createdAt: new Date(meta.createdAt),
+          lastActivity,
+        };
+        uploadSessions.set(session.id, session);
+        console.log(`[Upload] Recovered session ${session.id} (${session.uploadedChunks.size}/${session.totalChunks} chunks)`);
+      } catch {}
+    }
+  } catch (err) {
+    console.error("[Upload] Session recovery failed:", err);
+  }
+}
+
+recoverSessionsFromDisk();
+
 setInterval(() => {
   const inactiveCutoff = new Date(Date.now() - 6 * 60 * 60 * 1000);
   for (const [id, session] of uploadSessions.entries()) {
@@ -103,6 +172,60 @@ setInterval(() => {
     }
   }
 }, 30 * 60 * 1000);
+
+async function autoExpireLiveOverrides(): Promise<void> {
+  try {
+    const now = new Date();
+    const active = await db
+      .select()
+      .from(liveOverridesTable)
+      .where(eq(liveOverridesTable.isActive, true));
+    for (const override of active) {
+      if (override.endsAt && override.endsAt <= now) {
+        await db.update(liveOverridesTable)
+          .set({ isActive: false })
+          .where(eq(liveOverridesTable.id, override.id));
+        console.log(`[LiveOverride] Auto-expired: "${override.title}"`);
+        broadcastLiveEvent("override-expired", {
+          id: override.id,
+          title: override.title,
+          expiredAt: now.toISOString(),
+        });
+        broadcastLiveEvent("status", await buildLiveStatusPayload());
+      }
+    }
+  } catch {}
+}
+
+async function buildLiveStatusPayload() {
+  const liveOverride = await getActiveLiveOverride().catch(() => null);
+  const ytStatus = getLiveStatus();
+  const [deviceCountResult] = await db.select({ count: count() }).from(pushTokensTable).catch(() => [{ count: 0 }]);
+  const deviceCount = Number((deviceCountResult as any)?.count ?? 0);
+  const now = Date.now();
+  return {
+    isLive: !!(liveOverride || ytStatus.isLive),
+    ytLive: ytStatus.isLive,
+    ytVideoId: ytStatus.videoId,
+    ytTitle: ytStatus.title,
+    deviceCount,
+    sseClients: getSSEClientCount(),
+    liveOverride: liveOverride ? {
+      id: liveOverride.id,
+      title: liveOverride.title,
+      startedAt: liveOverride.startedAt.toISOString(),
+      endsAt: liveOverride.endsAt?.toISOString() ?? null,
+      elapsedSecs: Math.floor((now - liveOverride.startedAt.getTime()) / 1000),
+      remainingSecs: liveOverride.endsAt
+        ? Math.max(0, Math.floor((liveOverride.endsAt.getTime() - now) / 1000))
+        : null,
+    } : null,
+    ts: now,
+  };
+}
+
+setInterval(autoExpireLiveOverrides, 30 * 1000);
+autoExpireLiveOverrides();
 
 const router = Router();
 
@@ -383,6 +506,7 @@ router.post("/admin/videos/upload/init", async (req, res) => {
     };
 
     uploadSessions.set(sessionId, session);
+    await writeSessionToDisk(session);
     res.json({ sessionId, totalChunks: session.totalChunks });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -412,6 +536,8 @@ router.post("/admin/videos/upload/:sessionId/chunk", chunkUpload.single("chunk")
     session.uploadedChunks.add(idx);
     session.receivedBytes += chunk.buffer.length;
     session.lastActivity = new Date();
+
+    writeSessionToDisk(session).catch(() => {});
 
     res.json({
       sessionId,
@@ -640,7 +766,36 @@ router.put("/admin/videos/:id", async (req, res) => {
 router.delete("/admin/videos/:id", async (req, res) => {
   try {
     const { id } = DeleteAdminVideoParams.parse(req.params);
+    const [video] = await db.select().from(videosTable).where(eq(videosTable.id, id)).limit(1);
+
     await db.delete(videosTable).where(eq(videosTable.id, id));
+
+    if (video?.videoSource === "local") {
+      const uploadsDir = path.join(__dirname, "..", "uploads");
+      const hlsDir = path.join(uploadsDir, "hls", id);
+
+      if (video.localVideoUrl) {
+        try {
+          const urlParts = video.localVideoUrl.split("/api/uploads/");
+          const filename = urlParts[urlParts.length - 1];
+          if (filename && !filename.includes("/")) {
+            await fs.unlink(path.join(uploadsDir, filename)).catch(() => {});
+          }
+        } catch {}
+      }
+      await fs.rm(hlsDir, { recursive: true, force: true }).catch(() => {});
+
+      if (video.thumbnailUrl) {
+        try {
+          const thumbParts = video.thumbnailUrl.split("/api/uploads/");
+          const thumbFilename = thumbParts[thumbParts.length - 1];
+          if (thumbFilename && !thumbFilename.includes("/")) {
+            await fs.unlink(path.join(uploadsDir, thumbFilename)).catch(() => {});
+          }
+        } catch {}
+      }
+    }
+
     res.json({ success: true, message: "Video deleted" });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -1107,6 +1262,23 @@ router.get("/admin/analytics", async (req, res) => {
   }
 });
 
+router.get("/admin/live/events", async (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  const client = addSSEClient(res);
+
+  try {
+    const payload = await buildLiveStatusPayload();
+    res.write(`event: status\ndata: ${JSON.stringify(payload)}\n\n`);
+  } catch {}
+
+  req.on("close", () => removeSSEClient(client));
+});
+
 router.get("/admin/live", async (_req, res) => {
   try {
     let ytLive = false;
@@ -1207,6 +1379,8 @@ router.post("/admin/live/override/start", async (req, res) => {
       });
     }
 
+    buildLiveStatusPayload().then((payload) => broadcastLiveEvent("status", payload)).catch(() => {});
+
     res.status(201).json({ override, push: pushResult });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -1222,6 +1396,9 @@ router.post("/admin/live/override/stop", async (_req, res) => {
       .update(liveOverridesTable)
       .set({ isActive: false, endsAt: new Date() })
       .where(eq(liveOverridesTable.id, active.id));
+
+    buildLiveStatusPayload().then((payload) => broadcastLiveEvent("status", payload)).catch(() => {});
+
     res.json({ ok: true, stopped: 1 });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -1242,6 +1419,9 @@ router.post("/admin/live/override/extend", async (req, res) => {
       .set({ endsAt: newEndsAt })
       .where(eq(liveOverridesTable.id, active.id))
       .returning();
+
+    buildLiveStatusPayload().then((payload) => broadcastLiveEvent("status", payload)).catch(() => {});
+
     res.json({ ok: true, override: updated });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";

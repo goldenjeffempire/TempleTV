@@ -246,6 +246,7 @@ router.get("/broadcast/guide", async (_req, res) => {
 });
 
 router.get("/broadcast/current", async (_req, res) => {
+  const nowMs = Date.now();
   const activeLiveOverride = await getActiveLiveOverride();
   if (activeLiveOverride) {
     return res.json({
@@ -256,7 +257,8 @@ router.get("/broadcast/current", async (_req, res) => {
       totalSecs: 0,
       queueLength: 0,
       progressPercent: 0,
-      syncedAt: new Date().toISOString(),
+      syncedAt: new Date(nowMs).toISOString(),
+      serverTimeMs: nowMs,
       failoverReason: null,
       activeSchedule: null,
       liveOverride: {
@@ -264,6 +266,9 @@ router.get("/broadcast/current", async (_req, res) => {
         title: activeLiveOverride.title,
         startedAt: activeLiveOverride.startedAt.toISOString(),
         endsAt: activeLiveOverride.endsAt?.toISOString() ?? null,
+        remainingSecs: activeLiveOverride.endsAt
+          ? Math.max(0, Math.floor((activeLiveOverride.endsAt.getTime() - nowMs) / 1000))
+          : null,
       },
     });
   }
@@ -283,8 +288,10 @@ router.get("/broadcast/current", async (_req, res) => {
       totalSecs: 0,
       queueLength: 0,
       progressPercent: 0,
-      syncedAt: new Date().toISOString(),
+      syncedAt: new Date(nowMs).toISOString(),
+      serverTimeMs: nowMs,
       failoverReason: null,
+      liveOverride: null,
       activeSchedule: {
         id: activeSchedule.id,
         title: activeSchedule.title,
