@@ -97,6 +97,18 @@ Faith, Healing, Deliverance, Worship, Prophecy, Teachings, Special Programs
 - **API Server** — Express API server on port 8080 (YouTube RSS proxy for web; falls back to RSS when YouTube quota is exceeded via `fetchVideosFromRss()`)
 - **Admin Dashboard** — Vite dev server on port 5173 at `/admin/` (React admin panel for content management)
 
+## Features Added (Session 3)
+- **Videos page**: Fixed missing `Video` icon import (empty state crash), added "Edit Details" dialog for updating title, category, preacher, featured status per video
+- **Playlists DnD**: Installed `@dnd-kit/core` + `@dnd-kit/sortable`; playlist videos are now drag-and-drop reorderable
+- **Add Video to Playlist**: Changed from YouTube URL input to searchable library picker — selects videos already imported in the DB
+- **Push Tokens DB**: Added `push_tokens` table (id, token, platform, created_at, last_seen_at) for storing device tokens from the mobile app
+- **Real Push Notifications**: `POST /api/admin/notifications/send` now sends via Expo Push API (`https://exp.host/--/api/v2/push/send`) to all registered devices; `sentCount` tracks successful deliveries
+- **Push Token Registration API**: `POST /api/push-tokens` endpoint — mobile devices register on launch (upserts on conflict)
+- **Mobile Push Token**: `notifications.native.ts` now calls `/api/push-tokens` after getting the Expo push token on app launch
+- **View Tracking**: `POST /api/videos/:youtubeId/view` increments `view_count`; mobile player calls it when a video starts
+- **Analytics**: `uniqueViewers` now uses registered device count; daily views uses notification history instead of random data
+- **Dashboard**: "Notifications Today" stat card now shows registered device count as subtext
+
 ## Bug Fixes Applied (Session 2)
 - **Channel ID fix**: `JCTM_CHANNEL_ID` in `data/sermons.ts` corrected to `UCPFFvkE-KGpR37qJgvYriJg` everywhere (was wrong before)
 - **API server `/videos` route**: Added `fetchVideosFromRss()` fallback so it returns 200 + RSS data when YouTube quota exceeded (was returning 502)

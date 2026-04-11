@@ -83,7 +83,7 @@ export default function Dashboard() {
               <>
                 <div className="text-2xl font-bold">{stats?.notificationsSentToday || 0}</div>
                 <p className="text-xs text-muted-foreground mt-1">
-                  Sent to subscribers
+                  {(stats as any)?.registeredDevices ?? 0} registered devices
                 </p>
               </>
             )}

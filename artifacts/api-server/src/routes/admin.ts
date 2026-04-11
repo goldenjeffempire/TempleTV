@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable } from "@workspace/db";
+import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, pushTokensTable } from "@workspace/db";
 import { eq, ilike, or, count, sql, desc } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import {
@@ -25,8 +25,61 @@ import {
   SendPushNotificationBody,
   GetAnalyticsQueryParams,
 } from "@workspace/api-zod";
-
 const router = Router();
+
+const EXPO_PUSH_API = "https://exp.host/--/api/v2/push/send";
+
+async function sendExpoPushNotifications(
+  tokens: string[],
+  title: string,
+  body: string,
+  data: Record<string, unknown> = {}
+): Promise<{ sent: number; failed: number }> {
+  if (tokens.length === 0) return { sent: 0, failed: 0 };
+
+  const messages = tokens.map((token) => ({
+    to: token,
+    title,
+    body,
+    sound: "default",
+    data,
+  }));
+
+  const CHUNK_SIZE = 100;
+  let sent = 0;
+  let failed = 0;
+
+  for (let i = 0; i < messages.length; i += CHUNK_SIZE) {
+    const chunk = messages.slice(i, i + CHUNK_SIZE);
+    try {
+      const res = await fetch(EXPO_PUSH_API, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          "Accept-Encoding": "gzip, deflate",
+        },
+        body: JSON.stringify(chunk),
+        signal: AbortSignal.timeout(15000),
+      });
+
+      if (res.ok) {
+        const result = (await res.json()) as { data?: Array<{ status: string }> };
+        const statuses = result.data ?? [];
+        for (const s of statuses) {
+          if (s.status === "ok") sent++;
+          else failed++;
+        }
+      } else {
+        failed += chunk.length;
+      }
+    } catch {
+      failed += chunk.length;
+    }
+  }
+
+  return { sent, failed };
+}
 
 router.get("/admin/stats", async (req, res) => {
   try {
@@ -44,6 +97,7 @@ router.get("/admin/stats", async (req, res) => {
       .select({ count: count() })
       .from(notificationsTable)
       .where(sql`sent_at > now() - interval '1 day'`);
+    const [registeredDevicesResult] = await db.select({ count: count() }).from(pushTokensTable);
 
     const categoryCounts = await db
       .select({ category: videosTable.category, count: count() })
@@ -74,6 +128,7 @@ router.get("/admin/stats", async (req, res) => {
       liveViewerEstimate: liveStatus.viewerCount,
       recentImports: recentImportsResult?.count ?? 0,
       topCategory: categoryCounts[0]?.category ?? "sermon",
+      registeredDevices: registeredDevicesResult?.count ?? 0,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -89,21 +144,12 @@ router.get("/admin/videos", async (req, res) => {
     const limit = params.limit ?? 20;
     const offset = (page - 1) * limit;
 
-    let query = db.select().from(videosTable);
-    const filters: ReturnType<typeof ilike>[] = [];
-    if (params.search) {
-      filters.push(
-        ilike(videosTable.title, `%${params.search}%`),
-        ilike(videosTable.preacher, `%${params.search}%`)
-      );
-    }
-
     let rows: typeof videosTable.$inferSelect[];
-    if (filters.length > 0) {
+    if (params.search) {
       rows = await db
         .select()
         .from(videosTable)
-        .where(or(...filters))
+        .where(or(ilike(videosTable.title, `%${params.search}%`), ilike(videosTable.preacher, `%${params.search}%`)))
         .orderBy(desc(videosTable.importedAt))
         .limit(limit)
         .offset(offset);
@@ -211,14 +257,8 @@ router.put("/admin/videos/:id", async (req, res) => {
     if (!body.success) {
       return res.status(400).json({ error: "Invalid body" });
     }
-    const updates = Object.fromEntries(
-      Object.entries(body.data).filter(([, v]) => v !== undefined)
-    );
-    const [video] = await db
-      .update(videosTable)
-      .set(updates)
-      .where(eq(videosTable.id, id))
-      .returning();
+    const updates = Object.fromEntries(Object.entries(body.data).filter(([, v]) => v !== undefined));
+    const [video] = await db.update(videosTable).set(updates).where(eq(videosTable.id, id)).returning();
     if (!video) return res.status(404).json({ error: "Video not found" });
     res.json(video);
   } catch (err) {
@@ -238,11 +278,21 @@ router.delete("/admin/videos/:id", async (req, res) => {
   }
 });
 
+router.post("/videos/:youtubeId/view", async (req, res) => {
+  try {
+    const youtubeId = req.params.youtubeId;
+    await db
+      .update(videosTable)
+      .set({ viewCount: sql`coalesce(view_count, 0) + 1` })
+      .where(eq(videosTable.youtubeId, youtubeId));
+    res.json({ success: true });
+  } catch (err) {
+    res.json({ success: false });
+  }
+});
+
 async function getPlaylistWithVideos(id: string) {
-  const [playlist] = await db
-    .select()
-    .from(playlistsTable)
-    .where(eq(playlistsTable.id, id));
+  const [playlist] = await db.select().from(playlistsTable).where(eq(playlistsTable.id, id));
   if (!playlist) return null;
   const videos = await db
     .select()
@@ -310,14 +360,8 @@ router.put("/admin/playlists/:id", async (req, res) => {
     const { id } = UpdatePlaylistParams.parse(req.params);
     const parsed = UpdatePlaylistBody.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: "Invalid body" });
-    const updates = Object.fromEntries(
-      Object.entries(parsed.data).filter(([, v]) => v !== undefined)
-    );
-    const [playlist] = await db
-      .update(playlistsTable)
-      .set(updates)
-      .where(eq(playlistsTable.id, id))
-      .returning();
+    const updates = Object.fromEntries(Object.entries(parsed.data).filter(([, v]) => v !== undefined));
+    const [playlist] = await db.update(playlistsTable).set(updates).where(eq(playlistsTable.id, id)).returning();
     if (!playlist) return res.status(404).json({ error: "Playlist not found" });
     const [countResult] = await db
       .select({ count: count() })
@@ -383,11 +427,7 @@ router.delete("/admin/playlists/:id/videos/:videoId", async (req, res) => {
   try {
     const { id } = RemoveVideoFromPlaylistParams.parse(req.params);
     const videoId = req.params.videoId;
-    await db
-      .delete(playlistVideosTable)
-      .where(
-        sql`playlist_id = ${id} AND (video_id = ${videoId} OR id = ${videoId})`
-      );
+    await db.delete(playlistVideosTable).where(sql`playlist_id = ${id} AND (video_id = ${videoId} OR id = ${videoId})`);
     const result = await getPlaylistWithVideos(id);
     res.json(result);
   } catch (err) {
@@ -407,9 +447,7 @@ router.put("/admin/playlists/:id/reorder", async (req, res) => {
       await db
         .update(playlistVideosTable)
         .set({ sortOrder: i })
-        .where(
-          sql`playlist_id = ${id} AND (video_id = ${videoIds[i]} OR id = ${videoIds[i]})`
-        );
+        .where(sql`playlist_id = ${id} AND (video_id = ${videoIds[i]} OR id = ${videoIds[i]})`);
     }
 
     const result = await getPlaylistWithVideos(id);
@@ -422,7 +460,10 @@ router.put("/admin/playlists/:id/reorder", async (req, res) => {
 
 router.get("/admin/schedule", async (req, res) => {
   try {
-    const entries = await db.select().from(scheduleTable).orderBy(scheduleTable.dayOfWeek, scheduleTable.startTime);
+    const entries = await db
+      .select()
+      .from(scheduleTable)
+      .orderBy(scheduleTable.dayOfWeek, scheduleTable.startTime);
     res.json(entries);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -436,7 +477,12 @@ router.post("/admin/schedule", async (req, res) => {
     if (!parsed.success) return res.status(400).json({ error: "Invalid body" });
     const [entry] = await db
       .insert(scheduleTable)
-      .values({ id: randomUUID(), ...parsed.data, isRecurring: parsed.data.isRecurring ?? true, isActive: parsed.data.isActive ?? true })
+      .values({
+        id: randomUUID(),
+        ...parsed.data,
+        isRecurring: parsed.data.isRecurring ?? true,
+        isActive: parsed.data.isActive ?? true,
+      })
       .returning();
     res.status(201).json(entry);
   } catch (err) {
@@ -450,14 +496,8 @@ router.put("/admin/schedule/:id", async (req, res) => {
     const { id } = UpdateScheduleEntryParams.parse(req.params);
     const parsed = UpdateScheduleEntryBody.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: "Invalid body" });
-    const updates = Object.fromEntries(
-      Object.entries(parsed.data).filter(([, v]) => v !== undefined)
-    );
-    const [entry] = await db
-      .update(scheduleTable)
-      .set(updates)
-      .where(eq(scheduleTable.id, id))
-      .returning();
+    const updates = Object.fromEntries(Object.entries(parsed.data).filter(([, v]) => v !== undefined));
+    const [entry] = await db.update(scheduleTable).set(updates).where(eq(scheduleTable.id, id)).returning();
     if (!entry) return res.status(404).json({ error: "Schedule entry not found" });
     res.json(entry);
   } catch (err) {
@@ -477,28 +517,62 @@ router.delete("/admin/schedule/:id", async (req, res) => {
   }
 });
 
+router.post("/push-tokens", async (req, res) => {
+  try {
+    const { token, platform } = req.body as { token?: string; platform?: string };
+    if (!token || typeof token !== "string" || token.length === 0) {
+      return res.status(400).json({ error: "token is required" });
+    }
+    if (platform !== "ios" && platform !== "android") {
+      return res.status(400).json({ error: "platform must be ios or android" });
+    }
+
+    await db
+      .insert(pushTokensTable)
+      .values({ id: randomUUID(), token, platform })
+      .onConflictDoUpdate({
+        target: pushTokensTable.token,
+        set: { lastSeenAt: sql`now()`, platform },
+      });
+
+    res.json({ success: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
 router.post("/admin/notifications/send", async (req, res) => {
   try {
     const parsed = SendPushNotificationBody.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: "Invalid body" });
     const { title, body, type, videoId } = parsed.data;
 
-    const [notification] = await db
-      .insert(notificationsTable)
-      .values({
-        id: randomUUID(),
-        title,
-        body,
-        type,
-        videoId: videoId ?? null,
-        sentCount: 0,
-      })
-      .returning();
+    const tokenRows = await db.select({ token: pushTokensTable.token }).from(pushTokensTable);
+    const tokens = tokenRows.map((r) => r.token);
+
+    const { sent, failed } = await sendExpoPushNotifications(tokens, title, body, {
+      type,
+      ...(videoId ? { videoId } : {}),
+    });
+
+    await db.insert(notificationsTable).values({
+      id: randomUUID(),
+      title,
+      body,
+      type,
+      videoId: videoId ?? null,
+      sentCount: sent,
+    });
 
     res.json({
-      sent: 0,
-      failed: 0,
-      message: "Notification logged. Push delivery requires Expo push token integration.",
+      sent,
+      failed,
+      total: tokens.length,
+      message:
+        tokens.length === 0
+          ? "No registered devices found. Devices register automatically when they open the app."
+          : `Notification sent to ${sent}/${tokens.length} devices.`,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -548,22 +622,32 @@ router.get("/admin/analytics", async (req, res) => {
 
     const totalCatCount = categoryRows.reduce((s, r) => s + r.count, 0);
 
-    const [totalVids] = await db.select({ count: count() }).from(videosTable);
+    const [notifResult] = await db.select({ count: count() }).from(notificationsTable);
+    const [deviceResult] = await db.select({ count: count() }).from(pushTokensTable);
+
+    const notifHistory = await db
+      .select({ sentAt: notificationsTable.sentAt, sentCount: notificationsTable.sentCount })
+      .from(notificationsTable)
+      .orderBy(desc(notificationsTable.sentAt))
+      .limit(days);
+
+    const dailyViewsMap = new Map<string, number>();
+    for (const n of notifHistory) {
+      const d = new Date(n.sentAt).toISOString().split("T")[0];
+      dailyViewsMap.set(d, (dailyViewsMap.get(d) ?? 0) + (n.sentCount ?? 0));
+    }
+
     const dailyViews = Array.from({ length: days }, (_, i) => {
       const d = new Date();
       d.setDate(d.getDate() - (days - 1 - i));
-      return {
-        date: d.toISOString().split("T")[0],
-        views: Math.floor(Math.random() * 50) + 5,
-      };
+      const dateStr = d.toISOString().split("T")[0];
+      return { date: dateStr, views: dailyViewsMap.get(dateStr) ?? 0 };
     });
-
-    const [notifResult] = await db.select({ count: count() }).from(notificationsTable);
 
     res.json({
       period,
       totalViews: Number(totalViewsResult?.total ?? 0),
-      uniqueViewers: Math.floor(Number(totalViewsResult?.total ?? 0) * 0.7),
+      uniqueViewers: Number(deviceResult?.count ?? 0),
       avgWatchTimeMinutes: 24.5,
       liveStreamEvents: notifResult?.count ?? 0,
       topVideos: topVideosRows,

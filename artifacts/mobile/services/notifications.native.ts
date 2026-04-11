@@ -14,6 +14,22 @@ Notifications.setNotificationHandler({
   }),
 });
 
+async function registerTokenWithServer(token: string): Promise<void> {
+  try {
+    const platform = Platform.OS as "ios" | "android";
+    const domain = process.env.EXPO_PUBLIC_DOMAIN ?? "";
+    const baseUrl = domain ? `https://${domain}` : "";
+    await fetch(`${baseUrl}/api/push-tokens`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, platform }),
+      signal: AbortSignal.timeout(10000),
+    });
+  } catch {
+    // Non-critical — will retry on next launch
+  }
+}
+
 export async function setupAndroidNotificationChannel(): Promise<void> {
   if (Platform.OS !== "android") return;
   try {
@@ -49,6 +65,7 @@ export async function registerForPushTokenAsync(): Promise<string | null> {
     const { data: token } = await Notifications.getExpoPushTokenAsync();
     if (token) {
       await AsyncStorage.setItem(PUSH_TOKEN_KEY, token);
+      await registerTokenWithServer(token);
     }
     return token ?? null;
   } catch {

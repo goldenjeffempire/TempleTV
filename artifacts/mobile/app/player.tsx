@@ -272,6 +272,9 @@ export default function PlayerScreen() {
       playSermon(sermon, allSermons);
       setActiveSermon(sermon);
       addToHistory(sermon);
+      const domain = process.env.EXPO_PUBLIC_DOMAIN ?? "";
+      const base = domain ? `https://${domain}` : "";
+      fetch(`${base}/api/videos/${sermon.youtubeId}/view`, { method: "POST" }).catch(() => {});
     }
   }, []);
 

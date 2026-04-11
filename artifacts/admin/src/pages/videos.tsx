@@ -2,35 +2,58 @@ import { useListAdminVideos, useImportVideo, useUpdateAdminVideo, useDeleteAdmin
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Search, Plus, Loader2, MoreVertical, Edit, Trash2, Youtube, ExternalLink } from "lucide-react";
+import { Search, Plus, Loader2, MoreVertical, Trash2, Youtube, ExternalLink, Video, Star, Edit } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { getListAdminVideosQueryKey } from "@workspace/api-client-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+
+const CATEGORIES = ["sermon", "faith", "healing", "deliverance", "worship", "prophecy", "teachings", "special"];
+
+type VideoRow = {
+  id: string;
+  youtubeId: string;
+  title: string;
+  thumbnailUrl: string;
+  category: string;
+  preacher: string;
+  featured: boolean;
+  viewCount: number;
+  duration: string;
+  importedAt: string | Date;
+};
 
 export default function Videos() {
   const [search, setSearch] = useState("");
   const { data, isLoading } = useListAdminVideos({ search, limit: 50 });
   const [isImporting, setIsImporting] = useState(false);
   const [importUrl, setImportUrl] = useState("");
+  const [editingVideo, setEditingVideo] = useState<VideoRow | null>(null);
   const importVideo = useImportVideo();
+  const updateVideo = useUpdateAdminVideo();
   const deleteVideo = useDeleteAdminVideo();
   const { toast } = useToast();
   const queryClient = useQueryClient();
+
+  const [editForm, setEditForm] = useState({ title: "", category: "sermon", preacher: "", featured: false });
 
   const handleImport = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!importUrl) return;
 
     let youtubeId = importUrl;
-    // Extract ID if full URL
     if (importUrl.includes("youtube.com/watch?v=")) {
       youtubeId = importUrl.split("v=")[1].split("&")[0];
     } else if (importUrl.includes("youtu.be/")) {
@@ -58,7 +81,6 @@ export default function Videos() {
 
   const handleDelete = (id: string) => {
     if (!confirm("Are you sure you want to delete this video?")) return;
-    
     deleteVideo.mutate(
       { id },
       {
@@ -69,6 +91,32 @@ export default function Videos() {
         onError: () => {
           toast({ title: "Failed to delete video", variant: "destructive" });
         }
+      }
+    );
+  };
+
+  const openEdit = (video: VideoRow) => {
+    setEditForm({
+      title: video.title,
+      category: video.category,
+      preacher: video.preacher || "",
+      featured: video.featured ?? false,
+    });
+    setEditingVideo(video);
+  };
+
+  const handleEditSave = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingVideo) return;
+    updateVideo.mutate(
+      { id: editingVideo.id, data: editForm },
+      {
+        onSuccess: () => {
+          toast({ title: "Video updated" });
+          setEditingVideo(null);
+          queryClient.invalidateQueries({ queryKey: getListAdminVideosQueryKey() });
+        },
+        onError: () => toast({ title: "Failed to update video", variant: "destructive" })
       }
     );
   };
@@ -143,8 +191,8 @@ export default function Videos() {
                     </div>
                   )}
                   {video.featured && (
-                    <div className="absolute top-1 left-1 bg-primary text-primary-foreground text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">
-                      Featured
+                    <div className="absolute top-1 left-1 bg-primary text-primary-foreground text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider flex items-center gap-0.5">
+                      <Star className="w-2.5 h-2.5 fill-current" /> Featured
                     </div>
                   )}
                 </div>
@@ -156,7 +204,7 @@ export default function Videos() {
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-sm text-muted-foreground">
                     <span className="font-medium text-foreground/80">{video.preacher || "Unknown"}</span>
                     <span>•</span>
-                    <Badge variant="secondary" className="font-normal">{video.category}</Badge>
+                    <Badge variant="secondary" className="font-normal capitalize">{video.category}</Badge>
                     <span>•</span>
                     <span className="flex items-center gap-1">
                       <Youtube className="w-3.5 h-3.5" />
@@ -175,12 +223,17 @@ export default function Videos() {
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
+                      <DropdownMenuItem className="cursor-pointer" onClick={() => openEdit(video as VideoRow)}>
+                        <Edit className="h-4 w-4 mr-2" />
+                        Edit Details
+                      </DropdownMenuItem>
                       <DropdownMenuItem asChild>
                         <a href={`https://youtube.com/watch?v=${video.youtubeId}`} target="_blank" rel="noopener noreferrer" className="cursor-pointer">
                           <ExternalLink className="h-4 w-4 mr-2" />
                           View on YouTube
                         </a>
                       </DropdownMenuItem>
+                      <DropdownMenuSeparator />
                       <DropdownMenuItem className="text-destructive focus:bg-destructive/10 focus:text-destructive cursor-pointer" onClick={() => handleDelete(video.id)}>
                         <Trash2 className="h-4 w-4 mr-2" />
                         Delete
@@ -193,6 +246,52 @@ export default function Videos() {
           </div>
         )}
       </div>
+
+      <Dialog open={!!editingVideo} onOpenChange={(open) => !open && setEditingVideo(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Video</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleEditSave} className="space-y-4">
+            {editingVideo && (
+              <div className="flex gap-3 items-center p-3 bg-muted/30 rounded-lg border">
+                <img src={editingVideo.thumbnailUrl} className="w-20 h-14 object-cover rounded" alt="" />
+                <p className="text-sm font-medium line-clamp-2">{editingVideo.title}</p>
+              </div>
+            )}
+            <div className="space-y-2">
+              <Label>Title</Label>
+              <Input value={editForm.title} onChange={e => setEditForm({ ...editForm, title: e.target.value })} required />
+            </div>
+            <div className="space-y-2">
+              <Label>Preacher / Speaker</Label>
+              <Input value={editForm.preacher} onChange={e => setEditForm({ ...editForm, preacher: e.target.value })} placeholder="e.g. Pastor John" />
+            </div>
+            <div className="space-y-2">
+              <Label>Category</Label>
+              <Select value={editForm.category} onValueChange={v => setEditForm({ ...editForm, category: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {CATEGORIES.map(c => <SelectItem key={c} value={c} className="capitalize">{c}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-center justify-between p-3 bg-muted/20 rounded-lg border">
+              <div>
+                <Label>Featured</Label>
+                <p className="text-xs text-muted-foreground mt-0.5">Highlights this video on the home screen</p>
+              </div>
+              <Switch checked={editForm.featured} onCheckedChange={c => setEditForm({ ...editForm, featured: c })} />
+            </div>
+            <div className="flex gap-2 pt-1">
+              <Button type="button" variant="outline" className="flex-1" onClick={() => setEditingVideo(null)}>Cancel</Button>
+              <Button type="submit" className="flex-1" disabled={updateVideo.isPending}>
+                {updateVideo.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : "Save Changes"}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
