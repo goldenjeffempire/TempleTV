@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useListSchedule, useCreateScheduleEntry, useUpdateScheduleEntry, useDeleteScheduleEntry, getListScheduleQueryKey } from "@workspace/api-client-react";
+import { useListSchedule, useCreateScheduleEntry, useUpdateScheduleEntry, useDeleteScheduleEntry, getListScheduleQueryKey, useListAdminVideos, useListPlaylists } from "@workspace/api-client-react";
 import { Button } from "@/components/ui/button";
 import { Plus, Loader2, Calendar as CalendarIcon, Clock, Trash2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -15,6 +15,8 @@ const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", 
 
 export default function Schedule() {
   const { data: schedule, isLoading } = useListSchedule();
+  const { data: videos } = useListAdminVideos({ limit: 100 });
+  const { data: playlists } = useListPlaylists();
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const createEntry = useCreateScheduleEntry();
   const deleteEntry = useDeleteScheduleEntry();
@@ -26,8 +28,16 @@ export default function Schedule() {
     title: "", dayOfWeek: 0, startTime: "09:00", endTime: "10:30", contentType: "live" as any, contentId: "", isRecurring: true, isActive: true
   });
 
+  const resetContentType = (contentType: string) => {
+    setFormData({ ...formData, contentType, contentId: "" });
+  };
+
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
+    if (formData.contentType !== "live" && !formData.contentId) {
+      toast({ title: `Choose a ${formData.contentType} for this schedule slot`, variant: "destructive" });
+      return;
+    }
     createEntry.mutate({ data: formData }, {
       onSuccess: () => {
         toast({ title: "Schedule entry created" });
@@ -87,7 +97,7 @@ export default function Schedule() {
                 </div>
                 <div className="space-y-2">
                   <Label>Content Type</Label>
-                  <Select value={formData.contentType} onValueChange={v => setFormData({...formData, contentType: v})}>
+                  <Select value={formData.contentType} onValueChange={resetContentType}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="live">Live Service</SelectItem>
@@ -107,6 +117,25 @@ export default function Schedule() {
                   <Input type="time" value={formData.endTime} onChange={e => setFormData({...formData, endTime: e.target.value})} />
                 </div>
               </div>
+              {formData.contentType !== "live" && (
+                <div className="space-y-2">
+                  <Label>{formData.contentType === "playlist" ? "Playlist" : "Video"}</Label>
+                  <Select value={formData.contentId} onValueChange={v => setFormData({...formData, contentId: v})}>
+                    <SelectTrigger>
+                      <SelectValue placeholder={`Choose a ${formData.contentType}`} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {formData.contentType === "playlist"
+                        ? playlists?.map((playlist) => (
+                            <SelectItem key={playlist.id} value={playlist.id}>{playlist.name}</SelectItem>
+                          ))
+                        : videos?.videos?.map((video) => (
+                            <SelectItem key={video.id} value={video.id}>{video.title}</SelectItem>
+                          ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
               <div className="flex items-center justify-between pt-2">
                 <Label>Active</Label>
                 <Switch checked={formData.isActive} onCheckedChange={c => setFormData({...formData, isActive: c})} />
@@ -147,7 +176,7 @@ export default function Schedule() {
                       {entry.startTime} {entry.endTime && `- ${entry.endTime}`}
                     </div>
                     <div className="mt-2 inline-flex text-[10px] font-medium px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground uppercase tracking-wider">
-                      {entry.contentType}
+                      {entry.contentType}{entry.contentId ? " selected" : ""}
                     </div>
                   </div>
                 ))

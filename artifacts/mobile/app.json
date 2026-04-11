@@ -25,10 +25,6 @@
       "infoPlist": {
         "UIBackgroundModes": ["audio", "fetch", "remote-notification"],
         "AVAudioSessionCategory": "AVAudioSessionCategoryPlayback",
-        "NSMicrophoneUsageDescription": "Temple TV uses the microphone for audio playback features.",
-        "NSCameraUsageDescription": "Temple TV may use the camera for profile customisation.",
-        "NSPhotoLibraryUsageDescription": "Temple TV may access your photo library for profile photos.",
-        "NSUserTrackingUsageDescription": "This allows Temple TV to deliver personalised sermon recommendations.",
         "ITSAppUsesNonExemptEncryption": false,
         "NSAllowsArbitraryLoads": false
       }

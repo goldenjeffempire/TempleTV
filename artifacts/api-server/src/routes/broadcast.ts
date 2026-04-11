@@ -1,34 +1,70 @@
 import { Router } from "express";
-import { db, broadcastQueueTable } from "@workspace/db";
-import { eq, asc } from "drizzle-orm";
+import {
+  db,
+  broadcastQueueTable,
+  playlistVideosTable,
+  scheduleTable,
+  videosTable,
+} from "@workspace/db";
+import { eq, asc, and } from "drizzle-orm";
 import { randomUUID } from "crypto";
 
 const router = Router();
 
-router.get("/broadcast/current", async (_req, res) => {
-  const items = await db
-    .select()
-    .from(broadcastQueueTable)
-    .where(eq(broadcastQueueTable.isActive, true))
-    .orderBy(asc(broadcastQueueTable.sortOrder));
+type BroadcastItem = typeof broadcastQueueTable.$inferSelect;
+type ScheduleEntry = typeof scheduleTable.$inferSelect;
 
-  if (items.length === 0) {
-    return res.json({
-      item: null,
-      nextItem: null,
-      index: 0,
-      positionSecs: 0,
-      totalSecs: 0,
-      queueLength: 0,
-      progressPercent: 0,
-      syncedAt: new Date().toISOString(),
-      failoverReason: "Broadcast queue is empty.",
-    });
+function parseTimeToMinutes(value: string | null): number | null {
+  if (!value) return null;
+  const [h, m] = value.split(":").map((part) => Number(part));
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  return Math.max(0, Math.min(1439, h * 60 + m));
+}
+
+function getActiveScheduleEntry(entries: ScheduleEntry[], now = new Date()): ScheduleEntry | null {
+  const day = now.getDay();
+  const previousDay = (day + 6) % 7;
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+
+  const activeEntries = entries.filter((entry) => {
+    const start = parseTimeToMinutes(entry.startTime);
+    if (start === null) return false;
+    const end = parseTimeToMinutes(entry.endTime);
+
+    if (end === null || end === start) {
+      return entry.dayOfWeek === day && currentMinutes >= start;
+    }
+
+    if (end > start) {
+      return entry.dayOfWeek === day && currentMinutes >= start && currentMinutes < end;
+    }
+
+    return (
+      (entry.dayOfWeek === day && currentMinutes >= start) ||
+      (entry.dayOfWeek === previousDay && currentMinutes < end)
+    );
+  });
+
+  activeEntries.sort((a, b) => b.startTime.localeCompare(a.startTime));
+  return activeEntries[0] ?? null;
+}
+
+function parseDurationSecs(value: string | null | undefined): number {
+  if (!value) return 1800;
+  const parts = value.split(":").map((part) => Number(part));
+  if (parts.every((part) => Number.isFinite(part))) {
+    if (parts.length === 3) return Math.max(60, parts[0]! * 3600 + parts[1]! * 60 + parts[2]!);
+    if (parts.length === 2) return Math.max(60, parts[0]! * 60 + parts[1]!);
   }
+  const minutesMatch = value.match(/(\d+)\s*m/i);
+  if (minutesMatch?.[1]) return Math.max(60, Number(minutesMatch[1]) * 60);
+  return 1800;
+}
 
+function calculateCurrentFromItems(items: BroadcastItem[]) {
   const playableItems = items.filter((item) => item.durationSecs > 0);
   if (playableItems.length === 0) {
-    return res.json({
+    return {
       item: null,
       nextItem: null,
       index: 0,
@@ -36,9 +72,8 @@ router.get("/broadcast/current", async (_req, res) => {
       totalSecs: 0,
       queueLength: 0,
       progressPercent: 0,
-      syncedAt: new Date().toISOString(),
       failoverReason: "No active broadcast items have a valid duration.",
-    });
+    };
   }
 
   const totalSecs = playableItems.reduce((acc, i) => acc + i.durationSecs, 0);
@@ -62,7 +97,7 @@ router.get("/broadcast/current", async (_req, res) => {
   }
 
   const nextItem = playableItems[(index + 1) % playableItems.length] ?? null;
-  res.json({
+  return {
     item: currentItem,
     nextItem,
     index,
@@ -70,8 +105,138 @@ router.get("/broadcast/current", async (_req, res) => {
     totalSecs,
     queueLength: playableItems.length,
     progressPercent: currentItem.durationSecs > 0 ? Math.round((positionSecs / currentItem.durationSecs) * 100) : 0,
-    syncedAt: new Date().toISOString(),
     failoverReason: null,
+  };
+}
+
+async function getScheduledItems(entry: ScheduleEntry): Promise<BroadcastItem[]> {
+  if (!entry.contentId) return [];
+
+  if (entry.contentType === "video") {
+    const [video] = await db.select().from(videosTable).where(eq(videosTable.id, entry.contentId)).limit(1);
+    if (!video) return [];
+    return [{
+      id: `schedule-${entry.id}-${video.id}`,
+      videoId: video.id,
+      youtubeId: video.youtubeId,
+      title: video.title,
+      thumbnailUrl: video.thumbnailUrl,
+      durationSecs: parseDurationSecs(video.duration),
+      localVideoUrl: video.localVideoUrl,
+      videoSource: video.videoSource,
+      isActive: true,
+      sortOrder: 0,
+      addedAt: new Date(),
+    }];
+  }
+
+  if (entry.contentType === "playlist") {
+    const videos = await db
+      .select()
+      .from(playlistVideosTable)
+      .where(eq(playlistVideosTable.playlistId, entry.contentId))
+      .orderBy(asc(playlistVideosTable.sortOrder));
+
+    return videos.map((video, index) => ({
+      id: `schedule-${entry.id}-${video.id}`,
+      videoId: video.videoId,
+      youtubeId: video.youtubeId,
+      title: video.title,
+      thumbnailUrl: video.thumbnailUrl,
+      durationSecs: parseDurationSecs(video.duration),
+      localVideoUrl: null,
+      videoSource: "youtube",
+      isActive: true,
+      sortOrder: index,
+      addedAt: video.addedAt,
+    }));
+  }
+
+  return [];
+}
+
+router.get("/broadcast/current", async (_req, res) => {
+  const activeScheduleEntries = await db
+    .select()
+    .from(scheduleTable)
+    .where(eq(scheduleTable.isActive, true));
+  const activeSchedule = getActiveScheduleEntry(activeScheduleEntries);
+
+  if (activeSchedule?.contentType === "live") {
+    return res.json({
+      item: null,
+      nextItem: null,
+      index: 0,
+      positionSecs: 0,
+      totalSecs: 0,
+      queueLength: 0,
+      progressPercent: 0,
+      syncedAt: new Date().toISOString(),
+      failoverReason: null,
+      activeSchedule: {
+        id: activeSchedule.id,
+        title: activeSchedule.title,
+        contentType: activeSchedule.contentType,
+        contentId: activeSchedule.contentId,
+        startTime: activeSchedule.startTime,
+        endTime: activeSchedule.endTime,
+      },
+    });
+  }
+
+  if (activeSchedule && (activeSchedule.contentType === "playlist" || activeSchedule.contentType === "video")) {
+    const scheduledItems = await getScheduledItems(activeSchedule);
+    if (scheduledItems.length > 0) {
+      const calculated = calculateCurrentFromItems(scheduledItems);
+      return res.json({
+        ...calculated,
+        syncedAt: new Date().toISOString(),
+        activeSchedule: {
+          id: activeSchedule.id,
+          title: activeSchedule.title,
+          contentType: activeSchedule.contentType,
+          contentId: activeSchedule.contentId,
+          startTime: activeSchedule.startTime,
+          endTime: activeSchedule.endTime,
+        },
+      });
+    }
+  }
+
+  const items = await db
+    .select()
+    .from(broadcastQueueTable)
+    .where(eq(broadcastQueueTable.isActive, true))
+    .orderBy(asc(broadcastQueueTable.sortOrder));
+
+  if (items.length === 0) {
+    return res.json({
+      item: null,
+      nextItem: null,
+      index: 0,
+      positionSecs: 0,
+      totalSecs: 0,
+      queueLength: 0,
+      progressPercent: 0,
+      syncedAt: new Date().toISOString(),
+      failoverReason: "Broadcast queue is empty.",
+      activeSchedule,
+    });
+  }
+
+  const calculated = calculateCurrentFromItems(items);
+  if (!calculated.item) {
+    return res.json({
+      ...calculated,
+      syncedAt: new Date().toISOString(),
+      activeSchedule,
+    });
+  }
+
+  res.json({
+    ...calculated,
+    syncedAt: new Date().toISOString(),
+    activeSchedule,
   });
 });
 

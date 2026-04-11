@@ -24,6 +24,14 @@ export interface BroadcastCurrentResult {
   progressPercent?: number;
   syncedAt?: string;
   failoverReason?: string | null;
+  activeSchedule?: {
+    id: string;
+    title: string;
+    contentType: "live" | "playlist" | "video";
+    contentId: string | null;
+    startTime: string;
+    endTime: string | null;
+  } | null;
 }
 
 export async function checkBroadcastCurrent(): Promise<BroadcastCurrentResult | null> {

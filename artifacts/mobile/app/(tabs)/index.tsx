@@ -133,6 +133,10 @@ export default function WatchScreen() {
   };
 
   const handleBroadcastPress = () => {
+    if (broadcastCurrent?.activeSchedule?.contentType === "live") {
+      handleLivePress();
+      return;
+    }
     const item = broadcastCurrent?.item;
     if (!item) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -169,7 +173,8 @@ export default function WatchScreen() {
   };
 
   const broadcastItem = broadcastCurrent?.item ?? null;
-  const showBroadcast = !liveStatus.isLive && broadcastItem !== null;
+  const showScheduledLive = !liveStatus.isLive && broadcastCurrent?.activeSchedule?.contentType === "live";
+  const showBroadcast = !liveStatus.isLive && (broadcastItem !== null || showScheduledLive);
 
   const teachingsSermons = sermons.filter((s) => s.category === "Teachings").slice(0, 3);
   const specialSermons = sermons.filter((s) => s.category === "Special Programs").slice(0, 3);
@@ -269,6 +274,8 @@ export default function WatchScreen() {
                   <Text style={styles.liveTitle} numberOfLines={2}>
                     {liveStatus.isLive && liveStatus.title
                       ? liveStatus.title
+                      : showScheduledLive
+                      ? broadcastCurrent?.activeSchedule?.title ?? "Scheduled Live Service"
                       : showBroadcast
                       ? broadcastItem?.title ?? "Temple TV Broadcast"
                       : "Temple TV Live"}
@@ -276,6 +283,8 @@ export default function WatchScreen() {
                   <Text style={styles.liveSubtitle}>
                     {liveStatus.isLive
                       ? "Now streaming live — tap to watch"
+                      : showScheduledLive
+                      ? "Scheduled live service — tap to join"
                       : showBroadcast
                       ? "Continuous broadcast — tap to watch"
                       : "Live worship & preaching 24/7"}
@@ -291,7 +300,7 @@ export default function WatchScreen() {
                   >
                     <Feather name="play" size={15} color="#FFF" />
                     <Text style={styles.watchBtnText}>
-                      {liveStatus.isLive ? "Join Live" : showBroadcast ? "Watch Broadcast" : "Watch Stream"}
+                      {liveStatus.isLive || showScheduledLive ? "Join Live" : showBroadcast ? "Watch Broadcast" : "Watch Stream"}
                     </Text>
                   </Pressable>
                 </View>

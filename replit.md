@@ -161,6 +161,7 @@ Root layout (`app/_layout.tsx`) registers a `addNotificationResponseReceivedList
 - **Player failover**: YouTube player retries transient playback errors before showing the external YouTube handoff fallback.
 - **Cast/AirPlay handoff**: Player screen includes a cast button that opens the YouTube app/browser so users can use YouTube’s Chromecast/AirPlay device picker without adding native-only SDKs.
 - **Broadcast engine metadata**: `/api/broadcast/current` now returns `nextItem`, progress percent, sync timestamp, and explicit failover reasons for empty/invalid queues.
+- **Schedule-driven broadcast override**: Active schedule slots now drive the public broadcast endpoint. Live slots interrupt the app into the live player; playlist/video slots temporarily replace the 24/7 queue using the same epoch-synced engine.
 
 ## Features Added (Session 5)
 - **Light platform theme**: Mobile app and admin dashboard now default to a light theme instead of following the device/system dark mode.
@@ -168,3 +169,8 @@ Root layout (`app/_layout.tsx`) registers a `addNotificationResponseReceivedList
 - **Theme visibility**: Admin header shows whether the platform is currently using Light Theme or Auto Midnight and displays the active local time zone.
 
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.
+
+## Features Added (Session 6)
+- **Admin schedule targeting**: Schedule entries for playlist/video content now include selectors for imported playlists and videos so scheduled programming points to real content.
+- **App-wide live interrupt**: Mobile now polls for YouTube live status and scheduled live slots globally, not only on the Watch tab, and opens the live player when a service begins.
+- **App Store permission cleanup**: Removed unused iOS microphone/camera/photo/tracking usage descriptions from `app.json`; retained background audio, fetch, remote notification, and encryption declaration.
