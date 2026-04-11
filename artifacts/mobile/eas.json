@@ -8,19 +8,23 @@
       "developmentClient": true,
       "distribution": "internal",
       "ios": {
-        "simulator": true
+        "simulator": true,
+        "resourceClass": "m-medium"
       },
       "android": {
-        "buildType": "apk"
+        "buildType": "apk",
+        "gradleCommand": ":app:assembleDebug"
       },
       "env": {
-        "APP_ENV": "development"
+        "APP_ENV": "development",
+        "EXPO_PUBLIC_API_URL": "http://localhost:8080"
       }
     },
     "preview": {
       "distribution": "internal",
       "ios": {
-        "simulator": false
+        "simulator": false,
+        "resourceClass": "m-medium"
       },
       "android": {
         "buildType": "apk"
@@ -32,7 +36,8 @@
     "production": {
       "autoIncrement": true,
       "ios": {
-        "image": "latest"
+        "image": "latest",
+        "resourceClass": "m-medium"
       },
       "android": {
         "buildType": "app-bundle"
@@ -47,11 +52,14 @@
       "ios": {
         "appleId": "support@templetv.jctm",
         "ascAppId": "",
-        "appleTeamId": ""
+        "appleTeamId": "",
+        "language": "en-US",
+        "categories": ["Entertainment", "Education"]
       },
       "android": {
         "serviceAccountKeyPath": "./google-service-account.json",
-        "track": "production"
+        "track": "production",
+        "releaseStatus": "completed"
       }
     }
   }

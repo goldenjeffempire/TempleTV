@@ -94,7 +94,18 @@ Faith, Healing, Deliverance, Worship, Prophecy, Teachings, Special Programs
 
 ## Running Services (Workflows)
 - **Start application** — Expo dev server on port 18115 (mobile app)
-- **API Server** — Express API server on port 8080 (YouTube RSS proxy for web; falls back to RSS when YouTube quota is exceeded)
+- **API Server** — Express API server on port 8080 (YouTube RSS proxy for web; falls back to RSS when YouTube quota is exceeded via `fetchVideosFromRss()`)
+
+## Bug Fixes Applied (Session 2)
+- **Channel ID fix**: `JCTM_CHANNEL_ID` in `data/sermons.ts` corrected to `UCPFFvkE-KGpR37qJgvYriJg` everywhere (was wrong before)
+- **API server `/videos` route**: Added `fetchVideosFromRss()` fallback so it returns 200 + RSS data when YouTube quota exceeded (was returning 502)
+- **`useYouTubeChannel` rewrite**: On web, tries API server first, then falls directly to YouTube RSS. On native, goes directly to RSS without going through server.
+- **`services/youtube.ts`**: `checkLiveStatus` now uses API server on web for better live detection reliability
+- **`app/_layout.tsx`**: Added `expo-av` audio session setup (`staysActiveInBackground: true`, `playsInSilentModeIOS: true`) for iOS background audio
+- **`app.json`**: Added `expo-av` plugin, complete `infoPlist` with `AVAudioSessionCategory`, `ITSAppUsesNonExemptEncryption: false`, and removed arbitrary loads
+- **`eas.json`**: Added `appVersionSource: local`, iOS/Android submit config with categories (Entertainment, Education)
+- **`player.tsx`**: Moved `pointerEvents` from deprecated prop to `style` to eliminate RN 0.81 warning
+- **`YoutubePlayer.native.tsx`**: Moved `pointerEvents` to `style` on `Animated.View`
 
 ## Key Commands
 

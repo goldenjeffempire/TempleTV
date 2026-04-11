@@ -202,8 +202,7 @@ export function YoutubePlayer({
         />
 
         <Animated.View
-          style={[styles.transitionOverlay, { opacity: transitionOpacity }]}
-          pointerEvents="none"
+          style={[styles.transitionOverlay, { opacity: transitionOpacity, pointerEvents: "none" }]}
         >
           {thumb && (
             <Image source={{ uri: thumb }} style={styles.thumbnail} resizeMode="cover" />

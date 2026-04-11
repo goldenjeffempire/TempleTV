@@ -19,7 +19,30 @@ import { PlayerProvider } from "@/context/PlayerContext";
 
 SplashScreen.preventAutoHideAsync();
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      retry: 2,
+      staleTime: 5 * 60 * 1000,
+    },
+  },
+});
+
+async function setupAudioSession() {
+  if (Platform.OS === "web") return;
+  try {
+    const { Audio } = await import("expo-av");
+    await Audio.setAudioModeAsync({
+      allowsRecordingIOS: false,
+      staysActiveInBackground: true,
+      playsInSilentModeIOS: true,
+      shouldDuckAndroid: true,
+      playThroughEarpieceAndroid: false,
+    });
+  } catch {
+    // Non-critical — audio session setup failure won't break the app
+  }
+}
 
 function RootLayoutNav() {
   const notifListenerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -74,6 +97,9 @@ export default function RootLayout() {
   useEffect(() => {
     if (fontsLoaded || fontError) {
       SplashScreen.hideAsync();
+
+      // Set up audio session for background playback
+      setupAudioSession();
 
       if (Platform.OS !== "web") {
         import("@/services/notifications")

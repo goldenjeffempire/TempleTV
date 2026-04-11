@@ -212,4 +212,4 @@ export const CATEGORIES = [
   "Special Programs",
 ] as const;
 
-export const JCTM_CHANNEL_ID = "UCsXVk37biltHxV1aGl-AAxg";
+export const JCTM_CHANNEL_ID = "UCPFFvkE-KGpR37qJgvYriJg";

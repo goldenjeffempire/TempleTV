@@ -232,6 +232,46 @@ async function fetchViaRss2Json(rssUrl: string): Promise<string | null> {
   }
 }
 
+async function fetchVideosFromRss(): Promise<VideoItem[] | null> {
+  const DIRECT_RSS_URLS = [
+    `https://www.youtube.com/feeds/videos.xml?channel_id=${CHANNEL_ID}`,
+    `https://www.youtube.com/feeds/videos.xml?user=${CHANNEL_HANDLE}`,
+  ];
+
+  let xml: string | null = null;
+  for (const url of DIRECT_RSS_URLS) {
+    xml = await fetchDirect(url);
+    if (xml) break;
+  }
+  if (!xml) xml = await fetchViaAllOrigins(DIRECT_RSS_URLS[0]!);
+  if (!xml) xml = await fetchViaRss2Json(DIRECT_RSS_URLS[0]!);
+  if (!xml) return null;
+
+  const videos: VideoItem[] = [];
+  const entryPattern = /<entry>([\s\S]*?)<\/entry>/g;
+  let match: RegExpExecArray | null;
+  while ((match = entryPattern.exec(xml)) !== null) {
+    const entry = match[1];
+    const videoIdMatch = entry.match(/<yt:videoId>([^<]+)<\/yt:videoId>/);
+    if (!videoIdMatch) continue;
+    const videoId = videoIdMatch[1].trim();
+    const titleMatch = entry.match(/<title>([^<]+)<\/title>/i);
+    const title = titleMatch ? titleMatch[1].replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").trim() : "";
+    const publishedMatch = entry.match(/<published>([^<]+)<\/published>/i);
+    const published = publishedMatch ? publishedMatch[1].trim() : "";
+    const thumbMatch = entry.match(/<media:thumbnail[^>]+url="([^"]+)"/i);
+    const thumbnailUrl = thumbMatch ? thumbMatch[1] : `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
+    const descMatch = entry.match(/<media:description[^>]*>([\s\S]*?)<\/media:description>/i);
+    const description = descMatch ? descMatch[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1").trim() : "";
+    const nameMatch = entry.match(/<name>([^<]+)<\/name>/i);
+    const channelName = nameMatch ? nameMatch[1].trim() : "Temple TV JCTM";
+    if (videoId && title) {
+      videos.push({ videoId, title, description, publishedAt: published, thumbnailUrl, channelName, duration: "", viewCount: "0" });
+    }
+  }
+  return videos.length > 0 ? videos : null;
+}
+
 router.get("/youtube/videos", async (req, res) => {
   try {
     if (videosCache && Date.now() - videosCache.timestamp < CACHE_MS) {
@@ -239,14 +279,19 @@ router.get("/youtube/videos", async (req, res) => {
       return res.json({ videos: videosCache.videos, total: videosCache.videos.length });
     }
 
-    const videos = await fetchAllVideosFromApi();
+    let videos = await fetchAllVideosFromApi();
+
     if (!videos || videos.length === 0) {
-      return res.status(502).json({ error: "Could not fetch videos from YouTube API." });
+      videos = await fetchVideosFromRss();
+    }
+
+    if (!videos || videos.length === 0) {
+      return res.status(502).json({ error: "Could not fetch videos from YouTube." });
     }
 
     videosCache = { videos, timestamp: Date.now() };
     res.setHeader("Cache-Control", "public, max-age=600");
-    res.setHeader("X-Source", "youtube-api");
+    res.setHeader("X-Source", videos[0]?.duration ? "youtube-api" : "rss");
     return res.json({ videos, total: videos.length });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : "Unknown error";

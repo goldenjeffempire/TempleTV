@@ -157,6 +157,20 @@ function rssVideoToSermon(v: RssVideo): Sermon {
   };
 }
 
+async function fetchRssDirect(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(10000),
+      headers: { Accept: "application/xml, text/xml, */*" },
+    });
+    if (!res.ok) return null;
+    const text = await res.text();
+    return text.includes("<entry>") ? text : null;
+  } catch {
+    return null;
+  }
+}
+
 interface UseYouTubeChannelResult {
   sermons: Sermon[];
   loading: boolean;
@@ -175,22 +189,27 @@ export function useYouTubeChannel(): UseYouTubeChannelResult {
   const fetchVideos = useCallback(async (force = false) => {
     try {
       if (!force) {
-        const cached = await AsyncStorage.getItem(STORAGE_KEYS.rssCache);
-        if (cached) {
-          const { data, timestamp } = JSON.parse(cached) as { data: Sermon[]; timestamp: number };
-          const ageMs = Date.now() - timestamp;
-          if (ageMs < APP_CONFIG.rssCacheMinutes * 60 * 1000) {
-            setSermons(data);
-            setIsFromRss(true);
-            setLoading(false);
-            return;
+        try {
+          const cached = await AsyncStorage.getItem(STORAGE_KEYS.rssCache);
+          if (cached) {
+            const { data, timestamp } = JSON.parse(cached) as { data: Sermon[]; timestamp: number };
+            const ageMs = Date.now() - timestamp;
+            if (ageMs < APP_CONFIG.rssCacheMinutes * 60 * 1000 && data.length > 0) {
+              setSermons(data);
+              setIsFromRss(true);
+              setLoading(false);
+              return;
+            }
           }
+        } catch {
+          // Cache read failed — continue to fetch
         }
       }
 
       const domain = process.env.EXPO_PUBLIC_DOMAIN;
       const apiBase = domain ? `https://${domain}` : "";
 
+      // On web, try the API server first (which includes RSS fallback)
       if (Platform.OS === "web" && apiBase) {
         try {
           const res = await fetch(`${apiBase}/api/youtube/videos`, {
@@ -203,49 +222,53 @@ export function useYouTubeChannel(): UseYouTubeChannelResult {
               setSermons(allSermons);
               setIsFromRss(true);
               setError(null);
-              await AsyncStorage.setItem(
-                STORAGE_KEYS.rssCache,
-                JSON.stringify({ data: allSermons, timestamp: Date.now() })
-              );
+              try {
+                await AsyncStorage.setItem(
+                  STORAGE_KEYS.rssCache,
+                  JSON.stringify({ data: allSermons, timestamp: Date.now() })
+                );
+              } catch {}
               setLoading(false);
               return;
             }
           }
         } catch {
-          // fall through to RSS
+          // Fall through to direct RSS
         }
       }
 
-      const rssEndpoint =
-        Platform.OS === "web" && apiBase
-          ? `${apiBase}/api/youtube/rss`
-          : APP_CONFIG.rssUrl;
+      // Direct RSS fetch (works on both native and web)
+      const rssUrls = [
+        APP_CONFIG.rssUrl,
+        ...(Platform.OS === "web" && apiBase ? [`${apiBase}/api/youtube/rss`] : []),
+      ];
 
-      const res = await fetch(rssEndpoint, {
-        signal: AbortSignal.timeout(8000),
-        headers: { Accept: "application/xml, text/xml, */*" },
-      });
+      let xml: string | null = null;
+      for (const url of rssUrls) {
+        xml = await fetchRssDirect(url);
+        if (xml) break;
+      }
 
-      if (!res.ok) throw new Error(`RSS fetch failed: ${res.status}`);
+      if (!xml) throw new Error("Could not load sermons. Please check your connection.");
 
-      const xml = await res.text();
       const videos = parseYouTubeRss(xml);
-
-      if (videos.length === 0) throw new Error("No videos found in RSS feed");
+      if (videos.length === 0) throw new Error("No videos found in feed.");
 
       const rssSermons = videos.map(rssVideoToSermon);
       setSermons(rssSermons);
       setIsFromRss(true);
       setError(null);
 
-      await AsyncStorage.setItem(
-        STORAGE_KEYS.rssCache,
-        JSON.stringify({ data: rssSermons, timestamp: Date.now() })
-      );
+      try {
+        await AsyncStorage.setItem(
+          STORAGE_KEYS.rssCache,
+          JSON.stringify({ data: rssSermons, timestamp: Date.now() })
+        );
+      } catch {}
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Network error";
       setError(message);
-      setSermons(SERMONS);
+      // Keep showing fallback sermons (don't clear them)
       setIsFromRss(false);
     } finally {
       setLoading(false);
