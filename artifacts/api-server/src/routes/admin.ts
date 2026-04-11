@@ -1092,49 +1092,55 @@ router.get("/admin/analytics", async (req, res) => {
   }
 });
 
-router.get("/admin/live", async (req, res) => {
+router.get("/admin/live", async (_req, res) => {
   try {
-    let isLive = false;
-    let videoId: string | null = null;
-    let title: string | null = null;
-    let startedAt: string | null = null;
-    let viewerCount = 0;
+    let ytLive = false;
+    let ytVideoId: string | null = null;
+    let ytTitle: string | null = null;
 
-    const liveOverride = await getActiveLiveOverride();
+    const [liveOverride, deviceCountResult] = await Promise.all([
+      getActiveLiveOverride(),
+      db.select({ count: count() }).from(pushTokensTable),
+    ]);
+    const deviceCount = Number(deviceCountResult[0]?.count ?? 0);
 
     try {
       const oembedRes = await fetch(
         "https://www.youtube.com/oembed?url=https://www.youtube.com/@templetvjctm/live&format=json",
-        { signal: AbortSignal.timeout(5000) }
+        { signal: AbortSignal.timeout(4000) }
       );
       if (oembedRes.ok) {
         const data = (await oembedRes.json()) as { title?: string; thumbnail_url?: string };
         const vidMatch = (data.thumbnail_url ?? "").match(/\/vi\/([^/]+)\//);
-        isLive = !!(vidMatch?.[1] && data.title);
-        if (isLive) {
-          videoId = vidMatch![1];
-          title = data.title ?? null;
+        ytLive = !!(vidMatch?.[1] && data.title);
+        if (ytLive) {
+          ytVideoId = vidMatch![1];
+          ytTitle = data.title ?? null;
         }
       }
     } catch {}
 
-    if (liveOverride) {
-      isLive = true;
-      title = liveOverride.title;
-      startedAt = liveOverride.startedAt.toISOString();
-    }
+    const isLive = !!(liveOverride || ytLive);
+    const elapsedSecs = liveOverride
+      ? Math.floor((Date.now() - liveOverride.startedAt.getTime()) / 1000)
+      : null;
+    const remainingSecs = liveOverride?.endsAt
+      ? Math.max(0, Math.floor((liveOverride.endsAt.getTime() - Date.now()) / 1000))
+      : null;
 
     res.json({
       isLive,
-      videoId,
-      title,
-      startedAt,
-      viewerCount,
+      deviceCount,
+      ytLive,
+      ytVideoId,
+      ytTitle,
       liveOverride: liveOverride ? {
         id: liveOverride.id,
         title: liveOverride.title,
         startedAt: liveOverride.startedAt.toISOString(),
         endsAt: liveOverride.endsAt?.toISOString() ?? null,
+        elapsedSecs,
+        remainingSecs,
       } : null,
     });
   } catch (err) {
@@ -1169,7 +1175,7 @@ router.post("/admin/live/override/start", async (req, res) => {
 
     let pushResult = { sent: 0, failed: 0 };
     if (notify) {
-      const tokenRows = await db.select().from(pushTokensTable).where(eq(pushTokensTable.isActive, true));
+      const tokenRows = await db.select().from(pushTokensTable);
       pushResult = await sendExpoPushNotifications(
         tokenRows.map((row) => row.token),
         "Temple TV is live",
@@ -1202,6 +1208,26 @@ router.post("/admin/live/override/stop", async (_req, res) => {
       .set({ isActive: false, endsAt: new Date() })
       .where(eq(liveOverridesTable.id, active.id));
     res.json({ ok: true, stopped: 1 });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/admin/live/override/extend", async (req, res) => {
+  try {
+    const { extraMinutes = 30 } = req.body as { extraMinutes?: number };
+    const safe = Number.isFinite(extraMinutes) ? Math.max(5, Math.min(240, extraMinutes)) : 30;
+    const active = await getActiveLiveOverride();
+    if (!active) return res.status(404).json({ error: "No active live override" });
+    const base = active.endsAt && active.endsAt > new Date() ? active.endsAt : new Date();
+    const newEndsAt = new Date(base.getTime() + safe * 60 * 1000);
+    const [updated] = await db
+      .update(liveOverridesTable)
+      .set({ endsAt: newEndsAt })
+      .where(eq(liveOverridesTable.id, active.id))
+      .returning();
+    res.json({ ok: true, override: updated });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });

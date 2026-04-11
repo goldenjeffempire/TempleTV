@@ -4,7 +4,15 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { useListAdminVideos } from "@workspace/api-client-react";
 import {
@@ -28,8 +36,15 @@ import {
   ListVideo,
   AlertCircle,
   Headphones,
+  SmartphoneIcon,
+  Timer,
+  Bell,
+  BellOff,
+  XCircle,
+  CheckCircle2,
 } from "lucide-react";
 
+/* ─────────────────────────────── types ──────────────────────────── */
 type BroadcastItem = {
   id: string;
   youtubeId: string;
@@ -50,7 +65,12 @@ type CurrentBroadcast = {
   totalSecs: number;
   queueLength: number;
   progressPercent?: number;
-  liveOverride?: { id: string; title: string; startedAt: string; endsAt: string | null } | null;
+  liveOverride?: {
+    id: string;
+    title: string;
+    startedAt: string;
+    endsAt: string | null;
+  } | null;
   failoverReason?: string | null;
 };
 
@@ -67,6 +87,23 @@ type GuideItem = {
   videoSource: string;
 };
 
+type LiveStatus = {
+  isLive: boolean;
+  deviceCount: number;
+  ytLive: boolean;
+  ytVideoId: string | null;
+  ytTitle: string | null;
+  liveOverride: {
+    id: string;
+    title: string;
+    startedAt: string;
+    endsAt: string | null;
+    elapsedSecs: number | null;
+    remainingSecs: number | null;
+  } | null;
+};
+
+/* ─────────────────────────────── helpers ────────────────────────── */
 function fmtDuration(secs: number): string {
   const h = Math.floor(secs / 3600);
   const m = Math.floor((secs % 3600) / 60);
@@ -74,6 +111,14 @@ function fmtDuration(secs: number): string {
   if (h > 0) return `${h}h ${m}m`;
   if (m > 0) return `${m}m ${s}s`;
   return `${s}s`;
+}
+
+function fmtHMS(secs: number): string {
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = Math.floor(secs % 60);
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
 function fmtTotalTime(secs: number): string {
@@ -84,10 +129,19 @@ function fmtTotalTime(secs: number): string {
 }
 
 function fmtWallClock(ms: number): string {
-  const d = new Date(ms);
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+function fmtTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function fmtEndPreview(durationMinutes: number): string {
+  const end = new Date(Date.now() + durationMinutes * 60 * 1000);
+  return end.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+/* ─────────────────────────────── LiveClock ─────────────────────── */
 function LiveClock() {
   const [time, setTime] = useState(new Date());
   useEffect(() => {
@@ -95,39 +149,85 @@ function LiveClock() {
     return () => clearInterval(t);
   }, []);
   return (
-    <span className="font-mono text-sm">
+    <span className="font-mono text-sm tabular-nums">
       {time.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
     </span>
   );
 }
 
+/* ─────────────────────────────── presets ───────────────────────── */
+const SERVICE_PRESETS = [
+  { label: "Morning Service", icon: "☀️" },
+  { label: "Evening Service", icon: "🌙" },
+  { label: "Youth Service", icon: "✨" },
+  { label: "Prayer Meeting", icon: "🙏" },
+  { label: "Special Program", icon: "🎙️" },
+  { label: "Revival / Conference", icon: "🔥" },
+];
+
+const DURATION_PRESETS = [
+  { label: "30 min", value: 30 },
+  { label: "1 hr", value: 60 },
+  { label: "1.5 hr", value: 90 },
+  { label: "2 hr", value: 120 },
+  { label: "3 hr", value: 180 },
+  { label: "4 hr", value: 240 },
+];
+
+const EXTEND_PRESETS = [
+  { label: "+ 15 min", value: 15 },
+  { label: "+ 30 min", value: 30 },
+  { label: "+ 1 hr", value: 60 },
+];
+
+/* ─────────────────────────────── component ─────────────────────── */
 export default function Broadcast() {
   const [queue, setQueue] = useState<BroadcastItem[]>([]);
   const [current, setCurrent] = useState<CurrentBroadcast | null>(null);
   const [guide, setGuide] = useState<GuideItem[]>([]);
+  const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
   const [loading, setLoading] = useState(true);
+
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [showGoLiveDialog, setShowGoLiveDialog] = useState(false);
+  const [showEndDialog, setShowEndDialog] = useState(false);
+
   const [addSearch, setAddSearch] = useState("");
   const [addingId, setAddingId] = useState<string | null>(null);
   const [editingDuration, setEditingDuration] = useState<string | null>(null);
   const [durationInput, setDurationInput] = useState("");
-  const [goLiveTitle, setGoLiveTitle] = useState("");
-  const [goLiveHours, setGoLiveHours] = useState("2");
+
+  // Go Live form state
+  const [glTitle, setGlTitle] = useState("");
+  const [glDuration, setGlDuration] = useState(120);
+  const [glCustomDuration, setGlCustomDuration] = useState("");
+  const [glUseCustom, setGlUseCustom] = useState(false);
+  const [glNotify, setGlNotify] = useState(true);
+  const [glPreset, setGlPreset] = useState<string | null>(null);
   const [goingLive, setGoingLive] = useState(false);
   const [endingLive, setEndingLive] = useState(false);
+  const [extendingLive, setExtendingLive] = useState(false);
+  const [sendingNotif, setSendingNotif] = useState(false);
+
+  // Live countdown ticker
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Local position ticker for on-air panel
   const [livePosition, setLivePosition] = useState(0);
   const tickerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const { toast } = useToast();
 
+  const { toast } = useToast();
   const { data: videoLibrary } = useListAdminVideos({ search: addSearch, limit: 50 });
 
-  const loadQueue = useCallback(async () => {
+  /* ── data loading ────────────────────────────────────────────── */
+  const loadAll = useCallback(async () => {
     try {
-      const [qRes, cRes, gRes] = await Promise.all([
+      const [qRes, cRes, gRes, lRes] = await Promise.all([
         fetch("/api/admin/broadcast"),
         fetch("/api/broadcast/current"),
         fetch("/api/broadcast/guide"),
+        fetch("/api/admin/live"),
       ]);
       if (qRes.ok) setQueue(await qRes.json());
       if (cRes.ok) {
@@ -139,28 +239,149 @@ export default function Broadcast() {
         const g = await gRes.json();
         setGuide(g.items ?? []);
       }
+      if (lRes.ok) {
+        const ls = await lRes.json();
+        setLiveStatus(ls);
+        if (ls.liveOverride?.remainingSecs != null) {
+          setCountdown(ls.liveOverride.remainingSecs);
+        }
+      }
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    loadQueue();
-    const interval = setInterval(loadQueue, 15000);
+    loadAll();
+    const interval = setInterval(loadAll, 15000);
     return () => clearInterval(interval);
-  }, [loadQueue]);
+  }, [loadAll]);
 
+  // Position ticker
   useEffect(() => {
     if (tickerRef.current) clearInterval(tickerRef.current);
     if (current?.item && !current.liveOverride) {
-      tickerRef.current = setInterval(() => {
-        setLivePosition((p) => p + 1);
-      }, 1000);
+      tickerRef.current = setInterval(() => setLivePosition((p) => p + 1), 1000);
     }
-    return () => {
-      if (tickerRef.current) clearInterval(tickerRef.current);
-    };
-  }, [current?.item?.id, current?.liveOverride]);
+    return () => { if (tickerRef.current) clearInterval(tickerRef.current); };
+  }, [current?.item?.id, !!current?.liveOverride]);
+
+  // Countdown ticker for live override
+  useEffect(() => {
+    if (countdownRef.current) clearInterval(countdownRef.current);
+    if (liveStatus?.liveOverride?.remainingSecs != null) {
+      countdownRef.current = setInterval(() => setCountdown((c) => (c !== null ? Math.max(0, c - 1) : null)), 1000);
+    } else {
+      setCountdown(null);
+    }
+    return () => { if (countdownRef.current) clearInterval(countdownRef.current); };
+  }, [liveStatus?.liveOverride?.id]);
+
+  /* ── actions ─────────────────────────────────────────────────── */
+  const handleGoLive = async () => {
+    const finalTitle = glTitle.trim();
+    if (!finalTitle) {
+      toast({ title: "Please enter a broadcast title", variant: "destructive" });
+      return;
+    }
+    const mins = glUseCustom
+      ? Math.max(5, Math.min(480, parseInt(glCustomDuration, 10) || 120))
+      : glDuration;
+
+    setGoingLive(true);
+    try {
+      const res = await fetch("/api/admin/live/override/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: finalTitle, durationMinutes: mins, notify: glNotify }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as any).error ?? "Failed to go live");
+      }
+      const data = await res.json();
+      toast({
+        title: "🔴 You're LIVE!",
+        description: glNotify && data.push?.sent > 0
+          ? `Push notifications sent to ${data.push.sent} device${data.push.sent !== 1 ? "s" : ""}`
+          : "Live broadcast started — no push tokens registered yet",
+      });
+      setShowGoLiveDialog(false);
+      await loadAll();
+    } catch (err) {
+      toast({ title: err instanceof Error ? err.message : "Failed to go live", variant: "destructive" });
+    } finally {
+      setGoingLive(false);
+    }
+  };
+
+  const handleEndLive = async () => {
+    setEndingLive(true);
+    try {
+      const res = await fetch("/api/admin/live/override/stop", { method: "POST" });
+      if (!res.ok) throw new Error("Failed to end broadcast");
+      toast({ title: "Live broadcast ended", description: "Automatic queue will resume." });
+      setShowEndDialog(false);
+      setCountdown(null);
+      await loadAll();
+    } catch {
+      toast({ title: "Failed to end broadcast", variant: "destructive" });
+    } finally {
+      setEndingLive(false);
+    }
+  };
+
+  const handleExtend = async (extraMinutes: number) => {
+    setExtendingLive(true);
+    try {
+      const res = await fetch("/api/admin/live/override/extend", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ extraMinutes }),
+      });
+      if (!res.ok) throw new Error("Failed to extend");
+      const data = await res.json();
+      const newEndsAt = data.override?.endsAt;
+      toast({
+        title: `Extended by ${extraMinutes} min`,
+        description: newEndsAt
+          ? `New end time: ${fmtTime(newEndsAt)}`
+          : undefined,
+      });
+      await loadAll();
+    } catch {
+      toast({ title: "Failed to extend broadcast", variant: "destructive" });
+    } finally {
+      setExtendingLive(false);
+    }
+  };
+
+  const handleNotifyViewers = async () => {
+    const lo = liveStatus?.liveOverride;
+    if (!lo) return;
+    setSendingNotif(true);
+    try {
+      const res = await fetch("/api/admin/notifications/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: "Temple TV is LIVE now!",
+          body: lo.title,
+          type: "live_service",
+        }),
+      });
+      if (!res.ok) throw new Error("Failed");
+      const data = await res.json();
+      toast({
+        title: "Notifications sent",
+        description: `Sent to ${data.sent ?? 0} device${(data.sent ?? 0) !== 1 ? "s" : ""}`,
+      });
+    } catch {
+      toast({ title: "Failed to send notifications", variant: "destructive" });
+    } finally {
+      setSendingNotif(false);
+    }
+  };
 
   const addToQueue = async (video: { id: string; youtubeId: string; title: string; thumbnailUrl: string; videoSource?: string; localVideoUrl?: string | null }) => {
     setAddingId(video.id);
@@ -181,7 +402,7 @@ export default function Broadcast() {
       if (!res.ok) throw new Error("Failed to add");
       toast({ title: "Added to broadcast queue" });
       setShowAddDialog(false);
-      await loadQueue();
+      await loadAll();
     } catch {
       toast({ title: "Failed to add video", variant: "destructive" });
     } finally {
@@ -193,7 +414,7 @@ export default function Broadcast() {
     try {
       await fetch(`/api/admin/broadcast/${id}`, { method: "DELETE" });
       toast({ title: "Removed from queue" });
-      await loadQueue();
+      await loadAll();
     } catch {
       toast({ title: "Failed to remove", variant: "destructive" });
     }
@@ -211,7 +432,7 @@ export default function Broadcast() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ orderedIds: newQueue.map((i) => i.id) }),
       });
-      await loadQueue();
+      await loadAll();
     } catch {
       toast({ title: "Failed to reorder", variant: "destructive" });
     }
@@ -231,62 +452,37 @@ export default function Broadcast() {
       });
       toast({ title: "Duration updated" });
       setEditingDuration(null);
-      await loadQueue();
+      await loadAll();
     } catch {
-      toast({ title: "Failed to update duration", variant: "destructive" });
+      toast({ title: "Failed to update", variant: "destructive" });
     }
   };
 
-  const handleGoLive = async () => {
-    if (!goLiveTitle.trim()) {
-      toast({ title: "Broadcast title is required", variant: "destructive" });
-      return;
-    }
-    setGoingLive(true);
-    try {
-      const hours = parseFloat(goLiveHours) || 2;
-      const durationMinutes = Math.round(hours * 60);
-      const res = await fetch("/api/admin/live/override/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: goLiveTitle.trim(), durationMinutes, notify: true }),
-      });
-      if (!res.ok) throw new Error("Failed to go live");
-      toast({ title: "Station is now LIVE!" });
-      setShowGoLiveDialog(false);
-      setGoLiveTitle("");
-      await loadQueue();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed";
-      toast({ title: msg, variant: "destructive" });
-    } finally {
-      setGoingLive(false);
-    }
-  };
-
-  const handleEndLive = async () => {
-    setEndingLive(true);
-    try {
-      await fetch("/api/admin/live/override/stop", { method: "POST" });
-      toast({ title: "Live broadcast ended" });
-      await loadQueue();
-    } catch {
-      toast({ title: "Failed to end live broadcast", variant: "destructive" });
-    } finally {
-      setEndingLive(false);
-    }
-  };
-
+  /* ── derived values ───────────────────────────────────────────── */
   const totalSecs = queue.reduce((acc, i) => acc + i.durationSecs, 0);
-  const isOnAir = !!(current?.item || current?.liveOverride);
+  const isOnAir = !!liveStatus?.isLive;
+  const hasLiveOverride = !!liveStatus?.liveOverride;
+  const lo = liveStatus?.liveOverride;
   const currentProgress = current?.item
     ? Math.min(100, (livePosition / current.item.durationSecs) * 100)
     : 0;
   const remaining = current?.item ? Math.max(0, current.item.durationSecs - livePosition) : 0;
+  const liveDurationSecs = lo
+    ? Math.max(0, new Date(lo.endsAt ?? lo.startedAt).getTime() - new Date(lo.startedAt).getTime()) / 1000
+    : 0;
+  const liveProgress = lo && liveDurationSecs > 0 && countdown !== null
+    ? Math.min(100, Math.max(0, ((liveDurationSecs - countdown) / liveDurationSecs) * 100))
+    : 0;
+
+  /* ── effective duration for go live dialog ────────────────────── */
+  const effectiveDuration = glUseCustom
+    ? Math.max(5, parseInt(glCustomDuration, 10) || 120)
+    : glDuration;
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-start justify-between">
+    <div className="space-y-5">
+      {/* ── Header ── */}
+      <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
             <Tv className="w-6 h-6" />
@@ -296,66 +492,186 @@ export default function Broadcast() {
             24/7 continuous channel — manage your on-air lineup and live events
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap justify-end">
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-muted/50 border text-sm">
-            <div className={`w-2 h-2 rounded-full ${isOnAir ? "bg-red-500 animate-pulse" : "bg-muted-foreground/40"}`} />
+            <div className={`w-2 h-2 rounded-full flex-shrink-0 ${isOnAir ? "bg-red-500 animate-pulse" : "bg-muted-foreground/40"}`} />
             <LiveClock />
+            {liveStatus?.deviceCount != null && liveStatus.deviceCount > 0 && (
+              <span className="text-xs text-muted-foreground border-l pl-2 ml-1">
+                <SmartphoneIcon className="w-3 h-3 inline mr-1" />{liveStatus.deviceCount}
+              </span>
+            )}
           </div>
-          <Button size="sm" variant="outline" onClick={loadQueue}>
+          <Button size="sm" variant="outline" onClick={loadAll}>
             <RefreshCw className="w-4 h-4" />
           </Button>
-          {current?.liveOverride ? (
-            <Button size="sm" variant="destructive" onClick={handleEndLive} disabled={endingLive}>
-              {endingLive ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Signal className="w-4 h-4 mr-1" />}
+          {hasLiveOverride ? (
+            <Button size="sm" variant="destructive" onClick={() => setShowEndDialog(true)}>
+              <Signal className="w-4 h-4 mr-1.5" />
               End Live
             </Button>
           ) : (
-            <Button size="sm" className="bg-red-600 hover:bg-red-700 text-white" onClick={() => setShowGoLiveDialog(true)}>
-              <Mic className="w-4 h-4 mr-1" />
+            <Button
+              size="sm"
+              className="bg-red-600 hover:bg-red-700 text-white shadow-sm"
+              onClick={() => setShowGoLiveDialog(true)}
+            >
+              <Mic className="w-4 h-4 mr-1.5" />
               Go Live
             </Button>
           )}
           <Button size="sm" onClick={() => setShowAddDialog(true)}>
-            <Plus className="w-4 h-4 mr-1" />
+            <Plus className="w-4 h-4 mr-1.5" />
             Add Video
           </Button>
         </div>
       </div>
 
-      {current?.liveOverride && (
-        <div className="rounded-xl border-2 border-red-500/40 bg-red-500/5 p-4">
-          <div className="flex items-center gap-2 mb-2">
-            <div className="flex items-center gap-1.5 bg-red-500 text-white px-2.5 py-1 rounded-full text-xs font-bold animate-pulse">
-              <Signal className="w-3 h-3" />
-              LIVE ON AIR
-            </div>
-            <span className="text-sm font-medium">{current.liveOverride.title}</span>
+      {/* ── YouTube live detection banner ── */}
+      {liveStatus?.ytLive && !hasLiveOverride && (
+        <div className="rounded-xl border border-yellow-500/40 bg-yellow-500/5 p-4 flex items-center gap-3">
+          <Youtube className="w-5 h-5 text-yellow-600 dark:text-yellow-400 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-yellow-700 dark:text-yellow-300">YouTube Live Detected</p>
+            <p className="text-xs text-muted-foreground truncate">{liveStatus.ytTitle}</p>
           </div>
-          <div className="flex items-center gap-3 text-xs text-muted-foreground">
-            <span>Started {new Date(current.liveOverride.startedAt).toLocaleTimeString()}</span>
-            {current.liveOverride.endsAt && (
-              <span>· Ends {new Date(current.liveOverride.endsAt).toLocaleTimeString()}</span>
+          <Button size="sm" variant="outline" className="border-yellow-500/40 text-yellow-700 dark:text-yellow-300"
+            onClick={() => {
+              setGlTitle(liveStatus.ytTitle ?? "Temple TV Live Service");
+              setShowGoLiveDialog(true);
+            }}>
+            <Signal className="w-3.5 h-3.5 mr-1" />
+            Go Live Now
+          </Button>
+        </div>
+      )}
+
+      {/* ── LIVE STATUS PANEL ── */}
+      {hasLiveOverride && lo && (
+        <div className="rounded-xl border-2 border-red-500/50 bg-red-500/5 overflow-hidden">
+          {/* Top bar */}
+          <div className="flex items-center justify-between px-4 py-2.5 bg-red-500/10 border-b border-red-500/20">
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 bg-red-500 text-white px-2.5 py-1 rounded-full text-xs font-bold tracking-wide">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-white"></span>
+                </span>
+                LIVE ON AIR
+              </div>
+              <span className="text-sm font-semibold truncate max-w-xs">{lo.title}</span>
+            </div>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              {liveStatus?.deviceCount != null && (
+                <span className="flex items-center gap-1">
+                  <SmartphoneIcon className="w-3.5 h-3.5" />
+                  {liveStatus.deviceCount} registered device{liveStatus.deviceCount !== 1 ? "s" : ""}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Main content */}
+          <div className="p-4 space-y-3">
+            {/* Times row */}
+            <div className="flex items-center gap-6 text-sm">
+              <div>
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">Started</p>
+                <p className="font-mono font-semibold">{fmtTime(lo.startedAt)}</p>
+              </div>
+              {lo.endsAt && (
+                <div>
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">Scheduled End</p>
+                  <p className="font-mono font-semibold">{fmtTime(lo.endsAt)}</p>
+                </div>
+              )}
+              {lo.elapsedSecs != null && (
+                <div>
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">On Air For</p>
+                  <p className="font-mono font-semibold text-green-600 dark:text-green-400">{fmtHMS(lo.elapsedSecs)}</p>
+                </div>
+              )}
+              {countdown !== null && (
+                <div>
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">Remaining</p>
+                  <p className={`font-mono font-bold tabular-nums ${countdown < 300 ? "text-red-500" : "text-foreground"}`}>
+                    {fmtHMS(countdown)}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Progress bar */}
+            {lo.endsAt && liveDurationSecs > 0 && (
+              <div className="space-y-1">
+                <div className="h-2 bg-red-500/15 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-red-500 rounded-full transition-all duration-1000"
+                    style={{ width: `${liveProgress}%` }}
+                  />
+                </div>
+                <div className="flex justify-between text-[10px] text-muted-foreground">
+                  <span>{Math.round(liveProgress)}% elapsed</span>
+                  <span>{fmtDuration(liveDurationSecs)} total</span>
+                </div>
+              </div>
             )}
-            <Badge variant="outline" className="text-xs border-red-500/30 text-red-500">
-              <Mic className="w-3 h-3 mr-1" />Live Override Active
-            </Badge>
+
+            {/* Action buttons */}
+            <div className="flex items-center gap-2 flex-wrap pt-1">
+              {EXTEND_PRESETS.map((p) => (
+                <Button
+                  key={p.value}
+                  size="sm"
+                  variant="outline"
+                  className="text-xs h-8"
+                  disabled={extendingLive}
+                  onClick={() => handleExtend(p.value)}
+                >
+                  {extendingLive ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Timer className="w-3 h-3 mr-1" />}
+                  {p.label}
+                </Button>
+              ))}
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-xs h-8"
+                disabled={sendingNotif}
+                onClick={handleNotifyViewers}
+              >
+                {sendingNotif
+                  ? <Loader2 className="w-3 h-3 animate-spin mr-1.5" />
+                  : <Bell className="w-3 h-3 mr-1.5" />}
+                Notify Viewers
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                className="text-xs h-8 ml-auto"
+                onClick={() => setShowEndDialog(true)}
+              >
+                <XCircle className="w-3.5 h-3.5 mr-1.5" />
+                End Live Broadcast
+              </Button>
+            </div>
           </div>
         </div>
       )}
 
-      {current?.item && !current.liveOverride && (
+      {/* ── On Air Now (automatic queue) ── */}
+      {current?.item && !hasLiveOverride && (
         <div className="rounded-xl border bg-card overflow-hidden">
-          <div className="px-4 py-2.5 bg-red-500/8 border-b flex items-center justify-between">
+          <div className="px-4 py-2.5 bg-muted/30 border-b flex items-center justify-between">
             <div className="flex items-center gap-2">
               <div className="flex items-center gap-1.5 bg-red-500/15 text-red-500 px-2.5 py-1 rounded-full text-xs font-bold border border-red-500/25">
                 <Radio className="w-3 h-3" />
-                ON AIR NOW
+                ON AIR — AUTOMATED
               </div>
               <span className="text-xs text-muted-foreground">
-                Item {(current.index ?? 0) + 1} of {queue.length} · {fmtTotalTime(totalSecs)}
+                {(current.index ?? 0) + 1} of {queue.length} · {fmtTotalTime(totalSecs)}
               </span>
             </div>
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <div className="flex items-center gap-1 text-xs text-muted-foreground">
               <Headphones className="w-3.5 h-3.5" />
               Radio mirror active
             </div>
@@ -363,17 +679,13 @@ export default function Broadcast() {
           <div className="p-4 flex items-start gap-4">
             <div className="relative shrink-0">
               {current.item.thumbnailUrl ? (
-                <img
-                  src={current.item.thumbnailUrl}
-                  alt={current.item.title}
-                  className="w-32 h-20 object-cover rounded-lg shadow-md"
-                />
+                <img src={current.item.thumbnailUrl} alt="" className="w-32 h-20 object-cover rounded-lg shadow-sm" />
               ) : (
                 <div className="w-32 h-20 bg-muted rounded-lg flex items-center justify-center">
                   <Play className="w-6 h-6 text-muted-foreground" />
                 </div>
               )}
-              <div className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-red-500 border-2 border-background animate-pulse" />
+              <div className="absolute -top-1.5 -right-1.5 w-3.5 h-3.5 rounded-full bg-red-500 border-2 border-background animate-pulse" />
             </div>
             <div className="flex-1 min-w-0">
               <p className="font-semibold text-base truncate">{current.item.title}</p>
@@ -381,77 +693,69 @@ export default function Broadcast() {
                 <span className="text-green-600 dark:text-green-400 font-medium">{fmtDuration(livePosition)} elapsed</span>
                 <span>·</span>
                 <span>{fmtDuration(remaining)} remaining</span>
-                <span>·</span>
-                <Badge variant="secondary" className="text-xs h-4">
-                  {current.item.videoSource === "local" ? <><HardDrive className="w-3 h-3 mr-1" />Local</> : <><Youtube className="w-3 h-3 mr-1" />YouTube</>}
+                <Badge variant="secondary" className="text-xs h-4 ml-1">
+                  {current.item.videoSource === "local"
+                    ? <><HardDrive className="w-3 h-3 mr-1" />Local</>
+                    : <><Youtube className="w-3 h-3 mr-1" />YouTube</>}
                 </Badge>
               </div>
-              <div className="mt-3 space-y-1">
+              <div className="mt-2.5 space-y-1">
                 <div className="flex justify-between text-[10px] text-muted-foreground">
                   <span>{Math.round(currentProgress)}% complete</span>
                   <span>{fmtDuration(current.item.durationSecs)} total</span>
                 </div>
-                <div className="h-2 bg-muted rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-red-500 rounded-full transition-all duration-1000"
-                    style={{ width: `${currentProgress}%` }}
-                  />
+                <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                  <div className="h-full bg-red-500 rounded-full transition-all duration-1000" style={{ width: `${currentProgress}%` }} />
                 </div>
               </div>
             </div>
             {current.nextItem && (
-              <div className="shrink-0 hidden sm:block">
+              <div className="shrink-0 hidden md:block w-32">
                 <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1.5 flex items-center gap-1">
                   <SkipForward className="w-3 h-3" />Up Next
                 </p>
-                <div className="flex items-center gap-2">
-                  {current.nextItem.thumbnailUrl ? (
-                    <img src={current.nextItem.thumbnailUrl} alt="" className="w-16 h-10 object-cover rounded opacity-60" />
-                  ) : (
-                    <div className="w-16 h-10 bg-muted rounded opacity-60" />
-                  )}
-                  <p className="text-xs text-muted-foreground max-w-[120px] line-clamp-2">{current.nextItem.title}</p>
-                </div>
+                {current.nextItem.thumbnailUrl && (
+                  <img src={current.nextItem.thumbnailUrl} alt="" className="w-full h-16 object-cover rounded opacity-60 mb-1" />
+                )}
+                <p className="text-xs text-muted-foreground line-clamp-2 leading-tight">{current.nextItem.title}</p>
               </div>
             )}
           </div>
         </div>
       )}
 
-      {guide.length > 1 && (
+      {/* ── EPG Program Guide ── */}
+      {guide.length > 1 && !hasLiveOverride && (
         <div className="rounded-xl border bg-card">
           <div className="px-4 py-2.5 border-b flex items-center gap-2">
             <Calendar className="w-4 h-4 text-muted-foreground" />
-            <h2 className="text-sm font-semibold">Program Guide — Next 8 Programs</h2>
+            <h2 className="text-sm font-semibold">Program Guide</h2>
+            <span className="text-xs text-muted-foreground ml-1">Next {Math.min(8, guide.length)} programs</span>
           </div>
-          <div className="p-3 flex gap-2 overflow-x-auto pb-4">
+          <div className="p-3 flex gap-2 overflow-x-auto pb-4 scrollbar-thin">
             {guide.slice(0, 8).map((item, idx) => (
               <div
                 key={`${item.id}-${idx}`}
-                className={`shrink-0 w-40 rounded-lg border p-2.5 space-y-1.5 ${
-                  item.isCurrent
-                    ? "border-red-500/40 bg-red-500/5"
-                    : "bg-muted/30"
-                }`}
+                className={`shrink-0 w-40 rounded-lg border p-2 space-y-1.5 ${item.isCurrent ? "border-red-500/40 bg-red-500/5" : "bg-muted/20"}`}
               >
-                {item.thumbnailUrl ? (
-                  <div className="relative">
-                    <img src={item.thumbnailUrl} alt="" className="w-full h-20 object-cover rounded" />
-                    {item.isCurrent && (
-                      <div className="absolute inset-0 rounded flex items-center justify-center bg-black/40">
-                        <div className="flex items-center gap-1 text-white text-[10px] font-bold bg-red-500 px-2 py-0.5 rounded-full">
-                          <Radio className="w-2.5 h-2.5" /> ON AIR
-                        </div>
+                <div className="relative">
+                  {item.thumbnailUrl ? (
+                    <img src={item.thumbnailUrl} alt="" className="w-full h-[72px] object-cover rounded" />
+                  ) : (
+                    <div className="w-full h-[72px] bg-muted rounded flex items-center justify-center">
+                      <Play className="w-5 h-5 text-muted-foreground" />
+                    </div>
+                  )}
+                  {item.isCurrent && (
+                    <div className="absolute inset-0 rounded flex items-center justify-center bg-black/40">
+                      <div className="flex items-center gap-1 text-white text-[10px] font-bold bg-red-500 px-2 py-0.5 rounded-full">
+                        <Radio className="w-2.5 h-2.5" />ON AIR
                       </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="w-full h-20 bg-muted rounded flex items-center justify-center">
-                    <Play className="w-5 h-5 text-muted-foreground" />
-                  </div>
-                )}
+                    </div>
+                  )}
+                </div>
                 <p className="text-xs font-medium line-clamp-2 leading-tight">{item.title}</p>
-                <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                <div className="flex justify-between text-[10px] text-muted-foreground">
                   <span>{fmtWallClock(item.startMs)}</span>
                   <span>{fmtDuration(item.durationSecs)}</span>
                 </div>
@@ -466,6 +770,7 @@ export default function Broadcast() {
         </div>
       )}
 
+      {/* ── Broadcast Queue ── */}
       <div className="rounded-xl border bg-card">
         <div className="px-4 py-2.5 border-b flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -473,8 +778,7 @@ export default function Broadcast() {
             <h2 className="text-sm font-semibold">Broadcast Queue</h2>
             {totalSecs > 0 && (
               <Badge variant="outline" className="text-xs">
-                <Clock className="w-3 h-3 mr-1" />
-                {fmtTotalTime(totalSecs)}
+                <Clock className="w-3 h-3 mr-1" />{fmtTotalTime(totalSecs)}
               </Badge>
             )}
           </div>
@@ -484,70 +788,42 @@ export default function Broadcast() {
         {loading ? (
           <div className="p-3 space-y-2">
             {[1, 2, 3].map((i) => (
-              <div key={i} className="rounded-lg border bg-card/50 p-3 flex items-center gap-3">
-                <Skeleton className="w-20 h-12 rounded" />
-                <div className="flex-1 space-y-2">
-                  <Skeleton className="h-4 w-48" />
-                  <Skeleton className="h-3 w-24" />
-                </div>
+              <div key={i} className="flex items-center gap-3 p-3 rounded-lg border">
+                <Skeleton className="w-20 h-12 rounded shrink-0" />
+                <div className="flex-1 space-y-2"><Skeleton className="h-4 w-48" /><Skeleton className="h-3 w-24" /></div>
               </div>
             ))}
           </div>
         ) : queue.length === 0 ? (
           <div className="p-12 text-center">
-            <Radio className="w-10 h-10 text-muted-foreground mx-auto mb-3 opacity-40" />
+            <Radio className="w-10 h-10 text-muted-foreground mx-auto mb-3 opacity-30" />
             <p className="font-medium text-muted-foreground">No videos in broadcast queue</p>
-            <p className="text-sm text-muted-foreground/60 mt-1">
-              Add videos from your library to start the continuous broadcast
-            </p>
+            <p className="text-sm text-muted-foreground/60 mt-1">Add videos to start the 24/7 automatic broadcast</p>
             <Button className="mt-4" onClick={() => setShowAddDialog(true)}>
-              <Plus className="w-4 h-4 mr-1" />
-              Add First Video
+              <Plus className="w-4 h-4 mr-1" />Add First Video
             </Button>
           </div>
         ) : (
-          <div className="p-3 space-y-2">
+          <div className="p-3 space-y-1.5">
             {queue.map((item, index) => {
-              const isCurrent = current?.item?.id === item.id;
+              const isCurrent = current?.item?.id === item.id && !hasLiveOverride;
               return (
                 <div
                   key={item.id}
-                  className={`rounded-lg border bg-card p-3 flex items-center gap-3 transition-all ${
-                    isCurrent ? "border-red-500/40 bg-red-500/5 shadow-sm" : "hover:bg-muted/30"
-                  }`}
+                  className={`rounded-lg border p-3 flex items-center gap-3 transition-all ${isCurrent ? "border-red-500/40 bg-red-500/5 shadow-sm" : "bg-card hover:bg-muted/20"}`}
                 >
-                  <div className="text-xs text-muted-foreground font-mono w-5 text-center shrink-0">
-                    {index + 1}
-                  </div>
-
+                  <span className="text-xs text-muted-foreground font-mono w-5 text-center shrink-0">{index + 1}</span>
                   <div className="flex flex-col gap-0.5">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-5 w-5"
-                      onClick={() => move(index, "up")}
-                      disabled={index === 0}
-                    >
+                    <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => move(index, "up")} disabled={index === 0}>
                       <ChevronUp className="w-3 h-3" />
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-5 w-5"
-                      onClick={() => move(index, "down")}
-                      disabled={index === queue.length - 1}
-                    >
+                    <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => move(index, "down")} disabled={index === queue.length - 1}>
                       <ChevronDown className="w-3 h-3" />
                     </Button>
                   </div>
-
                   <div className="relative shrink-0">
                     {item.thumbnailUrl ? (
-                      <img
-                        src={item.thumbnailUrl}
-                        alt={item.title}
-                        className="w-20 h-12 object-cover rounded"
-                      />
+                      <img src={item.thumbnailUrl} alt="" className="w-20 h-12 object-cover rounded" />
                     ) : (
                       <div className="w-20 h-12 bg-muted rounded flex items-center justify-center">
                         <Play className="w-4 h-4 text-muted-foreground" />
@@ -559,16 +835,13 @@ export default function Broadcast() {
                       </div>
                     )}
                   </div>
-
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium truncate">{item.title}</p>
                     <div className="flex items-center gap-2 mt-0.5">
                       <Badge variant="secondary" className="text-xs h-5">
-                        {item.videoSource === "local" ? (
-                          <><HardDrive className="w-3 h-3 mr-1" />Local</>
-                        ) : (
-                          <><Youtube className="w-3 h-3 mr-1" />YouTube</>
-                        )}
+                        {item.videoSource === "local"
+                          ? <><HardDrive className="w-3 h-3 mr-1" />Local</>
+                          : <><Youtube className="w-3 h-3 mr-1" />YouTube</>}
                       </Badge>
                       {isCurrent && (
                         <Badge className="text-xs h-5 bg-red-500 text-white border-0">
@@ -577,8 +850,7 @@ export default function Broadcast() {
                       )}
                     </div>
                   </div>
-
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5">
                     {editingDuration === item.id ? (
                       <div className="flex items-center gap-1">
                         <Input
@@ -594,7 +866,7 @@ export default function Broadcast() {
                           }}
                           autoFocus
                         />
-                        <Button variant="default" size="sm" className="h-7 text-xs px-2" onClick={() => saveDuration(item.id)}>Save</Button>
+                        <Button variant="default" size="sm" className="h-7 text-xs px-2" onClick={() => saveDuration(item.id)}>✓</Button>
                         <Button variant="ghost" size="sm" className="h-7 text-xs px-2" onClick={() => setEditingDuration(null)}>✕</Button>
                       </div>
                     ) : (
@@ -602,16 +874,12 @@ export default function Broadcast() {
                         variant="outline"
                         size="sm"
                         className="h-7 text-xs gap-1"
-                        onClick={() => {
-                          setEditingDuration(item.id);
-                          setDurationInput(String(Math.round(item.durationSecs / 60)));
-                        }}
+                        onClick={() => { setEditingDuration(item.id); setDurationInput(String(Math.round(item.durationSecs / 60))); }}
                       >
                         <Clock className="w-3 h-3" />
                         {fmtDuration(item.durationSecs)}
                       </Button>
                     )}
-
                     <Button
                       variant="ghost"
                       size="icon"
@@ -628,99 +896,208 @@ export default function Broadcast() {
         )}
       </div>
 
-      <Dialog open={showGoLiveDialog} onOpenChange={setShowGoLiveDialog}>
-        <DialogContent className="max-w-sm">
+      {/* ════════════════ GO LIVE DIALOG ════════════════ */}
+      <Dialog open={showGoLiveDialog} onOpenChange={(o) => { if (!goingLive) setShowGoLiveDialog(o); }}>
+        <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Signal className="w-5 h-5 text-red-500" />
-              Go Live — Override Broadcast
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <span className="flex h-7 w-7 items-center justify-center rounded-full bg-red-500/15 text-red-500">
+                <Signal className="w-4 h-4" />
+              </span>
+              Start Live Broadcast
             </DialogTitle>
             <DialogDescription>
-              Activate live mode to pre-empt the automated queue. This is for real-time live services.
+              This pre-empts the automated queue for all viewers and radio listeners.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 pt-2">
+
+          <div className="space-y-4 py-1">
+            {/* Service type presets */}
             <div className="space-y-2">
-              <Label>Broadcast Title</Label>
+              <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Quick Presets</Label>
+              <div className="grid grid-cols-3 gap-1.5">
+                {SERVICE_PRESETS.map((p) => (
+                  <button
+                    key={p.label}
+                    type="button"
+                    onClick={() => {
+                      setGlPreset(p.label);
+                      setGlTitle(p.label);
+                    }}
+                    className={`text-left px-3 py-2 rounded-lg border text-xs font-medium transition-all ${
+                      glPreset === p.label
+                        ? "border-red-500 bg-red-500/10 text-red-600 dark:text-red-400"
+                        : "border-border bg-muted/30 hover:bg-muted/60 text-foreground"
+                    }`}
+                  >
+                    <span className="mr-1">{p.icon}</span>{p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Title */}
+            <div className="space-y-1.5">
+              <Label htmlFor="gl-title">Broadcast Title</Label>
               <Input
-                value={goLiveTitle}
-                onChange={(e) => setGoLiveTitle(e.target.value)}
-                placeholder="e.g. Sunday Live Service — Temple TV"
+                id="gl-title"
+                value={glTitle}
+                onChange={(e) => { setGlTitle(e.target.value); setGlPreset(null); }}
+                placeholder="e.g. Sunday Morning Service — Temple TV"
               />
             </div>
+
+            {/* Duration */}
             <div className="space-y-2">
-              <Label>Duration (hours)</Label>
-              <Input
-                type="number"
-                min={0.5}
-                max={12}
-                step={0.5}
-                value={goLiveHours}
-                onChange={(e) => setGoLiveHours(e.target.value)}
-                placeholder="2"
-              />
-              <p className="text-xs text-muted-foreground">Live broadcast will automatically end after this duration.</p>
+              <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Duration</Label>
+              <div className="flex gap-1.5 flex-wrap">
+                {DURATION_PRESETS.map((p) => (
+                  <button
+                    key={p.value}
+                    type="button"
+                    onClick={() => { setGlDuration(p.value); setGlUseCustom(false); }}
+                    className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-all ${
+                      !glUseCustom && glDuration === p.value
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-border bg-muted/30 hover:bg-muted/60"
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setGlUseCustom(true)}
+                  className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-all ${
+                    glUseCustom ? "border-primary bg-primary/10 text-primary" : "border-border bg-muted/30 hover:bg-muted/60"
+                  }`}
+                >
+                  Custom
+                </button>
+              </div>
+              {glUseCustom && (
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="number"
+                    min={5}
+                    max={480}
+                    placeholder="Minutes"
+                    value={glCustomDuration}
+                    onChange={(e) => setGlCustomDuration(e.target.value)}
+                    className="w-32 h-8 text-sm"
+                    autoFocus
+                  />
+                  <span className="text-sm text-muted-foreground">minutes</span>
+                </div>
+              )}
             </div>
-            <div className="flex items-start gap-2 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg text-xs text-amber-700 dark:text-amber-400">
+
+            {/* End time preview */}
+            <div className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-muted/30 border text-sm">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Clock className="w-4 h-4" />
+                <span>Starts now · ends ~</span>
+              </div>
+              <span className="font-mono font-semibold text-foreground">{fmtEndPreview(effectiveDuration)}</span>
+            </div>
+
+            {/* Notify toggle */}
+            <div className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-muted/20 border">
+              <div className="flex items-center gap-2.5">
+                {glNotify ? <Bell className="w-4 h-4 text-primary" /> : <BellOff className="w-4 h-4 text-muted-foreground" />}
+                <div>
+                  <p className="text-sm font-medium">Notify viewers</p>
+                  <p className="text-xs text-muted-foreground">
+                    Push notification to {liveStatus?.deviceCount ?? 0} registered device{(liveStatus?.deviceCount ?? 0) !== 1 ? "s" : ""}
+                  </p>
+                </div>
+              </div>
+              <Switch checked={glNotify} onCheckedChange={setGlNotify} />
+            </div>
+
+            {/* Warning */}
+            <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-amber-500/8 border border-amber-500/25 text-xs text-amber-700 dark:text-amber-400">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              This will override the automated broadcast queue for all viewers and radio listeners.
-            </div>
-            <div className="flex gap-2">
-              <Button variant="outline" className="flex-1" onClick={() => setShowGoLiveDialog(false)}>Cancel</Button>
-              <Button
-                className="flex-1 bg-red-600 hover:bg-red-700 text-white"
-                onClick={handleGoLive}
-                disabled={goingLive || !goLiveTitle.trim()}
-              >
-                {goingLive ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Signal className="w-4 h-4 mr-1" />}
-                Go Live Now
-              </Button>
+              The automated broadcast queue and radio mirror will pause until you end this live session.
             </div>
           </div>
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setShowGoLiveDialog(false)} disabled={goingLive}>
+              Cancel
+            </Button>
+            <Button
+              className="bg-red-600 hover:bg-red-700 text-white min-w-[120px]"
+              onClick={handleGoLive}
+              disabled={goingLive || !glTitle.trim()}
+            >
+              {goingLive
+                ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Starting…</>
+                : <><Signal className="w-4 h-4 mr-2" />Go Live Now</>}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
+      {/* ════════════════ END LIVE CONFIRMATION ════════════════ */}
+      <Dialog open={showEndDialog} onOpenChange={(o) => { if (!endingLive) setShowEndDialog(o); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>End Live Broadcast?</DialogTitle>
+            <DialogDescription>
+              {lo?.title && <><strong>"{lo.title}"</strong> will be stopped.<br /></>}
+              The automated broadcast queue will resume immediately for all viewers.
+            </DialogDescription>
+          </DialogHeader>
+          {lo && (
+            <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-muted/30 border text-sm">
+              <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse shrink-0" />
+              <div>
+                <p className="font-medium">{lo.title}</p>
+                <p className="text-xs text-muted-foreground">
+                  Started {fmtTime(lo.startedAt)}
+                  {lo.elapsedSecs != null ? ` · ${fmtHMS(lo.elapsedSecs)} on air` : ""}
+                </p>
+              </div>
+            </div>
+          )}
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setShowEndDialog(false)} disabled={endingLive}>Keep Broadcasting</Button>
+            <Button variant="destructive" onClick={handleEndLive} disabled={endingLive} className="min-w-[110px]">
+              {endingLive
+                ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Ending…</>
+                : <><XCircle className="w-4 h-4 mr-2" />End Live</>}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ════════════════ ADD VIDEO DIALOG ════════════════ */}
       <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
         <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col">
           <DialogHeader>
             <DialogTitle>Add Video to Broadcast Queue</DialogTitle>
           </DialogHeader>
-
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <Input
-              className="pl-9"
-              placeholder="Search video library..."
-              value={addSearch}
-              onChange={(e) => setAddSearch(e.target.value)}
-            />
+            <Input className="pl-9" placeholder="Search video library..." value={addSearch} onChange={(e) => setAddSearch(e.target.value)} />
           </div>
-
           <div className="overflow-y-auto flex-1 space-y-2 pr-1">
             {videoLibrary?.videos?.map((video) => {
               const alreadyAdded = queue.some((q) => q.youtubeId === video.youtubeId);
               return (
-                <div
-                  key={video.id}
-                  className="flex items-center gap-3 rounded-lg border bg-card p-2.5"
-                >
+                <div key={video.id} className="flex items-center gap-3 rounded-lg border bg-card p-2.5">
                   {video.thumbnailUrl ? (
-                    <img
-                      src={video.thumbnailUrl}
-                      alt={video.title}
-                      className="w-20 h-12 object-cover rounded"
-                    />
+                    <img src={video.thumbnailUrl} alt="" className="w-20 h-12 object-cover rounded shrink-0" />
                   ) : (
-                    <div className="w-20 h-12 bg-muted rounded flex items-center justify-center">
+                    <div className="w-20 h-12 bg-muted rounded flex items-center justify-center shrink-0">
                       <Play className="w-4 h-4 text-muted-foreground" />
                     </div>
                   )}
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium truncate">{video.title}</p>
                     <div className="flex items-center gap-1.5 mt-0.5">
-                      <Badge variant="secondary" className="text-xs h-4">
-                        {video.category}
-                      </Badge>
+                      <Badge variant="secondary" className="text-xs h-4">{video.category}</Badge>
                       {(video as any).videoSource === "local" && (
                         <Badge variant="outline" className="text-xs h-4 text-blue-500 border-blue-500/30">
                           <HardDrive className="w-2.5 h-2.5 mr-1" />Local
@@ -742,13 +1119,11 @@ export default function Broadcast() {
                     })}
                     className="shrink-0"
                   >
-                    {addingId === video.id ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : alreadyAdded ? (
-                      "In Queue"
-                    ) : (
-                      <><Plus className="w-4 h-4 mr-1" />Add</>
-                    )}
+                    {addingId === video.id
+                      ? <Loader2 className="w-4 h-4 animate-spin" />
+                      : alreadyAdded
+                      ? <><CheckCircle2 className="w-3.5 h-3.5 mr-1" />In Queue</>
+                      : <><PlusIcon className="w-4 h-4 mr-1" />Add</>}
                   </Button>
                 </div>
               );
