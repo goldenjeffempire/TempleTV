@@ -45,7 +45,7 @@
         "android.permission.WAKE_LOCK"
       ],
       "softwareKeyboardLayoutMode": "resize",
-      "userInterfaceStyle": "dark"
+      "userInterfaceStyle": "automatic"
     },
     "web": {
       "favicon": "./assets/images/icon.png",

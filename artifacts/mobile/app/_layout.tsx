@@ -6,9 +6,10 @@ import {
   useFonts,
 } from "@expo-google-fonts/inter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Stack } from "expo-router";
+import { router, Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import React, { useEffect } from "react";
+import React, { useEffect, useRef } from "react";
+import { Platform } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -21,6 +22,32 @@ SplashScreen.preventAutoHideAsync();
 const queryClient = new QueryClient();
 
 function RootLayoutNav() {
+  const notifListenerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+
+    let subscription: { remove: () => void } | null = null;
+
+    import("expo-notifications").then((Notifications) => {
+      subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+        const data = response.notification.request.content.data as Record<string, unknown>;
+        const type = data?.type as string | undefined;
+
+        if (type === "live_service") {
+          router.push("/(tabs)/");
+        } else if (type === "new_sermon") {
+          router.push("/(tabs)/library");
+        }
+      });
+    });
+
+    return () => {
+      subscription?.remove();
+      if (notifListenerRef.current) clearTimeout(notifListenerRef.current);
+    };
+  }, []);
+
   return (
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
@@ -47,6 +74,16 @@ export default function RootLayout() {
   useEffect(() => {
     if (fontsLoaded || fontError) {
       SplashScreen.hideAsync();
+
+      if (Platform.OS !== "web") {
+        import("@/services/notifications")
+          .then(({ registerForPushTokenAsync }) => {
+            if (typeof registerForPushTokenAsync === "function") {
+              registerForPushTokenAsync().catch(() => {});
+            }
+          })
+          .catch(() => {});
+      }
     }
   }, [fontsLoaded, fontError]);
 

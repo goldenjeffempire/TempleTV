@@ -1,5 +1,9 @@
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+
+const PUSH_TOKEN_KEY = "@temple_tv/push_token";
+const ANDROID_CHANNEL_ID = "temple-tv-default";
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -10,10 +14,62 @@ Notifications.setNotificationHandler({
   }),
 });
 
+export async function setupAndroidNotificationChannel(): Promise<void> {
+  if (Platform.OS !== "android") return;
+  try {
+    await Notifications.setNotificationChannelAsync(ANDROID_CHANNEL_ID, {
+      name: "Temple TV",
+      importance: Notifications.AndroidImportance.HIGH,
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: "#9B30FF",
+      sound: "default",
+      enableVibrate: true,
+    });
+  } catch {
+    // Non-critical
+  }
+}
+
+export async function registerForPushTokenAsync(): Promise<string | null> {
+  if (Platform.OS === "web") return null;
+
+  try {
+    await setupAndroidNotificationChannel();
+
+    const { status: existingStatus } = await Notifications.getPermissionsAsync();
+    let finalStatus = existingStatus;
+
+    if (existingStatus !== "granted") {
+      const { status } = await Notifications.requestPermissionsAsync();
+      finalStatus = status;
+    }
+
+    if (finalStatus !== "granted") return null;
+
+    const { data: token } = await Notifications.getExpoPushTokenAsync();
+    if (token) {
+      await AsyncStorage.setItem(PUSH_TOKEN_KEY, token);
+    }
+    return token ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getStoredPushToken(): Promise<string | null> {
+  try {
+    return await AsyncStorage.getItem(PUSH_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
 export async function requestNotificationPermissions(): Promise<boolean> {
   if (Platform.OS === "web") return false;
 
   try {
+    await setupAndroidNotificationChannel();
+
     const { status: existingStatus } = await Notifications.getPermissionsAsync();
     let finalStatus = existingStatus;
 
@@ -51,6 +107,7 @@ export async function sendLiveServiceNotification(title: string): Promise<void> 
         body: title || "Temple TV JCTM is streaming live right now. Tap to join!",
         sound: true,
         data: { type: "live_service" },
+        ...(Platform.OS === "android" ? { channelId: ANDROID_CHANNEL_ID } : {}),
       },
       trigger: null,
     });
@@ -72,6 +129,7 @@ export async function sendNewSermonNotification(sermonTitle: string): Promise<vo
         body: sermonTitle,
         sound: true,
         data: { type: "new_sermon" },
+        ...(Platform.OS === "android" ? { channelId: ANDROID_CHANNEL_ID } : {}),
       },
       trigger: null,
     });

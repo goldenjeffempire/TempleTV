@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import {
   FlatList,
   Platform,
@@ -103,7 +103,7 @@ export default function LibraryScreen() {
     [sourceData, search, category, sortMode, viewMode],
   );
 
-  const handleSermonPress = (sermon: Sermon) => {
+  const handleSermonPress = useCallback((sermon: Sermon) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.push({
       pathname: "/player",
@@ -116,7 +116,7 @@ export default function LibraryScreen() {
         category: sermon.category,
       },
     });
-  };
+  }, []);
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -223,6 +223,12 @@ export default function LibraryScreen() {
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
+          keyboardDismissMode="on-drag"
+          keyboardShouldPersistTaps="handled"
+          initialNumToRender={10}
+          maxToRenderPerBatch={8}
+          windowSize={5}
+          removeClippedSubviews={Platform.OS === "android"}
           refreshControl={
             viewMode === "all" ? (
               <RefreshControl

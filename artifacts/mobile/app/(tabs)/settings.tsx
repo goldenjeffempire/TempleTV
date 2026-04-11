@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   Alert,
   Animated,
@@ -19,6 +19,7 @@ import { GlassCard } from "@/components/GlassCard";
 import { usePlayer } from "@/context/PlayerContext";
 import { useWatchHistory } from "@/hooks/useWatchHistory";
 import { useFavorites } from "@/hooks/useFavorites";
+import { useNotificationPreferences } from "@/hooks/useNotificationPreferences";
 import { APP_CONFIG } from "@/constants/config";
 import {
   requestNotificationPermissions,
@@ -87,44 +88,44 @@ export default function SettingsScreen() {
   const { isRadioMode, dataSaver, shuffleMode, loopMode, toggleRadioMode, toggleDataSaver, toggleShuffle, cycleLoopMode, stopPlayback } = usePlayer();
   const { clearHistory, history } = useWatchHistory();
   const { favorites } = useFavorites();
+  const { prefs: notifPrefs, save: saveNotifPrefs, syncWithPermissionStatus } = useNotificationPreferences();
   const webTopPad = Platform.OS === "web" ? 67 : 0;
   const [notifPermission, setNotifPermission] = useState<string | null>(null);
-  const [liveAlertsEnabled, setLiveAlertsEnabled] = useState(false);
-  const [newSermonAlertsEnabled, setNewSermonAlertsEnabled] = useState(false);
 
   useEffect(() => {
     if (Platform.OS === "web") return;
     getNotificationPermissionStatus().then((status) => {
-      setNotifPermission(status);
-      const granted = status === "granted";
-      setLiveAlertsEnabled(granted);
-      setNewSermonAlertsEnabled(granted);
-    });
-  }, []);
-
-  const requestAndToggle = async (
-    enabled: boolean,
-    setter: (v: boolean) => void,
-  ) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    if (!enabled) {
-      const granted = await requestNotificationPermissions();
-      setter(granted);
-      setNotifPermission(granted ? "granted" : "denied");
-      if (!granted) {
-        Alert.alert(
-          "Notifications Blocked",
-          "Please enable notifications for Temple TV in your device Settings to receive alerts.",
-          [
-            { text: "Cancel", style: "cancel" },
-            { text: "Open Settings", onPress: () => Linking.openSettings() },
-          ],
-        );
+      setNotifPermission(status ?? null);
+      if (status === "granted") {
+        syncWithPermissionStatus(true);
       }
-    } else {
-      setter(false);
-    }
-  };
+    });
+  }, [syncWithPermissionStatus]);
+
+  const requestAndToggle = useCallback(
+    async (key: "liveAlerts" | "newSermonAlerts", currentValue: boolean) => {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      if (!currentValue) {
+        const granted = await requestNotificationPermissions();
+        setNotifPermission(granted ? "granted" : "denied");
+        if (granted) {
+          await saveNotifPrefs({ [key]: true });
+        } else {
+          Alert.alert(
+            "Notifications Blocked",
+            "Please enable notifications for Temple TV in your device Settings to receive alerts.",
+            [
+              { text: "Cancel", style: "cancel" },
+              { text: "Open Settings", onPress: () => Linking.openSettings() },
+            ],
+          );
+        }
+      } else {
+        await saveNotifPrefs({ [key]: false });
+      }
+    },
+    [saveNotifPrefs],
+  );
 
   const confirmClearHistory = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
@@ -214,8 +215,8 @@ export default function SettingsScreen() {
                 }
                 right={
                   <ToggleSwitch
-                    value={liveAlertsEnabled}
-                    onToggle={() => requestAndToggle(liveAlertsEnabled, setLiveAlertsEnabled)}
+                    value={notifPrefs.liveAlerts}
+                    onToggle={() => requestAndToggle("liveAlerts", notifPrefs.liveAlerts)}
                   />
                 }
               />
@@ -230,8 +231,8 @@ export default function SettingsScreen() {
                 }
                 right={
                   <ToggleSwitch
-                    value={newSermonAlertsEnabled}
-                    onToggle={() => requestAndToggle(newSermonAlertsEnabled, setNewSermonAlertsEnabled)}
+                    value={notifPrefs.newSermonAlerts}
+                    onToggle={() => requestAndToggle("newSermonAlerts", notifPrefs.newSermonAlerts)}
                   />
                 }
               />

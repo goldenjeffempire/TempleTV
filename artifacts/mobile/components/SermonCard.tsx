@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { memo, useState } from "react";
 import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
@@ -14,7 +14,7 @@ interface SermonCardProps {
   variant?: "horizontal" | "vertical";
 }
 
-function SmartImage({ uri, style }: { uri: string; style: object }) {
+const SmartImage = memo(function SmartImage({ uri, style }: { uri: string; style: object }) {
   const [errored, setErrored] = useState(false);
   if (errored || !uri) {
     return <Image source={PLACEHOLDER} style={style} resizeMode="cover" />;
@@ -27,9 +27,13 @@ function SmartImage({ uri, style }: { uri: string; style: object }) {
       onError={() => setErrored(true)}
     />
   );
-}
+});
 
-export function SermonCard({ sermon, onPress, variant = "vertical" }: SermonCardProps) {
+export const SermonCard = memo(function SermonCard({
+  sermon,
+  onPress,
+  variant = "vertical",
+}: SermonCardProps) {
   const c = useColors();
 
   const handlePress = () => {
@@ -77,7 +81,7 @@ export function SermonCard({ sermon, onPress, variant = "vertical" }: SermonCard
         { opacity: pressed ? 0.8 : 1, transform: [{ scale: pressed ? 0.97 : 1 }] },
       ]}
     >
-      <View style={[styles.thumbContainer, { borderRadius: c.radius }]}>
+      <View style={[styles.thumbContainer, { borderRadius: 12 }]}>
         <SmartImage uri={sermon.thumbnailUrl} style={styles.verticalThumb} />
         {!!sermon.duration && (
           <View style={styles.durationBadge}>
@@ -91,7 +95,7 @@ export function SermonCard({ sermon, onPress, variant = "vertical" }: SermonCard
       <Text style={[styles.meta, { color: c.mutedForeground }]}>{sermon.preacher}</Text>
     </Pressable>
   );
-}
+});
 
 const styles = StyleSheet.create({
   verticalCard: {
