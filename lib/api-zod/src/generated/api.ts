@@ -470,4 +470,36 @@ export const GetLiveStatusResponse = zod.object({
   title: zod.string().nullish(),
   startedAt: zod.string().nullish(),
   viewerCount: zod.number(),
+  liveOverride: zod
+    .object({
+      id: zod.string(),
+      title: zod.string(),
+      startedAt: zod.string().nullish(),
+      endsAt: zod.string().nullish(),
+    })
+    .nullish(),
+});
+
+/**
+ * @summary Start a manual live override
+ */
+export const startLiveOverrideBodyDurationMinutesMin = 5;
+export const startLiveOverrideBodyDurationMinutesMax = 480;
+
+export const StartLiveOverrideBody = zod.object({
+  title: zod.string().optional(),
+  durationMinutes: zod
+    .number()
+    .min(startLiveOverrideBodyDurationMinutesMin)
+    .max(startLiveOverrideBodyDurationMinutesMax)
+    .optional(),
+  notify: zod.boolean().optional(),
+});
+
+/**
+ * @summary Stop the active manual live override
+ */
+export const StopLiveOverrideResponse = zod.object({
+  success: zod.boolean(),
+  message: zod.string(),
 });

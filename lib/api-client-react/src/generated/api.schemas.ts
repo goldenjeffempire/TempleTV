@@ -278,12 +278,25 @@ export interface Analytics {
   dailyViews: DailyViewStat[];
 }
 
+export interface LiveOverride {
+  id: string;
+  title: string;
+  startedAt?: string | null;
+  endsAt?: string | null;
+}
+
 export interface LiveStatus {
   isLive: boolean;
   videoId?: string | null;
   title?: string | null;
   startedAt?: string | null;
   viewerCount: number;
+  liveOverride?: LiveOverride | null;
+}
+
+export interface LiveOverrideResult {
+  override: LiveOverride;
+  push: NotificationResult;
 }
 
 export interface DeleteResult {
@@ -310,3 +323,13 @@ export const GetAnalyticsPeriod = {
   "30d": "30d",
   "90d": "90d",
 } as const;
+
+export type StartLiveOverrideBody = {
+  title?: string;
+  /**
+   * @minimum 5
+   * @maximum 480
+   */
+  durationMinutes?: number;
+  notify?: boolean;
+};

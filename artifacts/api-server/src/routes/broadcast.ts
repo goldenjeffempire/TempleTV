@@ -2,6 +2,7 @@ import { Router } from "express";
 import {
   db,
   broadcastQueueTable,
+  liveOverridesTable,
   playlistVideosTable,
   scheduleTable,
   videosTable,
@@ -13,6 +14,16 @@ const router = Router();
 
 type BroadcastItem = typeof broadcastQueueTable.$inferSelect;
 type ScheduleEntry = typeof scheduleTable.$inferSelect;
+
+async function getActiveLiveOverride() {
+  const overrides = await db
+    .select()
+    .from(liveOverridesTable)
+    .where(eq(liveOverridesTable.isActive, true))
+    .orderBy(asc(liveOverridesTable.startedAt));
+  const now = new Date();
+  return overrides.find((override) => !override.endsAt || override.endsAt > now) ?? null;
+}
 
 function parseTimeToMinutes(value: string | null): number | null {
   if (!value) return null;
@@ -156,6 +167,28 @@ async function getScheduledItems(entry: ScheduleEntry): Promise<BroadcastItem[]>
 }
 
 router.get("/broadcast/current", async (_req, res) => {
+  const activeLiveOverride = await getActiveLiveOverride();
+  if (activeLiveOverride) {
+    return res.json({
+      item: null,
+      nextItem: null,
+      index: 0,
+      positionSecs: 0,
+      totalSecs: 0,
+      queueLength: 0,
+      progressPercent: 0,
+      syncedAt: new Date().toISOString(),
+      failoverReason: null,
+      activeSchedule: null,
+      liveOverride: {
+        id: activeLiveOverride.id,
+        title: activeLiveOverride.title,
+        startedAt: activeLiveOverride.startedAt.toISOString(),
+        endsAt: activeLiveOverride.endsAt?.toISOString() ?? null,
+      },
+    });
+  }
+
   const activeScheduleEntries = await db
     .select()
     .from(scheduleTable)

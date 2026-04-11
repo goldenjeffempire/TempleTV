@@ -5,6 +5,7 @@
  * Temple TV JCTM Admin API
  * OpenAPI spec version: 0.1.0
  */
+import type { LiveOverride } from "./liveOverride";
 
 export interface LiveStatus {
   isLive: boolean;
@@ -12,4 +13,5 @@ export interface LiveStatus {
   title?: string | null;
   startedAt?: string | null;
   viewerCount: number;
+  liveOverride?: LiveOverride | null;
 }

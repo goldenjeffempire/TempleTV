@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, pushTokensTable } from "@workspace/db";
+import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, pushTokensTable, liveOverridesTable } from "@workspace/db";
 import { eq, ilike, or, count, sql, desc } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import path from "path";
@@ -52,6 +52,16 @@ const upload = multer({
 const router = Router();
 
 const EXPO_PUSH_API = "https://exp.host/--/api/v2/push/send";
+
+async function getActiveLiveOverride() {
+  const overrides = await db
+    .select()
+    .from(liveOverridesTable)
+    .where(eq(liveOverridesTable.isActive, true))
+    .orderBy(desc(liveOverridesTable.startedAt));
+  const now = new Date();
+  return overrides.find((override) => !override.endsAt || override.endsAt > now) ?? null;
+}
 
 async function sendExpoPushNotifications(
   tokens: string[],
@@ -142,6 +152,11 @@ router.get("/admin/stats", async (req, res) => {
         liveStatus.isLive = !!(vidMatch?.[1] && d.title);
       }
     } catch {}
+
+    const liveOverride = await getActiveLiveOverride();
+    if (liveOverride) {
+      liveStatus.isLive = true;
+    }
 
     res.json({
       totalVideos: totalVideosResult?.count ?? 0,
@@ -821,6 +836,8 @@ router.get("/admin/live", async (req, res) => {
     let startedAt: string | null = null;
     let viewerCount = 0;
 
+    const liveOverride = await getActiveLiveOverride();
+
     try {
       const oembedRes = await fetch(
         "https://www.youtube.com/oembed?url=https://www.youtube.com/@templetvjctm/live&format=json",
@@ -837,7 +854,90 @@ router.get("/admin/live", async (req, res) => {
       }
     } catch {}
 
-    res.json({ isLive, videoId, title, startedAt, viewerCount });
+    if (liveOverride) {
+      isLive = true;
+      title = liveOverride.title;
+      startedAt = liveOverride.startedAt.toISOString();
+    }
+
+    res.json({
+      isLive,
+      videoId,
+      title,
+      startedAt,
+      viewerCount,
+      liveOverride: liveOverride ? {
+        id: liveOverride.id,
+        title: liveOverride.title,
+        startedAt: liveOverride.startedAt.toISOString(),
+        endsAt: liveOverride.endsAt?.toISOString() ?? null,
+      } : null,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/admin/live/override/start", async (req, res) => {
+  try {
+    const { title, durationMinutes = 120, notify = true } = req.body as {
+      title?: string;
+      durationMinutes?: number;
+      notify?: boolean;
+    };
+    const safeDuration = Number.isFinite(durationMinutes) ? Math.max(5, Math.min(480, durationMinutes)) : 120;
+    const startedAt = new Date();
+    const endsAt = new Date(startedAt.getTime() + safeDuration * 60 * 1000);
+
+    await db.update(liveOverridesTable).set({ isActive: false }).where(eq(liveOverridesTable.isActive, true));
+
+    const [override] = await db
+      .insert(liveOverridesTable)
+      .values({
+        id: randomUUID(),
+        title: title?.trim() || "Temple TV Live Service",
+        startedAt,
+        endsAt,
+        isActive: true,
+      })
+      .returning();
+
+    let pushResult = { sent: 0, failed: 0 };
+    if (notify) {
+      const tokenRows = await db.select().from(pushTokensTable).where(eq(pushTokensTable.isActive, true));
+      pushResult = await sendExpoPushNotifications(
+        tokenRows.map((row) => row.token),
+        "Temple TV is live",
+        override.title,
+        { type: "live_service", route: "/player", live: true }
+      );
+      await db.insert(notificationsTable).values({
+        id: randomUUID(),
+        title: "Temple TV is live",
+        body: override.title,
+        type: "live_service",
+        sentCount: pushResult.sent,
+        failedCount: pushResult.failed,
+      });
+    }
+
+    res.status(201).json({ override, push: pushResult });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/admin/live/override/stop", async (_req, res) => {
+  try {
+    const active = await getActiveLiveOverride();
+    if (!active) return res.json({ ok: true, stopped: 0 });
+    await db
+      .update(liveOverridesTable)
+      .set({ isActive: false, endsAt: new Date() })
+      .where(eq(liveOverridesTable.id, active.id));
+    res.json({ ok: true, stopped: 1 });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });

@@ -1,13 +1,44 @@
-import { useGetAdminStats, useListAdminVideos } from "@workspace/api-client-react";
+import {
+  getGetLiveStatusQueryKey,
+  useGetAdminStats,
+  useGetLiveStatus,
+  useListAdminVideos,
+  useStartLiveOverride,
+  useStopLiveOverride,
+} from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Video, ListVideo, Calendar, BellRing, Activity, Radio, Plus } from "lucide-react";
+import { Video, ListVideo, Calendar, BellRing, Activity, Radio, Plus, Loader2, Square } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
+import { useQueryClient } from "@tanstack/react-query";
+import { useToast } from "@/hooks/use-toast";
 
 export default function Dashboard() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
   const { data: stats, isLoading: isLoadingStats } = useGetAdminStats();
+  const { data: liveStatus } = useGetLiveStatus();
   const { data: videosData, isLoading: isLoadingVideos } = useListAdminVideos({ limit: 4 });
+  const startLiveOverride = useStartLiveOverride({
+    mutation: {
+      onSuccess: (result) => {
+        toast({ title: "Live override started", description: `Push sent to ${result.push.sent} devices.` });
+        queryClient.invalidateQueries({ queryKey: getGetLiveStatusQueryKey() });
+      },
+      onError: () => toast({ title: "Failed to start live override", variant: "destructive" }),
+    },
+  });
+  const stopLiveOverride = useStopLiveOverride({
+    mutation: {
+      onSuccess: () => {
+        toast({ title: "Live override stopped" });
+        queryClient.invalidateQueries({ queryKey: getGetLiveStatusQueryKey() });
+      },
+      onError: () => toast({ title: "Failed to stop live override", variant: "destructive" }),
+    },
+  });
+  const manualOverrideActive = Boolean(liveStatus?.liveOverride);
 
   return (
     <div className="space-y-6">
@@ -118,6 +149,38 @@ export default function Dashboard() {
                 </div>
               </div>
             )}
+            <div className="mt-4 rounded-lg border bg-background p-4">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="font-semibold text-sm">Manual Live Override</div>
+                  <div className="text-xs text-muted-foreground mt-1">
+                    {manualOverrideActive
+                      ? `Active: ${liveStatus?.liveOverride?.title}`
+                      : "Force the app into live mode if YouTube live detection is delayed."}
+                  </div>
+                </div>
+                {manualOverrideActive ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => stopLiveOverride.mutate()}
+                    disabled={stopLiveOverride.isPending}
+                  >
+                    {stopLiveOverride.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Square className="w-4 h-4 mr-2" />}
+                    Stop
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    onClick={() => startLiveOverride.mutate({ data: { title: "Temple TV Live Service", durationMinutes: 120, notify: true } })}
+                    disabled={startLiveOverride.isPending}
+                  >
+                    {startLiveOverride.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Radio className="w-4 h-4 mr-2" />}
+                    Go Live
+                  </Button>
+                )}
+              </div>
+            </div>
           </CardContent>
         </Card>
         

@@ -27,6 +27,7 @@ import type {
   HealthStatus,
   ImportVideoBody,
   ListAdminVideosParams,
+  LiveOverrideResult,
   LiveStatus,
   ManagedVideo,
   NotificationResult,
@@ -36,6 +37,7 @@ import type {
   ScheduleEntry,
   SendNotificationBody,
   SentNotification,
+  StartLiveOverrideBody,
   UpdatePlaylistBody,
   UpdateScheduleEntryBody,
   UpdateVideoBody,
@@ -1895,3 +1897,170 @@ export function useGetLiveStatus<
 
   return { ...query, queryKey: queryOptions.queryKey };
 }
+
+/**
+ * @summary Start a manual live override
+ */
+export const getStartLiveOverrideUrl = () => {
+  return `/api/admin/live/override/start`;
+};
+
+export const startLiveOverride = async (
+  startLiveOverrideBody?: StartLiveOverrideBody,
+  options?: RequestInit,
+): Promise<LiveOverrideResult> => {
+  return customFetch<LiveOverrideResult>(getStartLiveOverrideUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(startLiveOverrideBody),
+  });
+};
+
+export const getStartLiveOverrideMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof startLiveOverride>>,
+    TError,
+    { data: BodyType<StartLiveOverrideBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof startLiveOverride>>,
+  TError,
+  { data: BodyType<StartLiveOverrideBody> },
+  TContext
+> => {
+  const mutationKey = ["startLiveOverride"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof startLiveOverride>>,
+    { data: BodyType<StartLiveOverrideBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return startLiveOverride(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type StartLiveOverrideMutationResult = NonNullable<
+  Awaited<ReturnType<typeof startLiveOverride>>
+>;
+export type StartLiveOverrideMutationBody = BodyType<StartLiveOverrideBody>;
+export type StartLiveOverrideMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Start a manual live override
+ */
+export const useStartLiveOverride = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof startLiveOverride>>,
+    TError,
+    { data: BodyType<StartLiveOverrideBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof startLiveOverride>>,
+  TError,
+  { data: BodyType<StartLiveOverrideBody> },
+  TContext
+> => {
+  return useMutation(getStartLiveOverrideMutationOptions(options));
+};
+
+/**
+ * @summary Stop the active manual live override
+ */
+export const getStopLiveOverrideUrl = () => {
+  return `/api/admin/live/override/stop`;
+};
+
+export const stopLiveOverride = async (
+  options?: RequestInit,
+): Promise<DeleteResult> => {
+  return customFetch<DeleteResult>(getStopLiveOverrideUrl(), {
+    ...options,
+    method: "POST",
+  });
+};
+
+export const getStopLiveOverrideMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof stopLiveOverride>>,
+    TError,
+    void,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof stopLiveOverride>>,
+  TError,
+  void,
+  TContext
+> => {
+  const mutationKey = ["stopLiveOverride"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof stopLiveOverride>>,
+    void
+  > = () => {
+    return stopLiveOverride(requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type StopLiveOverrideMutationResult = NonNullable<
+  Awaited<ReturnType<typeof stopLiveOverride>>
+>;
+
+export type StopLiveOverrideMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Stop the active manual live override
+ */
+export const useStopLiveOverride = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof stopLiveOverride>>,
+    TError,
+    void,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof stopLiveOverride>>,
+  TError,
+  void,
+  TContext
+> => {
+  return useMutation(getStopLiveOverrideMutationOptions(options));
+};

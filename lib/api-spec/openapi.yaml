@@ -451,6 +451,47 @@ paths:
               schema:
                 $ref: "#/components/schemas/LiveStatus"
 
+  /admin/live/override/start:
+    post:
+      operationId: startLiveOverride
+      tags: [admin-live]
+      summary: Start a manual live override
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                durationMinutes:
+                  type: integer
+                  minimum: 5
+                  maximum: 480
+                notify:
+                  type: boolean
+      responses:
+        "201":
+          description: Live override started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LiveOverrideResult"
+
+  /admin/live/override/stop:
+    post:
+      operationId: stopLiveOverride
+      tags: [admin-live]
+      summary: Stop the active manual live override
+      responses:
+        "200":
+          description: Live override stopped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteResult"
+
 components:
   schemas:
     HealthStatus:
@@ -883,7 +924,34 @@ components:
           nullable: true
         viewerCount:
           type: integer
+        liveOverride:
+          nullable: true
+          $ref: "#/components/schemas/LiveOverride"
       required: [isLive, viewerCount]
+
+    LiveOverride:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        startedAt:
+          type: string
+          nullable: true
+        endsAt:
+          type: string
+          nullable: true
+      required: [id, title]
+
+    LiveOverrideResult:
+      type: object
+      properties:
+        override:
+          $ref: "#/components/schemas/LiveOverride"
+        push:
+          $ref: "#/components/schemas/NotificationResult"
+      required: [override, push]
 
     DeleteResult:
       type: object
