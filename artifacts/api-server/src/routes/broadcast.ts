@@ -9,20 +9,61 @@ import {
 } from "@workspace/db";
 import { eq, asc, and } from "drizzle-orm";
 import { randomUUID } from "crypto";
+import { cache } from "../lib/cache";
 
 const router = Router();
 
 type BroadcastItem = typeof broadcastQueueTable.$inferSelect;
 type ScheduleEntry = typeof scheduleTable.$inferSelect;
 
+const CACHE_KEYS = {
+  liveOverride: "broadcast:live_override",
+  scheduleEntries: "broadcast:schedule_entries",
+  broadcastQueue: "broadcast:queue",
+} as const;
+
 async function getActiveLiveOverride() {
-  const overrides = await db
-    .select()
-    .from(liveOverridesTable)
-    .where(eq(liveOverridesTable.isActive, true))
-    .orderBy(asc(liveOverridesTable.startedAt));
+  const overrides = await cache.getOrSet(
+    CACHE_KEYS.liveOverride,
+    () =>
+      db
+        .select()
+        .from(liveOverridesTable)
+        .where(eq(liveOverridesTable.isActive, true))
+        .orderBy(asc(liveOverridesTable.startedAt)),
+    5_000,
+  );
   const now = new Date();
-  return overrides.find((override) => !override.endsAt || override.endsAt > now) ?? null;
+  return overrides.find((override) => !override.endsAt || new Date(override.endsAt) > now) ?? null;
+}
+
+async function getScheduleEntries() {
+  return cache.getOrSet(
+    CACHE_KEYS.scheduleEntries,
+    () => db.select().from(scheduleTable).where(eq(scheduleTable.isActive, true)),
+    30_000,
+  );
+}
+
+async function getBroadcastQueue() {
+  return cache.getOrSet(
+    CACHE_KEYS.broadcastQueue,
+    () =>
+      db
+        .select()
+        .from(broadcastQueueTable)
+        .where(eq(broadcastQueueTable.isActive, true))
+        .orderBy(asc(broadcastQueueTable.sortOrder)),
+    10_000,
+  );
+}
+
+async function invalidateBroadcastCache() {
+  await Promise.all([
+    cache.del(CACHE_KEYS.liveOverride),
+    cache.del(CACHE_KEYS.scheduleEntries),
+    cache.del(CACHE_KEYS.broadcastQueue),
+  ]);
 }
 
 function parseTimeToMinutes(value: string | null): number | null {
@@ -177,14 +218,11 @@ router.get("/broadcast/guide", async (_req, res) => {
       return res.json({ items: [], liveOverride: { title: activeLiveOverride.title } });
     }
 
-    const activeScheduleEntries = await db
-      .select()
-      .from(scheduleTable)
-      .where(eq(scheduleTable.isActive, true));
-    const activeSchedule = getActiveScheduleEntry(activeScheduleEntries);
+    const activeScheduleEntries = await getScheduleEntries();
+    const activeSchedule = getActiveScheduleEntry(activeScheduleEntries as ScheduleEntry[]);
     const items = activeSchedule && activeSchedule.contentType !== "live"
       ? await getScheduledItems(activeSchedule)
-      : await db.select().from(broadcastQueueTable).where(eq(broadcastQueueTable.isActive, true)).orderBy(asc(broadcastQueueTable.sortOrder));
+      : await getBroadcastQueue();
 
     const playableItems = items.filter((item) => item.durationSecs > 0);
     if (playableItems.length === 0) return res.json({ items: [] });
@@ -269,17 +307,14 @@ router.get("/broadcast/current", async (_req, res) => {
         startedAt: activeLiveOverride.startedAt.toISOString(),
         endsAt: activeLiveOverride.endsAt?.toISOString() ?? null,
         remainingSecs: activeLiveOverride.endsAt
-          ? Math.max(0, Math.floor((activeLiveOverride.endsAt.getTime() - nowMs) / 1000))
+          ? Math.max(0, Math.floor((new Date(activeLiveOverride.endsAt).getTime() - nowMs) / 1000))
           : null,
       },
     });
   }
 
-  const activeScheduleEntries = await db
-    .select()
-    .from(scheduleTable)
-    .where(eq(scheduleTable.isActive, true));
-  const activeSchedule = getActiveScheduleEntry(activeScheduleEntries);
+  const activeScheduleEntries = await getScheduleEntries();
+  const activeSchedule = getActiveScheduleEntry(activeScheduleEntries as ScheduleEntry[]);
 
   if (activeSchedule?.contentType === "live") {
     return res.json({
@@ -325,11 +360,7 @@ router.get("/broadcast/current", async (_req, res) => {
     }
   }
 
-  const items = await db
-    .select()
-    .from(broadcastQueueTable)
-    .where(eq(broadcastQueueTable.isActive, true))
-    .orderBy(asc(broadcastQueueTable.sortOrder));
+  const items = await getBroadcastQueue();
 
   if (items.length === 0) {
     return res.json({
@@ -415,6 +446,7 @@ router.post("/admin/broadcast", async (req, res) => {
     })
     .returning();
 
+  await invalidateBroadcastCache();
   res.status(201).json(item);
 });
 
@@ -438,12 +470,14 @@ router.patch("/admin/broadcast/:id", async (req, res) => {
     .returning();
 
   if (!updated) return res.status(404).json({ error: "Item not found" });
+  await invalidateBroadcastCache();
   res.json(updated);
 });
 
 router.delete("/admin/broadcast/:id", async (req, res) => {
   const { id } = req.params as { id: string };
   await db.delete(broadcastQueueTable).where(eq(broadcastQueueTable.id, id));
+  await invalidateBroadcastCache();
   res.json({ ok: true });
 });
 
@@ -462,6 +496,7 @@ router.put("/admin/broadcast/reorder", async (req, res) => {
     )
   );
 
+  await invalidateBroadcastCache();
   res.json({ ok: true });
 });
 

@@ -203,6 +203,13 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 - **Re-encode option**: Video card dropdown menu includes "Re-encode (HLS)" for any local video that failed or has no HLS yet, allowing priority re-queuing
 - **Mobile HLS integration**: `LocalVideoPlayer` accepts `hlsMasterUrl` prop and prefers it over the raw upload URL; broadcasts and navigation routes pass the HLS URL through all navigation params
 
+## Features Added (Session 10) — Caching, Docker & Production Infrastructure
+- **Redis-ready dual-layer cache** (`api-server/src/lib/cache.ts`): Dual-layer caching — uses Redis when `REDIS_URL` env var is set, falls back transparently to in-memory (TTL + GC). `getOrSet` pattern avoids redundant fetches. Added `status()` method for health inspection.
+- **Broadcast route caching**: `/broadcast/current` and `/broadcast/guide` now cache DB queries for live overrides (5s TTL), schedule entries (30s TTL), and the broadcast queue (10s TTL). All write routes (POST/PATCH/DELETE broadcast queue, reorder) call `invalidateBroadcastCache()` immediately, so admin changes surface within one cycle.
+- **Cache health endpoint**: `GET /api/cache/status` returns Redis configured/connected state and memory cache status.
+- **Offline video downloads**: `useDownloads` hook (`hooks/useDownloads.ts`) uses `expo-file-system` for download/pause/resume/delete with progress tracking; Library tab's "Offline" tab shows all downloaded videos; only local-uploaded (non-YouTube) videos are downloadable.
+- **Docker containerization**: Added `artifacts/api-server/Dockerfile` (multi-stage: deps → builder → production runner), `artifacts/admin/Dockerfile` (multi-stage: deps → builder → nginx static server), `artifacts/admin/nginx.conf` (path-based routing for `/admin/`), and `docker-compose.yml` orchestrating the API, Admin, PostgreSQL 16, and Redis 7 services with health checks, volume persistence, and correct dependency ordering.
+
 ## Features Added (Session 6)
 - **Admin schedule targeting**: Schedule entries for playlist/video content now include selectors for imported playlists and videos so scheduled programming points to real content.
 - **App-wide live interrupt**: Mobile now polls for YouTube live status and scheduled live slots globally, not only on the Watch tab, and opens the live player when a service begins.
