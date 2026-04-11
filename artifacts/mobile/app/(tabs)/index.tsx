@@ -30,6 +30,7 @@ import { usePlayer } from "@/context/PlayerContext";
 import { checkLiveStatus, type LiveCheckResult } from "@/services/youtube";
 import { sendLiveServiceNotification } from "@/services/notifications";
 import { useFeaturedVideos } from "@/hooks/useFeaturedVideos";
+import { checkBroadcastCurrent, type BroadcastCurrentResult } from "@/services/broadcast";
 import type { Sermon } from "@/types";
 
 export default function WatchScreen() {
@@ -45,6 +46,7 @@ export default function WatchScreen() {
   const [showLiveBanner, setShowLiveBanner] = useState(false);
   const [liveBannerDismissed, setLiveBannerDismissed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [broadcastCurrent, setBroadcastCurrent] = useState<BroadcastCurrentResult | null>(null);
   const autoStartedRef = useRef(false);
 
   useEffect(() => {
@@ -54,8 +56,12 @@ export default function WatchScreen() {
 
     const doLiveCheck = async (useCached = false) => {
       try {
-        const status = await checkLiveStatus(useCached);
+        const [status, broadcastRes] = await Promise.all([
+          checkLiveStatus(useCached),
+          checkBroadcastCurrent(),
+        ]);
         setLiveStatus(status);
+        setBroadcastCurrent(broadcastRes);
         setCheckingLive(false);
         if (status.isLive) {
           if (!liveBannerDismissed) setShowLiveBanner(true);
@@ -126,6 +132,29 @@ export default function WatchScreen() {
     });
   };
 
+  const handleBroadcastPress = () => {
+    const item = broadcastCurrent?.item;
+    if (!item) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    if (item.videoSource === "local" && item.localVideoUrl) {
+      router.push({
+        pathname: "/player",
+        params: {
+          localVideoUrl: item.localVideoUrl,
+          title: item.title,
+          thumbnail: item.thumbnailUrl,
+          startPositionMs: String(broadcastCurrent!.positionSecs * 1000),
+        },
+      });
+    } else {
+      navigateToPlayer({
+        videoId: item.youtubeId,
+        title: item.title,
+        thumbnail: item.thumbnailUrl,
+      });
+    }
+  };
+
   const handleRefresh = async () => {
     setRefreshing(true);
     await Promise.all([
@@ -134,9 +163,13 @@ export default function WatchScreen() {
         setLiveStatus(status);
         if (status.isLive && !liveBannerDismissed) setShowLiveBanner(true);
       }),
+      checkBroadcastCurrent().then((bc) => setBroadcastCurrent(bc)),
     ]);
     setRefreshing(false);
   };
+
+  const broadcastItem = broadcastCurrent?.item ?? null;
+  const showBroadcast = !liveStatus.isLive && broadcastItem !== null;
 
   const teachingsSermons = sermons.filter((s) => s.category === "Teachings").slice(0, 3);
   const specialSermons = sermons.filter((s) => s.category === "Special Programs").slice(0, 3);
@@ -202,37 +235,58 @@ export default function WatchScreen() {
             <SkeletonLiveBanner />
           ) : (
             <Pressable
-              onPress={handleLivePress}
+              onPress={showBroadcast ? handleBroadcastPress : handleLivePress}
               style={({ pressed }) => [{ opacity: pressed ? 0.9 : 1, transform: [{ scale: pressed ? 0.98 : 1 }] }]}
             >
               <GlassCard style={styles.liveCard} intensity="high">
-                <Image
-                  source={require("@/assets/images/live-banner.png")}
-                  style={styles.liveBanner}
-                  resizeMode="cover"
-                />
+                {showBroadcast && broadcastItem?.thumbnailUrl ? (
+                  <Image
+                    source={{ uri: broadcastItem.thumbnailUrl }}
+                    style={styles.liveBanner}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <Image
+                    source={require("@/assets/images/live-banner.png")}
+                    style={styles.liveBanner}
+                    resizeMode="cover"
+                  />
+                )}
                 <View style={styles.liveOverlay}>
                   {checkingLive ? null : liveStatus.isLive ? (
                     <LiveBadge size="large" />
+                  ) : showBroadcast ? (
+                    <View style={[styles.offlineTag, { backgroundColor: "rgba(106,13,173,0.85)" }]}>
+                      <Feather name="radio" size={13} color="rgba(255,255,255,0.9)" />
+                      <Text style={styles.offlineTagText}>ON AIR</Text>
+                    </View>
                   ) : (
                     <View style={styles.offlineTag}>
                       <Feather name="clock" size={13} color="rgba(255,255,255,0.8)" />
                       <Text style={styles.offlineTagText}>24/7 Stream</Text>
                     </View>
                   )}
-                  <Text style={styles.liveTitle}>
-                    {liveStatus.isLive && liveStatus.title ? liveStatus.title : "Temple TV Live"}
+                  <Text style={styles.liveTitle} numberOfLines={2}>
+                    {liveStatus.isLive && liveStatus.title
+                      ? liveStatus.title
+                      : showBroadcast
+                      ? broadcastItem?.title ?? "Temple TV Broadcast"
+                      : "Temple TV Live"}
                   </Text>
                   <Text style={styles.liveSubtitle}>
-                    {liveStatus.isLive ? "Now streaming live — tap to watch" : "Live worship & preaching 24/7"}
+                    {liveStatus.isLive
+                      ? "Now streaming live — tap to watch"
+                      : showBroadcast
+                      ? "Continuous broadcast — tap to watch"
+                      : "Live worship & preaching 24/7"}
                   </Text>
                   <Pressable
-                    onPress={handleLivePress}
+                    onPress={showBroadcast ? handleBroadcastPress : handleLivePress}
                     style={[styles.watchBtn, { backgroundColor: liveStatus.isLive ? "#FF0040" : c.primary }]}
                   >
                     <Feather name="play" size={15} color="#FFF" />
                     <Text style={styles.watchBtnText}>
-                      {liveStatus.isLive ? "Join Live" : "Watch Stream"}
+                      {liveStatus.isLive ? "Join Live" : showBroadcast ? "Watch Broadcast" : "Watch Stream"}
                     </Text>
                   </Pressable>
                 </View>

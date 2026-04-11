@@ -10,6 +10,7 @@ import Playlists from "@/pages/playlists";
 import Schedule from "@/pages/schedule";
 import Notifications from "@/pages/notifications";
 import Analytics from "@/pages/analytics";
+import Broadcast from "@/pages/broadcast";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -28,6 +29,7 @@ function Router() {
         <Route path="/videos" component={Videos} />
         <Route path="/playlists" component={Playlists} />
         <Route path="/schedule" component={Schedule} />
+        <Route path="/broadcast" component={Broadcast} />
         <Route path="/notifications" component={Notifications} />
         <Route path="/analytics" component={Analytics} />
         <Route component={NotFound} />

@@ -7,7 +7,8 @@ import {
   Calendar, 
   BellRing, 
   BarChart2, 
-  Radio
+  Radio,
+  Tv2,
 } from "lucide-react";
 import { useGetLiveStatus } from "@workspace/api-client-react";
 
@@ -18,6 +19,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const links = [
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
     { href: "/videos", label: "Video Library", icon: Video },
+    { href: "/broadcast", label: "Broadcast Queue", icon: Tv2 },
     { href: "/playlists", label: "Playlists", icon: ListVideo },
     { href: "/schedule", label: "Schedule", icon: Calendar },
     { href: "/notifications", label: "Notifications", icon: BellRing },

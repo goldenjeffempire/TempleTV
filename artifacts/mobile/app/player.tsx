@@ -20,6 +20,7 @@ import { useColors } from "@/hooks/useColors";
 import { useFavorites } from "@/hooks/useFavorites";
 import { useWatchHistory } from "@/hooks/useWatchHistory";
 import { YoutubePlayer } from "@/components/YoutubePlayer";
+import { LocalVideoPlayer } from "@/components/LocalVideoPlayer";
 import { SermonCard } from "@/components/SermonCard";
 import { LiveBadge } from "@/components/LiveBadge";
 import { GlassCard } from "@/components/GlassCard";
@@ -178,6 +179,8 @@ export default function PlayerScreen() {
     duration?: string;
     thumbnail?: string;
     category?: string;
+    localVideoUrl?: string;
+    startPositionMs?: string;
   }>();
 
   const {
@@ -188,6 +191,8 @@ export default function PlayerScreen() {
     duration: paramDuration,
     thumbnail: paramThumbnail,
     category: paramCategory,
+    localVideoUrl: paramLocalVideoUrl,
+    startPositionMs: paramStartPositionMs,
   } = params;
 
   const {
@@ -364,13 +369,24 @@ export default function PlayerScreen() {
       {Platform.OS !== "web" && <StatusBar barStyle="light-content" backgroundColor="#000" />}
 
       <View style={styles.playerContainer}>
-        <YoutubePlayer
-          videoId={displayVideoId}
-          isLive={isLive}
-          thumbnailUrl={thumbnailUrl}
-          autoPlay
-          onEnd={handleVideoEnd}
-        />
+        {paramLocalVideoUrl ? (
+          <LocalVideoPlayer
+            videoUrl={paramLocalVideoUrl}
+            thumbnailUrl={paramThumbnail}
+            title={displayTitle}
+            autoPlay
+            startPositionMs={paramStartPositionMs ? parseInt(paramStartPositionMs, 10) : 0}
+            onEnd={handleVideoEnd}
+          />
+        ) : (
+          <YoutubePlayer
+            videoId={displayVideoId}
+            isLive={isLive}
+            thumbnailUrl={thumbnailUrl}
+            autoPlay
+            onEnd={handleVideoEnd}
+          />
+        )}
         <LinearGradient
           colors={["rgba(0,0,0,0.7)", "transparent"]}
           style={[styles.topGradient, { paddingTop: insets.top + webTopPad + 12, pointerEvents: "box-none" }]}
