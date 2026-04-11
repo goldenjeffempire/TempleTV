@@ -47,7 +47,13 @@ export default function WatchScreen() {
   const [liveBannerDismissed, setLiveBannerDismissed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [broadcastCurrent, setBroadcastCurrent] = useState<BroadcastCurrentResult | null>(null);
+  const [tickMs, setTickMs] = useState(() => Date.now());
   const autoStartedRef = useRef(false);
+
+  useEffect(() => {
+    const ticker = setInterval(() => setTickMs(Date.now()), 1000);
+    return () => clearInterval(ticker);
+  }, []);
 
   useEffect(() => {
     Animated.timing(fadeAnim, { toValue: 1, duration: 500, useNativeDriver: Platform.OS !== "web" }).start();
@@ -183,6 +189,19 @@ export default function WatchScreen() {
   const showScheduledLive = !liveStatus.isLive && broadcastCurrent?.activeSchedule?.contentType === "live";
   const showBroadcast = !liveStatus.isLive && (broadcastItem !== null || showScheduledLive);
 
+  const broadcastFetchTimeRef = useRef(Date.now());
+  useEffect(() => { broadcastFetchTimeRef.current = Date.now(); }, [broadcastCurrent]);
+  const elapsedSinceFetch = (tickMs - broadcastFetchTimeRef.current) / 1000;
+  const livePositionSecs = Math.round((broadcastCurrent?.positionSecs ?? 0) + elapsedSinceFetch);
+  const totalDuration = broadcastCurrent?.item?.durationSecs ?? 1;
+  const liveProgress = Math.min(100, (livePositionSecs / totalDuration) * 100);
+  const liveRemaining = Math.max(0, totalDuration - livePositionSecs);
+  const liveRemMins = Math.floor(liveRemaining / 60);
+  const liveRemSecs = liveRemaining % 60;
+  const liveRemStr = liveRemMins > 0
+    ? `${liveRemMins}m ${String(liveRemSecs).padStart(2, "0")}s`
+    : `${liveRemSecs}s`;
+
   const teachingsSermons = sermons.filter((s) => s.category === "Teachings").slice(0, 3);
   const specialSermons = sermons.filter((s) => s.category === "Special Programs").slice(0, 3);
 
@@ -296,10 +315,23 @@ export default function WatchScreen() {
                       ? "Continuous broadcast — tap to watch"
                       : "Live worship & preaching 24/7"}
                   </Text>
-                  {showBroadcast && broadcastCurrent?.nextItem && (
-                    <Text style={styles.broadcastNext} numberOfLines={1}>
-                      Up next: {broadcastCurrent.nextItem.title}
-                    </Text>
+                  {showBroadcast && broadcastCurrent?.item && (
+                    <View style={styles.broadcastProgressSection}>
+                      <View style={styles.broadcastProgressRow}>
+                        <View style={styles.broadcastProgressTrack}>
+                          <View style={[styles.broadcastProgressFill, { width: `${liveProgress}%` }]} />
+                        </View>
+                        <View style={styles.broadcastTimeBadge}>
+                          <Feather name="clock" size={9} color="rgba(255,255,255,0.7)" />
+                          <Text style={styles.broadcastTimeText}>{liveRemStr} left</Text>
+                        </View>
+                      </View>
+                      {broadcastCurrent?.nextItem && (
+                        <Text style={styles.broadcastNext} numberOfLines={1}>
+                          Up next: {broadcastCurrent.nextItem.title}
+                        </Text>
+                      )}
+                    </View>
                   )}
                   <Pressable
                     onPress={showBroadcast ? handleBroadcastPress : handleLivePress}
@@ -307,7 +339,7 @@ export default function WatchScreen() {
                   >
                     <Feather name="play" size={15} color="#FFF" />
                     <Text style={styles.watchBtnText}>
-                      {liveStatus.isLive || showScheduledLive ? "Join Live" : showBroadcast ? "Watch Broadcast" : "Watch Stream"}
+                      {liveStatus.isLive || showScheduledLive ? "Join Live" : showBroadcast ? "Tune In Now" : "Watch Stream"}
                     </Text>
                   </Pressable>
                 </View>
@@ -475,7 +507,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  liveCard: { marginHorizontal: 16, marginBottom: 8, height: 220 },
+  liveCard: { marginHorizontal: 16, marginBottom: 8, minHeight: 240 },
   liveBanner: { ...StyleSheet.absoluteFillObject, width: "100%", height: "100%" },
   liveOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -497,6 +529,12 @@ const styles = StyleSheet.create({
   offlineTagText: { color: "rgba(255,255,255,0.85)", fontSize: 12, fontFamily: "Inter_600SemiBold" },
   liveTitle: { color: "#FFFFFF", fontSize: 22, fontFamily: "Inter_700Bold" },
   liveSubtitle: { color: "rgba(255,255,255,0.7)", fontSize: 13, fontFamily: "Inter_400Regular" },
+  broadcastProgressSection: { gap: 5, marginTop: 2 },
+  broadcastProgressRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  broadcastProgressTrack: { flex: 1, height: 3, backgroundColor: "rgba(255,255,255,0.2)", borderRadius: 2, overflow: "hidden" },
+  broadcastProgressFill: { height: "100%", backgroundColor: "#6A0DAD", borderRadius: 2 } as const,
+  broadcastTimeBadge: { flexDirection: "row", alignItems: "center", gap: 3 },
+  broadcastTimeText: { color: "rgba(255,255,255,0.7)", fontSize: 10, fontFamily: "Inter_500Medium" },
   broadcastNext: { color: "rgba(255,255,255,0.62)", fontSize: 12, fontFamily: "Inter_500Medium" },
   watchBtn: {
     flexDirection: "row",

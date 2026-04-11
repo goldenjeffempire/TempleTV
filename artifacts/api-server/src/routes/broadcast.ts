@@ -170,6 +170,77 @@ async function getScheduledItems(entry: ScheduleEntry): Promise<BroadcastItem[]>
   return [];
 }
 
+router.get("/broadcast/guide", async (_req, res) => {
+  try {
+    const activeLiveOverride = await getActiveLiveOverride();
+    if (activeLiveOverride) {
+      return res.json({ items: [], liveOverride: { title: activeLiveOverride.title } });
+    }
+
+    const activeSchedule = await getActiveScheduleEntry();
+    const items = activeSchedule && activeSchedule.contentType !== "live"
+      ? await getScheduledItems(activeSchedule)
+      : await db.select().from(broadcastQueueTable).where(eq(broadcastQueueTable.isActive, true)).orderBy(asc(broadcastQueueTable.sortOrder));
+
+    const playableItems = items.filter((item) => item.durationSecs > 0);
+    if (playableItems.length === 0) return res.json({ items: [] });
+
+    const totalSecs = playableItems.reduce((acc, i) => acc + i.durationSecs, 0);
+    const epochSecs = Math.floor(Date.now() / 1000);
+    const cyclePos = epochSecs % totalSecs;
+
+    let cumulative = 0;
+    let currentIdx = 0;
+    let positionInCurrent = 0;
+    for (let i = 0; i < playableItems.length; i++) {
+      const item = playableItems[i]!;
+      if (cyclePos < cumulative + item.durationSecs) {
+        currentIdx = i;
+        positionInCurrent = cyclePos - cumulative;
+        break;
+      }
+      cumulative += item.durationSecs;
+    }
+
+    const guideItems: Array<{
+      id: string; youtubeId: string; title: string; thumbnailUrl: string;
+      durationSecs: number; localVideoUrl: string | null; videoSource: string;
+      startMs: number; endMs: number; isCurrent: boolean;
+      positionSecs: number; progressPercent: number;
+    }> = [];
+    const nowMs = Date.now();
+    let wallClockStartMs = nowMs - positionInCurrent * 1000;
+    const limit = Math.min(24, playableItems.length * 3);
+
+    for (let i = 0; i < limit; i++) {
+      const idx = (currentIdx + i) % playableItems.length;
+      const item = playableItems[idx]!;
+      const isCurrent = i === 0;
+      guideItems.push({
+        id: item.id,
+        youtubeId: item.youtubeId,
+        title: item.title,
+        thumbnailUrl: item.thumbnailUrl,
+        durationSecs: item.durationSecs,
+        localVideoUrl: item.localVideoUrl ?? null,
+        videoSource: item.videoSource ?? "youtube",
+        startMs: wallClockStartMs,
+        endMs: wallClockStartMs + item.durationSecs * 1000,
+        isCurrent,
+        positionSecs: isCurrent ? positionInCurrent : 0,
+        progressPercent: isCurrent && item.durationSecs > 0 ? Math.round((positionInCurrent / item.durationSecs) * 100) : 0,
+      });
+      wallClockStartMs += item.durationSecs * 1000;
+      if (wallClockStartMs > nowMs + 24 * 3600 * 1000) break;
+    }
+
+    res.json({ items: guideItems });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
 router.get("/broadcast/current", async (_req, res) => {
   const activeLiveOverride = await getActiveLiveOverride();
   if (activeLiveOverride) {

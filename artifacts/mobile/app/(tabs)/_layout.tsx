@@ -18,6 +18,10 @@ function NativeTabLayout() {
           <Icon sf={{ default: "tv", selected: "tv.fill" }} />
           <Label>Watch</Label>
         </NativeTabs.Trigger>
+        <NativeTabs.Trigger name="guide">
+          <Icon sf={{ default: "list.bullet.rectangle", selected: "list.bullet.rectangle.fill" }} />
+          <Label>Guide</Label>
+        </NativeTabs.Trigger>
         <NativeTabs.Trigger name="library">
           <Icon sf={{ default: "books.vertical", selected: "books.vertical.fill" }} />
           <Label>Library</Label>
@@ -88,6 +92,18 @@ function ClassicTabLayout() {
                 <SymbolView name="tv" tintColor={color} size={24} />
               ) : (
                 <Feather name="tv" size={22} color={color} />
+              ),
+          }}
+        />
+        <Tabs.Screen
+          name="guide"
+          options={{
+            title: "Guide",
+            tabBarIcon: ({ color }) =>
+              isIOS ? (
+                <SymbolView name="list.bullet.rectangle" tintColor={color} size={24} />
+              ) : (
+                <Feather name="list" size={22} color={color} />
               ),
           }}
         />

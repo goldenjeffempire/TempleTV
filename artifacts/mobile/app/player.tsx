@@ -29,7 +29,9 @@ import { GlassCard } from "@/components/GlassCard";
 import { usePlayer } from "@/context/PlayerContext";
 import { SERMONS } from "@/data/sermons";
 import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
-import { checkBroadcastCurrent } from "@/services/broadcast";
+import { checkBroadcastCurrent, type BroadcastCurrentResult } from "@/services/broadcast";
+import { ChannelBug } from "@/components/ChannelBug";
+import { BroadcastInfoStrip } from "@/components/BroadcastInfoStrip";
 import type { Sermon } from "@/types";
 
 function formatTime(seconds: number): string {
@@ -235,6 +237,7 @@ export default function PlayerScreen() {
 
   const isLive = live === "true";
   const isBroadcastMode = paramBroadcastMode === "true";
+  const [broadcastInfo, setBroadcastInfo] = useState<BroadcastCurrentResult | null>(null);
   const scrollRef = useRef<ScrollView>(null);
   const fadeAnim = useRef(new Animated.Value(Platform.OS === "web" ? 1 : 0)).current;
   const titleFade = useRef(new Animated.Value(1)).current;
@@ -309,6 +312,23 @@ export default function PlayerScreen() {
       Animated.timing(titleFade, { toValue: 1, duration: 250, useNativeDriver: Platform.OS !== "web" }).start();
     });
   }, [ctxSermon?.youtubeId]);
+
+  useEffect(() => {
+    if (!isBroadcastMode) return;
+    let cancelled = false;
+    const refreshInfo = async () => {
+      try {
+        const bc = await checkBroadcastCurrent();
+        if (!cancelled && bc) setBroadcastInfo(bc);
+      } catch {}
+    };
+    refreshInfo();
+    const ticker = setInterval(refreshInfo, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(ticker);
+    };
+  }, [isBroadcastMode]);
 
   useEffect(() => {
     if (!isBroadcastMode) return;
@@ -525,8 +545,17 @@ export default function PlayerScreen() {
                 <Feather name={isRadioMode ? "video" : "headphones"} size={16} color="#FFF" />
               </Pressable>
             )}
+            {isBroadcastMode && (
+              <View style={styles.channelBugWrap}>
+                <ChannelBug visible animated />
+              </View>
+            )}
           </View>
         </LinearGradient>
+
+        {isBroadcastMode && !isRadioMode && (
+          <BroadcastInfoStrip broadcast={broadcastInfo} playerHeight={videoPlayerHeight} />
+        )}
       </View>
 
       <Animated.View style={{ opacity: fadeAnim, flex: 1 }}>
@@ -677,7 +706,24 @@ export default function PlayerScreen() {
             </GlassCard>
           )}
 
-          {relatedSermons.length > 0 && (
+          {isBroadcastMode && broadcastInfo?.nextItem && (
+            <View style={styles.relatedSection}>
+              <Text style={[styles.relatedTitle, { color: c.foreground }]}>Up Next on Temple TV</Text>
+              <GlassCard style={styles.broadcastUpNext}>
+                <View style={styles.broadcastUpNextLeft}>
+                  <Feather name="tv" size={16} color={c.primary} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.autoPlayLabel, { color: c.mutedForeground }]}>Coming Up</Text>
+                    <Text style={[styles.autoPlayTitle, { color: c.foreground }]} numberOfLines={2}>
+                      {broadcastInfo.nextItem.title}
+                    </Text>
+                  </View>
+                </View>
+              </GlassCard>
+            </View>
+          )}
+
+          {!isBroadcastMode && relatedSermons.length > 0 && (
             <View style={styles.relatedSection}>
               <Text style={[styles.relatedTitle, { color: c.foreground }]}>Related Sermons</Text>
               {relatedSermons.map((sermon) => (
@@ -698,6 +744,9 @@ const styles = StyleSheet.create({
   topControls: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, gap: 12 },
   backBtn: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.4)" },
   audioToggleBtn: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.4)" },
+  channelBugWrap: { position: "absolute", bottom: 8, right: 8, pointerEvents: "none" } as const,
+  broadcastUpNext: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 14 },
+  broadcastUpNextLeft: { flexDirection: "row", alignItems: "center", gap: 10, flex: 1 },
   info: { padding: 16, gap: 16 },
   titleSection: { gap: 8 },
   topMeta: { flexDirection: "row", alignItems: "center", gap: 8 },

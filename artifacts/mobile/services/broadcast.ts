@@ -49,6 +49,48 @@ function normalizeItem(item: BroadcastItem | null, domain: string): BroadcastIte
   };
 }
 
+export interface BroadcastGuideItem {
+  id: string;
+  youtubeId: string;
+  title: string;
+  thumbnailUrl: string;
+  durationSecs: number;
+  localVideoUrl: string | null;
+  videoSource: string;
+  startMs: number;
+  endMs: number;
+  isCurrent: boolean;
+  positionSecs: number;
+  progressPercent: number;
+}
+
+export interface BroadcastGuideResult {
+  items: BroadcastGuideItem[];
+  liveOverride?: { title: string } | null;
+}
+
+export async function fetchBroadcastGuide(): Promise<BroadcastGuideResult | null> {
+  const domain = process.env.EXPO_PUBLIC_DOMAIN;
+  if (!domain) return null;
+  try {
+    const res = await fetch(`https://${domain}/api/broadcast/guide`, {
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as BroadcastGuideResult;
+    return {
+      ...data,
+      items: data.items.map((item) => ({
+        ...item,
+        localVideoUrl: toAbsoluteUrl(item.localVideoUrl, domain),
+        thumbnailUrl: toAbsoluteUrl(item.thumbnailUrl, domain) ?? item.thumbnailUrl,
+      })),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function checkBroadcastCurrent(): Promise<BroadcastCurrentResult | null> {
   const domain = process.env.EXPO_PUBLIC_DOMAIN;
   if (!domain) return null;

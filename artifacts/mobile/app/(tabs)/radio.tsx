@@ -15,8 +15,10 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
 import { GlassCard } from "@/components/GlassCard";
+import { ChannelBug } from "@/components/ChannelBug";
 import { usePlayer } from "@/context/PlayerContext";
 import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
+import { checkBroadcastCurrent, type BroadcastCurrentResult } from "@/services/broadcast";
 import type { LoopMode, Sermon, SermonCategory } from "@/types";
 
 const PLACEHOLDER = require("@/assets/images/sermon-placeholder.png");
@@ -60,6 +62,38 @@ export default function RadioScreen() {
   const { sermons } = useYouTubeChannel();
   const webTopPad = Platform.OS === "web" ? 67 : 0;
   const [radioCategory, setRadioCategory] = useState<SermonCategory>("All");
+  const [broadcastInfo, setBroadcastInfo] = useState<BroadcastCurrentResult | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const bc = await checkBroadcastCurrent();
+        if (!cancelled) setBroadcastInfo(bc);
+      } catch {}
+    };
+    load();
+    const interval = setInterval(load, 30000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  const handleListenLive = () => {
+    const item = broadcastInfo?.item;
+    if (!item) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    const startMs = String((broadcastInfo?.positionSecs ?? 0) * 1000);
+    if (item.videoSource === "local" && item.localVideoUrl) {
+      router.push({
+        pathname: "/player",
+        params: { broadcastMode: "true", localVideoUrl: item.localVideoUrl, title: item.title, thumbnail: item.thumbnailUrl, startPositionMs: startMs },
+      });
+    } else {
+      router.push({
+        pathname: "/player",
+        params: { broadcastMode: "true", videoId: item.youtubeId, title: item.title, thumbnail: item.thumbnailUrl, startPositionMs: startMs },
+      });
+    }
+  };
 
   const filteredQueue = useMemo(() => {
     if (radioCategory === "All") return sermons.length > 0 ? sermons : queue;
@@ -175,6 +209,28 @@ export default function RadioScreen() {
             </Text>
           </View>
         </View>
+
+        {broadcastInfo?.item && (
+          <GlassCard style={[styles.broadcastCard, { borderColor: c.primary + "30" }]} intensity="medium">
+            <View style={styles.broadcastCardHeader}>
+              <ChannelBug visible animated />
+              <Text style={[styles.broadcastCardLabel, { color: c.mutedForeground }]}>Now Broadcasting</Text>
+            </View>
+            <Text style={[styles.broadcastCardTitle, { color: c.foreground }]} numberOfLines={2}>
+              {broadcastInfo.item.title}
+            </Text>
+            <View style={styles.broadcastProgressTrack}>
+              <View style={[styles.broadcastProgressFill, { width: `${Math.min(100, broadcastInfo.progressPercent ?? 0)}%`, backgroundColor: c.primary }]} />
+            </View>
+            <Pressable
+              style={({ pressed }) => [styles.listenLiveBtn, { backgroundColor: c.primary, opacity: pressed ? 0.85 : 1 }]}
+              onPress={handleListenLive}
+            >
+              <Feather name="headphones" size={16} color="#FFF" />
+              <Text style={styles.listenLiveBtnText}>Listen to Temple TV Channel</Text>
+            </Pressable>
+          </GlassCard>
+        )}
 
         <View style={styles.playerSection}>
           <Animated.View style={{ transform: [{ rotate: spin }, { scale: pulseAnim }] }}>
@@ -480,4 +536,20 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   watchVideoText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  broadcastCard: { marginHorizontal: 16, marginBottom: 4, padding: 16, gap: 10, borderWidth: 1 },
+  broadcastCardHeader: { flexDirection: "row", alignItems: "center", gap: 8 },
+  broadcastCardLabel: { fontSize: 12, fontFamily: "Inter_500Medium" },
+  broadcastCardTitle: { fontSize: 16, fontFamily: "Inter_700Bold", lineHeight: 22 },
+  broadcastProgressTrack: { height: 3, backgroundColor: "rgba(106,13,173,0.15)", borderRadius: 2, overflow: "hidden" },
+  broadcastProgressFill: { height: "100%", borderRadius: 2 } as const,
+  listenLiveBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 11,
+    borderRadius: 22,
+    marginTop: 2,
+  },
+  listenLiveBtnText: { color: "#FFF", fontSize: 14, fontFamily: "Inter_700Bold" },
 });
