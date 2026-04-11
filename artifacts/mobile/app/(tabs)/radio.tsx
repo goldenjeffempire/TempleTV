@@ -13,6 +13,7 @@ import { Feather } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
+import { navigateToSermon } from "@/utils/navigation";
 import { useColors } from "@/hooks/useColors";
 import { GlassCard } from "@/components/GlassCard";
 import { ChannelBug } from "@/components/ChannelBug";
@@ -207,17 +208,7 @@ export default function RadioScreen() {
     if (!nowPlaying) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     if (isRadioMode) toggleRadioMode();
-    router.push({
-      pathname: "/player",
-      params: {
-        videoId: nowPlaying.youtubeId,
-        title: nowPlaying.title,
-        preacher: nowPlaying.preacher,
-        duration: nowPlaying.duration,
-        thumbnail: nowPlaying.thumbnailUrl,
-        category: nowPlaying.category,
-      },
-    });
+    navigateToSermon(nowPlaying);
   };
 
   const upNext = filteredQueue

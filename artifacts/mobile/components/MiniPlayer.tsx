@@ -7,6 +7,7 @@ import { router } from "expo-router";
 import { useColors } from "@/hooks/useColors";
 import { LiveBadge } from "@/components/LiveBadge";
 import { usePlayer } from "@/context/PlayerContext";
+import { navigateToSermon } from "@/utils/navigation";
 
 export function MiniPlayer() {
   const c = useColors();
@@ -44,17 +45,7 @@ export function MiniPlayer() {
     if (isLive) {
       router.push({ pathname: "/player", params: { live: "true", title: "Temple TV Live", preacher: "Temple TV JCTM" } });
     } else if (currentSermon) {
-      router.push({
-        pathname: "/player",
-        params: {
-          videoId: currentSermon.youtubeId,
-          title: currentSermon.title,
-          preacher: currentSermon.preacher,
-          duration: currentSermon.duration,
-          thumbnail: currentSermon.thumbnailUrl,
-          category: currentSermon.category,
-        },
-      });
+      navigateToSermon(currentSermon);
     }
   };
 

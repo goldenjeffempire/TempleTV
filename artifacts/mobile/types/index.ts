@@ -9,6 +9,8 @@ export interface Sermon {
   preacher: string;
   date: string;
   views?: number;
+  videoSource?: "youtube" | "local";
+  localVideoUrl?: string;
 }
 
 export type SermonCategory =

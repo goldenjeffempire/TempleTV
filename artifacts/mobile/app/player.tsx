@@ -21,6 +21,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useColors } from "@/hooks/useColors";
 import { useFavorites } from "@/hooks/useFavorites";
 import { useWatchHistory } from "@/hooks/useWatchHistory";
+import { useWatchProgress } from "@/hooks/useWatchProgress";
 import { YoutubePlayer } from "@/components/YoutubePlayer";
 import { LocalVideoPlayer } from "@/components/LocalVideoPlayer";
 import { SermonCard } from "@/components/SermonCard";
@@ -233,6 +234,7 @@ export default function PlayerScreen() {
 
   const { isFavorite, toggleFavorite } = useFavorites();
   const { addToHistory } = useWatchHistory();
+  const { saveProgress } = useWatchProgress();
   const { sermons: rssSermons } = useYouTubeChannel();
 
   const isLive = live === "true";
@@ -264,19 +266,34 @@ export default function PlayerScreen() {
   );
 
   const makeParamSermon = useCallback((): Sermon | null => {
-    if (!paramVideoId) return null;
+    if (!paramVideoId && !paramLocalVideoUrl) return null;
+    if (paramLocalVideoUrl) {
+      return {
+        id: `local_${encodeURIComponent(paramLocalVideoUrl)}`,
+        title: paramTitle ?? "Temple TV",
+        description: "",
+        youtubeId: "",
+        thumbnailUrl: paramThumbnail ?? "",
+        duration: paramDuration ?? "",
+        category: (paramCategory as Sermon["category"]) || "Faith",
+        preacher: paramPreacher ?? "JCTM",
+        date: new Date().toISOString().slice(0, 10),
+        videoSource: "local",
+        localVideoUrl: paramLocalVideoUrl,
+      };
+    }
     return {
       id: `player_${paramVideoId}`,
       title: paramTitle ?? "Temple TV",
       description: "",
-      youtubeId: paramVideoId,
+      youtubeId: paramVideoId!,
       thumbnailUrl: paramThumbnail ?? `https://img.youtube.com/vi/${paramVideoId}/hqdefault.jpg`,
       duration: paramDuration ?? "",
       category: (paramCategory as Sermon["category"]) || "Faith",
       preacher: paramPreacher ?? "JCTM",
       date: new Date().toISOString().slice(0, 10),
     };
-  }, [paramVideoId, paramTitle, paramPreacher, paramDuration, paramThumbnail, paramCategory]);
+  }, [paramVideoId, paramLocalVideoUrl, paramTitle, paramPreacher, paramDuration, paramThumbnail, paramCategory]);
 
   const [activeSermon, setActiveSermon] = useState<Sermon | null>(() => {
     if (isLive) return null;
@@ -312,6 +329,15 @@ export default function PlayerScreen() {
       Animated.timing(titleFade, { toValue: 1, duration: 250, useNativeDriver: Platform.OS !== "web" }).start();
     });
   }, [ctxSermon?.youtubeId]);
+
+  useEffect(() => {
+    if (isLive || isBroadcastMode || !activeSermon) return;
+    if (currentTime < 5 || duration <= 0) return;
+    saveProgress(activeSermon.id, currentTime, duration, {
+      title: activeSermon.title,
+      thumbnailUrl: activeSermon.thumbnailUrl,
+    });
+  }, [currentTime]);
 
   useEffect(() => {
     if (!isBroadcastMode) return;

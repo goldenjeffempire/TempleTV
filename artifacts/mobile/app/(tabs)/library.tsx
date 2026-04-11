@@ -10,17 +10,20 @@ import {
   View,
 } from "react-native";
 import { Feather } from "@expo/vector-icons";
-import { router, useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
 import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
+import { useLocalVideos } from "@/hooks/useLocalVideos";
 import { useFavorites } from "@/hooks/useFavorites";
 import { useWatchHistory } from "@/hooks/useWatchHistory";
+import { useWatchProgress } from "@/hooks/useWatchProgress";
 import { usePlaylists, usePlaylistDetail } from "@/hooks/usePlaylists";
 import { CategoryPills } from "@/components/CategoryPills";
 import { SermonCard } from "@/components/SermonCard";
 import { SkeletonHorizontalCard } from "@/components/SkeletonCard";
+import { navigateToSermon } from "@/utils/navigation";
 import type { SermonCategory, Sermon, SortMode } from "@/types";
 
 type ViewMode = "all" | "favorites" | "history" | "playlists";
@@ -87,6 +90,7 @@ export default function LibraryScreen() {
   const { sermons, loading, refresh } = useYouTubeChannel();
   const { favorites, isFavorite, toggleFavorite } = useFavorites();
   const { history, hasWatched } = useWatchHistory();
+  const { getProgress } = useWatchProgress();
   const { playlists, loading: playlistsLoading } = usePlaylists();
   const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null);
   const { detail: selectedPlaylist, loading: playlistDetailLoading, sermons: playlistSermons } = usePlaylistDetail(selectedPlaylistId);
@@ -118,18 +122,12 @@ export default function LibraryScreen() {
 
   const handleSermonPress = useCallback((sermon: Sermon) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    router.push({
-      pathname: "/player",
-      params: {
-        videoId: sermon.youtubeId,
-        title: sermon.title,
-        preacher: sermon.preacher,
-        duration: sermon.duration,
-        thumbnail: sermon.thumbnailUrl,
-        category: sermon.category,
-      },
-    });
-  }, []);
+    const prog = getProgress(sermon.id);
+    navigateToSermon(
+      sermon,
+      prog ? { startPositionMs: String(Math.floor(prog.position * 1000)) } : {},
+    );
+  }, [getProgress]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -356,7 +354,12 @@ export default function LibraryScreen() {
           }
           renderItem={({ item }) => (
             <View style={styles.cardWrapper}>
-              <SermonCard sermon={item} onPress={handleSermonPress} variant="horizontal" />
+              <SermonCard
+                sermon={item}
+                onPress={handleSermonPress}
+                variant="horizontal"
+                progress={getProgress(item.id)?.pct}
+              />
               <Pressable
                 onPress={() => {
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);

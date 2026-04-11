@@ -12,6 +12,7 @@ interface SermonCardProps {
   sermon: Sermon;
   onPress: (sermon: Sermon) => void;
   variant?: "horizontal" | "vertical";
+  progress?: number;
 }
 
 const SmartImage = memo(function SmartImage({ uri, style }: { uri: string; style: object }) {
@@ -33,6 +34,7 @@ export const SermonCard = memo(function SermonCard({
   sermon,
   onPress,
   variant = "vertical",
+  progress,
 }: SermonCardProps) {
   const c = useColors();
 
@@ -40,6 +42,9 @@ export const SermonCard = memo(function SermonCard({
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     onPress(sermon);
   };
+
+  const showProgress = typeof progress === "number" && progress > 0.01 && progress < 0.98;
+  const isLocal = sermon.videoSource === "local";
 
   if (variant === "horizontal") {
     return (
@@ -50,6 +55,16 @@ export const SermonCard = memo(function SermonCard({
         <GlassCard style={styles.horizontalCard}>
           <View style={styles.horizontalThumbWrap}>
             <SmartImage uri={sermon.thumbnailUrl} style={styles.horizontalThumb} />
+            {showProgress && (
+              <View style={[styles.progressTrack, { backgroundColor: "rgba(255,255,255,0.2)" }]}>
+                <View
+                  style={[
+                    styles.progressFill,
+                    { backgroundColor: c.primary, width: `${Math.round(progress! * 100)}%` as any },
+                  ]}
+                />
+              </View>
+            )}
           </View>
           <View style={styles.horizontalInfo}>
             <Text style={[styles.title, { color: c.foreground }]} numberOfLines={2}>
@@ -62,6 +77,12 @@ export const SermonCard = memo(function SermonCard({
                   <Feather name="clock" size={11} color={c.mutedForeground} />
                   <Text style={[styles.duration, { color: c.mutedForeground }]}>{sermon.duration}</Text>
                 </>
+              )}
+              {isLocal && (
+                <View style={[styles.localBadge, { backgroundColor: c.primary + "22" }]}>
+                  <Feather name="upload" size={9} color={c.primary} />
+                  <Text style={[styles.localBadgeText, { color: c.primary }]}>Local</Text>
+                </View>
               )}
               <View style={[styles.categoryBadge, { backgroundColor: c.secondary }]}>
                 <Text style={[styles.categoryText, { color: c.accent }]}>{sermon.category}</Text>
@@ -86,6 +107,21 @@ export const SermonCard = memo(function SermonCard({
         {!!sermon.duration && (
           <View style={styles.durationBadge}>
             <Text style={styles.durationBadgeText}>{sermon.duration}</Text>
+          </View>
+        )}
+        {isLocal && (
+          <View style={[styles.localBadgeThumb, { backgroundColor: c.primary }]}>
+            <Feather name="upload" size={9} color="#FFF" />
+          </View>
+        )}
+        {showProgress && (
+          <View style={[styles.progressTrack, { backgroundColor: "rgba(255,255,255,0.2)" }]}>
+            <View
+              style={[
+                styles.progressFill,
+                { backgroundColor: c.primary, width: `${Math.round(progress! * 100)}%` as any },
+              ]}
+            />
           </View>
         )}
       </View>
@@ -125,6 +161,27 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontFamily: "Inter_500Medium",
   },
+  localBadgeThumb: {
+    position: "absolute",
+    top: 6,
+    left: 6,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  progressTrack: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 3,
+  },
+  progressFill: {
+    height: 3,
+    borderRadius: 1.5,
+  },
   horizontalCard: {
     flexDirection: "row",
     padding: 12,
@@ -136,6 +193,7 @@ const styles = StyleSheet.create({
     width: 120,
     height: 68,
     backgroundColor: "#111",
+    position: "relative",
   },
   horizontalThumb: {
     width: 120,
@@ -173,6 +231,18 @@ const styles = StyleSheet.create({
     marginLeft: 2,
   },
   categoryText: {
+    fontSize: 10,
+    fontFamily: "Inter_600SemiBold",
+  },
+  localBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 10,
+  },
+  localBadgeText: {
     fontSize: 10,
     fontFamily: "Inter_600SemiBold",
   },

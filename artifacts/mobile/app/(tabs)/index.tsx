@@ -30,7 +30,9 @@ import { usePlayer } from "@/context/PlayerContext";
 import { checkLiveStatus, type LiveCheckResult } from "@/services/youtube";
 import { sendLiveServiceNotification } from "@/services/notifications";
 import { useFeaturedVideos } from "@/hooks/useFeaturedVideos";
+import { useWatchProgress } from "@/hooks/useWatchProgress";
 import { checkBroadcastCurrent, type BroadcastCurrentResult } from "@/services/broadcast";
+import { navigateToSermon } from "@/utils/navigation";
 import type { Sermon } from "@/types";
 
 export default function WatchScreen() {
@@ -39,6 +41,7 @@ export default function WatchScreen() {
   const { currentSermon, isLive: playerIsLive, playSermon, playLive, setQueue } = usePlayer();
   const { sermons, loading, refresh, isFromRss, error: feedError } = useYouTubeChannel();
   const { featured } = useFeaturedVideos();
+  const { continueWatching, getProgress } = useWatchProgress();
   const { isOnline } = useNetworkStatus();
   const fadeAnim = useRef(new Animated.Value(Platform.OS === "web" ? 1 : 0)).current;
   const [liveStatus, setLiveStatus] = useState<LiveCheckResult>({ isLive: false, videoId: null, title: null });
@@ -119,14 +122,12 @@ export default function WatchScreen() {
   };
 
   const handleSermonPress = (sermon: Sermon) => {
-    navigateToPlayer({
-      videoId: sermon.youtubeId,
-      title: sermon.title,
-      preacher: sermon.preacher,
-      duration: sermon.duration,
-      thumbnail: sermon.thumbnailUrl,
-      category: sermon.category,
-    });
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    const prog = getProgress(sermon.id);
+    navigateToSermon(
+      sermon,
+      prog ? { startPositionMs: String(Math.floor(prog.position * 1000)) } : {},
+    );
   };
 
   const handleLivePress = () => {
@@ -352,6 +353,40 @@ export default function WatchScreen() {
               title={playerIsLive ? "Temple TV Live" : currentSermon?.title ?? ""}
               isLive={playerIsLive}
             />
+          )}
+
+          {continueWatching.length > 0 && !loading && (
+            <View style={styles.section}>
+              <SectionHeader
+                title="Continue Watching"
+                subtitle={`${continueWatching.length} in progress`}
+                onSeeAll={() => router.push("/library")}
+              />
+              <FlatList
+                horizontal
+                data={continueWatching
+                  .map((cw) => ({
+                    item: sermons.find((s) => s.id === cw.videoKey),
+                    pct: cw.pct,
+                    position: cw.position,
+                  }))
+                  .filter((x): x is { item: Sermon; pct: number; position: number } => !!x.item)}
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
+                keyExtractor={(x) => x.item.id}
+                renderItem={({ item: { item, pct, position } }) => (
+                  <SermonCard
+                    sermon={item}
+                    onPress={(s) => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                      navigateToSermon(s, { startPositionMs: String(Math.floor(position * 1000)) });
+                    }}
+                    variant="vertical"
+                    progress={pct}
+                  />
+                )}
+              />
+            </View>
           )}
 
           {featured.length > 0 && (
