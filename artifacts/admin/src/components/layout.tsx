@@ -9,12 +9,17 @@ import {
   BarChart2, 
   Radio,
   Tv2,
+  Moon,
+  Sun,
 } from "lucide-react";
 import { useGetLiveStatus } from "@workspace/api-client-react";
+import { getLocalTimeZone, isMidnightHour } from "@/lib/theme";
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
   const { data: liveStatus } = useGetLiveStatus();
+  const isMidnightTheme = isMidnightHour();
+  const ThemeIcon = isMidnightTheme ? Moon : Sun;
 
   const links = [
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -72,6 +77,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
             )}
           </div>
           <div className="flex items-center gap-4">
+            <div className="hidden md:flex items-center gap-2 bg-muted text-muted-foreground px-3 py-1.5 rounded-full text-xs font-medium border">
+              <ThemeIcon className="w-3.5 h-3.5" />
+              {isMidnightTheme ? "Auto Midnight" : "Light Theme"}
+              <span className="opacity-70">• {getLocalTimeZone()}</span>
+            </div>
             <div className="w-8 h-8 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center text-primary text-sm font-medium">
               AD
             </div>

@@ -11,6 +11,8 @@ import Schedule from "@/pages/schedule";
 import Notifications from "@/pages/notifications";
 import Analytics from "@/pages/analytics";
 import Broadcast from "@/pages/broadcast";
+import { applyAutoTheme } from "@/lib/theme";
+import { useEffect } from "react";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -39,6 +41,12 @@ function Router() {
 }
 
 function App() {
+  useEffect(() => {
+    applyAutoTheme();
+    const interval = window.setInterval(applyAutoTheme, 60000);
+    return () => window.clearInterval(interval);
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>

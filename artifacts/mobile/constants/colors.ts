@@ -65,6 +65,39 @@ const colors = {
     surfaceGlass: "rgba(20, 0, 40, 0.88)",
   },
 
+  midnight: {
+    text: "#F0E6FF",
+    tint: "#9B30FF",
+
+    background: "#0D0014",
+    foreground: "#F0E6FF",
+
+    card: "rgba(155, 48, 255, 0.10)",
+    cardForeground: "#F0E6FF",
+
+    primary: "#9B30FF",
+    primaryForeground: "#FFFFFF",
+
+    secondary: "rgba(155, 48, 255, 0.18)",
+    secondaryForeground: "#D4A0FF",
+
+    muted: "rgba(255, 255, 255, 0.08)",
+    mutedForeground: "rgba(255, 255, 255, 0.50)",
+
+    accent: "#BB6BFF",
+    accentForeground: "#FFFFFF",
+
+    destructive: "#FF5555",
+    destructiveForeground: "#FFFFFF",
+
+    border: "rgba(155, 48, 255, 0.28)",
+    input: "rgba(255, 255, 255, 0.06)",
+
+    glow: "#BB6BFF",
+    liveRed: "#FF0040",
+    surfaceGlass: "rgba(20, 0, 40, 0.88)",
+  },
+
   radius: 16,
 };
 

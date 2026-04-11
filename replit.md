@@ -54,7 +54,7 @@ A mobile broadcasting platform for Temple TV (JCTM) built with Expo/React Native
 - `useYouTubeChannel` — Fetches + caches YouTube channel videos; exposes `error` state
 
 ### Design System
-- **Full dark mode**: `userInterfaceStyle: "automatic"` (iOS + Android); dark palette `#0D0014` background, `#F0E6FF` text, `#9B30FF` primary
+- **Light-first auto theme**: Mobile and admin default to light theme; automatic midnight theme activates from 8:00 PM to 5:59 AM using the device/browser local time zone
 - Glassmorphism-style UI with theme-aware glass backgrounds (GlassCard, MiniPlayer, NetworkBanner)
 - Loop icons: `minus-circle` (none) / `repeat` (all) / `rotate-cw` (one) — consistent in player + radio
 - SermonCard wrapped in `React.memo` for scroll performance
@@ -161,5 +161,10 @@ Root layout (`app/_layout.tsx`) registers a `addNotificationResponseReceivedList
 - **Player failover**: YouTube player retries transient playback errors before showing the external YouTube handoff fallback.
 - **Cast/AirPlay handoff**: Player screen includes a cast button that opens the YouTube app/browser so users can use YouTube’s Chromecast/AirPlay device picker without adding native-only SDKs.
 - **Broadcast engine metadata**: `/api/broadcast/current` now returns `nextItem`, progress percent, sync timestamp, and explicit failover reasons for empty/invalid queues.
+
+## Features Added (Session 5)
+- **Light platform theme**: Mobile app and admin dashboard now default to a light theme instead of following the device/system dark mode.
+- **Auto midnight theme**: Mobile and admin automatically switch to the midnight palette from 8:00 PM through 5:59 AM based on the current device/browser local time zone.
+- **Theme visibility**: Admin header shows whether the platform is currently using Light Theme or Auto Midnight and displays the active local time zone.
 
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.
