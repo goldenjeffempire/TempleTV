@@ -1,8 +1,8 @@
 import { useListAdminVideos, useImportVideo, useUpdateAdminVideo, useDeleteAdminVideo } from "@workspace/api-client-react";
-import { useState, useRef } from "react";
+import { useState, useRef, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Search, Plus, Loader2, MoreVertical, Trash2, Youtube, ExternalLink, Video, Star, Edit, Upload, HardDrive, Play } from "lucide-react";
+import { Search, Plus, Loader2, MoreVertical, Trash2, Youtube, ExternalLink, Video, Star, Edit, Upload, HardDrive, Play, Pause, X, CheckCircle2, AlertCircle, Zap } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   DropdownMenu,
@@ -19,6 +19,38 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+
+const CHUNK_SIZE = 5 * 1024 * 1024;
+const MAX_CONCURRENT = 2;
+const MAX_RETRIES = 3;
+
+type UploadState = "idle" | "initializing" | "uploading" | "paused" | "finalizing" | "done" | "error";
+
+interface ChunkStatus {
+  index: number;
+  status: "pending" | "uploading" | "done" | "error";
+  retries: number;
+}
+
+async function uploadChunk(
+  sessionId: string,
+  chunkIndex: number,
+  data: ArrayBuffer,
+  signal: AbortSignal
+): Promise<void> {
+  const formData = new FormData();
+  formData.append("chunk", new Blob([data]));
+  formData.append("chunkIndex", String(chunkIndex));
+  const res = await fetch(`/api/admin/videos/upload/${sessionId}/chunk`, {
+    method: "POST",
+    body: formData,
+    signal,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as { error?: string };
+    throw new Error(err.error ?? `HTTP ${res.status}`);
+  }
+}
 
 const CATEGORIES = ["sermon", "faith", "healing", "deliverance", "worship", "prophecy", "teachings", "special"];
 
@@ -59,10 +91,18 @@ export default function Videos() {
   const [uploadForm, setUploadForm] = useState({ title: "", category: "sermon", preacher: "", featured: false });
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [thumbnailFile, setThumbnailFile] = useState<File | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
+  const [uploadState, setUploadState] = useState<UploadState>("idle");
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadSpeed, setUploadSpeed] = useState(0);
+  const [chunksTotal, setChunksTotal] = useState(0);
+  const [chunksDone, setChunksDone] = useState(0);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const thumbnailInputRef = useRef<HTMLInputElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const uploadStartTimeRef = useRef<number>(0);
+  const bytesUploadedRef = useRef<number>(0);
 
   const handleImport = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -150,64 +190,173 @@ export default function Videos() {
       video.src = url;
     });
 
+  const resetUploadState = useCallback(() => {
+    setUploadState("idle");
+    setUploadProgress(0);
+    setUploadSpeed(0);
+    setChunksTotal(0);
+    setChunksDone(0);
+    setUploadError(null);
+    setSessionId(null);
+    abortControllerRef.current = null;
+    uploadStartTimeRef.current = 0;
+    bytesUploadedRef.current = 0;
+  }, []);
+
+  const handlePauseResume = useCallback(() => {
+    if (uploadState === "uploading") {
+      abortControllerRef.current?.abort();
+      setUploadState("paused");
+    }
+  }, [uploadState]);
+
+  const handleCancelUpload = useCallback(async () => {
+    abortControllerRef.current?.abort();
+    if (sessionId) {
+      await fetch(`/api/admin/videos/upload/${sessionId}`, { method: "DELETE" }).catch(() => {});
+    }
+    resetUploadState();
+    setVideoFile(null);
+    setThumbnailFile(null);
+    setUploadForm({ title: "", category: "sermon", preacher: "", featured: false });
+    setShowUploadDialog(false);
+  }, [sessionId, resetUploadState]);
+
+  const runChunkedUpload = useCallback(async (sid: string, file: File, totalChunks: number) => {
+    const chunkStatuses: ChunkStatus[] = Array.from({ length: totalChunks }, (_, i) => ({
+      index: i, status: "pending", retries: 0,
+    }));
+
+    const abortCtrl = new AbortController();
+    abortControllerRef.current = abortCtrl;
+
+    uploadStartTimeRef.current = Date.now();
+    bytesUploadedRef.current = 0;
+
+    const uploadSingleChunk = async (chunk: ChunkStatus): Promise<void> => {
+      const start = chunk.index * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, file.size);
+      const sliceBuffer = await file.slice(start, end).arrayBuffer();
+
+      chunk.status = "uploading";
+      while (chunk.retries <= MAX_RETRIES) {
+        try {
+          await uploadChunk(sid, chunk.index, sliceBuffer, abortCtrl.signal);
+          chunk.status = "done";
+          bytesUploadedRef.current += sliceBuffer.byteLength;
+
+          const elapsed = (Date.now() - uploadStartTimeRef.current) / 1000;
+          const speed = elapsed > 0 ? bytesUploadedRef.current / elapsed : 0;
+          setUploadSpeed(Math.round(speed));
+
+          setChunksDone((prev) => {
+            const next = prev + 1;
+            setUploadProgress(Math.round((next / totalChunks) * 100));
+            return next;
+          });
+          return;
+        } catch (err) {
+          if ((err as Error).name === "AbortError") throw err;
+          chunk.retries++;
+          if (chunk.retries > MAX_RETRIES) {
+            chunk.status = "error";
+            throw new Error(`Chunk ${chunk.index} failed after ${MAX_RETRIES} retries`);
+          }
+          await new Promise((r) => setTimeout(r, 500 * chunk.retries));
+        }
+      }
+    };
+
+    const pending = [...chunkStatuses];
+    const inFlight: Promise<void>[] = [];
+
+    while (pending.length > 0 || inFlight.length > 0) {
+      if (abortCtrl.signal.aborted) throw new DOMException("Aborted", "AbortError");
+
+      while (inFlight.length < MAX_CONCURRENT && pending.length > 0) {
+        const chunk = pending.shift()!;
+        const promise = uploadSingleChunk(chunk).then(() => {
+          inFlight.splice(inFlight.indexOf(promise), 1);
+        });
+        inFlight.push(promise);
+      }
+
+      if (inFlight.length > 0) await Promise.race(inFlight);
+    }
+  }, []);
+
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!videoFile || !uploadForm.title.trim()) return;
 
-    setIsUploading(true);
-    setUploadProgress(0);
+    setUploadState("initializing");
+    setUploadError(null);
 
     try {
       const durationSecs = await detectVideoDuration(videoFile);
+      const totalChunks = Math.ceil(videoFile.size / CHUNK_SIZE);
+      const ext = videoFile.name.includes(".") ? `.${videoFile.name.split(".").pop()}` : ".mp4";
 
-      const formData = new FormData();
-      formData.append("video", videoFile);
-      if (thumbnailFile) formData.append("thumbnail", thumbnailFile);
-      formData.append("title", uploadForm.title.trim());
-      formData.append("category", uploadForm.category);
-      formData.append("preacher", uploadForm.preacher);
-      formData.append("featured", String(uploadForm.featured));
-      if (durationSecs > 0) formData.append("durationSecs", String(durationSecs));
-
-      const apiUrl = getApiUrl("/api/admin/videos/upload");
-
-      const xhr = new XMLHttpRequest();
-      xhr.upload.addEventListener("progress", (event) => {
-        if (event.lengthComputable) {
-          setUploadProgress(Math.round((event.loaded / event.total) * 100));
-        }
-      });
-
-      await new Promise<void>((resolve, reject) => {
-        xhr.open("POST", apiUrl);
-        xhr.onload = () => {
-          if (xhr.status === 201) {
-            resolve();
-          } else {
-            try {
-              const err = JSON.parse(xhr.responseText) as { error?: string };
-              reject(new Error(err.error ?? `HTTP ${xhr.status}`));
-            } catch {
-              reject(new Error(`HTTP ${xhr.status}`));
-            }
-          }
-        };
-        xhr.onerror = () => reject(new Error("Network error"));
-        xhr.send(formData);
-      });
-
-      toast({ title: "Video uploaded successfully" });
-      setShowUploadDialog(false);
-      setVideoFile(null);
-      setThumbnailFile(null);
-      setUploadForm({ title: "", category: "sermon", preacher: "", featured: false });
+      setChunksTotal(totalChunks);
+      setChunksDone(0);
       setUploadProgress(0);
-      queryClient.invalidateQueries({ queryKey: getListAdminVideosQueryKey() });
+
+      const initRes = await fetch("/api/admin/videos/upload/init", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: uploadForm.title.trim(),
+          category: uploadForm.category,
+          preacher: uploadForm.preacher,
+          featured: String(uploadForm.featured),
+          durationSecs: durationSecs > 0 ? String(durationSecs) : undefined,
+          totalChunks: String(totalChunks),
+          totalBytes: String(videoFile.size),
+          ext,
+        }),
+      });
+
+      if (!initRes.ok) {
+        const err = await initRes.json() as { error?: string };
+        throw new Error(err.error ?? "Failed to initialize upload");
+      }
+
+      const { sessionId: sid } = await initRes.json() as { sessionId: string };
+      setSessionId(sid);
+
+      if (thumbnailFile) {
+        const thumbForm = new FormData();
+        thumbForm.append("thumbnail", thumbnailFile);
+        await fetch(`/api/admin/videos/upload/${sid}/thumbnail`, { method: "POST", body: thumbForm });
+      }
+
+      setUploadState("uploading");
+      await runChunkedUpload(sid, videoFile, totalChunks);
+
+      setUploadState("finalizing");
+      const finalRes = await fetch(`/api/admin/videos/upload/${sid}/finalize`, { method: "POST" });
+      if (!finalRes.ok) {
+        const err = await finalRes.json() as { error?: string };
+        throw new Error(err.error ?? "Failed to finalize upload");
+      }
+
+      setUploadState("done");
+      toast({ title: "Video uploaded successfully" });
+
+      setTimeout(() => {
+        setShowUploadDialog(false);
+        setVideoFile(null);
+        setThumbnailFile(null);
+        setUploadForm({ title: "", category: "sermon", preacher: "", featured: false });
+        resetUploadState();
+        queryClient.invalidateQueries({ queryKey: getListAdminVideosQueryKey() });
+      }, 1000);
     } catch (err) {
+      if ((err as Error).name === "AbortError") return;
       const msg = err instanceof Error ? err.message : "Upload failed";
+      setUploadError(msg);
+      setUploadState("error");
       toast({ title: msg, variant: "destructive" });
-    } finally {
-      setIsUploading(false);
     }
   };
 
@@ -432,7 +581,7 @@ export default function Videos() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={showUploadDialog} onOpenChange={(open) => { if (!isUploading) { setShowUploadDialog(open); if (!open) { setVideoFile(null); setThumbnailFile(null); setUploadProgress(0); } } }}>
+      <Dialog open={showUploadDialog} onOpenChange={(open) => { if (uploadState === "idle" || uploadState === "done" || uploadState === "error") { setShowUploadDialog(open); if (!open) { setVideoFile(null); setThumbnailFile(null); resetUploadState(); } } }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -529,11 +678,21 @@ export default function Videos() {
               <Switch checked={uploadForm.featured} onCheckedChange={c => setUploadForm({ ...uploadForm, featured: c })} />
             </div>
 
-            {isUploading && (
-              <div className="space-y-1.5">
-                <div className="flex justify-between text-xs text-muted-foreground">
-                  <span>Uploading...</span>
-                  <span>{uploadProgress}%</span>
+            {(uploadState === "uploading" || uploadState === "paused" || uploadState === "finalizing" || uploadState === "initializing") && (
+              <div className="space-y-2 p-3 bg-muted/30 rounded-lg border">
+                <div className="flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-1.5 font-medium">
+                    {uploadState === "finalizing" ? (
+                      <><Loader2 className="w-3 h-3 animate-spin" /> Finalizing…</>
+                    ) : uploadState === "initializing" ? (
+                      <><Loader2 className="w-3 h-3 animate-spin" /> Preparing…</>
+                    ) : uploadState === "paused" ? (
+                      <><Pause className="w-3 h-3" /> Paused</>
+                    ) : (
+                      <><Zap className="w-3 h-3 text-primary" /> Uploading…</>
+                    )}
+                  </div>
+                  <span className="text-muted-foreground">{chunksDone}/{chunksTotal} chunks · {uploadProgress}%</span>
                 </div>
                 <div className="h-2 bg-muted rounded-full overflow-hidden">
                   <div
@@ -541,26 +700,59 @@ export default function Videos() {
                     style={{ width: `${uploadProgress}%` }}
                   />
                 </div>
+                {uploadSpeed > 0 && uploadState === "uploading" && (
+                  <p className="text-xs text-muted-foreground">
+                    {uploadSpeed > 1024 * 1024
+                      ? `${(uploadSpeed / (1024 * 1024)).toFixed(1)} MB/s`
+                      : `${(uploadSpeed / 1024).toFixed(0)} KB/s`}
+                    {" · "}Parallel chunks: {Math.min(MAX_CONCURRENT, chunksTotal - chunksDone)}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {uploadState === "done" && (
+              <div className="flex items-center gap-2 p-3 bg-green-500/10 border border-green-500/30 rounded-lg text-sm text-green-700 dark:text-green-400">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                Video uploaded successfully!
+              </div>
+            )}
+
+            {uploadState === "error" && uploadError && (
+              <div className="flex items-center gap-2 p-3 bg-destructive/10 border border-destructive/30 rounded-lg text-sm text-destructive">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                {uploadError}
               </div>
             )}
 
             <div className="flex gap-2 pt-1">
-              <Button type="button" variant="outline" className="flex-1" onClick={() => setShowUploadDialog(false)} disabled={isUploading}>
+              <Button
+                type="button"
+                variant="outline"
+                className="flex-1"
+                onClick={handleCancelUpload}
+                disabled={uploadState === "finalizing" || uploadState === "done"}
+              >
+                <X className="w-4 h-4 mr-1.5" />
                 Cancel
               </Button>
-              <Button type="submit" className="flex-1" disabled={isUploading || !videoFile || !uploadForm.title.trim()}>
-                {isUploading ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Uploading {uploadProgress}%
-                  </>
-                ) : (
-                  <>
-                    <Upload className="w-4 h-4 mr-2" />
-                    Upload Video
-                  </>
-                )}
-              </Button>
+              {uploadState === "uploading" && (
+                <Button type="button" variant="outline" onClick={handlePauseResume} className="flex-1">
+                  <Pause className="w-4 h-4 mr-1.5" />
+                  Pause
+                </Button>
+              )}
+              {uploadState === "idle" || uploadState === "error" ? (
+                <Button type="submit" className="flex-1" disabled={!videoFile || !uploadForm.title.trim()}>
+                  <Upload className="w-4 h-4 mr-1.5" />
+                  Upload Video
+                </Button>
+              ) : uploadState === "paused" ? (
+                <Button type="submit" className="flex-1">
+                  <Upload className="w-4 h-4 mr-1.5" />
+                  Resume Upload
+                </Button>
+              ) : null}
             </div>
           </form>
         </DialogContent>

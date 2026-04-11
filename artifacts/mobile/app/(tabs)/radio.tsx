@@ -23,6 +23,14 @@ import type { LoopMode, Sermon, SermonCategory } from "@/types";
 
 const PLACEHOLDER = require("@/assets/images/sermon-placeholder.png");
 
+function fmtSecs(secs: number): string {
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = Math.floor(secs % 60);
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
 const LOOP_ICONS: Record<LoopMode, string> = {
   none: "minus-circle",
   all: "repeat",
@@ -63,19 +71,40 @@ export default function RadioScreen() {
   const webTopPad = Platform.OS === "web" ? 67 : 0;
   const [radioCategory, setRadioCategory] = useState<SermonCategory>("All");
   const [broadcastInfo, setBroadcastInfo] = useState<BroadcastCurrentResult | null>(null);
-
+  const [autoMirror, setAutoMirror] = useState(false);
+  const [broadcastPosition, setBroadcastPosition] = useState(0);
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
       try {
         const bc = await checkBroadcastCurrent();
-        if (!cancelled) setBroadcastInfo(bc);
+        if (!cancelled) {
+          setBroadcastInfo(bc);
+          if (bc?.positionSecs) setBroadcastPosition(bc.positionSecs);
+        }
       } catch {}
     };
     load();
-    const interval = setInterval(load, 30000);
+    const interval = setInterval(load, 10000);
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
+
+  useEffect(() => {
+    if (!broadcastInfo?.positionSecs) return;
+    const ticker = setInterval(() => setBroadcastPosition((p) => p + 1), 1000);
+    return () => clearInterval(ticker);
+  }, [broadcastInfo?.item?.id]);
+
+  useEffect(() => {
+    if (!autoMirror || !broadcastInfo?.item) return;
+    const item = broadcastInfo.item;
+    const startMs = String(broadcastPosition * 1000);
+    if (item.videoSource === "local" && item.localVideoUrl) {
+      router.push({ pathname: "/player", params: { broadcastMode: "true", localVideoUrl: item.localVideoUrl, title: item.title, thumbnail: item.thumbnailUrl, startPositionMs: startMs, radioOnly: "true" } });
+    } else if (item.youtubeId) {
+      router.push({ pathname: "/player", params: { broadcastMode: "true", videoId: item.youtubeId, title: item.title, thumbnail: item.thumbnailUrl, startPositionMs: startMs, radioOnly: "true" } });
+    }
+  }, [autoMirror]);
 
   const handleListenLive = () => {
     const item = broadcastInfo?.item;
@@ -210,24 +239,52 @@ export default function RadioScreen() {
           </View>
         </View>
 
-        {broadcastInfo?.item && (
+        {(broadcastInfo?.item || broadcastInfo?.liveOverride) && (
           <GlassCard style={[styles.broadcastCard, { borderColor: c.primary + "30" }]} intensity="medium">
             <View style={styles.broadcastCardHeader}>
               <ChannelBug visible animated />
-              <Text style={[styles.broadcastCardLabel, { color: c.mutedForeground }]}>Now Broadcasting</Text>
+              <Text style={[styles.broadcastCardLabel, { color: c.mutedForeground }]}>
+                {broadcastInfo.liveOverride ? "LIVE ON AIR" : "Now Broadcasting"}
+              </Text>
+              <View style={{ flex: 1 }} />
+              <Text style={[styles.broadcastTime, { color: c.mutedForeground }]}>
+                {broadcastInfo.item && broadcastInfo.item.durationSecs > 0
+                  ? `${fmtSecs(broadcastPosition)} / ${fmtSecs(broadcastInfo.item.durationSecs)}`
+                  : ""}
+              </Text>
             </View>
             <Text style={[styles.broadcastCardTitle, { color: c.foreground }]} numberOfLines={2}>
-              {broadcastInfo.item.title}
+              {broadcastInfo.liveOverride?.title ?? broadcastInfo.item?.title ?? ""}
             </Text>
-            <View style={styles.broadcastProgressTrack}>
-              <View style={[styles.broadcastProgressFill, { width: `${Math.min(100, broadcastInfo.progressPercent ?? 0)}%`, backgroundColor: c.primary }]} />
-            </View>
+            {broadcastInfo.item && broadcastInfo.item.durationSecs > 0 && (
+              <View>
+                <View style={styles.broadcastProgressTrack}>
+                  <View
+                    style={[
+                      styles.broadcastProgressFill,
+                      {
+                        width: `${Math.min(100, (broadcastPosition / broadcastInfo.item.durationSecs) * 100)}%`,
+                        backgroundColor: c.primary,
+                      },
+                    ]}
+                  />
+                </View>
+                <View style={styles.broadcastTimeRow}>
+                  <Text style={[styles.broadcastTimeSm, { color: c.mutedForeground }]}>
+                    {fmtSecs(broadcastPosition)} elapsed
+                  </Text>
+                  <Text style={[styles.broadcastTimeSm, { color: c.mutedForeground }]}>
+                    {fmtSecs(Math.max(0, broadcastInfo.item.durationSecs - broadcastPosition))} remaining
+                  </Text>
+                </View>
+              </View>
+            )}
             <Pressable
               style={({ pressed }) => [styles.listenLiveBtn, { backgroundColor: c.primary, opacity: pressed ? 0.85 : 1 }]}
               onPress={handleListenLive}
             >
               <Feather name="headphones" size={16} color="#FFF" />
-              <Text style={styles.listenLiveBtnText}>Listen to Temple TV Channel</Text>
+              <Text style={styles.listenLiveBtnText}>Tune In to Temple TV Channel</Text>
             </Pressable>
           </GlassCard>
         )}
@@ -412,6 +469,28 @@ export default function RadioScreen() {
               <View style={[styles.thumb, { transform: [{ translateX: dataSaver ? 20 : 0 }] }]} />
             </Pressable>
           </GlassCard>
+
+          {broadcastInfo?.item && (
+            <GlassCard style={styles.toggleRow}>
+              <View style={styles.toggleLeft}>
+                <View style={[styles.toggleIcon, { backgroundColor: c.secondary }]}>
+                  <Feather name="cast" size={16} color={c.primary} />
+                </View>
+                <View>
+                  <Text style={[styles.toggleLabel, { color: c.foreground }]}>Auto-Mirror Broadcast</Text>
+                  <Text style={[styles.toggleDesc, { color: c.mutedForeground }]}>
+                    Opens current broadcast audio automatically
+                  </Text>
+                </View>
+              </View>
+              <Pressable
+                onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setAutoMirror((v) => !v); }}
+                style={[styles.switch, { backgroundColor: autoMirror ? c.primary : c.muted }]}
+              >
+                <View style={[styles.thumb, { transform: [{ translateX: autoMirror ? 20 : 0 }] }]} />
+              </Pressable>
+            </GlassCard>
+          )}
         </View>
 
         {upNext.length > 0 && (
@@ -540,8 +619,11 @@ const styles = StyleSheet.create({
   broadcastCardHeader: { flexDirection: "row", alignItems: "center", gap: 8 },
   broadcastCardLabel: { fontSize: 12, fontFamily: "Inter_500Medium" },
   broadcastCardTitle: { fontSize: 16, fontFamily: "Inter_700Bold", lineHeight: 22 },
-  broadcastProgressTrack: { height: 3, backgroundColor: "rgba(106,13,173,0.15)", borderRadius: 2, overflow: "hidden" },
+  broadcastProgressTrack: { height: 3, backgroundColor: "rgba(106,13,173,0.15)", borderRadius: 2, overflow: "hidden", marginTop: 2 },
   broadcastProgressFill: { height: "100%", borderRadius: 2 } as const,
+  broadcastTimeRow: { flexDirection: "row" as const, justifyContent: "space-between" as const, marginTop: 4 },
+  broadcastTimeSm: { fontSize: 11, fontFamily: "Inter_400Regular" },
+  broadcastTime: { fontSize: 11, fontFamily: "Inter_400Regular" },
   listenLiveBtn: {
     flexDirection: "row",
     alignItems: "center",

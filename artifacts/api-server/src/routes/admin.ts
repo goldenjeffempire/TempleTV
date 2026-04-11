@@ -4,6 +4,8 @@ import { eq, ilike, or, count, sql, desc } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
+import fs from "fs/promises";
+import { createWriteStream, existsSync } from "fs";
 import multer from "multer";
 import {
   ImportVideoBody,
@@ -48,6 +50,57 @@ const upload = multer({
     }
   },
 });
+
+const chunkUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 },
+});
+
+const thumbnailUpload = multer({
+  storage: multer.diskStorage({
+    destination: path.join(__dirname, "..", "uploads"),
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname);
+      cb(null, `thumb-${randomUUID()}${ext}`);
+    },
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype.startsWith("image/")) cb(null, true);
+    else cb(new Error("Only image files allowed for thumbnails"));
+  },
+});
+
+interface ChunkedSession {
+  id: string;
+  ext: string;
+  totalChunks: number;
+  uploadedChunks: Set<number>;
+  tmpDir: string;
+  totalBytes: number;
+  receivedBytes: number;
+  metadata: {
+    title: string;
+    category: string;
+    preacher: string;
+    featured: boolean;
+    durationSecs: number;
+  };
+  thumbnailPath?: string;
+  createdAt: Date;
+}
+
+const uploadSessions = new Map<string, ChunkedSession>();
+
+setInterval(() => {
+  const cutoff = new Date(Date.now() - 3 * 60 * 60 * 1000);
+  for (const [id, session] of uploadSessions.entries()) {
+    if (session.createdAt < cutoff) {
+      fs.rm(session.tmpDir, { recursive: true, force: true }).catch(() => {});
+      uploadSessions.delete(id);
+    }
+  }
+}, 30 * 60 * 1000);
 
 const router = Router();
 
@@ -285,6 +338,210 @@ router.post("/admin/videos/upload", upload.fields([{ name: "video", maxCount: 1 
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });
   }
+});
+
+router.post("/admin/videos/upload/init", async (req, res) => {
+  try {
+    const { title, category, preacher, featured, durationSecs, totalChunks, totalBytes, ext } = req.body as {
+      title?: string;
+      category?: string;
+      preacher?: string;
+      featured?: string;
+      durationSecs?: string;
+      totalChunks?: string;
+      totalBytes?: string;
+      ext?: string;
+    };
+
+    if (!title?.trim()) return res.status(400).json({ error: "Title is required" });
+    if (!totalChunks || !totalBytes) return res.status(400).json({ error: "totalChunks and totalBytes are required" });
+
+    const sessionId = randomUUID();
+    const tmpDir = path.join(__dirname, "..", "uploads", "tmp", sessionId);
+    await fs.mkdir(tmpDir, { recursive: true });
+
+    const session: ChunkedSession = {
+      id: sessionId,
+      ext: ext ?? ".mp4",
+      totalChunks: parseInt(totalChunks, 10),
+      uploadedChunks: new Set(),
+      tmpDir,
+      totalBytes: parseInt(totalBytes, 10),
+      receivedBytes: 0,
+      metadata: {
+        title: title.trim(),
+        category: category ?? "sermon",
+        preacher: preacher ?? "",
+        featured: featured === "true",
+        durationSecs: durationSecs ? parseInt(durationSecs, 10) : 0,
+      },
+      createdAt: new Date(),
+    };
+
+    uploadSessions.set(sessionId, session);
+    res.json({ sessionId, totalChunks: session.totalChunks });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/admin/videos/upload/:sessionId/chunk", chunkUpload.single("chunk"), async (req, res) => {
+  try {
+    const { sessionId } = req.params as { sessionId: string };
+    const { chunkIndex } = req.body as { chunkIndex?: string };
+
+    const session = uploadSessions.get(sessionId);
+    if (!session) return res.status(404).json({ error: "Upload session not found or expired" });
+
+    const chunk = req.file;
+    if (!chunk) return res.status(400).json({ error: "No chunk data provided" });
+
+    const idx = parseInt(chunkIndex ?? "0", 10);
+    if (isNaN(idx) || idx < 0 || idx >= session.totalChunks) {
+      return res.status(400).json({ error: `Invalid chunk index: ${idx}` });
+    }
+
+    const chunkPath = path.join(session.tmpDir, `chunk-${String(idx).padStart(6, "0")}`);
+    await fs.writeFile(chunkPath, chunk.buffer);
+
+    session.uploadedChunks.add(idx);
+    session.receivedBytes += chunk.buffer.length;
+
+    res.json({
+      sessionId,
+      chunkIndex: idx,
+      uploadedChunks: session.uploadedChunks.size,
+      totalChunks: session.totalChunks,
+      progressPercent: Math.round((session.uploadedChunks.size / session.totalChunks) * 100),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.get("/admin/videos/upload/:sessionId/status", (req, res) => {
+  const { sessionId } = req.params as { sessionId: string };
+  const session = uploadSessions.get(sessionId);
+  if (!session) return res.status(404).json({ error: "Session not found" });
+
+  const missingChunks: number[] = [];
+  for (let i = 0; i < session.totalChunks; i++) {
+    if (!session.uploadedChunks.has(i)) missingChunks.push(i);
+  }
+
+  res.json({
+    sessionId,
+    uploadedChunks: session.uploadedChunks.size,
+    totalChunks: session.totalChunks,
+    missingChunks,
+    progressPercent: Math.round((session.uploadedChunks.size / session.totalChunks) * 100),
+    metadata: session.metadata,
+  });
+});
+
+router.post("/admin/videos/upload/:sessionId/thumbnail", thumbnailUpload.single("thumbnail"), async (req, res) => {
+  try {
+    const { sessionId } = req.params as { sessionId: string };
+    const session = uploadSessions.get(sessionId);
+    if (!session) return res.status(404).json({ error: "Session not found or expired" });
+
+    if (req.file) {
+      session.thumbnailPath = req.file.filename;
+    }
+
+    res.json({ ok: true, thumbnailPath: session.thumbnailPath });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
+  try {
+    const { sessionId } = req.params as { sessionId: string };
+    const session = uploadSessions.get(sessionId);
+    if (!session) return res.status(404).json({ error: "Session not found or expired" });
+
+    const missingChunks: number[] = [];
+    for (let i = 0; i < session.totalChunks; i++) {
+      if (!session.uploadedChunks.has(i)) missingChunks.push(i);
+    }
+
+    if (missingChunks.length > 0) {
+      return res.status(400).json({ error: `Missing chunks: ${missingChunks.join(", ")}`, missingChunks });
+    }
+
+    const finalFilename = `${randomUUID()}${session.ext}`;
+    const finalPath = path.join(__dirname, "..", "uploads", finalFilename);
+    const writeStream = createWriteStream(finalPath);
+
+    await new Promise<void>((resolve, reject) => {
+      writeStream.on("error", reject);
+      writeStream.on("finish", resolve);
+
+      const writeChunks = async () => {
+        try {
+          for (let i = 0; i < session.totalChunks; i++) {
+            const chunkPath = path.join(session.tmpDir, `chunk-${String(i).padStart(6, "0")}`);
+            const data = await fs.readFile(chunkPath);
+            await new Promise<void>((r, e) => {
+              writeStream.write(data, (err) => { if (err) e(err); else r(); });
+            });
+          }
+          writeStream.end();
+        } catch (err) {
+          reject(err);
+        }
+      };
+
+      writeChunks();
+    });
+
+    await fs.rm(session.tmpDir, { recursive: true, force: true });
+
+    const devDomain = process.env.REPLIT_DEV_DOMAIN;
+    const baseUrl = process.env.API_BASE_URL ?? (devDomain ? `https://${devDomain}` : "");
+    const localVideoUrl = `${baseUrl}/api/uploads/${finalFilename}`;
+    const thumbnailUrl = session.thumbnailPath ? `${baseUrl}/api/uploads/${session.thumbnailPath}` : "";
+
+    const id = randomUUID();
+    const [video] = await db
+      .insert(videosTable)
+      .values({
+        id,
+        youtubeId: `local-${id}`,
+        title: session.metadata.title,
+        description: "",
+        thumbnailUrl,
+        duration: session.metadata.durationSecs > 0 ? String(session.metadata.durationSecs) : "",
+        category: session.metadata.category,
+        preacher: session.metadata.preacher,
+        publishedAt: null,
+        featured: session.metadata.featured,
+        viewCount: 0,
+        videoSource: "local",
+        localVideoUrl,
+      })
+      .returning();
+
+    uploadSessions.delete(sessionId);
+    res.status(201).json(video);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.delete("/admin/videos/upload/:sessionId", async (req, res) => {
+  const { sessionId } = req.params as { sessionId: string };
+  const session = uploadSessions.get(sessionId);
+  if (session) {
+    await fs.rm(session.tmpDir, { recursive: true, force: true }).catch(() => {});
+    uploadSessions.delete(sessionId);
+  }
+  res.json({ ok: true });
 });
 
 router.post("/admin/videos/import", async (req, res) => {

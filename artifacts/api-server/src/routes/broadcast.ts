@@ -177,7 +177,11 @@ router.get("/broadcast/guide", async (_req, res) => {
       return res.json({ items: [], liveOverride: { title: activeLiveOverride.title } });
     }
 
-    const activeSchedule = await getActiveScheduleEntry();
+    const activeScheduleEntries = await db
+      .select()
+      .from(scheduleTable)
+      .where(eq(scheduleTable.isActive, true));
+    const activeSchedule = getActiveScheduleEntry(activeScheduleEntries);
     const items = activeSchedule && activeSchedule.contentType !== "live"
       ? await getScheduledItems(activeSchedule)
       : await db.select().from(broadcastQueueTable).where(eq(broadcastQueueTable.isActive, true)).orderBy(asc(broadcastQueueTable.sortOrder));
