@@ -53,7 +53,7 @@ const upload = multer({
 
 const chunkUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 20 * 1024 * 1024 },
+  limits: { fileSize: 50 * 1024 * 1024 },
 });
 
 const thumbnailUpload = multer({
@@ -88,14 +88,15 @@ interface ChunkedSession {
   };
   thumbnailPath?: string;
   createdAt: Date;
+  lastActivity: Date;
 }
 
 const uploadSessions = new Map<string, ChunkedSession>();
 
 setInterval(() => {
-  const cutoff = new Date(Date.now() - 3 * 60 * 60 * 1000);
+  const inactiveCutoff = new Date(Date.now() - 6 * 60 * 60 * 1000);
   for (const [id, session] of uploadSessions.entries()) {
-    if (session.createdAt < cutoff) {
+    if (session.lastActivity < inactiveCutoff) {
       fs.rm(session.tmpDir, { recursive: true, force: true }).catch(() => {});
       uploadSessions.delete(id);
     }
@@ -360,6 +361,7 @@ router.post("/admin/videos/upload/init", async (req, res) => {
     const tmpDir = path.join(__dirname, "..", "uploads", "tmp", sessionId);
     await fs.mkdir(tmpDir, { recursive: true });
 
+    const now = new Date();
     const session: ChunkedSession = {
       id: sessionId,
       ext: ext ?? ".mp4",
@@ -375,7 +377,8 @@ router.post("/admin/videos/upload/init", async (req, res) => {
         featured: featured === "true",
         durationSecs: durationSecs ? parseInt(durationSecs, 10) : 0,
       },
-      createdAt: new Date(),
+      createdAt: now,
+      lastActivity: now,
     };
 
     uploadSessions.set(sessionId, session);
@@ -407,6 +410,7 @@ router.post("/admin/videos/upload/:sessionId/chunk", chunkUpload.single("chunk")
 
     session.uploadedChunks.add(idx);
     session.receivedBytes += chunk.buffer.length;
+    session.lastActivity = new Date();
 
     res.json({
       sessionId,
@@ -434,9 +438,12 @@ router.get("/admin/videos/upload/:sessionId/status", (req, res) => {
   res.json({
     sessionId,
     uploadedChunks: session.uploadedChunks.size,
+    uploadedChunkIndices: Array.from(session.uploadedChunks),
     totalChunks: session.totalChunks,
     missingChunks,
     progressPercent: Math.round((session.uploadedChunks.size / session.totalChunks) * 100),
+    receivedBytes: session.receivedBytes,
+    totalBytes: session.totalBytes,
     metadata: session.metadata,
   });
 });
