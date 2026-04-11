@@ -32,6 +32,7 @@ interface YoutubePlayerProps {
   autoPlay?: boolean;
   title?: string;
   preacher?: string;
+  playerHeight?: number;
   onEnd?: () => void;
   onPlay?: () => void;
   onPause?: () => void;
@@ -164,13 +165,14 @@ export function YoutubePlayer({
   autoPlay = true,
   title,
   preacher,
+  playerHeight: playerHeightProp,
   onEnd,
   onPlay,
   onPause,
   onToggleAudioMode,
 }: YoutubePlayerProps) {
   const c = useColors();
-  const { width } = useWindowDimensions();
+  const { width, height: screenHeight } = useWindowDimensions();
   const { updatePlayback, playerPlayRef, playerPauseRef, playerSeekRef, dataSaver, isRadioMode } = usePlayer();
   const [loading, setLoading] = useState(false);
   const [playing, setPlaying] = useState(autoPlay);
@@ -309,7 +311,10 @@ export function YoutubePlayer({
     setPlayerError(true);
   }, [retryCount]);
 
-  const playerHeight = Math.min(Math.round(width * (9 / 16)), 260);
+  const playerHeight = playerHeightProp ?? Math.min(
+    Math.round(width * (9 / 16)),
+    Math.round(screenHeight * 0.42),
+  );
   const thumb =
     thumbnailUrl ?? (activeVideoId ? `https://img.youtube.com/vi/${activeVideoId}/hqdefault.jpg` : null);
 

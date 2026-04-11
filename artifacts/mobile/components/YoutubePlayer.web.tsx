@@ -48,6 +48,7 @@ interface YoutubePlayerProps {
   autoPlay?: boolean;
   title?: string;
   preacher?: string;
+  playerHeight?: number;
   onEnd?: () => void;
   onPlay?: () => void;
   onPause?: () => void;

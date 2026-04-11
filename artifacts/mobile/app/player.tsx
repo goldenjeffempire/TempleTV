@@ -10,6 +10,7 @@ import {
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -172,6 +173,11 @@ const volStyles = StyleSheet.create({
 export default function PlayerScreen() {
   const c = useColors();
   const insets = useSafeAreaInsets();
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
+  const videoPlayerHeight = Math.min(
+    Math.round(screenWidth * (9 / 16)),
+    Math.round(screenHeight * 0.42),
+  );
   const params = useLocalSearchParams<{
     videoId?: string;
     live?: string;
@@ -393,7 +399,16 @@ export default function PlayerScreen() {
     <View style={[styles.container, { backgroundColor: c.background }]}>
       {Platform.OS !== "web" && <StatusBar barStyle="light-content" backgroundColor="#000" />}
 
-      <View style={[styles.playerContainer, isRadioMode && !paramLocalVideoUrl && { aspectRatio: undefined, height: 280 }]}>
+      <View
+        style={[
+          styles.playerContainer,
+          {
+            height: isRadioMode && !paramLocalVideoUrl
+              ? Math.max(videoPlayerHeight, 280)
+              : videoPlayerHeight,
+          },
+        ]}
+      >
         {paramLocalVideoUrl ? (
           <LocalVideoPlayer
             videoUrl={paramLocalVideoUrl}
@@ -410,6 +425,7 @@ export default function PlayerScreen() {
             thumbnailUrl={thumbnailUrl}
             title={displayTitle}
             preacher={displayPreacher}
+            playerHeight={videoPlayerHeight}
             autoPlay
             onEnd={handleVideoEnd}
             onToggleAudioMode={handleToggleAudioMode}
@@ -606,7 +622,7 @@ export default function PlayerScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  playerContainer: { width: "100%", aspectRatio: 16 / 9, backgroundColor: "#000", maxHeight: 260, position: "relative" },
+  playerContainer: { width: "100%", backgroundColor: "#000", position: "relative" },
   topGradient: { position: "absolute", top: 0, left: 0, right: 0, height: 110 },
   topControls: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, gap: 12 },
   backBtn: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.4)" },
