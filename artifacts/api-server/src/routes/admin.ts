@@ -291,6 +291,75 @@ router.post("/videos/:youtubeId/view", async (req, res) => {
   }
 });
 
+router.get("/videos/featured", async (req, res) => {
+  try {
+    const videos = await db
+      .select()
+      .from(videosTable)
+      .where(eq(videosTable.featured, true))
+      .orderBy(desc(videosTable.importedAt))
+      .limit(10);
+    res.json(videos.map((v) => ({
+      id: v.id,
+      youtubeId: v.youtubeId,
+      title: v.title,
+      description: v.description,
+      thumbnailUrl: v.thumbnailUrl,
+      duration: v.duration,
+      category: v.category,
+      preacher: v.preacher,
+      publishedAt: v.publishedAt,
+      views: v.viewCount,
+    })));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.get("/playlists", async (req, res) => {
+  try {
+    const playlists = await db
+      .select()
+      .from(playlistsTable)
+      .where(eq(playlistsTable.isActive, true))
+      .orderBy(desc(playlistsTable.createdAt));
+    const withCounts = await Promise.all(
+      playlists.map(async (p) => {
+        const [countResult] = await db
+          .select({ count: count() })
+          .from(playlistVideosTable)
+          .where(eq(playlistVideosTable.playlistId, p.id));
+        return { ...p, videoCount: countResult?.count ?? 0 };
+      })
+    );
+    res.json(withCounts);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.get("/playlists/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+    const [playlist] = await db
+      .select()
+      .from(playlistsTable)
+      .where(eq(playlistsTable.id, id));
+    if (!playlist) return res.status(404).json({ error: "Playlist not found" });
+    const videos = await db
+      .select()
+      .from(playlistVideosTable)
+      .where(eq(playlistVideosTable.playlistId, id))
+      .orderBy(playlistVideosTable.sortOrder);
+    res.json({ ...playlist, videos });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
 async function getPlaylistWithVideos(id: string) {
   const [playlist] = await db.select().from(playlistsTable).where(eq(playlistsTable.id, id));
   if (!playlist) return null;

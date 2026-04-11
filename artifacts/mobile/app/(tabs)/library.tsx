@@ -17,12 +17,13 @@ import { useColors } from "@/hooks/useColors";
 import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
 import { useFavorites } from "@/hooks/useFavorites";
 import { useWatchHistory } from "@/hooks/useWatchHistory";
+import { usePlaylists, usePlaylistDetail } from "@/hooks/usePlaylists";
 import { CategoryPills } from "@/components/CategoryPills";
 import { SermonCard } from "@/components/SermonCard";
 import { SkeletonHorizontalCard } from "@/components/SkeletonCard";
 import type { SermonCategory, Sermon, SortMode } from "@/types";
 
-type ViewMode = "all" | "favorites" | "history";
+type ViewMode = "all" | "favorites" | "history" | "playlists";
 
 const SORT_LABELS: Record<SortMode, string> = {
   newest: "Newest",
@@ -86,6 +87,9 @@ export default function LibraryScreen() {
   const { sermons, loading, refresh } = useYouTubeChannel();
   const { favorites, isFavorite, toggleFavorite } = useFavorites();
   const { history, hasWatched } = useWatchHistory();
+  const { playlists, loading: playlistsLoading } = usePlaylists();
+  const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null);
+  const { detail: selectedPlaylist, loading: playlistDetailLoading, sermons: playlistSermons } = usePlaylistDetail(selectedPlaylistId);
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState<SermonCategory>("All");
   const [viewMode, setViewMode] = useState<ViewMode>("all");
@@ -145,6 +149,7 @@ export default function LibraryScreen() {
     { key: "all", label: "All", icon: "grid" },
     { key: "favorites", label: "Saved", icon: "heart" },
     { key: "history", label: "History", icon: "clock" },
+    { key: "playlists", label: "Playlists", icon: "list" },
   ];
 
   return (
@@ -197,28 +202,129 @@ export default function LibraryScreen() {
           })}
         </View>
 
-        <View style={[styles.searchContainer, { backgroundColor: c.muted, borderColor: c.border }]}>
-          <Feather name="search" size={18} color={c.mutedForeground} />
-          <TextInput
-            style={[styles.searchInput, { color: c.foreground }]}
-            placeholder="Search sermons, preachers, keywords..."
-            placeholderTextColor={c.mutedForeground}
-            value={search}
-            onChangeText={setSearch}
-            returnKeyType="search"
-            clearButtonMode="while-editing"
-          />
-          {search.length > 0 && Platform.OS !== "ios" && (
-            <Pressable onPress={() => setSearch("")} hitSlop={8}>
-              <Feather name="x" size={18} color={c.mutedForeground} />
-            </Pressable>
-          )}
-        </View>
-
-        {viewMode === "all" && <CategoryPills selected={category} onSelect={setCategory} />}
+        {viewMode !== "playlists" && (
+          <>
+            <View style={[styles.searchContainer, { backgroundColor: c.muted, borderColor: c.border }]}>
+              <Feather name="search" size={18} color={c.mutedForeground} />
+              <TextInput
+                style={[styles.searchInput, { color: c.foreground }]}
+                placeholder="Search sermons, preachers, keywords..."
+                placeholderTextColor={c.mutedForeground}
+                value={search}
+                onChangeText={setSearch}
+                returnKeyType="search"
+                clearButtonMode="while-editing"
+              />
+              {search.length > 0 && Platform.OS !== "ios" && (
+                <Pressable onPress={() => setSearch("")} hitSlop={8}>
+                  <Feather name="x" size={18} color={c.mutedForeground} />
+                </Pressable>
+              )}
+            </View>
+            {viewMode === "all" && <CategoryPills selected={category} onSelect={setCategory} />}
+          </>
+        )}
       </View>
 
-      {loading && viewMode === "all" ? (
+      {viewMode === "playlists" ? (
+        selectedPlaylistId && selectedPlaylist ? (
+          <FlatList
+            data={playlistDetailLoading ? [] : playlistSermons}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={styles.listContent}
+            showsVerticalScrollIndicator={false}
+            ListHeaderComponent={
+              <View style={styles.playlistDetailHeader}>
+                <Pressable
+                  onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setSelectedPlaylistId(null); }}
+                  style={styles.backBtn}
+                  hitSlop={12}
+                >
+                  <Feather name="arrow-left" size={20} color={c.primary} />
+                  <Text style={[styles.backBtnText, { color: c.primary }]}>Playlists</Text>
+                </Pressable>
+                <Text style={[styles.playlistDetailTitle, { color: c.foreground }]}>{selectedPlaylist.name}</Text>
+                {selectedPlaylist.description ? (
+                  <Text style={[styles.playlistDetailDesc, { color: c.mutedForeground }]}>{selectedPlaylist.description}</Text>
+                ) : null}
+                <Text style={[styles.playlistDetailCount, { color: c.mutedForeground }]}>
+                  {selectedPlaylist.videoCount} video{selectedPlaylist.videoCount !== 1 ? "s" : ""} · {selectedPlaylist.loopMode === "sequential" ? "Sequential" : selectedPlaylist.loopMode === "shuffle" ? "Shuffle" : "Loop"}
+                </Text>
+              </View>
+            }
+            renderItem={({ item, index }) => (
+              <View style={styles.playlistItemRow}>
+                <View style={styles.playlistIndex}>
+                  <Text style={[styles.playlistIndexText, { color: c.mutedForeground }]}>{index + 1}</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <SermonCard sermon={item} onPress={handleSermonPress} variant="horizontal" />
+                </View>
+              </View>
+            )}
+            ListEmptyComponent={
+              playlistDetailLoading ? (
+                <View style={styles.listContent}>
+                  {[1, 2, 3].map((i) => <SkeletonHorizontalCard key={i} />)}
+                </View>
+              ) : (
+                <View style={styles.emptyState}>
+                  <Feather name="list" size={52} color={c.mutedForeground} />
+                  <Text style={[styles.emptyTitle, { color: c.foreground }]}>Empty playlist</Text>
+                  <Text style={[styles.emptyText, { color: c.mutedForeground }]}>No videos have been added to this playlist yet</Text>
+                </View>
+              )
+            }
+          />
+        ) : (
+          <FlatList
+            data={playlistsLoading ? [] : playlists}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={styles.listContent}
+            showsVerticalScrollIndicator={false}
+            renderItem={({ item }) => (
+              <Pressable
+                onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); setSelectedPlaylistId(item.id); }}
+                style={({ pressed }) => [styles.playlistCard, { backgroundColor: c.card, borderColor: c.border, opacity: pressed ? 0.85 : 1 }]}
+              >
+                <View style={[styles.playlistIconWrap, { backgroundColor: c.secondary }]}>
+                  <Feather name="list" size={22} color={c.primary} />
+                </View>
+                <View style={styles.playlistCardBody}>
+                  <Text style={[styles.playlistCardName, { color: c.foreground }]} numberOfLines={1}>{item.name}</Text>
+                  {item.description ? (
+                    <Text style={[styles.playlistCardDesc, { color: c.mutedForeground }]} numberOfLines={1}>{item.description}</Text>
+                  ) : null}
+                  <View style={styles.playlistCardMeta}>
+                    <Text style={[styles.playlistCardCount, { color: c.mutedForeground }]}>
+                      {item.videoCount} video{item.videoCount !== 1 ? "s" : ""}
+                    </Text>
+                    <View style={[styles.loopBadge, { backgroundColor: c.muted }]}>
+                      <Text style={[styles.loopBadgeText, { color: c.mutedForeground }]}>
+                        {item.loopMode === "sequential" ? "Sequential" : item.loopMode === "shuffle" ? "Shuffle" : "Loop"}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+                <Feather name="chevron-right" size={18} color={c.mutedForeground} />
+              </Pressable>
+            )}
+            ListEmptyComponent={
+              playlistsLoading ? (
+                <View style={styles.listContent}>
+                  {[1, 2, 3].map((i) => <SkeletonHorizontalCard key={i} />)}
+                </View>
+              ) : (
+                <View style={styles.emptyState}>
+                  <Feather name="list" size={52} color={c.mutedForeground} />
+                  <Text style={[styles.emptyTitle, { color: c.foreground }]}>No playlists yet</Text>
+                  <Text style={[styles.emptyText, { color: c.mutedForeground }]}>Create playlists in the admin dashboard to organize your content</Text>
+                </View>
+              )
+            }
+          />
+        )
+      ) : loading && viewMode === "all" ? (
         <FlatList
           data={[1, 2, 3, 4, 5]}
           keyExtractor={(i) => String(i)}
@@ -392,4 +498,34 @@ const styles = StyleSheet.create({
   },
   emptyTitle: { fontSize: 18, fontFamily: "Inter_600SemiBold", textAlign: "center" },
   emptyText: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 20 },
+  playlistCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    gap: 12,
+  },
+  playlistIconWrap: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  playlistCardBody: { flex: 1, gap: 3 },
+  playlistCardName: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  playlistCardDesc: { fontSize: 12, fontFamily: "Inter_400Regular" },
+  playlistCardMeta: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 2 },
+  playlistCardCount: { fontSize: 12, fontFamily: "Inter_400Regular" },
+  loopBadge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10 },
+  loopBadgeText: { fontSize: 10, fontFamily: "Inter_600SemiBold", textTransform: "uppercase", letterSpacing: 0.5 },
+  playlistDetailHeader: { paddingBottom: 16, gap: 4 },
+  backBtn: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 12 },
+  backBtnText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  playlistDetailTitle: { fontSize: 24, fontFamily: "Inter_700Bold" },
+  playlistDetailDesc: { fontSize: 13, fontFamily: "Inter_400Regular", lineHeight: 18 },
+  playlistDetailCount: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 4 },
+  playlistIndex: { width: 28, alignItems: "center", justifyContent: "center", paddingTop: 8 },
+  playlistIndexText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
 });

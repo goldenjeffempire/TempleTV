@@ -29,6 +29,7 @@ import { LiveNotificationBanner } from "@/components/LiveNotificationBanner";
 import { usePlayer } from "@/context/PlayerContext";
 import { checkLiveStatus, type LiveCheckResult } from "@/services/youtube";
 import { sendLiveServiceNotification } from "@/services/notifications";
+import { useFeaturedVideos } from "@/hooks/useFeaturedVideos";
 import type { Sermon } from "@/types";
 
 export default function WatchScreen() {
@@ -36,6 +37,7 @@ export default function WatchScreen() {
   const insets = useSafeAreaInsets();
   const { currentSermon, isLive: playerIsLive, playSermon, playLive, setQueue } = usePlayer();
   const { sermons, loading, refresh, isFromRss, error: feedError } = useYouTubeChannel();
+  const { featured } = useFeaturedVideos();
   const { isOnline } = useNetworkStatus();
   const fadeAnim = useRef(new Animated.Value(Platform.OS === "web" ? 1 : 0)).current;
   const [liveStatus, setLiveStatus] = useState<LiveCheckResult>({ isLive: false, videoId: null, title: null });
@@ -228,6 +230,26 @@ export default function WatchScreen() {
               title={playerIsLive ? "Temple TV Live" : currentSermon?.title ?? ""}
               isLive={playerIsLive}
             />
+          )}
+
+          {featured.length > 0 && (
+            <View style={styles.section}>
+              <SectionHeader
+                title="Featured"
+                subtitle="Handpicked sermons"
+                onSeeAll={() => router.push("/library")}
+              />
+              <FlatList
+                horizontal
+                data={featured}
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
+                keyExtractor={(item) => item.id}
+                renderItem={({ item }) => (
+                  <SermonCard sermon={item} onPress={handleSermonPress} variant="vertical" />
+                )}
+              />
+            </View>
           )}
 
           <View style={styles.section}>
