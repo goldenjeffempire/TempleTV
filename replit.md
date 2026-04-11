@@ -93,9 +93,15 @@ Faith, Healing, Deliverance, Worship, Prophecy, Teachings, Special Programs
 - `production` — autoIncrement, Android App Bundle, iOS archive
 
 ## Running Services (Workflows)
-- **Start application** — Expo dev server on port 18115 (mobile app)
-- **API Server** — Express API server on port 8080 (YouTube RSS proxy for web; falls back to RSS when YouTube quota is exceeded via `fetchVideosFromRss()`)
-- **Admin Dashboard** — Vite dev server on port 5173 at `/admin/` (React admin panel for content management)
+- **Temple TV** — Expo dev server on port 18115 at `/mobile/` (mobile app)
+- **API Server** — Express API server on port 8080 at `/api` (YouTube RSS proxy for web; falls back to RSS when YouTube quota is exceeded via `fetchVideosFromRss()`)
+- **Temple TV Admin** — Vite dev server on port 23744 at `/admin/` (React admin panel for content management)
+
+## Replit Migration Notes
+- Dependencies are installed with pnpm from the existing lockfile; the monorepo structure is preserved.
+- Replit-native app runners are used for the mobile app, API server, and admin dashboard; duplicate legacy imported runners were removed to avoid route and port conflicts.
+- Development PostgreSQL is provisioned and the existing Drizzle schema has been applied with `pnpm --filter @workspace/db run push`.
+- Mobile web rendering requires root layout containers to fill the viewport (`SafeAreaProvider` and `GestureHandlerRootView` use `flex: 1`).
 
 ## Features Added (Session 3)
 - **Videos page**: Fixed missing `Video` icon import (empty state crash), added "Edit Details" dialog for updating title, category, preacher, featured status per video
