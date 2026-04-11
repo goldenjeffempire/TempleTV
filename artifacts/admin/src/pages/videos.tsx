@@ -136,6 +136,20 @@ export default function Videos() {
     );
   };
 
+  const detectVideoDuration = (file: File): Promise<number> =>
+    new Promise((resolve) => {
+      const url = URL.createObjectURL(file);
+      const video = document.createElement("video");
+      video.preload = "metadata";
+      video.onloadedmetadata = () => {
+        const secs = isFinite(video.duration) ? Math.round(video.duration) : 0;
+        URL.revokeObjectURL(url);
+        resolve(secs);
+      };
+      video.onerror = () => { URL.revokeObjectURL(url); resolve(0); };
+      video.src = url;
+    });
+
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!videoFile || !uploadForm.title.trim()) return;
@@ -144,6 +158,8 @@ export default function Videos() {
     setUploadProgress(0);
 
     try {
+      const durationSecs = await detectVideoDuration(videoFile);
+
       const formData = new FormData();
       formData.append("video", videoFile);
       if (thumbnailFile) formData.append("thumbnail", thumbnailFile);
@@ -151,6 +167,7 @@ export default function Videos() {
       formData.append("category", uploadForm.category);
       formData.append("preacher", uploadForm.preacher);
       formData.append("featured", String(uploadForm.featured));
+      if (durationSecs > 0) formData.append("durationSecs", String(durationSecs));
 
       const apiUrl = getApiUrl("/api/admin/videos/upload");
 

@@ -234,22 +234,28 @@ router.post("/admin/videos/upload", upload.fields([{ name: "video", maxCount: 1 
       return res.status(400).json({ error: "Video file is required" });
     }
 
-    const { title, category, preacher, featured } = req.body as {
+    const { title, category, preacher, featured, durationSecs: durationSecsStr } = req.body as {
       title?: string;
       category?: string;
       preacher?: string;
       featured?: string;
+      durationSecs?: string;
     };
 
     if (!title?.trim()) {
       return res.status(400).json({ error: "Title is required" });
     }
 
+    const durationSecsNum = durationSecsStr ? parseInt(durationSecsStr, 10) : null;
+    const durationText = durationSecsNum && durationSecsNum > 0
+      ? String(durationSecsNum)
+      : "";
+
     const devDomain = process.env.REPLIT_DEV_DOMAIN;
     const baseUrl = process.env.API_BASE_URL ?? (devDomain ? `https://${devDomain}` : "");
-    const localVideoUrl = `${baseUrl}/uploads/${videoFile.filename}`;
+    const localVideoUrl = `${baseUrl}/api/uploads/${videoFile.filename}`;
     const thumbnailUrl = thumbnailFile
-      ? `${baseUrl}/uploads/${thumbnailFile.filename}`
+      ? `${baseUrl}/api/uploads/${thumbnailFile.filename}`
       : "";
 
     const id = randomUUID();
@@ -263,7 +269,7 @@ router.post("/admin/videos/upload", upload.fields([{ name: "video", maxCount: 1 
         title: title.trim(),
         description: "",
         thumbnailUrl,
-        duration: "",
+        duration: durationText,
         category: category ?? "sermon",
         preacher: preacher ?? "",
         publishedAt: null,

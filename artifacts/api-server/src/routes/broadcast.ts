@@ -62,6 +62,10 @@ function getActiveScheduleEntry(entries: ScheduleEntry[], now = new Date()): Sch
 
 function parseDurationSecs(value: string | null | undefined): number {
   if (!value) return 1800;
+  if (!value.includes(":") && !value.match(/[a-z]/i)) {
+    const plain = Number(value);
+    if (Number.isFinite(plain) && plain > 0) return Math.max(60, Math.round(plain));
+  }
   const parts = value.split(":").map((part) => Number(part));
   if (parts.every((part) => Number.isFinite(part))) {
     if (parts.length === 3) return Math.max(60, parts[0]! * 3600 + parts[1]! * 60 + parts[2]!);
@@ -296,6 +300,18 @@ router.post("/admin/broadcast", async (req, res) => {
     return res.status(400).json({ error: "youtubeId and title are required" });
   }
 
+  let resolvedDurationSecs = durationSecs ?? 0;
+
+  if (resolvedDurationSecs <= 0 && videoId) {
+    const [video] = await db.select().from(videosTable).where(eq(videosTable.id, videoId)).limit(1);
+    if (video?.duration) {
+      const detected = parseDurationSecs(video.duration);
+      if (detected > 60) resolvedDurationSecs = detected;
+    }
+  }
+
+  if (resolvedDurationSecs <= 0) resolvedDurationSecs = 1800;
+
   const existing = await db
     .select()
     .from(broadcastQueueTable)
@@ -311,7 +327,7 @@ router.post("/admin/broadcast", async (req, res) => {
       youtubeId,
       title,
       thumbnailUrl: thumbnailUrl ?? "",
-      durationSecs: durationSecs ?? 1800,
+      durationSecs: resolvedDurationSecs,
       localVideoUrl: localVideoUrl ?? null,
       videoSource: videoSource ?? "youtube",
       sortOrder: maxOrder,

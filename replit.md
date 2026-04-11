@@ -115,6 +115,16 @@ Faith, Healing, Deliverance, Worship, Prophecy, Teachings, Special Programs
 - **Analytics**: `uniqueViewers` now uses registered device count; daily views uses notification history instead of random data
 - **Dashboard**: "Notifications Today" stat card now shows registered device count as subtext
 
+## Broadcast Streaming Fixes (Session 8)
+- **Broadcast auto-advance**: `player.tsx` now accepts `broadcastMode=true` URL param; on video end, calls `checkBroadcastCurrent()` and replaces route with the next broadcast item at correct position instead of advancing the library queue
+- **YouTube position sync**: `startPositionSecs` prop now passed to `YoutubePlayer` from `paramStartPositionMs` (converted from ms→secs) so broadcast viewers join at the correct live position
+- **Broadcast re-sync interval**: `player.tsx` sets a 60-second interval in broadcast mode; if the current video differs from what the server says should be playing, it navigates to the correct video at the correct offset
+- **Duration auto-detection (upload)**: Admin video upload now detects video duration client-side via the HTML5 `loadedmetadata` event and sends `durationSecs` as a form field
+- **Duration stored on upload**: API upload handler reads `durationSecs` field and stores it in the `duration` column instead of always defaulting to empty string
+- **Duration auto-detection (broadcast queue)**: `POST /api/admin/broadcast` now looks up video duration from the DB when `durationSecs` is missing/zero, so broadcast items get accurate durations instead of always defaulting to 1800s
+- **`parseDurationSecs` enhancement**: Now handles plain-seconds strings (stored by upload handler) in addition to `H:MM:SS` and `Xm` formats
+- **`handleBroadcastPress` fix**: Watch tab now passes `broadcastMode: "true"` and `startPositionMs` for both local and YouTube broadcast items
+
 ## Bug Fixes Applied (Session 2)
 - **Channel ID fix**: `JCTM_CHANNEL_ID` in `data/sermons.ts` corrected to `UCPFFvkE-KGpR37qJgvYriJg` everywhere (was wrong before)
 - **API server `/videos` route**: Added `fetchVideosFromRss()` fallback so it returns 200 + RSS data when YouTube quota exceeded (was returning 502)

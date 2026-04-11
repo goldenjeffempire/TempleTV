@@ -29,6 +29,7 @@ import { GlassCard } from "@/components/GlassCard";
 import { usePlayer } from "@/context/PlayerContext";
 import { SERMONS } from "@/data/sermons";
 import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
+import { checkBroadcastCurrent } from "@/services/broadcast";
 import type { Sermon } from "@/types";
 
 function formatTime(seconds: number): string {
@@ -189,6 +190,7 @@ export default function PlayerScreen() {
     category?: string;
     localVideoUrl?: string;
     startPositionMs?: string;
+    broadcastMode?: string;
   }>();
 
   const {
@@ -201,6 +203,7 @@ export default function PlayerScreen() {
     category: paramCategory,
     localVideoUrl: paramLocalVideoUrl,
     startPositionMs: paramStartPositionMs,
+    broadcastMode: paramBroadcastMode,
   } = params;
 
   const {
@@ -231,6 +234,7 @@ export default function PlayerScreen() {
   const { sermons: rssSermons } = useYouTubeChannel();
 
   const isLive = live === "true";
+  const isBroadcastMode = paramBroadcastMode === "true";
   const scrollRef = useRef<ScrollView>(null);
   const fadeAnim = useRef(new Animated.Value(Platform.OS === "web" ? 1 : 0)).current;
   const titleFade = useRef(new Animated.Value(1)).current;
@@ -306,7 +310,67 @@ export default function PlayerScreen() {
     });
   }, [ctxSermon?.youtubeId]);
 
-  const handleVideoEnd = useCallback(() => { advanceToNext(); }, [advanceToNext]);
+  useEffect(() => {
+    if (!isBroadcastMode) return;
+    let cancelled = false;
+    const syncBroadcast = async () => {
+      try {
+        const bc = await checkBroadcastCurrent();
+        if (cancelled || !bc?.item) return;
+        const bcIsLocal = bc.item.videoSource === "local" && !!bc.item.localVideoUrl;
+        const currentIsLocal = !!paramLocalVideoUrl;
+        const currentId = currentIsLocal ? paramLocalVideoUrl : paramVideoId;
+        const bcId = bcIsLocal ? bc.item.localVideoUrl : bc.item.youtubeId;
+        if (currentId !== bcId) {
+          const item = bc.item;
+          const nextParams: Record<string, string> = {
+            broadcastMode: "true",
+            title: item.title,
+            thumbnail: item.thumbnailUrl ?? "",
+            startPositionMs: String(bc.positionSecs * 1000),
+          };
+          if (bcIsLocal) {
+            nextParams.localVideoUrl = item.localVideoUrl!;
+          } else {
+            nextParams.videoId = item.youtubeId;
+          }
+          router.replace({ pathname: "/player", params: nextParams });
+        }
+      } catch {}
+    };
+    const interval = setInterval(syncBroadcast, 60000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [isBroadcastMode, paramVideoId, paramLocalVideoUrl]);
+
+  const handleVideoEnd = useCallback(async () => {
+    if (isBroadcastMode) {
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      try {
+        const bc = await checkBroadcastCurrent();
+        if (!isMountedRef.current) return;
+        if (bc?.item) {
+          const item = bc.item;
+          const nextParams: Record<string, string> = {
+            broadcastMode: "true",
+            title: item.title,
+            thumbnail: item.thumbnailUrl ?? "",
+            startPositionMs: String(bc.positionSecs * 1000),
+          };
+          if (item.videoSource === "local" && item.localVideoUrl) {
+            nextParams.localVideoUrl = item.localVideoUrl;
+          } else {
+            nextParams.videoId = item.youtubeId;
+          }
+          router.replace({ pathname: "/player", params: nextParams });
+        }
+      } catch {}
+    } else {
+      advanceToNext();
+    }
+  }, [isBroadcastMode, advanceToNext]);
   const handlePlayNext = useCallback(() => {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     playNext();
@@ -433,6 +497,7 @@ export default function PlayerScreen() {
             preacher={displayPreacher}
             playerHeight={videoPlayerHeight}
             autoPlay
+            startPositionSecs={paramStartPositionMs ? Math.floor(parseInt(paramStartPositionMs, 10) / 1000) : undefined}
             onEnd={handleVideoEnd}
             onToggleAudioMode={handleToggleAudioMode}
           />

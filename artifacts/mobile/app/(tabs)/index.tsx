@@ -140,21 +140,28 @@ export default function WatchScreen() {
     const item = broadcastCurrent?.item;
     if (!item) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    const startMs = String((broadcastCurrent?.positionSecs ?? 0) * 1000);
     if (item.videoSource === "local" && item.localVideoUrl) {
       router.push({
         pathname: "/player",
         params: {
+          broadcastMode: "true",
           localVideoUrl: item.localVideoUrl,
           title: item.title,
           thumbnail: item.thumbnailUrl,
-          startPositionMs: String(broadcastCurrent!.positionSecs * 1000),
+          startPositionMs: startMs,
         },
       });
     } else {
-      navigateToPlayer({
-        videoId: item.youtubeId,
-        title: item.title,
-        thumbnail: item.thumbnailUrl,
+      router.push({
+        pathname: "/player",
+        params: {
+          broadcastMode: "true",
+          videoId: item.youtubeId,
+          title: item.title,
+          thumbnail: item.thumbnailUrl,
+          startPositionMs: startMs,
+        },
       });
     }
   };
