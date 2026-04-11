@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   FlatList,
   Platform,
@@ -10,7 +10,7 @@ import {
   View,
 } from "react-native";
 import { Feather } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
@@ -82,6 +82,7 @@ function applySortAndFilter(
 export default function LibraryScreen() {
   const c = useColors();
   const insets = useSafeAreaInsets();
+  const params = useLocalSearchParams<{ category?: string }>();
   const { sermons, loading, refresh } = useYouTubeChannel();
   const { favorites, isFavorite, toggleFavorite } = useFavorites();
   const { history, hasWatched } = useWatchHistory();
@@ -89,7 +90,15 @@ export default function LibraryScreen() {
   const [category, setCategory] = useState<SermonCategory>("All");
   const [viewMode, setViewMode] = useState<ViewMode>("all");
   const [sortMode, setSortMode] = useState<SortMode>("newest");
+
   const [refreshing, setRefreshing] = useState(false);
+
+  useEffect(() => {
+    if (params.category && params.category !== "All") {
+      setCategory(params.category as SermonCategory);
+      setViewMode("all");
+    }
+  }, [params.category]);
   const webTopPad = Platform.OS === "web" ? 67 : 0;
 
   const sourceData = useMemo(() => {

@@ -1,5 +1,7 @@
 import React, { useEffect, useRef } from "react";
-import { Animated, StyleSheet, Text, View } from "react-native";
+import { Animated, Platform, StyleSheet, Text, View } from "react-native";
+
+const ND = Platform.OS !== "web";
 
 export function LiveBadge({ size = "medium" }: { size?: "small" | "medium" | "large" }) {
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -7,16 +9,8 @@ export function LiveBadge({ size = "medium" }: { size?: "small" | "medium" | "la
   useEffect(() => {
     const pulse = Animated.loop(
       Animated.sequence([
-        Animated.timing(pulseAnim, {
-          toValue: 0.4,
-          duration: 800,
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulseAnim, {
-          toValue: 1,
-          duration: 800,
-          useNativeDriver: true,
-        }),
+        Animated.timing(pulseAnim, { toValue: 0.4, duration: 800, useNativeDriver: ND }),
+        Animated.timing(pulseAnim, { toValue: 1, duration: 800, useNativeDriver: ND }),
       ]),
     );
     pulse.start();

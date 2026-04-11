@@ -1,7 +1,9 @@
 import React, { useEffect, useRef } from "react";
-import { Animated, StyleSheet, Text, View } from "react-native";
+import { Animated, Platform, StyleSheet, Text, View } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
+
+const ND = Platform.OS !== "web";
 
 interface NowPlayingBarProps {
   title: string;
@@ -16,8 +18,8 @@ export function NowPlayingBar({ title, isLive = false }: NowPlayingBarProps) {
     if (!isLive) return;
     const glow = Animated.loop(
       Animated.sequence([
-        Animated.timing(glowAnim, { toValue: 1, duration: 1500, useNativeDriver: true }),
-        Animated.timing(glowAnim, { toValue: 0, duration: 1500, useNativeDriver: true }),
+        Animated.timing(glowAnim, { toValue: 1, duration: 1500, useNativeDriver: ND }),
+        Animated.timing(glowAnim, { toValue: 0, duration: 1500, useNativeDriver: ND }),
       ]),
     );
     glow.start();

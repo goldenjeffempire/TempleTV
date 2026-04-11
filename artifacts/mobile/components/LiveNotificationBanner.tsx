@@ -20,9 +20,10 @@ export function LiveNotificationBanner({
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
+    const ND = Platform.OS !== "web";
     Animated.spring(slideAnim, {
       toValue: visible ? 0 : -100,
-      useNativeDriver: true,
+      useNativeDriver: ND,
       damping: 18,
     }).start();
 
@@ -32,8 +33,8 @@ export function LiveNotificationBanner({
       }
       const pulse = Animated.loop(
         Animated.sequence([
-          Animated.timing(pulseAnim, { toValue: 1.05, duration: 700, useNativeDriver: true }),
-          Animated.timing(pulseAnim, { toValue: 1, duration: 700, useNativeDriver: true }),
+          Animated.timing(pulseAnim, { toValue: 1.05, duration: 700, useNativeDriver: ND }),
+          Animated.timing(pulseAnim, { toValue: 1, duration: 700, useNativeDriver: ND }),
         ]),
       );
       pulse.start();

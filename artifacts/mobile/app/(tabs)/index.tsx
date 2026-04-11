@@ -37,7 +37,7 @@ export default function WatchScreen() {
   const { currentSermon, isLive: playerIsLive, playSermon, playLive, setQueue } = usePlayer();
   const { sermons, loading, refresh, isFromRss, error: feedError } = useYouTubeChannel();
   const { isOnline } = useNetworkStatus();
-  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const fadeAnim = useRef(new Animated.Value(Platform.OS === "web" ? 1 : 0)).current;
   const [liveStatus, setLiveStatus] = useState<LiveCheckResult>({ isLive: false, videoId: null, title: null });
   const [checkingLive, setCheckingLive] = useState(true);
   const [showLiveBanner, setShowLiveBanner] = useState(false);
@@ -46,7 +46,7 @@ export default function WatchScreen() {
   const autoStartedRef = useRef(false);
 
   useEffect(() => {
-    Animated.timing(fadeAnim, { toValue: 1, duration: 500, useNativeDriver: true }).start();
+    Animated.timing(fadeAnim, { toValue: 1, duration: 500, useNativeDriver: Platform.OS !== "web" }).start();
 
     checkLiveStatus()
       .then((status) => {
@@ -234,7 +234,7 @@ export default function WatchScreen() {
             <SectionHeader
               title="Latest Sermons"
               subtitle={isFromRss ? "From YouTube" : "Featured"}
-              onSeeAll={() => router.push("/(tabs)/library")}
+              onSeeAll={() => router.push("/library")}
             />
             {loading ? (
               <FlatList
@@ -261,7 +261,7 @@ export default function WatchScreen() {
 
           {!loading && faithSermons.length > 0 && (
             <View style={styles.section}>
-              <SectionHeader title="Faith" onSeeAll={() => router.push("/(tabs)/library")} />
+              <SectionHeader title="Faith" onSeeAll={() => router.push({ pathname: "/library", params: { category: "Faith" } })} />
               <View style={styles.listContainer}>
                 {faithSermons.map((s) => (
                   <SermonCard key={s.id} sermon={s} onPress={handleSermonPress} variant="horizontal" />
@@ -272,7 +272,7 @@ export default function WatchScreen() {
 
           {!loading && healingSermons.length > 0 && (
             <View style={styles.section}>
-              <SectionHeader title="Healing & Miracles" onSeeAll={() => router.push("/(tabs)/library")} />
+              <SectionHeader title="Healing & Miracles" onSeeAll={() => router.push({ pathname: "/library", params: { category: "Healing" } })} />
               <View style={styles.listContainer}>
                 {healingSermons.map((s) => (
                   <SermonCard key={s.id} sermon={s} onPress={handleSermonPress} variant="horizontal" />
@@ -283,7 +283,7 @@ export default function WatchScreen() {
 
           {!loading && deliveranceSermons.length > 0 && (
             <View style={styles.section}>
-              <SectionHeader title="Deliverance" onSeeAll={() => router.push("/(tabs)/library")} />
+              <SectionHeader title="Deliverance" onSeeAll={() => router.push({ pathname: "/library", params: { category: "Deliverance" } })} />
               <View style={styles.listContainer}>
                 {deliveranceSermons.map((s) => (
                   <SermonCard key={s.id} sermon={s} onPress={handleSermonPress} variant="horizontal" />
@@ -294,7 +294,7 @@ export default function WatchScreen() {
 
           {!loading && worshipSermons.length > 0 && (
             <View style={styles.section}>
-              <SectionHeader title="Worship" onSeeAll={() => router.push("/(tabs)/library")} />
+              <SectionHeader title="Worship" onSeeAll={() => router.push({ pathname: "/library", params: { category: "Worship" } })} />
               <View style={styles.listContainer}>
                 {worshipSermons.map((s) => (
                   <SermonCard key={s.id} sermon={s} onPress={handleSermonPress} variant="horizontal" />
@@ -305,7 +305,7 @@ export default function WatchScreen() {
 
           {!loading && teachingsSermons.length > 0 && (
             <View style={styles.section}>
-              <SectionHeader title="Teachings" onSeeAll={() => router.push("/(tabs)/library")} />
+              <SectionHeader title="Teachings" onSeeAll={() => router.push({ pathname: "/library", params: { category: "Teachings" } })} />
               <View style={styles.listContainer}>
                 {teachingsSermons.map((s) => (
                   <SermonCard key={s.id} sermon={s} onPress={handleSermonPress} variant="horizontal" />
@@ -316,7 +316,7 @@ export default function WatchScreen() {
 
           {!loading && specialSermons.length > 0 && (
             <View style={styles.section}>
-              <SectionHeader title="Special Programs" onSeeAll={() => router.push("/(tabs)/library")} />
+              <SectionHeader title="Special Programs" onSeeAll={() => router.push({ pathname: "/library", params: { category: "Special" } })} />
               <View style={styles.listContainer}>
                 {specialSermons.map((s) => (
                   <SermonCard key={s.id} sermon={s} onPress={handleSermonPress} variant="horizontal" />

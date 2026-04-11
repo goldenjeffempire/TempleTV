@@ -87,21 +87,22 @@ export default function RadioScreen() {
       return;
     }
 
+    const ND = Platform.OS !== "web";
     const rotate = Animated.loop(
-      Animated.timing(rotateAnim, { toValue: 1, duration: 10000, useNativeDriver: true }),
+      Animated.timing(rotateAnim, { toValue: 1, duration: 10000, useNativeDriver: ND }),
     );
     const pulse = Animated.loop(
       Animated.sequence([
-        Animated.timing(pulseAnim, { toValue: 1.08, duration: 2000, useNativeDriver: true }),
-        Animated.timing(pulseAnim, { toValue: 1, duration: 2000, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1.08, duration: 2000, useNativeDriver: ND }),
+        Animated.timing(pulseAnim, { toValue: 1, duration: 2000, useNativeDriver: ND }),
       ]),
     );
     const makeWave = (anim: Animated.Value, delay: number) =>
       Animated.loop(
         Animated.sequence([
           Animated.delay(delay),
-          Animated.timing(anim, { toValue: 1, duration: 500, useNativeDriver: true }),
-          Animated.timing(anim, { toValue: 0.2, duration: 500, useNativeDriver: true }),
+          Animated.timing(anim, { toValue: 1, duration: 500, useNativeDriver: ND }),
+          Animated.timing(anim, { toValue: 0.2, duration: 500, useNativeDriver: ND }),
         ]),
       );
     rotate.start();

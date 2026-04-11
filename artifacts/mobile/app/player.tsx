@@ -216,7 +216,7 @@ export default function PlayerScreen() {
 
   const isLive = live === "true";
   const scrollRef = useRef<ScrollView>(null);
-  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const fadeAnim = useRef(new Animated.Value(Platform.OS === "web" ? 1 : 0)).current;
   const titleFade = useRef(new Animated.Value(1)).current;
   const initializedRef = useRef(false);
   const isMountedRef = useRef(true);
@@ -261,7 +261,7 @@ export default function PlayerScreen() {
   });
 
   useEffect(() => {
-    Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: true }).start();
+    Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: Platform.OS !== "web" }).start();
   }, []);
 
   useEffect(() => {
@@ -278,12 +278,12 @@ export default function PlayerScreen() {
   useEffect(() => {
     if (!ctxSermon || isLive) return;
     if (ctxSermon.youtubeId === activeSermon?.youtubeId) return;
-    Animated.timing(titleFade, { toValue: 0, duration: 150, useNativeDriver: true }).start(() => {
+    Animated.timing(titleFade, { toValue: 0, duration: 150, useNativeDriver: Platform.OS !== "web" }).start(() => {
       if (!isMountedRef.current) return;
       setActiveSermon(ctxSermon);
       addToHistory(ctxSermon);
       scrollRef.current?.scrollTo({ y: 0, animated: true });
-      Animated.timing(titleFade, { toValue: 1, duration: 250, useNativeDriver: true }).start();
+      Animated.timing(titleFade, { toValue: 1, duration: 250, useNativeDriver: Platform.OS !== "web" }).start();
     });
   }, [ctxSermon?.youtubeId]);
 

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from "react";
-import { Animated, StyleSheet, Text, useColorScheme, View } from "react-native";
+import { Animated, Platform, StyleSheet, Text, useColorScheme, View } from "react-native";
 import { Feather } from "@expo/vector-icons";
 
 interface NetworkBannerProps {
@@ -12,9 +12,10 @@ export function NetworkBanner({ visible }: NetworkBannerProps) {
   const isDark = colorScheme === "dark";
 
   useEffect(() => {
+    const ND = Platform.OS !== "web";
     Animated.spring(slideAnim, {
       toValue: visible ? 0 : -52,
-      useNativeDriver: true,
+      useNativeDriver: ND,
       damping: 22,
       stiffness: 200,
     }).start();

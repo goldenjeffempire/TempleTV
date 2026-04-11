@@ -35,9 +35,9 @@ function RootLayoutNav() {
         const type = data?.type as string | undefined;
 
         if (type === "live_service") {
-          router.push("/(tabs)/");
+          router.push("/");
         } else if (type === "new_sermon") {
-          router.push("/(tabs)/library");
+          router.push("/library");
         }
       });
     });

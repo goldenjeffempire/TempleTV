@@ -74,6 +74,8 @@ Faith, Healing, Deliverance, Worship, Prophecy, Teachings, Special Programs
 9. **User personalization** — Favorites, watch history, notification prefs (all AsyncStorage)
 10. **NetworkBanner** — Amber-themed offline indicator with themed colors
 11. **EAS build config** (`eas.json`) — development/preview/production build profiles
+12. **Category deep-link navigation** — "See all" buttons on Watch tab navigate to Library with category pre-selected via URL param (`/library?category=Faith`)
+13. **TypeScript strict compliance** — zero errors; web notification stub exports all native functions as no-ops
 
 ## App Store Configuration (`app.json`)
 - **iOS bundle ID**: `com.templetv.jctm`
