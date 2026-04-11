@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
-  FlatList,
   Image,
   Platform,
   Pressable,
@@ -11,6 +10,7 @@ import {
   View,
 } from "react-native";
 import { Feather } from "@expo/vector-icons";
+import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
@@ -140,6 +140,23 @@ export default function RadioScreen() {
     }
   };
 
+  const handleWatchVideo = () => {
+    if (!nowPlaying) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (isRadioMode) toggleRadioMode();
+    router.push({
+      pathname: "/player",
+      params: {
+        videoId: nowPlaying.youtubeId,
+        title: nowPlaying.title,
+        preacher: nowPlaying.preacher,
+        duration: nowPlaying.duration,
+        thumbnail: nowPlaying.thumbnailUrl,
+        category: nowPlaying.category,
+      },
+    });
+  };
+
   const upNext = filteredQueue
     .slice(currentIndex + 1, currentIndex + 6)
     .filter((s) => s.youtubeId !== nowPlaying?.youtubeId);
@@ -154,7 +171,7 @@ export default function RadioScreen() {
           <View>
             <Text style={[styles.header, { color: c.foreground }]}>Radio</Text>
             <Text style={[styles.desc, { color: c.mutedForeground }]}>
-              Listen with screen off — background audio mode
+              Audio-only stream — background playback, low data
             </Text>
           </View>
         </View>
@@ -258,6 +275,19 @@ export default function RadioScreen() {
               </Text>
             </Pressable>
           </View>
+
+          {nowPlaying && Platform.OS !== "web" && (
+            <Pressable
+              onPress={handleWatchVideo}
+              style={({ pressed }) => [
+                styles.watchVideoBtn,
+                { borderColor: c.border, backgroundColor: c.muted, opacity: pressed ? 0.7 : 1 },
+              ]}
+            >
+              <Feather name="video" size={14} color={c.foreground} />
+              <Text style={[styles.watchVideoText, { color: c.foreground }]}>Watch Video</Text>
+            </Pressable>
+          )}
         </View>
 
         <View style={styles.categorySection}>
@@ -295,7 +325,7 @@ export default function RadioScreen() {
               <View>
                 <Text style={[styles.toggleLabel, { color: c.foreground }]}>Radio Mode</Text>
                 <Text style={[styles.toggleDesc, { color: c.mutedForeground }]}>
-                  Background audio — works with screen off
+                  Audio-only stream — hides video, saves data
                 </Text>
               </View>
             </View>
@@ -439,4 +469,15 @@ const styles = StyleSheet.create({
   queueText: { flex: 1 },
   queueItemTitle: { fontSize: 14, fontFamily: "Inter_500Medium" },
   queueMeta: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
+  watchVideoBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+    borderRadius: 22,
+    borderWidth: 1,
+    marginTop: 2,
+  },
+  watchVideoText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
 });

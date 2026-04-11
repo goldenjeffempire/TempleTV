@@ -20,9 +20,12 @@ interface YoutubePlayerProps {
   thumbnailUrl?: string;
   channelHandle?: string;
   autoPlay?: boolean;
+  title?: string;
+  preacher?: string;
   onEnd?: () => void;
   onPlay?: () => void;
   onPause?: () => void;
+  onToggleAudioMode?: () => void;
 }
 
 export function YoutubePlayer({

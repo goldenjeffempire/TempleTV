@@ -526,6 +526,7 @@ const styles = StyleSheet.create({
   playlistDetailTitle: { fontSize: 24, fontFamily: "Inter_700Bold" },
   playlistDetailDesc: { fontSize: 13, fontFamily: "Inter_400Regular", lineHeight: 18 },
   playlistDetailCount: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 4 },
+  playlistItemRow: { flexDirection: "row", alignItems: "flex-start" },
   playlistIndex: { width: 28, alignItems: "center", justifyContent: "center", paddingTop: 8 },
   playlistIndexText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
 });

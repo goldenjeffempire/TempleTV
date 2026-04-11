@@ -170,6 +170,15 @@ Root layout (`app/_layout.tsx`) registers a `addNotificationResponseReceivedList
 
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.
 
+## Features Added (Session 7)
+- **True audio-only radio mode**: When Radio Mode is toggled on, the YouTube player shrinks to 1px height (hidden) while audio continues streaming — no video frames rendered, saving GPU, CPU, and data
+- **Audio card overlay**: In audio mode, the player screen shows a spinning disc with album art, pulsing wave visualizer, "Audio Mode" badge, and a "Switch to Video" button
+- **Video ↔ Audio toggle button**: A headphones/video icon button appears in the player screen's top bar (native only) for seamless switching between full video and audio-only mode without stopping playback
+- **Works for both live and VOD**: The hidden player handles live broadcasts and uploaded sermons equally — Radio Mode works regardless of what's currently broadcasting
+- **"Watch Video" from Radio tab**: A "Watch Video" button appears in the Radio tab when a sermon is playing, navigating to the full player and disabling Radio Mode for immediate video viewing
+- **Low data optimized**: Audio mode forces `suggestedQuality: "small"` on the YouTube player, minimizing bandwidth consumption
+- **Library.tsx playlistItemRow fix**: Added missing `playlistItemRow` style that was causing a TypeScript error
+
 ## Features Added (Session 6)
 - **Admin schedule targeting**: Schedule entries for playlist/video content now include selectors for imported playlists and videos so scheduled programming points to real content.
 - **App-wide live interrupt**: Mobile now polls for YouTube live status and scheduled live slots globally, not only on the Watch tab, and opens the live player when a service begins.

@@ -209,6 +209,7 @@ export default function PlayerScreen() {
     toggleShuffle,
     cycleLoopMode,
     togglePlay,
+    toggleRadioMode,
     volume,
     dataSaver,
     isRadioMode,
@@ -383,11 +384,16 @@ export default function PlayerScreen() {
   const showSeekBar = !isLive && duration > 0;
   const showVolume = !isLive && Platform.OS === "web";
 
+  const handleToggleAudioMode = useCallback(() => {
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    toggleRadioMode();
+  }, [toggleRadioMode]);
+
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
       {Platform.OS !== "web" && <StatusBar barStyle="light-content" backgroundColor="#000" />}
 
-      <View style={styles.playerContainer}>
+      <View style={[styles.playerContainer, isRadioMode && !paramLocalVideoUrl && { aspectRatio: undefined, height: 280 }]}>
         {paramLocalVideoUrl ? (
           <LocalVideoPlayer
             videoUrl={paramLocalVideoUrl}
@@ -402,8 +408,11 @@ export default function PlayerScreen() {
             videoId={displayVideoId}
             isLive={isLive}
             thumbnailUrl={thumbnailUrl}
+            title={displayTitle}
+            preacher={displayPreacher}
             autoPlay
             onEnd={handleVideoEnd}
+            onToggleAudioMode={handleToggleAudioMode}
           />
         )}
         <LinearGradient
@@ -420,6 +429,15 @@ export default function PlayerScreen() {
             </Pressable>
             <View style={{ flex: 1 }} />
             {isLive && <LiveBadge size="medium" />}
+            {!isLive && !paramLocalVideoUrl && Platform.OS !== "web" && (
+              <Pressable
+                onPress={handleToggleAudioMode}
+                style={[styles.audioToggleBtn, isRadioMode && { backgroundColor: "rgba(106,13,173,0.6)" }]}
+                hitSlop={12}
+              >
+                <Feather name={isRadioMode ? "video" : "headphones"} size={16} color="#FFF" />
+              </Pressable>
+            )}
           </View>
         </LinearGradient>
       </View>
@@ -592,6 +610,7 @@ const styles = StyleSheet.create({
   topGradient: { position: "absolute", top: 0, left: 0, right: 0, height: 110 },
   topControls: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, gap: 12 },
   backBtn: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.4)" },
+  audioToggleBtn: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.4)" },
   info: { padding: 16, gap: 16 },
   titleSection: { gap: 8 },
   topMeta: { flexDirection: "row", alignItems: "center", gap: 8 },
