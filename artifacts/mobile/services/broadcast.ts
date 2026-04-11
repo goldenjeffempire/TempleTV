@@ -1,22 +1,16 @@
+export interface BroadcastItem {
+  id: string;
+  youtubeId: string;
+  title: string;
+  thumbnailUrl: string;
+  durationSecs: number;
+  localVideoUrl: string | null;
+  videoSource: string;
+}
+
 export interface BroadcastCurrentResult {
-  item: {
-    id: string;
-    youtubeId: string;
-    title: string;
-    thumbnailUrl: string;
-    durationSecs: number;
-    localVideoUrl: string | null;
-    videoSource: string;
-  } | null;
-  nextItem: {
-    id: string;
-    youtubeId: string;
-    title: string;
-    thumbnailUrl: string;
-    durationSecs: number;
-    localVideoUrl: string | null;
-    videoSource: string;
-  } | null;
+  item: BroadcastItem | null;
+  nextItem: BroadcastItem | null;
   index: number;
   positionSecs: number;
   totalSecs: number;
@@ -32,6 +26,27 @@ export interface BroadcastCurrentResult {
     startTime: string;
     endTime: string | null;
   } | null;
+  liveOverride?: {
+    id: string;
+    title: string;
+    startedAt: string;
+    endsAt: string | null;
+  } | null;
+}
+
+function toAbsoluteUrl(url: string | null, domain: string): string | null {
+  if (!url) return null;
+  if (url.startsWith("http://") || url.startsWith("https://")) return url;
+  return `https://${domain}${url.startsWith("/") ? url : `/${url}`}`;
+}
+
+function normalizeItem(item: BroadcastItem | null, domain: string): BroadcastItem | null {
+  if (!item) return null;
+  return {
+    ...item,
+    localVideoUrl: toAbsoluteUrl(item.localVideoUrl, domain),
+    thumbnailUrl: toAbsoluteUrl(item.thumbnailUrl, domain) ?? item.thumbnailUrl,
+  };
 }
 
 export async function checkBroadcastCurrent(): Promise<BroadcastCurrentResult | null> {
@@ -42,7 +57,12 @@ export async function checkBroadcastCurrent(): Promise<BroadcastCurrentResult | 
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return null;
-    return (await res.json()) as BroadcastCurrentResult;
+    const data = (await res.json()) as BroadcastCurrentResult;
+    return {
+      ...data,
+      item: normalizeItem(data.item, domain),
+      nextItem: normalizeItem(data.nextItem, domain),
+    };
   } catch {
     return null;
   }

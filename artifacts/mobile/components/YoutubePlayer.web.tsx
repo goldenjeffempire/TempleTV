@@ -49,6 +49,7 @@ interface YoutubePlayerProps {
   title?: string;
   preacher?: string;
   playerHeight?: number;
+  startPositionSecs?: number;
   onEnd?: () => void;
   onPlay?: () => void;
   onPause?: () => void;
@@ -60,6 +61,7 @@ export function YoutubePlayer({
   isLive,
   channelHandle = "templetvjctm",
   autoPlay = true,
+  startPositionSecs,
   onEnd,
   onPlay,
   onPause,

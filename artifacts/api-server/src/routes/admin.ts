@@ -245,7 +245,8 @@ router.post("/admin/videos/upload", upload.fields([{ name: "video", maxCount: 1 
       return res.status(400).json({ error: "Title is required" });
     }
 
-    const baseUrl = process.env.API_BASE_URL ?? "";
+    const devDomain = process.env.REPLIT_DEV_DOMAIN;
+    const baseUrl = process.env.API_BASE_URL ?? (devDomain ? `https://${devDomain}` : "");
     const localVideoUrl = `${baseUrl}/uploads/${videoFile.filename}`;
     const thumbnailUrl = thumbnailFile
       ? `${baseUrl}/uploads/${thumbnailFile.filename}`

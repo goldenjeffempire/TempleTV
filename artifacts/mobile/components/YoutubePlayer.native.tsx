@@ -33,6 +33,7 @@ interface YoutubePlayerProps {
   title?: string;
   preacher?: string;
   playerHeight?: number;
+  startPositionSecs?: number;
   onEnd?: () => void;
   onPlay?: () => void;
   onPause?: () => void;
@@ -166,6 +167,7 @@ export function YoutubePlayer({
   title,
   preacher,
   playerHeight: playerHeightProp,
+  startPositionSecs,
   onEnd,
   onPlay,
   onPause,
@@ -184,6 +186,7 @@ export function YoutubePlayer({
   const isMountedRef = useRef(true);
   const playerRef = useRef<any>(null);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const hasSeededStartRef = useRef(false);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -239,7 +242,11 @@ export function YoutubePlayer({
     playerRef.current = ref;
     setPlayerReady(true);
     Animated.timing(transitionOpacity, { toValue: 0, duration: 350, useNativeDriver: true }).start();
-  }, [transitionOpacity]);
+    if (startPositionSecs && startPositionSecs > 0 && !hasSeededStartRef.current) {
+      hasSeededStartRef.current = true;
+      setTimeout(() => { try { ref?.seekTo?.(startPositionSecs, true); } catch {} }, 500);
+    }
+  }, [transitionOpacity, startPositionSecs]);
 
   const onChangeState = useCallback(
     (state: string) => {

@@ -23,6 +23,7 @@ interface YoutubePlayerProps {
   title?: string;
   preacher?: string;
   playerHeight?: number;
+  startPositionSecs?: number;
   onEnd?: () => void;
   onPlay?: () => void;
   onPause?: () => void;
