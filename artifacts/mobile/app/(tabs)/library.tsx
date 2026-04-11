@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ActivityIndicator,
   FlatList,
   Platform,
   Pressable,
@@ -20,13 +21,14 @@ import { useFavorites } from "@/hooks/useFavorites";
 import { useWatchHistory } from "@/hooks/useWatchHistory";
 import { useWatchProgress } from "@/hooks/useWatchProgress";
 import { usePlaylists, usePlaylistDetail } from "@/hooks/usePlaylists";
+import { useDownloads } from "@/hooks/useDownloads";
 import { CategoryPills } from "@/components/CategoryPills";
 import { SermonCard } from "@/components/SermonCard";
 import { SkeletonHorizontalCard } from "@/components/SkeletonCard";
 import { navigateToSermon } from "@/utils/navigation";
 import type { SermonCategory, Sermon, SortMode } from "@/types";
 
-type ViewMode = "all" | "favorites" | "history" | "playlists";
+type ViewMode = "all" | "favorites" | "history" | "playlists" | "downloads";
 
 const SORT_LABELS: Record<SortMode, string> = {
   newest: "Newest",
@@ -92,6 +94,7 @@ export default function LibraryScreen() {
   const { history, hasWatched } = useWatchHistory();
   const { getProgress } = useWatchProgress();
   const { playlists, loading: playlistsLoading } = usePlaylists();
+  const { downloads, isDownloaded, getProgress: getDlProgress, downloadSermon, deleteDownload, isSupported: dlSupported } = useDownloads();
   const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null);
   const { detail: selectedPlaylist, loading: playlistDetailLoading, sermons: playlistSermons } = usePlaylistDetail(selectedPlaylistId);
   const [search, setSearch] = useState("");
@@ -148,6 +151,7 @@ export default function LibraryScreen() {
     { key: "favorites", label: "Saved", icon: "heart" },
     { key: "history", label: "History", icon: "clock" },
     { key: "playlists", label: "Playlists", icon: "list" },
+    ...(dlSupported ? [{ key: "downloads" as ViewMode, label: "Offline", icon: "download" }] : []),
   ];
 
   return (
@@ -200,7 +204,7 @@ export default function LibraryScreen() {
           })}
         </View>
 
-        {viewMode !== "playlists" && (
+        {viewMode !== "playlists" && viewMode !== "downloads" && (
           <>
             <View style={[styles.searchContainer, { backgroundColor: c.muted, borderColor: c.border }]}>
               <Feather name="search" size={18} color={c.mutedForeground} />
@@ -224,7 +228,64 @@ export default function LibraryScreen() {
         )}
       </View>
 
-      {viewMode === "playlists" ? (
+      {viewMode === "downloads" ? (
+        <FlatList
+          data={downloads}
+          keyExtractor={(item) => item.sermon.id}
+          contentContainerStyle={styles.listContent}
+          showsVerticalScrollIndicator={false}
+          ListHeaderComponent={
+            downloads.length > 0 ? (
+              <View style={[styles.downloadHeader, { borderColor: c.border }]}>
+                <Feather name="download" size={14} color={c.primary} />
+                <Text style={[styles.downloadHeaderText, { color: c.mutedForeground }]}>
+                  {downloads.length} video{downloads.length !== 1 ? "s" : ""} saved offline
+                </Text>
+              </View>
+            ) : null
+          }
+          renderItem={({ item: rec }) => {
+            const dlProg = getDlProgress(rec.sermon.id);
+            const dlActive = dlProg?.status === "downloading";
+            return (
+              <View style={styles.cardWrapper}>
+                <SermonCard
+                  sermon={{ ...rec.sermon, localVideoUrl: rec.localPath }}
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    navigateToSermon({ ...rec.sermon, localVideoUrl: rec.localPath }, {});
+                  }}
+                  variant="horizontal"
+                />
+                <View style={[styles.offlineBadge, { backgroundColor: c.secondary }]}>
+                  <Feather name="wifi-off" size={10} color={c.primary} />
+                  <Text style={[styles.offlineBadgeText, { color: c.primary }]}>Offline</Text>
+                </View>
+                <Pressable
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                    deleteDownload(rec.sermon.id);
+                  }}
+                  style={[styles.deleteBtn, { backgroundColor: c.muted }]}
+                  hitSlop={8}
+                  disabled={dlActive}
+                >
+                  <Feather name="trash-2" size={16} color="#FF4040" />
+                </Pressable>
+              </View>
+            );
+          }}
+          ListEmptyComponent={
+            <View style={styles.emptyState}>
+              <Feather name="download" size={52} color={c.mutedForeground} />
+              <Text style={[styles.emptyTitle, { color: c.foreground }]}>No offline videos</Text>
+              <Text style={[styles.emptyText, { color: c.mutedForeground }]}>
+                Browse the library and tap the download icon on uploaded videos to save them for offline viewing
+              </Text>
+            </View>
+          }
+        />
+      ) : viewMode === "playlists" ? (
         selectedPlaylistId && selectedPlaylist ? (
           <FlatList
             data={playlistDetailLoading ? [] : playlistSermons}
@@ -352,35 +413,66 @@ export default function LibraryScreen() {
               />
             ) : undefined
           }
-          renderItem={({ item }) => (
-            <View style={styles.cardWrapper}>
-              <SermonCard
-                sermon={item}
-                onPress={handleSermonPress}
-                variant="horizontal"
-                progress={getProgress(item.id)?.pct}
-              />
-              <Pressable
-                onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  toggleFavorite(item);
-                }}
-                style={styles.heartBtn}
-                hitSlop={8}
-              >
-                <Feather
-                  name="heart"
-                  size={18}
-                  color={isFavorite(item.youtubeId) ? "#FF0040" : c.mutedForeground}
+          renderItem={({ item }) => {
+            const isLocal = item.videoSource === "local" && !!item.localVideoUrl;
+            const downloaded = isLocal && isDownloaded(item.id);
+            const dlProg = isLocal ? getDlProgress(item.id) : null;
+            const dlActive = dlProg?.status === "downloading";
+            return (
+              <View style={styles.cardWrapper}>
+                <SermonCard
+                  sermon={item}
+                  onPress={handleSermonPress}
+                  variant="horizontal"
+                  progress={getProgress(item.id)?.pct}
                 />
-              </Pressable>
-              {hasWatched(item.youtubeId) && (
-                <View style={[styles.watchedBadge, { backgroundColor: c.primary }]}>
-                  <Feather name="check" size={10} color="#FFF" />
-                </View>
-              )}
-            </View>
-          )}
+                <Pressable
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    toggleFavorite(item);
+                  }}
+                  style={styles.heartBtn}
+                  hitSlop={8}
+                >
+                  <Feather
+                    name="heart"
+                    size={18}
+                    color={isFavorite(item.youtubeId) ? "#FF0040" : c.mutedForeground}
+                  />
+                </Pressable>
+                {isLocal && dlSupported && (
+                  <Pressable
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      if (downloaded) {
+                        deleteDownload(item.id);
+                      } else {
+                        downloadSermon(item);
+                      }
+                    }}
+                    style={[styles.downloadBtn, { backgroundColor: c.muted }]}
+                    hitSlop={8}
+                    disabled={dlActive}
+                  >
+                    {dlActive ? (
+                      <ActivityIndicator size="small" color={c.primary} style={{ width: 18, height: 18 }} />
+                    ) : (
+                      <Feather
+                        name={downloaded ? "check-circle" : "download"}
+                        size={16}
+                        color={downloaded ? c.primary : c.mutedForeground}
+                      />
+                    )}
+                  </Pressable>
+                )}
+                {hasWatched(item.youtubeId) && (
+                  <View style={[styles.watchedBadge, { backgroundColor: c.primary }]}>
+                    <Feather name="check" size={10} color="#FFF" />
+                  </View>
+                )}
+              </View>
+            );
+          }}
           ListEmptyComponent={
             <View style={styles.emptyState}>
               <Feather
@@ -532,4 +624,46 @@ const styles = StyleSheet.create({
   playlistItemRow: { flexDirection: "row", alignItems: "flex-start" },
   playlistIndex: { width: 28, alignItems: "center", justifyContent: "center", paddingTop: 8 },
   playlistIndexText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  downloadBtn: {
+    position: "absolute",
+    right: 14,
+    bottom: 8,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  downloadHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    marginBottom: 8,
+  },
+  downloadHeaderText: { fontSize: 12, fontFamily: "Inter_400Regular" },
+  offlineBadge: {
+    position: "absolute",
+    right: 80,
+    bottom: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  offlineBadgeText: { fontSize: 10, fontFamily: "Inter_600SemiBold" },
+  deleteBtn: {
+    position: "absolute",
+    right: 14,
+    top: "50%",
+    marginTop: -14,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
 });

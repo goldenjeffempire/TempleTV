@@ -2,7 +2,7 @@
 
 ## Overview
 
-A mobile broadcasting platform for Temple TV (JCTM) built with Expo/React Native. Features Live TV, Video-on-Demand sermon library, 24/7 Radio mode, push notifications, and a continuous streaming engine. Production-ready with EAS build config, full dark mode, and notification deep-linking.
+A full-stack broadcasting platform for Temple TV (JCTM). Features a cross-platform mobile app (Expo/React Native), a web admin dashboard (React/Vite), and a Node.js/Express API backend. Includes Live TV, Video-on-Demand sermon library, 24/7 Radio mode, push notifications, offline video downloads, and a continuous adaptive streaming engine.
 
 ## Stack
 
@@ -76,6 +76,8 @@ Faith, Healing, Deliverance, Worship, Prophecy, Teachings, Special Programs
 11. **EAS build config** (`eas.json`) — development/preview/production build profiles
 12. **Category deep-link navigation** — "See all" buttons on Watch tab navigate to Library with category pre-selected via URL param (`/library?category=Faith`)
 13. **TypeScript strict compliance** — zero errors; web notification stub exports all native functions as no-ops
+14. **Offline Video Downloads** — `useDownloads` hook uses `expo-file-system` to download locally-uploaded videos to device storage; download progress indicator on library cards; "Offline" tab in Library shows all downloaded videos; delete button to free storage; downloaded videos play from local path when offline
+15. **Cast to TV** — "Cast" button in player: opens YouTube native app (Chromecast-ready) or browser for YouTube videos; AirPlay supported natively on iOS via expo-av for local HLS videos through system media controls
 
 ## App Store Configuration (`app.json`)
 - **iOS bundle ID**: `com.templetv.jctm`
