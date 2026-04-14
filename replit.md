@@ -120,6 +120,19 @@ Faith, Healing, Deliverance, Worship, Prophecy, Teachings, Special Programs
 - **Analytics**: `uniqueViewers` now uses registered device count; daily views uses notification history instead of random data
 - **Dashboard**: "Notifications Today" stat card now shows registered device count as subtext
 
+## Features Added (Session 14) — High-Performance Upload Infrastructure
+- **20 MB chunk size**: Doubled from 10 MB for significantly higher throughput on large files (GB-scale content)
+- **True parallel multi-file uploads**: All selected files now upload simultaneously (capped at 3 concurrent files), eliminating the previous sequential bottleneck
+- **6 parallel streams per file**: Up from 4; each file uses 6 concurrent chunk uploads independent of other files
+- **Adaptive concurrency**: Each file's upload engine measures rolling bandwidth in real-time and automatically scales between 2–8 parallel streams (scales up above 10 MB/s, scales down below 1 MB/s) to maximize throughput without overwhelming the network
+- **SHA-256 checksum verification**: Every 20 MB chunk is hashed client-side using Web Crypto API and verified server-side with Node.js crypto before the chunk is written to disk; corrupted-in-transit data is rejected with a specific error and retried
+- **Per-file progress dashboard**: Upload dialog shows individual progress cards per file with speed, ETA, chunk count, active stream count, checksum counter, and state badges (pending/uploading/paused/done/error)
+- **Per-file pause, resume, cancel**: Each file in a batch can be independently paused (aborts its streams), resumed (fetches server status to skip already-uploaded chunks), cancelled (deletes server session), or retried
+- **Aggregate stats bar**: During multi-file uploads, a summary row shows combined speed, overall bytes, and overall percentage across all active uploads
+- **Broadcast auto-queue**: All uploaded videos (single or batch) are automatically added to the broadcast queue with no manual intervention
+- **Backend checksum enforcement**: `POST /api/admin/videos/upload/:sessionId/chunk` now accepts a `checksum` field; if provided, computes SHA-256 server-side and returns 400 on mismatch; response includes `checksumVerified` flag
+- **Session recovery preserved**: localStorage-based single-file session recovery (resume after browser refresh) is maintained in the new engine
+
 ## Broadcast Streaming Fixes (Session 8)
 - **Broadcast auto-advance**: `player.tsx` now accepts `broadcastMode=true` URL param; on video end, calls `checkBroadcastCurrent()` and replaces route with the next broadcast item at correct position instead of advancing the library queue
 - **YouTube position sync**: `startPositionSecs` prop now passed to `YoutubePlayer` from `paramStartPositionMs` (converted from ms→secs) so broadcast viewers join at the correct live position

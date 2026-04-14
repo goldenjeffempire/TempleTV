@@ -2,7 +2,12 @@ import { useListAdminVideos, useImportVideo, useUpdateAdminVideo, useDeleteAdmin
 import { useState, useRef, useCallback, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Search, Plus, Loader2, MoreVertical, Trash2, Youtube, ExternalLink, Video, Star, Edit, Upload, HardDrive, Play, Pause, X, CheckCircle2, AlertCircle, Zap, RotateCcw, Clock, Activity, Cpu, Layers } from "lucide-react";
+import {
+  Search, Plus, Loader2, MoreVertical, Trash2, Youtube, ExternalLink,
+  Video, Star, Edit, Upload, HardDrive, Play, Pause, X, CheckCircle2,
+  AlertCircle, Zap, RotateCcw, Clock, Activity, Cpu, Layers,
+  FileVideo, ShieldCheck, Wifi, TrendingUp,
+} from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   DropdownMenu,
@@ -20,18 +25,44 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 
-const CHUNK_SIZE = 10 * 1024 * 1024;
-const MAX_CONCURRENT = 4;
+// ─── Upload engine constants ───────────────────────────────────────────────────
+const CHUNK_SIZE = 20 * 1024 * 1024;        // 20 MB per chunk (doubled for throughput)
+const MAX_CONCURRENT_PER_FILE = 6;           // parallel chunk streams per file
+const MAX_CONCURRENT_FILES = 3;              // max simultaneous file uploads
+const MIN_CONCURRENCY = 2;
+const MAX_CONCURRENCY = 8;
 const MAX_RETRIES = 5;
-const SPEED_SAMPLES = 8;
-const UPLOAD_SESSION_KEY = "ttv-upload-session-v2";
+const SPEED_SAMPLES = 10;
+const UPLOAD_SESSION_KEY = "ttv-upload-session-v3";
+const CATEGORIES = ["sermon", "faith", "healing", "deliverance", "worship", "prophecy", "teachings", "special"];
 
-type UploadState = "idle" | "initializing" | "uploading" | "paused" | "finalizing" | "done" | "error";
+// ─── Types ─────────────────────────────────────────────────────────────────────
+type TaskState = "pending" | "initializing" | "uploading" | "paused" | "finalizing" | "done" | "error";
 
-interface ChunkStatus {
-  index: number;
-  status: "pending" | "uploading" | "done" | "error";
-  retries: number;
+interface FileTask {
+  id: string;
+  file: File;
+  title: string;
+  category: string;
+  preacher: string;
+  featured: boolean;
+  sessionId: string | null;
+  state: TaskState;
+  progress: number;
+  bytesUploaded: number;
+  speed: number;
+  eta: number;
+  chunksTotal: number;
+  chunksDone: number;
+  error: string | null;
+  abortController: AbortController | null;
+  speedSamples: { time: number; bytes: number }[];
+  bytesRef: number;
+  startTime: number;
+  durationSecs: number;
+  concurrency: number;
+  checksumOk: number;
+  checksumFailed: number;
 }
 
 interface StoredSession {
@@ -42,17 +73,84 @@ interface StoredSession {
   form: { title: string; category: string; preacher: string; featured: boolean };
 }
 
+type VideoRow = {
+  id: string;
+  youtubeId: string;
+  title: string;
+  thumbnailUrl: string;
+  category: string;
+  preacher: string;
+  featured: boolean;
+  viewCount: number;
+  duration: string;
+  importedAt: string | Date;
+  videoSource?: string;
+  localVideoUrl?: string | null;
+  hlsMasterUrl?: string | null;
+  transcodingStatus?: string;
+};
+
+// ─── Utility functions ─────────────────────────────────────────────────────────
+function formatFileSize(bytes: number) {
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function formatSpeed(bps: number) {
+  if (bps >= 1024 * 1024) return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`;
+  return `${(bps / 1024).toFixed(0)} KB/s`;
+}
+
+function formatEta(seconds: number) {
+  if (!isFinite(seconds) || seconds <= 0) return "";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  return `${m}m ${s}s`;
+}
+
+function exponentialBackoff(attempt: number): number {
+  const base = Math.min(500 * Math.pow(2, attempt), 16000);
+  return base + Math.random() * base * 0.3;
+}
+
+async function computeSha256(buffer: ArrayBuffer): Promise<string> {
+  const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
+  return Array.from(new Uint8Array(hashBuffer))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function detectVideoDuration(file: File): Promise<number> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    video.preload = "metadata";
+    video.onloadedmetadata = () => {
+      const secs = isFinite(video.duration) ? Math.round(video.duration) : 0;
+      URL.revokeObjectURL(url);
+      resolve(secs);
+    };
+    video.onerror = () => { URL.revokeObjectURL(url); resolve(0); };
+    video.src = url;
+  });
+}
+
+// ─── Chunk upload (XHR with checksum + progress) ───────────────────────────────
 async function uploadChunk(
   sessionId: string,
   chunkIndex: number,
   data: ArrayBuffer,
+  checksum: string,
   signal: AbortSignal,
-  onProgress?: (incrementalBytes: number) => void
+  onProgress?: (bytes: number) => void
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const formData = new FormData();
     formData.append("chunk", new Blob([data]));
     formData.append("chunkIndex", String(chunkIndex));
+    formData.append("checksum", checksum);
 
     const xhr = new XMLHttpRequest();
     let lastLoaded = 0;
@@ -79,8 +177,7 @@ async function uploadChunk(
     };
 
     xhr.onerror = () => reject(new Error("Network error"));
-    xhr.onabort = () => reject(Object.assign(new Error("AbortError"), { name: "AbortError" }));
-
+    xhr.onabort = () => reject(Object.assign(new Error("Aborted"), { name: "AbortError" }));
     signal.addEventListener("abort", () => xhr.abort(), { once: true });
 
     xhr.open("POST", `/api/admin/videos/upload/${sessionId}/chunk`);
@@ -88,50 +185,7 @@ async function uploadChunk(
   });
 }
 
-function exponentialBackoff(attempt: number): number {
-  const base = Math.min(500 * Math.pow(2, attempt), 16000);
-  const jitter = Math.random() * base * 0.3;
-  return base + jitter;
-}
-
-const CATEGORIES = ["sermon", "faith", "healing", "deliverance", "worship", "prophecy", "teachings", "special"];
-
-type VideoRow = {
-  id: string;
-  youtubeId: string;
-  title: string;
-  thumbnailUrl: string;
-  category: string;
-  preacher: string;
-  featured: boolean;
-  viewCount: number;
-  duration: string;
-  importedAt: string | Date;
-  videoSource?: string;
-  localVideoUrl?: string | null;
-  hlsMasterUrl?: string | null;
-  transcodingStatus?: string;
-};
-
-function formatFileSize(bytes: number) {
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
-
-function formatSpeed(bps: number) {
-  if (bps >= 1024 * 1024) return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`;
-  return `${(bps / 1024).toFixed(0)} KB/s`;
-}
-
-function formatEta(seconds: number) {
-  if (!isFinite(seconds) || seconds <= 0) return "";
-  if (seconds < 60) return `${Math.round(seconds)}s remaining`;
-  const m = Math.floor(seconds / 60);
-  const s = Math.round(seconds % 60);
-  return `${m}m ${s}s remaining`;
-}
-
+// ─── Main component ────────────────────────────────────────────────────────────
 export default function Videos() {
   const [search, setSearch] = useState("");
   const { data, isLoading } = useListAdminVideos({ search, limit: 50 });
@@ -146,39 +200,46 @@ export default function Videos() {
 
   const [editForm, setEditForm] = useState({ title: "", category: "sermon", preacher: "", featured: false });
 
+  // ── Upload dialog state ─────────────────────────────────────────────────────
   const [showUploadDialog, setShowUploadDialog] = useState(false);
-  const [uploadForm, setUploadForm] = useState({ title: "", category: "sermon", preacher: "", featured: false });
-  const [videoFile, setVideoFile] = useState<File | null>(null);
-  const [videoFiles, setVideoFiles] = useState<File[]>([]);
-  const [thumbnailFile, setThumbnailFile] = useState<File | null>(null);
-  const [uploadState, setUploadState] = useState<UploadState>("idle");
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const [uploadSpeed, setUploadSpeed] = useState(0);
-  const [uploadEta, setUploadEta] = useState(0);
-  const [bytesUploaded, setBytesUploaded] = useState(0);
-  const [chunksTotal, setChunksTotal] = useState(0);
-  const [chunksDone, setChunksDone] = useState(0);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [sessionId, setSessionId] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [pendingResume, setPendingResume] = useState<StoredSession | null>(null);
+  const [thumbnailFile, setThumbnailFile] = useState<File | null>(null);
+
+  // Global metadata defaults (applied per-file on upload start)
+  const [defaultForm, setDefaultForm] = useState({ title: "", category: "sermon", preacher: "", featured: false });
+
+  // Per-file task state (mutable ref + revision counter for re-renders)
+  const tasksRef = useRef<Map<string, FileTask>>(new Map());
+  const [revision, setRevision] = useState(0);
+  const forceUpdate = useCallback(() => setRevision((r) => r + 1), []);
 
   const videoInputRef = useRef<HTMLInputElement>(null);
   const thumbnailInputRef = useRef<HTMLInputElement>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
-  const uploadStartTimeRef = useRef<number>(0);
-  const bytesUploadedRef = useRef<number>(0);
-  const speedSamplesRef = useRef<{ time: number; bytes: number }[]>([]);
-  const totalFileBytes = useRef<number>(0);
 
+  // ── Derived UI state ────────────────────────────────────────────────────────
+  const tasks = Array.from(tasksRef.current.values());
+  const hasFiles = tasks.length > 0;
+  const isAnyUploading = tasks.some((t) => t.state === "uploading" || t.state === "initializing" || t.state === "finalizing");
+  const isAllDone = hasFiles && tasks.every((t) => t.state === "done");
+  const isAllFinished = hasFiles && tasks.every((t) => t.state === "done" || t.state === "error");
+  const activeCount = tasks.filter((t) => t.state === "uploading" || t.state === "initializing" || t.state === "finalizing").length;
+  const doneCount = tasks.filter((t) => t.state === "done").length;
+  const errorCount = tasks.filter((t) => t.state === "error").length;
+
+  // Aggregate speed across all active uploads
+  const totalSpeed = tasks.reduce((sum, t) => sum + (t.state === "uploading" ? t.speed : 0), 0);
+  const totalBytes = tasks.reduce((sum, t) => sum + t.file.size, 0);
+  const totalUploaded = tasks.reduce((sum, t) => sum + t.bytesUploaded, 0);
+  const overallProgress = totalBytes > 0 ? Math.round((totalUploaded / totalBytes) * 100) : 0;
+
+  // ── Session recovery ────────────────────────────────────────────────────────
   useEffect(() => {
     const stored = localStorage.getItem(UPLOAD_SESSION_KEY);
     if (stored) {
       try {
         const parsed = JSON.parse(stored) as StoredSession;
-        if (parsed.sessionId && parsed.fileName) {
-          setPendingResume(parsed);
-        }
+        if (parsed.sessionId && parsed.fileName) setPendingResume(parsed);
       } catch {
         localStorage.removeItem(UPLOAD_SESSION_KEY);
       }
@@ -194,15 +255,437 @@ export default function Videos() {
     setPendingResume(null);
   }, []);
 
+  // ── Task helpers ────────────────────────────────────────────────────────────
+  const updateTask = useCallback((id: string, patch: Partial<FileTask>) => {
+    const task = tasksRef.current.get(id);
+    if (task) {
+      Object.assign(task, patch);
+      forceUpdate();
+    }
+  }, [forceUpdate]);
+
+  const addFiles = useCallback((files: File[]) => {
+    const videos = files.filter((f) => f.type.startsWith("video/"));
+    if (videos.length === 0) return;
+    tasksRef.current.clear();
+    for (const file of videos) {
+      const id = crypto.randomUUID();
+      const task: FileTask = {
+        id, file,
+        title: file.name.replace(/\.[^/.]+$/, ""),
+        category: "sermon",
+        preacher: "",
+        featured: false,
+        sessionId: null,
+        state: "pending",
+        progress: 0,
+        bytesUploaded: 0,
+        speed: 0,
+        eta: 0,
+        chunksTotal: 0,
+        chunksDone: 0,
+        error: null,
+        abortController: null,
+        speedSamples: [],
+        bytesRef: 0,
+        startTime: 0,
+        durationSecs: 0,
+        concurrency: MAX_CONCURRENT_PER_FILE,
+        checksumOk: 0,
+        checksumFailed: 0,
+      };
+      tasksRef.current.set(id, task);
+    }
+    // Pre-fill title if single file
+    if (videos.length === 1) {
+      setDefaultForm((prev) => ({ ...prev, title: videos[0]!.name.replace(/\.[^/.]+$/, "") }));
+    } else {
+      setDefaultForm((prev) => ({ ...prev, title: "" }));
+    }
+    forceUpdate();
+  }, [forceUpdate]);
+
+  // ── Upload engine for a single file ────────────────────────────────────────
+  const runFileUpload = useCallback(async (taskId: string, resumeSession?: { sid: string; uploadedChunks: Set<number> }) => {
+    const task = tasksRef.current.get(taskId);
+    if (!task) return;
+
+    updateTask(taskId, { state: "initializing", error: null });
+
+    try {
+      // Detect duration
+      const durationSecs = await detectVideoDuration(task.file);
+      const totalChunks = Math.ceil(task.file.size / CHUNK_SIZE);
+      const ext = task.file.name.includes(".") ? `.${task.file.name.split(".").pop()}` : ".mp4";
+
+      updateTask(taskId, {
+        durationSecs,
+        chunksTotal: totalChunks,
+        chunksDone: 0,
+        progress: 0,
+        bytesRef: 0,
+        bytesUploaded: 0,
+        speedSamples: [],
+        startTime: Date.now(),
+      });
+
+      let sid = resumeSession?.sid ?? null;
+      let alreadyUploaded = resumeSession?.uploadedChunks ?? new Set<number>();
+      const title = task.title || task.file.name.replace(/\.[^/.]+$/, "");
+
+      if (!sid) {
+        const initRes = await fetch("/api/admin/videos/upload/init", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title,
+            category: task.category,
+            preacher: task.preacher,
+            featured: String(task.featured),
+            durationSecs: durationSecs > 0 ? String(durationSecs) : undefined,
+            totalChunks: String(totalChunks),
+            totalBytes: String(task.file.size),
+            ext,
+          }),
+        });
+
+        if (!initRes.ok) {
+          const err = (await initRes.json()) as { error?: string };
+          throw new Error(err.error ?? "Failed to initialize upload");
+        }
+
+        const { sessionId: newSid } = (await initRes.json()) as { sessionId: string };
+        sid = newSid;
+
+        // Save session for single-file recovery
+        if (tasksRef.current.size === 1) {
+          saveSession({ sessionId: sid, fileName: task.file.name, fileSize: task.file.size, totalChunks, form: { title, category: task.category, preacher: task.preacher, featured: task.featured } });
+        }
+      }
+
+      updateTask(taskId, { sessionId: sid, state: "uploading" });
+
+      // Upload thumbnail for first file
+      if (thumbnailFile && !resumeSession) {
+        const thumbForm = new FormData();
+        thumbForm.append("thumbnail", thumbnailFile);
+        await fetch(`/api/admin/videos/upload/${sid}/thumbnail`, { method: "POST", body: thumbForm });
+      }
+
+      // ── Chunk upload with adaptive concurrency ──────────────────────────────
+      const abortCtrl = new AbortController();
+      updateTask(taskId, { abortController: abortCtrl });
+
+      const pending: number[] = [];
+      for (let i = 0; i < totalChunks; i++) {
+        if (!alreadyUploaded.has(i)) pending.push(i);
+      }
+
+      let chunksDoneLocal = alreadyUploaded.size;
+      updateTask(taskId, { chunksDone: chunksDoneLocal, progress: Math.round((chunksDoneLocal / totalChunks) * 100) });
+
+      const onChunkProgress = (incrementalBytes: number) => {
+        const t = tasksRef.current.get(taskId);
+        if (!t) return;
+        t.bytesRef += incrementalBytes;
+        t.bytesUploaded = Math.min(t.bytesRef, task.file.size);
+
+        const now = Date.now();
+        t.speedSamples.push({ time: now, bytes: t.bytesRef });
+        if (t.speedSamples.length > SPEED_SAMPLES) t.speedSamples.shift();
+
+        if (t.speedSamples.length >= 2) {
+          const oldest = t.speedSamples[0]!;
+          const newest = t.speedSamples[t.speedSamples.length - 1]!;
+          const elapsed = (newest.time - oldest.time) / 1000;
+          const bytesDelta = newest.bytes - oldest.bytes;
+          t.speed = elapsed > 0 ? Math.round(bytesDelta / elapsed) : 0;
+          const remaining = task.file.size - t.bytesRef;
+          t.eta = t.speed > 0 ? remaining / t.speed : 0;
+        }
+        forceUpdate();
+      };
+
+      const uploadOneChunk = async (chunkIdx: number): Promise<void> => {
+        if (abortCtrl.signal.aborted) throw Object.assign(new Error("Aborted"), { name: "AbortError" });
+
+        const start = chunkIdx * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, task.file.size);
+        const buffer = await task.file.slice(start, end).arrayBuffer();
+        const checksum = await computeSha256(buffer);
+
+        let attempt = 0;
+        while (attempt <= MAX_RETRIES) {
+          try {
+            await uploadChunk(sid!, chunkIdx, buffer, checksum, abortCtrl.signal, onChunkProgress);
+            chunksDoneLocal++;
+            const t = tasksRef.current.get(taskId);
+            if (t) {
+              t.chunksDone = chunksDoneLocal;
+              t.progress = Math.round((chunksDoneLocal / totalChunks) * 100);
+              t.checksumOk++;
+
+              // Adaptive concurrency: adjust based on current speed
+              if (t.speed > 10 * 1024 * 1024 && t.concurrency < MAX_CONCURRENCY) {
+                t.concurrency = Math.min(t.concurrency + 1, MAX_CONCURRENCY);
+              } else if (t.speed < 1 * 1024 * 1024 && t.speed > 0 && t.concurrency > MIN_CONCURRENCY) {
+                t.concurrency = Math.max(t.concurrency - 1, MIN_CONCURRENCY);
+              }
+            }
+            forceUpdate();
+            return;
+          } catch (err) {
+            if ((err as Error).name === "AbortError") throw err;
+            const errMsg = (err as Error).message || "";
+            if (errMsg.includes("checksum")) {
+              const t = tasksRef.current.get(taskId);
+              if (t) { t.checksumFailed++; forceUpdate(); }
+            }
+            attempt++;
+            if (attempt > MAX_RETRIES) throw new Error(`Chunk ${chunkIdx} failed after ${MAX_RETRIES} retries`);
+            await new Promise((r) => setTimeout(r, exponentialBackoff(attempt)));
+          }
+        }
+      };
+
+      // Semaphore-based parallel execution with adaptive concurrency
+      const queue = [...pending];
+      const inFlight = new Set<Promise<void>>();
+
+      const dispatch = (): Promise<void> | null => {
+        const t = tasksRef.current.get(taskId);
+        if (!t || queue.length === 0) return null;
+        const chunkIdx = queue.shift()!;
+        const p = uploadOneChunk(chunkIdx).finally(() => {
+          inFlight.delete(p);
+        });
+        inFlight.add(p);
+        return p;
+      };
+
+      // Fill initial concurrency slots
+      const t0 = tasksRef.current.get(taskId)!;
+      for (let i = 0; i < Math.min(t0.concurrency, queue.length); i++) {
+        dispatch();
+      }
+
+      while (inFlight.size > 0) {
+        if (abortCtrl.signal.aborted) throw Object.assign(new Error("Aborted"), { name: "AbortError" });
+        await Promise.race(Array.from(inFlight));
+        // After any completion, fill up to current concurrency
+        const tNow = tasksRef.current.get(taskId);
+        if (tNow) {
+          while (inFlight.size < tNow.concurrency && queue.length > 0) {
+            dispatch();
+          }
+        }
+      }
+
+      // ── Finalize ──────────────────────────────────────────────────────────────
+      updateTask(taskId, { state: "finalizing" });
+      const finalRes = await fetch(`/api/admin/videos/upload/${sid}/finalize`, { method: "POST" });
+      if (!finalRes.ok) {
+        const err = (await finalRes.json()) as { error?: string };
+        throw new Error(err.error ?? "Finalization failed");
+      }
+
+      updateTask(taskId, { state: "done", progress: 100 });
+      if (tasksRef.current.size === 1) clearSession();
+    } catch (err) {
+      if ((err as Error).name === "AbortError") {
+        updateTask(taskId, { state: "paused" });
+        return;
+      }
+      const msg = err instanceof Error ? err.message : "Upload failed";
+      updateTask(taskId, { state: "error", error: msg });
+    }
+  }, [thumbnailFile, saveSession, clearSession, updateTask, forceUpdate]);
+
+  // ── Start all uploads (parallel, capped at MAX_CONCURRENT_FILES) ────────────
+  const handleUploadAll = useCallback(async () => {
+    const pending = Array.from(tasksRef.current.values()).filter((t) => t.state === "pending" || t.state === "error");
+    if (pending.length === 0) return;
+
+    // Apply default metadata
+    for (const task of tasksRef.current.values()) {
+      if (task.state !== "done") {
+        if (defaultForm.title && tasksRef.current.size === 1) task.title = defaultForm.title;
+        task.category = defaultForm.category;
+        task.preacher = defaultForm.preacher;
+        task.featured = defaultForm.featured;
+      }
+    }
+
+    // Process in batches of MAX_CONCURRENT_FILES
+    const queue = [...pending];
+    const running = new Set<Promise<void>>();
+
+    const launchNext = () => {
+      if (queue.length === 0) return;
+      const task = queue.shift()!;
+      const p = runFileUpload(task.id).finally(() => running.delete(p));
+      running.add(p);
+    };
+
+    // Seed initial batch
+    for (let i = 0; i < Math.min(MAX_CONCURRENT_FILES, queue.length + running.size); i++) {
+      launchNext();
+    }
+
+    // As each finishes, launch more
+    while (running.size > 0) {
+      await Promise.race(Array.from(running));
+      while (running.size < MAX_CONCURRENT_FILES && queue.length > 0) {
+        launchNext();
+      }
+    }
+
+    // Post-completion
+    const completedCount = Array.from(tasksRef.current.values()).filter((t) => t.state === "done").length;
+    const failedCount = Array.from(tasksRef.current.values()).filter((t) => t.state === "error").length;
+
+    if (completedCount > 0) {
+      toast({
+        title: `${completedCount} video${completedCount > 1 ? "s" : ""} uploaded successfully`,
+        description: failedCount > 0
+          ? `${failedCount} file${failedCount > 1 ? "s" : ""} failed — check errors and retry.`
+          : "All content was automatically added to the broadcast queue.",
+      });
+      queryClient.invalidateQueries({ queryKey: getListAdminVideosQueryKey() });
+    }
+
+    // Auto-close if all succeeded
+    if (failedCount === 0 && completedCount > 0) {
+      setTimeout(() => {
+        setShowUploadDialog(false);
+        tasksRef.current.clear();
+        setDefaultForm({ title: "", category: "sermon", preacher: "", featured: false });
+        setThumbnailFile(null);
+        forceUpdate();
+        clearSession();
+      }, 1500);
+    }
+  }, [defaultForm, runFileUpload, toast, queryClient, clearSession, forceUpdate]);
+
+  // ── Pause a single file ─────────────────────────────────────────────────────
+  const pauseTask = useCallback((id: string) => {
+    const task = tasksRef.current.get(id);
+    if (task?.abortController) {
+      task.abortController.abort();
+    }
+  }, []);
+
+  // ── Resume a single file ────────────────────────────────────────────────────
+  const resumeTask = useCallback(async (id: string) => {
+    const task = tasksRef.current.get(id);
+    if (!task || task.state !== "paused" || !task.sessionId) return;
+
+    updateTask(id, { state: "initializing", error: null });
+
+    try {
+      const statusRes = await fetch(`/api/admin/videos/upload/${task.sessionId}/status`);
+      if (!statusRes.ok) {
+        updateTask(id, { state: "pending", sessionId: null });
+        return;
+      }
+      const status = (await statusRes.json()) as { uploadedChunkIndices?: number[] };
+      const uploadedSet = new Set<number>(status.uploadedChunkIndices ?? []);
+      runFileUpload(id, { sid: task.sessionId, uploadedChunks: uploadedSet });
+    } catch {
+      updateTask(id, { state: "error", error: "Failed to resume — try restarting" });
+    }
+  }, [updateTask, runFileUpload]);
+
+  // ── Cancel a single file ────────────────────────────────────────────────────
+  const cancelTask = useCallback(async (id: string) => {
+    const task = tasksRef.current.get(id);
+    if (!task) return;
+    task.abortController?.abort();
+    if (task.sessionId) {
+      await fetch(`/api/admin/videos/upload/${task.sessionId}`, { method: "DELETE" }).catch(() => {});
+    }
+    tasksRef.current.delete(id);
+    if (tasksRef.current.size === 0) clearSession();
+    forceUpdate();
+  }, [clearSession, forceUpdate]);
+
+  // ── Cancel all ──────────────────────────────────────────────────────────────
+  const cancelAll = useCallback(async () => {
+    for (const task of tasksRef.current.values()) {
+      task.abortController?.abort();
+      if (task.sessionId) {
+        await fetch(`/api/admin/videos/upload/${task.sessionId}`, { method: "DELETE" }).catch(() => {});
+      }
+    }
+    tasksRef.current.clear();
+    clearSession();
+    setDefaultForm({ title: "", category: "sermon", preacher: "", featured: false });
+    setThumbnailFile(null);
+    setShowUploadDialog(false);
+    forceUpdate();
+  }, [clearSession, forceUpdate]);
+
+  // ── Resume from localStorage ────────────────────────────────────────────────
+  const handleResumeFromStorage = useCallback(async (file: File) => {
+    if (!pendingResume) return;
+
+    const id = crypto.randomUUID();
+    const task: FileTask = {
+      id, file,
+      title: pendingResume.form.title,
+      category: pendingResume.form.category,
+      preacher: pendingResume.form.preacher,
+      featured: pendingResume.form.featured,
+      sessionId: pendingResume.sessionId,
+      state: "initializing",
+      progress: 0, bytesUploaded: 0, speed: 0, eta: 0,
+      chunksTotal: pendingResume.totalChunks, chunksDone: 0,
+      error: null, abortController: null,
+      speedSamples: [], bytesRef: 0, startTime: Date.now(),
+      durationSecs: 0, concurrency: MAX_CONCURRENT_PER_FILE,
+      checksumOk: 0, checksumFailed: 0,
+    };
+    tasksRef.current.clear();
+    tasksRef.current.set(id, task);
+    forceUpdate();
+
+    try {
+      const statusRes = await fetch(`/api/admin/videos/upload/${pendingResume.sessionId}/status`);
+      if (!statusRes.ok) {
+        clearSession();
+        tasksRef.current.clear();
+        forceUpdate();
+        toast({ title: "Previous session expired. Please upload again.", variant: "destructive" });
+        return;
+      }
+      const status = (await statusRes.json()) as { uploadedChunkIndices?: number[] };
+      const uploadedSet = new Set<number>(status.uploadedChunkIndices ?? []);
+      runFileUpload(id, { sid: pendingResume.sessionId, uploadedChunks: uploadedSet });
+    } catch {
+      clearSession();
+      tasksRef.current.clear();
+      forceUpdate();
+    }
+  }, [pendingResume, clearSession, runFileUpload, toast, forceUpdate]);
+
+  // ── Drag & drop ─────────────────────────────────────────────────────────────
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const files = Array.from(e.dataTransfer.files);
+    addFiles(files);
+  }, [addFiles]);
+
+  // ── Render helpers ──────────────────────────────────────────────────────────
   const handleImport = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!importUrl) return;
 
     let youtubeId = importUrl;
     if (importUrl.includes("youtube.com/watch?v=")) {
-      youtubeId = importUrl.split("v=")[1].split("&")[0];
+      youtubeId = importUrl.split("v=")[1]!.split("&")[0]!;
     } else if (importUrl.includes("youtu.be/")) {
-      youtubeId = importUrl.split("youtu.be/")[1].split("?")[0];
+      youtubeId = importUrl.split("youtu.be/")[1]!.split("?")[0]!;
     }
 
     setIsImporting(true);
@@ -214,9 +697,7 @@ export default function Videos() {
           setImportUrl("");
           queryClient.invalidateQueries({ queryKey: getListAdminVideosQueryKey() });
         },
-        onError: () => {
-          toast({ title: "Failed to import video", variant: "destructive" });
-        },
+        onError: () => toast({ title: "Failed to import video", variant: "destructive" }),
         onSettled: () => setIsImporting(false),
       }
     );
@@ -257,348 +738,7 @@ export default function Videos() {
     );
   };
 
-  const detectVideoDuration = (file: File): Promise<number> =>
-    new Promise((resolve) => {
-      const url = URL.createObjectURL(file);
-      const video = document.createElement("video");
-      video.preload = "metadata";
-      video.onloadedmetadata = () => {
-        const secs = isFinite(video.duration) ? Math.round(video.duration) : 0;
-        URL.revokeObjectURL(url);
-        resolve(secs);
-      };
-      video.onerror = () => { URL.revokeObjectURL(url); resolve(0); };
-      video.src = url;
-    });
-
-  const resetUploadState = useCallback(() => {
-    setUploadState("idle");
-    setUploadProgress(0);
-    setUploadSpeed(0);
-    setUploadEta(0);
-    setBytesUploaded(0);
-    setChunksTotal(0);
-    setChunksDone(0);
-    setUploadError(null);
-    setSessionId(null);
-    abortControllerRef.current = null;
-    uploadStartTimeRef.current = 0;
-    bytesUploadedRef.current = 0;
-    speedSamplesRef.current = [];
-    totalFileBytes.current = 0;
-  }, []);
-
-  const updateSpeedAndEta = useCallback((newBytes: number) => {
-    const now = Date.now();
-    bytesUploadedRef.current += newBytes;
-    setBytesUploaded(bytesUploadedRef.current);
-
-    const sample = { time: now, bytes: bytesUploadedRef.current };
-    speedSamplesRef.current.push(sample);
-    if (speedSamplesRef.current.length > SPEED_SAMPLES) {
-      speedSamplesRef.current.shift();
-    }
-
-    const samples = speedSamplesRef.current;
-    if (samples.length >= 2) {
-      const oldest = samples[0];
-      const newest = samples[samples.length - 1];
-      const elapsed = (newest.time - oldest.time) / 1000;
-      const bytesDelta = newest.bytes - oldest.bytes;
-      const speed = elapsed > 0 ? bytesDelta / elapsed : 0;
-      setUploadSpeed(Math.round(speed));
-
-      const remaining = totalFileBytes.current - bytesUploadedRef.current;
-      const eta = speed > 0 ? remaining / speed : 0;
-      setUploadEta(eta);
-    }
-  }, []);
-
-  const handlePauseResume = useCallback(() => {
-    if (uploadState === "uploading") {
-      abortControllerRef.current?.abort();
-      setUploadState("paused");
-    }
-  }, [uploadState]);
-
-  const handleCancelUpload = useCallback(async () => {
-    abortControllerRef.current?.abort();
-    if (sessionId) {
-      await fetch(`/api/admin/videos/upload/${sessionId}`, { method: "DELETE" }).catch(() => {});
-    }
-    clearSession();
-    resetUploadState();
-    setVideoFile(null);
-    setVideoFiles([]);
-    setThumbnailFile(null);
-    setUploadForm({ title: "", category: "sermon", preacher: "", featured: false });
-    setShowUploadDialog(false);
-  }, [sessionId, resetUploadState, clearSession]);
-
-  const runChunkedUpload = useCallback(async (
-    sid: string,
-    file: File,
-    totalChunks: number,
-    alreadyUploaded: Set<number> = new Set()
-  ) => {
-    const chunkStatuses: ChunkStatus[] = Array.from({ length: totalChunks }, (_, i) => ({
-      index: i,
-      status: alreadyUploaded.has(i) ? "done" : "pending",
-      retries: 0,
-    }));
-
-    const abortCtrl = new AbortController();
-    abortControllerRef.current = abortCtrl;
-
-    if (uploadStartTimeRef.current === 0) {
-      uploadStartTimeRef.current = Date.now();
-    }
-
-    const doneCount = alreadyUploaded.size;
-    setChunksDone(doneCount);
-    setUploadProgress(Math.round((doneCount / totalChunks) * 100));
-
-    const uploadSingleChunk = async (chunk: ChunkStatus): Promise<void> => {
-      const start = chunk.index * CHUNK_SIZE;
-      const end = Math.min(start + CHUNK_SIZE, file.size);
-      const sliceBuffer = await file.slice(start, end).arrayBuffer();
-
-      chunk.status = "uploading";
-      let attempt = 0;
-
-      while (attempt <= MAX_RETRIES) {
-        try {
-          await uploadChunk(sid, chunk.index, sliceBuffer, abortCtrl.signal, updateSpeedAndEta);
-          chunk.status = "done";
-
-          setChunksDone((prev) => {
-            const next = prev + 1;
-            setUploadProgress(Math.round((next / totalChunks) * 100));
-            return next;
-          });
-          return;
-        } catch (err) {
-          if ((err as Error).name === "AbortError") throw err;
-          attempt++;
-          if (attempt > MAX_RETRIES) {
-            chunk.status = "error";
-            throw new Error(`Chunk ${chunk.index} failed after ${MAX_RETRIES} retries`);
-          }
-          await new Promise((r) => setTimeout(r, exponentialBackoff(attempt)));
-        }
-      }
-    };
-
-    const pending = chunkStatuses.filter((c) => c.status === "pending");
-    const inFlight: Promise<void>[] = [];
-
-    while (pending.length > 0 || inFlight.length > 0) {
-      if (abortCtrl.signal.aborted) throw new DOMException("Aborted", "AbortError");
-
-      while (inFlight.length < MAX_CONCURRENT && pending.length > 0) {
-        const chunk = pending.shift()!;
-        const promise = uploadSingleChunk(chunk).then(() => {
-          inFlight.splice(inFlight.indexOf(promise), 1);
-        });
-        inFlight.push(promise);
-      }
-
-      if (inFlight.length > 0) await Promise.race(inFlight);
-    }
-  }, [updateSpeedAndEta]);
-
-  const handleUpload = async (e?: React.FormEvent, resumeSession?: { sid: string; uploadedChunks: Set<number> }) => {
-    e?.preventDefault();
-    const filesToUpload = resumeSession
-      ? (videoFile ? [videoFile] : [])
-      : (videoFiles.length > 0 ? videoFiles : (videoFile ? [videoFile] : []));
-    if (filesToUpload.length === 0 || !uploadForm.title.trim()) return;
-
-    setUploadState("initializing");
-    setUploadError(null);
-
-    try {
-      for (let fileIndex = 0; fileIndex < filesToUpload.length; fileIndex++) {
-        const currentFile = filesToUpload[fileIndex]!;
-        const title = filesToUpload.length === 1
-          ? uploadForm.title.trim()
-          : (fileIndex === 0 && uploadForm.title.trim()
-            ? uploadForm.title.trim()
-            : currentFile.name.replace(/\.[^/.]+$/, ""));
-
-        const durationSecs = await detectVideoDuration(currentFile);
-        const totalChunks = Math.ceil(currentFile.size / CHUNK_SIZE);
-        const ext = currentFile.name.includes(".") ? `.${currentFile.name.split(".").pop()}` : ".mp4";
-        totalFileBytes.current = currentFile.size;
-
-        setChunksTotal(totalChunks);
-        setChunksDone(0);
-        setUploadProgress(0);
-        setBytesUploaded(0);
-        bytesUploadedRef.current = 0;
-        speedSamplesRef.current = [];
-        uploadStartTimeRef.current = Date.now();
-
-        let sid = resumeSession?.sid ?? null;
-        let alreadyUploaded = resumeSession?.uploadedChunks ?? new Set<number>();
-
-        if (!sid) {
-          const initRes = await fetch("/api/admin/videos/upload/init", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              title,
-              category: uploadForm.category,
-              preacher: uploadForm.preacher,
-              featured: String(uploadForm.featured),
-              durationSecs: durationSecs > 0 ? String(durationSecs) : undefined,
-              totalChunks: String(totalChunks),
-              totalBytes: String(currentFile.size),
-              ext,
-            }),
-          });
-
-          if (!initRes.ok) {
-            const err = await initRes.json() as { error?: string };
-            throw new Error(err.error ?? "Failed to initialize upload");
-          }
-
-          const { sessionId: newSid } = await initRes.json() as { sessionId: string };
-          sid = newSid;
-
-          if (filesToUpload.length === 1) {
-            saveSession({
-              sessionId: sid,
-              fileName: currentFile.name,
-              fileSize: currentFile.size,
-              totalChunks,
-              form: uploadForm,
-            });
-          }
-        }
-
-        setSessionId(sid);
-
-        if (thumbnailFile && !resumeSession && filesToUpload.length === 1) {
-          const thumbForm = new FormData();
-          thumbForm.append("thumbnail", thumbnailFile);
-          await fetch(`/api/admin/videos/upload/${sid}/thumbnail`, { method: "POST", body: thumbForm });
-        }
-
-        setUploadState("uploading");
-        await runChunkedUpload(sid, currentFile, totalChunks, alreadyUploaded);
-
-        setUploadState("finalizing");
-        const finalRes = await fetch(`/api/admin/videos/upload/${sid}/finalize`, { method: "POST" });
-        if (!finalRes.ok) {
-          const err = await finalRes.json() as { error?: string };
-          throw new Error(err.error ?? "Failed to finalize upload");
-        }
-
-        if (filesToUpload.length === 1) clearSession();
-      }
-
-      setUploadState("done");
-      toast({
-        title: filesToUpload.length > 1
-          ? `${filesToUpload.length} videos uploaded successfully`
-          : "Video uploaded successfully",
-        description: "Uploaded content was automatically added to the broadcast queue.",
-      });
-
-      setTimeout(() => {
-        setShowUploadDialog(false);
-        setVideoFile(null);
-        setVideoFiles([]);
-        setThumbnailFile(null);
-        setUploadForm({ title: "", category: "sermon", preacher: "", featured: false });
-        resetUploadState();
-        queryClient.invalidateQueries({ queryKey: getListAdminVideosQueryKey() });
-      }, 1500);
-    } catch (err) {
-      if ((err as Error).name === "AbortError") return;
-      const msg = err instanceof Error ? err.message : "Upload failed";
-      setUploadError(msg);
-      setUploadState("error");
-      toast({ title: msg, variant: "destructive" });
-    }
-  };
-
-  const handleResumeFromStorage = async () => {
-    if (!pendingResume || !videoFile) return;
-    setUploadState("initializing");
-    setUploadError(null);
-
-    try {
-      const statusRes = await fetch(`/api/admin/videos/upload/${pendingResume.sessionId}/status`);
-      if (!statusRes.ok) {
-        clearSession();
-        setPendingResume(null);
-        toast({ title: "Previous session expired. Starting fresh.", variant: "destructive" });
-        return;
-      }
-
-      const status = await statusRes.json() as { uploadedChunks: number; totalChunks: number; uploadedChunkIndices?: number[] };
-      const uploadedIndices = new Set<number>(status.uploadedChunkIndices ?? []);
-
-      const totalChunks = Math.ceil(videoFile.size / CHUNK_SIZE);
-      totalFileBytes.current = videoFile.size;
-      setChunksTotal(totalChunks);
-
-      const resumeBytes = uploadedIndices.size * CHUNK_SIZE;
-      bytesUploadedRef.current = Math.min(resumeBytes, videoFile.size);
-      setBytesUploaded(bytesUploadedRef.current);
-      uploadStartTimeRef.current = Date.now();
-      speedSamplesRef.current = [];
-
-      setSessionId(pendingResume.sessionId);
-      setUploadState("uploading");
-      await runChunkedUpload(pendingResume.sessionId, videoFile, totalChunks, uploadedIndices);
-
-      setUploadState("finalizing");
-      const finalRes = await fetch(`/api/admin/videos/upload/${pendingResume.sessionId}/finalize`, { method: "POST" });
-      if (!finalRes.ok) {
-        const err = await finalRes.json() as { error?: string };
-        throw new Error(err.error ?? "Failed to finalize upload");
-      }
-
-      clearSession();
-      setUploadState("done");
-      toast({ title: "Video uploaded successfully" });
-
-      setTimeout(() => {
-        setShowUploadDialog(false);
-        setVideoFile(null);
-        setThumbnailFile(null);
-        setUploadForm({ title: "", category: "sermon", preacher: "", featured: false });
-        resetUploadState();
-        queryClient.invalidateQueries({ queryKey: getListAdminVideosQueryKey() });
-      }, 1500);
-    } catch (err) {
-      if ((err as Error).name === "AbortError") return;
-      const msg = err instanceof Error ? err.message : "Upload failed";
-      setUploadError(msg);
-      setUploadState("error");
-      toast({ title: msg, variant: "destructive" });
-    }
-  };
-
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    const files = Array.from(e.dataTransfer.files).filter((file) => file.type.startsWith("video/"));
-    if (files.length > 0) {
-      setVideoFiles(files);
-      setVideoFile(files[0]!);
-      if (!uploadForm.title) {
-        setUploadForm(prev => ({ ...prev, title: files[0]!.name.replace(/\.[^/.]+$/, "") }));
-      }
-    }
-  }, [uploadForm.title]);
-
-  const isUploading = uploadState === "uploading" || uploadState === "initializing" || uploadState === "finalizing";
-  const showResumeHint = !!pendingResume && !!videoFile && uploadState === "idle";
-
+  // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
@@ -635,13 +775,10 @@ export default function Videos() {
         <div className="flex items-center gap-3 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg text-sm">
           <RotateCcw className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
           <div className="flex-1 min-w-0">
-            <span className="font-medium text-amber-700 dark:text-amber-400">Interrupted upload found:</span>
+            <span className="font-medium text-amber-700 dark:text-amber-400">Interrupted upload:</span>
             {" "}<span className="text-muted-foreground truncate">{pendingResume.fileName}</span>
           </div>
-          <Button size="sm" variant="outline" className="border-amber-500/50 text-amber-700 dark:text-amber-400 hover:bg-amber-500/10" onClick={() => {
-            setUploadForm(pendingResume.form);
-            setShowUploadDialog(true);
-          }}>
+          <Button size="sm" variant="outline" className="border-amber-500/50 text-amber-700 dark:text-amber-400" onClick={() => setShowUploadDialog(true)}>
             Resume
           </Button>
           <Button size="sm" variant="ghost" className="text-muted-foreground" onClick={clearSession}>
@@ -666,7 +803,7 @@ export default function Videos() {
 
         {isLoading ? (
           <div className="divide-y">
-            {[1, 2, 3, 4, 5].map(i => (
+            {[1, 2, 3, 4, 5].map((i) => (
               <div key={i} className="p-4 flex gap-4">
                 <Skeleton className="w-32 h-20 rounded-md" />
                 <div className="space-y-2 flex-1">
@@ -684,8 +821,8 @@ export default function Videos() {
           </div>
         ) : (
           <div className="divide-y">
-            {data?.videos.map((video) => {
-              const v = video as VideoRow;
+            {data?.videos.map((video: VideoRow) => {
+              const v = video;
               const isLocal = v.videoSource === "local";
               return (
                 <div key={v.id} className="p-4 flex gap-4 group hover:bg-muted/30 transition-colors">
@@ -739,23 +876,19 @@ export default function Videos() {
                           <span>•</span>
                           {v.transcodingStatus === "done" ? (
                             <span className="flex items-center gap-1 text-green-600 font-medium">
-                              <Layers className="w-3.5 h-3.5" />
-                              HLS Ready
+                              <Layers className="w-3.5 h-3.5" /> HLS Ready
                             </span>
                           ) : v.transcodingStatus === "processing" ? (
                             <span className="flex items-center gap-1 text-blue-600">
-                              <Cpu className="w-3.5 h-3.5 animate-pulse" />
-                              Encoding…
+                              <Cpu className="w-3.5 h-3.5 animate-pulse" /> Encoding…
                             </span>
                           ) : v.transcodingStatus === "queued" ? (
                             <span className="flex items-center gap-1 text-amber-600">
-                              <Clock className="w-3.5 h-3.5" />
-                              In queue
+                              <Clock className="w-3.5 h-3.5" /> In queue
                             </span>
                           ) : v.transcodingStatus === "failed" ? (
                             <span className="flex items-center gap-1 text-red-500">
-                              <AlertCircle className="w-3.5 h-3.5" />
-                              Encode failed
+                              <AlertCircle className="w-3.5 h-3.5" /> Encode failed
                             </span>
                           ) : null}
                         </>
@@ -774,15 +907,13 @@ export default function Videos() {
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         <DropdownMenuItem className="cursor-pointer" onClick={() => openEdit(v)}>
-                          <Edit className="h-4 w-4 mr-2" />
-                          Edit Details
+                          <Edit className="h-4 w-4 mr-2" /> Edit Details
                         </DropdownMenuItem>
                         {isLocal && v.localVideoUrl ? (
                           <>
                             <DropdownMenuItem asChild>
                               <a href={v.localVideoUrl} target="_blank" rel="noopener noreferrer" className="cursor-pointer">
-                                <Play className="h-4 w-4 mr-2" />
-                                Play Local Video
+                                <Play className="h-4 w-4 mr-2" /> Play Local Video
                               </a>
                             </DropdownMenuItem>
                             {(v.transcodingStatus === "failed" || v.transcodingStatus === "none") && (
@@ -793,23 +924,20 @@ export default function Videos() {
                                   toast({ title: "Video queued for re-encoding" });
                                 }}
                               >
-                                <Cpu className="h-4 w-4 mr-2" />
-                                Re-encode (HLS)
+                                <Cpu className="h-4 w-4 mr-2" /> Re-encode (HLS)
                               </DropdownMenuItem>
                             )}
                           </>
                         ) : (
                           <DropdownMenuItem asChild>
                             <a href={`https://youtube.com/watch?v=${v.youtubeId}`} target="_blank" rel="noopener noreferrer" className="cursor-pointer">
-                              <ExternalLink className="h-4 w-4 mr-2" />
-                              View on YouTube
+                              <ExternalLink className="h-4 w-4 mr-2" /> View on YouTube
                             </a>
                           </DropdownMenuItem>
                         )}
                         <DropdownMenuSeparator />
                         <DropdownMenuItem className="text-destructive focus:bg-destructive/10 focus:text-destructive cursor-pointer" onClick={() => handleDelete(v.id)}>
-                          <Trash2 className="h-4 w-4 mr-2" />
-                          Delete
+                          <Trash2 className="h-4 w-4 mr-2" /> Delete
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
@@ -821,6 +949,7 @@ export default function Videos() {
         )}
       </div>
 
+      {/* ── Edit Video Dialog ──────────────────────────────────────────────────── */}
       <Dialog open={!!editingVideo} onOpenChange={(open) => !open && setEditingVideo(null)}>
         <DialogContent>
           <DialogHeader>
@@ -841,18 +970,18 @@ export default function Videos() {
             )}
             <div className="space-y-2">
               <Label>Title</Label>
-              <Input value={editForm.title} onChange={e => setEditForm({ ...editForm, title: e.target.value })} required />
+              <Input value={editForm.title} onChange={(e) => setEditForm({ ...editForm, title: e.target.value })} required />
             </div>
             <div className="space-y-2">
               <Label>Preacher / Speaker</Label>
-              <Input value={editForm.preacher} onChange={e => setEditForm({ ...editForm, preacher: e.target.value })} placeholder="e.g. Pastor John" />
+              <Input value={editForm.preacher} onChange={(e) => setEditForm({ ...editForm, preacher: e.target.value })} placeholder="e.g. Pastor John" />
             </div>
             <div className="space-y-2">
               <Label>Category</Label>
-              <Select value={editForm.category} onValueChange={v => setEditForm({ ...editForm, category: v })}>
+              <Select value={editForm.category} onValueChange={(v) => setEditForm({ ...editForm, category: v })}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {CATEGORIES.map(c => <SelectItem key={c} value={c} className="capitalize">{c}</SelectItem>)}
+                  {CATEGORIES.map((c) => <SelectItem key={c} value={c} className="capitalize">{c}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -861,7 +990,7 @@ export default function Videos() {
                 <Label>Featured</Label>
                 <p className="text-xs text-muted-foreground mt-0.5">Highlights this video on the home screen</p>
               </div>
-              <Switch checked={editForm.featured} onCheckedChange={c => setEditForm({ ...editForm, featured: c })} />
+              <Switch checked={editForm.featured} onCheckedChange={(c) => setEditForm({ ...editForm, featured: c })} />
             </div>
             <div className="flex gap-2 pt-1">
               <Button type="button" variant="outline" className="flex-1" onClick={() => setEditingVideo(null)}>Cancel</Button>
@@ -873,249 +1002,368 @@ export default function Videos() {
         </DialogContent>
       </Dialog>
 
+      {/* ── Upload Dialog ──────────────────────────────────────────────────────── */}
       <Dialog
         open={showUploadDialog}
         onOpenChange={(open) => {
-          if (uploadState === "idle" || uploadState === "done" || uploadState === "error") {
-            setShowUploadDialog(open);
-            if (!open) { setVideoFile(null); setVideoFiles([]); setThumbnailFile(null); resetUploadState(); }
+          if (isAnyUploading) return;
+          setShowUploadDialog(open);
+          if (!open) {
+            tasksRef.current.clear();
+            setDefaultForm({ title: "", category: "sermon", preacher: "", featured: false });
+            setThumbnailFile(null);
+            forceUpdate();
           }
         }}
       >
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <HardDrive className="w-5 h-5" />
-              Upload Local Video
+              High-Speed Video Upload
+              {hasFiles && (
+                <span className="ml-auto text-xs font-normal text-muted-foreground">
+                  {tasks.length} file{tasks.length > 1 ? "s" : ""} · {formatFileSize(totalBytes)}
+                </span>
+              )}
             </DialogTitle>
           </DialogHeader>
-          <form onSubmit={handleUpload} className="space-y-4">
-            <div
-              className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${
-                isDragging
-                  ? "border-primary bg-primary/5"
-                  : videoFile
-                  ? "border-primary/40 bg-primary/5"
-                  : "hover:border-primary/60 hover:bg-muted/20"
-              }`}
-              onClick={() => !isUploading && videoInputRef.current?.click()}
-              onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-              onDragLeave={() => setIsDragging(false)}
-              onDrop={handleDrop}
-            >
-              <input
-                ref={videoInputRef}
-                type="file"
-                accept="video/*"
-                multiple
-                className="hidden"
-                disabled={isUploading}
-                onChange={(e) => {
-                  const files = Array.from(e.target.files ?? []).filter((file) => file.type.startsWith("video/"));
-                  const f = files[0];
-                  if (f) {
-                    setVideoFiles(files);
-                    setVideoFile(f);
-                    if (!uploadForm.title) {
-                      setUploadForm(prev => ({ ...prev, title: f.name.replace(/\.[^/.]+$/, "") }));
-                    }
-                  }
-                }}
-              />
-              {videoFile ? (
-                <div className="space-y-1">
-                  <Video className="w-8 h-8 mx-auto text-primary" />
-                  <p className="text-sm font-medium">
-                    {videoFiles.length > 1 ? `${videoFiles.length} videos selected` : videoFile.name}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {videoFiles.length > 1
-                      ? `${formatFileSize(videoFiles.reduce((sum, file) => sum + file.size, 0))} total · uploaded one file at a time with parallel chunks`
-                      : formatFileSize(videoFile.size)}
-                  </p>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <Upload className="w-8 h-8 mx-auto text-muted-foreground opacity-50" />
-                  <p className="text-sm font-medium">Drop videos here or click to select</p>
-                  <p className="text-xs text-muted-foreground">MP4, MOV, AVI, MKV · Up to 5 GB</p>
-                </div>
-              )}
-            </div>
 
-            {showResumeHint && pendingResume && (
-              <div className="flex items-center gap-3 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg text-xs">
-                <RotateCcw className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
-                <div className="flex-1">
-                  <span className="font-medium text-amber-700 dark:text-amber-400">Resume interrupted upload?</span>
-                  <p className="text-muted-foreground mt-0.5">Skip already uploaded chunks and continue where it left off.</p>
-                </div>
-                <Button size="sm" type="button" variant="outline" className="border-amber-500/50 text-amber-700 dark:text-amber-400 shrink-0" onClick={handleResumeFromStorage}>
-                  Resume
-                </Button>
-              </div>
-            )}
-
-            <div
-              className="border rounded-lg p-3 flex items-center gap-3 cursor-pointer hover:bg-muted/20 transition-colors"
-              onClick={() => !isUploading && thumbnailInputRef.current?.click()}
-            >
-              <input
-                ref={thumbnailInputRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                disabled={isUploading}
-                onChange={(e) => setThumbnailFile(e.target.files?.[0] ?? null)}
-              />
-              {thumbnailFile ? (
-                <img src={URL.createObjectURL(thumbnailFile)} className="w-16 h-10 object-cover rounded" alt="thumbnail" />
-              ) : (
-                <div className="w-16 h-10 bg-muted rounded flex items-center justify-center shrink-0">
-                  <Upload className="w-4 h-4 text-muted-foreground opacity-40" />
-                </div>
-              )}
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium">{thumbnailFile ? thumbnailFile.name : "Add thumbnail (optional)"}</p>
-                <p className="text-xs text-muted-foreground">JPG, PNG, WebP</p>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label>Title <span className="text-destructive">*</span></Label>
-              <Input
-                value={uploadForm.title}
-                onChange={e => setUploadForm({ ...uploadForm, title: e.target.value })}
-                placeholder="e.g. Sunday Service — Faith That Moves Mountains"
-                disabled={isUploading}
-                required
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>Preacher / Speaker</Label>
-              <Input
-                value={uploadForm.preacher}
-                onChange={e => setUploadForm({ ...uploadForm, preacher: e.target.value })}
-                placeholder="e.g. Prophet Amos"
-                disabled={isUploading}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>Category</Label>
-              <Select value={uploadForm.category} onValueChange={v => setUploadForm({ ...uploadForm, category: v })} disabled={isUploading}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {CATEGORIES.map(c => <SelectItem key={c} value={c} className="capitalize">{c}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex items-center justify-between p-3 bg-muted/20 rounded-lg border">
-              <div>
-                <Label>Featured</Label>
-                <p className="text-xs text-muted-foreground mt-0.5">Pin to top of the home screen</p>
-              </div>
-              <Switch checked={uploadForm.featured} onCheckedChange={c => setUploadForm({ ...uploadForm, featured: c })} disabled={isUploading} />
-            </div>
-
-            {(uploadState === "uploading" || uploadState === "paused" || uploadState === "finalizing" || uploadState === "initializing") && (
-              <div className="space-y-2.5 p-3 bg-muted/30 rounded-lg border">
-                <div className="flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-1.5 font-medium">
-                    {uploadState === "finalizing" ? (
-                      <><Loader2 className="w-3 h-3 animate-spin" /> Finalizing…</>
-                    ) : uploadState === "initializing" ? (
-                      <><Loader2 className="w-3 h-3 animate-spin" /> Preparing…</>
-                    ) : uploadState === "paused" ? (
-                      <><Pause className="w-3 h-3" /> Paused</>
-                    ) : (
-                      <><Zap className="w-3 h-3 text-primary animate-pulse" /> Uploading…</>
-                    )}
+          <div className="space-y-4">
+            {/* ── Drop zone ──────────────────────────────────────────────────── */}
+            {!isAnyUploading && (
+              <div
+                className={`border-2 border-dashed rounded-lg p-5 text-center cursor-pointer transition-colors ${
+                  isDragging ? "border-primary bg-primary/5" : hasFiles ? "border-primary/40 bg-primary/5" : "hover:border-primary/60 hover:bg-muted/20"
+                }`}
+                onClick={() => videoInputRef.current?.click()}
+                onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                onDragLeave={() => setIsDragging(false)}
+                onDrop={handleDrop}
+              >
+                <input
+                  ref={videoInputRef}
+                  type="file"
+                  accept="video/*"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    const files = Array.from(e.target.files ?? []);
+                    addFiles(files);
+                  }}
+                />
+                {hasFiles ? (
+                  <div className="flex items-center justify-center gap-3">
+                    <FileVideo className="w-6 h-6 text-primary shrink-0" />
+                    <div className="text-left">
+                      <p className="text-sm font-medium">
+                        {tasks.length} video{tasks.length > 1 ? "s" : ""} selected
+                      </p>
+                      <p className="text-xs text-muted-foreground">{formatFileSize(totalBytes)} total · Click to change</p>
+                    </div>
                   </div>
-                  <span className="text-muted-foreground font-mono">{uploadProgress}%</span>
-                </div>
-
-                <div className="h-2 bg-muted rounded-full overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all duration-500 ${
-                      uploadState === "paused" ? "bg-amber-500" : "bg-primary"
-                    }`}
-                    style={{ width: `${uploadProgress}%` }}
-                  />
-                </div>
-
-                <div className="grid grid-cols-3 gap-2 text-[11px]">
-                  <div className="flex items-center gap-1 text-muted-foreground">
-                    <Activity className="w-3 h-3 shrink-0" />
-                    <span>{uploadState === "uploading" && uploadSpeed > 0 ? formatSpeed(uploadSpeed) : "—"}</span>
-                  </div>
-                  <div className="flex items-center gap-1 text-muted-foreground text-center justify-center">
-                    <span>{chunksDone}/{chunksTotal} chunks</span>
-                  </div>
-                  <div className="flex items-center gap-1 text-muted-foreground justify-end">
-                    <Clock className="w-3 h-3 shrink-0" />
-                    <span>{uploadState === "uploading" && uploadEta > 0 ? formatEta(uploadEta) : "—"}</span>
-                  </div>
-                </div>
-
-                {videoFile && (
-                  <div className="text-[11px] text-muted-foreground">
-                    {formatFileSize(bytesUploaded)} / {formatFileSize(videoFile.size)}
-                    {videoFiles.length > 1 && <span className="ml-2">· batch of {videoFiles.length}</span>}
-                    {uploadState === "uploading" && (
-                      <span className="ml-2 text-primary/70">· {Math.min(MAX_CONCURRENT, chunksTotal - chunksDone)} parallel streams</span>
-                    )}
+                ) : (
+                  <div className="space-y-2">
+                    <Upload className="w-8 h-8 mx-auto text-muted-foreground opacity-50" />
+                    <p className="text-sm font-medium">Drop video files here or click to select</p>
+                    <p className="text-xs text-muted-foreground">MP4, MOV, AVI, MKV · Multiple files supported · Up to 5 GB each</p>
+                    <div className="flex items-center justify-center gap-4 mt-3 text-[11px] text-muted-foreground">
+                      <span className="flex items-center gap-1"><Zap className="w-3 h-3" /> 20 MB chunks</span>
+                      <span className="flex items-center gap-1"><Wifi className="w-3 h-3" /> 6 parallel streams</span>
+                      <span className="flex items-center gap-1"><ShieldCheck className="w-3 h-3" /> SHA-256 verified</span>
+                      <span className="flex items-center gap-1"><TrendingUp className="w-3 h-3" /> Adaptive speed</span>
+                    </div>
                   </div>
                 )}
               </div>
             )}
 
-            {uploadState === "done" && (
+            {/* ── Pending resume banner ──────────────────────────────────────── */}
+            {pendingResume && !hasFiles && !isAnyUploading && (
+              <div className="flex items-center gap-3 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg text-xs">
+                <RotateCcw className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                <div className="flex-1">
+                  <span className="font-medium text-amber-700 dark:text-amber-400">Interrupted upload found</span>
+                  <p className="text-muted-foreground mt-0.5">{pendingResume.fileName} — select the same file and resume.</p>
+                </div>
+                {tasks.length === 1 && tasks[0]!.file.name === pendingResume.fileName && (
+                  <Button size="sm" type="button" variant="outline" className="border-amber-500/50 text-amber-700 dark:text-amber-400 shrink-0" onClick={() => handleResumeFromStorage(tasks[0]!.file)}>
+                    Resume
+                  </Button>
+                )}
+                <Button size="sm" variant="ghost" className="text-muted-foreground shrink-0" onClick={clearSession}>
+                  <X className="w-3.5 h-3.5" />
+                </Button>
+              </div>
+            )}
+
+            {/* ── File list with per-file progress cards ─────────────────────── */}
+            {hasFiles && (
+              <div className="space-y-2">
+                {tasks.map((task) => (
+                  <FileTaskCard
+                    key={task.id}
+                    task={task}
+                    onPause={() => pauseTask(task.id)}
+                    onResume={() => resumeTask(task.id)}
+                    onCancel={() => cancelTask(task.id)}
+                    onRetry={() => runFileUpload(task.id)}
+                  />
+                ))}
+              </div>
+            )}
+
+            {/* ── Aggregate stats (during upload) ──────────────────────────── */}
+            {isAnyUploading && (
+              <div className="p-3 bg-muted/30 rounded-lg border space-y-2">
+                <div className="flex items-center justify-between text-xs font-medium">
+                  <span className="flex items-center gap-1.5">
+                    <Zap className="w-3 h-3 text-primary animate-pulse" />
+                    {activeCount} active · {doneCount} done{errorCount > 0 ? ` · ${errorCount} failed` : ""}
+                  </span>
+                  <span className="font-mono">{overallProgress}% overall</span>
+                </div>
+                <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                  <div className="h-full bg-primary rounded-full transition-all duration-500" style={{ width: `${overallProgress}%` }} />
+                </div>
+                <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                  <span className="flex items-center gap-1"><Activity className="w-3 h-3" /> {totalSpeed > 0 ? formatSpeed(totalSpeed) : "—"} aggregate</span>
+                  <span>{formatFileSize(totalUploaded)} / {formatFileSize(totalBytes)}</span>
+                </div>
+              </div>
+            )}
+
+            {/* ── Metadata form ────────────────────────────────────────────── */}
+            {hasFiles && !isAnyUploading && !isAllDone && (
+              <div className="space-y-3 pt-1 border-t">
+                <p className="text-xs text-muted-foreground font-medium pt-1">
+                  {tasks.length > 1 ? "Metadata applied to all files (titles default to filename)" : "Video details"}
+                </p>
+
+                {/* Thumbnail */}
+                <div
+                  className="border rounded-lg p-3 flex items-center gap-3 cursor-pointer hover:bg-muted/20 transition-colors"
+                  onClick={() => thumbnailInputRef.current?.click()}
+                >
+                  <input
+                    ref={thumbnailInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => setThumbnailFile(e.target.files?.[0] ?? null)}
+                  />
+                  {thumbnailFile ? (
+                    <img src={URL.createObjectURL(thumbnailFile)} className="w-14 h-9 object-cover rounded" alt="thumbnail" />
+                  ) : (
+                    <div className="w-14 h-9 bg-muted rounded flex items-center justify-center shrink-0">
+                      <Upload className="w-3.5 h-3.5 text-muted-foreground opacity-40" />
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium">{thumbnailFile ? thumbnailFile.name : "Add thumbnail (optional)"}</p>
+                    <p className="text-xs text-muted-foreground">JPG, PNG, WebP</p>
+                  </div>
+                </div>
+
+                {tasks.length === 1 && (
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Title <span className="text-destructive">*</span></Label>
+                    <Input
+                      value={defaultForm.title}
+                      onChange={(e) => setDefaultForm({ ...defaultForm, title: e.target.value })}
+                      placeholder="e.g. Sunday Service — Faith That Moves Mountains"
+                    />
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Preacher</Label>
+                    <Input
+                      value={defaultForm.preacher}
+                      onChange={(e) => setDefaultForm({ ...defaultForm, preacher: e.target.value })}
+                      placeholder="e.g. Prophet Amos"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Category</Label>
+                    <Select value={defaultForm.category} onValueChange={(v) => setDefaultForm({ ...defaultForm, category: v })}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {CATEGORIES.map((c) => <SelectItem key={c} value={c} className="capitalize">{c}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between p-2.5 bg-muted/20 rounded-lg border">
+                  <div>
+                    <Label className="text-xs">Featured</Label>
+                    <p className="text-[11px] text-muted-foreground">Pin to top of home screen</p>
+                  </div>
+                  <Switch checked={defaultForm.featured} onCheckedChange={(c) => setDefaultForm({ ...defaultForm, featured: c })} />
+                </div>
+              </div>
+            )}
+
+            {/* ── Success banner ────────────────────────────────────────────── */}
+            {isAllDone && (
               <div className="flex items-center gap-2 p-3 bg-green-500/10 border border-green-500/30 rounded-lg text-sm text-green-700 dark:text-green-400">
                 <CheckCircle2 className="w-4 h-4 shrink-0" />
-                Video uploaded successfully!
+                All videos uploaded and queued for broadcast!
               </div>
             )}
 
-            {uploadState === "error" && uploadError && (
-              <div className="flex items-center gap-2 p-3 bg-destructive/10 border border-destructive/30 rounded-lg text-sm text-destructive">
-                <AlertCircle className="w-4 h-4 shrink-0" />
-                {uploadError}
-              </div>
-            )}
-
+            {/* ── Action buttons ────────────────────────────────────────────── */}
             <div className="flex gap-2 pt-1">
-              <Button
-                type="button"
-                variant="outline"
-                className="flex-1"
-                onClick={handleCancelUpload}
-                disabled={uploadState === "finalizing" || uploadState === "done"}
-              >
-                <X className="w-4 h-4 mr-1.5" />
-                Cancel
-              </Button>
-              {uploadState === "uploading" && (
-                <Button type="button" variant="outline" onClick={handlePauseResume} className="flex-1">
-                  <Pause className="w-4 h-4 mr-1.5" />
-                  Pause
+              {!isAnyUploading && !isAllDone && (
+                <Button type="button" variant="outline" className="flex-1" onClick={cancelAll}>
+                  <X className="w-4 h-4 mr-1.5" />
+                  {hasFiles ? "Cancel" : "Close"}
                 </Button>
               )}
-              {(uploadState === "idle" || uploadState === "error") && (
-                <Button type="submit" className="flex-1" disabled={!videoFile || !uploadForm.title.trim()}>
-                  <Upload className="w-4 h-4 mr-1.5" />
-                  {videoFiles.length > 1 ? `Upload ${videoFiles.length} Videos` : "Upload Video"}
+              {isAnyUploading && (
+                <Button type="button" variant="outline" className="flex-1" onClick={cancelAll}>
+                  <X className="w-4 h-4 mr-1.5" />
+                  Cancel All
                 </Button>
               )}
-              {uploadState === "paused" && (
-                <Button type="submit" className="flex-1">
-                  <RotateCcw className="w-4 h-4 mr-1.5" />
-                  Resume Upload
+              {!isAnyUploading && !isAllDone && hasFiles && (
+                <Button
+                  type="button"
+                  className="flex-1"
+                  disabled={tasks.length === 1 && !defaultForm.title.trim()}
+                  onClick={handleUploadAll}
+                >
+                  <Zap className="w-4 h-4 mr-1.5" />
+                  {isAllFinished && errorCount > 0 ? `Retry ${errorCount} Failed` : tasks.length > 1 ? `Upload ${tasks.length} Videos` : "Upload Video"}
+                </Button>
+              )}
+              {isAllFinished && !isAnyUploading && !isAllDone && errorCount > 0 && doneCount > 0 && (
+                <Button type="button" variant="outline" className="flex-1" onClick={() => {
+                  setShowUploadDialog(false);
+                  tasksRef.current.clear();
+                  forceUpdate();
+                }}>
+                  Close
                 </Button>
               )}
             </div>
-          </form>
+          </div>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+// ── Per-file upload card component ─────────────────────────────────────────────
+function FileTaskCard({
+  task,
+  onPause,
+  onResume,
+  onCancel,
+  onRetry,
+}: {
+  task: FileTask;
+  onPause: () => void;
+  onResume: () => void;
+  onCancel: () => void;
+  onRetry: () => void;
+}) {
+  const isActive = task.state === "uploading" || task.state === "initializing" || task.state === "finalizing";
+  const isPaused = task.state === "paused";
+  const isDone = task.state === "done";
+  const isError = task.state === "error";
+  const isPending = task.state === "pending";
+
+  return (
+    <div className={`rounded-lg border p-3 space-y-2 transition-colors ${
+      isDone ? "bg-green-500/5 border-green-500/30" :
+      isError ? "bg-destructive/5 border-destructive/30" :
+      isPaused ? "bg-amber-500/5 border-amber-500/30" :
+      isActive ? "bg-primary/5 border-primary/30" :
+      "bg-muted/20"
+    }`}>
+      <div className="flex items-start gap-2">
+        <div className="shrink-0 mt-0.5">
+          {isDone ? <CheckCircle2 className="w-4 h-4 text-green-500" /> :
+           isError ? <AlertCircle className="w-4 h-4 text-destructive" /> :
+           isPaused ? <Pause className="w-4 h-4 text-amber-500" /> :
+           isActive ? <Zap className="w-4 h-4 text-primary animate-pulse" /> :
+           <FileVideo className="w-4 h-4 text-muted-foreground" />}
+        </div>
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <p className="text-xs font-medium truncate" title={task.file.name}>{task.file.name}</p>
+            <span className="text-[10px] text-muted-foreground shrink-0">{formatFileSize(task.file.size)}</span>
+          </div>
+
+          {/* Status line */}
+          <div className="flex items-center gap-2 mt-0.5 text-[11px] text-muted-foreground">
+            {isDone && <span className="text-green-600 font-medium">Done · added to broadcast queue</span>}
+            {isError && <span className="text-destructive">{task.error ?? "Upload failed"}</span>}
+            {isPending && <span>Pending</span>}
+            {isActive && (
+              <>
+                {task.state === "initializing" && <span>Initializing…</span>}
+                {task.state === "finalizing" && <span className="flex items-center gap-1"><Loader2 className="w-2.5 h-2.5 animate-spin" />Finalizing…</span>}
+                {task.state === "uploading" && (
+                  <>
+                    <span className="flex items-center gap-1"><Activity className="w-2.5 h-2.5" />{task.speed > 0 ? formatSpeed(task.speed) : "—"}</span>
+                    <span>·</span>
+                    <span>{task.chunksDone}/{task.chunksTotal} chunks</span>
+                    <span>·</span>
+                    <span className="flex items-center gap-1"><Wifi className="w-2.5 h-2.5" />{task.concurrency} streams</span>
+                    {task.eta > 0 && <><span>·</span><span className="flex items-center gap-1"><Clock className="w-2.5 h-2.5" />{formatEta(task.eta)}</span></>}
+                    {task.checksumOk > 0 && <><span>·</span><span className="flex items-center gap-1 text-green-600"><ShieldCheck className="w-2.5 h-2.5" />{task.checksumOk}</span></>}
+                  </>
+                )}
+              </>
+            )}
+            {isPaused && <span className="text-amber-600">Paused · {task.progress}% done</span>}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1 shrink-0">
+          {task.state === "uploading" && (
+            <Button size="icon" variant="ghost" className="h-6 w-6" onClick={onPause} title="Pause">
+              <Pause className="w-3 h-3" />
+            </Button>
+          )}
+          {isPaused && (
+            <Button size="icon" variant="ghost" className="h-6 w-6" onClick={onResume} title="Resume">
+              <Zap className="w-3 h-3" />
+            </Button>
+          )}
+          {isError && (
+            <Button size="icon" variant="ghost" className="h-6 w-6" onClick={onRetry} title="Retry">
+              <RotateCcw className="w-3 h-3" />
+            </Button>
+          )}
+          {!isDone && (
+            <Button size="icon" variant="ghost" className="h-6 w-6 text-muted-foreground hover:text-destructive" onClick={onCancel} title="Cancel">
+              <X className="w-3 h-3" />
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {/* Progress bar */}
+      {(isActive || isPaused) && task.chunksTotal > 0 && (
+        <div className="space-y-1">
+          <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-300 ${isPaused ? "bg-amber-500" : "bg-primary"}`}
+              style={{ width: `${task.progress}%` }}
+            />
+          </div>
+          <div className="flex justify-between text-[10px] text-muted-foreground">
+            <span>{formatFileSize(task.bytesUploaded)} / {formatFileSize(task.file.size)}</span>
+            <span className="font-mono">{task.progress}%</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

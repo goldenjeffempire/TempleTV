@@ -7,7 +7,7 @@ import { getLiveStatus } from "./youtube";
 import { cache } from "../lib/cache";
 import { logger } from "../lib/logger";
 import { metricsSnapshot } from "../middlewares/observability";
-import { randomUUID } from "crypto";
+import { randomUUID, createHash } from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs/promises";
@@ -59,7 +59,7 @@ const upload = multer({
 
 const chunkUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 },
+  limits: { fileSize: 30 * 1024 * 1024 }, // 30 MB limit (client sends ≤20 MB chunks)
 });
 
 const thumbnailUpload = multer({
@@ -715,7 +715,7 @@ router.post("/admin/videos/upload/init", async (req, res) => {
 router.post("/admin/videos/upload/:sessionId/chunk", chunkUpload.single("chunk"), async (req, res) => {
   try {
     const { sessionId } = req.params as { sessionId: string };
-    const { chunkIndex } = req.body as { chunkIndex?: string };
+    const { chunkIndex, checksum } = req.body as { chunkIndex?: string; checksum?: string };
 
     const session = uploadSessions.get(sessionId);
     if (!session) return res.status(404).json({ error: "Upload session not found or expired" });
@@ -726,6 +726,15 @@ router.post("/admin/videos/upload/:sessionId/chunk", chunkUpload.single("chunk")
     const idx = parseInt(chunkIndex ?? "0", 10);
     if (isNaN(idx) || idx < 0 || idx >= session.totalChunks) {
       return res.status(400).json({ error: `Invalid chunk index: ${idx}` });
+    }
+
+    // Verify SHA-256 checksum when provided by client
+    if (checksum) {
+      const actualChecksum = createHash("sha256").update(chunk.buffer).digest("hex");
+      if (actualChecksum !== checksum) {
+        logger.warn({ sessionId, chunkIndex: idx, expected: checksum, actual: actualChecksum }, "Chunk checksum mismatch");
+        return res.status(400).json({ error: `Checksum mismatch for chunk ${idx} — data corrupted in transit` });
+      }
     }
 
     const chunkPath = path.join(session.tmpDir, `chunk-${String(idx).padStart(6, "0")}`);
@@ -743,6 +752,7 @@ router.post("/admin/videos/upload/:sessionId/chunk", chunkUpload.single("chunk")
       uploadedChunks: session.uploadedChunks.size,
       totalChunks: session.totalChunks,
       progressPercent: Math.round((session.uploadedChunks.size / session.totalChunks) * 100),
+      checksumVerified: !!checksum,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
