@@ -26,11 +26,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 
 // ─── Upload engine constants ───────────────────────────────────────────────────
-const CHUNK_SIZE = 20 * 1024 * 1024;        // 20 MB per chunk (doubled for throughput)
-const MAX_CONCURRENT_PER_FILE = 6;           // parallel chunk streams per file
-const MAX_CONCURRENT_FILES = 3;              // max simultaneous file uploads
-const MIN_CONCURRENCY = 2;
-const MAX_CONCURRENCY = 8;
+const CHUNK_SIZE = 32 * 1024 * 1024;        // 32 MB — optimal for large file throughput
+const MAX_CONCURRENT_PER_FILE = 10;          // parallel chunk streams per file
+const MAX_CONCURRENT_FILES = 5;              // max simultaneous file uploads
+const MIN_CONCURRENCY = 4;                   // floor: never starve the pipe
+const MAX_CONCURRENCY = 16;                  // ceiling on fast connections
+const PREFETCH_AHEAD = 12;                   // pre-read & hash this many chunks ahead
 const MAX_RETRIES = 5;
 const SPEED_SAMPLES = 10;
 const UPLOAD_SESSION_KEY = "ttv-upload-session-v3";
@@ -372,18 +373,41 @@ export default function Videos() {
         await fetch(`/api/admin/videos/upload/${sid}/thumbnail`, { method: "POST", body: thumbForm });
       }
 
-      // ── Chunk upload with adaptive concurrency ──────────────────────────────
+      // ── Prefetch pipeline + adaptive-concurrency chunk upload ──────────────
       const abortCtrl = new AbortController();
       updateTask(taskId, { abortController: abortCtrl });
 
-      const pending: number[] = [];
+      const queue: number[] = [];
       for (let i = 0; i < totalChunks; i++) {
-        if (!alreadyUploaded.has(i)) pending.push(i);
+        if (!alreadyUploaded.has(i)) queue.push(i);
       }
 
       let chunksDoneLocal = alreadyUploaded.size;
       updateTask(taskId, { chunksDone: chunksDoneLocal, progress: Math.round((chunksDoneLocal / totalChunks) * 100) });
 
+      // ── Prefetch pool: read & hash chunks BEFORE their slot opens ──────────
+      // Key optimisation: when a concurrent slot becomes free, the next chunk is
+      // already prepared in memory — zero idle time on the critical path.
+      interface PreparedChunk { buffer: ArrayBuffer; checksum: string; }
+      const prefetchPool = new Map<number, Promise<PreparedChunk>>();
+
+      const prepareChunk = (chunkIdx: number): Promise<PreparedChunk> => {
+        if (!prefetchPool.has(chunkIdx)) {
+          prefetchPool.set(chunkIdx, (async () => {
+            const start = chunkIdx * CHUNK_SIZE;
+            const end = Math.min(start + CHUNK_SIZE, task.file.size);
+            const buffer = await task.file.slice(start, end).arrayBuffer();
+            const checksum = await computeSha256(buffer);
+            return { buffer, checksum };
+          })());
+        }
+        return prefetchPool.get(chunkIdx)!;
+      };
+
+      // Eagerly pre-warm the first PREFETCH_AHEAD chunks
+      queue.slice(0, PREFETCH_AHEAD).forEach(prepareChunk);
+
+      // ── Progress / speed tracking ─────────────────────────────────────────
       const onChunkProgress = (incrementalBytes: number) => {
         const t = tasksRef.current.get(taskId);
         if (!t) return;
@@ -406,18 +430,25 @@ export default function Videos() {
         forceUpdate();
       };
 
-      const uploadOneChunk = async (chunkIdx: number): Promise<void> => {
+      // ── Upload a single chunk (data already in prefetch pool) ─────────────
+      const uploadOneChunk = async (chunkIdx: number, queueCursor: number): Promise<void> => {
         if (abortCtrl.signal.aborted) throw Object.assign(new Error("Aborted"), { name: "AbortError" });
 
-        const start = chunkIdx * CHUNK_SIZE;
-        const end = Math.min(start + CHUNK_SIZE, task.file.size);
-        const buffer = await task.file.slice(start, end).arrayBuffer();
-        const checksum = await computeSha256(buffer);
+        // The prepared data is already in memory — no blocking wait here
+        const { buffer, checksum } = await prepareChunk(chunkIdx);
+
+        // Immediately warm up the next chunk to keep the pipeline full
+        const nextPrefetch = queueCursor + PREFETCH_AHEAD;
+        if (nextPrefetch < queue.length) prepareChunk(queue[nextPrefetch]!);
 
         let attempt = 0;
         while (attempt <= MAX_RETRIES) {
           try {
             await uploadChunk(sid!, chunkIdx, buffer, checksum, abortCtrl.signal, onChunkProgress);
+
+            // Free memory — the buffer is no longer needed
+            prefetchPool.delete(chunkIdx);
+
             chunksDoneLocal++;
             const t = tasksRef.current.get(taskId);
             if (t) {
@@ -425,10 +456,12 @@ export default function Videos() {
               t.progress = Math.round((chunksDoneLocal / totalChunks) * 100);
               t.checksumOk++;
 
-              // Adaptive concurrency: adjust based on current speed
-              if (t.speed > 10 * 1024 * 1024 && t.concurrency < MAX_CONCURRENCY) {
+              // Adaptive concurrency: scale up on fast links, scale down on slow
+              if (t.speed > 15 * 1024 * 1024 && t.concurrency < MAX_CONCURRENCY) {
+                t.concurrency = Math.min(t.concurrency + 2, MAX_CONCURRENCY);
+              } else if (t.speed > 5 * 1024 * 1024 && t.concurrency < MAX_CONCURRENCY) {
                 t.concurrency = Math.min(t.concurrency + 1, MAX_CONCURRENCY);
-              } else if (t.speed < 1 * 1024 * 1024 && t.speed > 0 && t.concurrency > MIN_CONCURRENCY) {
+              } else if (t.speed < 512 * 1024 && t.speed > 0 && t.concurrency > MIN_CONCURRENCY) {
                 t.concurrency = Math.max(t.concurrency - 1, MIN_CONCURRENCY);
               }
             }
@@ -438,6 +471,8 @@ export default function Videos() {
             if ((err as Error).name === "AbortError") throw err;
             const errMsg = (err as Error).message || "";
             if (errMsg.includes("checksum")) {
+              // Checksum mismatch: discard the cached chunk and recompute on retry
+              prefetchPool.delete(chunkIdx);
               const t = tasksRef.current.get(taskId);
               if (t) { t.checksumFailed++; forceUpdate(); }
             }
@@ -448,36 +483,31 @@ export default function Videos() {
         }
       };
 
-      // Semaphore-based parallel execution with adaptive concurrency
-      const queue = [...pending];
+      // ── Semaphore dispatch loop ────────────────────────────────────────────
+      // Tracks queue cursor so prefetch can look ahead correctly
       const inFlight = new Set<Promise<void>>();
+      let queueHead = 0;
 
-      const dispatch = (): Promise<void> | null => {
+      const dispatch = (): void => {
         const t = tasksRef.current.get(taskId);
-        if (!t || queue.length === 0) return null;
-        const chunkIdx = queue.shift()!;
-        const p = uploadOneChunk(chunkIdx).finally(() => {
-          inFlight.delete(p);
-        });
+        if (!t || queueHead >= queue.length) return;
+        const chunkIdx = queue[queueHead]!;
+        const cursor = queueHead++;
+        const p = uploadOneChunk(chunkIdx, cursor).finally(() => inFlight.delete(p));
         inFlight.add(p);
-        return p;
       };
 
-      // Fill initial concurrency slots
+      // Seed initial concurrency slots
       const t0 = tasksRef.current.get(taskId)!;
-      for (let i = 0; i < Math.min(t0.concurrency, queue.length); i++) {
-        dispatch();
-      }
+      for (let i = 0; i < Math.min(t0.concurrency, queue.length); i++) dispatch();
 
       while (inFlight.size > 0) {
         if (abortCtrl.signal.aborted) throw Object.assign(new Error("Aborted"), { name: "AbortError" });
         await Promise.race(Array.from(inFlight));
-        // After any completion, fill up to current concurrency
+        // Refill slots up to adaptive concurrency target
         const tNow = tasksRef.current.get(taskId);
         if (tNow) {
-          while (inFlight.size < tNow.concurrency && queue.length > 0) {
-            dispatch();
-          }
+          while (inFlight.size < tNow.concurrency && queueHead < queue.length) dispatch();
         }
       }
 
@@ -1068,10 +1098,10 @@ export default function Videos() {
                     <p className="text-sm font-medium">Drop video files here or click to select</p>
                     <p className="text-xs text-muted-foreground">MP4, MOV, AVI, MKV · Multiple files supported · Up to 5 GB each</p>
                     <div className="flex items-center justify-center gap-4 mt-3 text-[11px] text-muted-foreground">
-                      <span className="flex items-center gap-1"><Zap className="w-3 h-3" /> 20 MB chunks</span>
-                      <span className="flex items-center gap-1"><Wifi className="w-3 h-3" /> 6 parallel streams</span>
+                      <span className="flex items-center gap-1"><Zap className="w-3 h-3" /> 32 MB chunks</span>
+                      <span className="flex items-center gap-1"><Wifi className="w-3 h-3" /> 10 parallel streams</span>
                       <span className="flex items-center gap-1"><ShieldCheck className="w-3 h-3" /> SHA-256 verified</span>
-                      <span className="flex items-center gap-1"><TrendingUp className="w-3 h-3" /> Adaptive speed</span>
+                      <span className="flex items-center gap-1"><TrendingUp className="w-3 h-3" /> Prefetch pipeline</span>
                     </div>
                   </div>
                 )}

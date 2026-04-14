@@ -59,7 +59,7 @@ const upload = multer({
 
 const chunkUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 30 * 1024 * 1024 }, // 30 MB limit (client sends ≤20 MB chunks)
+  limits: { fileSize: 40 * 1024 * 1024 }, // 40 MB limit (client sends ≤32 MB chunks)
 });
 
 const thumbnailUpload = multer({
