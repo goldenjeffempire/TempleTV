@@ -1,0 +1,55 @@
+Implement a fully functional broadcast playback system with the following behavior:
+
+🎬 Primary Streaming Logic
+When an admin uploads video content for broadcast, the system must:
+Automatically ingest and register the video into the active broadcast playlist
+Make the video immediately available for streaming without requiring manual refresh
+When a user clicks “Watch Stream”:
+The player must connect to the live broadcast pipeline
+The stream must reflect the current position of the active playlist, not restart per user
+All users must view the same synchronized stream (TV-style broadcast model)
+🔁 Continuous Playlist Loop Engine (24/7 Operation)
+The platform must implement a persistent queue-based playback system:
+All uploaded videos are placed into a broadcast queue
+Videos must play sequentially in the order defined by the admin
+After the last video in the queue finishes:
+The system must automatically restart the entire playlist
+Playback must continue indefinitely (no توقف, no idle state)
+There must be:
+❌ No playback dead-ends
+❌ No requirement for manual restart
+✅ Guaranteed continuous looping
+⚡ Real-Time Queue Updates
+When new videos are uploaded:
+They must be dynamically injected into the queue
+The system must update the playlist without interrupting the current stream
+Newly added content should be scheduled into the next available playback cycle
+📂 Multi-Video Upload Capability
+The admin system must support:
+Bulk upload of multiple video files (local device)
+Parallel upload processing with progress tracking
+Automatic encoding/transcoding (if required for streaming optimization)
+Upon upload completion:
+Videos must be automatically:
+Validated
+Indexed
+Inserted into the broadcast queue
+🧠 Playback Intelligence & Reliability
+Implement:
+Auto-retry on playback failure
+Fallback to next valid video if a file is corrupted
+Buffer recovery mechanisms (no infinite loading states)
+Ensure:
+Smooth transitions between videos (no black screens)
+Preloading of next video before current ends
+🌍 User Experience Requirement
+From the user’s perspective:
+Clicking “Watch Stream” should immediately start playback (<1.5s)
+The stream must feel like a live TV channel, not on-demand playback
+Users cannot “break” the stream or encounter empty states
+🎯 FINAL BEHAVIOR GUARANTEE
+The system must function as a 24/7 automated broadcast station where:
+Uploaded videos = broadcast content
+Queue = programming schedule
+Loop = continuous transmission
+Users = passive viewers of a live stream

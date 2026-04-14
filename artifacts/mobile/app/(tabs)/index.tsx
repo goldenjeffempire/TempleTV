@@ -139,15 +139,22 @@ export default function WatchScreen() {
     });
   };
 
-  const handleBroadcastPress = () => {
-    if (broadcastCurrent?.activeSchedule?.contentType === "live") {
+  const handleBroadcastPress = async () => {
+    const latest = await checkBroadcastCurrent().catch(() => null);
+    const currentBroadcast = latest ?? broadcastCurrent;
+    if (latest) setBroadcastCurrent(latest);
+
+    if (currentBroadcast?.activeSchedule?.contentType === "live") {
       handleLivePress();
       return;
     }
-    const item = broadcastCurrent?.item;
+    const item = currentBroadcast?.item;
     if (!item) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    const startMs = String((broadcastCurrent?.positionSecs ?? 0) * 1000);
+    const networkDriftSecs = currentBroadcast?.serverTimeMs
+      ? Math.max(0, Math.round((Date.now() - currentBroadcast.serverTimeMs) / 1000))
+      : 0;
+    const startMs = String(((currentBroadcast?.positionSecs ?? 0) + networkDriftSecs) * 1000);
     if (item.videoSource === "local" && item.localVideoUrl) {
       router.push({
         pathname: "/player",

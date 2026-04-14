@@ -242,6 +242,7 @@ export default function PlayerScreen() {
   const isLive = live === "true";
   const isBroadcastMode = paramBroadcastMode === "true";
   const [broadcastInfo, setBroadcastInfo] = useState<BroadcastCurrentResult | null>(null);
+  const [broadcastRecovering, setBroadcastRecovering] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
   const fadeAnim = useRef(new Animated.Value(Platform.OS === "web" ? 1 : 0)).current;
   const titleFade = useRef(new Animated.Value(1)).current;
@@ -394,6 +395,38 @@ export default function PlayerScreen() {
     };
   }, [isBroadcastMode, paramVideoId, paramLocalVideoUrl]);
 
+  const tuneToBroadcastItem = useCallback((bc: BroadcastCurrentResult) => {
+    if (!bc?.item) return;
+    const item = bc.item;
+    const networkDriftSecs = bc.serverTimeMs ? Math.max(0, Math.round((Date.now() - bc.serverTimeMs) / 1000)) : 0;
+    const nextParams: Record<string, string> = {
+      broadcastMode: "true",
+      title: item.title,
+      thumbnail: item.thumbnailUrl ?? "",
+      startPositionMs: String((bc.positionSecs + networkDriftSecs) * 1000),
+    };
+    if (item.videoSource === "local" && item.localVideoUrl) {
+      nextParams.localVideoUrl = item.localVideoUrl;
+      if ((item as any).hlsMasterUrl) nextParams.hlsMasterUrl = (item as any).hlsMasterUrl;
+    } else {
+      nextParams.videoId = item.youtubeId;
+    }
+    router.replace({ pathname: "/player", params: nextParams });
+  }, []);
+
+  const recoverBroadcastPlayback = useCallback(async () => {
+    if (!isBroadcastMode || broadcastRecovering) return;
+    setBroadcastRecovering(true);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const bc = await checkBroadcastCurrent();
+      if (!isMountedRef.current) return;
+      if (bc?.item) tuneToBroadcastItem(bc);
+    } finally {
+      if (isMountedRef.current) setBroadcastRecovering(false);
+    }
+  }, [isBroadcastMode, broadcastRecovering, tuneToBroadcastItem]);
+
   const handleVideoEnd = useCallback(async () => {
     if (isBroadcastMode) {
       await new Promise((resolve) => setTimeout(resolve, 800));
@@ -401,26 +434,13 @@ export default function PlayerScreen() {
         const bc = await checkBroadcastCurrent();
         if (!isMountedRef.current) return;
         if (bc?.item) {
-          const item = bc.item;
-          const nextParams: Record<string, string> = {
-            broadcastMode: "true",
-            title: item.title,
-            thumbnail: item.thumbnailUrl ?? "",
-            startPositionMs: String(bc.positionSecs * 1000),
-          };
-          if (item.videoSource === "local" && item.localVideoUrl) {
-            nextParams.localVideoUrl = item.localVideoUrl;
-            if ((item as any).hlsMasterUrl) nextParams.hlsMasterUrl = (item as any).hlsMasterUrl;
-          } else {
-            nextParams.videoId = item.youtubeId;
-          }
-          router.replace({ pathname: "/player", params: nextParams });
+          tuneToBroadcastItem(bc);
         }
       } catch {}
     } else {
       advanceToNext();
     }
-  }, [isBroadcastMode, advanceToNext]);
+  }, [isBroadcastMode, advanceToNext, tuneToBroadcastItem]);
   const handlePlayNext = useCallback(() => {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     playNext();
@@ -538,6 +558,7 @@ export default function PlayerScreen() {
             autoPlay
             startPositionMs={paramStartPositionMs ? parseInt(paramStartPositionMs, 10) : 0}
             onEnd={handleVideoEnd}
+            onError={recoverBroadcastPlayback}
           />
         ) : (
           <YoutubePlayer
@@ -550,6 +571,7 @@ export default function PlayerScreen() {
             autoPlay
             startPositionSecs={paramStartPositionMs ? Math.floor(parseInt(paramStartPositionMs, 10) / 1000) : undefined}
             onEnd={handleVideoEnd}
+            onError={recoverBroadcastPlayback}
             onToggleAudioMode={handleToggleAudioMode}
           />
         )}

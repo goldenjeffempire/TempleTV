@@ -149,6 +149,7 @@ export default function Videos() {
   const [showUploadDialog, setShowUploadDialog] = useState(false);
   const [uploadForm, setUploadForm] = useState({ title: "", category: "sermon", preacher: "", featured: false });
   const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [videoFiles, setVideoFiles] = useState<File[]>([]);
   const [thumbnailFile, setThumbnailFile] = useState<File | null>(null);
   const [uploadState, setUploadState] = useState<UploadState>("idle");
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -328,6 +329,7 @@ export default function Videos() {
     clearSession();
     resetUploadState();
     setVideoFile(null);
+    setVideoFiles([]);
     setThumbnailFile(null);
     setUploadForm({ title: "", category: "sermon", preacher: "", featured: false });
     setShowUploadDialog(false);
@@ -407,85 +409,107 @@ export default function Videos() {
 
   const handleUpload = async (e?: React.FormEvent, resumeSession?: { sid: string; uploadedChunks: Set<number> }) => {
     e?.preventDefault();
-    if (!videoFile || !uploadForm.title.trim()) return;
+    const filesToUpload = resumeSession
+      ? (videoFile ? [videoFile] : [])
+      : (videoFiles.length > 0 ? videoFiles : (videoFile ? [videoFile] : []));
+    if (filesToUpload.length === 0 || !uploadForm.title.trim()) return;
 
     setUploadState("initializing");
     setUploadError(null);
 
     try {
-      const durationSecs = await detectVideoDuration(videoFile);
-      const totalChunks = Math.ceil(videoFile.size / CHUNK_SIZE);
-      const ext = videoFile.name.includes(".") ? `.${videoFile.name.split(".").pop()}` : ".mp4";
-      totalFileBytes.current = videoFile.size;
+      for (let fileIndex = 0; fileIndex < filesToUpload.length; fileIndex++) {
+        const currentFile = filesToUpload[fileIndex]!;
+        const title = filesToUpload.length === 1
+          ? uploadForm.title.trim()
+          : (fileIndex === 0 && uploadForm.title.trim()
+            ? uploadForm.title.trim()
+            : currentFile.name.replace(/\.[^/.]+$/, ""));
 
-      setChunksTotal(totalChunks);
-      setChunksDone(0);
-      setUploadProgress(0);
-      setBytesUploaded(0);
-      speedSamplesRef.current = [];
-      uploadStartTimeRef.current = Date.now();
+        const durationSecs = await detectVideoDuration(currentFile);
+        const totalChunks = Math.ceil(currentFile.size / CHUNK_SIZE);
+        const ext = currentFile.name.includes(".") ? `.${currentFile.name.split(".").pop()}` : ".mp4";
+        totalFileBytes.current = currentFile.size;
 
-      let sid = resumeSession?.sid ?? null;
-      let alreadyUploaded = resumeSession?.uploadedChunks ?? new Set<number>();
+        setChunksTotal(totalChunks);
+        setChunksDone(0);
+        setUploadProgress(0);
+        setBytesUploaded(0);
+        bytesUploadedRef.current = 0;
+        speedSamplesRef.current = [];
+        uploadStartTimeRef.current = Date.now();
 
-      if (!sid) {
-        const initRes = await fetch("/api/admin/videos/upload/init", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            title: uploadForm.title.trim(),
-            category: uploadForm.category,
-            preacher: uploadForm.preacher,
-            featured: String(uploadForm.featured),
-            durationSecs: durationSecs > 0 ? String(durationSecs) : undefined,
-            totalChunks: String(totalChunks),
-            totalBytes: String(videoFile.size),
-            ext,
-          }),
-        });
+        let sid = resumeSession?.sid ?? null;
+        let alreadyUploaded = resumeSession?.uploadedChunks ?? new Set<number>();
 
-        if (!initRes.ok) {
-          const err = await initRes.json() as { error?: string };
-          throw new Error(err.error ?? "Failed to initialize upload");
+        if (!sid) {
+          const initRes = await fetch("/api/admin/videos/upload/init", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title,
+              category: uploadForm.category,
+              preacher: uploadForm.preacher,
+              featured: String(uploadForm.featured),
+              durationSecs: durationSecs > 0 ? String(durationSecs) : undefined,
+              totalChunks: String(totalChunks),
+              totalBytes: String(currentFile.size),
+              ext,
+            }),
+          });
+
+          if (!initRes.ok) {
+            const err = await initRes.json() as { error?: string };
+            throw new Error(err.error ?? "Failed to initialize upload");
+          }
+
+          const { sessionId: newSid } = await initRes.json() as { sessionId: string };
+          sid = newSid;
+
+          if (filesToUpload.length === 1) {
+            saveSession({
+              sessionId: sid,
+              fileName: currentFile.name,
+              fileSize: currentFile.size,
+              totalChunks,
+              form: uploadForm,
+            });
+          }
         }
 
-        const { sessionId: newSid } = await initRes.json() as { sessionId: string };
-        sid = newSid;
+        setSessionId(sid);
 
-        saveSession({
-          sessionId: sid,
-          fileName: videoFile.name,
-          fileSize: videoFile.size,
-          totalChunks,
-          form: uploadForm,
-        });
+        if (thumbnailFile && !resumeSession && filesToUpload.length === 1) {
+          const thumbForm = new FormData();
+          thumbForm.append("thumbnail", thumbnailFile);
+          await fetch(`/api/admin/videos/upload/${sid}/thumbnail`, { method: "POST", body: thumbForm });
+        }
+
+        setUploadState("uploading");
+        await runChunkedUpload(sid, currentFile, totalChunks, alreadyUploaded);
+
+        setUploadState("finalizing");
+        const finalRes = await fetch(`/api/admin/videos/upload/${sid}/finalize`, { method: "POST" });
+        if (!finalRes.ok) {
+          const err = await finalRes.json() as { error?: string };
+          throw new Error(err.error ?? "Failed to finalize upload");
+        }
+
+        if (filesToUpload.length === 1) clearSession();
       }
 
-      setSessionId(sid);
-
-      if (thumbnailFile && !resumeSession) {
-        const thumbForm = new FormData();
-        thumbForm.append("thumbnail", thumbnailFile);
-        await fetch(`/api/admin/videos/upload/${sid}/thumbnail`, { method: "POST", body: thumbForm });
-      }
-
-      setUploadState("uploading");
-      await runChunkedUpload(sid, videoFile, totalChunks, alreadyUploaded);
-
-      setUploadState("finalizing");
-      const finalRes = await fetch(`/api/admin/videos/upload/${sid}/finalize`, { method: "POST" });
-      if (!finalRes.ok) {
-        const err = await finalRes.json() as { error?: string };
-        throw new Error(err.error ?? "Failed to finalize upload");
-      }
-
-      clearSession();
       setUploadState("done");
-      toast({ title: "Video uploaded successfully" });
+      toast({
+        title: filesToUpload.length > 1
+          ? `${filesToUpload.length} videos uploaded successfully`
+          : "Video uploaded successfully",
+        description: "Uploaded content was automatically added to the broadcast queue.",
+      });
 
       setTimeout(() => {
         setShowUploadDialog(false);
         setVideoFile(null);
+        setVideoFiles([]);
         setThumbnailFile(null);
         setUploadForm({ title: "", category: "sermon", preacher: "", featured: false });
         resetUploadState();
@@ -562,11 +586,12 @@ export default function Videos() {
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    const file = e.dataTransfer.files[0];
-    if (file && file.type.startsWith("video/")) {
-      setVideoFile(file);
+    const files = Array.from(e.dataTransfer.files).filter((file) => file.type.startsWith("video/"));
+    if (files.length > 0) {
+      setVideoFiles(files);
+      setVideoFile(files[0]!);
       if (!uploadForm.title) {
-        setUploadForm(prev => ({ ...prev, title: file.name.replace(/\.[^/.]+$/, "") }));
+        setUploadForm(prev => ({ ...prev, title: files[0]!.name.replace(/\.[^/.]+$/, "") }));
       }
     }
   }, [uploadForm.title]);
@@ -853,7 +878,7 @@ export default function Videos() {
         onOpenChange={(open) => {
           if (uploadState === "idle" || uploadState === "done" || uploadState === "error") {
             setShowUploadDialog(open);
-            if (!open) { setVideoFile(null); setThumbnailFile(null); resetUploadState(); }
+            if (!open) { setVideoFile(null); setVideoFiles([]); setThumbnailFile(null); resetUploadState(); }
           }
         }}
       >
@@ -882,11 +907,14 @@ export default function Videos() {
                 ref={videoInputRef}
                 type="file"
                 accept="video/*"
+                multiple
                 className="hidden"
                 disabled={isUploading}
                 onChange={(e) => {
-                  const f = e.target.files?.[0];
+                  const files = Array.from(e.target.files ?? []).filter((file) => file.type.startsWith("video/"));
+                  const f = files[0];
                   if (f) {
+                    setVideoFiles(files);
                     setVideoFile(f);
                     if (!uploadForm.title) {
                       setUploadForm(prev => ({ ...prev, title: f.name.replace(/\.[^/.]+$/, "") }));
@@ -897,13 +925,19 @@ export default function Videos() {
               {videoFile ? (
                 <div className="space-y-1">
                   <Video className="w-8 h-8 mx-auto text-primary" />
-                  <p className="text-sm font-medium">{videoFile.name}</p>
-                  <p className="text-xs text-muted-foreground">{formatFileSize(videoFile.size)}</p>
+                  <p className="text-sm font-medium">
+                    {videoFiles.length > 1 ? `${videoFiles.length} videos selected` : videoFile.name}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {videoFiles.length > 1
+                      ? `${formatFileSize(videoFiles.reduce((sum, file) => sum + file.size, 0))} total · uploaded one file at a time with parallel chunks`
+                      : formatFileSize(videoFile.size)}
+                  </p>
                 </div>
               ) : (
                 <div className="space-y-2">
                   <Upload className="w-8 h-8 mx-auto text-muted-foreground opacity-50" />
-                  <p className="text-sm font-medium">Drop video here or click to select</p>
+                  <p className="text-sm font-medium">Drop videos here or click to select</p>
                   <p className="text-xs text-muted-foreground">MP4, MOV, AVI, MKV · Up to 5 GB</p>
                 </div>
               )}
@@ -1026,6 +1060,7 @@ export default function Videos() {
                 {videoFile && (
                   <div className="text-[11px] text-muted-foreground">
                     {formatFileSize(bytesUploaded)} / {formatFileSize(videoFile.size)}
+                    {videoFiles.length > 1 && <span className="ml-2">· batch of {videoFiles.length}</span>}
                     {uploadState === "uploading" && (
                       <span className="ml-2 text-primary/70">· {Math.min(MAX_CONCURRENT, chunksTotal - chunksDone)} parallel streams</span>
                     )}
@@ -1068,7 +1103,7 @@ export default function Videos() {
               {(uploadState === "idle" || uploadState === "error") && (
                 <Button type="submit" className="flex-1" disabled={!videoFile || !uploadForm.title.trim()}>
                   <Upload className="w-4 h-4 mr-1.5" />
-                  Upload Video
+                  {videoFiles.length > 1 ? `Upload ${videoFiles.length} Videos` : "Upload Video"}
                 </Button>
               )}
               {uploadState === "paused" && (

@@ -35,6 +35,7 @@ interface YoutubePlayerProps {
   playerHeight?: number;
   startPositionSecs?: number;
   onEnd?: () => void;
+  onError?: () => void;
   onPlay?: () => void;
   onPause?: () => void;
   onToggleAudioMode?: () => void;
@@ -169,6 +170,7 @@ export function YoutubePlayer({
   playerHeight: playerHeightProp,
   startPositionSecs,
   onEnd,
+  onError,
   onPlay,
   onPause,
   onToggleAudioMode,
@@ -316,7 +318,8 @@ export function YoutubePlayer({
       return;
     }
     setPlayerError(true);
-  }, [retryCount]);
+    onError?.();
+  }, [retryCount, onError]);
 
   const playerHeight = playerHeightProp ?? Math.min(
     Math.round(width * (9 / 16)),

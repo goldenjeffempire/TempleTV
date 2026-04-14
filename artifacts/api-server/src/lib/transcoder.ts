@@ -7,6 +7,7 @@ import { db, videosTable, transcodingJobsTable, broadcastQueueTable } from "@wor
 import { eq, and, desc, asc } from "drizzle-orm";
 import { logger } from "./logger";
 import { broadcastLiveEvent } from "./liveEvents";
+import { cache } from "./cache";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, "..", "uploads");
@@ -286,8 +287,14 @@ async function processNextJob(): Promise<boolean> {
 
     await db
       .update(broadcastQueueTable)
-      .set({ localVideoUrl: hlsMasterUrl, videoSource: "local" })
+      .set({
+        localVideoUrl: hlsMasterUrl,
+        videoSource: "local",
+        ...(probedDuration > 0 ? { durationSecs: probedDuration } : {}),
+      })
       .where(eq(broadcastQueueTable.videoId, job.videoId));
+
+    await cache.del("broadcast:queue");
 
     logger.info({ jobId: job.id, videoId: job.videoId, hlsMasterUrl }, "Transcoding complete");
 
@@ -297,6 +304,12 @@ async function processNextJob(): Promise<boolean> {
       status: "done",
       progress: 100,
       hlsMasterUrl,
+    });
+    broadcastLiveEvent("broadcast-queue-updated", {
+      videoId: job.videoId,
+      hlsMasterUrl,
+      durationSecs: probedDuration > 0 ? probedDuration : undefined,
+      queuedAt: new Date().toISOString(),
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

@@ -148,6 +148,7 @@ interface LocalVideoPlayerProps {
   title?: string;
   autoPlay?: boolean;
   onEnd?: () => void;
+  onError?: () => void;
   onPlay?: () => void;
   onPause?: () => void;
   startPositionMs?: number;
@@ -160,6 +161,7 @@ export function LocalVideoPlayer({
   title,
   autoPlay = true,
   onEnd,
+  onError,
   onPlay,
   onPause,
   startPositionMs = 0,
@@ -170,6 +172,7 @@ export function LocalVideoPlayer({
   const { updatePlayback, playerPlayRef, playerPauseRef, playerSeekRef, isPlaying, dataSaver, isRadioMode } = usePlayer();
   const [status, setStatus] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const retryCountRef = useRef(0);
   const videoRef = useRef<any>(null);
   const isMountedRef = useRef(true);
   const transitionOpacity = useRef(new Animated.Value(1)).current;
@@ -266,8 +269,21 @@ export function LocalVideoPlayer({
           onEnd?.();
         }
       }
+      if (!s.isLoaded && s.error) {
+        if (retryCountRef.current < 2) {
+          retryCountRef.current += 1;
+          setLoading(true);
+          setTimeout(() => {
+            if (!isMountedRef.current || !videoRef.current) return;
+            videoRef.current.replayAsync?.({ positionMillis: startPositionMs }).catch(() => onError?.());
+          }, 700);
+        } else {
+          setLoading(false);
+          onError?.();
+        }
+      }
     },
-    [loading, onEnd, onPlay, onPause, transitionOpacity, updatePlayback]
+    [loading, onEnd, onError, onPlay, onPause, startPositionMs, transitionOpacity, updatePlayback]
   );
 
   if (Platform.OS !== "web") {

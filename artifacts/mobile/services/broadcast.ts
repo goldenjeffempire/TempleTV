@@ -17,6 +17,7 @@ export interface BroadcastCurrentResult {
   queueLength: number;
   progressPercent?: number;
   syncedAt?: string;
+  serverTimeMs?: number;
   failoverReason?: string | null;
   activeSchedule?: {
     id: string;

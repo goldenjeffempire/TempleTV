@@ -229,3 +229,12 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 - **Operations status API**: Added protected `GET /api/admin/ops/status`, aggregating database connectivity, cache health, broadcast continuity, transcoding status, upload storage, and in-process HTTP metrics into a single operator-friendly payload.
 - **Mobile platform status**: Settings now includes a Platform Status section showing whether the broadcast platform is healthy, how many programme queue items are active, and how much sermon content is available.
 - **Server logging cleanup**: Replaced remaining startup/recovery `console.*` calls in server routes with the shared structured logger.
+
+## Features Added (Session 13) — Automated Broadcast Queue Reliability
+- **Automatic queue registration**: Admin local uploads and YouTube imports now automatically upsert videos into `broadcast_queue`, preserving metadata, source type, stream URL, sort order, and active status.
+- **Queue cleanup on delete**: Deleting a managed video now also removes its broadcast queue entry, invalidates broadcast caches, and notifies connected admin dashboards.
+- **HLS queue synchronization**: When FFmpeg HLS transcoding finishes, the worker updates the broadcast queue item with the HLS master URL and probed duration, clears the queue cache, and emits a live queue update event.
+- **Real-time admin broadcast refresh**: Broadcast admin page listens for `broadcast-queue-updated` SSE events and reloads queue state immediately after upload/import/transcode/delete changes.
+- **Bulk admin uploads**: Video Library upload dialog accepts multiple video files. Each file is uploaded through the existing resumable chunk pipeline with parallel chunk streams, and every finalized video is auto-added to the broadcast queue.
+- **Fresh mobile broadcast sync**: Watch tab fetches fresh `/api/broadcast/current` state immediately before opening the player and compensates start position with server-time drift.
+- **Playback failover**: Local and YouTube players now surface playback errors to the broadcast player screen, which re-checks the broadcast engine and routes viewers to the currently correct queue item.

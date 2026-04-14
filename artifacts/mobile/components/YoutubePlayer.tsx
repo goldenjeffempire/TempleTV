@@ -25,6 +25,7 @@ interface YoutubePlayerProps {
   playerHeight?: number;
   startPositionSecs?: number;
   onEnd?: () => void;
+  onError?: () => void;
   onPlay?: () => void;
   onPause?: () => void;
   onToggleAudioMode?: () => void;

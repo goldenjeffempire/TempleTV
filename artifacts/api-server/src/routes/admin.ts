@@ -249,6 +249,76 @@ const router = Router();
 
 const EXPO_PUSH_API = "https://exp.host/--/api/v2/push/send";
 
+const BROADCAST_CACHE_KEYS = ["broadcast:live_override", "broadcast:schedule_entries", "broadcast:queue"] as const;
+
+async function invalidateBroadcastCache(): Promise<void> {
+  await Promise.all(BROADCAST_CACHE_KEYS.map((key) => cache.del(key)));
+}
+
+function parseDurationSecs(value: string | null | undefined): number {
+  if (!value) return 1800;
+  if (!value.includes(":") && !value.match(/[a-z]/i)) {
+    const plain = Number(value);
+    if (Number.isFinite(plain) && plain > 0) return Math.max(60, Math.round(plain));
+  }
+  const parts = value.split(":").map((part) => Number(part));
+  if (parts.every((part) => Number.isFinite(part))) {
+    if (parts.length === 3) return Math.max(60, parts[0]! * 3600 + parts[1]! * 60 + parts[2]!);
+    if (parts.length === 2) return Math.max(60, parts[0]! * 60 + parts[1]!);
+  }
+  const minutesMatch = value.match(/(\d+)\s*m/i);
+  if (minutesMatch?.[1]) return Math.max(60, Number(minutesMatch[1]) * 60);
+  return 1800;
+}
+
+async function upsertBroadcastQueueVideo(video: typeof videosTable.$inferSelect): Promise<void> {
+  const existing = await db
+    .select()
+    .from(broadcastQueueTable)
+    .orderBy(asc(broadcastQueueTable.sortOrder));
+
+  const durationSecs = parseDurationSecs(video.duration);
+  const streamUrl = video.hlsMasterUrl || video.localVideoUrl || null;
+  const matching = existing.find((item) => item.videoId === video.id);
+
+  if (matching) {
+    await db
+      .update(broadcastQueueTable)
+      .set({
+        youtubeId: video.youtubeId,
+        title: video.title,
+        thumbnailUrl: video.thumbnailUrl,
+        durationSecs,
+        localVideoUrl: streamUrl,
+        videoSource: video.videoSource,
+        isActive: true,
+      })
+      .where(eq(broadcastQueueTable.id, matching.id));
+  } else {
+    const maxOrder = existing.length > 0 ? Math.max(...existing.map((i) => i.sortOrder)) + 1 : 0;
+    await db.insert(broadcastQueueTable).values({
+      id: randomUUID(),
+      videoId: video.id,
+      youtubeId: video.youtubeId,
+      title: video.title,
+      thumbnailUrl: video.thumbnailUrl,
+      durationSecs,
+      localVideoUrl: streamUrl,
+      videoSource: video.videoSource,
+      isActive: true,
+      sortOrder: maxOrder,
+    });
+  }
+
+  await invalidateBroadcastCache();
+  broadcastLiveEvent("broadcast-queue-updated", {
+    videoId: video.id,
+    youtubeId: video.youtubeId,
+    title: video.title,
+    queuedAt: new Date().toISOString(),
+  });
+}
+
 async function getActiveLiveOverride() {
   const overrides = await db
     .select()
@@ -789,6 +859,7 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
 
     uploadSessions.delete(sessionId);
 
+    await upsertBroadcastQueueVideo(video);
     queueTranscodingJob(id, finalPath, 1).catch(() => {});
 
     res.status(201).json(video);
@@ -866,6 +937,7 @@ router.post("/admin/videos/import", async (req, res) => {
       })
       .returning();
 
+    await upsertBroadcastQueueVideo(video);
     res.status(201).json(video);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -883,6 +955,7 @@ router.put("/admin/videos/:id", async (req, res) => {
     const updates = Object.fromEntries(Object.entries(body.data).filter(([, v]) => v !== undefined));
     const [video] = await db.update(videosTable).set(updates).where(eq(videosTable.id, id)).returning();
     if (!video) return res.status(404).json({ error: "Video not found" });
+    await upsertBroadcastQueueVideo(video);
     res.json(video);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -896,6 +969,9 @@ router.delete("/admin/videos/:id", async (req, res) => {
     const [video] = await db.select().from(videosTable).where(eq(videosTable.id, id)).limit(1);
 
     await db.delete(videosTable).where(eq(videosTable.id, id));
+    await db.delete(broadcastQueueTable).where(eq(broadcastQueueTable.videoId, id));
+    await invalidateBroadcastCache();
+    broadcastLiveEvent("broadcast-queue-updated", { videoId: id, deleted: true, queuedAt: new Date().toISOString() });
 
     if (video?.videoSource === "local") {
       const uploadsDir = path.join(__dirname, "..", "uploads");

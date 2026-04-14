@@ -51,6 +51,7 @@ interface YoutubePlayerProps {
   playerHeight?: number;
   startPositionSecs?: number;
   onEnd?: () => void;
+  onError?: () => void;
   onPlay?: () => void;
   onPause?: () => void;
   onToggleAudioMode?: () => void;
@@ -63,6 +64,7 @@ export function YoutubePlayer({
   autoPlay = true,
   startPositionSecs,
   onEnd,
+  onError,
   onPlay,
   onPause,
 }: YoutubePlayerProps) {
@@ -174,6 +176,7 @@ export function YoutubePlayer({
             }
           },
           onError: () => {
+            onError?.();
             if (isMountedRef.current) { setError(true); setLoading(false); }
           },
         },
@@ -183,7 +186,7 @@ export function YoutubePlayer({
       setError(true);
       setLoading(false);
     }
-  }, [videoId, isLive, autoPlay, volume, registerPlayerRefs, startTick, stopTick, onEnd, onPlay, onPause]);
+  }, [videoId, isLive, autoPlay, volume, registerPlayerRefs, startTick, stopTick, onEnd, onError, onPlay, onPause]);
 
   useEffect(() => {
     isMountedRef.current = true;

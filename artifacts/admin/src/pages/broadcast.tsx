@@ -287,6 +287,10 @@ export default function Broadcast() {
           loadAll();
         });
 
+        es.addEventListener("broadcast-queue-updated", () => {
+          loadAll();
+        });
+
         es.onopen = () => { attempt = 0; };
 
         es.onerror = () => {
