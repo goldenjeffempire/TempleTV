@@ -54,3 +54,18 @@ export function metricsText(): string {
 
   return `${lines.join("\n")}\n`;
 }
+
+export function metricsSnapshot() {
+  const requests = Array.from(methodStats.entries()).map(([method, stats]) => ({
+    method,
+    total: stats.total,
+    errors: stats.errors,
+    averageMs: stats.total > 0 ? Math.round(stats.totalMs / stats.total) : 0,
+  }));
+
+  return {
+    uptimeSecs: Math.floor((Date.now() - startedAt) / 1000),
+    activeRequests,
+    requests,
+  };
+}

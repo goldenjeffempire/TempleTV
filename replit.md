@@ -223,3 +223,9 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 - **Admin API protection**: `/api/admin/*` routes now require `ADMIN_API_TOKEN` in production, with timing-safe token comparison and support for bearer headers, `X-Admin-Token`, and SSE query token transport.
 - **Admin access key UI**: Admin dashboard header now shows whether an admin key is configured and lets operators set/remove the key locally; protected admin fetches and live SSE connections automatically include it.
 - **Production metrics**: Added `GET /api/metrics` with Prometheus-compatible uptime, active request, request count, error count, and latency sum metrics.
+
+## Features Added (Session 12) — Professional Operations Center
+- **Admin Operations page**: Added `/operations` in the admin dashboard with platform-wide health checks, API uptime, request counters, database counts, registered device count, broadcast queue state, connected admin clients, cache mode, upload sessions, storage usage, and video pipeline status.
+- **Operations status API**: Added protected `GET /api/admin/ops/status`, aggregating database connectivity, cache health, broadcast continuity, transcoding status, upload storage, and in-process HTTP metrics into a single operator-friendly payload.
+- **Mobile platform status**: Settings now includes a Platform Status section showing whether the broadcast platform is healthy, how many programme queue items are active, and how much sermon content is available.
+- **Server logging cleanup**: Replaced remaining startup/recovery `console.*` calls in server routes with the shared structured logger.

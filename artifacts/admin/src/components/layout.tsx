@@ -13,6 +13,7 @@ import {
   Sun,
   Cpu,
   KeyRound,
+  ShieldCheck,
 } from "lucide-react";
 import { useGetLiveStatus } from "@workspace/api-client-react";
 import { getLocalTimeZone, isMidnightHour } from "@/lib/theme";
@@ -56,6 +57,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
     { href: "/notifications", label: "Notifications", icon: BellRing },
     { href: "/analytics", label: "Analytics", icon: BarChart2 },
     { href: "/transcoding", label: "Transcoding Queue", icon: Cpu },
+    { href: "/operations", label: "Operations", icon: ShieldCheck },
   ];
 
   return (

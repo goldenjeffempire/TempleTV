@@ -22,6 +22,7 @@ import { useFavorites } from "@/hooks/useFavorites";
 import { useNotificationPreferences } from "@/hooks/useNotificationPreferences";
 import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
 import { APP_CONFIG } from "@/constants/config";
+import { fetchPlatformStatus, type PlatformStatus } from "@/services/platform";
 import {
   requestNotificationPermissions,
   getNotificationPermissionStatus,
@@ -94,6 +95,7 @@ export default function SettingsScreen() {
   const webTopPad = Platform.OS === "web" ? 67 : 0;
   const [notifPermission, setNotifPermission] = useState<string | null>(null);
   const [cacheRefreshing, setCacheRefreshing] = useState(false);
+  const [platformStatus, setPlatformStatus] = useState<PlatformStatus | null>(null);
 
   useEffect(() => {
     if (Platform.OS === "web") return;
@@ -104,6 +106,20 @@ export default function SettingsScreen() {
       }
     });
   }, [syncWithPermissionStatus]);
+
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      const result = await fetchPlatformStatus();
+      if (mounted) setPlatformStatus(result);
+    };
+    load();
+    const interval = setInterval(load, 60000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, []);
 
   const requestAndToggle = useCallback(
     async (key: "liveAlerts" | "newSermonAlerts", currentValue: boolean) => {
@@ -196,6 +212,36 @@ export default function SettingsScreen() {
               Jesus Christ Temple Ministry
             </Text>
           </View>
+        </GlassCard>
+
+        <Text style={[styles.sectionLabel, { color: c.mutedForeground }]}>PLATFORM STATUS</Text>
+        <GlassCard style={styles.group}>
+          <Row
+            icon={platformStatus?.overallStatus === "critical" ? "alert-triangle" : platformStatus?.overallStatus === "degraded" ? "alert-circle" : "shield"}
+            label="Broadcast Platform"
+            description={
+              platformStatus
+                ? platformStatus.overallStatus === "ok"
+                  ? "All core systems are online"
+                  : "Some services need attention"
+                : "Status unavailable while offline"
+            }
+            value={platformStatus ? platformStatus.overallStatus.toUpperCase() : "Offline"}
+          />
+          <Divider />
+          <Row
+            icon="tv"
+            label="Programme Queue"
+            description="Active 24/7 broadcast items"
+            value={`${platformStatus?.broadcast?.activeQueueItems ?? 0} active`}
+          />
+          <Divider />
+          <Row
+            icon="database"
+            label="Sermon Catalog"
+            description={`${platformStatus?.database?.counts?.activeScheduleEntries ?? 0} scheduled slots`}
+            value={`${platformStatus?.database?.counts?.videos ?? sermons.length} videos`}
+          />
         </GlassCard>
 
         <Text style={[styles.sectionLabel, { color: c.mutedForeground }]}>PLAYBACK</Text>

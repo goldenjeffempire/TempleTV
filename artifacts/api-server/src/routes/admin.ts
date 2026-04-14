@@ -1,9 +1,12 @@
 import { Router } from "express";
-import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, pushTokensTable, liveOverridesTable, transcodingJobsTable } from "@workspace/db";
+import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, pushTokensTable, liveOverridesTable, transcodingJobsTable, broadcastQueueTable } from "@workspace/db";
 import { eq, ilike, or, count, sql, desc, asc, and } from "drizzle-orm";
 import { queueTranscodingJob, retryTranscodingJob } from "../lib/transcoder";
 import { broadcastLiveEvent, addSSEClient, removeSSEClient, getSSEClientCount } from "../lib/liveEvents";
 import { getLiveStatus } from "./youtube";
+import { cache } from "../lib/cache";
+import { logger } from "../lib/logger";
+import { metricsSnapshot } from "../middlewares/observability";
 import { randomUUID } from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -117,6 +120,21 @@ async function writeSessionToDisk(session: ChunkedSession): Promise<void> {
   } catch {}
 }
 
+async function getDirectorySizeBytes(dir: string): Promise<number> {
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    const sizes = await Promise.all(entries.map(async (entry) => {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) return getDirectorySizeBytes(fullPath);
+      const stat = await fs.stat(fullPath).catch(() => null);
+      return stat?.size ?? 0;
+    }));
+    return sizes.reduce((total, size) => total + size, 0);
+  } catch {
+    return 0;
+  }
+}
+
 async function recoverSessionsFromDisk(): Promise<void> {
   try {
     const tmpRoot = path.join(__dirname, "..", "uploads", "tmp");
@@ -153,11 +171,11 @@ async function recoverSessionsFromDisk(): Promise<void> {
           lastActivity,
         };
         uploadSessions.set(session.id, session);
-        console.log(`[Upload] Recovered session ${session.id} (${session.uploadedChunks.size}/${session.totalChunks} chunks)`);
+        logger.info({ sessionId: session.id, uploadedChunks: session.uploadedChunks.size, totalChunks: session.totalChunks }, "Recovered upload session");
       } catch {}
     }
   } catch (err) {
-    console.error("[Upload] Session recovery failed:", err);
+    logger.error({ err }, "Upload session recovery failed");
   }
 }
 
@@ -185,7 +203,7 @@ async function autoExpireLiveOverrides(): Promise<void> {
         await db.update(liveOverridesTable)
           .set({ isActive: false })
           .where(eq(liveOverridesTable.id, override.id));
-        console.log(`[LiveOverride] Auto-expired: "${override.title}"`);
+        logger.info({ liveOverrideId: override.id, title: override.title }, "Live override auto-expired");
         broadcastLiveEvent("override-expired", {
           id: override.id,
           title: override.title,
@@ -350,6 +368,116 @@ router.get("/admin/stats", async (req, res) => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });
+  }
+});
+
+router.get("/admin/ops/status", async (_req, res) => {
+  const generatedAt = new Date();
+  const uploadsDir = path.join(__dirname, "..", "uploads");
+  const hlsDir = path.join(uploadsDir, "hls");
+
+  try {
+    const [
+      dbProbe,
+      totalVideosResult,
+      localVideosResult,
+      totalPlaylistsResult,
+      activeScheduleResult,
+      devicesResult,
+      activeBroadcastResult,
+      inactiveBroadcastResult,
+      liveOverrideResult,
+      processingJobsResult,
+      queuedJobsResult,
+      doneJobsResult,
+      failedJobsResult,
+      cancelledJobsResult,
+      uploadBytes,
+      hlsBytes,
+    ] = await Promise.all([
+      db.execute(sql`select 1 as ok`).then(() => true).catch(() => false),
+      db.select({ count: count() }).from(videosTable),
+      db.select({ count: count() }).from(videosTable).where(eq(videosTable.videoSource, "local")),
+      db.select({ count: count() }).from(playlistsTable),
+      db.select({ count: count() }).from(scheduleTable).where(eq(scheduleTable.isActive, true)),
+      db.select({ count: count() }).from(pushTokensTable),
+      db.select({ count: count() }).from(broadcastQueueTable).where(eq(broadcastQueueTable.isActive, true)),
+      db.select({ count: count() }).from(broadcastQueueTable).where(eq(broadcastQueueTable.isActive, false)),
+      db.select({ count: count() }).from(liveOverridesTable).where(eq(liveOverridesTable.isActive, true)),
+      db.select({ count: count() }).from(transcodingJobsTable).where(eq(transcodingJobsTable.status, "processing")),
+      db.select({ count: count() }).from(transcodingJobsTable).where(eq(transcodingJobsTable.status, "queued")),
+      db.select({ count: count() }).from(transcodingJobsTable).where(eq(transcodingJobsTable.status, "done")),
+      db.select({ count: count() }).from(transcodingJobsTable).where(eq(transcodingJobsTable.status, "failed")),
+      db.select({ count: count() }).from(transcodingJobsTable).where(eq(transcodingJobsTable.status, "cancelled")),
+      getDirectorySizeBytes(uploadsDir),
+      getDirectorySizeBytes(hlsDir),
+    ]);
+
+    const processingJobs = Number(processingJobsResult[0]?.count ?? 0);
+    const queuedJobs = Number(queuedJobsResult[0]?.count ?? 0);
+    const failedJobs = Number(failedJobsResult[0]?.count ?? 0);
+    const activeBroadcastItems = Number(activeBroadcastResult[0]?.count ?? 0);
+    const activeLiveOverrides = Number(liveOverrideResult[0]?.count ?? 0);
+    const dbConnected = Boolean(dbProbe);
+    const cacheStatus = cache.status();
+
+    const checks = [
+      { key: "api", label: "API process", status: "ok" },
+      { key: "database", label: "Database", status: dbConnected ? "ok" : "critical" },
+      { key: "cache", label: "Cache", status: cacheStatus.redis.configured && !cacheStatus.redis.connected ? "degraded" : "ok" },
+      { key: "transcoding", label: "Transcoding queue", status: failedJobs > 0 ? "degraded" : "ok" },
+      { key: "broadcast", label: "Broadcast continuity", status: activeBroadcastItems > 0 || activeLiveOverrides > 0 ? "ok" : "degraded" },
+    ];
+
+    const overallStatus = checks.some((check) => check.status === "critical")
+      ? "critical"
+      : checks.some((check) => check.status === "degraded")
+        ? "degraded"
+        : "ok";
+
+    res.json({
+      generatedAt: generatedAt.toISOString(),
+      environment: process.env.NODE_ENV ?? "development",
+      overallStatus,
+      checks,
+      metrics: metricsSnapshot(),
+      cache: cacheStatus,
+      database: {
+        connected: dbConnected,
+        counts: {
+          videos: Number(totalVideosResult[0]?.count ?? 0),
+          localVideos: Number(localVideosResult[0]?.count ?? 0),
+          playlists: Number(totalPlaylistsResult[0]?.count ?? 0),
+          activeScheduleEntries: Number(activeScheduleResult[0]?.count ?? 0),
+          registeredDevices: Number(devicesResult[0]?.count ?? 0),
+        },
+      },
+      broadcast: {
+        activeQueueItems: activeBroadcastItems,
+        inactiveQueueItems: Number(inactiveBroadcastResult[0]?.count ?? 0),
+        activeLiveOverrides,
+        connectedAdminClients: getSSEClientCount(),
+      },
+      videoPipeline: {
+        processing: processingJobs,
+        queued: queuedJobs,
+        done: Number(doneJobsResult[0]?.count ?? 0),
+        failed: failedJobs,
+        cancelled: Number(cancelledJobsResult[0]?.count ?? 0),
+        uploadBytes,
+        hlsBytes,
+      },
+      uploadSessions: {
+        active: uploadSessions.size,
+      },
+    });
+  } catch (err) {
+    logger.error({ err }, "Operations status failed");
+    res.status(500).json({
+      generatedAt: generatedAt.toISOString(),
+      overallStatus: "critical",
+      error: err instanceof Error ? err.message : "Unknown error",
+    });
   }
 });
 
