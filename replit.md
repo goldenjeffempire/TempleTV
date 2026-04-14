@@ -217,3 +217,9 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 - **Admin schedule targeting**: Schedule entries for playlist/video content now include selectors for imported playlists and videos so scheduled programming points to real content.
 - **App-wide live interrupt**: Mobile now polls for YouTube live status and scheduled live slots globally, not only on the Watch tab, and opens the live player when a service begins.
 - **App Store permission cleanup**: Removed unused iOS microphone/camera/photo/tracking usage descriptions from `app.json`; retained background audio, fetch, remote notification, and encryption declaration.
+
+## Features Added (Session 11) — Operational Security & Observability
+- **API security middleware**: Added request IDs, secure response headers, per-IP/per-path rate limiting, and stricter JSON/body size limits.
+- **Admin API protection**: `/api/admin/*` routes now require `ADMIN_API_TOKEN` in production, with timing-safe token comparison and support for bearer headers, `X-Admin-Token`, and SSE query token transport.
+- **Admin access key UI**: Admin dashboard header now shows whether an admin key is configured and lets operators set/remove the key locally; protected admin fetches and live SSE connections automatically include it.
+- **Production metrics**: Added `GET /api/metrics` with Prometheus-compatible uptime, active request, request count, error count, and latency sum metrics.

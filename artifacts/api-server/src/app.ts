@@ -5,11 +5,18 @@ import path from "path";
 import { fileURLToPath } from "url";
 import router from "./routes";
 import { logger } from "./lib/logger";
+import { adminAccessControl, rateLimit, requestId, securityHeaders } from "./middlewares/security";
+import { requestMetrics } from "./middlewares/observability";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app: Express = express();
 
+app.set("trust proxy", 1);
+app.use(requestId);
+app.use(securityHeaders);
+app.use(rateLimit);
+app.use(requestMetrics);
 app.use(
   pinoHttp({
     logger,
@@ -29,9 +36,19 @@ app.use(
     },
   }),
 );
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(cors({
+  origin(origin, callback) {
+    const configured = process.env.ALLOWED_ORIGINS?.split(",").map((value) => value.trim()).filter(Boolean) ?? [];
+    if (!origin || process.env.NODE_ENV !== "production" || configured.length === 0 || configured.includes(origin)) {
+      callback(null, true);
+      return;
+    }
+    callback(new Error("Origin is not allowed by CORS"));
+  },
+}));
+app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true, limit: "2mb" }));
+app.use(adminAccessControl);
 
 app.use("/api/uploads", express.static(path.join(__dirname, "..", "uploads")));
 

@@ -12,15 +12,40 @@ import {
   Moon,
   Sun,
   Cpu,
+  KeyRound,
 } from "lucide-react";
 import { useGetLiveStatus } from "@workspace/api-client-react";
 import { getLocalTimeZone, isMidnightHour } from "@/lib/theme";
+import { getAdminToken, setAdminToken } from "@/lib/admin-access";
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
+  const [hasAdminToken, setHasAdminToken] = React.useState(() => Boolean(getAdminToken()));
   const { data: liveStatus } = useGetLiveStatus();
   const isMidnightTheme = isMidnightHour();
   const ThemeIcon = isMidnightTheme ? Moon : Sun;
+
+  React.useEffect(() => {
+    const sync = () => setHasAdminToken(Boolean(getAdminToken()));
+    window.addEventListener("temple-tv-admin-token-changed", sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener("temple-tv-admin-token-changed", sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, []);
+
+  const updateAdminToken = () => {
+    const current = getAdminToken();
+    const next = window.prompt(
+      current
+        ? "Admin access key is set. Enter a new key, or leave blank to remove it."
+        : "Enter the admin access key for protected production API actions.",
+      current,
+    );
+    if (next === null) return;
+    setAdminToken(next);
+  };
 
   const links = [
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -79,6 +104,18 @@ export function Layout({ children }: { children: React.ReactNode }) {
             )}
           </div>
           <div className="flex items-center gap-4">
+            <button
+              type="button"
+              onClick={updateAdminToken}
+              className={`hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
+                hasAdminToken
+                  ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20"
+                  : "bg-amber-500/10 text-amber-600 border-amber-500/20"
+              }`}
+            >
+              <KeyRound className="w-3.5 h-3.5" />
+              {hasAdminToken ? "Admin key set" : "Admin key"}
+            </button>
             <div className="hidden md:flex items-center gap-2 bg-muted text-muted-foreground px-3 py-1.5 rounded-full text-xs font-medium border">
               <ThemeIcon className="w-3.5 h-3.5" />
               {isMidnightTheme ? "Auto Midnight" : "Light Theme"}

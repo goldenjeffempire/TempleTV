@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
+import { getAdminEventSourceUrl } from "@/lib/admin-access";
 import { useListAdminVideos } from "@workspace/api-client-react";
 import {
   Radio,
@@ -267,7 +268,7 @@ export default function Broadcast() {
     const connect = () => {
       if (destroyed) return;
       try {
-        es = new EventSource("/api/admin/live/events");
+        es = new EventSource(getAdminEventSourceUrl("/api/admin/live/events"));
 
         es.addEventListener("status", (e: MessageEvent) => {
           try {
