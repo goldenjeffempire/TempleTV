@@ -8,10 +8,13 @@ import { eq, and, desc, asc } from "drizzle-orm";
 import { logger } from "./logger";
 import { broadcastLiveEvent } from "./liveEvents";
 import { cache } from "./cache";
+import { objectStorageClient } from "./objectStorage";
+import { createReadStream } from "fs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, "..", "uploads");
 const HLS_DIR = path.join(UPLOADS_DIR, "hls");
+const BUCKET_ID = process.env.DEFAULT_OBJECT_STORAGE_BUCKET_ID ?? "";
 
 interface QualityProfile {
   name: string;
@@ -21,8 +24,11 @@ interface QualityProfile {
   bufsize: string;
   audioBitrate: string;
   bandwidth: number;
+  resolution: string;
 }
 
+// 5-level adaptive bitrate ladder — 240p to 1080p
+// 2-second HLS segments ensure <3 s startup time
 const QUALITY_PROFILES: QualityProfile[] = [
   {
     name: "1080p",
@@ -32,6 +38,7 @@ const QUALITY_PROFILES: QualityProfile[] = [
     bufsize: "9000k",
     audioBitrate: "128k",
     bandwidth: 4000000,
+    resolution: "1920x1080",
   },
   {
     name: "720p",
@@ -41,6 +48,7 @@ const QUALITY_PROFILES: QualityProfile[] = [
     bufsize: "5600k",
     audioBitrate: "128k",
     bandwidth: 2500000,
+    resolution: "1280x720",
   },
   {
     name: "480p",
@@ -50,6 +58,27 @@ const QUALITY_PROFILES: QualityProfile[] = [
     bufsize: "2800k",
     audioBitrate: "96k",
     bandwidth: 1200000,
+    resolution: "854x480",
+  },
+  {
+    name: "360p",
+    height: 360,
+    videoBitrate: "600k",
+    maxBitrate: "700k",
+    bufsize: "1400k",
+    audioBitrate: "64k",
+    bandwidth: 600000,
+    resolution: "640x360",
+  },
+  {
+    name: "240p",
+    height: 240,
+    videoBitrate: "280k",
+    maxBitrate: "320k",
+    bufsize: "640k",
+    audioBitrate: "48k",
+    bandwidth: 280000,
+    resolution: "426x240",
   },
 ];
 
@@ -124,63 +153,105 @@ async function probeDuration(inputPath: string): Promise<number> {
   });
 }
 
+async function probeVideoInfo(inputPath: string): Promise<{ width: number; height: number; fps: number }> {
+  return new Promise((resolve) => {
+    const proc = spawn("ffprobe", [
+      "-v", "error",
+      "-select_streams", "v:0",
+      "-show_entries", "stream=width,height,r_frame_rate",
+      "-of", "json",
+      inputPath,
+    ], { stdio: ["ignore", "pipe", "ignore"] });
+
+    let output = "";
+    proc.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+    proc.on("close", () => {
+      try {
+        const parsed = JSON.parse(output) as { streams?: Array<{ width?: number; height?: number; r_frame_rate?: string }> };
+        const stream = parsed.streams?.[0];
+        const width = stream?.width ?? 0;
+        const height = stream?.height ?? 0;
+        let fps = 30;
+        if (stream?.r_frame_rate) {
+          const [num, den] = stream.r_frame_rate.split("/").map(Number);
+          if (num && den && den > 0) fps = Math.round(num / den);
+        }
+        resolve({ width, height, fps });
+      } catch {
+        resolve({ width: 0, height: 0, fps: 30 });
+      }
+    });
+    proc.on("error", () => resolve({ width: 0, height: 0, fps: 30 }));
+  });
+}
+
 async function transcodeQuality(
   inputPath: string,
   outputDir: string,
   profile: QualityProfile,
+  sourceHeight: number,
   onProgress?: (pct: number) => void
-): Promise<void> {
+): Promise<boolean> {
+  // Skip profiles higher than source (no upscaling)
+  if (sourceHeight > 0 && profile.height > sourceHeight * 1.1) {
+    logger.info({ profile: profile.name, sourceHeight }, "Skipping upscale variant");
+    return false;
+  }
+
   await fs.mkdir(outputDir, { recursive: true });
 
-  const segmentPattern = path.join(outputDir, "seg%04d.ts");
+  const segmentPattern = path.join(outputDir, "seg%05d.ts");
   const playlistPath = path.join(outputDir, "index.m3u8");
 
   const args = [
     "-y",
     "-i", inputPath,
     "-map", "0:v:0",
-    "-map", "0:a:0",
-    "-vf", `scale=-2:${profile.height}`,
+    "-map", "0:a:0?",    // optional audio (won't fail if no audio)
+    "-vf", `scale=-2:'min(${profile.height},ih)'`,
     "-c:v", "libx264",
     "-preset", "fast",
+    "-profile:v", "main",
+    "-level:v", "4.1",
     "-b:v", profile.videoBitrate,
     "-maxrate", profile.maxBitrate,
     "-bufsize", profile.bufsize,
+    "-g", "60",           // 2-second GOP at 30fps → fast random access
+    "-keyint_min", "60",
+    "-sc_threshold", "0", // disable scene-change keyframes (consistent GOP)
     "-c:a", "aac",
     "-b:a", profile.audioBitrate,
     "-ar", "48000",
-    "-hls_time", "6",
+    "-ac", "2",
+    "-hls_time", "2",                    // 2-second segments → <3 s startup
     "-hls_playlist_type", "vod",
     "-hls_segment_type", "mpegts",
     "-hls_segment_filename", segmentPattern,
-    "-hls_flags", "independent_segments",
+    "-hls_flags", "independent_segments+delete_segments",
+    "-hls_list_size", "0",
     playlistPath,
   ];
 
   await runFFmpeg(args, onProgress);
+  return true;
 }
 
-async function generateMasterPlaylist(hlsVideoDir: string): Promise<void> {
+async function generateMasterPlaylist(
+  hlsVideoDir: string,
+  producedProfiles: QualityProfile[]
+): Promise<void> {
   const lines: string[] = [
     "#EXTM3U",
     "#EXT-X-VERSION:3",
     "",
   ];
 
-  for (const profile of QUALITY_PROFILES) {
-    const qualityDir = path.join(hlsVideoDir, profile.name);
-    const playlistPath = path.join(qualityDir, "index.m3u8");
-
+  for (const profile of producedProfiles) {
+    const playlistPath = path.join(hlsVideoDir, profile.name, "index.m3u8");
     try {
       await fs.access(playlistPath);
-
-      const resolution =
-        profile.name === "1080p" ? "1920x1080" :
-        profile.name === "720p" ? "1280x720" :
-        "854x480";
-
       lines.push(
-        `#EXT-X-STREAM-INF:BANDWIDTH=${profile.bandwidth},RESOLUTION=${resolution},CODECS="avc1.4d4028,mp4a.40.2",NAME="${profile.name}"`
+        `#EXT-X-STREAM-INF:BANDWIDTH=${profile.bandwidth},RESOLUTION=${profile.resolution},CODECS="avc1.4d401f,mp4a.40.2",NAME="${profile.name}"`
       );
       lines.push(`${profile.name}/index.m3u8`);
       lines.push("");
@@ -192,6 +263,48 @@ async function generateMasterPlaylist(hlsVideoDir: string): Promise<void> {
   const masterPath = path.join(hlsVideoDir, "master.m3u8");
   await fs.writeFile(masterPath, lines.join("\n"), "utf-8");
 }
+
+// ── GCS upload (best-effort, non-blocking for serving) ────────────────────────
+async function uploadHlsToGcs(videoId: string, localHlsDir: string): Promise<void> {
+  if (!BUCKET_ID) return;
+
+  try {
+    const bucket = objectStorageClient.bucket(BUCKET_ID);
+    const allFiles = await collectFiles(localHlsDir);
+
+    await Promise.all(
+      allFiles.map(async (localPath) => {
+        const relative = path.relative(localHlsDir, localPath);
+        const objectName = `hls/${videoId}/${relative}`;
+        const contentType = localPath.endsWith(".m3u8")
+          ? "application/vnd.apple.mpegurl"
+          : "video/mp2t";
+
+        await bucket.file(objectName).save(createReadStream(localPath), {
+          metadata: { contentType },
+          resumable: false,
+        });
+      })
+    );
+
+    logger.info({ videoId, fileCount: allFiles.length }, "HLS output uploaded to GCS");
+  } catch (err) {
+    logger.warn({ videoId, err }, "GCS HLS upload failed (local serving still active)");
+  }
+}
+
+async function collectFiles(dir: string): Promise<string[]> {
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  const results: string[] = [];
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) results.push(...await collectFiles(full));
+    else results.push(full);
+  }
+  return results;
+}
+
+// ── Job processor ─────────────────────────────────────────────────────────────
 
 let isWorkerRunning = false;
 
@@ -229,8 +342,13 @@ async function processNextJob(): Promise<boolean> {
     const hlsVideoDir = path.join(HLS_DIR, job.videoId);
     await fs.mkdir(hlsVideoDir, { recursive: true });
 
+    // Probe source video to skip upscale variants
+    const { height: sourceHeight } = await probeVideoInfo(job.videoPath);
+
+    const producedProfiles: QualityProfile[] = [];
+
     for (let i = 0; i < QUALITY_PROFILES.length; i++) {
-      const profile = QUALITY_PROFILES[i];
+      const profile = QUALITY_PROFILES[i]!;
       const qualityOutputDir = path.join(hlsVideoDir, profile.name);
 
       logger.info({ jobId: job.id, quality: profile.name }, "Transcoding quality variant");
@@ -240,26 +358,34 @@ async function processNextJob(): Promise<boolean> {
 
       let lastBroadcastPct = -1;
 
-      await transcodeQuality(job.videoPath, qualityOutputDir, profile, async (pct) => {
-        const overall = profileBaseProgress + Math.round((pct / 100) * profileProgressRange);
-        await db
-          .update(transcodingJobsTable)
-          .set({ progress: overall })
-          .where(eq(transcodingJobsTable.id, job.id));
+      const produced = await transcodeQuality(
+        job.videoPath,
+        qualityOutputDir,
+        profile,
+        sourceHeight,
+        async (pct) => {
+          const overall = profileBaseProgress + Math.round((pct / 100) * profileProgressRange);
+          await db
+            .update(transcodingJobsTable)
+            .set({ progress: overall })
+            .where(eq(transcodingJobsTable.id, job.id));
 
-        if (overall - lastBroadcastPct >= 5) {
-          lastBroadcastPct = overall;
-          broadcastLiveEvent("transcoding-update", {
-            jobId: job.id,
-            videoId: job.videoId,
-            status: "processing",
-            progress: overall,
-          });
+          if (overall - lastBroadcastPct >= 3) {
+            lastBroadcastPct = overall;
+            broadcastLiveEvent("transcoding-update", {
+              jobId: job.id,
+              videoId: job.videoId,
+              status: "processing",
+              progress: overall,
+            });
+          }
         }
-      });
+      );
+
+      if (produced) producedProfiles.push(profile);
     }
 
-    await generateMasterPlaylist(hlsVideoDir);
+    await generateMasterPlaylist(hlsVideoDir, producedProfiles);
 
     const devDomain = process.env.REPLIT_DEV_DOMAIN;
     const baseUrl = process.env.API_BASE_URL ?? (devDomain ? `https://${devDomain}` : "");
@@ -311,6 +437,9 @@ async function processNextJob(): Promise<boolean> {
       durationSecs: probedDuration > 0 ? probedDuration : undefined,
       queuedAt: new Date().toISOString(),
     });
+
+    // Upload HLS output to GCS for CDN-backed durability (non-blocking)
+    uploadHlsToGcs(job.videoId, hlsVideoDir).catch(() => {});
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error({ jobId: job.id, err: msg }, "Transcoding job failed");

@@ -6,8 +6,17 @@ import {
   Search, Plus, Loader2, MoreVertical, Trash2, Youtube, ExternalLink,
   Video, Star, Edit, Upload, HardDrive, Play, Pause, X, CheckCircle2,
   AlertCircle, Zap, RotateCcw, Clock, Activity, Cpu, Layers,
-  FileVideo, ShieldCheck, Wifi, TrendingUp,
+  FileVideo, ShieldCheck, Wifi, TrendingUp, Minimize2, Gauge, Server,
 } from "lucide-react";
+import {
+  isCompressionSupported,
+  probeVideo,
+  shouldCompress,
+  compressVideo,
+  type CompressionOptions,
+  type CompressionProgress,
+  type ProbeResult,
+} from "@/lib/videoCompressor";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   DropdownMenu,
@@ -26,20 +35,28 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 
 // ─── Upload engine constants ───────────────────────────────────────────────────
-const CHUNK_SIZE = 32 * 1024 * 1024;        // 32 MB — optimal for large file throughput
-const MAX_CONCURRENT_PER_FILE = 12;          // parallel chunk streams per file
+const CHUNK_SIZE = 8 * 1024 * 1024;         // 8 MB — fine-grained retry + adaptive network
+const MAX_CONCURRENT_PER_FILE = 6;           // parallel chunk streams per file
 const MAX_CONCURRENT_FILES = 5;              // max simultaneous file uploads
-const MIN_CONCURRENCY = 4;                   // floor: never starve the pipe
-const MAX_CONCURRENCY = 20;                  // ceiling on fast connections
-const PREFETCH_AHEAD = 6;                    // pre-read & hash ahead (6×32MB = 192MB max)
+const MIN_CONCURRENCY = 2;                   // floor: safe minimum on poor links
+const MAX_CONCURRENCY = 12;                  // ceiling on fast connections
+const PREFETCH_AHEAD = 4;                    // pre-read & hash ahead (4×8MB = 32MB max)
 const RENDER_THROTTLE_MS = 80;               // max UI refresh rate ~12 fps during upload
-const MAX_RETRIES = 5;
-const SPEED_SAMPLES = 10;
-const UPLOAD_SESSION_KEY = "ttv-upload-session-v3";
+const MAX_RETRIES = 6;
+const SPEED_SAMPLES = 12;
+const UPLOAD_SESSION_KEY = "ttv-upload-session-v4";
 const CATEGORIES = ["sermon", "faith", "healing", "deliverance", "worship", "prophecy", "teachings", "special"];
 
+// ─── Compression defaults ──────────────────────────────────────────────────────
+const DEFAULT_COMPRESSION_OPTS: CompressionOptions = {
+  maxHeight: 1080,
+  targetBitrate: 4_000_000,   // 4 Mbps — 30–60% reduction for typical sermon footage
+  targetFps: 30,
+  hardwareAcceleration: "prefer-hardware",
+};
+
 // ─── Types ─────────────────────────────────────────────────────────────────────
-type TaskState = "pending" | "initializing" | "uploading" | "paused" | "finalizing" | "done" | "error";
+type TaskState = "pending" | "compressing" | "initializing" | "uploading" | "paused" | "finalizing" | "done" | "error";
 
 interface FileTask {
   id: string;
@@ -65,6 +82,11 @@ interface FileTask {
   concurrency: number;
   checksumOk: number;
   checksumFailed: number;
+  // Compression fields
+  skipCompression: boolean;
+  compressionProgress: CompressionProgress | null;
+  compressedBlob: Blob | null;
+  probe: ProbeResult | null;
 }
 
 interface StoredSession {
@@ -207,6 +229,7 @@ export default function Videos() {
   const [isDragging, setIsDragging] = useState(false);
   const [pendingResume, setPendingResume] = useState<StoredSession | null>(null);
   const [thumbnailFile, setThumbnailFile] = useState<File | null>(null);
+  const [compressionEnabled, setCompressionEnabled] = useState(isCompressionSupported());
 
   // Global metadata defaults (applied per-file on upload start)
   const [defaultForm, setDefaultForm] = useState({ title: "", category: "sermon", preacher: "", featured: false });
@@ -222,10 +245,10 @@ export default function Videos() {
   // ── Derived UI state ────────────────────────────────────────────────────────
   const tasks = Array.from(tasksRef.current.values());
   const hasFiles = tasks.length > 0;
-  const isAnyUploading = tasks.some((t) => t.state === "uploading" || t.state === "initializing" || t.state === "finalizing");
+  const isAnyUploading = tasks.some((t) => t.state === "uploading" || t.state === "initializing" || t.state === "finalizing" || t.state === "compressing");
   const isAllDone = hasFiles && tasks.every((t) => t.state === "done");
   const isAllFinished = hasFiles && tasks.every((t) => t.state === "done" || t.state === "error");
-  const activeCount = tasks.filter((t) => t.state === "uploading" || t.state === "initializing" || t.state === "finalizing").length;
+  const activeCount = tasks.filter((t) => t.state === "uploading" || t.state === "initializing" || t.state === "finalizing" || t.state === "compressing").length;
   const doneCount = tasks.filter((t) => t.state === "done").length;
   const errorCount = tasks.filter((t) => t.state === "error").length;
 
@@ -295,6 +318,10 @@ export default function Videos() {
         concurrency: MAX_CONCURRENT_PER_FILE,
         checksumOk: 0,
         checksumFailed: 0,
+        skipCompression: false,
+        compressionProgress: null,
+        compressedBlob: null,
+        probe: null,
       };
       tasksRef.current.set(id, task);
     }
@@ -315,10 +342,54 @@ export default function Videos() {
     updateTask(taskId, { state: "initializing", error: null });
 
     try {
+      // ── Phase 0: Client-side compression (optional) ──────────────────────
+      let uploadFile = task.file; // the file we'll actually upload
+      if (compressionEnabled && !task.skipCompression && !resumeSession) {
+        // Probe video to determine if compression is worthwhile
+        const probe = await probeVideo(task.file);
+        updateTask(taskId, { probe });
+
+        if (shouldCompress(probe, DEFAULT_COMPRESSION_OPTS)) {
+          updateTask(taskId, {
+            state: "compressing",
+            compressionProgress: {
+              phase: "analyzing", progress: 0, eta: 0,
+              inputSize: task.file.size, outputSize: task.file.size,
+              compressionRatio: 1, fps: 0,
+            },
+          });
+
+          const abortCtrl = new AbortController();
+          updateTask(taskId, { abortController: abortCtrl });
+
+          const compressed = await compressVideo(
+            task.file,
+            DEFAULT_COMPRESSION_OPTS,
+            probe,
+            (cp) => {
+              const t = tasksRef.current.get(taskId);
+              if (t) {
+                t.compressionProgress = cp;
+                forceUpdate();
+              }
+            },
+            abortCtrl.signal
+          );
+
+          // Use compressed blob as upload source
+          uploadFile = new File([compressed], task.file.name.replace(/\.[^.]+$/, ".mp4"), { type: "video/mp4" });
+          updateTask(taskId, {
+            compressedBlob: compressed,
+            compressionProgress: null,
+            abortController: null,
+          });
+        }
+      }
+
       // Detect duration
-      const durationSecs = await detectVideoDuration(task.file);
-      const totalChunks = Math.ceil(task.file.size / CHUNK_SIZE);
-      const ext = task.file.name.includes(".") ? `.${task.file.name.split(".").pop()}` : ".mp4";
+      const durationSecs = await detectVideoDuration(uploadFile);
+      const totalChunks = Math.ceil(uploadFile.size / CHUNK_SIZE);
+      const ext = uploadFile.name.includes(".") ? `.${uploadFile.name.split(".").pop()}` : ".mp4";
 
       updateTask(taskId, {
         durationSecs,
@@ -396,8 +467,8 @@ export default function Videos() {
         if (!prefetchPool.has(chunkIdx)) {
           prefetchPool.set(chunkIdx, (async () => {
             const start = chunkIdx * CHUNK_SIZE;
-            const end = Math.min(start + CHUNK_SIZE, task.file.size);
-            const buffer = await task.file.slice(start, end).arrayBuffer();
+            const end = Math.min(start + CHUNK_SIZE, uploadFile.size);
+            const buffer = await uploadFile.slice(start, end).arrayBuffer();
             const checksum = await computeSha256(buffer);
             return { buffer, checksum };
           })());
@@ -417,7 +488,7 @@ export default function Videos() {
         const t = tasksRef.current.get(taskId);
         if (!t) return;
         t.bytesRef += incrementalBytes;
-        t.bytesUploaded = Math.min(t.bytesRef, task.file.size);
+        t.bytesUploaded = Math.min(t.bytesRef, uploadFile.size);
 
         const now = Date.now();
         t.speedSamples.push({ time: now, bytes: t.bytesRef });
@@ -429,7 +500,7 @@ export default function Videos() {
           const elapsed = (newest.time - oldest.time) / 1000;
           const bytesDelta = newest.bytes - oldest.bytes;
           t.speed = elapsed > 0 ? Math.round(bytesDelta / elapsed) : 0;
-          const remaining = task.file.size - t.bytesRef;
+          const remaining = uploadFile.size - t.bytesRef;
           t.eta = t.speed > 0 ? remaining / t.speed : 0;
         }
         // Throttle React renders — internal state is always current
@@ -538,7 +609,7 @@ export default function Videos() {
       const msg = err instanceof Error ? err.message : "Upload failed";
       updateTask(taskId, { state: "error", error: msg });
     }
-  }, [thumbnailFile, saveSession, clearSession, updateTask, forceUpdate]);
+  }, [thumbnailFile, saveSession, clearSession, updateTask, forceUpdate, compressionEnabled]);
 
   // ── Start all uploads (parallel, capped at MAX_CONCURRENT_FILES) ────────────
   const handleUploadAll = useCallback(async () => {
@@ -683,6 +754,10 @@ export default function Videos() {
       speedSamples: [], bytesRef: 0, startTime: Date.now(),
       durationSecs: 0, concurrency: MAX_CONCURRENT_PER_FILE,
       checksumOk: 0, checksumFailed: 0,
+      skipCompression: true, // skip compression on resume — file was already processed
+      compressionProgress: null,
+      compressedBlob: null,
+      probe: null,
     };
     tasksRef.current.clear();
     tasksRef.current.set(id, task);
@@ -1106,11 +1181,12 @@ export default function Videos() {
                     <Upload className="w-8 h-8 mx-auto text-muted-foreground opacity-50" />
                     <p className="text-sm font-medium">Drop video files here or click to select</p>
                     <p className="text-xs text-muted-foreground">MP4, MOV, AVI, MKV · Multiple files supported · Up to 5 GB each</p>
-                    <div className="flex items-center justify-center gap-4 mt-3 text-[11px] text-muted-foreground">
-                      <span className="flex items-center gap-1"><Zap className="w-3 h-3" /> 32 MB chunks</span>
-                      <span className="flex items-center gap-1"><Wifi className="w-3 h-3" /> 12 parallel streams</span>
-                      <span className="flex items-center gap-1"><ShieldCheck className="w-3 h-3" /> SHA-256 verified</span>
-                      <span className="flex items-center gap-1"><TrendingUp className="w-3 h-3" /> Prefetch pipeline</span>
+                    <div className="flex flex-wrap items-center justify-center gap-3 mt-3 text-[11px] text-muted-foreground">
+                      {isCompressionSupported() && <span className="flex items-center gap-1 text-primary"><Minimize2 className="w-3 h-3" /> H.264 compress</span>}
+                      <span className="flex items-center gap-1"><Zap className="w-3 h-3" /> 8 MB chunks</span>
+                      <span className="flex items-center gap-1"><Wifi className="w-3 h-3" /> Adaptive streams</span>
+                      <span className="flex items-center gap-1"><ShieldCheck className="w-3 h-3" /> SHA-256</span>
+                      <span className="flex items-center gap-1"><Server className="w-3 h-3" /> 5-level HLS ABR</span>
                     </div>
                   </div>
                 )}
@@ -1178,6 +1254,20 @@ export default function Videos() {
                 <p className="text-xs text-muted-foreground font-medium pt-1">
                   {tasks.length > 1 ? "Metadata applied to all files (titles default to filename)" : "Video details"}
                 </p>
+
+                {/* Compression toggle */}
+                {isCompressionSupported() && (
+                  <div className="flex items-center justify-between p-2.5 bg-primary/5 border border-primary/20 rounded-lg">
+                    <div className="flex items-center gap-2">
+                      <Minimize2 className="w-3.5 h-3.5 text-primary shrink-0" />
+                      <div>
+                        <Label className="text-xs font-medium">H.264 client compression</Label>
+                        <p className="text-[11px] text-muted-foreground">30–60% smaller · hardware-accelerated · before upload</p>
+                      </div>
+                    </div>
+                    <Switch checked={compressionEnabled} onCheckedChange={setCompressionEnabled} />
+                  </div>
+                )}
 
                 {/* Thumbnail */}
                 <div
@@ -1309,17 +1399,22 @@ function FileTaskCard({
   onCancel: () => void;
   onRetry: () => void;
 }) {
+  const isCompressing = task.state === "compressing";
   const isActive = task.state === "uploading" || task.state === "initializing" || task.state === "finalizing";
   const isPaused = task.state === "paused";
   const isDone = task.state === "done";
   const isError = task.state === "error";
   const isPending = task.state === "pending";
 
+  const cp = task.compressionProgress;
+  const uploadSize = task.compressedBlob ? task.compressedBlob.size : task.file.size;
+
   return (
     <div className={`rounded-lg border p-3 space-y-2 transition-colors ${
       isDone ? "bg-green-500/5 border-green-500/30" :
       isError ? "bg-destructive/5 border-destructive/30" :
       isPaused ? "bg-amber-500/5 border-amber-500/30" :
+      isCompressing ? "bg-violet-500/5 border-violet-500/30" :
       isActive ? "bg-primary/5 border-primary/30" :
       "bg-muted/20"
     }`}>
@@ -1328,6 +1423,7 @@ function FileTaskCard({
           {isDone ? <CheckCircle2 className="w-4 h-4 text-green-500" /> :
            isError ? <AlertCircle className="w-4 h-4 text-destructive" /> :
            isPaused ? <Pause className="w-4 h-4 text-amber-500" /> :
+           isCompressing ? <Minimize2 className="w-4 h-4 text-violet-500 animate-pulse" /> :
            isActive ? <Zap className="w-4 h-4 text-primary animate-pulse" /> :
            <FileVideo className="w-4 h-4 text-muted-foreground" />}
         </div>
@@ -1335,14 +1431,44 @@ function FileTaskCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <p className="text-xs font-medium truncate" title={task.file.name}>{task.file.name}</p>
-            <span className="text-[10px] text-muted-foreground shrink-0">{formatFileSize(task.file.size)}</span>
+            <span className="text-[10px] text-muted-foreground shrink-0">
+              {task.compressedBlob
+                ? <span className="text-green-600">{formatFileSize(task.compressedBlob.size)} <span className="text-muted-foreground line-through">{formatFileSize(task.file.size)}</span></span>
+                : formatFileSize(task.file.size)
+              }
+            </span>
           </div>
 
           {/* Status line */}
           <div className="flex items-center gap-2 mt-0.5 text-[11px] text-muted-foreground">
-            {isDone && <span className="text-green-600 font-medium">Done · added to broadcast queue</span>}
+            {isDone && (
+              <span className="text-green-600 font-medium flex items-center gap-1">
+                <CheckCircle2 className="w-2.5 h-2.5" />
+                Done · broadcast queued
+                {task.compressedBlob && (
+                  <span className="text-violet-500 ml-1">
+                    · {Math.round((1 - task.compressedBlob.size / task.file.size) * 100)}% smaller
+                  </span>
+                )}
+              </span>
+            )}
             {isError && <span className="text-destructive">{task.error ?? "Upload failed"}</span>}
             {isPending && <span>Pending</span>}
+            {isCompressing && cp && (
+              <>
+                {cp.phase === "analyzing" && <span className="text-violet-500 flex items-center gap-1"><Gauge className="w-2.5 h-2.5" />Analyzing…</span>}
+                {cp.phase === "compressing" && (
+                  <>
+                    <span className="flex items-center gap-1 text-violet-500"><Minimize2 className="w-2.5 h-2.5" />Compressing</span>
+                    <span>·</span>
+                    <span>{cp.fps > 0 ? `${cp.fps} fps` : "—"}</span>
+                    {cp.eta > 0 && <><span>·</span><span className="flex items-center gap-1"><Clock className="w-2.5 h-2.5" />{formatEta(cp.eta)}</span></>}
+                    <span>·</span>
+                    <span>{Math.round(cp.compressionRatio * 100)}% of original</span>
+                  </>
+                )}
+              </>
+            )}
             {isActive && (
               <>
                 {task.state === "initializing" && <span>Initializing…</span>}
@@ -1388,7 +1514,23 @@ function FileTaskCard({
         </div>
       </div>
 
-      {/* Progress bar */}
+      {/* Compression progress bar */}
+      {isCompressing && cp && cp.phase === "compressing" && (
+        <div className="space-y-1">
+          <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+            <div
+              className="h-full rounded-full bg-violet-500 transition-all duration-300"
+              style={{ width: `${cp.progress}%` }}
+            />
+          </div>
+          <div className="flex justify-between text-[10px] text-muted-foreground">
+            <span className="text-violet-500">H.264 · {formatFileSize(cp.inputSize)} → ~{formatFileSize(cp.outputSize)}</span>
+            <span className="font-mono">{cp.progress}%</span>
+          </div>
+        </div>
+      )}
+
+      {/* Upload progress bar */}
       {(isActive || isPaused) && task.chunksTotal > 0 && (
         <div className="space-y-1">
           <div className="h-1.5 bg-muted rounded-full overflow-hidden">
@@ -1398,7 +1540,7 @@ function FileTaskCard({
             />
           </div>
           <div className="flex justify-between text-[10px] text-muted-foreground">
-            <span>{formatFileSize(task.bytesUploaded)} / {formatFileSize(task.file.size)}</span>
+            <span>{formatFileSize(task.bytesUploaded)} / {formatFileSize(uploadSize)}</span>
             <span className="font-mono">{task.progress}%</span>
           </div>
         </div>

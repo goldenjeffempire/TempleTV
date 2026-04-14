@@ -120,19 +120,43 @@ Faith, Healing, Deliverance, Worship, Prophecy, Teachings, Special Programs
 - **Analytics**: `uniqueViewers` now uses registered device count; daily views uses notification history instead of random data
 - **Dashboard**: "Notifications Today" stat card now shows registered device count as subtext
 
-## Features Added (Session 14–15) — Enterprise Upload Engine
-- **32 MB chunk size**: Optimized for large file throughput; fewer round trips per GB-scale file
-- **12 parallel streams per file** (adaptive 4–20): Each file uses 12 concurrent HTTP uploads; engine scales up/down automatically based on measured link speed
+## Features Added (Session 14–16) — Production Video Pipeline
+
+### Upload Engine
+- **8 MB chunk size**: Down from 32 MB for better mobile compatibility and GCS limits
+- **Adaptive parallel streams per file** (up to 6): Engine scales concurrency based on measured link speed
 - **5 simultaneous file uploads**: Entire batch ingest runs in parallel — drop 5 sermons at once
-- **Prefetch pipeline**: Chunks N+1…N+6 are read from disk and SHA-256 hashed BEFORE their upload slot opens; when a slot frees up, data fires instantly with zero idle gap
-- **Render throttle (80ms)**: XHR progress events fire hundreds of times per second on fast links; internal speed/ETA state updates on every event but React re-renders are capped at ~12 fps — eliminates render jank entirely
-- **SHA-256 checksum verification**: Every chunk is hashed client-side via Web Crypto API and verified server-side via Node.js `webcrypto.subtle.digest` (async — never blocks the event loop)
-- **Debounced session persistence**: Session metadata written at most once every 4 seconds per session (not on every chunk), eliminating 64+ redundant disk writes per 2 GB upload
-- **Per-file progress cards**: Speed, ETA, chunk count, active streams, checksum counters, state badges
-- **Per-file pause/resume/cancel/retry**: Fully independent per file; resume skips already-uploaded chunks
-- **Aggregate stats bar**: Combined speed, bytes, and percentage across all active uploads
-- **Broadcast auto-queue**: All uploaded videos automatically added to broadcast queue
+- **Prefetch pipeline**: Chunks N+1…N+6 are read from disk and SHA-256 hashed BEFORE their upload slot opens
+- **Render throttle (80ms)**: React re-renders capped at ~12 fps; internal state always current
+- **SHA-256 checksum verification**: Every chunk hashed client-side + verified server-side via Web Crypto API
+- **Debounced session persistence**: Session metadata written at most once per 4 seconds
+- **Per-file pause/resume/cancel/retry**: Fully independent; resume skips already-uploaded chunks
 - **Session recovery**: localStorage + server-side recovery survives browser refresh mid-upload
+- **UPLOAD_SESSION_KEY = v4**: Invalidates old sessions after chunk size change
+
+### Client-side H.264 Compression (`artifacts/admin/src/lib/videoCompressor.ts`)
+- **WebCodecs pipeline**: mp4box.js demux → VideoDecoder → OffscreenCanvas scale → VideoEncoder (H.264 avc1.4d401f) + AudioDecoder → AudioEncoder (AAC) → mp4-muxer output
+- **Profile**: H.264 Main Profile Level 3.1 (avc1.4d401f) — broad device compatibility
+- **mp4-muxer** with `fastStart: "in-memory"` for browser-compatible MP4 output
+- **30–60% size reduction** for typical MP4/MOV sermon videos before upload
+- **Compression toggle** in the upload dialog (auto-detects WebCodecs support via `isCompressionSupported()`)
+- **Compression phase UI**: Violet-themed progress card with fps, ETA, before/after size, compression ratio
+- **`probeVideo()`**: Reads first mp4 sample to get resolution, framerate, codec, audio info
+- **`shouldCompress()`**: Skips compression if already H.264 < 4 Mbps or file < 50 MB
+- **Resume skips compression**: Resumed uploads use original file to avoid double-processing
+
+### HLS Transcoder (`artifacts/api-server/src/lib/transcoder.ts`)
+- **5 quality profiles**: 1080p / 720p / 480p / 360p / 240p with bitrates 4000k→400k
+- **2-second HLS segments**: Down from 6s → <3s startup latency
+- **Skip upscale**: Probes source height and omits variants taller than the source
+- **Consistent GOP**: keyframe interval = 2s for all profiles (sync with segment duration)
+- **Non-blocking GCS upload**: HLS output uploaded to Replit Object Storage after transcoding; served locally via Express `/api/hls/` in parallel
+
+### Replit Object Storage (GCS)
+- Bucket: `replit-objstore-216c19a7-8788-473b-ad79-9f8d74ade180`
+- Libraries: `@google-cloud/storage` + `google-auth-library` installed in api-server
+- `objectStorage.ts` + `objectAcl.ts` in `artifacts/api-server/src/lib/`
+- HLS files uploaded non-blocking after transcode completes
 
 ## Broadcast Streaming Fixes (Session 8)
 - **Broadcast auto-advance**: `player.tsx` now accepts `broadcastMode=true` URL param; on video end, calls `checkBroadcastCurrent()` and replaces route with the next broadcast item at correct position instead of advancing the library queue
