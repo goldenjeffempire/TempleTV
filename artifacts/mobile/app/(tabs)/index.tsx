@@ -280,9 +280,9 @@ export default function WatchScreen() {
                   />
                 ) : (
                   <Image
-                    source={require("@/assets/images/live-banner.png")}
+                    source={require("@/assets/images/logo.png")}
                     style={styles.liveBanner}
-                    resizeMode="cover"
+                    resizeMode="contain"
                   />
                 )}
                 <View style={styles.liveOverlay}>
