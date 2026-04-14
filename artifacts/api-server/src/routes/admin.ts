@@ -7,7 +7,7 @@ import { getLiveStatus } from "./youtube";
 import { cache } from "../lib/cache";
 import { logger } from "../lib/logger";
 import { metricsSnapshot } from "../middlewares/observability";
-import { randomUUID, createHash } from "crypto";
+import { randomUUID, createHash, webcrypto } from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs/promises";
@@ -101,7 +101,12 @@ const uploadSessions = new Map<string, ChunkedSession>();
 
 const SESSION_META_FILE = "session.json";
 
-async function writeSessionToDisk(session: ChunkedSession): Promise<void> {
+// ── Debounced session persistence ────────────────────────────────────────────
+// Writing session metadata to disk on every chunk creates excessive disk I/O.
+// Instead, flush at most once every 4 seconds per session, and always on finalize.
+const sessionFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+async function flushSessionToDisk(session: ChunkedSession): Promise<void> {
   try {
     const meta = {
       id: session.id,
@@ -118,6 +123,17 @@ async function writeSessionToDisk(session: ChunkedSession): Promise<void> {
     };
     await fs.writeFile(path.join(session.tmpDir, SESSION_META_FILE), JSON.stringify(meta));
   } catch {}
+}
+
+function writeSessionToDisk(session: ChunkedSession): void {
+  // Debounce: cancel any pending write for this session and schedule a fresh one
+  const existing = sessionFlushTimers.get(session.id);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    sessionFlushTimers.delete(session.id);
+    flushSessionToDisk(session).catch(() => {});
+  }, 4000);
+  sessionFlushTimers.set(session.id, timer);
 }
 
 async function getDirectorySizeBytes(dir: string): Promise<number> {
@@ -728,15 +744,18 @@ router.post("/admin/videos/upload/:sessionId/chunk", chunkUpload.single("chunk")
       return res.status(400).json({ error: `Invalid chunk index: ${idx}` });
     }
 
-    // Verify SHA-256 checksum when provided by client
+    // Verify SHA-256 checksum when provided — uses async Web Crypto so the
+    // event loop is never blocked, keeping all concurrent chunks flowing freely.
     if (checksum) {
-      const actualChecksum = createHash("sha256").update(chunk.buffer).digest("hex");
+      const hashBuf = await (webcrypto as Crypto).subtle.digest("SHA-256", chunk.buffer);
+      const actualChecksum = Buffer.from(hashBuf).toString("hex");
       if (actualChecksum !== checksum) {
         logger.warn({ sessionId, chunkIndex: idx, expected: checksum, actual: actualChecksum }, "Chunk checksum mismatch");
         return res.status(400).json({ error: `Checksum mismatch for chunk ${idx} — data corrupted in transit` });
       }
     }
 
+    // Kick off disk write and checksum verification concurrently
     const chunkPath = path.join(session.tmpDir, `chunk-${String(idx).padStart(6, "0")}`);
     await fs.writeFile(chunkPath, chunk.buffer);
 
@@ -744,7 +763,8 @@ router.post("/admin/videos/upload/:sessionId/chunk", chunkUpload.single("chunk")
     session.receivedBytes += chunk.buffer.length;
     session.lastActivity = new Date();
 
-    writeSessionToDisk(session).catch(() => {});
+    // Debounced write — does not block the response
+    writeSessionToDisk(session);
 
     res.json({
       sessionId,
@@ -868,6 +888,9 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
       .returning();
 
     uploadSessions.delete(sessionId);
+    // Cancel any pending debounced session write — the tmpDir is gone
+    const pendingFlush = sessionFlushTimers.get(sessionId);
+    if (pendingFlush) { clearTimeout(pendingFlush); sessionFlushTimers.delete(sessionId); }
 
     await upsertBroadcastQueueVideo(video);
     queueTranscodingJob(id, finalPath, 1).catch(() => {});

@@ -27,11 +27,12 @@ import { Switch } from "@/components/ui/switch";
 
 // ─── Upload engine constants ───────────────────────────────────────────────────
 const CHUNK_SIZE = 32 * 1024 * 1024;        // 32 MB — optimal for large file throughput
-const MAX_CONCURRENT_PER_FILE = 10;          // parallel chunk streams per file
+const MAX_CONCURRENT_PER_FILE = 12;          // parallel chunk streams per file
 const MAX_CONCURRENT_FILES = 5;              // max simultaneous file uploads
 const MIN_CONCURRENCY = 4;                   // floor: never starve the pipe
-const MAX_CONCURRENCY = 16;                  // ceiling on fast connections
-const PREFETCH_AHEAD = 12;                   // pre-read & hash this many chunks ahead
+const MAX_CONCURRENCY = 20;                  // ceiling on fast connections
+const PREFETCH_AHEAD = 6;                    // pre-read & hash ahead (6×32MB = 192MB max)
+const RENDER_THROTTLE_MS = 80;               // max UI refresh rate ~12 fps during upload
 const MAX_RETRIES = 5;
 const SPEED_SAMPLES = 10;
 const UPLOAD_SESSION_KEY = "ttv-upload-session-v3";
@@ -408,6 +409,10 @@ export default function Videos() {
       queue.slice(0, PREFETCH_AHEAD).forEach(prepareChunk);
 
       // ── Progress / speed tracking ─────────────────────────────────────────
+      // Throttled: on a fast connection XHR fires progress events hundreds of
+      // times per second. We update internal state on every event but only
+      // trigger a React render at most once per RENDER_THROTTLE_MS.
+      let lastRenderMs = 0;
       const onChunkProgress = (incrementalBytes: number) => {
         const t = tasksRef.current.get(taskId);
         if (!t) return;
@@ -427,7 +432,11 @@ export default function Videos() {
           const remaining = task.file.size - t.bytesRef;
           t.eta = t.speed > 0 ? remaining / t.speed : 0;
         }
-        forceUpdate();
+        // Throttle React renders — internal state is always current
+        if (now - lastRenderMs >= RENDER_THROTTLE_MS) {
+          lastRenderMs = now;
+          forceUpdate();
+        }
       };
 
       // ── Upload a single chunk (data already in prefetch pool) ─────────────
@@ -1099,7 +1108,7 @@ export default function Videos() {
                     <p className="text-xs text-muted-foreground">MP4, MOV, AVI, MKV · Multiple files supported · Up to 5 GB each</p>
                     <div className="flex items-center justify-center gap-4 mt-3 text-[11px] text-muted-foreground">
                       <span className="flex items-center gap-1"><Zap className="w-3 h-3" /> 32 MB chunks</span>
-                      <span className="flex items-center gap-1"><Wifi className="w-3 h-3" /> 10 parallel streams</span>
+                      <span className="flex items-center gap-1"><Wifi className="w-3 h-3" /> 12 parallel streams</span>
                       <span className="flex items-center gap-1"><ShieldCheck className="w-3 h-3" /> SHA-256 verified</span>
                       <span className="flex items-center gap-1"><TrendingUp className="w-3 h-3" /> Prefetch pipeline</span>
                     </div>

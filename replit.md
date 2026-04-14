@@ -120,18 +120,19 @@ Faith, Healing, Deliverance, Worship, Prophecy, Teachings, Special Programs
 - **Analytics**: `uniqueViewers` now uses registered device count; daily views uses notification history instead of random data
 - **Dashboard**: "Notifications Today" stat card now shows registered device count as subtext
 
-## Features Added (Session 14) — High-Performance Upload Infrastructure
-- **20 MB chunk size**: Doubled from 10 MB for significantly higher throughput on large files (GB-scale content)
-- **True parallel multi-file uploads**: All selected files now upload simultaneously (capped at 3 concurrent files), eliminating the previous sequential bottleneck
-- **6 parallel streams per file**: Up from 4; each file uses 6 concurrent chunk uploads independent of other files
-- **Adaptive concurrency**: Each file's upload engine measures rolling bandwidth in real-time and automatically scales between 2–8 parallel streams (scales up above 10 MB/s, scales down below 1 MB/s) to maximize throughput without overwhelming the network
-- **SHA-256 checksum verification**: Every 20 MB chunk is hashed client-side using Web Crypto API and verified server-side with Node.js crypto before the chunk is written to disk; corrupted-in-transit data is rejected with a specific error and retried
-- **Per-file progress dashboard**: Upload dialog shows individual progress cards per file with speed, ETA, chunk count, active stream count, checksum counter, and state badges (pending/uploading/paused/done/error)
-- **Per-file pause, resume, cancel**: Each file in a batch can be independently paused (aborts its streams), resumed (fetches server status to skip already-uploaded chunks), cancelled (deletes server session), or retried
-- **Aggregate stats bar**: During multi-file uploads, a summary row shows combined speed, overall bytes, and overall percentage across all active uploads
-- **Broadcast auto-queue**: All uploaded videos (single or batch) are automatically added to the broadcast queue with no manual intervention
-- **Backend checksum enforcement**: `POST /api/admin/videos/upload/:sessionId/chunk` now accepts a `checksum` field; if provided, computes SHA-256 server-side and returns 400 on mismatch; response includes `checksumVerified` flag
-- **Session recovery preserved**: localStorage-based single-file session recovery (resume after browser refresh) is maintained in the new engine
+## Features Added (Session 14–15) — Enterprise Upload Engine
+- **32 MB chunk size**: Optimized for large file throughput; fewer round trips per GB-scale file
+- **12 parallel streams per file** (adaptive 4–20): Each file uses 12 concurrent HTTP uploads; engine scales up/down automatically based on measured link speed
+- **5 simultaneous file uploads**: Entire batch ingest runs in parallel — drop 5 sermons at once
+- **Prefetch pipeline**: Chunks N+1…N+6 are read from disk and SHA-256 hashed BEFORE their upload slot opens; when a slot frees up, data fires instantly with zero idle gap
+- **Render throttle (80ms)**: XHR progress events fire hundreds of times per second on fast links; internal speed/ETA state updates on every event but React re-renders are capped at ~12 fps — eliminates render jank entirely
+- **SHA-256 checksum verification**: Every chunk is hashed client-side via Web Crypto API and verified server-side via Node.js `webcrypto.subtle.digest` (async — never blocks the event loop)
+- **Debounced session persistence**: Session metadata written at most once every 4 seconds per session (not on every chunk), eliminating 64+ redundant disk writes per 2 GB upload
+- **Per-file progress cards**: Speed, ETA, chunk count, active streams, checksum counters, state badges
+- **Per-file pause/resume/cancel/retry**: Fully independent per file; resume skips already-uploaded chunks
+- **Aggregate stats bar**: Combined speed, bytes, and percentage across all active uploads
+- **Broadcast auto-queue**: All uploaded videos automatically added to broadcast queue
+- **Session recovery**: localStorage + server-side recovery survives browser refresh mid-upload
 
 ## Broadcast Streaming Fixes (Session 8)
 - **Broadcast auto-advance**: `player.tsx` now accepts `broadcastMode=true` URL param; on video end, calls `checkBroadcastCurrent()` and replaces route with the next broadcast item at correct position instead of advancing the library queue
