@@ -104,6 +104,9 @@ Faith, Healing, Deliverance, Worship, Prophecy, Teachings, Special Programs
 - Replit-native app runners are used for the mobile app, API server, and admin dashboard; duplicate legacy imported runners were removed to avoid route and port conflicts.
 - Development PostgreSQL is provisioned and the existing Drizzle schema has been applied with `pnpm --filter @workspace/db run push`.
 - Mobile web rendering requires root layout containers to fill the viewport (`SafeAreaProvider` and `GestureHandlerRootView` use `flex: 1`).
+- The Expo config keeps `react-native-track-player` as a runtime dependency but does not list it as an Expo config plugin, because the package does not provide a valid plugin entry point.
+- Mobile preview dependency compatibility was aligned for Expo SDK 54: `expo-file-system` uses the SDK-compatible 19.x line and `shaka-player` satisfies the web shim used by `react-native-track-player`.
+- Verified Replit preview routes: `/api/healthz`, `/admin/`, `/mobile/`, and Expo `/status` all return HTTP 200 with the registered API, admin, and mobile runners active.
 
 ## Features Added (Session 3)
 - **Videos page**: Fixed missing `Video` icon import (empty state crash), added "Edit Details" dialog for updating title, category, preacher, featured status per video

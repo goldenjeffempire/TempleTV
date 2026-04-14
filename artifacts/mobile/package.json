@@ -57,9 +57,10 @@
   },
   "dependencies": {
     "expo-av": "^16.0.8",
-    "expo-file-system": "^55.0.16",
+    "expo-file-system": "^19.0.21",
     "expo-notifications": "^0.32.16",
     "react-native-track-player": "^4.1.2",
-    "react-native-youtube-iframe": "^2.4.1"
+    "react-native-youtube-iframe": "^2.4.1",
+    "shaka-player": "^4.16.26"
   }
 }

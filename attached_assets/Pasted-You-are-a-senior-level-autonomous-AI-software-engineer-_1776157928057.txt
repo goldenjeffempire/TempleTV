@@ -1,0 +1,245 @@
+You are a senior-level autonomous AI software engineer and system architect. Your task is to design, build, and deploy a fully production-ready, scalable, secure, and high-performance mobile and backend application called **Temple TV** for a global Christian ministry.
+
+This is not a prototype. This must be a **real-world, enterprise-grade system (2030-level architecture)** capable of handling thousands to millions of concurrent users with zero downtime and seamless streaming experience.
+
+---
+
+## 🎯 PRODUCT OVERVIEW
+
+Temple TV is a **24/7 live streaming + on-demand + audio radio platform** that behaves like a digital TV station.
+
+The app must:
+
+* Continuously stream video content (like a TV channel)
+* Automatically loop uploaded sermons
+* Integrate with YouTube for live streaming and video content
+* Provide an audio-only streaming mode (radio)
+* Require **NO user authentication** (public access system)
+* Be optimized for global usage, especially low-bandwidth environments
+
+---
+
+## 🧩 CORE SYSTEM REQUIREMENTS
+
+### 1. 📱 MOBILE APPLICATION
+
+Build a cross-platform mobile app using:
+
+* Flutter (preferred) OR React Native
+
+Features:
+
+* Auto-play live stream on launch
+* Seamless switching:
+
+  * YouTube Live → when active
+  * Auto-loop playlist → when offline
+* Sermon library (search, filter, categories)
+* Audio-only mode (background playback)
+* Adaptive bitrate streaming
+* Offline caching (limited)
+* Chromecast / AirPlay support
+* Push notifications (no login required)
+
+---
+
+### 2. 🎛️ ADMIN DASHBOARD (WEB APP)
+
+Build a full-featured admin panel using:
+
+* React.js (Next.js preferred)
+
+Capabilities:
+
+* Add videos via YouTube links
+* Auto-fetch metadata using YouTube API
+* Create and manage playlists
+* Drag-and-drop playlist ordering
+* Set loop mode (sequential/random)
+* Schedule content by time (TV programming)
+* Trigger live stream override
+* Send push notifications
+* View analytics dashboard
+
+---
+
+### 3. 🔁 STREAMING ENGINE (CRITICAL)
+
+Implement a hybrid streaming system:
+
+#### Live Mode:
+
+* Detect active streams from YouTube
+* Auto-switch app to live broadcast
+
+#### Loop Mode:
+
+* Backend-controlled playlist engine
+* Auto-play videos continuously
+* Zero downtime between videos
+* Preload next content
+* Failover handling (skip broken video)
+
+---
+
+### 4. 📻 AUDIO RADIO SYSTEM
+
+* Extract audio from video streams OR maintain audio playlist
+* Support background playback
+* Optimize for low data usage
+* Allow switching between video ↔ audio seamlesslyImport complete
+
+---
+
+### 5. 🌐 BACKEND ARCHITECTURE
+
+Build a scalable backend using:
+
+* Node.js (NestJS preferred) OR Firebase (hybrid allowed)
+
+Services:
+
+* API Gateway
+* Content Service
+* Playlist Engine
+* Stream Detection Service
+* Notification Service
+
+Database:
+
+* PostgreSQL OR Firestore
+
+Caching:
+
+* Redis for fast state management
+
+---
+
+### 6. ☁️ CLOUD & INFRASTRUCTURE
+
+Use production-grade infrastructure:
+
+* Cloud: AWS OR GCP OR Firebase
+* CDN: Cloudflare
+* Containerization: Docker
+* Orchestration: Kubernetes (K8s)
+
+Ensure:
+
+* Horizontal scaling
+* Load balancing
+* Zero downtime deployment
+* Multi-region readiness
+
+---
+
+### 7. 🔔 NOTIFICATIONS SYSTEM
+
+Use:
+
+* Firebase Cloud Messaging (FCM)
+
+Features:
+
+* Live stream alerts
+* New content alerts
+* Scheduled announcements
+
+---
+
+### 8. 📊 ANALYTICS & MONITORING
+
+Implement:
+
+* User engagement tracking
+* Live viewer metrics
+* Watch time analytics
+
+Monitoring tools:
+
+* Prometheus + Grafana OR equivalent
+* Error tracking (Sentry)
+
+---
+
+### 9. 🔒 SECURITY (WITHOUT AUTH)
+
+Even without authentication:
+
+* Secure all APIs
+* Implement rate limiting
+* Use HTTPS everywhere
+* Protect admin routes strictly
+* Validate all inputs
+
+---
+
+### 10. ⚙️ DEVOPS & DEPLOYMENT
+
+* CI/CD pipeline (GitHub Actions)
+* Automated testing
+* Staging + production environments
+* Infrastructure as Code (Terraform optional)
+
+---
+
+## 🚀 PERFORMANCE REQUIREMENTS
+
+* App launch time < 2 seconds
+* Video start latency < 1.5 seconds
+* Seamless transitions (no buffering gaps)
+* Support low-end Android devices
+* Optimize for poor network conditions (Africa-first)
+
+---
+
+## 🧠 INTELLIGENCE FEATURES (OPTIONAL BUT PREFERRED)
+
+* Smart content recommendation
+* Auto-play optimization based on engagement
+* Dynamic bitrate adaptation
+* Intelligent caching
+
+---
+
+## 📦 DELIVERABLES
+
+You must produce:
+
+1. Full source code (mobile + backend + admin)
+2. Clean architecture (modular, scalable)
+3. API documentation (OpenAPI/Swagger)
+4. Deployment scripts
+5. Database schema
+6. README with setup instructions
+7. Production deployment (live URL or instructions)
+
+---
+
+## ❗ CONSTRAINTS
+
+* NO user authentication system (public access)
+* MUST integrate with YouTube as primary video source
+* MUST support continuous streaming logic
+* MUST be production-ready, not a demo
+
+---
+
+## 🧭 EXECUTION STRATEGY
+
+1. Design system architecture
+2. Set up backend services
+3. Implement streaming engine
+4. Build admin dashboard
+5. Build mobile app
+6. Integrate all systems
+7. Optimize performance
+8. Deploy to production
+
+---
+
+## 🎯 FINAL GOAL
+
+Deliver a **fully functional, scalable, modern digital TV platform** that operates 24/7 without manual intervention, providing a seamless viewing and listening experience globally.
+
+Think like a **FAANG-level system architect** and build accordingly.
