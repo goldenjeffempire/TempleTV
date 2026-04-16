@@ -268,6 +268,17 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 - **Mobile platform status**: Settings now includes a Platform Status section showing whether the broadcast platform is healthy, how many programme queue items are active, and how much sermon content is available.
 - **Server logging cleanup**: Replaced remaining startup/recovery `console.*` calls in server routes with the shared structured logger.
 
+## Features Added (Latest Session) — Live Stream Health Monitor
+
+- **Live Monitor admin page**: New `/live-monitor` admin page with real-time YouTube live stream health dashboard
+- **4 stat cards**: Stream Status (LIVE/OFF AIR), Stream Uptime (live timer), Last Check (staleness + detection method), Poll Interval (normal vs burst mode)
+- **Live stream card**: When live, shows thumbnail, title, video ID, and direct links to YouTube and YouTube Studio
+- **Event History log**: Timestamped log of every live↔offline transition with detection method and stream title; persisted in-memory up to 50 events
+- **Burst mode indicator**: Shows amber "⚡ Burst mode" badge when the poller is in 15s rapid-poll mode after a state change
+- **Offline alert banner**: Prominent red alert banner + toast notification when stream goes offline (detected via SSE)
+- **SSE real-time badge**: Green "Real-time" pill when connected to SSE event stream; turns red on disconnection
+- **Server tracking additions**: `liveHistory`, `liveSessionStartedAt`, and `currentPollIntervalMs` exported from youtube route; `GET /api/admin/live/health` endpoint returns current status, uptime, poll config, and history
+
 ## Features Added (Session 13) — Automated Broadcast Queue Reliability
 - **Automatic queue registration**: Admin local uploads and YouTube imports now automatically upsert videos into `broadcast_queue`, preserving metadata, source type, stream URL, sort order, and active status.
 - **Queue cleanup on delete**: Deleting a managed video now also removes its broadcast queue entry, invalidates broadcast caches, and notifies connected admin dashboards.

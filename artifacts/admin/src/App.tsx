@@ -13,6 +13,7 @@ import Analytics from "@/pages/analytics";
 import Broadcast from "@/pages/broadcast";
 import Transcoding from "@/pages/transcoding";
 import Operations from "@/pages/operations";
+import LiveMonitor from "@/pages/live-monitor";
 import { applyAutoTheme } from "@/lib/theme";
 import { useEffect } from "react";
 
@@ -38,6 +39,7 @@ function Router() {
         <Route path="/analytics" component={Analytics} />
         <Route path="/transcoding" component={Transcoding} />
         <Route path="/operations" component={Operations} />
+        <Route path="/live-monitor" component={LiveMonitor} />
         <Route component={NotFound} />
       </Switch>
     </Layout>

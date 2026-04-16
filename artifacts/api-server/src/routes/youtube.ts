@@ -48,9 +48,43 @@ let cachedLiveStatus: LiveStatus = {
 let lastStateChangeAt = 0;
 let lastNotifiedVideoId: string | null = null;
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
+let liveSessionStartedAt: number | null = null;
+let currentPollIntervalMs = LIVE_POLL_NORMAL_MS;
+
+export interface LiveEventRecord {
+  ts: number;
+  isLive: boolean;
+  videoId: string | null;
+  title: string | null;
+  method: string | null;
+}
+
+const MAX_HISTORY = 50;
+const liveHistory: LiveEventRecord[] = [];
 
 export function getLiveStatus(): LiveStatus {
   return { ...cachedLiveStatus };
+}
+
+export function getLiveMonitorData() {
+  const uptimeSecs =
+    cachedLiveStatus.isLive && liveSessionStartedAt
+      ? Math.floor((Date.now() - liveSessionStartedAt) / 1000)
+      : 0;
+  return {
+    current: {
+      ...cachedLiveStatus,
+      staleSec: Math.floor((Date.now() - cachedLiveStatus.checkedAt) / 1000),
+      uptimeSecs,
+      liveSessionStartedAt,
+    },
+    polling: {
+      intervalMs: currentPollIntervalMs,
+      mode: currentPollIntervalMs === LIVE_POLL_BURST_MS ? "burst" : "normal",
+      lastStateChangeAt,
+    },
+    history: [...liveHistory].reverse(),
+  };
 }
 
 async function checkViaOembed(): Promise<{ isLive: boolean; videoId: string | null; title: string | null }> {
@@ -170,17 +204,35 @@ async function pollLiveStatus() {
   const previousVideoId = cachedLiveStatus.videoId;
 
   const stateChanged = result.isLive !== wasLive || result.videoId !== previousVideoId;
+  const now = Date.now();
 
   cachedLiveStatus = {
     isLive: result.isLive,
     videoId: result.videoId,
     title: result.title,
-    checkedAt: Date.now(),
+    checkedAt: now,
     detectionMethod: result.method,
   };
 
   if (stateChanged) {
-    lastStateChangeAt = Date.now();
+    lastStateChangeAt = now;
+
+    if (result.isLive && !wasLive) {
+      liveSessionStartedAt = now;
+    } else if (!result.isLive && wasLive) {
+      liveSessionStartedAt = null;
+    }
+
+    const record: LiveEventRecord = {
+      ts: now,
+      isLive: result.isLive,
+      videoId: result.videoId,
+      title: result.title,
+      method: result.method,
+    };
+    liveHistory.push(record);
+    if (liveHistory.length > MAX_HISTORY) liveHistory.shift();
+
     broadcastLiveEvent("yt-status", {
       isLive: result.isLive,
       videoId: result.videoId,
@@ -198,11 +250,11 @@ async function pollLiveStatus() {
     await sendLiveAutoNotification(result.title, result.videoId);
   }
 
-  const isInBurstWindow = Date.now() - lastStateChangeAt < BURST_WINDOW_MS;
-  const nextPoll = isInBurstWindow ? LIVE_POLL_BURST_MS : LIVE_POLL_NORMAL_MS;
+  const isInBurstWindow = now - lastStateChangeAt < BURST_WINDOW_MS;
+  currentPollIntervalMs = isInBurstWindow ? LIVE_POLL_BURST_MS : LIVE_POLL_NORMAL_MS;
 
   if (pollTimer) clearTimeout(pollTimer);
-  pollTimer = setTimeout(pollLiveStatus, nextPoll);
+  pollTimer = setTimeout(pollLiveStatus, currentPollIntervalMs);
 }
 
 pollLiveStatus();

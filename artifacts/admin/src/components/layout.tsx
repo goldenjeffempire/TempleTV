@@ -14,6 +14,7 @@ import {
   Cpu,
   KeyRound,
   ShieldCheck,
+  MonitorPlay,
 } from "lucide-react";
 import { useGetLiveStatus } from "@workspace/api-client-react";
 import { getLocalTimeZone, isMidnightHour } from "@/lib/theme";
@@ -57,6 +58,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
     { href: "/notifications", label: "Notifications", icon: BellRing },
     { href: "/analytics", label: "Analytics", icon: BarChart2 },
     { href: "/transcoding", label: "Transcoding Queue", icon: Cpu },
+    { href: "/live-monitor", label: "Live Monitor", icon: MonitorPlay },
     { href: "/operations", label: "Operations", icon: ShieldCheck },
   ];
 

@@ -3,7 +3,7 @@ import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, no
 import { eq, ilike, or, count, sql, desc, asc, and } from "drizzle-orm";
 import { queueTranscodingJob, retryTranscodingJob } from "../lib/transcoder";
 import { broadcastLiveEvent, addSSEClient, removeSSEClient, getSSEClientCount } from "../lib/liveEvents";
-import { getLiveStatus } from "./youtube";
+import { getLiveStatus, getLiveMonitorData } from "./youtube";
 import { cache } from "../lib/cache";
 import { logger } from "../lib/logger";
 import { metricsSnapshot } from "../middlewares/observability";
@@ -1767,6 +1767,10 @@ router.post("/admin/transcoding/requeue/:videoId", async (req, res) => {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });
   }
+});
+
+router.get("/admin/live/health", (_req, res) => {
+  res.json(getLiveMonitorData());
 });
 
 export default router;
