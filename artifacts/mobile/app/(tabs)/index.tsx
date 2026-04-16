@@ -31,7 +31,7 @@ import { checkLiveStatus, type LiveCheckResult } from "@/services/youtube";
 import { sendLiveServiceNotification } from "@/services/notifications";
 import { useFeaturedVideos } from "@/hooks/useFeaturedVideos";
 import { useWatchProgress } from "@/hooks/useWatchProgress";
-import { checkBroadcastCurrent, type BroadcastCurrentResult } from "@/services/broadcast";
+import { checkBroadcastCurrent, subscribeBroadcastEvents, type BroadcastCurrentResult } from "@/services/broadcast";
 import { navigateToSermon } from "@/utils/navigation";
 import type { Sermon } from "@/types";
 
@@ -106,6 +106,47 @@ export default function WatchScreen() {
       playSermon(first, sermons);
     }
   }, [loading, sermons]);
+
+  useEffect(() => {
+    const refreshBroadcast = async (payload?: any) => {
+      if (payload?.current) {
+        setBroadcastCurrent(payload.current);
+        return;
+      }
+      const latest = await checkBroadcastCurrent().catch(() => null);
+      if (latest) setBroadcastCurrent(latest);
+    };
+
+    const subscription = subscribeBroadcastEvents({
+      "broadcast-current-updated": refreshBroadcast,
+      "broadcast-queue-updated": () => refreshBroadcast(),
+      "broadcast-schedule-updated": () => refreshBroadcast(),
+      "broadcast-control-updated": () => refreshBroadcast(),
+      "override-expired": () => refreshBroadcast(),
+      status: (payload) => {
+        if (payload) {
+          setLiveStatus({
+            isLive: !!payload.isLive,
+            videoId: payload.ytVideoId ?? null,
+            title: payload.ytTitle ?? payload.liveOverride?.title ?? null,
+          });
+          setShowLiveBanner(!!payload.isLive && !liveBannerDismissed);
+        }
+        refreshBroadcast();
+      },
+      "yt-status": (payload) => {
+        if (payload) {
+          setLiveStatus({
+            isLive: !!payload.isLive,
+            videoId: payload.videoId ?? null,
+            title: payload.title ?? null,
+          });
+        }
+      },
+    });
+
+    return () => subscription?.close();
+  }, [liveBannerDismissed]);
 
   const webTopPad = Platform.OS === "web" ? 67 : 0;
   const topPad = insets.top + webTopPad;

@@ -10,6 +10,11 @@ import {
 import { eq, asc, and } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { cache } from "../lib/cache";
+import {
+  addSSEClient,
+  broadcastLiveEvent,
+  removeSSEClient,
+} from "../lib/liveEvents";
 
 const router = Router();
 
@@ -64,6 +69,121 @@ async function invalidateBroadcastCache() {
     cache.del(CACHE_KEYS.scheduleEntries),
     cache.del(CACHE_KEYS.broadcastQueue),
   ]);
+}
+
+async function buildBroadcastCurrentPayload() {
+  const nowMs = Date.now();
+  const syncedAt = new Date(nowMs).toISOString();
+
+  const activeLiveOverride = await getActiveLiveOverride();
+  if (activeLiveOverride) {
+    return {
+      item: null,
+      nextItem: null,
+      index: 0,
+      positionSecs: 0,
+      totalSecs: 0,
+      queueLength: 0,
+      progressPercent: 0,
+      syncedAt,
+      serverTimeMs: nowMs,
+      failoverReason: null,
+      activeSchedule: null,
+      liveOverride: {
+        id: activeLiveOverride.id,
+        title: activeLiveOverride.title,
+        startedAt: activeLiveOverride.startedAt.toISOString(),
+        endsAt: activeLiveOverride.endsAt?.toISOString() ?? null,
+        remainingSecs: activeLiveOverride.endsAt
+          ? Math.max(0, Math.floor((new Date(activeLiveOverride.endsAt).getTime() - nowMs) / 1000))
+          : null,
+      },
+    };
+  }
+
+  const activeScheduleEntries = await getScheduleEntries();
+  const activeSchedule = getActiveScheduleEntry(activeScheduleEntries as ScheduleEntry[]);
+
+  if (activeSchedule?.contentType === "live") {
+    return {
+      item: null,
+      nextItem: null,
+      index: 0,
+      positionSecs: 0,
+      totalSecs: 0,
+      queueLength: 0,
+      progressPercent: 0,
+      syncedAt,
+      serverTimeMs: nowMs,
+      failoverReason: null,
+      liveOverride: null,
+      activeSchedule: {
+        id: activeSchedule.id,
+        title: activeSchedule.title,
+        contentType: activeSchedule.contentType,
+        contentId: activeSchedule.contentId,
+        startTime: activeSchedule.startTime,
+        endTime: activeSchedule.endTime,
+      },
+    };
+  }
+
+  if (activeSchedule && (activeSchedule.contentType === "playlist" || activeSchedule.contentType === "video")) {
+    const scheduledItems = await getScheduledItems(activeSchedule);
+    if (scheduledItems.length > 0) {
+      const calculated = calculateCurrentFromItems(scheduledItems);
+      return {
+        ...calculated,
+        syncedAt,
+        serverTimeMs: nowMs,
+        liveOverride: null,
+        activeSchedule: {
+          id: activeSchedule.id,
+          title: activeSchedule.title,
+          contentType: activeSchedule.contentType,
+          contentId: activeSchedule.contentId,
+          startTime: activeSchedule.startTime,
+          endTime: activeSchedule.endTime,
+        },
+      };
+    }
+  }
+
+  const items = await getBroadcastQueue();
+
+  if (items.length === 0) {
+    return {
+      item: null,
+      nextItem: null,
+      index: 0,
+      positionSecs: 0,
+      totalSecs: 0,
+      queueLength: 0,
+      progressPercent: 0,
+      syncedAt,
+      serverTimeMs: nowMs,
+      failoverReason: "Broadcast queue is empty.",
+      activeSchedule,
+      liveOverride: null,
+    };
+  }
+
+  const calculated = calculateCurrentFromItems(items);
+  return {
+    ...calculated,
+    syncedAt,
+    serverTimeMs: nowMs,
+    activeSchedule,
+    liveOverride: null,
+  };
+}
+
+function emitBroadcastState(reason: string, detail: Record<string, unknown> = {}) {
+  buildBroadcastCurrentPayload()
+    .then((current) => {
+      broadcastLiveEvent("broadcast-current-updated", { reason, current, ...detail });
+    })
+    .catch(() => {});
 }
 
 function parseTimeToMinutes(value: string | null): number | null {
@@ -284,109 +404,29 @@ router.get("/broadcast/guide", async (_req, res) => {
 });
 
 router.get("/broadcast/current", async (_req, res) => {
-  const nowMs = Date.now();
-  const syncedAt = new Date(nowMs).toISOString();
-
-  const activeLiveOverride = await getActiveLiveOverride();
-  if (activeLiveOverride) {
-    return res.json({
-      item: null,
-      nextItem: null,
-      index: 0,
-      positionSecs: 0,
-      totalSecs: 0,
-      queueLength: 0,
-      progressPercent: 0,
-      syncedAt,
-      serverTimeMs: nowMs,
-      failoverReason: null,
-      activeSchedule: null,
-      liveOverride: {
-        id: activeLiveOverride.id,
-        title: activeLiveOverride.title,
-        startedAt: activeLiveOverride.startedAt.toISOString(),
-        endsAt: activeLiveOverride.endsAt?.toISOString() ?? null,
-        remainingSecs: activeLiveOverride.endsAt
-          ? Math.max(0, Math.floor((new Date(activeLiveOverride.endsAt).getTime() - nowMs) / 1000))
-          : null,
-      },
-    });
+  try {
+    res.json(await buildBroadcastCurrentPayload());
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
   }
+});
 
-  const activeScheduleEntries = await getScheduleEntries();
-  const activeSchedule = getActiveScheduleEntry(activeScheduleEntries as ScheduleEntry[]);
+router.get("/broadcast/events", async (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
 
-  if (activeSchedule?.contentType === "live") {
-    return res.json({
-      item: null,
-      nextItem: null,
-      index: 0,
-      positionSecs: 0,
-      totalSecs: 0,
-      queueLength: 0,
-      progressPercent: 0,
-      syncedAt,
-      serverTimeMs: nowMs,
-      failoverReason: null,
-      liveOverride: null,
-      activeSchedule: {
-        id: activeSchedule.id,
-        title: activeSchedule.title,
-        contentType: activeSchedule.contentType,
-        contentId: activeSchedule.contentId,
-        startTime: activeSchedule.startTime,
-        endTime: activeSchedule.endTime,
-      },
-    });
-  }
+  const client = addSSEClient(res);
 
-  if (activeSchedule && (activeSchedule.contentType === "playlist" || activeSchedule.contentType === "video")) {
-    const scheduledItems = await getScheduledItems(activeSchedule);
-    if (scheduledItems.length > 0) {
-      const calculated = calculateCurrentFromItems(scheduledItems);
-      return res.json({
-        ...calculated,
-        syncedAt,
-        serverTimeMs: nowMs,
-        activeSchedule: {
-          id: activeSchedule.id,
-          title: activeSchedule.title,
-          contentType: activeSchedule.contentType,
-          contentId: activeSchedule.contentId,
-          startTime: activeSchedule.startTime,
-          endTime: activeSchedule.endTime,
-        },
-      });
-    }
-  }
+  try {
+    const current = await buildBroadcastCurrentPayload();
+    res.write(`event: broadcast-current-updated\ndata: ${JSON.stringify({ reason: "connected", current })}\n\n`);
+  } catch {}
 
-  const items = await getBroadcastQueue();
-
-  if (items.length === 0) {
-    return res.json({
-      item: null,
-      nextItem: null,
-      index: 0,
-      positionSecs: 0,
-      totalSecs: 0,
-      queueLength: 0,
-      progressPercent: 0,
-      syncedAt,
-      serverTimeMs: nowMs,
-      failoverReason: "Broadcast queue is empty.",
-      activeSchedule,
-      liveOverride: null,
-    });
-  }
-
-  const calculated = calculateCurrentFromItems(items);
-  res.json({
-    ...calculated,
-    syncedAt,
-    serverTimeMs: nowMs,
-    activeSchedule,
-    liveOverride: null,
-  });
+  req.on("close", () => removeSSEClient(client));
 });
 
 router.get("/admin/broadcast", async (_req, res) => {
@@ -447,6 +487,8 @@ router.post("/admin/broadcast", async (req, res) => {
     .returning();
 
   await invalidateBroadcastCache();
+  broadcastLiveEvent("broadcast-queue-updated", { id: item.id, reason: "added", queuedAt: new Date().toISOString() });
+  emitBroadcastState("queue-added", { id: item.id });
   res.status(201).json(item);
 });
 
@@ -471,6 +513,8 @@ router.patch("/admin/broadcast/:id", async (req, res) => {
 
   if (!updated) return res.status(404).json({ error: "Item not found" });
   await invalidateBroadcastCache();
+  broadcastLiveEvent("broadcast-queue-updated", { id, reason: "updated", queuedAt: new Date().toISOString() });
+  emitBroadcastState("queue-updated", { id });
   res.json(updated);
 });
 
@@ -478,6 +522,8 @@ router.delete("/admin/broadcast/:id", async (req, res) => {
   const { id } = req.params as { id: string };
   await db.delete(broadcastQueueTable).where(eq(broadcastQueueTable.id, id));
   await invalidateBroadcastCache();
+  broadcastLiveEvent("broadcast-queue-updated", { id, reason: "deleted", queuedAt: new Date().toISOString() });
+  emitBroadcastState("queue-deleted", { id });
   res.json({ ok: true });
 });
 
@@ -497,6 +543,8 @@ router.put("/admin/broadcast/reorder", async (req, res) => {
   );
 
   await invalidateBroadcastCache();
+  broadcastLiveEvent("broadcast-queue-updated", { orderedIds, reason: "reordered", queuedAt: new Date().toISOString() });
+  emitBroadcastState("queue-reordered", { orderedIds });
   res.json({ ok: true });
 });
 

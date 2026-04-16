@@ -30,7 +30,7 @@ import { GlassCard } from "@/components/GlassCard";
 import { usePlayer } from "@/context/PlayerContext";
 import { SERMONS } from "@/data/sermons";
 import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
-import { checkBroadcastCurrent, type BroadcastCurrentResult } from "@/services/broadcast";
+import { checkBroadcastCurrent, subscribeBroadcastEvents, type BroadcastCurrentResult } from "@/services/broadcast";
 import { ChannelBug } from "@/components/ChannelBug";
 import { BroadcastInfoStrip } from "@/components/BroadcastInfoStrip";
 import type { Sermon } from "@/types";
@@ -414,6 +414,32 @@ export default function PlayerScreen() {
     router.replace({ pathname: "/player", params: nextParams });
   }, []);
 
+  useEffect(() => {
+    if (!isBroadcastMode) return;
+    const handleBroadcastUpdate = async (payload?: any) => {
+      const bc = (payload?.current as BroadcastCurrentResult | undefined) ?? await checkBroadcastCurrent().catch(() => null);
+      if (!bc || !isMountedRef.current) return;
+      setBroadcastInfo(bc);
+      if (bc.item) {
+        const bcIsLocal = bc.item.videoSource === "local" && !!bc.item.localVideoUrl;
+        const currentId = paramLocalVideoUrl ? paramLocalVideoUrl : paramVideoId;
+        const nextId = bcIsLocal ? bc.item.localVideoUrl : bc.item.youtubeId;
+        if (currentId !== nextId) tuneToBroadcastItem(bc);
+      }
+    };
+
+    const subscription = subscribeBroadcastEvents({
+      "broadcast-current-updated": handleBroadcastUpdate,
+      "broadcast-queue-updated": () => handleBroadcastUpdate(),
+      "broadcast-schedule-updated": () => handleBroadcastUpdate(),
+      "broadcast-control-updated": () => handleBroadcastUpdate(),
+      "override-expired": () => handleBroadcastUpdate(),
+      status: () => handleBroadcastUpdate(),
+    });
+
+    return () => subscription?.close();
+  }, [isBroadcastMode, paramVideoId, paramLocalVideoUrl, tuneToBroadcastItem]);
+
   const recoverBroadcastPlayback = useCallback(async () => {
     if (!isBroadcastMode || broadcastRecovering) return;
     setBroadcastRecovering(true);
@@ -522,7 +548,7 @@ export default function PlayerScreen() {
   const webTopPad = Platform.OS === "web" ? 67 : 0;
   const loopIcon = loopMode === "one" ? "rotate-cw" : loopMode === "all" ? "repeat" : "minus-circle";
   const loopColor = loopMode === "none" ? c.mutedForeground : c.primary;
-  const showSeekBar = !isLive && duration > 0;
+  const showSeekBar = !isLive && !isBroadcastMode && duration > 0;
   const showVolume = !isLive && Platform.OS === "web";
 
   const handleToggleAudioMode = useCallback(() => {
@@ -691,7 +717,7 @@ export default function PlayerScreen() {
             </Pressable>
           </View>
 
-          {!isLive && (
+          {!isLive && !isBroadcastMode && (
             <GlassCard style={styles.controlsCard}>
               <Pressable
                 onPress={() => { if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); toggleShuffle(); }}
@@ -727,7 +753,7 @@ export default function PlayerScreen() {
             </GlassCard>
           )}
 
-          {nextSermon && !isLive && (
+          {nextSermon && !isLive && !isBroadcastMode && (
             <GlassCard style={styles.autoPlayBanner}>
               <View style={styles.autoPlayLeft}>
                 <Feather name="skip-forward" size={16} color={c.primary} />
@@ -744,7 +770,7 @@ export default function PlayerScreen() {
             </GlassCard>
           )}
 
-          {!nextSermon && !isLive && loopMode === "none" && (
+          {!nextSermon && !isLive && !isBroadcastMode && loopMode === "none" && (
             <GlassCard style={styles.autoPlayBanner}>
               <View style={styles.autoPlayLeft}>
                 <Feather name="check-circle" size={16} color={c.mutedForeground} />

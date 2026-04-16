@@ -1,7 +1,7 @@
 import { router } from "expo-router";
 import React, { useEffect, useRef } from "react";
 import { usePlayer } from "@/context/PlayerContext";
-import { checkBroadcastCurrent } from "@/services/broadcast";
+import { checkBroadcastCurrent, subscribeBroadcastEvents } from "@/services/broadcast";
 import { checkLiveStatus } from "@/services/youtube";
 
 export function LiveBroadcastSupervisor() {
@@ -43,9 +43,18 @@ export function LiveBroadcastSupervisor() {
 
     checkForInterrupt();
     const interval = setInterval(checkForInterrupt, 20000);
+    const subscription = subscribeBroadcastEvents({
+      "broadcast-current-updated": checkForInterrupt,
+      "broadcast-control-updated": checkForInterrupt,
+      "broadcast-schedule-updated": checkForInterrupt,
+      status: checkForInterrupt,
+      "yt-status": checkForInterrupt,
+      "override-expired": checkForInterrupt,
+    });
     return () => {
       cancelled = true;
       clearInterval(interval);
+      subscription?.close();
     };
   }, [playLive]);
 

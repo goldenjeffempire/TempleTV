@@ -1,0 +1,155 @@
+Transform the Temple TV platform (Mobile App + Admin System + Backend) into a:
+
+24/7 broadcast-grade, enterprise-level OTT streaming platform
+with real-time control, zero downtime, and seamless user experience.
+
+📱 MOBILE APP — COMPLETE ENHANCEMENT
+🎬 Live Streaming Experience (TV-Grade)
+Implement a true live broadcast player:
+Auto-connect to active stream on app launch
+<1.5s playback startup time
+Adaptive bitrate streaming (HLS/DASH)
+Instant stream switching (<300ms perceived delay)
+Ensure:
+No blank states or playback failures
+Automatic recovery from buffering/network drops
+Fallback stream if primary fails
+🔄 Real-Time Synchronization
+App must:
+Reflect admin updates instantly (no manual refresh)
+Sync with backend via WebSockets or real-time events
+Automatically update when:
+New videos are added
+Playlist changes
+Live stream starts/stops
+📺 Channel Experience (Not On-Demand)
+Users should:
+Enter a continuous live stream (not per-video playback)
+Join mid-stream like a real TV channel
+Not control playback position (broadcast model)
+⚡ Performance Optimization
+App launch: <2 seconds
+Lightweight UI optimized for low-end devices (2GB RAM)
+Efficient caching (thumbnails, metadata only—not stream)
+Background preloading of stream segments
+🔔 Notification System
+Real-time push notifications for:
+Live stream start
+Special broadcasts
+New content added
+🧑‍💻 ADMIN DASHBOARD — FULL CONTROL SYSTEM
+🎛️ Broadcast Control Center
+Admin must be able to:
+Start/stop live stream instantly
+Switch between:
+Live stream (YouTube or RTMP)
+Playlist loop mode
+Override current broadcast at any time
+📂 Advanced Video Management
+Features:
+Bulk upload (multi-file, large videos)
+Drag-and-drop playlist arrangement
+Instant queue injection (no restart required)
+Edit metadata (title, description, thumbnails)
+🔁 Playlist & Scheduling Engine
+Admin can:
+Create multiple playlists
+Schedule content by time/date
+Set priority content (e.g., live events override queue)
+System must:
+Run 24/7 continuously
+Auto-loop playlists indefinitely
+Prevent empty queues at all times
+📡 Live Stream Integration
+Support:
+YouTube Live ingestion
+RTMP stream input
+Automatically detect:
+Live status
+Stream failure → trigger fallback playlist
+📊 Analytics Dashboard
+Show:
+Live viewers
+Playback metrics (start time, buffering rate)
+Upload performance
+System health
+⚙️ BACKEND SYSTEM — CORE ORCHESTRATION
+🧠 Streaming Engine
+Must handle:
+Live vs playlist switching
+Continuous playback loop
+Failover logic (auto fallback content)
+Preloading next content
+📡 API Layer (Production-Ready)
+Fully functional REST/GraphQL APIs:
+Stream state
+Playlist management
+Upload system
+Analytics
+Must include:
+Rate limiting
+Input validation
+Error handling
+🔄 Real-Time Infrastructure
+Use:
+WebSockets / PubSub for live updates
+Ensure:
+Instant sync across:
+Mobile app
+Admin dashboard
+Streaming engine
+☁️ DEVOPS & INFRASTRUCTURE
+🚀 Deployment
+Fully containerized (Docker)
+Deployable on:
+AWS / GCP / Firebase
+Load-balanced architecture
+Auto-scaling enabled
+🔁 CI/CD Pipeline
+Automated:
+Build
+Test
+Deploy
+Separate:
+Staging environment
+Production environment
+🔐 Security
+Enforce:
+HTTPS everywhere
+Secured admin endpoints (token/IP restriction)
+API rate limiting
+Protection against abuse & replay attacks
+📊 OBSERVABILITY (MANDATORY)
+Integrate:
+Real-time logging
+Error tracking (Sentry or equivalent)
+Performance monitoring
+Stream health monitoring
+⚡ RELIABILITY & SLA
+99.9% uptime target
+Zero dead streams
+Auto-recovery on failure
+Continuous 24/7 operation without manual restart
+🔁 FULL SYSTEM INTEGRATION
+
+All components must operate as one unified system:
+
+📱 Mobile App ↔ ⚙️ Backend APIs
+🧑‍💻 Admin Dashboard ↔ 📡 Streaming Engine
+📂 Upload System ↔ 🔁 Playlist Engine
+📡 Live Stream ↔ 📺 Broadcast Output
+
+No isolated modules. No manual syncing.
+
+🎯 FINAL SUCCESS CRITERIA
+
+System is ONLY complete when:
+
+Users can open app and instantly watch live content
+Admin can control broadcast in real-time
+Upload → queue → stream pipeline is fully automated
+Streaming runs continuously 24/7
+Platform is deployable immediately to:
+Google Play Store
+Apple App Store
+Web (HTTPS live URL)

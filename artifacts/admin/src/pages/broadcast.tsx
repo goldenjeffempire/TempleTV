@@ -291,6 +291,18 @@ export default function Broadcast() {
           loadAll();
         });
 
+        es.addEventListener("broadcast-current-updated", () => {
+          loadAll();
+        });
+
+        es.addEventListener("broadcast-schedule-updated", () => {
+          loadAll();
+        });
+
+        es.addEventListener("broadcast-control-updated", () => {
+          loadAll();
+        });
+
         es.onopen = () => { attempt = 0; };
 
         es.onerror = () => {

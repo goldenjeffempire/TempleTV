@@ -1318,6 +1318,8 @@ router.post("/admin/schedule", async (req, res) => {
         isActive: parsed.data.isActive ?? true,
       })
       .returning();
+    await invalidateBroadcastCache();
+    broadcastLiveEvent("broadcast-schedule-updated", { id: entry.id, reason: "created", queuedAt: new Date().toISOString() });
     res.status(201).json(entry);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -1333,6 +1335,8 @@ router.put("/admin/schedule/:id", async (req, res) => {
     const updates = Object.fromEntries(Object.entries(parsed.data).filter(([, v]) => v !== undefined));
     const [entry] = await db.update(scheduleTable).set(updates).where(eq(scheduleTable.id, id)).returning();
     if (!entry) return res.status(404).json({ error: "Schedule entry not found" });
+    await invalidateBroadcastCache();
+    broadcastLiveEvent("broadcast-schedule-updated", { id: entry.id, reason: "updated", queuedAt: new Date().toISOString() });
     res.json(entry);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -1344,6 +1348,8 @@ router.delete("/admin/schedule/:id", async (req, res) => {
   try {
     const { id } = DeleteScheduleEntryParams.parse(req.params);
     await db.delete(scheduleTable).where(eq(scheduleTable.id, id));
+    await invalidateBroadcastCache();
+    broadcastLiveEvent("broadcast-schedule-updated", { id, reason: "deleted", queuedAt: new Date().toISOString() });
     res.json({ success: true, message: "Schedule entry deleted" });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -1672,6 +1678,7 @@ router.post("/admin/live/override/start", async (req, res) => {
     }
 
     buildLiveStatusPayload().then((payload) => broadcastLiveEvent("status", payload)).catch(() => {});
+    broadcastLiveEvent("broadcast-control-updated", { reason: "live-started", id: override.id, queuedAt: new Date().toISOString() });
 
     res.status(201).json({ override, push: pushResult });
   } catch (err) {
@@ -1690,6 +1697,7 @@ router.post("/admin/live/override/stop", async (_req, res) => {
       .where(eq(liveOverridesTable.id, active.id));
 
     buildLiveStatusPayload().then((payload) => broadcastLiveEvent("status", payload)).catch(() => {});
+    broadcastLiveEvent("broadcast-control-updated", { reason: "live-stopped", id: active.id, queuedAt: new Date().toISOString() });
 
     res.json({ ok: true, stopped: 1 });
   } catch (err) {
@@ -1713,6 +1721,7 @@ router.post("/admin/live/override/extend", async (req, res) => {
       .returning();
 
     buildLiveStatusPayload().then((payload) => broadcastLiveEvent("status", payload)).catch(() => {});
+    broadcastLiveEvent("broadcast-control-updated", { reason: "live-extended", id: active.id, queuedAt: new Date().toISOString() });
 
     res.json({ ok: true, override: updated });
   } catch (err) {

@@ -108,6 +108,14 @@ Faith, Healing, Deliverance, Worship, Prophecy, Teachings, Special Programs
 - Mobile preview dependency compatibility was aligned for Expo SDK 54: `expo-file-system` uses the SDK-compatible 19.x line and `shaka-player` satisfies the web shim used by `react-native-track-player`.
 - Verified Replit preview routes: `/api/healthz`, `/admin/`, `/mobile/`, and Expo `/status` all return HTTP 200 with the registered API, admin, and mobile runners active.
 
+## Features Added (Current Session) — Real-Time Broadcast Control Foundation
+- **Public broadcast event stream**: Added `/api/broadcast/events` so clients can subscribe to current broadcast changes without waiting for polling.
+- **Unified broadcast state payload**: Refactored `/api/broadcast/current` into a shared server-side state builder used by both HTTP and event-stream responses.
+- **Instant queue/control events**: Broadcast queue add/update/delete/reorder, schedule create/update/delete, and live start/stop/extend now publish real-time update events.
+- **Mobile real-time sync**: Watch screen, player screen, and live supervisor subscribe to broadcast events when the runtime supports EventSource, with existing polling retained as fallback.
+- **Broadcast-model playback hardening**: Player controls and seek/progress controls are hidden during broadcast mode so channel playback behaves like TV rather than on-demand video.
+- **Admin control refresh**: Broadcast Control listens for queue, schedule, current-state, and live-control events to refresh the control room immediately.
+
 ## Features Added (Session 3)
 - **Videos page**: Fixed missing `Video` icon import (empty state crash), added "Edit Details" dialog for updating title, category, preacher, featured status per video
 - **Playlists DnD**: Installed `@dnd-kit/core` + `@dnd-kit/sortable`; playlist videos are now drag-and-drop reorderable

@@ -110,3 +110,42 @@ export async function checkBroadcastCurrent(): Promise<BroadcastCurrentResult | 
     return null;
   }
 }
+
+export type BroadcastRealtimeEvent =
+  | "broadcast-current-updated"
+  | "broadcast-queue-updated"
+  | "broadcast-schedule-updated"
+  | "broadcast-control-updated"
+  | "status"
+  | "override-expired"
+  | "yt-status";
+
+export function subscribeBroadcastEvents(
+  handlers: Partial<Record<BroadcastRealtimeEvent, (payload: any) => void>>,
+): { close: () => void } | null {
+  const domain = process.env.EXPO_PUBLIC_DOMAIN;
+  const EventSourceCtor = (globalThis as any).EventSource;
+  if (!domain || typeof EventSourceCtor !== "function") return null;
+
+  const source = new EventSourceCtor(`https://${domain}/api/broadcast/events`);
+
+  const listenerEntries = (Object.entries(handlers) as Array<[BroadcastRealtimeEvent, (payload: any) => void]>)
+    .map(([event, handler]) => {
+      const listener = (message: any) => {
+        try {
+          handler(message?.data ? JSON.parse(message.data) : null);
+        } catch {
+          handler(null);
+        }
+      };
+      source.addEventListener(event, listener);
+      return [event, listener] as const;
+    });
+
+  return {
+    close: () => {
+      for (const [event, listener] of listenerEntries) source.removeEventListener?.(event, listener);
+      source.close();
+    },
+  };
+}
