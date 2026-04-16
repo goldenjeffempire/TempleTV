@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, pushTokensTable, liveOverridesTable, transcodingJobsTable, broadcastQueueTable } from "@workspace/db";
-import { eq, ilike, or, count, sql, desc, asc, and } from "drizzle-orm";
+import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, scheduledNotificationsTable, pushTokensTable, liveOverridesTable, transcodingJobsTable, broadcastQueueTable } from "@workspace/db";
+import { eq, ilike, or, count, sql, desc, asc, and, lte } from "drizzle-orm";
 import { queueTranscodingJob, retryTranscodingJob } from "../lib/transcoder";
 import { broadcastLiveEvent, addSSEClient, removeSSEClient, getSSEClientCount } from "../lib/liveEvents";
 import { getLiveStatus, getLiveMonitorData } from "./youtube";
@@ -1422,6 +1422,75 @@ router.get("/admin/notifications/history", async (req, res) => {
       .orderBy(desc(notificationsTable.sentAt))
       .limit(50);
     res.json(history);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.get("/admin/notifications/scheduled", async (req, res) => {
+  try {
+    const rows = await db
+      .select()
+      .from(scheduledNotificationsTable)
+      .orderBy(asc(scheduledNotificationsTable.scheduledAt))
+      .limit(100);
+    res.json(rows);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/admin/notifications/schedule", async (req, res) => {
+  try {
+    const { title, body, type, videoId, scheduledAt } = req.body as {
+      title: string;
+      body: string;
+      type: string;
+      videoId?: string;
+      scheduledAt: string;
+    };
+    if (!title || !body || !type || !scheduledAt) {
+      return res.status(400).json({ error: "title, body, type, and scheduledAt are required" });
+    }
+    const schedDate = new Date(scheduledAt);
+    if (isNaN(schedDate.getTime()) || schedDate <= new Date()) {
+      return res.status(400).json({ error: "scheduledAt must be a valid future date" });
+    }
+    const row = {
+      id: randomUUID(),
+      title,
+      body,
+      type,
+      videoId: videoId ?? null,
+      scheduledAt: schedDate,
+      status: "pending" as const,
+    };
+    await db.insert(scheduledNotificationsTable).values(row);
+    res.json(row);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.delete("/admin/notifications/scheduled/:id", async (req, res) => {
+  try {
+    const { id } = req.params as { id: string };
+    const rows = await db
+      .select()
+      .from(scheduledNotificationsTable)
+      .where(eq(scheduledNotificationsTable.id, id));
+    if (rows.length === 0) return res.status(404).json({ error: "Not found" });
+    if (rows[0].status !== "pending") {
+      return res.status(400).json({ error: "Only pending notifications can be cancelled" });
+    }
+    await db
+      .update(scheduledNotificationsTable)
+      .set({ status: "cancelled" })
+      .where(eq(scheduledNotificationsTable.id, id));
+    res.json({ ok: true });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });

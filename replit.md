@@ -287,3 +287,12 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 - **Bulk admin uploads**: Video Library upload dialog accepts multiple video files. Each file is uploaded through the existing resumable chunk pipeline with parallel chunk streams, and every finalized video is auto-added to the broadcast queue.
 - **Fresh mobile broadcast sync**: Watch tab fetches fresh `/api/broadcast/current` state immediately before opening the player and compensates start position with server-time drift.
 - **Playback failover**: Local and YouTube players now surface playback errors to the broadcast player screen, which re-checks the broadcast engine and routes viewers to the currently correct queue item.
+
+## Features Added (Session 17) — Scheduled Push Notifications
+- **Scheduled Notifications DB table**: Added scheduled_notifications table with fields: id, title, body, type, videoId, scheduledAt, status, sentCount, errorMessage, sentAt, createdAt. Schema pushed with Drizzle.
+- **Background scheduler**: lib/notification-scheduler.ts starts on server boot; checks every 30 seconds for pending notifications whose scheduledAt <= NOW(), sends via Expo Push API, marks as sent or failed, and records a sent_notifications row on success.
+- **API endpoints added**:
+  - GET /api/admin/notifications/scheduled — list all scheduled notifications (sorted by scheduledAt asc)
+  - POST /api/admin/notifications/schedule — create a new scheduled notification (validates future date)
+  - DELETE /api/admin/notifications/scheduled/:id — cancel a pending scheduled notification (sets status = cancelled)
+- **Admin Notifications page redesigned**: Three-tab layout: Send Now (unchanged instant send + recent history), Schedule (scheduling form with datetime-local picker + live pending/sent list with cancel button), and History (full paginated log). Scheduled list auto-refreshes every 30 seconds. Status badges for pending/sent/failed/cancelled states.

@@ -1,6 +1,7 @@
 import app from "./app";
 import { logger } from "./lib/logger";
 import { resumePendingJobsOnStartup } from "./lib/transcoder";
+import { startNotificationScheduler } from "./lib/notification-scheduler";
 
 const rawPort = process.env["PORT"];
 
@@ -27,4 +28,6 @@ app.listen(port, (err) => {
   resumePendingJobsOnStartup().catch((err) => {
     logger.error({ err }, "Failed to resume pending transcoding jobs");
   });
+
+  startNotificationScheduler();
 });
