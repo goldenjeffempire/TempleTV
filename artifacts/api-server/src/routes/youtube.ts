@@ -50,6 +50,7 @@ let lastNotifiedVideoId: string | null = null;
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 let liveSessionStartedAt: number | null = null;
 let currentPollIntervalMs = LIVE_POLL_NORMAL_MS;
+let currentViewerCount: number | null = null;
 
 export interface LiveEventRecord {
   ts: number;
@@ -59,8 +60,15 @@ export interface LiveEventRecord {
   method: string | null;
 }
 
+export interface ViewerSnapshot {
+  ts: number;
+  count: number;
+}
+
 const MAX_HISTORY = 50;
+const MAX_VIEWER_SNAPSHOTS = 120;
 const liveHistory: LiveEventRecord[] = [];
+const viewerHistory: ViewerSnapshot[] = [];
 
 export function getLiveStatus(): LiveStatus {
   return { ...cachedLiveStatus };
@@ -77,6 +85,7 @@ export function getLiveMonitorData() {
       staleSec: Math.floor((Date.now() - cachedLiveStatus.checkedAt) / 1000),
       uptimeSecs,
       liveSessionStartedAt,
+      viewerCount: currentViewerCount,
     },
     polling: {
       intervalMs: currentPollIntervalMs,
@@ -84,6 +93,7 @@ export function getLiveMonitorData() {
       lastStateChangeAt,
     },
     history: [...liveHistory].reverse(),
+    viewerHistory: [...viewerHistory],
   };
 }
 
@@ -127,6 +137,37 @@ async function checkViaYouTubeLivePage(): Promise<{ isLive: boolean; videoId: st
     };
   }
   return { isLive: false, videoId: null, title: null };
+}
+
+async function scrapeViewerCount(videoId: string): Promise<number | null> {
+  try {
+    const url = `https://www.youtube.com/watch?v=${videoId}`;
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(8000),
+      headers: { ...BROWSER_HEADERS, Accept: "text/html,application/xhtml+xml" },
+    });
+    if (!response.ok) return null;
+    const html = await response.text();
+
+    const patterns = [
+      /"concurrentViewers"\s*:\s*"(\d+)"/,
+      /"viewCount"\s*:\s*\{\s*"videoViewCountRenderer"\s*:\s*\{\s*"viewCount"\s*:\s*\{\s*"runs"\s*:\s*\[\s*\{\s*"text"\s*:\s*"([\d,]+)/,
+      /"viewCount"\s*:\s*"(\d+)"/,
+      /"watching_now"\s*:\s*(\d+)/,
+      /(\d[\d,]*)\s+(?:watching|viewers?\s+now)/i,
+    ];
+
+    for (const pattern of patterns) {
+      const match = html.match(pattern);
+      if (match?.[1]) {
+        const count = parseInt(match[1].replace(/,/g, ""), 10);
+        if (!isNaN(count) && count > 0) return count;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 async function checkYouTubeLive(): Promise<{ isLive: boolean; videoId: string | null; title: string | null; method: string }> {
@@ -219,8 +260,10 @@ async function pollLiveStatus() {
 
     if (result.isLive && !wasLive) {
       liveSessionStartedAt = now;
+      viewerHistory.length = 0;
     } else if (!result.isLive && wasLive) {
       liveSessionStartedAt = null;
+      currentViewerCount = null;
     }
 
     const record: LiveEventRecord = {
@@ -239,6 +282,15 @@ async function pollLiveStatus() {
       title: result.title,
       checkedAt: cachedLiveStatus.checkedAt,
     });
+  }
+
+  if (result.isLive && result.videoId) {
+    const count = await scrapeViewerCount(result.videoId);
+    if (count !== null) {
+      currentViewerCount = count;
+      viewerHistory.push({ ts: now, count });
+      if (viewerHistory.length > MAX_VIEWER_SNAPSHOTS) viewerHistory.shift();
+    }
   }
 
   const justWentLive = result.isLive && (!wasLive || result.videoId !== previousVideoId);

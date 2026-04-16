@@ -8,10 +8,21 @@ import {
   Radio,
   RefreshCw,
   Signal,
+  TrendingUp,
+  Users,
   Wifi,
   WifiOff,
   Zap,
 } from "lucide-react";
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -26,6 +37,11 @@ interface LiveEventRecord {
   method: string | null;
 }
 
+interface ViewerSnapshot {
+  ts: number;
+  count: number;
+}
+
 interface LiveHealthData {
   current: {
     isLive: boolean;
@@ -36,6 +52,7 @@ interface LiveHealthData {
     detectionMethod?: string;
     uptimeSecs: number;
     liveSessionStartedAt: number | null;
+    viewerCount: number | null;
   };
   polling: {
     intervalMs: number;
@@ -43,6 +60,7 @@ interface LiveHealthData {
     lastStateChangeAt: number;
   };
   history: LiveEventRecord[];
+  viewerHistory: ViewerSnapshot[];
 }
 
 function formatDuration(secs: number): string {
@@ -70,6 +88,12 @@ function formatDateTime(ts: number): string {
   });
 }
 
+function formatViewerCount(n: number | null): string {
+  if (n === null) return "—";
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return n.toLocaleString();
+}
+
 function UptimeClock({ startSecs }: { startSecs: number }) {
   const [elapsed, setElapsed] = useState(startSecs);
   useEffect(() => {
@@ -81,9 +105,77 @@ function UptimeClock({ startSecs }: { startSecs: number }) {
 }
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
-
 function apiUrl(path: string) {
   return `${BASE.replace(/\/admin\/?$/, "")}/api${path}`;
+}
+
+interface ChartPoint {
+  label: string;
+  count: number;
+  ts: number;
+}
+
+function buildChartData(snapshots: ViewerSnapshot[]): ChartPoint[] {
+  return snapshots.map((s) => ({
+    ts: s.ts,
+    label: new Date(s.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    count: s.count,
+  }));
+}
+
+function ViewerChart({ data }: { data: ViewerSnapshot[] }) {
+  const chartData = buildChartData(data);
+  const maxVal = Math.max(...chartData.map((d) => d.count), 1);
+  const yMax = Math.ceil(maxVal * 1.2);
+
+  return (
+    <ResponsiveContainer width="100%" height={200}>
+      <AreaChart data={chartData} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
+        <defs>
+          <linearGradient id="viewerGradient" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%" stopColor="#ef4444" stopOpacity={0.25} />
+            <stop offset="95%" stopColor="#ef4444" stopOpacity={0} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+        <XAxis
+          dataKey="label"
+          tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
+          tickLine={false}
+          axisLine={false}
+          interval="preserveStartEnd"
+        />
+        <YAxis
+          domain={[0, yMax]}
+          tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
+          tickLine={false}
+          axisLine={false}
+          tickFormatter={(v: number) => (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v))}
+          width={36}
+        />
+        <Tooltip
+          contentStyle={{
+            background: "hsl(var(--card))",
+            border: "1px solid hsl(var(--border))",
+            borderRadius: "6px",
+            fontSize: "12px",
+          }}
+          labelStyle={{ color: "hsl(var(--foreground))", fontWeight: 600 }}
+          formatter={(value: number) => [value.toLocaleString(), "Viewers"]}
+        />
+        <Area
+          type="monotone"
+          dataKey="count"
+          stroke="#ef4444"
+          strokeWidth={2}
+          fill="url(#viewerGradient)"
+          dot={false}
+          activeDot={{ r: 4, fill: "#ef4444" }}
+          isAnimationActive={false}
+        />
+      </AreaChart>
+    </ResponsiveContainer>
+  );
 }
 
 export default function LiveMonitor() {
@@ -95,7 +187,6 @@ export default function LiveMonitor() {
   const [refreshing, setRefreshing] = useState(false);
   const [alertVisible, setAlertVisible] = useState(false);
   const prevIsLive = useRef<boolean | null>(null);
-  const eventSourceRef = useRef<EventSource | null>(null);
 
   const fetchHealth = useCallback(async (silent = false) => {
     if (!silent) setRefreshing(true);
@@ -118,7 +209,7 @@ export default function LiveMonitor() {
 
   useEffect(() => {
     fetchHealth();
-    const interval = setInterval(() => fetchHealth(true), 10000);
+    const interval = setInterval(() => fetchHealth(true), 15000);
     return () => clearInterval(interval);
   }, [fetchHealth]);
 
@@ -129,58 +220,40 @@ export default function LiveMonitor() {
       : apiUrl("/youtube/live/events");
 
     const es = new EventSource(url);
-    eventSourceRef.current = es;
 
-    es.onopen = () => {
-      setSseConnected(true);
-      setSseError(false);
-    };
-
-    es.addEventListener("connected", () => {
-      setSseConnected(true);
-      setSseError(false);
-    });
+    es.onopen = () => { setSseConnected(true); setSseError(false); };
+    es.addEventListener("connected", () => { setSseConnected(true); setSseError(false); });
+    es.addEventListener("heartbeat", () => { setSseConnected(true); });
 
     es.addEventListener("yt-status", (e) => {
       const payload = JSON.parse((e as MessageEvent).data) as {
-        isLive: boolean;
-        videoId: string | null;
-        title: string | null;
+        isLive: boolean; videoId: string | null; title: string | null;
       };
 
       if (prevIsLive.current !== null && prevIsLive.current !== payload.isLive) {
         if (!payload.isLive) {
           setAlertVisible(true);
-          toast({
-            title: "⚠️ Stream went offline",
-            description: "Temple TV is no longer live.",
-            variant: "destructive",
-          });
+          toast({ title: "⚠️ Stream went offline", description: "Temple TV is no longer live.", variant: "destructive" });
           setTimeout(() => setAlertVisible(false), 8000);
         } else {
-          toast({
-            title: "🔴 Stream is LIVE!",
-            description: payload.title ?? "Temple TV has started a live stream.",
-          });
+          toast({ title: "🔴 Stream is LIVE!", description: payload.title ?? "Temple TV has started a live stream." });
         }
       }
       prevIsLive.current = payload.isLive;
       fetchHealth(true);
     });
 
-    es.addEventListener("heartbeat", () => {
-      setSseConnected(true);
-    });
-
-    es.onerror = () => {
-      setSseConnected(false);
-      setSseError(true);
-    };
-
-    return () => {
-      es.close();
-    };
+    es.onerror = () => { setSseConnected(false); setSseError(true); };
+    return () => es.close();
   }, [fetchHealth, toast]);
+
+  const peakViewers = data?.viewerHistory.length
+    ? Math.max(...data.viewerHistory.map((s) => s.count))
+    : null;
+
+  const avgViewers = data?.viewerHistory.length
+    ? Math.round(data.viewerHistory.reduce((s, p) => s + p.count, 0) / data.viewerHistory.length)
+    : null;
 
   return (
     <div className="space-y-6">
@@ -202,12 +275,7 @@ export default function LiveMonitor() {
             {sseConnected ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
             {sseConnected ? "Real-time" : sseError ? "SSE Error" : "Connecting…"}
           </div>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => fetchHealth()}
-            disabled={refreshing}
-          >
+          <Button size="sm" variant="outline" onClick={() => fetchHealth()} disabled={refreshing}>
             <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${refreshing ? "animate-spin" : ""}`} />
             Refresh
           </Button>
@@ -225,8 +293,8 @@ export default function LiveMonitor() {
       )}
 
       {loading ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {Array.from({ length: 4 }).map((_, i) => (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {Array.from({ length: 6 }).map((_, i) => (
             <Card key={i}>
               <CardContent className="p-5">
                 <div className="h-4 bg-muted rounded animate-pulse mb-3 w-1/2" />
@@ -237,7 +305,7 @@ export default function LiveMonitor() {
         </div>
       ) : data ? (
         <>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             <Card className={data.current.isLive ? "border-red-500/40 bg-red-500/5" : ""}>
               <CardContent className="p-5">
                 <div className="flex items-center justify-between mb-3">
@@ -247,8 +315,30 @@ export default function LiveMonitor() {
                 <div className={`text-2xl font-bold ${data.current.isLive ? "text-red-500" : "text-foreground"}`}>
                   {data.current.isLive ? "LIVE" : "OFF AIR"}
                 </div>
-                {data.current.isLive && (
+                {data.current.isLive && data.current.title && (
                   <p className="text-xs text-muted-foreground mt-1 truncate">{data.current.title}</p>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="p-5">
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Concurrent Viewers</span>
+                  <Users className="w-4 h-4 text-muted-foreground" />
+                </div>
+                <div className={`text-2xl font-bold font-mono ${data.current.isLive ? "" : "text-muted-foreground"}`}>
+                  {data.current.isLive
+                    ? data.current.viewerCount !== null
+                      ? data.current.viewerCount.toLocaleString()
+                      : <span className="text-base text-muted-foreground">Fetching…</span>
+                    : "—"}
+                </div>
+                {data.current.isLive && peakViewers !== null && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Peak: {peakViewers.toLocaleString()}
+                    {avgViewers !== null && <span className="ml-2">Avg: {avgViewers.toLocaleString()}</span>}
+                  </p>
                 )}
               </CardContent>
             </Card>
@@ -267,9 +357,7 @@ export default function LiveMonitor() {
                   )}
                 </div>
                 {data.current.liveSessionStartedAt && data.current.isLive && (
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Since {formatTime(data.current.liveSessionStartedAt)}
-                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">Since {formatTime(data.current.liveSessionStartedAt)}</p>
                 )}
               </CardContent>
             </Card>
@@ -280,12 +368,8 @@ export default function LiveMonitor() {
                   <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Last Check</span>
                   <Activity className="w-4 h-4 text-muted-foreground" />
                 </div>
-                <div className="text-2xl font-bold">
-                  {data.current.staleSec}s ago
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  via {data.current.detectionMethod ?? "—"}
-                </p>
+                <div className="text-2xl font-bold">{data.current.staleSec}s ago</div>
+                <p className="text-xs text-muted-foreground mt-1">via {data.current.detectionMethod ?? "—"}</p>
               </CardContent>
             </Card>
 
@@ -295,10 +379,8 @@ export default function LiveMonitor() {
                   <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Poll Interval</span>
                   <Zap className={`w-4 h-4 ${data.polling.mode === "burst" ? "text-amber-500" : "text-muted-foreground"}`} />
                 </div>
-                <div className="text-2xl font-bold">
-                  {data.polling.intervalMs / 1000}s
-                </div>
-                <div className="text-xs text-muted-foreground mt-1">
+                <div className="text-2xl font-bold">{data.polling.intervalMs / 1000}s</div>
+                <div className="mt-1">
                   <Badge
                     variant="secondary"
                     className={`text-xs ${data.polling.mode === "burst" ? "bg-amber-500/10 text-amber-600 border-amber-500/20" : ""}`}
@@ -306,6 +388,21 @@ export default function LiveMonitor() {
                     {data.polling.mode === "burst" ? "⚡ Burst mode" : "Normal mode"}
                   </Badge>
                 </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="p-5">
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Viewer Snapshots</span>
+                  <TrendingUp className="w-4 h-4 text-muted-foreground" />
+                </div>
+                <div className="text-2xl font-bold">{data.viewerHistory.length}</div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {data.viewerHistory.length > 0
+                    ? `From ${formatTime(data.viewerHistory[0]!.ts)} to ${formatTime(data.viewerHistory[data.viewerHistory.length - 1]!.ts)}`
+                    : "No data collected yet"}
+                </p>
               </CardContent>
             </Card>
           </div>
@@ -362,6 +459,58 @@ export default function LiveMonitor() {
 
           <Card>
             <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-sm">Concurrent Viewer Trend</CardTitle>
+                {data.current.isLive && data.current.viewerCount !== null && (
+                  <Badge className="bg-red-500/10 text-red-600 border-red-500/20 text-xs">
+                    {data.current.viewerCount.toLocaleString()} now
+                  </Badge>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent>
+              {data.viewerHistory.length < 2 ? (
+                <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
+                  <Users className="w-8 h-8 mb-2 opacity-30" />
+                  <p className="text-sm">
+                    {data.current.isLive
+                      ? "Collecting viewer data… Check back in a minute."
+                      : "Viewer trend appears here during a live stream."}
+                  </p>
+                  <p className="text-xs mt-1 opacity-70">Data is sampled once per poll cycle (every {data.polling.intervalMs / 1000}s)</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="flex gap-6 text-sm">
+                    <div>
+                      <span className="text-muted-foreground text-xs">Current</span>
+                      <p className="font-semibold">{formatViewerCount(data.current.viewerCount)}</p>
+                    </div>
+                    {peakViewers !== null && (
+                      <div>
+                        <span className="text-muted-foreground text-xs">Peak</span>
+                        <p className="font-semibold text-red-500">{peakViewers.toLocaleString()}</p>
+                      </div>
+                    )}
+                    {avgViewers !== null && (
+                      <div>
+                        <span className="text-muted-foreground text-xs">Avg</span>
+                        <p className="font-semibold">{avgViewers.toLocaleString()}</p>
+                      </div>
+                    )}
+                    <div>
+                      <span className="text-muted-foreground text-xs">Samples</span>
+                      <p className="font-semibold">{data.viewerHistory.length}</p>
+                    </div>
+                  </div>
+                  <ViewerChart data={data.viewerHistory} />
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-3">
               <CardTitle className="text-sm">Event History</CardTitle>
             </CardHeader>
             <CardContent>
@@ -375,9 +524,7 @@ export default function LiveMonitor() {
                   {data.history.map((event, i) => (
                     <div
                       key={event.ts}
-                      className={`flex items-start gap-3 px-3 py-2.5 rounded-lg border text-sm ${
-                        i === 0 ? "bg-muted/60" : ""
-                      }`}
+                      className={`flex items-start gap-3 px-3 py-2.5 rounded-lg border text-sm ${i === 0 ? "bg-muted/60" : ""}`}
                     >
                       <div className="mt-0.5 shrink-0">
                         {event.isLive ? (
@@ -398,9 +545,7 @@ export default function LiveMonitor() {
                           >
                             {event.isLive ? "Went Live" : "Went Offline"}
                           </Badge>
-                          {i === 0 && (
-                            <Badge variant="outline" className="text-xs">Latest</Badge>
-                          )}
+                          {i === 0 && <Badge variant="outline" className="text-xs">Latest</Badge>}
                           {event.method && (
                             <span className="text-xs text-muted-foreground">
                               via <code className="font-mono">{event.method}</code>
@@ -438,15 +583,13 @@ export default function LiveMonitor() {
                 <div>
                   <p className="text-xs text-muted-foreground mb-1">Last State Change</p>
                   <p className="font-medium">
-                    {data.polling.lastStateChangeAt
-                      ? formatDateTime(data.polling.lastStateChangeAt)
-                      : "None yet"}
+                    {data.polling.lastStateChangeAt ? formatDateTime(data.polling.lastStateChangeAt) : "None yet"}
                   </p>
                 </div>
               </div>
               <p className="text-xs text-muted-foreground mt-4 leading-relaxed">
                 Normal mode polls every 60 seconds. Burst mode (15s interval) activates for 10 minutes after any state
-                change to quickly detect transitions between live and offline.
+                change. Viewer count is scraped from the YouTube watch page on every poll cycle when live.
               </p>
             </CardContent>
           </Card>
