@@ -8,6 +8,7 @@ import {
   startSSEHeartbeat,
   type LiveStatusSnapshot,
 } from "../lib/liveEvents";
+import { emitBroadcastState } from "./broadcast";
 
 const router = Router();
 
@@ -277,6 +278,12 @@ async function pollLiveStatus() {
     if (liveHistory.length > MAX_HISTORY) liveHistory.shift();
 
     broadcastLiveEvent("yt-status", {
+      isLive: result.isLive,
+      videoId: result.videoId,
+      title: result.title,
+      checkedAt: cachedLiveStatus.checkedAt,
+    });
+    emitBroadcastState("youtube-live-changed", {
       isLive: result.isLive,
       videoId: result.videoId,
       title: result.title,

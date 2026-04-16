@@ -71,7 +71,7 @@ async function invalidateBroadcastCache() {
   ]);
 }
 
-async function buildBroadcastCurrentPayload() {
+export async function buildBroadcastCurrentPayload() {
   const nowMs = Date.now();
   const syncedAt = new Date(nowMs).toISOString();
 
@@ -178,7 +178,7 @@ async function buildBroadcastCurrentPayload() {
   };
 }
 
-function emitBroadcastState(reason: string, detail: Record<string, unknown> = {}) {
+export function emitBroadcastState(reason: string, detail: Record<string, unknown> = {}) {
   buildBroadcastCurrentPayload()
     .then((current) => {
       broadcastLiveEvent("broadcast-current-updated", { reason, current, ...detail });

@@ -115,6 +115,8 @@ Faith, Healing, Deliverance, Worship, Prophecy, Teachings, Special Programs
 - **Mobile real-time sync**: Watch screen, player screen, and live supervisor subscribe to broadcast events when the runtime supports EventSource, with existing polling retained as fallback.
 - **Broadcast-model playback hardening**: Player controls and seek/progress controls are hidden during broadcast mode so channel playback behaves like TV rather than on-demand video.
 - **Admin control refresh**: Broadcast Control listens for queue, schedule, current-state, and live-control events to refresh the control room immediately.
+- **Live/failover state propagation**: Live override start/stop/extend/expiry, schedule changes, broadcast queue video changes, and YouTube live status changes now also emit a full current-broadcast snapshot.
+- **Admin realtime status**: Broadcast Control shows the real-time connection state and the last received update timestamp in the page header.
 
 ## Features Added (Session 3)
 - **Videos page**: Fixed missing `Video` icon import (empty state crash), added "Edit Details" dialog for updating title, category, preacher, featured status per video

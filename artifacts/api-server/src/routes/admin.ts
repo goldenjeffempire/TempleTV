@@ -4,6 +4,7 @@ import { eq, ilike, or, count, sql, desc, asc, and, lte } from "drizzle-orm";
 import { queueTranscodingJob, retryTranscodingJob } from "../lib/transcoder";
 import { broadcastLiveEvent, addSSEClient, removeSSEClient, getSSEClientCount } from "../lib/liveEvents";
 import { getLiveStatus, getLiveMonitorData } from "./youtube";
+import { emitBroadcastState } from "./broadcast";
 import { cache } from "../lib/cache";
 import { logger } from "../lib/logger";
 import { metricsSnapshot } from "../middlewares/observability";
@@ -219,6 +220,7 @@ async function autoExpireLiveOverrides(): Promise<void> {
         await db.update(liveOverridesTable)
           .set({ isActive: false })
           .where(eq(liveOverridesTable.id, override.id));
+        await invalidateBroadcastCache();
         logger.info({ liveOverrideId: override.id, title: override.title }, "Live override auto-expired");
         broadcastLiveEvent("override-expired", {
           id: override.id,
@@ -226,6 +228,7 @@ async function autoExpireLiveOverrides(): Promise<void> {
           expiredAt: now.toISOString(),
         });
         broadcastLiveEvent("status", await buildLiveStatusPayload());
+        emitBroadcastState("live-override-expired", { id: override.id });
       }
     }
   } catch {}
@@ -333,6 +336,7 @@ async function upsertBroadcastQueueVideo(video: typeof videosTable.$inferSelect)
     title: video.title,
     queuedAt: new Date().toISOString(),
   });
+  emitBroadcastState("queue-video-upserted", { videoId: video.id });
 }
 
 async function getActiveLiveOverride() {
@@ -1005,6 +1009,7 @@ router.delete("/admin/videos/:id", async (req, res) => {
     await db.delete(broadcastQueueTable).where(eq(broadcastQueueTable.videoId, id));
     await invalidateBroadcastCache();
     broadcastLiveEvent("broadcast-queue-updated", { videoId: id, deleted: true, queuedAt: new Date().toISOString() });
+    emitBroadcastState("queue-video-deleted", { videoId: id });
 
     if (video?.videoSource === "local") {
       const uploadsDir = path.join(__dirname, "..", "uploads");
@@ -1320,6 +1325,7 @@ router.post("/admin/schedule", async (req, res) => {
       .returning();
     await invalidateBroadcastCache();
     broadcastLiveEvent("broadcast-schedule-updated", { id: entry.id, reason: "created", queuedAt: new Date().toISOString() });
+    emitBroadcastState("schedule-created", { id: entry.id });
     res.status(201).json(entry);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -1337,6 +1343,7 @@ router.put("/admin/schedule/:id", async (req, res) => {
     if (!entry) return res.status(404).json({ error: "Schedule entry not found" });
     await invalidateBroadcastCache();
     broadcastLiveEvent("broadcast-schedule-updated", { id: entry.id, reason: "updated", queuedAt: new Date().toISOString() });
+    emitBroadcastState("schedule-updated", { id: entry.id });
     res.json(entry);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -1350,6 +1357,7 @@ router.delete("/admin/schedule/:id", async (req, res) => {
     await db.delete(scheduleTable).where(eq(scheduleTable.id, id));
     await invalidateBroadcastCache();
     broadcastLiveEvent("broadcast-schedule-updated", { id, reason: "deleted", queuedAt: new Date().toISOString() });
+    emitBroadcastState("schedule-deleted", { id });
     res.json({ success: true, message: "Schedule entry deleted" });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -1677,8 +1685,10 @@ router.post("/admin/live/override/start", async (req, res) => {
       });
     }
 
+    await invalidateBroadcastCache();
     buildLiveStatusPayload().then((payload) => broadcastLiveEvent("status", payload)).catch(() => {});
     broadcastLiveEvent("broadcast-control-updated", { reason: "live-started", id: override.id, queuedAt: new Date().toISOString() });
+    emitBroadcastState("live-started", { id: override.id });
 
     res.status(201).json({ override, push: pushResult });
   } catch (err) {
@@ -1696,8 +1706,10 @@ router.post("/admin/live/override/stop", async (_req, res) => {
       .set({ isActive: false, endsAt: new Date() })
       .where(eq(liveOverridesTable.id, active.id));
 
+    await invalidateBroadcastCache();
     buildLiveStatusPayload().then((payload) => broadcastLiveEvent("status", payload)).catch(() => {});
     broadcastLiveEvent("broadcast-control-updated", { reason: "live-stopped", id: active.id, queuedAt: new Date().toISOString() });
+    emitBroadcastState("live-stopped", { id: active.id });
 
     res.json({ ok: true, stopped: 1 });
   } catch (err) {
@@ -1720,8 +1732,10 @@ router.post("/admin/live/override/extend", async (req, res) => {
       .where(eq(liveOverridesTable.id, active.id))
       .returning();
 
+    await invalidateBroadcastCache();
     buildLiveStatusPayload().then((payload) => broadcastLiveEvent("status", payload)).catch(() => {});
     broadcastLiveEvent("broadcast-control-updated", { reason: "live-extended", id: active.id, queuedAt: new Date().toISOString() });
+    emitBroadcastState("live-extended", { id: active.id });
 
     res.json({ ok: true, override: updated });
   } catch (err) {

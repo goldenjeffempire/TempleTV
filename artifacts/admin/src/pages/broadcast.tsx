@@ -188,6 +188,8 @@ export default function Broadcast() {
   const [guide, setGuide] = useState<GuideItem[]>([]);
   const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const [realtimeState, setRealtimeState] = useState<"connecting" | "connected" | "reconnecting" | "offline">("connecting");
+  const [lastRealtimeAt, setLastRealtimeAt] = useState<Date | null>(null);
 
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [showGoLiveDialog, setShowGoLiveDialog] = useState(false);
@@ -268,12 +270,14 @@ export default function Broadcast() {
     const connect = () => {
       if (destroyed) return;
       try {
+        setRealtimeState(attempt > 0 ? "reconnecting" : "connecting");
         es = new EventSource(getAdminEventSourceUrl("/api/admin/live/events"));
 
         es.addEventListener("status", (e: MessageEvent) => {
           try {
             const ls = JSON.parse(e.data) as LiveStatus;
             setLiveStatus(ls);
+            setLastRealtimeAt(new Date());
             if (ls.liveOverride?.remainingSecs != null) {
               setCountdown(ls.liveOverride.remainingSecs);
             } else if (!ls.liveOverride) {
@@ -284,31 +288,47 @@ export default function Broadcast() {
         });
 
         es.addEventListener("override-expired", () => {
+          setLastRealtimeAt(new Date());
           loadAll();
         });
 
         es.addEventListener("broadcast-queue-updated", () => {
+          setLastRealtimeAt(new Date());
           loadAll();
         });
 
-        es.addEventListener("broadcast-current-updated", () => {
+        es.addEventListener("broadcast-current-updated", (e: MessageEvent) => {
+          try {
+            const payload = JSON.parse(e.data);
+            if (payload?.current) {
+              setCurrent(payload.current);
+              setLivePosition(payload.current.positionSecs ?? 0);
+            }
+          } catch {}
+          setLastRealtimeAt(new Date());
           loadAll();
         });
 
         es.addEventListener("broadcast-schedule-updated", () => {
+          setLastRealtimeAt(new Date());
           loadAll();
         });
 
         es.addEventListener("broadcast-control-updated", () => {
+          setLastRealtimeAt(new Date());
           loadAll();
         });
 
-        es.onopen = () => { attempt = 0; };
+        es.onopen = () => {
+          attempt = 0;
+          setRealtimeState("connected");
+        };
 
         es.onerror = () => {
           es?.close();
           es = null;
           if (destroyed) return;
+          setRealtimeState("reconnecting");
           const delay = Math.min(1000 * Math.pow(2, attempt), 30_000);
           attempt++;
           reconnectTimer = setTimeout(connect, delay);
@@ -322,6 +342,7 @@ export default function Broadcast() {
       destroyed = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       es?.close();
+      setRealtimeState("offline");
     };
   }, [loadAll]);
 
@@ -567,6 +588,21 @@ export default function Broadcast() {
             {liveStatus?.deviceCount != null && liveStatus.deviceCount > 0 && (
               <span className="text-xs text-muted-foreground border-l pl-2 ml-1">
                 <SmartphoneIcon className="w-3 h-3 inline mr-1" />{liveStatus.deviceCount}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-muted/40 border text-xs">
+            <div className={`w-2 h-2 rounded-full ${
+              realtimeState === "connected"
+                ? "bg-green-500"
+                : realtimeState === "reconnecting"
+                  ? "bg-yellow-500 animate-pulse"
+                  : "bg-muted-foreground/40"
+            }`} />
+            <span className="capitalize">{realtimeState}</span>
+            {lastRealtimeAt && (
+              <span className="text-muted-foreground border-l pl-2">
+                update {lastRealtimeAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
               </span>
             )}
           </div>
