@@ -308,7 +308,35 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
   - DELETE /api/admin/notifications/scheduled/:id — cancel a pending scheduled notification (sets status = cancelled)
 - **Admin Notifications page redesigned**: Three-tab layout: Send Now (unchanged instant send + recent history), Schedule (scheduling form with datetime-local picker + live pending/sent list with cancel button), and History (full paginated log). Scheduled list auto-refreshes every 30 seconds. Status badges for pending/sent/failed/cancelled states.
 
-## Features Added (Current Session) — Enterprise Launch Readiness
+## Features Added (Current Session) — User Authentication & Donations
+
+### User Authentication (JWT)
+- **`users` DB table**: id, email, password_hash (bcrypt, 12 rounds), display_name, avatar_url, email_verified, created_at, updated_at
+- **`user_favorites` DB table**: server-side favourites per user (videoId, videoTitle, videoThumbnail, videoCategory)
+- **`user_watch_history` DB table**: server-side watch history per user with progressSecs
+- **`POST /api/auth/signup`**: Creates account, returns JWT + user object; 409 on duplicate email
+- **`POST /api/auth/login`**: Validates credentials, returns JWT (90-day expiry)
+- **`GET /api/auth/me`**: Returns current user from JWT (requireAuth middleware)
+- **`PATCH /api/auth/profile`**: Updates displayName
+- **`DELETE /api/auth/account`**: Deletes account + cascades to favorites/history
+- **`GET/POST/DELETE /api/user/favorites`**: Server-side favourite management
+- **`GET/POST/DELETE /api/user/history`**: Server-side watch history sync
+- **`requireAuth` middleware**: JWT verification, attaches user to req.user
+- **Auth rate limiting**: Signup + login capped at 10 req/min/IP (brute-force protection)
+- **JWT_SECRET**: Auto-generated 48-byte hex key stored as environment variable
+
+### Mobile Auth Screens
+- **`AuthContext`**: React context with signIn/signOut/updateUser; restores token from AsyncStorage on launch; refreshes user profile in background
+- **`services/authApi.ts`**: All API calls for auth (signup, login, me, profile update, favorites/history sync)
+- **`app/login.tsx`**: Full login screen (email + password with show/hide, submit, link to signup)
+- **`app/signup.tsx`**: Full signup screen (name + email + password + confirm password validation)
+- **Settings — ACCOUNT section**: Shows sign in/create account buttons when logged out; shows user name + email + sign-out when logged in
+- **Settings — GIVE section**: Donation entry point from settings
+
+### Donations Screen
+- **`app/donate.tsx`**: Full donation screen with 4 giving tiers, Paystack/Flutterwave/bank transfer links, account details, contact email
+
+## Features Added (Session (previous)) — Enterprise Launch Readiness
 - **Launch readiness API**: Added protected `GET /api/admin/launch/readiness`, aggregating security, content, broadcast, HLS, cache, notification, monetization, and app launch configuration into go/no-go checks.
 - **Admin Launch Readiness page**: Added `/launch-readiness` with readiness score, blocker/warning counts, operational metrics, and actionable checklist grouped by Security & Access, Content & Broadcast, Streaming Pipeline, and Growth & Distribution.
 - **Navigation update**: Added Launch Readiness to the admin sidebar so operators can review production blockers before public release.

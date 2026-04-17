@@ -18,6 +18,8 @@ function getClientIp(req: Request): string {
 }
 
 function limitForPath(path: string): number {
+  if (path.startsWith("/api/auth/signup") || path.startsWith("/api/auth/login")) return 10;
+  if (path.startsWith("/api/auth")) return 30;
   if (path.startsWith("/api/admin/videos/upload")) return 90;
   if (path.startsWith("/api/admin/notifications")) return 20;
   if (path.startsWith("/api/admin")) return 240;

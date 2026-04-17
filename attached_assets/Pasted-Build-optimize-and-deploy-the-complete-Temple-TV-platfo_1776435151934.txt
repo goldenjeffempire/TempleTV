@@ -1,0 +1,96 @@
+Build, optimize, and deploy the complete Temple TV platform as a fully functional, enterprise-grade, production-ready streaming application using the Replit environment.
+
+Enhance the entire Temple TV mobile application to achieve full optimization, stability, and seamless functionality, ensuring it is production-ready for real-world usage. The platform must meet enterprise-grade standards and be fully prepared for deployment and launch across all major distribution channels, including mobile app stores, web platforms, and Smart TV applications.
+
+🎯 Execution Goals
+Deliver a fully working, production-ready application
+Ensure clean, maintainable, and scalable code architecture
+Build a real-world streaming platform, not a prototype
+Ensure the project runs smoothly within Replit and can be deployed externally
+🏗️ System Architecture (MANDATORY)
+
+Design and implement a full-stack architecture:
+
+Backend
+Use Node.js with NestJS (preferred) or Express
+Build RESTful APIs (or GraphQL if more suitable)
+Implement authentication (JWT-based)
+Use PostgreSQL (preferred) or MongoDB
+Structure code into services, controllers, and modules
+Frontend
+Build a responsive UI using:
+React (preferred) or Next.js
+Ensure mobile-first and cross-device compatibility
+Create reusable components and clean UI structure
+Mobile App
+Use React Native (Expo preferred)
+Ensure compatibility for Android and iOS
+Optimize performance and responsiveness
+📡 Video & Streaming System
+Implement:
+Video upload functionality (large file support)
+Cloud storage integration (e.g., AWS S3 or equivalent)
+Adaptive streaming (HLS)
+For live streaming:
+Support RTMP ingestion
+Deliver via HLS playback
+👤 Core Features to Implement
+User authentication (signup/login/logout)
+User profiles and personalization
+Video browsing and playback
+Watch history and saved content
+🛠️ Admin Dashboard
+
+Create a secure admin interface to:
+
+Upload and manage videos
+Manage livestreams
+Update homepage content dynamically
+Manage users and roles
+💰 Monetization Features
+Integrate ad systems (AdMob / AdSense ready structure)
+Implement optional:
+Subscriptions
+Donations
+Premium content access
+⚡ Performance Optimization
+Optimize API response times
+Implement caching strategies
+Ensure fast video upload and playback
+Optimize for low-bandwidth environments
+🔐 Security Requirements
+Secure all APIs
+Use HTTPS
+Prevent common vulnerabilities (XSS, CSRF, injection)
+Validate and sanitize all inputs
+🚀 Deployment (CRITICAL)
+
+Within Replit:
+
+Ensure the app runs correctly in the Replit workspace
+Configure environment variables properly
+Prepare the app for external deployment
+
+Also:
+
+Provide deployment-ready builds for:
+Web (hosting-ready)
+Mobile (APK / IPA guidance)
+Backend (cloud deployable)
+📂 Code Quality & Structure
+Use clear folder structure:
+/backend
+/frontend
+/mobile
+Write modular, reusable, and well-documented code
+Include setup instructions in a README
+✅ Final Deliverables
+Fully working full-stack application
+Clean and scalable codebase
+Deployment-ready builds
+Clear instructions to run and deploy
+⚠️ Agent Instructions
+Do NOT generate placeholder or incomplete code
+Do NOT skip core features
+Ensure everything is functional and connected
+Test all major features before finalizing

@@ -12,6 +12,7 @@ import {
   View,
 } from "react-native";
 import { Feather } from "@expo/vector-icons";
+import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
@@ -21,6 +22,7 @@ import { useWatchHistory } from "@/hooks/useWatchHistory";
 import { useFavorites } from "@/hooks/useFavorites";
 import { useNotificationPreferences } from "@/hooks/useNotificationPreferences";
 import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
+import { useAuth } from "@/context/AuthContext";
 import { APP_CONFIG } from "@/constants/config";
 import { fetchPlatformStatus, type PlatformStatus } from "@/services/platform";
 import {
@@ -92,10 +94,27 @@ export default function SettingsScreen() {
   const { favorites } = useFavorites();
   const { sermons, refresh, clearCache, cacheAgeMinutes, loading: cacheLoading } = useYouTubeChannel();
   const { prefs: notifPrefs, save: saveNotifPrefs, syncWithPermissionStatus } = useNotificationPreferences();
+  const { user, isLoggedIn, signOut } = useAuth();
   const webTopPad = Platform.OS === "web" ? 67 : 0;
   const [notifPermission, setNotifPermission] = useState<string | null>(null);
   const [cacheRefreshing, setCacheRefreshing] = useState(false);
   const [platformStatus, setPlatformStatus] = useState<PlatformStatus | null>(null);
+
+  const confirmSignOut = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    if (Platform.OS === "web") {
+      if (window.confirm("Sign out of your Temple TV account?")) signOut();
+    } else {
+      Alert.alert(
+        "Sign Out",
+        "Are you sure you want to sign out?",
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Sign Out", style: "destructive", onPress: signOut },
+        ],
+      );
+    }
+  };
 
   useEffect(() => {
     if (Platform.OS === "web") return;
@@ -212,6 +231,50 @@ export default function SettingsScreen() {
               Jesus Christ Temple Ministry
             </Text>
           </View>
+        </GlassCard>
+
+        <Text style={[styles.sectionLabel, { color: c.mutedForeground }]}>ACCOUNT</Text>
+        {isLoggedIn && user ? (
+          <GlassCard style={styles.group}>
+            <Row
+              icon="user"
+              label={user.displayName}
+              description={user.email}
+            />
+            <Divider />
+            <Row
+              icon="log-out"
+              label="Sign Out"
+              onPress={confirmSignOut}
+              danger
+            />
+          </GlassCard>
+        ) : (
+          <GlassCard style={styles.group}>
+            <Row
+              icon="log-in"
+              label="Sign In"
+              description="Sync favourites and history across devices"
+              onPress={() => router.push("/login")}
+            />
+            <Divider />
+            <Row
+              icon="user-plus"
+              label="Create Account"
+              description="Free — no credit card required"
+              onPress={() => router.push("/signup")}
+            />
+          </GlassCard>
+        )}
+
+        <Text style={[styles.sectionLabel, { color: c.mutedForeground }]}>GIVE</Text>
+        <GlassCard style={styles.group}>
+          <Row
+            icon="heart"
+            label="Support the Ministry"
+            description="Give / Donate to Temple TV JCTM"
+            onPress={() => router.push("/donate")}
+          />
         </GlassCard>
 
         <Text style={[styles.sectionLabel, { color: c.mutedForeground }]}>PLATFORM STATUS</Text>

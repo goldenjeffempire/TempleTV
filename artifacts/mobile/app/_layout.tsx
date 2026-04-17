@@ -17,6 +17,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { LiveBroadcastSupervisor } from "@/components/LiveBroadcastSupervisor";
 import { PlayerProvider } from "@/context/PlayerContext";
+import { AuthProvider } from "@/context/AuthContext";
 import { setupTrackPlayer } from "@/services/nowPlaying";
 
 SplashScreen.preventAutoHideAsync();
@@ -84,6 +85,30 @@ function RootLayoutNav() {
           animation: "slide_from_bottom",
         }}
       />
+      <Stack.Screen
+        name="login"
+        options={{
+          headerShown: false,
+          presentation: "modal",
+          animation: "slide_from_bottom",
+        }}
+      />
+      <Stack.Screen
+        name="signup"
+        options={{
+          headerShown: false,
+          presentation: "modal",
+          animation: "slide_from_bottom",
+        }}
+      />
+      <Stack.Screen
+        name="donate"
+        options={{
+          headerShown: false,
+          presentation: "modal",
+          animation: "slide_from_bottom",
+        }}
+      />
     </Stack>
   );
 }
@@ -122,14 +147,16 @@ export default function RootLayout() {
     <SafeAreaProvider style={{ flex: 1 }}>
       <ErrorBoundary>
         <QueryClientProvider client={queryClient}>
-          <PlayerProvider>
-            <LiveBroadcastSupervisor />
-            <GestureHandlerRootView style={{ flex: 1 }}>
-              <KeyboardProvider>
-                <RootLayoutNav />
-              </KeyboardProvider>
-            </GestureHandlerRootView>
-          </PlayerProvider>
+          <AuthProvider>
+            <PlayerProvider>
+              <LiveBroadcastSupervisor />
+              <GestureHandlerRootView style={{ flex: 1 }}>
+                <KeyboardProvider>
+                  <RootLayoutNav />
+                </KeyboardProvider>
+              </GestureHandlerRootView>
+            </PlayerProvider>
+          </AuthProvider>
         </QueryClientProvider>
       </ErrorBoundary>
     </SafeAreaProvider>
