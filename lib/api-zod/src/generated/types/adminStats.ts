@@ -15,4 +15,5 @@ export interface AdminStats {
   liveViewerEstimate: number;
   recentImports: number;
   topCategory: string;
+  registeredUsers: number;
 }

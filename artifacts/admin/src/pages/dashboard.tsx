@@ -7,7 +7,7 @@ import {
   useStopLiveOverride,
 } from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Video, ListVideo, Calendar, BellRing, Activity, Radio, Plus, Loader2, Square } from "lucide-react";
+import { Video, ListVideo, Calendar, BellRing, Activity, Radio, Plus, Loader2, Square, Users } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
@@ -115,6 +115,27 @@ export default function Dashboard() {
                 <div className="text-2xl font-bold">{stats?.notificationsSentToday || 0}</div>
                 <p className="text-xs text-muted-foreground mt-1">
                   {(stats as any)?.registeredDevices ?? 0} registered devices
+                </p>
+              </>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        <Card className="lg:col-span-1 border-primary/20 bg-primary/5">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Registered Members</CardTitle>
+            <Users className="h-4 w-4 text-primary" />
+          </CardHeader>
+          <CardContent>
+            {isLoadingStats ? <Skeleton className="h-7 w-20" /> : (
+              <>
+                <div className="text-2xl font-bold text-primary">{stats?.registeredUsers ?? 0}</div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  <Link href="/users" className="underline underline-offset-2 hover:text-foreground transition-colors">
+                    View all members →
+                  </Link>
                 </p>
               </>
             )}

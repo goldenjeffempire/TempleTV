@@ -26,6 +26,35 @@ export const GetAdminStatsResponse = zod.object({
   liveViewerEstimate: zod.number(),
   recentImports: zod.number(),
   topCategory: zod.string(),
+  registeredUsers: zod.number(),
+});
+
+/**
+ * @summary List registered app users
+ */
+export const listAdminUsersQueryPageDefault = 1;
+export const listAdminUsersQueryLimitDefault = 20;
+
+export const ListAdminUsersQueryParams = zod.object({
+  search: zod.coerce.string().optional(),
+  page: zod.coerce.number().default(listAdminUsersQueryPageDefault),
+  limit: zod.coerce.number().default(listAdminUsersQueryLimitDefault),
+});
+
+export const ListAdminUsersResponse = zod.object({
+  users: zod.array(
+    zod.object({
+      id: zod.string(),
+      email: zod.string(),
+      displayName: zod.string(),
+      avatarUrl: zod.string().nullish(),
+      emailVerified: zod.boolean(),
+      createdAt: zod.coerce.date(),
+    }),
+  ),
+  total: zod.number(),
+  page: zod.number(),
+  totalPages: zod.number(),
 });
 
 /**

@@ -50,6 +50,46 @@ paths:
               schema:
                 $ref: "#/components/schemas/AdminStats"
 
+  /admin/users:
+    get:
+      operationId: listAdminUsers
+      tags: [admin-users]
+      summary: List registered app users
+      parameters:
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Paginated list of registered users
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AdminUser"
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  totalPages:
+                    type: integer
+                required: [users, total, page, totalPages]
+
   /admin/videos:
     get:
       operationId: listAdminVideos
@@ -520,6 +560,8 @@ components:
           type: integer
         topCategory:
           type: string
+        registeredUsers:
+          type: integer
       required:
         - totalVideos
         - totalPlaylists
@@ -529,6 +571,31 @@ components:
         - liveViewerEstimate
         - recentImports
         - topCategory
+        - registeredUsers
+
+    AdminUser:
+      type: object
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+        displayName:
+          type: string
+        avatarUrl:
+          type: string
+          nullable: true
+        emailVerified:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - email
+        - displayName
+        - emailVerified
+        - createdAt
 
     ManagedVideo:
       type: object

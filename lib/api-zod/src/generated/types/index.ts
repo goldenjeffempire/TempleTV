@@ -8,6 +8,7 @@
 
 export * from "./addVideoToPlaylistBody";
 export * from "./adminStats";
+export * from "./adminUser";
 export * from "./analytics";
 export * from "./categoryStat";
 export * from "./createPlaylistBody";
@@ -20,6 +21,8 @@ export * from "./getAnalyticsParams";
 export * from "./getAnalyticsPeriod";
 export * from "./healthStatus";
 export * from "./importVideoBody";
+export * from "./listAdminUsers200";
+export * from "./listAdminUsersParams";
 export * from "./listAdminVideosParams";
 export * from "./liveOverride";
 export * from "./liveOverrideResult";

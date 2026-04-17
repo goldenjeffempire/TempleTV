@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, scheduledNotificationsTable, pushTokensTable, liveOverridesTable, transcodingJobsTable, broadcastQueueTable } from "@workspace/db";
+import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, scheduledNotificationsTable, pushTokensTable, liveOverridesTable, transcodingJobsTable, broadcastQueueTable, usersTable } from "@workspace/db";
 import { eq, ilike, or, count, sql, desc, asc, and, lte } from "drizzle-orm";
 import { queueTranscodingJob, retryTranscodingJob } from "../lib/transcoder";
 import { broadcastLiveEvent, addSSEClient, removeSSEClient, getSSEClientCount } from "../lib/liveEvents";
@@ -418,6 +418,7 @@ router.get("/admin/stats", async (req, res) => {
       .from(notificationsTable)
       .where(sql`sent_at > now() - interval '1 day'`);
     const [registeredDevicesResult] = await db.select({ count: count() }).from(pushTokensTable);
+    const [registeredUsersResult] = await db.select({ count: count() }).from(usersTable);
 
     const categoryCounts = await db
       .select({ category: videosTable.category, count: count() })
@@ -454,6 +455,52 @@ router.get("/admin/stats", async (req, res) => {
       recentImports: recentImportsResult?.count ?? 0,
       topCategory: categoryCounts[0]?.category ?? "sermon",
       registeredDevices: registeredDevicesResult?.count ?? 0,
+      registeredUsers: Number(registeredUsersResult?.count ?? 0),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.get("/admin/users", async (req, res) => {
+  try {
+    const search = typeof req.query.search === "string" ? req.query.search.trim() : undefined;
+    const page = Math.max(1, Number(req.query.page ?? 1));
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit ?? 20)));
+    const offset = (page - 1) * limit;
+
+    const where = search
+      ? or(ilike(usersTable.email, `%${search}%`), ilike(usersTable.displayName, `%${search}%`))
+      : undefined;
+
+    const [totalResult] = await db
+      .select({ count: count() })
+      .from(usersTable)
+      .where(where);
+
+    const rows = await db
+      .select({
+        id: usersTable.id,
+        email: usersTable.email,
+        displayName: usersTable.displayName,
+        avatarUrl: usersTable.avatarUrl,
+        emailVerified: usersTable.emailVerified,
+        createdAt: usersTable.createdAt,
+      })
+      .from(usersTable)
+      .where(where)
+      .orderBy(desc(usersTable.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    const total = Number(totalResult?.count ?? 0);
+
+    res.json({
+      users: rows,
+      total,
+      page,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";

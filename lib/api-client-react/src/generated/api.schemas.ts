@@ -18,6 +18,16 @@ export interface AdminStats {
   liveViewerEstimate: number;
   recentImports: number;
   topCategory: string;
+  registeredUsers: number;
+}
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  displayName: string;
+  avatarUrl?: string | null;
+  emailVerified: boolean;
+  createdAt: string;
 }
 
 export interface ManagedVideo {
@@ -303,6 +313,19 @@ export interface DeleteResult {
   success: boolean;
   message: string;
 }
+
+export type ListAdminUsersParams = {
+  search?: string;
+  page?: number;
+  limit?: number;
+};
+
+export type ListAdminUsers200 = {
+  users: AdminUser[];
+  total: number;
+  page: number;
+  totalPages: number;
+};
 
 export type ListAdminVideosParams = {
   search?: string;
