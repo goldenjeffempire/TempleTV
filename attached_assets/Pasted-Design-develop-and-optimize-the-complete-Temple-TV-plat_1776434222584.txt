@@ -1,0 +1,69 @@
+Design, develop, and optimize the complete Temple TV platform as a fully integrated, enterprise-grade streaming ecosystem.
+
+Enhance the entire Temple TV mobile application to achieve full optimization, stability, and seamless functionality, ensuring it is production-ready for real-world usage. The platform must meet enterprise-grade standards and be fully prepared for deployment and launch across all major distribution channels, including mobile app stores, web platforms, and Smart TV applications.
+
+🎯 Core Objectives
+Deliver a production-ready, deployment-ready, and launch-ready system
+Ensure high performance, scalability, reliability, and security
+Build a real-world streaming platform comparable to modern global media services
+🏗️ Backend & System Architecture
+Architect and implement a robust, scalable backend infrastructure
+Use modern frameworks (e.g., Node.js with NestJS or equivalent)
+Design RESTful APIs and/or GraphQL services
+Integrate a reliable database system (PostgreSQL or MongoDB)
+Implement secure authentication and authorization (JWT / OAuth)
+📡 Video Streaming & Media System
+Enable fast and efficient large video uploads
+Implement adaptive bitrate streaming (HLS/DASH)
+Integrate cloud-based storage and delivery systems
+Ensure smooth playback across varying network conditions
+Support live streaming (RTMP ingestion with HLS playback)
+👤 User Management System
+Secure user registration and login
+Profile management and personalization
+Watch history and saved content
+Role-based access control (Admin, Editor, Viewer)
+🛠️ Admin Dashboard
+Develop a secure and intuitive admin panel to:
+Upload and manage video content
+Control livestream sessions
+Dynamically update platform content
+Manage users, roles, and permissions
+Ensure real-time data synchronization across all platforms
+📱🌐📺 Cross-Platform Optimization
+Ensure full responsiveness and compatibility for:
+Mobile applications (Android & iOS)
+Web platforms
+Smart TV applications
+Maintain consistent UI/UX across all devices
+💰 Monetization & Revenue System
+Integrate ad monetization systems (e.g., AdMob / AdSense)
+Enable subscriptions, donations, and premium access features
+Ensure all monetization functionalities are fully operational and compliant
+⚡ Performance & Optimization
+Optimize for speed, responsiveness, and low latency
+Implement caching mechanisms and CDN integration
+Ensure efficient media upload and delivery performance
+Handle high traffic and concurrent users effectively
+🔐 Security & Reliability
+Apply enterprise-level security best practices
+Protect against vulnerabilities (XSS, CSRF, injection attacks)
+Ensure secure data handling and encrypted communications (HTTPS)
+Implement logging, monitoring, and fault tolerance systems
+🚀 Deployment & DevOps
+Configure CI/CD pipelines for automated deployment
+Ensure compatibility with cloud environments (AWS, Firebase, or similar)
+Prepare production builds and environment configurations
+Ensure readiness for publishing on:
+Google Play Store
+Apple App Store
+Web hosting platforms
+Smart TV app stores
+✅ Final Requirement
+
+The final system must be:
+
+Fully functional and thoroughly tested
+Enterprise-grade and scalable
+Optimized for real-world usage
+Deployment-ready and launch-ready across all supported platforms

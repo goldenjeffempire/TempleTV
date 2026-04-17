@@ -91,6 +91,9 @@
       ]
     ],
     "extra": {
+      "router": {
+        "origin": "https://377e7acc-255a-4cbd-a486-d948164639b4-00-1mswafgr4qwrv.worf.replit.dev:3000"
+      },
       "eas": {
         "projectId": "temple-tv-jctm"
       }
