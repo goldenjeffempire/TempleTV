@@ -307,3 +307,8 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
   - POST /api/admin/notifications/schedule — create a new scheduled notification (validates future date)
   - DELETE /api/admin/notifications/scheduled/:id — cancel a pending scheduled notification (sets status = cancelled)
 - **Admin Notifications page redesigned**: Three-tab layout: Send Now (unchanged instant send + recent history), Schedule (scheduling form with datetime-local picker + live pending/sent list with cancel button), and History (full paginated log). Scheduled list auto-refreshes every 30 seconds. Status badges for pending/sent/failed/cancelled states.
+
+## Features Added (Current Session) — Enterprise Launch Readiness
+- **Launch readiness API**: Added protected `GET /api/admin/launch/readiness`, aggregating security, content, broadcast, HLS, cache, notification, monetization, and app launch configuration into go/no-go checks.
+- **Admin Launch Readiness page**: Added `/launch-readiness` with readiness score, blocker/warning counts, operational metrics, and actionable checklist grouped by Security & Access, Content & Broadcast, Streaming Pipeline, and Growth & Distribution.
+- **Navigation update**: Added Launch Readiness to the admin sidebar so operators can review production blockers before public release.

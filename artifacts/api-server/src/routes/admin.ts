@@ -571,6 +571,230 @@ router.get("/admin/ops/status", async (_req, res) => {
   }
 });
 
+type LaunchCheckStatus = "ready" | "warning" | "blocked";
+
+function launchCheck(
+  key: string,
+  label: string,
+  status: LaunchCheckStatus,
+  detail: string,
+  action?: string,
+) {
+  return { key, label, status, detail, action };
+}
+
+router.get("/admin/launch/readiness", async (_req, res) => {
+  const generatedAt = new Date();
+
+  try {
+    const [
+      totalVideosResult,
+      localVideos,
+      featuredVideosResult,
+      activeScheduleResult,
+      activeBroadcastResult,
+      devicesResult,
+      failedJobsResult,
+      queuedJobsResult,
+    ] = await Promise.all([
+      db.select({ count: count() }).from(videosTable),
+      db.select().from(videosTable).where(eq(videosTable.videoSource, "local")),
+      db.select({ count: count() }).from(videosTable).where(eq(videosTable.featured, true)),
+      db.select({ count: count() }).from(scheduleTable).where(eq(scheduleTable.isActive, true)),
+      db.select({ count: count() }).from(broadcastQueueTable).where(eq(broadcastQueueTable.isActive, true)),
+      db.select({ count: count() }).from(pushTokensTable),
+      db.select({ count: count() }).from(transcodingJobsTable).where(eq(transcodingJobsTable.status, "failed")),
+      db.select({ count: count() }).from(transcodingJobsTable).where(eq(transcodingJobsTable.status, "queued")),
+    ]);
+
+    const totalVideos = Number(totalVideosResult[0]?.count ?? 0);
+    const hlsReadyLocalVideos = localVideos.filter((video) => Boolean(video.hlsMasterUrl)).length;
+    const featuredVideos = Number(featuredVideosResult[0]?.count ?? 0);
+    const activeScheduleEntries = Number(activeScheduleResult[0]?.count ?? 0);
+    const activeBroadcastItems = Number(activeBroadcastResult[0]?.count ?? 0);
+    const registeredDevices = Number(devicesResult[0]?.count ?? 0);
+    const failedTranscodes = Number(failedJobsResult[0]?.count ?? 0);
+    const queuedTranscodes = Number(queuedJobsResult[0]?.count ?? 0);
+    const adminTokenConfigured = Boolean(process.env.ADMIN_API_TOKEN?.trim());
+    const corsConfigured = Boolean(process.env.ALLOWED_ORIGINS?.trim());
+    const objectStorageConfigured = Boolean(process.env.PRIVATE_OBJECT_DIR?.trim() || process.env.PUBLIC_OBJECT_SEARCH_PATHS?.trim());
+    const distributedCacheConfigured = Boolean(process.env.REDIS_URL?.trim());
+    const adsConfigured = Boolean(
+      process.env.ADMOB_APP_ID?.trim() ||
+      process.env.EXPO_PUBLIC_ADMOB_APP_ID?.trim() ||
+      process.env.ADSENSE_CLIENT_ID?.trim(),
+    );
+    const donationConfigured = Boolean(
+      process.env.DONATION_URL?.trim() ||
+      process.env.EXPO_PUBLIC_DONATION_URL?.trim() ||
+      process.env.STRIPE_SECRET_KEY?.trim(),
+    );
+    const appStoreConfigured = Boolean(process.env.APPLE_TEAM_ID?.trim() || process.env.EXPO_PUBLIC_REPL_ID?.trim());
+
+    const categories = [
+      {
+        key: "security",
+        label: "Security & access",
+        checks: [
+          launchCheck(
+            "admin-token",
+            "Admin API protection",
+            adminTokenConfigured ? "ready" : process.env.NODE_ENV === "production" ? "blocked" : "warning",
+            adminTokenConfigured ? "Admin API token is configured." : "Admin API token is not configured.",
+            "Set ADMIN_API_TOKEN before production launch.",
+          ),
+          launchCheck(
+            "cors",
+            "Allowed production origins",
+            process.env.NODE_ENV === "production" && !corsConfigured ? "blocked" : corsConfigured ? "ready" : "warning",
+            corsConfigured ? "Allowed origins are explicitly configured." : "Production CORS allowlist is not set.",
+            "Set ALLOWED_ORIGINS to the public web and admin domains.",
+          ),
+          launchCheck(
+            "rate-limit",
+            "Rate limiting and security headers",
+            "ready",
+            "API rate limits, request IDs, and hardened response headers are active.",
+          ),
+        ],
+      },
+      {
+        key: "content",
+        label: "Content & broadcast",
+        checks: [
+          launchCheck(
+            "video-library",
+            "Video library",
+            totalVideos > 0 ? "ready" : "blocked",
+            `${totalVideos} managed videos are available.`,
+            "Import YouTube videos or upload local sermons.",
+          ),
+          launchCheck(
+            "featured-content",
+            "Featured content",
+            featuredVideos > 0 ? "ready" : "warning",
+            `${featuredVideos} videos are marked as featured.`,
+            "Mark at least one sermon as featured for the home experience.",
+          ),
+          launchCheck(
+            "broadcast-queue",
+            "24/7 broadcast queue",
+            activeBroadcastItems > 0 ? "ready" : "blocked",
+            `${activeBroadcastItems} active broadcast queue items are available.`,
+            "Add active items to the broadcast queue.",
+          ),
+          launchCheck(
+            "schedule",
+            "Programming schedule",
+            activeScheduleEntries > 0 ? "ready" : "warning",
+            `${activeScheduleEntries} active schedule entries are configured.`,
+            "Create weekly schedule entries for planned programming.",
+          ),
+        ],
+      },
+      {
+        key: "streaming",
+        label: "Streaming pipeline",
+        checks: [
+          launchCheck(
+            "object-storage",
+            "Cloud media storage",
+            objectStorageConfigured ? "ready" : "warning",
+            objectStorageConfigured ? "Object storage paths are configured." : "Object storage environment paths are not configured.",
+            "Configure object storage before relying on large production media libraries.",
+          ),
+          launchCheck(
+            "hls",
+            "Adaptive HLS readiness",
+            localVideos.length === 0 || hlsReadyLocalVideos === localVideos.length ? "ready" : "warning",
+            `${hlsReadyLocalVideos} of ${localVideos.length} local uploads have HLS renditions.`,
+            "Let queued transcodes complete or retry failed jobs.",
+          ),
+          launchCheck(
+            "transcoding",
+            "Transcoding queue health",
+            failedTranscodes > 0 ? "blocked" : queuedTranscodes > 0 ? "warning" : "ready",
+            `${failedTranscodes} failed jobs and ${queuedTranscodes} queued jobs.`,
+            "Retry failed encodes from the Transcoding Queue page.",
+          ),
+          launchCheck(
+            "cache",
+            "Distributed cache",
+            distributedCacheConfigured ? "ready" : "warning",
+            distributedCacheConfigured ? "Redis cache is configured." : "Running with in-memory cache fallback.",
+            "Add REDIS_URL for multi-instance production scaling.",
+          ),
+        ],
+      },
+      {
+        key: "growth",
+        label: "Growth & distribution",
+        checks: [
+          launchCheck(
+            "push-devices",
+            "Push notification reach",
+            registeredDevices > 0 ? "ready" : "warning",
+            `${registeredDevices} devices are registered for notifications.`,
+            "Open the mobile app on test devices to register push tokens.",
+          ),
+          launchCheck(
+            "ads",
+            "Ad monetization",
+            adsConfigured ? "ready" : "warning",
+            adsConfigured ? "Ad monetization identifiers are configured." : "Ad monetization identifiers are not configured.",
+            "Add AdMob or AdSense configuration when ads are approved.",
+          ),
+          launchCheck(
+            "donations",
+            "Donations and premium access",
+            donationConfigured ? "ready" : "warning",
+            donationConfigured ? "Donation or payment configuration is present." : "Donation/payment configuration is not present.",
+            "Connect the approved giving or subscription provider.",
+          ),
+          launchCheck(
+            "app-store",
+            "App launch metadata",
+            appStoreConfigured ? "ready" : "warning",
+            appStoreConfigured ? "Launch build metadata is available." : "App store account metadata is not configured.",
+            "Prepare Apple developer metadata before store submission.",
+          ),
+        ],
+      },
+    ];
+
+    const allChecks = categories.flatMap((category) => category.checks);
+    const blocked = allChecks.filter((check) => check.status === "blocked").length;
+    const warnings = allChecks.filter((check) => check.status === "warning").length;
+    const ready = allChecks.filter((check) => check.status === "ready").length;
+
+    res.json({
+      generatedAt: generatedAt.toISOString(),
+      environment: process.env.NODE_ENV ?? "development",
+      overallStatus: blocked > 0 ? "blocked" : warnings > 0 ? "warning" : "ready",
+      summary: { ready, warnings, blocked, total: allChecks.length },
+      counts: {
+        totalVideos,
+        localVideos: localVideos.length,
+        hlsReadyLocalVideos,
+        featuredVideos,
+        activeScheduleEntries,
+        activeBroadcastItems,
+        registeredDevices,
+        failedTranscodes,
+        queuedTranscodes,
+      },
+      categories,
+    });
+  } catch (err) {
+    logger.error({ err }, "Launch readiness failed");
+    res.status(500).json({
+      generatedAt: generatedAt.toISOString(),
+      overallStatus: "blocked",
+      error: err instanceof Error ? err.message : "Unknown error",
+    });
+  }
+});
+
 router.get("/admin/videos", async (req, res) => {
   try {
     const parsed = ListAdminVideosQueryParams.safeParse(req.query);
