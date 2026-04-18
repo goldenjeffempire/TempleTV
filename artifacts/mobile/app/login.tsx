@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -134,6 +135,15 @@ export default function LoginScreen() {
           </Pressable>
         </View>
 
+        <Pressable
+          onPress={() => Linking.openURL("mailto:support@templetv.jctm?subject=Password%20Reset%20Request")}
+          style={styles.forgotBtn}
+        >
+          <Text style={[styles.forgotText, { color: c.mutedForeground }]}>
+            Forgot your password? Contact support
+          </Text>
+        </Pressable>
+
         <View style={styles.footer}>
           <Text style={[styles.footerText, { color: c.mutedForeground }]}>
             Don't have an account?{" "}
@@ -179,8 +189,18 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
-    marginTop: 32,
+    marginTop: 16,
   },
   footerText: { fontSize: 14, fontFamily: "Inter_400Regular" },
   footerLink: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  forgotBtn: {
+    alignItems: "center",
+    paddingVertical: 12,
+    marginTop: 8,
+  },
+  forgotText: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    textDecorationLine: "underline",
+  },
 });

@@ -66,4 +66,14 @@ app.use("/api/hls", (req, res, next) => {
 
 app.use("/api", router);
 
+app.use((_req: express.Request, res: express.Response) => {
+  res.status(404).json({ error: "not_found", message: "The requested endpoint does not exist." });
+});
+
+app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  const message = err instanceof Error ? err.message : "An unexpected error occurred";
+  logger.error({ err }, "Unhandled request error");
+  res.status(500).json({ error: "internal_error", message });
+});
+
 export default app;

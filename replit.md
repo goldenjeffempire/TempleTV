@@ -345,6 +345,28 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 - **admin/src/lib/videoCompressor.ts**: Fixed mp4box v2.3 API breaking changes — `MP4Sample` → `Sample`, `MP4ArrayBuffer` → `MP4BoxBuffer`, `onFlush` → double-cast, `m.default` → `m as unknown as typeof MP4BoxType`; fixed `sample.data` handling for `Uint8Array | DataView | undefined` union
 - **artifacts/api-server routes/admin.ts**: Fixed `ListAdminVideosQueryParams` fallback object from `{}` to properly typed `{ page, limit, search, category }` default
 
+## Features Added (Current Session) — Production Hardening
+
+### API Server
+- **Startup env var validation**: Server now throws immediately if `DATABASE_URL` or `JWT_SECRET` are missing, with a clear descriptive error message — prevents silent failures at boot.
+- **Global 404 & error handlers**: Added catch-all 404 JSON response and global Express error handler middleware in `app.ts`.
+- **`PATCH /api/auth/password`**: Authenticated endpoint to change password — validates current password with bcrypt before updating.
+
+### Mobile App — Cloud Sync
+- **`apiGetFavorites()` + `apiGetHistory()`**: New functions in `authApi.ts` that fetch server-side data for the authenticated user.
+- **`apiChangePassword()`**: New function in `authApi.ts` that calls the password change endpoint.
+- **`useFavorites` cloud sync**: On login (token change), pulls cloud favorites and merges with local AsyncStorage, de-duplicating by videoId — cloud-only items are added locally.
+- **`useWatchHistory` cloud sync**: Same approach — merges cloud history into local, sorted by watchedAt, capped at `maxHistoryItems`.
+
+### Mobile App — Screens & UX
+- **`app/change-password.tsx`**: New screen with current password + new password + confirm password fields, eye-toggle visibility, form validation (min 8 chars, must match), loading state, success alert, and back navigation.
+- **`app/(tabs)/settings.tsx`**: Added "Change Password" row in the Account section when logged in, linking to the change-password screen.
+- **`app/login.tsx`**: Added "Forgot your password? Contact support" link that opens a pre-filled support email.
+- **Placeholder fixes**: Donate screen bank account number changed from fake "0123456789" to "Contact Us"; settings share URL changed from fake `https://templetv.jctm` to `https://jctm.org.ng`.
+
+### Admin Dashboard
+- **Notification character counters**: Both "Send Now" and "Schedule" forms now show live counters (Title: 0/65, Body: 0/240) with `maxLength` enforcement and red highlighting when the limit is exceeded.
+
 ## Features Added (Session (previous)) — Enterprise Launch Readiness
 - **Launch readiness API**: Added protected `GET /api/admin/launch/readiness`, aggregating security, content, broadcast, HLS, cache, notification, monetization, and app launch configuration into go/no-go checks.
 - **Admin Launch Readiness page**: Added `/launch-readiness` with readiness score, blocker/warning counts, operational metrics, and actionable checklist grouped by Security & Access, Content & Broadcast, Streaming Pipeline, and Growth & Distribution.

@@ -24,6 +24,7 @@ import { useNotificationPreferences } from "@/hooks/useNotificationPreferences";
 import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
 import { useAuth } from "@/context/AuthContext";
 import { APP_CONFIG } from "@/constants/config";
+import { apiChangePassword } from "@/services/authApi";
 import { fetchPlatformStatus, type PlatformStatus } from "@/services/platform";
 import {
   requestNotificationPermissions,
@@ -243,6 +244,13 @@ export default function SettingsScreen() {
             />
             <Divider />
             <Row
+              icon="lock"
+              label="Change Password"
+              description="Update your account password"
+              onPress={() => router.push("/change-password")}
+            />
+            <Divider />
+            <Row
               icon="log-out"
               label="Sign Out"
               onPress={confirmSignOut}
@@ -446,7 +454,7 @@ export default function SettingsScreen() {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
               const { Share } = await import("react-native");
               Share.share({
-                message: "Watch sermons & live worship on Temple TV JCTM. Download the app: https://templetv.jctm",
+                message: "Watch sermons & live worship on Temple TV JCTM. Visit us at: https://jctm.org.ng",
                 title: "Temple TV JCTM",
               });
             }}

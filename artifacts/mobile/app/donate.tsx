@@ -144,7 +144,7 @@ export default function DonateScreen() {
           </View>
           <View style={styles.accountRow}>
             <Text style={[styles.accountKey, { color: c.mutedForeground }]}>Account No.</Text>
-            <Text style={[styles.accountVal, { color: c.foreground }]}>0123456789</Text>
+            <Text style={[styles.accountVal, { color: c.foreground }]}>Contact Us</Text>
           </View>
           <Text style={[styles.accountNote, { color: c.mutedForeground }]}>
             * Please contact us after transfer to confirm your giving.

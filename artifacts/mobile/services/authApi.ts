@@ -101,3 +101,45 @@ export async function apiSyncHistory(video: {
 export async function apiClearHistory(): Promise<void> {
   await authFetch("/api/user/history", { method: "DELETE" });
 }
+
+export interface CloudFavorite {
+  id: string;
+  videoId: string;
+  videoTitle: string;
+  videoThumbnail: string;
+  videoCategory: string;
+  createdAt: string;
+}
+
+export interface CloudHistoryEntry {
+  id: string;
+  videoId: string;
+  videoTitle: string;
+  videoThumbnail: string;
+  videoCategory: string;
+  progressSecs: number;
+  watchedAt: string;
+}
+
+export async function apiGetFavorites(): Promise<CloudFavorite[]> {
+  const res = await authFetch("/api/user/favorites");
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? "Failed to fetch favorites");
+  return (data as { favorites: CloudFavorite[] }).favorites ?? [];
+}
+
+export async function apiGetHistory(): Promise<CloudHistoryEntry[]> {
+  const res = await authFetch("/api/user/history");
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? "Failed to fetch history");
+  return (data as { history: CloudHistoryEntry[] }).history ?? [];
+}
+
+export async function apiChangePassword(currentPassword: string, newPassword: string): Promise<void> {
+  const res = await authFetch("/api/auth/password", {
+    method: "PATCH",
+    body: JSON.stringify({ currentPassword, newPassword }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? "Failed to change password");
+}

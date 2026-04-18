@@ -126,6 +126,44 @@ router.patch("/auth/profile", requireAuth, async (req, res) => {
   res.json({ user: { ...req.user, displayName: displayName.trim() } });
 });
 
+router.patch("/auth/password", requireAuth, async (req, res) => {
+  const PasswordBody = z.object({
+    currentPassword: z.string().min(1),
+    newPassword: z.string().min(8, "New password must be at least 8 characters"),
+  });
+
+  const parsed = PasswordBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid input", details: parsed.error.issues });
+    return;
+  }
+
+  const [user] = await db
+    .select({ id: usersTable.id, passwordHash: usersTable.passwordHash })
+    .from(usersTable)
+    .where(eq(usersTable.id, req.user!.id))
+    .limit(1);
+
+  if (!user) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+
+  const currentValid = await bcrypt.compare(parsed.data.currentPassword, user.passwordHash);
+  if (!currentValid) {
+    res.status(401).json({ error: "Current password is incorrect" });
+    return;
+  }
+
+  const newHash = await bcrypt.hash(parsed.data.newPassword, 12);
+  await db
+    .update(usersTable)
+    .set({ passwordHash: newHash, updatedAt: new Date() })
+    .where(eq(usersTable.id, req.user!.id));
+
+  res.json({ success: true, message: "Password updated successfully" });
+});
+
 router.delete("/auth/account", requireAuth, async (req, res) => {
   await db.delete(usersTable).where(eq(usersTable.id, req.user!.id));
   res.json({ success: true });

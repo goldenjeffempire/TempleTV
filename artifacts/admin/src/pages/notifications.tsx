@@ -186,12 +186,18 @@ export default function Notifications() {
                     </Select>
                   </div>
                   <div className="space-y-2">
-                    <Label>Title</Label>
-                    <Input value={formData.title} onChange={(e) => setFormData({ ...formData, title: e.target.value })} placeholder="e.g. Sunday Service is Live!" required />
+                    <div className="flex items-center justify-between">
+                      <Label>Title</Label>
+                      <span className={`text-[10px] ${formData.title.length > 65 ? "text-destructive font-medium" : "text-muted-foreground"}`}>{formData.title.length}/65</span>
+                    </div>
+                    <Input value={formData.title} onChange={(e) => setFormData({ ...formData, title: e.target.value })} placeholder="e.g. Sunday Service is Live!" maxLength={65} required />
                   </div>
                   <div className="space-y-2">
-                    <Label>Message Body</Label>
-                    <Textarea value={formData.body} onChange={(e) => setFormData({ ...formData, body: e.target.value })} placeholder="Tap here to join us in worship..." className="min-h-[100px]" required />
+                    <div className="flex items-center justify-between">
+                      <Label>Message Body</Label>
+                      <span className={`text-[10px] ${formData.body.length > 240 ? "text-destructive font-medium" : "text-muted-foreground"}`}>{formData.body.length}/240</span>
+                    </div>
+                    <Textarea value={formData.body} onChange={(e) => setFormData({ ...formData, body: e.target.value })} placeholder="Tap here to join us in worship..." className="min-h-[100px]" maxLength={240} required />
                   </div>
                   {(formData.type === "live_service" || formData.type === "new_sermon") && (
                     <div className="space-y-2">
@@ -265,12 +271,18 @@ export default function Notifications() {
                     </Select>
                   </div>
                   <div className="space-y-2">
-                    <Label>Title</Label>
-                    <Input value={schedForm.title} onChange={(e) => setSchedForm({ ...schedForm, title: e.target.value })} placeholder="e.g. Join us for Sunday Service!" required />
+                    <div className="flex items-center justify-between">
+                      <Label>Title</Label>
+                      <span className={`text-[10px] ${schedForm.title.length > 65 ? "text-destructive font-medium" : "text-muted-foreground"}`}>{schedForm.title.length}/65</span>
+                    </div>
+                    <Input value={schedForm.title} onChange={(e) => setSchedForm({ ...schedForm, title: e.target.value })} placeholder="e.g. Join us for Sunday Service!" maxLength={65} required />
                   </div>
                   <div className="space-y-2">
-                    <Label>Message Body</Label>
-                    <Textarea value={schedForm.body} onChange={(e) => setSchedForm({ ...schedForm, body: e.target.value })} placeholder="Worship starts at 10AM — tap to watch live." className="min-h-[100px]" required />
+                    <div className="flex items-center justify-between">
+                      <Label>Message Body</Label>
+                      <span className={`text-[10px] ${schedForm.body.length > 240 ? "text-destructive font-medium" : "text-muted-foreground"}`}>{schedForm.body.length}/240</span>
+                    </div>
+                    <Textarea value={schedForm.body} onChange={(e) => setSchedForm({ ...schedForm, body: e.target.value })} placeholder="Worship starts at 10AM — tap to watch live." className="min-h-[100px]" maxLength={240} required />
                   </div>
                   {(schedForm.type === "live_service" || schedForm.type === "new_sermon") && (
                     <div className="space-y-2">
