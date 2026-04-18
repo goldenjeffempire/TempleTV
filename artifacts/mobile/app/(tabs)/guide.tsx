@@ -15,9 +15,12 @@ import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
 import { LinearGradient } from "expo-linear-gradient";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useColors } from "@/hooks/useColors";
 import { GlassCard } from "@/components/GlassCard";
 import { fetchBroadcastGuide, type BroadcastGuideItem } from "@/services/broadcast";
+
+const REMINDERS_KEY = "@temple_tv/guide_reminders";
 
 function fmtTime(ms: number): string {
   const d = new Date(ms);
@@ -40,13 +43,58 @@ function fmtDuration(secs: number): string {
 
 const PLACEHOLDER = require("@/assets/images/sermon-placeholder.png");
 
+function ReminderButton({
+  itemId,
+  reminders,
+  onToggle,
+  c,
+}: {
+  itemId: string;
+  reminders: Set<string>;
+  onToggle: (id: string) => void;
+  c: ReturnType<typeof useColors>;
+}) {
+  const isSet = reminders.has(itemId);
+  return (
+    <Pressable
+      onPress={() => onToggle(itemId)}
+      style={({ pressed }) => [
+        styles.reminderBtn,
+        {
+          backgroundColor: isSet ? "rgba(245,158,11,0.12)" : c.secondary,
+          borderColor: isSet ? "rgba(245,158,11,0.45)" : c.border,
+          opacity: pressed ? 0.7 : 1,
+        },
+      ]}
+    >
+      <Feather
+        name={isSet ? "bell" : "bell-off"}
+        size={12}
+        color={isSet ? "#f59e0b" : c.mutedForeground}
+      />
+      <Text
+        style={[
+          styles.reminderText,
+          { color: isSet ? "#f59e0b" : c.mutedForeground },
+        ]}
+      >
+        {isSet ? "Reminded" : "Remind me"}
+      </Text>
+    </Pressable>
+  );
+}
+
 function GuideItemCard({
   item,
   onPress,
+  reminders,
+  onToggleReminder,
   c,
 }: {
   item: BroadcastGuideItem;
   onPress: (item: BroadcastGuideItem) => void;
+  reminders: Set<string>;
+  onToggleReminder: (id: string) => void;
   c: ReturnType<typeof useColors>;
 }) {
   if (item.isCurrent) {
@@ -80,7 +128,7 @@ function GuideItemCard({
             <Text style={styles.currentDuration}>{fmtDuration(item.durationSecs)}</Text>
 
             <View style={styles.progressTrack}>
-              <View style={[styles.progressFill, { width: `${Math.min(100, item.progressPercent)}%` }]} />
+              <View style={[styles.progressFill, { width: `${Math.min(100, item.progressPercent)}%` as any }]} />
             </View>
 
             <View style={styles.currentActions}>
@@ -125,6 +173,14 @@ function GuideItemCard({
         <Text style={[styles.upcomingTime, { color: c.primary }]}>{fmtTime(item.startMs)}</Text>
         <Text style={[styles.upcomingTitle, { color: c.foreground }]} numberOfLines={2}>{item.title}</Text>
         <Text style={[styles.upcomingDuration, { color: c.mutedForeground }]}>{fmtDuration(item.durationSecs)}</Text>
+        <View style={{ marginTop: 4 }}>
+          <ReminderButton
+            itemId={item.id}
+            reminders={reminders}
+            onToggle={onToggleReminder}
+            c={c}
+          />
+        </View>
       </View>
       <Feather name="chevron-right" size={16} color={c.mutedForeground} />
     </Pressable>
@@ -139,6 +195,28 @@ export default function GuideScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [reminders, setReminders] = useState<Set<string>>(new Set());
+
+  const loadReminders = async () => {
+    try {
+      const raw = await AsyncStorage.getItem(REMINDERS_KEY);
+      if (raw) setReminders(new Set(JSON.parse(raw) as string[]));
+    } catch {}
+  };
+
+  const toggleReminder = useCallback(async (itemId: string) => {
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setReminders((prev) => {
+      const next = new Set(prev);
+      if (next.has(itemId)) {
+        next.delete(itemId);
+      } else {
+        next.add(itemId);
+      }
+      AsyncStorage.setItem(REMINDERS_KEY, JSON.stringify([...next])).catch(() => {});
+      return next;
+    });
+  }, []);
 
   const loadGuide = useCallback(async () => {
     try {
@@ -153,6 +231,7 @@ export default function GuideScreen() {
 
   useEffect(() => {
     Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: Platform.OS !== "web" }).start();
+    loadReminders();
     loadGuide();
     const interval = setInterval(loadGuide, 60000);
     return () => clearInterval(interval);
@@ -198,6 +277,7 @@ export default function GuideScreen() {
   const today = new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
   const currentItem = guide.find((g) => g.isCurrent);
   const upcomingItems = guide.filter((g) => !g.isCurrent);
+  const reminderCount = reminders.size;
 
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
@@ -219,6 +299,11 @@ export default function GuideScreen() {
             <View>
               <Text style={[styles.headerTitle, { color: c.foreground }]}>Programme Guide</Text>
               <Text style={[styles.headerDate, { color: c.mutedForeground }]}>{today}</Text>
+              {reminderCount > 0 && (
+                <Text style={[styles.reminderCount, { color: "#f59e0b" }]}>
+                  {reminderCount} reminder{reminderCount !== 1 ? "s" : ""} set
+                </Text>
+              )}
             </View>
             <View style={[styles.channelBug, { backgroundColor: "rgba(106,13,173,0.15)", borderColor: c.primary + "40" }]}>
               <View style={styles.bugDot} />
@@ -248,7 +333,13 @@ export default function GuideScreen() {
               {currentItem && (
                 <View style={styles.section}>
                   <Text style={[styles.sectionLabel, { color: c.mutedForeground }]}>Now</Text>
-                  <GuideItemCard item={currentItem} onPress={handleItemPress} c={c} />
+                  <GuideItemCard
+                    item={currentItem}
+                    onPress={handleItemPress}
+                    reminders={reminders}
+                    onToggleReminder={toggleReminder}
+                    c={c}
+                  />
                 </View>
               )}
 
@@ -258,7 +349,13 @@ export default function GuideScreen() {
                   <View style={[styles.upcomingList, { borderColor: c.border }]}>
                     {upcomingItems.map((item, idx) => (
                       <React.Fragment key={`${item.id}-${idx}`}>
-                        <GuideItemCard item={item} onPress={handleItemPress} c={c} />
+                        <GuideItemCard
+                          item={item}
+                          onPress={handleItemPress}
+                          reminders={reminders}
+                          onToggleReminder={toggleReminder}
+                          c={c}
+                        />
                         {idx < upcomingItems.length - 1 && (
                           <View style={[styles.divider, { backgroundColor: c.border }]} />
                         )}
@@ -285,13 +382,14 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   header: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     justifyContent: "space-between",
     paddingHorizontal: 16,
     paddingBottom: 16,
   },
   headerTitle: { fontSize: 24, fontWeight: "700" },
   headerDate: { fontSize: 13, marginTop: 2 },
+  reminderCount: { fontSize: 12, fontWeight: "600", marginTop: 4 },
   channelBug: {
     flexDirection: "row",
     alignItems: "center",
@@ -300,6 +398,7 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     borderRadius: 8,
     borderWidth: 1,
+    marginTop: 4,
   },
   bugDot: { width: 7, height: 7, borderRadius: 3.5, backgroundColor: "#FF0040" },
   bugText: { fontSize: 10, fontWeight: "700", letterSpacing: 1.5 },
@@ -317,7 +416,7 @@ const styles = StyleSheet.create({
   currentTitle: { color: "#FFF", fontSize: 18, fontWeight: "700", lineHeight: 24 },
   currentDuration: { color: "rgba(255,255,255,0.6)", fontSize: 12 },
   progressTrack: { height: 3, backgroundColor: "rgba(255,255,255,0.2)", borderRadius: 2, overflow: "hidden", marginTop: 4 },
-  progressFill: { height: "100%", backgroundColor: "#6A0DAD", borderRadius: 2 },
+  progressFill: { height: "100%" as any, backgroundColor: "#6A0DAD", borderRadius: 2 },
   currentActions: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 6 },
   tuneInBtn: {
     flexDirection: "row",
@@ -353,4 +452,15 @@ const styles = StyleSheet.create({
   emptyTitle: { fontSize: 18, fontWeight: "700", textAlign: "center" },
   emptySubtitle: { fontSize: 14, textAlign: "center", lineHeight: 20 },
   updatedText: { fontSize: 11, textAlign: "center", paddingBottom: 8, paddingHorizontal: 16 },
+  reminderBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    alignSelf: "flex-start",
+  },
+  reminderText: { fontSize: 11, fontWeight: "600" },
 });

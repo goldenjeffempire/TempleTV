@@ -144,27 +144,27 @@ export default function DonateScreen() {
           </View>
           <View style={styles.accountRow}>
             <Text style={[styles.accountKey, { color: c.mutedForeground }]}>Account No.</Text>
-            <Text style={[styles.accountVal, { color: c.foreground }]}>Contact Us</Text>
+            <Pressable onPress={() => openLink("mailto:giving@jctm.org.ng")}>
+              <Text style={[styles.accountVal, { color: c.primary }]}>Contact Us →</Text>
+            </Pressable>
           </View>
           <Text style={[styles.accountNote, { color: c.mutedForeground }]}>
             * Please contact us after transfer to confirm your giving.
           </Text>
         </GlassCard>
 
-        {Platform.OS !== "web" && (
-          <Pressable
-            onPress={() => openLink("mailto:giving@jctm.org.ng")}
-            style={({ pressed }) => [
-              styles.contactBtn,
-              { borderColor: c.border, opacity: pressed ? 0.7 : 1 },
-            ]}
-          >
-            <Feather name="mail" size={16} color={c.mutedForeground} />
-            <Text style={[styles.contactText, { color: c.mutedForeground }]}>
-              Questions? Contact our giving team
-            </Text>
-          </Pressable>
-        )}
+        <Pressable
+          onPress={() => openLink("mailto:giving@jctm.org.ng")}
+          style={({ pressed }) => [
+            styles.contactBtn,
+            { borderColor: c.border, opacity: pressed ? 0.7 : 1 },
+          ]}
+        >
+          <Feather name="mail" size={16} color={c.mutedForeground} />
+          <Text style={[styles.contactText, { color: c.mutedForeground }]}>
+            Questions? Contact our giving team
+          </Text>
+        </Pressable>
       </ScrollView>
     </View>
   );

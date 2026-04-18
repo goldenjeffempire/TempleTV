@@ -40,6 +40,26 @@ export interface BroadcastCurrent {
   liveVideoId?: string | null;
 }
 
+export interface GuideItem {
+  id: string;
+  youtubeId: string;
+  title: string;
+  thumbnailUrl: string;
+  durationSecs: number;
+  localVideoUrl: string | null;
+  videoSource: string;
+  startMs: number;
+  endMs: number;
+  isCurrent: boolean;
+  positionSecs: number;
+  progressPercent: number;
+}
+
+export interface GuideResponse {
+  items: GuideItem[];
+  liveOverride?: { title: string } | null;
+}
+
 export async function fetchVideos(): Promise<VideoItem[]> {
   const res = await fetch(apiUrl("/youtube/videos"), {
     signal: AbortSignal.timeout(12000),
@@ -63,6 +83,14 @@ export async function fetchBroadcastCurrent(): Promise<BroadcastCurrent> {
   });
   if (!res.ok) throw new Error("Failed to fetch broadcast");
   return res.json() as Promise<BroadcastCurrent>;
+}
+
+export async function fetchGuide(): Promise<GuideResponse> {
+  const res = await fetch(apiUrl("/broadcast/guide"), {
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!res.ok) throw new Error("Failed to fetch guide");
+  return res.json() as Promise<GuideResponse>;
 }
 
 export { BASE_URL };

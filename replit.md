@@ -402,3 +402,26 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 - **Launch readiness API**: Added protected `GET /api/admin/launch/readiness`, aggregating security, content, broadcast, HLS, cache, notification, monetization, and app launch configuration into go/no-go checks.
 - **Admin Launch Readiness page**: Added `/launch-readiness` with readiness score, blocker/warning counts, operational metrics, and actionable checklist grouped by Security & Access, Content & Broadcast, Streaming Pipeline, and Growth & Distribution.
 - **Navigation update**: Added Launch Readiness to the admin sidebar so operators can review production blockers before public release.
+
+## Features Added (Current Session) — TV Guide, Mobile Reminders & Platform Polish
+
+### Smart TV — TV Guide / Schedule System
+- **`TVGuide` page** (`artifacts/tv/src/pages/TVGuide.tsx`): Full-screen programme guide with a grid listing of all upcoming broadcast items — program name, thumbnail, start time, end time, and duration
+- **Live programme highlighting**: The currently-playing item is prominently highlighted with a purple gradient card, a "NOW" badge, and a real-time progress bar showing how far through the programme the stream is
+- **Reminder system** (`artifacts/tv/src/hooks/useGuide.ts`): Viewers can toggle reminders for any upcoming programme using the R key or the bell button; reminders are persisted to `localStorage` and survive page refreshes. A reminder count badge appears in the guide header.
+- **Watchable from guide**: Current programme with a YouTube video ID shows a "Watch" action button — pressing Enter/clicking it plays the video in the full-screen player
+- **D-pad navigation**: Full arrow-key navigation (↑/↓ to move between programmes, Enter to watch/act, R to toggle reminder, Escape to return home)
+- **Auto-refresh**: Guide data refreshes from `/api/broadcast/guide` every 60 seconds without disrupting navigation
+- **Live override banner**: When a manual live override is active, the guide displays a prominent LIVE NOW banner instead of the normal grid
+- **Empty & error states**: Dedicated states for loading (skeleton rows), API errors (with retry button), and empty schedule
+- **App-level routing** (`artifacts/tv/src/App.tsx`): Extracted player state to the root so Home ↔ Guide ↔ Player navigation is clean and stateless
+- **Guide button in Home header**: Clearly visible "Guide" button in the TV header; keyboard shortcut G also opens the guide from any point on the Home screen
+
+### Mobile App — Programme Reminders
+- **Reminder toggle in Guide screen** (`artifacts/mobile/app/(tabs)/guide.tsx`): Upcoming programmes in the TV guide now have a "Remind me" / "Reminded" button; state stored via `AsyncStorage` under `@temple_tv/guide_reminders`
+- **Reminder counter**: Guide header shows the total number of active reminders set for upcoming programmes
+- **Haptic feedback**: Toggling a reminder triggers a light haptic tap on supported iOS/Android devices
+
+### Mobile App — Donate Screen Fixes
+- **Account number link**: The "Contact Us" placeholder for bank account details is now a tappable link that opens the giving team email
+- **Contact button on web**: The "Questions? Contact our giving team" button is now visible on all platforms (web, iOS, Android) — was previously hidden on web

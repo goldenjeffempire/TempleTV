@@ -1,8 +1,7 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { LiveHero } from "../components/LiveHero";
 import { SermonRow } from "../components/SermonRow";
 import { Clock } from "../components/Clock";
-import { Player } from "./Player";
 import { useTVNav } from "../hooks/useTVNav";
 import { useSermons, useLiveStatus } from "../hooks/useData";
 
@@ -15,12 +14,16 @@ const CATEGORIES = [
   "Special Programs",
 ];
 
-export function Home() {
+interface HomeProps {
+  onNavigateGuide: () => void;
+  onPlay: (videoId: string, title: string) => void;
+}
+
+export function Home({ onNavigateGuide, onPlay }: HomeProps) {
   const { byCategory, loading } = useSermons();
   const liveStatus = useLiveStatus();
   const scrollRef = useRef<HTMLDivElement>(null);
-
-  const [player, setPlayer] = useState<{ videoId: string; title: string } | null>(null);
+  const [guideButtonFocused, setGuideButtonFocused] = useState(false);
 
   const rows = [
     { key: "__live__", label: "Live", items: liveStatus?.isLive ? 1 : 0 },
@@ -43,29 +46,36 @@ export function Home() {
       if (!row) return;
       if (row.key === "__live__") {
         if (liveStatus?.isLive && liveStatus.videoId) {
-          setPlayer({ videoId: liveStatus.videoId, title: liveStatus.title ?? "Live Stream" });
+          onPlay(liveStatus.videoId, liveStatus.title ?? "Live Stream");
         }
         return;
       }
       const sermons = byCategory[row.key] ?? [];
       const sermon = sermons[itemIndex];
       if (sermon) {
-        setPlayer({ videoId: sermon.videoId, title: sermon.title });
+        onPlay(sermon.videoId, sermon.title);
       }
     },
-    [rows, byCategory, liveStatus],
+    [rows, byCategory, liveStatus, onPlay],
   );
 
   const { focusRow, getFocusItem } = useTVNav({
     rowCount: rows.length,
     getRowItemCount,
     onSelect,
-    enabled: !player,
+    enabled: true,
   });
 
-  if (player) {
-    return <Player videoId={player.videoId} title={player.title} onBack={() => setPlayer(null)} />;
-  }
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "g" || e.key === "G") {
+        e.preventDefault();
+        onNavigateGuide();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onNavigateGuide]);
 
   return (
     <div style={{ width: "100vw", height: "100vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -94,7 +104,41 @@ export function Home() {
             <span style={{ fontSize: 14, color: "rgba(255,255,255,0.4)", marginLeft: 8 }}>JCTM</span>
           </div>
         </div>
-        <Clock />
+
+        {/* Navigation */}
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          {/* Guide button */}
+          <button
+            onClick={onNavigateGuide}
+            onFocus={() => setGuideButtonFocused(true)}
+            onBlur={() => setGuideButtonFocused(false)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "9px 18px",
+              borderRadius: 10,
+              background: guideButtonFocused ? "rgba(106,13,173,0.5)" : "rgba(255,255,255,0.08)",
+              border: `1px solid ${guideButtonFocused ? "rgba(106,13,173,0.7)" : "rgba(255,255,255,0.15)"}`,
+              color: "#fff",
+              fontSize: 14,
+              fontWeight: 600,
+              cursor: "pointer",
+              fontFamily: "inherit",
+              transition: "all 0.15s",
+            }}
+            title="Open TV Guide (G)"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+              <line x1="3" y1="9" x2="21" y2="9"/>
+              <line x1="3" y1="15" x2="21" y2="15"/>
+              <line x1="9" y1="9" x2="9" y2="21"/>
+            </svg>
+            Guide
+          </button>
+          <Clock />
+        </div>
       </div>
 
       {/* Scrollable content */}
@@ -109,7 +153,7 @@ export function Home() {
             focused={focusRow === 0}
             onSelect={() => {
               if (liveStatus?.isLive && liveStatus.videoId) {
-                setPlayer({ videoId: liveStatus.videoId, title: liveStatus.title ?? "Live" });
+                onPlay(liveStatus.videoId, liveStatus.title ?? "Live");
               }
             }}
           />
@@ -143,7 +187,7 @@ export function Home() {
                 rowFocused={focusRow === rowIndex}
                 onCardFocus={() => {}}
                 onCardSelect={(sermon) =>
-                  setPlayer({ videoId: sermon.videoId, title: sermon.title })
+                  onPlay(sermon.videoId, sermon.title)
                 }
               />
             );
@@ -153,7 +197,7 @@ export function Home() {
         {/* Nav hint */}
         <div style={{ paddingLeft: 60, paddingTop: 16 }}>
           <p style={{ fontSize: 13, color: "rgba(255,255,255,0.3)", letterSpacing: "0.04em" }}>
-            ↑ ↓ Navigate rows &nbsp; · &nbsp; ← → Select video &nbsp; · &nbsp; ENTER Play
+            ↑ ↓ Navigate rows &nbsp; · &nbsp; ← → Select video &nbsp; · &nbsp; ENTER Play &nbsp; · &nbsp; G TV Guide
           </p>
         </div>
       </div>
