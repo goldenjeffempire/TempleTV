@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { useListAdminUsers } from "@workspace/api-client-react";
+import { keepPreviousData } from "@tanstack/react-query";
+import { useListAdminUsers, getListAdminUsersQueryKey } from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -43,10 +44,10 @@ export default function UsersPage() {
   const [page, setPage] = useState(1);
   const debouncedSearch = useDebounce(search, 350);
 
-  const { data, isLoading } = useListAdminUsers(
-    { search: debouncedSearch || undefined, page, limit: 20 },
-    { query: { keepPreviousData: true } },
-  );
+  const params = { search: debouncedSearch || undefined, page, limit: 20 };
+  const { data, isLoading } = useListAdminUsers(params, {
+    query: { placeholderData: keepPreviousData, queryKey: getListAdminUsersQueryKey(params) },
+  });
 
   const handleSearch = (value: string) => {
     setSearch(value);

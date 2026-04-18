@@ -41,7 +41,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 
-type PlaylistVideo = {
+type LocalPlaylistVideo = {
   id: string;
   videoId: string;
   title: string;
@@ -55,7 +55,7 @@ function SortableVideoItem({
   index,
   onRemove,
 }: {
-  video: PlaylistVideo;
+  video: LocalPlaylistVideo;
   index: number;
   onRemove: (id: string) => void;
 }) {
@@ -325,12 +325,13 @@ function PlaylistDetail({ id }: { id: string }) {
     const { active, over } = event;
     if (!over || active.id === over.id || !playlist) return;
 
-    const oldIndex = playlist.videos.findIndex((v: PlaylistVideo) => v.id === active.id);
-    const newIndex = playlist.videos.findIndex((v: PlaylistVideo) => v.id === over.id);
+    const videos = playlist.videos as unknown as LocalPlaylistVideo[];
+    const oldIndex = videos.findIndex((v) => v.id === active.id);
+    const newIndex = videos.findIndex((v) => v.id === over.id);
     if (oldIndex === -1 || newIndex === -1) return;
 
-    const newOrder = arrayMove(playlist.videos as PlaylistVideo[], oldIndex, newIndex);
-    const videoIds = newOrder.map((v: PlaylistVideo) => v.id);
+    const newOrder = arrayMove(videos, oldIndex, newIndex);
+    const videoIds = newOrder.map((v) => v.id);
 
     reorderPlaylist.mutate(
       { id, data: { videoIds } },
@@ -370,7 +371,7 @@ function PlaylistDetail({ id }: { id: string }) {
     );
   };
 
-  const existingVideoIds = new Set(playlist?.videos?.map((v: PlaylistVideo) => v.videoId) ?? []);
+  const existingVideoIds = new Set((playlist?.videos as unknown as LocalPlaylistVideo[])?.map((v) => v.videoId) ?? []);
   const filteredLibrary = (allVideos?.videos ?? []).filter(
     (v) =>
       !existingVideoIds.has(v.id) &&
@@ -457,10 +458,10 @@ function PlaylistDetail({ id }: { id: string }) {
         ) : (
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
             <SortableContext
-              items={playlist.videos.map((v: PlaylistVideo) => v.id)}
+              items={(playlist.videos as unknown as LocalPlaylistVideo[]).map((v) => v.id)}
               strategy={verticalListSortingStrategy}
             >
-              {playlist.videos.map((video: PlaylistVideo, index: number) => (
+              {(playlist.videos as unknown as LocalPlaylistVideo[]).map((video, index) => (
                 <SortableVideoItem
                   key={video.id}
                   video={video}

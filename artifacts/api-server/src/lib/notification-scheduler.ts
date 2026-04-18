@@ -21,8 +21,13 @@ async function sendToExpo(
 
     const res = await fetch("https://exp.host/--/api/v2/push/send", {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "Accept-Encoding": "gzip, deflate",
+      },
       body: JSON.stringify(messages),
+      signal: AbortSignal.timeout(15_000),
     });
 
     if (!res.ok) {
@@ -60,7 +65,7 @@ async function processDueNotifications() {
     if (due.length === 0) return;
 
     const tokenRows = await db.select({ token: pushTokensTable.token }).from(pushTokensTable);
-    const tokens = tokenRows.map((r) => r.token);
+    const tokens = tokenRows.map((r: { token: string }) => r.token);
 
     for (const notif of due) {
       try {
@@ -101,7 +106,8 @@ async function processDueNotifications() {
 export function startNotificationScheduler() {
   logger.info("Notification scheduler started (30s interval)");
   processDueNotifications().catch((err) => logger.error({ err }, "Scheduler error on startup"));
-  setInterval(() => {
+  const timer = setInterval(() => {
     processDueNotifications().catch((err) => logger.error({ err }, "Scheduler error"));
   }, 30_000);
+  timer.unref();
 }

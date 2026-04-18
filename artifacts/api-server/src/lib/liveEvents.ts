@@ -104,4 +104,22 @@ export function startSSEHeartbeat(): void {
 
     broadcastLiveEvent("heartbeat", { ts: now, clients: clients.size });
   }, 20_000);
+
+  heartbeatTimer.unref();
+}
+
+export function stopSSEHeartbeat(): void {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
+
+export function closeAllSSEClients(): void {
+  for (const client of clients) {
+    try {
+      client.res.end();
+    } catch {}
+  }
+  clients.clear();
 }

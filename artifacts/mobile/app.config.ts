@@ -1,0 +1,116 @@
+import type { ConfigContext, ExpoConfig } from "expo/config";
+
+export default ({ config }: ConfigContext): ExpoConfig => {
+  const replitExpoDomain = process.env.REPLIT_EXPO_DEV_DOMAIN;
+  const routerOrigin = replitExpoDomain
+    ? `https://${replitExpoDomain}`
+    : "https://templetv.jctm";
+
+  return {
+    ...config,
+    name: "Temple TV",
+    slug: "mobile",
+    version: "1.0.0",
+    orientation: "portrait",
+    icon: "./assets/images/icon.png",
+    scheme: "templetv",
+    userInterfaceStyle: "light",
+    newArchEnabled: true,
+    description:
+      "Stream live worship, sermons, and teachings from Temple TV JCTM Broadcasting — Jesus Christ Temple Ministry.",
+    owner: "templetv",
+    privacy: "public",
+    assetBundlePatterns: ["**/*"],
+    splash: {
+      image: "./assets/images/icon.png",
+      resizeMode: "contain",
+      backgroundColor: "#F8F5FF",
+    },
+    ios: {
+      supportsTablet: true,
+      bundleIdentifier: "com.templetv.jctm",
+      buildNumber: "1",
+      requireFullScreen: false,
+      infoPlist: {
+        UIBackgroundModes: ["audio", "fetch", "remote-notification"],
+        AVAudioSessionCategory: "AVAudioSessionCategoryPlayback",
+        ITSAppUsesNonExemptEncryption: false,
+        NSAllowsArbitraryLoads: false,
+      },
+    },
+    android: {
+      package: "com.templetv.jctm",
+      versionCode: 1,
+      adaptiveIcon: {
+        foregroundImage: "./assets/images/icon.png",
+        backgroundColor: "#F8F5FF",
+      },
+      permissions: [
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.VIBRATE",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "android.permission.WAKE_LOCK",
+      ],
+      softwareKeyboardLayoutMode: "resize",
+      userInterfaceStyle: "light",
+      blockedPermissions: [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+      ],
+    },
+    web: {
+      favicon: "./assets/images/icon.png",
+      bundler: "metro",
+    },
+    notification: {
+      icon: "./assets/images/icon.png",
+      color: "#6A0DAD",
+      androidMode: "collapse",
+      androidCollapsedTitle: "Temple TV",
+    },
+    plugins: [
+      [
+        "expo-router",
+        {
+          origin: routerOrigin,
+        },
+      ],
+      "expo-font",
+      "expo-web-browser",
+      [
+        "expo-av",
+        {
+          microphonePermission: false,
+        },
+      ],
+      [
+        "expo-notifications",
+        {
+          icon: "./assets/images/icon.png",
+          color: "#6A0DAD",
+          sounds: [],
+        },
+      ],
+    ],
+    extra: {
+      ...(config.extra as Record<string, unknown> | undefined),
+      router: {
+        origin: routerOrigin,
+      },
+      eas: {
+        projectId: "temple-tv-jctm",
+      },
+    },
+    experiments: {
+      typedRoutes: true,
+      reactCompiler: true,
+    },
+  };
+};

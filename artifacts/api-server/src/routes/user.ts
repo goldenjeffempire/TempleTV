@@ -64,12 +64,13 @@ router.post("/user/favorites", requireAuth, async (req, res) => {
 });
 
 router.delete("/user/favorites/:videoId", requireAuth, async (req, res) => {
+  const videoId = req.params["videoId"] as string;
   await db
     .delete(userFavoritesTable)
     .where(
       and(
         eq(userFavoritesTable.userId, req.user!.id),
-        eq(userFavoritesTable.videoId, req.params.videoId),
+        eq(userFavoritesTable.videoId, videoId),
       ),
     );
   res.json({ success: true });

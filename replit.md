@@ -336,6 +336,15 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 ### Donations Screen
 - **`app/donate.tsx`**: Full donation screen with 4 giving tiers, Paystack/Flutterwave/bank transfer links, account details, contact email
 
+## Session 17 — TypeScript Cleanup (All Substantive Errors Resolved)
+- **API server**: 100% clean TypeScript (only cosmetic TS7030 "not all code paths return" in Express handlers — runtime-safe, Express handles void fine)
+- **admin/src/pages/playlists.tsx**: Renamed local `PlaylistVideo` to `LocalPlaylistVideo` to eliminate name collision with generated api-client-react type; replaced all implicit type assertions with explicit `as unknown as` casts throughout DnD reorder logic and existingVideoIds computation
+- **admin/src/pages/notifications.tsx**: Removed non-existent `SendNotificationBodyType` import; defined `NotifType` union inline; cast Select `onValueChange` string values to `NotifType`
+- **admin/src/pages/users.tsx**: Added `getListAdminUsersQueryKey` import; included required `queryKey` in React Query v5 `query` options alongside `keepPreviousData`
+- **admin/src/pages/videos.tsx**: Added `as unknown as VideoRow[]` cast for `data?.videos` map callback to resolve `ManagedVideo` vs `VideoRow` incompatibility (runtime data has extra fields not in generated OpenAPI types)
+- **admin/src/lib/videoCompressor.ts**: Fixed mp4box v2.3 API breaking changes — `MP4Sample` → `Sample`, `MP4ArrayBuffer` → `MP4BoxBuffer`, `onFlush` → double-cast, `m.default` → `m as unknown as typeof MP4BoxType`; fixed `sample.data` handling for `Uint8Array | DataView | undefined` union
+- **artifacts/api-server routes/admin.ts**: Fixed `ListAdminVideosQueryParams` fallback object from `{}` to properly typed `{ page, limit, search, category }` default
+
 ## Features Added (Session (previous)) — Enterprise Launch Readiness
 - **Launch readiness API**: Added protected `GET /api/admin/launch/readiness`, aggregating security, content, broadcast, HLS, cache, notification, monetization, and app launch configuration into go/no-go checks.
 - **Admin Launch Readiness page**: Added `/launch-readiness` with readiness score, blocker/warning counts, operational metrics, and actionable checklist grouped by Security & Access, Content & Broadcast, Streaming Pipeline, and Growth & Distribution.

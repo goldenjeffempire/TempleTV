@@ -45,7 +45,7 @@ class MemoryCache {
 }
 
 class RedisCache {
-  private client: import("ioredis").Redis;
+  private client!: import("ioredis").Redis;
   private ready = false;
 
   constructor(url: string) {

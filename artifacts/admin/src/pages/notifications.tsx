@@ -14,6 +14,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "").replace(/\/admin\/?$/, "") + "/api";
 
+type NotifType = "live_service" | "new_sermon" | "announcement" | "custom";
+
 type ScheduledNotif = {
   id: string;
   title: string;
@@ -44,14 +46,14 @@ export default function Notifications() {
   const [formData, setFormData] = useState({
     title: "",
     body: "",
-    type: "announcement" as string,
+    type: "announcement" as NotifType,
     videoId: "",
   });
 
   const [schedForm, setSchedForm] = useState({
     title: "",
     body: "",
-    type: "announcement" as string,
+    type: "announcement" as NotifType,
     videoId: "",
     scheduledAt: "",
   });
@@ -173,7 +175,7 @@ export default function Notifications() {
                 <form onSubmit={handleSend} className="space-y-4">
                   <div className="space-y-2">
                     <Label>Notification Type</Label>
-                    <Select value={formData.type} onValueChange={(v) => setFormData({ ...formData, type: v })}>
+                    <Select value={formData.type} onValueChange={(v) => setFormData({ ...formData, type: v as NotifType })}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="announcement">Announcement</SelectItem>
@@ -252,7 +254,7 @@ export default function Notifications() {
                 <form onSubmit={handleSchedule} className="space-y-4">
                   <div className="space-y-2">
                     <Label>Notification Type</Label>
-                    <Select value={schedForm.type} onValueChange={(v) => setSchedForm({ ...schedForm, type: v })}>
+                    <Select value={schedForm.type} onValueChange={(v) => setSchedForm({ ...schedForm, type: v as NotifType })}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="announcement">Announcement</SelectItem>

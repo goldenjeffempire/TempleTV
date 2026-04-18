@@ -1227,7 +1227,7 @@ export default function Broadcast() {
                       ? <Loader2 className="w-4 h-4 animate-spin" />
                       : alreadyAdded
                       ? <><CheckCircle2 className="w-3.5 h-3.5 mr-1" />In Queue</>
-                      : <><PlusIcon className="w-4 h-4 mr-1" />Add</>}
+                      : <><Plus className="w-4 h-4 mr-1" />Add</>}
                   </Button>
                 </div>
               );

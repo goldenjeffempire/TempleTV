@@ -935,7 +935,7 @@ export default function Videos() {
           </div>
         ) : (
           <div className="divide-y">
-            {data?.videos.map((video: VideoRow) => {
+            {(data?.videos as unknown as VideoRow[]).map((video: VideoRow) => {
               const v = video;
               const isLocal = v.videoSource === "local";
               return (

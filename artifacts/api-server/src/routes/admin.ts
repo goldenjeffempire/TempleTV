@@ -845,7 +845,7 @@ router.get("/admin/launch/readiness", async (_req, res) => {
 router.get("/admin/videos", async (req, res) => {
   try {
     const parsed = ListAdminVideosQueryParams.safeParse(req.query);
-    const params = parsed.success ? parsed.data : {};
+    const params = parsed.success ? parsed.data : { page: 1, limit: 20, search: undefined, category: undefined };
     const page = params.page ?? 1;
     const limit = params.limit ?? 20;
     const offset = (page - 1) * limit;
@@ -1022,7 +1022,7 @@ router.post("/admin/videos/upload/:sessionId/chunk", chunkUpload.single("chunk")
     // Verify SHA-256 checksum when provided — uses async Web Crypto so the
     // event loop is never blocked, keeping all concurrent chunks flowing freely.
     if (checksum) {
-      const hashBuf = await (webcrypto as Crypto).subtle.digest("SHA-256", chunk.buffer);
+      const hashBuf = await (webcrypto as Crypto).subtle.digest("SHA-256", new Uint8Array(chunk.buffer as unknown as ArrayBuffer));
       const actualChecksum = Buffer.from(hashBuf).toString("hex");
       if (actualChecksum !== checksum) {
         logger.warn({ sessionId, chunkIndex: idx, expected: checksum, actual: actualChecksum }, "Chunk checksum mismatch");
@@ -1952,7 +1952,6 @@ router.post("/admin/live/override/start", async (req, res) => {
         body: override.title,
         type: "live_service",
         sentCount: pushResult.sent,
-        failedCount: pushResult.failed,
       });
     }
 

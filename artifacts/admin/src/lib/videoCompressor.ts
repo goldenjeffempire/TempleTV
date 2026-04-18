@@ -5,14 +5,14 @@
  * Falls back gracefully when WebCodecs is unavailable.
  */
 
-import type MP4BoxType from "mp4box";
+import type * as MP4BoxType from "mp4box";
 import type { Muxer as MuxerType, ArrayBufferTarget as ArrayBufferTargetType } from "mp4-muxer";
 
 export interface CompressionOptions {
   maxHeight: number;       // cap resolution (e.g. 1080)
   targetBitrate: number;   // bits/s (e.g. 4_000_000 for 4 Mbps)
   targetFps: number;       // normalize frame rate (e.g. 30)
-  hardwareAcceleration?: VideoHardwareAcceleration;
+  hardwareAcceleration?: HardwareAcceleration;
 }
 
 export interface CompressionProgress {
@@ -98,7 +98,7 @@ export async function compressVideo(
 ): Promise<Blob> {
   // Dynamic imports — mp4box and mp4-muxer are heavy, only load when needed
   const [MP4Box, { Muxer, ArrayBufferTarget }] = await Promise.all([
-    import("mp4box").then((m) => m.default as typeof MP4BoxType),
+    import("mp4box").then((m) => m as unknown as typeof MP4BoxType),
     import("mp4-muxer") as Promise<{ Muxer: typeof MuxerType; ArrayBufferTarget: typeof ArrayBufferTargetType }>,
   ]);
 
@@ -258,7 +258,7 @@ export async function compressVideo(
     let videoTrackId = -1;
     let audioTrackId = -1;
     let videoConfigured = false;
-    let pendingSamples: { isVideo: boolean; samples: MP4BoxType.MP4Sample[] }[] = [];
+    let pendingSamples: { isVideo: boolean; samples: MP4BoxType.Sample[] }[] = [];
     let allSamplesReceived = false;
     let drainStarted = false;
 
@@ -280,7 +280,7 @@ export async function compressVideo(
             type: sample.is_sync ? "key" : "delta",
             timestamp: (sample.cts / sample.timescale) * 1_000_000,
             duration: (sample.duration / sample.timescale) * 1_000_000,
-            data: new Uint8Array(sample.data),
+            data: sample.data instanceof Uint8Array ? sample.data : new Uint8Array((sample.data as unknown as DataView).buffer),
           });
 
           if (isVideo) {
@@ -290,7 +290,7 @@ export async function compressVideo(
               type: "key",
               timestamp: (sample.cts / sample.timescale) * 1_000_000,
               duration: (sample.duration / sample.timescale) * 1_000_000,
-              data: new Uint8Array(sample.data),
+              data: sample.data instanceof Uint8Array ? sample.data : new Uint8Array((sample.data as unknown as DataView).buffer),
             });
             audioDecoder.decode(aChunk);
           }
@@ -337,7 +337,8 @@ export async function compressVideo(
       }
     };
 
-    mp4file.onReady = (info: MP4BoxType.MP4Info) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mp4file.onReady = (info: any) => {
       onProgress({ phase: "analyzing", progress: 5, eta: 0, inputSize: file.size, outputSize: file.size, compressionRatio: 1, fps: 0 });
 
       const videoTrack = info.videoTracks?.[0];
@@ -414,12 +415,13 @@ export async function compressVideo(
       mp4file.start();
     };
 
-    mp4file.onSamples = (_id: number, user: unknown, samples: MP4BoxType.MP4Sample[]) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mp4file.onSamples = (_id: number, user: unknown, samples: MP4BoxType.Sample[]) => {
       const isVideo = user === "video";
       pendingSamples.push({ isVideo, samples });
     };
 
-    mp4file.onFlush = () => {
+    (mp4file as unknown as { onFlush: () => void }).onFlush = () => {
       allSamplesReceived = true;
       drainAndFinalize().catch(reject);
     };
@@ -440,7 +442,7 @@ export async function compressVideo(
       }
 
       const slice = file.slice(offset, offset + CHUNK);
-      const buf = (await slice.arrayBuffer()) as MP4BoxType.MP4ArrayBuffer;
+      const buf = (await slice.arrayBuffer()) as MP4BoxType.MP4BoxBuffer;
       buf.fileStart = offset;
       offset += CHUNK;
       mp4file.appendBuffer(buf);
