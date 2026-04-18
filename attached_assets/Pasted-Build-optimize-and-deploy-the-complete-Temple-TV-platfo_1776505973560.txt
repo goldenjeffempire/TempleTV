@@ -1,0 +1,85 @@
+Build, optimize, and deploy the complete Temple TV platform as a fully functional, enterprise-grade, production-ready streaming application using the Replit environment.
+
+Enhance the entire Temple TV mobile application to achieve full optimization, stability, and seamless functionality, ensuring it is production-ready for real-world usage. The platform must meet enterprise-grade standards and be fully prepared for deployment and launch across all major distribution channels, including mobile app stores, web platforms, and Smart TV applications.
+
+🎯 Execution Goals
+Deliver a fully working, production-ready streaming system
+Ensure clean, scalable, and maintainable architecture
+Build a real-world multimedia platform (video + audio streaming)
+Ensure smooth execution and deployment within Replit
+📡 Streaming System
+Support large video uploads
+Implement adaptive streaming (HLS)
+Ensure smooth playback across different network conditions
+Enable live streaming:
+RTMP ingestion
+HLS playback
+🔊 Radio Mode (CRITICAL FEATURE)
+
+Implement a radio (audio-only) mode fully synchronized with the streaming system:
+
+Core Requirements
+Provide a toggle switch (Video Mode ↔ Radio Mode)
+When Radio Mode is enabled:
+Deliver audio-only playback from the same stream
+Continue playing the exact live or recorded content
+Maintain synchronization with video playback
+Functional Capabilities
+Real-time audio extraction from video streams
+Background playback support
+Reduced data consumption for users
+Seamless switching between video and audio without restarting playback
+Live Streaming Integration
+Live streams must automatically support:
+Video playback (default mode)
+Audio-only playback (radio mode)
+Ensure minimal latency difference between both modes
+UI/UX for Radio Mode
+Add:
+“Radio Mode” toggle
+Audio player interface (play/pause, seek, volume)
+Display current content metadata (title, speaker, etc.)
+👤 Core Features
+User authentication (signup/login/logout)
+User profiles and personalization
+Watch/listen history
+Saved or favorite content
+🛠️ Admin Capabilities
+Upload and manage video content
+Manage livestream sessions
+Dynamically update platform content
+Manage users and roles
+💰 Monetization
+Integrate ad-ready structure (AdMob / AdSense)
+Support subscriptions, donations, and premium content
+Ensure monetization works across both video and radio modes
+⚡ Performance Optimization
+Fast loading and smooth playback
+Efficient media delivery
+Optimized for low-bandwidth environments (especially radio mode)
+Handle high user traffic effectively
+🔐 Security
+Secure all communications (HTTPS)
+Validate and sanitize inputs
+Protect against common vulnerabilities (XSS, CSRF, injections)
+🚀 Deployment (CRITICAL)
+Ensure full functionality within Replit
+Configure environment variables properly
+Prepare for deployment across:
+Mobile app stores
+Web platforms
+Smart TV platforms
+📂 Code Structure
+/project
+Maintain clean, modular, and well-documented code
+Include a complete README with setup and deployment instructions
+✅ Final Deliverables
+Fully functional video + radio streaming platform
+Seamless switching between video and audio modes
+Production-ready, enterprise-grade system
+Deployment-ready builds and configurations
+⚠️ Agent Rules
+Do NOT generate placeholder or incomplete features
+Ensure all features are fully functional
+Maintain synchronization between video and radio modes
+Test all core functionalities before completion

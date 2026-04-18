@@ -14,10 +14,29 @@ const CATEGORIES = [
   "Special Programs",
 ];
 
+const CATEGORY_KEYWORDS: Record<string, string[]> = {
+  Faith: ["faith", "believe", "trust", "salvation", "grace", "prayer", "gospel", "word", "scripture", "bible"],
+  Healing: ["healing", "heal", "miracle", "health", "sick", "recovery", "restore", "wholeness", "body"],
+  Deliverance: ["deliverance", "deliver", "freedom", "captive", "bondage", "oppress", "demon", "stronghold"],
+  Worship: ["worship", "praise", "sing", "glory", "holy", "spirit", "presence", "choir", "music"],
+  Teachings: ["teaching", "lesson", "study", "message", "sermon", "preach", "doctrine", "truth", "instruction"],
+  "Special Programs": ["conference", "special", "convention", "program", "service", "crusade", "revival", "anniversary"],
+};
+
+function categorizeVideo(video: VideoItem, index: number): string {
+  const text = `${video.title} ${video.description}`.toLowerCase();
+  for (const [category, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
+    if (keywords.some((kw) => text.includes(kw))) {
+      return category;
+    }
+  }
+  return CATEGORIES[index % CATEGORIES.length]!;
+}
+
 function categorize(videos: VideoItem[]): Sermon[] {
   return videos.map((v, i) => ({
     ...v,
-    category: CATEGORIES[i % CATEGORIES.length]!,
+    category: categorizeVideo(v, i),
   }));
 }
 

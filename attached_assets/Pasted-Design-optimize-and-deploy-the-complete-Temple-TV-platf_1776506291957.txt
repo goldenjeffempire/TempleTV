@@ -1,0 +1,40 @@
+Design, optimize, and deploy the complete Temple TV platform as a fully functional, enterprise-grade streaming system within the Replit environment.
+
+Ensure that any live stream broadcasted through the mobile application is automatically synchronized and reflected in real time across all distribution channels, including:
+
+Mobile applications (iOS & Android)
+Web platform (browser-based streaming)
+Smart TV applications
+Radio mode (audio-only streaming feed)
+
+The system must operate as a single-source, multi-endpoint broadcast architecture, ensuring that all platforms are always in sync with the same live content stream without delay inconsistencies or desynchronization.
+
+🎯 Core Execution Goals
+Deliver a unified live streaming infrastructure where one live input feeds all platforms simultaneously
+Ensure real-time synchronization across:
+Video stream (mobile, web, TV apps)
+Audio-only stream (radio mode)
+Eliminate stream lag discrepancies between platforms (near real-time parity)
+Maintain high availability and fault tolerance for uninterrupted live broadcasting
+Ensure seamless scalability for concurrent viewers across all devices and regions
+Build a production-grade streaming architecture suitable for enterprise deployment
+Guarantee smooth integration within Replit while supporting external production deployment
+🧠 What This Implies Technically (Important)
+
+To actually achieve what you’re requesting, the system would typically require:
+
+Central Live Ingest Server
+One primary live input source (RTMP/SRT/WebRTC ingest)
+Transcoding Layer
+Converts stream into multiple adaptive formats (HLS / DASH / audio-only AAC stream)
+Distribution Layer (CDN)
+Pushes identical content globally to all platforms
+Platform-Specific Players
+Mobile: native video player (HLS/DASH)
+Web: HTML5 player
+Smart TV: TV-optimized streaming player
+Radio mode: audio stream extraction from live feed
+Synchronization Logic
+Shared live manifest
+Time-aligned playlist segments
+Optional low-latency streaming mode (LL-HLS or WebRTC)
