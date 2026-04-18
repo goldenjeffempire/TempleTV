@@ -17,6 +17,8 @@ import {
   MonitorPlay,
   Rocket,
   Users,
+  CreditCard,
+  Signal,
 } from "lucide-react";
 import { useGetLiveStatus } from "@workspace/api-client-react";
 import { getLocalTimeZone, isMidnightHour } from "@/lib/theme";
@@ -61,7 +63,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
     { href: "/analytics", label: "Analytics", icon: BarChart2 },
     { href: "/users", label: "Registered Users", icon: Users },
     { href: "/transcoding", label: "Transcoding Queue", icon: Cpu },
+    { href: "/live-control", label: "Live Control", icon: Signal },
     { href: "/live-monitor", label: "Live Monitor", icon: MonitorPlay },
+    { href: "/subscriptions", label: "Subscriptions", icon: CreditCard },
     { href: "/operations", label: "Operations", icon: ShieldCheck },
     { href: "/launch-readiness", label: "Launch Readiness", icon: Rocket },
   ];

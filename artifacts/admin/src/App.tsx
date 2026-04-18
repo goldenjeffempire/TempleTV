@@ -16,6 +16,8 @@ import Operations from "@/pages/operations";
 import LiveMonitor from "@/pages/live-monitor";
 import LaunchReadiness from "@/pages/launch-readiness";
 import UsersPage from "@/pages/users";
+import LiveControl from "@/pages/live-control";
+import Subscriptions from "@/pages/subscriptions";
 import { applyAutoTheme } from "@/lib/theme";
 import { useEffect } from "react";
 
@@ -44,6 +46,8 @@ function Router() {
         <Route path="/live-monitor" component={LiveMonitor} />
         <Route path="/users" component={UsersPage} />
         <Route path="/launch-readiness" component={LaunchReadiness} />
+        <Route path="/live-control" component={LiveControl} />
+        <Route path="/subscriptions" component={Subscriptions} />
         <Route component={NotFound} />
       </Switch>
     </Layout>

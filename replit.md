@@ -2,7 +2,13 @@
 
 ## Overview
 
-A full-stack broadcasting platform for Temple TV (JCTM). Features a cross-platform mobile app (Expo/React Native), a web admin dashboard (React/Vite), and a Node.js/Express API backend. Includes Live TV, Video-on-Demand sermon library, 24/7 Radio mode, push notifications, offline video downloads, and a continuous adaptive streaming engine.
+An enterprise-grade, production-ready broadcasting platform for Temple TV (JCTM). Features a cross-platform mobile app (Expo/React Native), a Smart TV web app, an admin dashboard (React/Vite), and a Node.js/Express API backend. Includes Live TV, Video-on-Demand sermon library, 24/7 Radio mode, push notifications, offline video downloads, a continuous adaptive streaming engine, subscription management, and a unified real-time broadcast synchronization system across all platforms.
+
+## Key Architecture: Unified Live Broadcast Sync
+- **Single-source, multi-endpoint**: One live input (YouTube Live, HLS URL, or RTMP ingest) feeds all platforms simultaneously
+- **Real-time push via SSE**: `GET /api/broadcast/events` delivers instant state changes to all connected clients (TV, mobile, web, radio)
+- **Admin Live Control**: Dedicated Live Control panel in admin to go live instantly — pushes to all connected clients within milliseconds
+- **HLS stream support**: External HLS stream URLs (Mux, Cloudflare Stream, Wowza, etc.) stored and distributed across platforms
 
 ## Stack
 
@@ -108,6 +114,33 @@ Faith, Healing, Deliverance, Worship, Prophecy, Teachings, Special Programs
 - Mobile preview dependency compatibility was aligned for Expo SDK 54: `expo-file-system` uses the SDK-compatible 19.x line and `shaka-player` satisfies the web shim used by `react-native-track-player`.
 - Verified Replit preview routes: `/api/healthz`, `/admin/`, `/mobile/`, and Expo `/status` all return HTTP 200 with the registered API, admin, and mobile runners active.
 - Mobile Expo dev CORS is configured to allow the Replit preview origin, preventing blocked source-map/runtime requests in the `/mobile/` preview.
+
+## Features Added (Latest Session) — Enterprise Production & Unified Broadcast Architecture
+
+### Smart TV App
+- **Search page**: Full on-screen keyboard with D-pad navigation, real-time filtering of the entire video library, shows all videos when query empty, playable directly from results; keyboard shortcut `S` from home
+- **Video Details page**: Intermediate details view before playback — full blurred background thumbnail, metadata (date, duration, views), description, "Up Next" list of related videos in right panel; D-pad navigable
+- **Search navigation hook** (`useSearch.ts`): Pre-fetches all videos, debounced 300ms client-side filter
+- **Real-time live sync hook** (`useLiveSync.ts`): SSE-first connection to `/api/broadcast/events` with automatic reconnection and polling fallback — all clients get live state within milliseconds of admin going live
+- **Keyword-based categorization** (`useData.ts`): Videos are now categorized by matching title/description keywords (Faith, Healing, Deliverance, Worship, Teachings, Special Programs) instead of round-robin assignment
+
+### Mobile Radio
+- **Sleep Timer**: 15 / 30 / 60 / 90 minute options; countdown displayed in the button; haptic feedback on expiry; auto-pauses playback; cancel at any time
+
+### Admin Panel
+- **Live Control page** (`/live-control`): Dedicated single-click "Go Live" panel — instantly overrides broadcast on all platforms via SSE; supports custom HLS stream URL, RTMP ingest key (stored for reference), auto-end timer, internal notes; shows elapsed time, real-time connected viewer count; broadcast history
+- **Subscriptions page** (`/subscriptions`): Full CRUD for subscription tiers (name, slug, monthly/yearly price in ₦, feature list); subscriber management table with status control (active/canceled/expired/past_due)
+
+### API Server
+- **`POST /api/admin/live-overrides`**: New Go-Live endpoint supporting `hlsStreamUrl`, `rtmpIngestKey`, `streamNotes`, `endsAt` — immediately pushes to all SSE clients
+- **`GET/PATCH /api/admin/live-overrides/:id`**: History fetch and update for live overrides
+- **Subscription API routes** (`/api/subscriptions/tiers`, `/api/admin/subscriptions/*`, `/api/me/subscription`): Full tier management, user grant, status control, my-subscription endpoint
+- **Updated `/api/admin/live/override/start`**: Now supports hlsStreamUrl, rtmpIngestKey, streamNotes fields
+
+### Database
+- **`subscription_tiers` table**: id, name, slug, description, price_monthly_cents, price_yearly_cents, features (JSON), is_active, sort_order
+- **`user_subscriptions` table**: id, user_id, tier_id, status, provider, period start/end, cancel_at_period_end
+- **Live overrides schema extended**: Added `hls_stream_url`, `rtmp_ingest_key`, `stream_notes` columns — schema pushed to DB
 
 ## Features Added (Current Session) — Real-Time Broadcast Control Foundation
 - **Public broadcast event stream**: Added `/api/broadcast/events` so clients can subscribe to current broadcast changes without waiting for polling.

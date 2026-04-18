@@ -10,3 +10,4 @@ export * from "./transcoding";
 export * from "./users";
 export * from "./user-favorites";
 export * from "./user-watch-history";
+export * from "./subscriptions";

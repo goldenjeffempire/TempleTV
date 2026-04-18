@@ -46,6 +46,22 @@ const LOOP_LABELS: Record<LoopMode, string> = {
 
 const RADIO_CATEGORIES: SermonCategory[] = ["All", "Worship", "Teachings", "Faith", "Healing", "Deliverance", "Prophecy", "Special Programs"];
 
+const SLEEP_TIMER_OPTIONS = [
+  { label: "15 min", secs: 15 * 60 },
+  { label: "30 min", secs: 30 * 60 },
+  { label: "60 min", secs: 60 * 60 },
+  { label: "90 min", secs: 90 * 60 },
+];
+
+function fmtTimer(secs: number): string {
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
+  if (m > 0) return `${m}m ${String(s).padStart(2, "0")}s`;
+  return `${s}s`;
+}
+
 export default function RadioScreen() {
   const c = useColors();
   const insets = useSafeAreaInsets();
@@ -74,6 +90,9 @@ export default function RadioScreen() {
   const [broadcastInfo, setBroadcastInfo] = useState<BroadcastCurrentResult | null>(null);
   const [autoMirror, setAutoMirror] = useState(false);
   const [broadcastPosition, setBroadcastPosition] = useState(0);
+  const [sleepTimerSecs, setSleepTimerSecs] = useState(0);
+  const [showTimerPicker, setShowTimerPicker] = useState(false);
+  const sleepTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
@@ -106,6 +125,38 @@ export default function RadioScreen() {
       router.push({ pathname: "/player", params: { broadcastMode: "true", videoId: item.youtubeId, title: item.title, thumbnail: item.thumbnailUrl, startPositionMs: startMs, radioOnly: "true" } });
     }
   }, [autoMirror]);
+
+  useEffect(() => {
+    if (sleepTimerRef.current) clearInterval(sleepTimerRef.current);
+    if (sleepTimerSecs <= 0) return;
+    sleepTimerRef.current = setInterval(() => {
+      setSleepTimerSecs((prev) => {
+        if (prev <= 1) {
+          if (sleepTimerRef.current) clearInterval(sleepTimerRef.current);
+          togglePlay();
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => {
+      if (sleepTimerRef.current) clearInterval(sleepTimerRef.current);
+    };
+  }, [sleepTimerSecs > 0 ? 1 : 0]);
+
+  const handleSetSleepTimer = (secs: number) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setSleepTimerSecs(secs);
+    setShowTimerPicker(false);
+  };
+
+  const handleCancelSleepTimer = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (sleepTimerRef.current) clearInterval(sleepTimerRef.current);
+    setSleepTimerSecs(0);
+    setShowTimerPicker(false);
+  };
 
   const handleListenLive = () => {
     const item = broadcastInfo?.item;
@@ -482,6 +533,53 @@ export default function RadioScreen() {
               </Pressable>
             </GlassCard>
           )}
+
+          {/* Sleep Timer */}
+          <GlassCard style={[styles.toggleRow, { flexDirection: "column", alignItems: "stretch", gap: 10 }]}>
+            <View style={[styles.toggleRow, { padding: 0, gap: 12 }]}>
+              <View style={styles.toggleLeft}>
+                <View style={[styles.toggleIcon, { backgroundColor: c.secondary }]}>
+                  <Feather name="moon" size={16} color={c.primary} />
+                </View>
+                <View>
+                  <Text style={[styles.toggleLabel, { color: c.foreground }]}>Sleep Timer</Text>
+                  <Text style={[styles.toggleDesc, { color: c.mutedForeground }]}>
+                    {sleepTimerSecs > 0 ? `Stops in ${fmtTimer(sleepTimerSecs)}` : "Auto-pause after a set time"}
+                  </Text>
+                </View>
+              </View>
+              {sleepTimerSecs > 0 ? (
+                <Pressable
+                  onPress={handleCancelSleepTimer}
+                  style={[styles.modeBtn, { backgroundColor: c.primary, borderColor: c.primary }]}
+                >
+                  <Text style={[styles.modeBtnText, { color: "#FFF" }]}>{fmtTimer(sleepTimerSecs)}</Text>
+                  <Feather name="x" size={13} color="#FFF" />
+                </Pressable>
+              ) : (
+                <Pressable
+                  onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setShowTimerPicker((v) => !v); }}
+                  style={[styles.modeBtn, { backgroundColor: c.muted, borderColor: c.border }]}
+                >
+                  <Feather name="moon" size={13} color={c.mutedForeground} />
+                  <Text style={[styles.modeBtnText, { color: c.mutedForeground }]}>Set</Text>
+                </Pressable>
+              )}
+            </View>
+            {showTimerPicker && sleepTimerSecs === 0 && (
+              <View style={styles.timerOptions}>
+                {SLEEP_TIMER_OPTIONS.map((opt) => (
+                  <Pressable
+                    key={opt.secs}
+                    onPress={() => handleSetSleepTimer(opt.secs)}
+                    style={({ pressed }) => [styles.timerOption, { backgroundColor: pressed ? c.primary : c.muted, borderColor: c.border }]}
+                  >
+                    <Text style={[styles.timerOptionText, { color: c.foreground }]}>{opt.label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+          </GlassCard>
         </View>
 
         {upNext.length > 0 && (
@@ -595,6 +693,9 @@ const styles = StyleSheet.create({
   queueText: { flex: 1 },
   queueItemTitle: { fontSize: 14, fontFamily: "Inter_500Medium" },
   queueMeta: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
+  timerOptions: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  timerOption: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, borderWidth: 1 },
+  timerOptionText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
   watchVideoBtn: {
     flexDirection: "row",
     alignItems: "center",

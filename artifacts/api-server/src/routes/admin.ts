@@ -1913,12 +1913,91 @@ router.get("/admin/live", async (_req, res) => {
   }
 });
 
+router.get("/admin/live-overrides", async (_req, res) => {
+  try {
+    const overrides = await db.select().from(liveOverridesTable).orderBy(desc(liveOverridesTable.startedAt));
+    res.json(overrides);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "Unknown error" });
+  }
+});
+
+router.post("/admin/live-overrides", async (req, res) => {
+  try {
+    const { title, hlsStreamUrl, rtmpIngestKey, streamNotes, endsAt, notify = true } = req.body as {
+      title?: string;
+      hlsStreamUrl?: string | null;
+      rtmpIngestKey?: string | null;
+      streamNotes?: string | null;
+      endsAt?: string | null;
+      notify?: boolean;
+    };
+    await db.update(liveOverridesTable).set({ isActive: false }).where(eq(liveOverridesTable.isActive, true));
+    const startedAt = new Date();
+    const [override] = await db.insert(liveOverridesTable).values({
+      id: randomUUID(),
+      title: title?.trim() || "Temple TV Live",
+      hlsStreamUrl: hlsStreamUrl || null,
+      rtmpIngestKey: rtmpIngestKey || null,
+      streamNotes: streamNotes || null,
+      startedAt,
+      endsAt: endsAt ? new Date(endsAt) : null,
+      isActive: true,
+    }).returning();
+
+    if (notify) {
+      const tokenRows = await db.select().from(pushTokensTable);
+      const pushResult = await sendExpoPushNotifications(
+        tokenRows.map((r) => r.token),
+        "Temple TV is Live",
+        override.title,
+        { type: "live_service", route: "/player", live: true }
+      );
+      await db.insert(notificationsTable).values({
+        id: randomUUID(), title: "Temple TV is Live", body: override.title, type: "live_service", sentCount: pushResult.sent,
+      });
+    }
+
+    await invalidateBroadcastCache();
+    emitBroadcastState("live-started", { id: override.id });
+    broadcastLiveEvent("broadcast-control-updated", { reason: "live-started", id: override.id, queuedAt: new Date().toISOString() });
+    res.status(201).json(override);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "Unknown error" });
+  }
+});
+
+router.patch("/admin/live-overrides/:id", async (req, res) => {
+  const { id } = req.params as { id: string };
+  try {
+    const { isActive, title, hlsStreamUrl, streamNotes, endsAt } = req.body as {
+      isActive?: boolean; title?: string; hlsStreamUrl?: string | null; streamNotes?: string | null; endsAt?: string | null;
+    };
+    const updates: Record<string, unknown> = {};
+    if (isActive !== undefined) updates.isActive = isActive;
+    if (title !== undefined) updates.title = title;
+    if (hlsStreamUrl !== undefined) updates.hlsStreamUrl = hlsStreamUrl;
+    if (streamNotes !== undefined) updates.streamNotes = streamNotes;
+    if (endsAt !== undefined) updates.endsAt = endsAt ? new Date(endsAt) : null;
+    const [updated] = await db.update(liveOverridesTable).set(updates).where(eq(liveOverridesTable.id, id)).returning();
+    if (!updated) return res.status(404).json({ error: "Override not found" });
+    await invalidateBroadcastCache();
+    emitBroadcastState("live-updated", { id });
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "Unknown error" });
+  }
+});
+
 router.post("/admin/live/override/start", async (req, res) => {
   try {
-    const { title, durationMinutes = 120, notify = true } = req.body as {
+    const { title, durationMinutes = 120, notify = true, hlsStreamUrl, rtmpIngestKey, streamNotes } = req.body as {
       title?: string;
       durationMinutes?: number;
       notify?: boolean;
+      hlsStreamUrl?: string | null;
+      rtmpIngestKey?: string | null;
+      streamNotes?: string | null;
     };
     const safeDuration = Number.isFinite(durationMinutes) ? Math.max(5, Math.min(480, durationMinutes)) : 120;
     const startedAt = new Date();
@@ -1931,6 +2010,9 @@ router.post("/admin/live/override/start", async (req, res) => {
       .values({
         id: randomUUID(),
         title: title?.trim() || "Temple TV Live Service",
+        hlsStreamUrl: hlsStreamUrl || null,
+        rtmpIngestKey: rtmpIngestKey || null,
+        streamNotes: streamNotes || null,
         startedAt,
         endsAt,
         isActive: true,
