@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/tv/"
+title = "Temple TV Smart TV"
+version = "1.0.0"
+id = "artifacts/tv"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/tv/" ]
+localPort = 23876
+
+[services.development]
+run = "pnpm --filter @workspace/tv run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/tv", "run", "build" ]
+publicDir = "artifacts/tv/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23876"
+BASE_PATH = "/tv/"

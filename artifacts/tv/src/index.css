@@ -1,0 +1,121 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-border: hsl(var(--border));
+  --font-sans: var(--app-font-sans);
+}
+
+:root {
+  --background: 0 0% 6%;
+  --foreground: 0 0% 97%;
+  --card: 0 0% 11%;
+  --card-foreground: 0 0% 97%;
+  --primary: 0 78% 50%;
+  --primary-foreground: 0 0% 100%;
+  --muted: 0 0% 16%;
+  --muted-foreground: 0 0% 58%;
+  --accent: 0 0% 14%;
+  --border: 0 0% 20%;
+  --app-font-sans: 'Inter', 'Helvetica Neue', Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: var(--app-font-sans);
+  overflow: hidden;
+  cursor: none;
+}
+
+/* Remove default focus outline - we handle it ourselves */
+* { outline: none; }
+
+/* TV focus ring */
+.tv-focused {
+  outline: 4px solid #fff !important;
+  outline-offset: 3px;
+  transform: scale(1.04);
+  z-index: 10;
+}
+
+.tv-focused-primary {
+  outline: 4px solid hsl(var(--primary)) !important;
+  outline-offset: 3px;
+  transform: scale(1.04);
+  z-index: 10;
+}
+
+/* Smooth transitions */
+.tv-card {
+  transition: transform 0.15s ease, outline 0.1s ease;
+  will-change: transform;
+}
+
+/* Scrollbar hidden for TV */
+::-webkit-scrollbar { display: none; }
+* { scrollbar-width: none; }
+
+/* Live pulse */
+@keyframes pulse-live {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.live-pulse { animation: pulse-live 1.4s ease-in-out infinite; }
+
+/* Gradient overlay */
+.gradient-bottom {
+  background: linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.5) 40%, transparent 100%);
+}
+
+.gradient-left {
+  background: linear-gradient(to right, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.5) 40%, transparent 100%);
+}
+
+/* Progress bar */
+.progress-track {
+  height: 3px;
+  background: rgba(255,255,255,0.2);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: hsl(var(--primary));
+  border-radius: 2px;
+  transition: width 0.5s ease;
+}
+
+/* Shimmer skeleton */
+@keyframes shimmer {
+  0% { background-position: -100% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, hsl(var(--muted)) 25%, hsl(var(--accent)) 50%, hsl(var(--muted)) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 8px;
+}
+
+/* Text truncation */
+.line-clamp-1 { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
+.line-clamp-2 { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }

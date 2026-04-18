@@ -367,6 +367,19 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 ### Admin Dashboard
 - **Notification character counters**: Both "Send Now" and "Schedule" forms now show live counters (Title: 0/65, Body: 0/240) with `maxLength` enforcement and red highlighting when the limit is exceeded.
 
+## Features Added (Current Session) — Smart TV App
+
+### Smart TV App (`artifacts/tv`) — New Artifact
+- **New artifact** at `/tv/` — a dedicated Smart TV web interface (Samsung Tizen / LG webOS / any Smart TV browser)
+- **10-foot UI design**: Dark OLED background (`#101010`), large fonts (24px minimum body text, 42px hero titles), prominent focus rings
+- **D-pad / Remote navigation**: Full arrow-key spatial navigation — Up/Down switches between content rows, Left/Right moves between videos in a row, Enter plays the selected video, Escape/Backspace returns from the player
+- **Live Hero banner**: Shows LIVE NOW or OFF AIR status with real YouTube live detection, includes pulsing LIVE indicator, auto-displays thumbnail when live
+- **Categorized sermon rows**: Faith, Healing, Deliverance, Worship, Teachings, Special Programs — fed from the same `/api/youtube/videos` endpoint
+- **Video Player**: Full-screen YouTube embed with auto-play, auto-hiding controls overlay, and back navigation
+- **Live clock** in the header (updates every second)
+- **Skeleton loading state** while videos are fetching
+- **Reuses the existing API server** — no new backend code needed
+
 ## Features Added (Current Session) — Performance & Reliability Upgrades
 
 ### API Server — Broadcast Payload Optimization
