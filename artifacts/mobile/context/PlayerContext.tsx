@@ -24,8 +24,6 @@ interface PlayerContextType {
   shuffleMode: boolean;
   loopMode: LoopMode;
   volume: number;
-  currentTime: number;
-  duration: number;
   playSermon: (sermon: Sermon, newQueue?: Sermon[]) => void;
   playLive: () => void;
   togglePlay: () => void;
@@ -47,7 +45,13 @@ interface PlayerContextType {
   playerVolumeRef: React.MutableRefObject<((v: number) => void) | null>;
 }
 
+interface PlayerProgressContextType {
+  currentTime: number;
+  duration: number;
+}
+
 const PlayerContext = createContext<PlayerContextType | undefined>(undefined);
+const PlayerProgressContext = createContext<PlayerProgressContextType>({ currentTime: 0, duration: 0 });
 
 const LOOP_CYCLE: LoopMode[] = ["none", "all", "one"];
 
@@ -399,8 +403,6 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       shuffleMode,
       loopMode,
       volume,
-      currentTime,
-      duration,
       playSermon,
       playLive,
       togglePlay,
@@ -433,8 +435,6 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       shuffleMode,
       loopMode,
       volume,
-      currentTime,
-      duration,
       playSermon,
       playLive,
       togglePlay,
@@ -453,7 +453,15 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     ],
   );
 
-  return <PlayerContext.Provider value={value}>{children}</PlayerContext.Provider>;
+  const progressValue = useMemo(() => ({ currentTime, duration }), [currentTime, duration]);
+
+  return (
+    <PlayerContext.Provider value={value}>
+      <PlayerProgressContext.Provider value={progressValue}>
+        {children}
+      </PlayerProgressContext.Provider>
+    </PlayerContext.Provider>
+  );
 }
 
 export function usePlayer() {
@@ -462,4 +470,8 @@ export function usePlayer() {
     throw new Error("usePlayer must be used within a PlayerProvider");
   }
   return context;
+}
+
+export function usePlayerProgress() {
+  return useContext(PlayerProgressContext);
 }

@@ -1,5 +1,6 @@
 import express, { type Express } from "express";
 import cors from "cors";
+import compression from "compression";
 import pinoHttp from "pino-http";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -13,6 +14,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app: Express = express();
 
 app.set("trust proxy", 1);
+app.use(compression({ threshold: 1024 }));
 app.use(requestId);
 app.use(securityHeaders);
 app.use(rateLimit);
@@ -71,9 +73,15 @@ app.use((_req: express.Request, res: express.Response) => {
 });
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  const message = err instanceof Error ? err.message : "An unexpected error occurred";
   logger.error({ err }, "Unhandled request error");
-  res.status(500).json({ error: "internal_error", message });
+  const isProd = process.env.NODE_ENV === "production";
+  const message = isProd
+    ? "An internal server error occurred"
+    : err instanceof Error ? err.message : "An unexpected error occurred";
+  const status = err instanceof Error && "status" in err && typeof (err as any).status === "number"
+    ? (err as any).status as number
+    : 500;
+  res.status(status).json({ error: "internal_error", message });
 });
 
 export default app;

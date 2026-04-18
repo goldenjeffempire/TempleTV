@@ -211,7 +211,14 @@ async function uploadChunk(
 
 // ─── Main component ────────────────────────────────────────────────────────────
 export default function Videos() {
-  const [search, setSearch] = useState("");
+  const [search, setSearchRaw] = useState(() => new URLSearchParams(window.location.search).get("q") ?? "");
+  const setSearch = useCallback((val: string) => {
+    setSearchRaw(val);
+    const params = new URLSearchParams(window.location.search);
+    if (val) params.set("q", val); else params.delete("q");
+    const newUrl = `${window.location.pathname}${params.toString() ? "?" + params.toString() : ""}`;
+    window.history.replaceState(null, "", newUrl);
+  }, []);
   const { data, isLoading } = useListAdminVideos({ search, limit: 50 });
   const [isImporting, setIsImporting] = useState(false);
   const [importUrl, setImportUrl] = useState("");

@@ -6,7 +6,7 @@ import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
 import { useColors } from "@/hooks/useColors";
 import { LiveBadge } from "@/components/LiveBadge";
-import { usePlayer } from "@/context/PlayerContext";
+import { usePlayer, usePlayerProgress } from "@/context/PlayerContext";
 import { navigateToSermon } from "@/utils/navigation";
 
 export function MiniPlayer() {
@@ -20,9 +20,8 @@ export function MiniPlayer() {
     isRadioMode,
     togglePlay,
     playNext,
-    currentTime,
-    duration,
   } = usePlayer();
+  const { currentTime, duration } = usePlayerProgress();
 
   if (!currentSermon && !isLive) return null;
 

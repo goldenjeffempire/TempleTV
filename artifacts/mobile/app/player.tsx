@@ -27,7 +27,7 @@ import { LocalVideoPlayer } from "@/components/LocalVideoPlayer";
 import { SermonCard } from "@/components/SermonCard";
 import { LiveBadge } from "@/components/LiveBadge";
 import { GlassCard } from "@/components/GlassCard";
-import { usePlayer } from "@/context/PlayerContext";
+import { usePlayer, usePlayerProgress } from "@/context/PlayerContext";
 import { SERMONS } from "@/data/sermons";
 import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
 import { checkBroadcastCurrent, subscribeBroadcastEvents, type BroadcastCurrentResult } from "@/services/broadcast";
@@ -228,11 +228,10 @@ export default function PlayerScreen() {
     volume,
     dataSaver,
     isRadioMode,
-    currentTime,
-    duration,
     seekTo,
     setVolume,
   } = usePlayer();
+  const { currentTime, duration } = usePlayerProgress();
 
   const { isFavorite, toggleFavorite } = useFavorites();
   const { addToHistory } = useWatchHistory();

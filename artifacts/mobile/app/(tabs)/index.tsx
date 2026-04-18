@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
   FlatList,
@@ -35,6 +35,57 @@ import { checkBroadcastCurrent, subscribeBroadcastEvents, type BroadcastCurrentR
 import { navigateToSermon } from "@/utils/navigation";
 import type { Sermon } from "@/types";
 
+const broadcastProgressStyles = StyleSheet.create({
+  section: { gap: 5, marginTop: 2 },
+  row: { flexDirection: "row", alignItems: "center", gap: 8 },
+  track: { flex: 1, height: 3, backgroundColor: "rgba(255,255,255,0.2)", borderRadius: 2, overflow: "hidden" },
+  fill: { height: "100%" as any, backgroundColor: "#6A0DAD", borderRadius: 2 },
+  timeBadge: { flexDirection: "row", alignItems: "center", gap: 3 },
+  timeText: { color: "rgba(255,255,255,0.7)", fontSize: 10, fontFamily: "Inter_500Medium" },
+  nextText: { color: "rgba(255,255,255,0.62)", fontSize: 12, fontFamily: "Inter_500Medium" },
+});
+
+function BroadcastProgress({ broadcastCurrent }: { broadcastCurrent: BroadcastCurrentResult }) {
+  const [tickMs, setTickMs] = useState(() => Date.now());
+  const fetchTimeRef = useRef(Date.now());
+
+  useEffect(() => { fetchTimeRef.current = Date.now(); }, [broadcastCurrent]);
+  useEffect(() => {
+    const t = setInterval(() => setTickMs(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const elapsed = (tickMs - fetchTimeRef.current) / 1000;
+  const positionSecs = Math.round((broadcastCurrent.positionSecs ?? 0) + elapsed);
+  const totalDuration = broadcastCurrent.item?.durationSecs ?? 1;
+  const progress = Math.min(100, (positionSecs / totalDuration) * 100);
+  const remaining = Math.max(0, totalDuration - positionSecs);
+  const remMins = Math.floor(remaining / 60);
+  const remSecs = remaining % 60;
+  const remStr = remMins > 0
+    ? `${remMins}m ${String(remSecs).padStart(2, "0")}s`
+    : `${remSecs}s`;
+
+  return (
+    <View style={broadcastProgressStyles.section}>
+      <View style={broadcastProgressStyles.row}>
+        <View style={broadcastProgressStyles.track}>
+          <View style={[broadcastProgressStyles.fill, { width: `${progress}%` } as any]} />
+        </View>
+        <View style={broadcastProgressStyles.timeBadge}>
+          <Feather name="clock" size={9} color="rgba(255,255,255,0.7)" />
+          <Text style={broadcastProgressStyles.timeText}>{remStr} left</Text>
+        </View>
+      </View>
+      {broadcastCurrent.nextItem && (
+        <Text style={broadcastProgressStyles.nextText} numberOfLines={1}>
+          Up next: {broadcastCurrent.nextItem.title}
+        </Text>
+      )}
+    </View>
+  );
+}
+
 export default function WatchScreen() {
   const c = useColors();
   const insets = useSafeAreaInsets();
@@ -50,13 +101,7 @@ export default function WatchScreen() {
   const [liveBannerDismissed, setLiveBannerDismissed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [broadcastCurrent, setBroadcastCurrent] = useState<BroadcastCurrentResult | null>(null);
-  const [tickMs, setTickMs] = useState(() => Date.now());
   const autoStartedRef = useRef(false);
-
-  useEffect(() => {
-    const ticker = setInterval(() => setTickMs(Date.now()), 1000);
-    return () => clearInterval(ticker);
-  }, []);
 
   useEffect(() => {
     Animated.timing(fadeAnim, { toValue: 1, duration: 500, useNativeDriver: Platform.OS !== "web" }).start();
@@ -151,36 +196,30 @@ export default function WatchScreen() {
   const webTopPad = Platform.OS === "web" ? 67 : 0;
   const topPad = insets.top + webTopPad;
 
-  const recentSermons = sermons.slice(0, 6);
-  const faithSermons = sermons.filter((s) => s.category === "Faith").slice(0, 3);
-  const healingSermons = sermons.filter((s) => s.category === "Healing").slice(0, 3);
-  const deliveranceSermons = sermons.filter((s) => s.category === "Deliverance").slice(0, 3);
-  const worshipSermons = sermons.filter((s) => s.category === "Worship").slice(0, 3);
-
-  const navigateToPlayer = (params: Record<string, string>) => {
+  const navigateToPlayer = useCallback((params: Record<string, string>) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     router.push({ pathname: "/player", params });
-  };
+  }, []);
 
-  const handleSermonPress = (sermon: Sermon) => {
+  const handleSermonPress = useCallback((sermon: Sermon) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     const prog = getProgress(sermon.id);
     navigateToSermon(
       sermon,
       prog ? { startPositionMs: String(Math.floor(prog.position * 1000)) } : {},
     );
-  };
+  }, [getProgress]);
 
-  const handleLivePress = () => {
+  const handleLivePress = useCallback(() => {
     navigateToPlayer({
       live: "true",
       title: liveStatus.title ?? "Temple TV Live",
       preacher: "Temple TV JCTM",
       ...(liveStatus.videoId ? { videoId: liveStatus.videoId } : {}),
     });
-  };
+  }, [navigateToPlayer, liveStatus]);
 
-  const handleBroadcastPress = async () => {
+  const handleBroadcastPress = useCallback(async () => {
     const latest = await checkBroadcastCurrent().catch(() => null);
     const currentBroadcast = latest ?? broadcastCurrent;
     if (latest) setBroadcastCurrent(latest);
@@ -220,7 +259,7 @@ export default function WatchScreen() {
         },
       });
     }
-  };
+  }, [broadcastCurrent, handleLivePress]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -239,21 +278,13 @@ export default function WatchScreen() {
   const showScheduledLive = !liveStatus.isLive && broadcastCurrent?.activeSchedule?.contentType === "live";
   const showBroadcast = !liveStatus.isLive && (broadcastItem !== null || showScheduledLive);
 
-  const broadcastFetchTimeRef = useRef(Date.now());
-  useEffect(() => { broadcastFetchTimeRef.current = Date.now(); }, [broadcastCurrent]);
-  const elapsedSinceFetch = (tickMs - broadcastFetchTimeRef.current) / 1000;
-  const livePositionSecs = Math.round((broadcastCurrent?.positionSecs ?? 0) + elapsedSinceFetch);
-  const totalDuration = broadcastCurrent?.item?.durationSecs ?? 1;
-  const liveProgress = Math.min(100, (livePositionSecs / totalDuration) * 100);
-  const liveRemaining = Math.max(0, totalDuration - livePositionSecs);
-  const liveRemMins = Math.floor(liveRemaining / 60);
-  const liveRemSecs = liveRemaining % 60;
-  const liveRemStr = liveRemMins > 0
-    ? `${liveRemMins}m ${String(liveRemSecs).padStart(2, "0")}s`
-    : `${liveRemSecs}s`;
-
-  const teachingsSermons = sermons.filter((s) => s.category === "Teachings").slice(0, 3);
-  const specialSermons = sermons.filter((s) => s.category === "Special Programs").slice(0, 3);
+  const recentSermons = useMemo(() => sermons.slice(0, 6), [sermons]);
+  const faithSermons = useMemo(() => sermons.filter((s) => s.category === "Faith").slice(0, 3), [sermons]);
+  const healingSermons = useMemo(() => sermons.filter((s) => s.category === "Healing").slice(0, 3), [sermons]);
+  const deliveranceSermons = useMemo(() => sermons.filter((s) => s.category === "Deliverance").slice(0, 3), [sermons]);
+  const worshipSermons = useMemo(() => sermons.filter((s) => s.category === "Worship").slice(0, 3), [sermons]);
+  const teachingsSermons = useMemo(() => sermons.filter((s) => s.category === "Teachings").slice(0, 3), [sermons]);
+  const specialSermons = useMemo(() => sermons.filter((s) => s.category === "Special Programs").slice(0, 3), [sermons]);
 
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
@@ -366,22 +397,7 @@ export default function WatchScreen() {
                       : "Live worship & preaching 24/7"}
                   </Text>
                   {showBroadcast && broadcastCurrent?.item && (
-                    <View style={styles.broadcastProgressSection}>
-                      <View style={styles.broadcastProgressRow}>
-                        <View style={styles.broadcastProgressTrack}>
-                          <View style={[styles.broadcastProgressFill, { width: `${liveProgress}%` }]} />
-                        </View>
-                        <View style={styles.broadcastTimeBadge}>
-                          <Feather name="clock" size={9} color="rgba(255,255,255,0.7)" />
-                          <Text style={styles.broadcastTimeText}>{liveRemStr} left</Text>
-                        </View>
-                      </View>
-                      {broadcastCurrent?.nextItem && (
-                        <Text style={styles.broadcastNext} numberOfLines={1}>
-                          Up next: {broadcastCurrent.nextItem.title}
-                        </Text>
-                      )}
-                    </View>
+                    <BroadcastProgress broadcastCurrent={broadcastCurrent} />
                   )}
                   <Pressable
                     onPress={showBroadcast ? handleBroadcastPress : handleLivePress}

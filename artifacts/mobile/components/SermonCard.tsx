@@ -1,5 +1,6 @@
-import React, { memo, useState } from "react";
-import { Image, Pressable, StyleSheet, Text, View } from "react-native";
+import React, { memo } from "react";
+import { Image as ExpoImage } from "expo-image";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
@@ -16,16 +17,14 @@ interface SermonCardProps {
 }
 
 const SmartImage = memo(function SmartImage({ uri, style }: { uri: string; style: object }) {
-  const [errored, setErrored] = useState(false);
-  if (errored || !uri) {
-    return <Image source={PLACEHOLDER} style={style} resizeMode="cover" />;
-  }
   return (
-    <Image
-      source={{ uri }}
+    <ExpoImage
+      source={uri || PLACEHOLDER}
+      placeholder={PLACEHOLDER}
+      contentFit="cover"
+      transition={150}
       style={style}
-      resizeMode="cover"
-      onError={() => setErrored(true)}
+      cachePolicy="disk"
     />
   );
 });
