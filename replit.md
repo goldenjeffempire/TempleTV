@@ -367,6 +367,24 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 ### Admin Dashboard
 - **Notification character counters**: Both "Send Now" and "Schedule" forms now show live counters (Title: 0/65, Body: 0/240) with `maxLength` enforcement and red highlighting when the limit is exceeded.
 
+## Features Added (Current Session) — Performance & Reliability Upgrades
+
+### API Server — Broadcast Payload Optimization
+- **Parallelized DB queries** in `buildBroadcastCurrentPayload`: `getActiveLiveOverride`, `getScheduleEntries`, and `getQueueItems` are now fetched concurrently via `Promise.all` (was sequential).
+- **2-second full-payload cache**: Added `BROADCAST_PAYLOAD_CACHE_KEY` with 2s TTL so rapid SSE reconnects and client polls don't hammer the DB. Cache is invalidated whenever admin changes broadcast state.
+- **TypeScript simplification**: Replaced complex generic in cache.get call with a clean `cache.get<any>` for the short-lived broadcast payload cache.
+
+### API Server — YouTube Cache Upgrade
+- **Dual-layer Redis/memory cache** for YouTube videos and RSS: migrated from plain `let videosCache` in-memory variables to the `cache` module (`youtube:videos` and `youtube:rss` keys with 10-minute TTL). When Redis is configured, cached data now survives process restarts.
+- **Stale fallback**: Added `_videosCacheFallback` — if all YouTube sources fail on a cache miss, the last known video list is served with an `X-Cache: STALE` header instead of returning a 502.
+- **Imported `cache` module** into `youtube.ts`.
+
+### Mobile App — Web RSS Fix
+- **RSS URL ordering on web**: On `Platform.OS === "web"`, the RSS fetch now prefers the API server proxy (`${apiBase}/api/youtube/rss`) before falling back to the direct YouTube RSS URL. This avoids CORS failures when fetching YouTube RSS from browser context.
+
+### Bug Fixes
+- **`pointerEvents` deprecation** in `BroadcastInfoStrip.tsx`: Moved prop from component prop to `style={{ pointerEvents: "none" }}` per React Native 0.73+ deprecation warning.
+
 ## Features Added (Session (previous)) — Enterprise Launch Readiness
 - **Launch readiness API**: Added protected `GET /api/admin/launch/readiness`, aggregating security, content, broadcast, HLS, cache, notification, monetization, and app launch configuration into go/no-go checks.
 - **Admin Launch Readiness page**: Added `/launch-readiness` with readiness score, blocker/warning counts, operational metrics, and actionable checklist grouped by Security & Access, Content & Broadcast, Streaming Pipeline, and Growth & Distribution.

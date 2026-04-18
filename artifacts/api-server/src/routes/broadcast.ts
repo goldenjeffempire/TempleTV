@@ -27,6 +27,9 @@ const CACHE_KEYS = {
   broadcastQueue: "broadcast:queue",
 } as const;
 
+const BROADCAST_PAYLOAD_CACHE_KEY = "broadcast:current_payload";
+const BROADCAST_PAYLOAD_TTL_MS = 2_000;
+
 async function getActiveLiveOverride() {
   const overrides = await cache.getOrSet(
     CACHE_KEYS.liveOverride,
@@ -68,16 +71,49 @@ async function invalidateBroadcastCache() {
     cache.del(CACHE_KEYS.liveOverride),
     cache.del(CACHE_KEYS.scheduleEntries),
     cache.del(CACHE_KEYS.broadcastQueue),
+    cache.del(BROADCAST_PAYLOAD_CACHE_KEY),
   ]);
 }
 
-export async function buildBroadcastCurrentPayload() {
+export async function buildBroadcastCurrentPayload(skipCache = false) {
   const nowMs = Date.now();
   const syncedAt = new Date(nowMs).toISOString();
 
-  const activeLiveOverride = await getActiveLiveOverride();
+  if (!skipCache) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cached = await cache.get<any>(BROADCAST_PAYLOAD_CACHE_KEY);
+    if (cached !== null) return { ...cached, syncedAt, serverTimeMs: nowMs };
+  }
+
+  const [activeLiveOverride, scheduleEntries, queueItems] = await Promise.all([
+    getActiveLiveOverride(),
+    getScheduleEntries(),
+    getBroadcastQueue(),
+  ]);
+
+  let result: ReturnType<typeof calculateCurrentFromItems> & {
+    syncedAt: string;
+    serverTimeMs: number;
+    activeSchedule: {
+      id: string;
+      title: string;
+      contentType: string;
+      contentId: string | null;
+      startTime: string;
+      endTime: string | null;
+    } | null;
+    liveOverride: {
+      id: string;
+      title: string;
+      startedAt: string;
+      endsAt: string | null;
+      remainingSecs?: number | null;
+    } | null;
+    failoverReason?: string | null;
+  };
+
   if (activeLiveOverride) {
-    return {
+    result = {
       item: null,
       nextItem: null,
       index: 0,
@@ -99,13 +135,14 @@ export async function buildBroadcastCurrentPayload() {
           : null,
       },
     };
+    await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
+    return result;
   }
 
-  const activeScheduleEntries = await getScheduleEntries();
-  const activeSchedule = getActiveScheduleEntry(activeScheduleEntries as ScheduleEntry[]);
+  const activeSchedule = getActiveScheduleEntry(scheduleEntries as ScheduleEntry[]);
 
   if (activeSchedule?.contentType === "live") {
-    return {
+    result = {
       item: null,
       nextItem: null,
       index: 0,
@@ -126,13 +163,15 @@ export async function buildBroadcastCurrentPayload() {
         endTime: activeSchedule.endTime,
       },
     };
+    await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
+    return result;
   }
 
   if (activeSchedule && (activeSchedule.contentType === "playlist" || activeSchedule.contentType === "video")) {
     const scheduledItems = await getScheduledItems(activeSchedule);
     if (scheduledItems.length > 0) {
       const calculated = calculateCurrentFromItems(scheduledItems);
-      return {
+      result = {
         ...calculated,
         syncedAt,
         serverTimeMs: nowMs,
@@ -146,13 +185,13 @@ export async function buildBroadcastCurrentPayload() {
           endTime: activeSchedule.endTime,
         },
       };
+      await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
+      return result;
     }
   }
 
-  const items = await getBroadcastQueue();
-
-  if (items.length === 0) {
-    return {
+  if (queueItems.length === 0) {
+    result = {
       item: null,
       nextItem: null,
       index: 0,
@@ -163,19 +202,41 @@ export async function buildBroadcastCurrentPayload() {
       syncedAt,
       serverTimeMs: nowMs,
       failoverReason: "Broadcast queue is empty.",
-      activeSchedule,
+      activeSchedule: activeSchedule
+        ? {
+            id: activeSchedule.id,
+            title: activeSchedule.title,
+            contentType: activeSchedule.contentType,
+            contentId: activeSchedule.contentId,
+            startTime: activeSchedule.startTime,
+            endTime: activeSchedule.endTime,
+          }
+        : null,
       liveOverride: null,
     };
+    await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
+    return result;
   }
 
-  const calculated = calculateCurrentFromItems(items);
-  return {
+  const calculated = calculateCurrentFromItems(queueItems);
+  result = {
     ...calculated,
     syncedAt,
     serverTimeMs: nowMs,
-    activeSchedule,
+    activeSchedule: activeSchedule
+      ? {
+          id: activeSchedule.id,
+          title: activeSchedule.title,
+          contentType: activeSchedule.contentType,
+          contentId: activeSchedule.contentId,
+          startTime: activeSchedule.startTime,
+          endTime: activeSchedule.endTime,
+        }
+      : null,
     liveOverride: null,
   };
+  await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
+  return result;
 }
 
 export function emitBroadcastState(reason: string, detail: Record<string, unknown> = {}) {

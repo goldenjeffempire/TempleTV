@@ -9,6 +9,7 @@ import {
   type LiveStatusSnapshot,
 } from "../lib/liveEvents";
 import { emitBroadcastState } from "./broadcast";
+import { cache } from "../lib/cache";
 
 const router = Router();
 
@@ -25,7 +26,9 @@ const BROWSER_HEADERS = {
   "Cache-Control": "no-cache",
 };
 
-const CACHE_MS = 10 * 60 * 1000;
+const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes in ms
+const YOUTUBE_VIDEOS_CACHE_KEY = "youtube:videos";
+const YOUTUBE_RSS_CACHE_KEY = "youtube:rss";
 const LIVE_POLL_NORMAL_MS = 60 * 1000;
 const LIVE_POLL_BURST_MS = 15 * 1000;
 const BURST_WINDOW_MS = 10 * 60 * 1000;
@@ -330,7 +333,8 @@ interface VideoItem {
   viewCount: string;
 }
 
-let videosCache: { videos: VideoItem[]; timestamp: number } | null = null;
+// In-memory fallback if Redis not available (cache module handles tier selection)
+let _videosCacheFallback: { videos: VideoItem[]; timestamp: number } | null = null;
 
 async function fetchAllVideosFromApi(): Promise<VideoItem[] | null> {
   if (!YOUTUBE_API_KEY) return null;
@@ -576,9 +580,10 @@ async function fetchVideosFromRss(): Promise<VideoItem[] | null> {
 
 router.get("/youtube/videos", async (req, res) => {
   try {
-    if (videosCache && Date.now() - videosCache.timestamp < CACHE_MS) {
+    const cached = await cache.get<VideoItem[]>(YOUTUBE_VIDEOS_CACHE_KEY);
+    if (cached !== null) {
       res.setHeader("X-Cache", "HIT");
-      return res.json({ videos: videosCache.videos, total: videosCache.videos.length });
+      return res.json({ videos: cached, total: cached.length });
     }
 
     let videos = await fetchAllVideosFromApi();
@@ -588,10 +593,16 @@ router.get("/youtube/videos", async (req, res) => {
     }
 
     if (!videos || videos.length === 0) {
+      // Serve stale memory fallback if available rather than returning an error
+      if (_videosCacheFallback) {
+        res.setHeader("X-Cache", "STALE");
+        return res.json({ videos: _videosCacheFallback.videos, total: _videosCacheFallback.videos.length });
+      }
       return res.status(502).json({ error: "Could not fetch videos from YouTube." });
     }
 
-    videosCache = { videos, timestamp: Date.now() };
+    await cache.set(YOUTUBE_VIDEOS_CACHE_KEY, videos, CACHE_TTL_MS);
+    _videosCacheFallback = { videos, timestamp: Date.now() };
     res.setHeader("Cache-Control", "public, max-age=600");
     res.setHeader("X-Source", videos[0]?.duration ? "youtube-api" : "rss");
     return res.json({ videos, total: videos.length });
@@ -601,28 +612,30 @@ router.get("/youtube/videos", async (req, res) => {
   }
 });
 
-let rssCache: { xml: string; timestamp: number } | null = null;
-
 router.get("/youtube/rss", async (req, res) => {
   try {
-    if (rssCache && Date.now() - rssCache.timestamp < CACHE_MS) {
+    const cachedXml = await cache.get<string>(YOUTUBE_RSS_CACHE_KEY);
+    if (cachedXml !== null) {
       res.setHeader("Content-Type", "application/xml; charset=utf-8");
       res.setHeader("X-Cache", "HIT");
-      return res.send(rssCache.xml);
+      return res.send(cachedXml);
     }
 
     if (YOUTUBE_API_KEY) {
-      if (videosCache && Date.now() - videosCache.timestamp < CACHE_MS) {
-        const xml = videosToXml(videosCache.videos);
+      const cachedVideos = await cache.get<VideoItem[]>(YOUTUBE_VIDEOS_CACHE_KEY);
+      if (cachedVideos !== null) {
+        const xml = videosToXml(cachedVideos);
+        await cache.set(YOUTUBE_RSS_CACHE_KEY, xml, CACHE_TTL_MS);
         res.setHeader("Content-Type", "application/xml; charset=utf-8");
         res.setHeader("X-Source", "youtube-api-cached");
         return res.send(xml);
       }
       const videos = await fetchAllVideosFromApi();
       if (videos && videos.length > 0) {
-        videosCache = { videos, timestamp: Date.now() };
+        await cache.set(YOUTUBE_VIDEOS_CACHE_KEY, videos, CACHE_TTL_MS);
+        _videosCacheFallback = { videos, timestamp: Date.now() };
         const xml = videosToXml(videos);
-        rssCache = { xml, timestamp: Date.now() };
+        await cache.set(YOUTUBE_RSS_CACHE_KEY, xml, CACHE_TTL_MS);
         res.setHeader("Content-Type", "application/xml; charset=utf-8");
         res.setHeader("X-Source", "youtube-api");
         return res.send(xml);
@@ -654,7 +667,7 @@ router.get("/youtube/rss", async (req, res) => {
       });
     }
 
-    rssCache = { xml, timestamp: Date.now() };
+    await cache.set(YOUTUBE_RSS_CACHE_KEY, xml, CACHE_TTL_MS);
     res.setHeader("Content-Type", "application/xml; charset=utf-8");
     res.setHeader("Cache-Control", "public, max-age=600");
     res.send(xml);

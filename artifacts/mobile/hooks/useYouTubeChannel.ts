@@ -246,11 +246,11 @@ export function useYouTubeChannel(): UseYouTubeChannelResult {
         }
       }
 
-      // Direct RSS fetch (works on both native and web)
-      const rssUrls = [
-        APP_CONFIG.rssUrl,
-        ...(Platform.OS === "web" && apiBase ? [`${apiBase}/api/youtube/rss`] : []),
-      ];
+      // Direct RSS fetch (works on native; on web prefer API proxy to avoid CORS)
+      const rssUrls =
+        Platform.OS === "web" && apiBase
+          ? [`${apiBase}/api/youtube/rss`, APP_CONFIG.rssUrl]
+          : [APP_CONFIG.rssUrl];
 
       let xml: string | null = null;
       for (const url of rssUrls) {

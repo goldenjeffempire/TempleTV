@@ -40,8 +40,7 @@ export function BroadcastInfoStrip({ broadcast, playerHeight }: BroadcastInfoStr
 
   return (
     <Animated.View
-      style={[styles.container, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}
-      pointerEvents="none"
+      style={[styles.container, { opacity: fadeAnim, transform: [{ translateY: slideAnim }], pointerEvents: "none" }]}
     >
       <LinearGradient
         colors={["transparent", "rgba(0,0,0,0.95)"]}
