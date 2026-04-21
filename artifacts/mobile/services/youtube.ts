@@ -1,4 +1,5 @@
 import { Platform } from "react-native";
+import { getApiBase } from "@/lib/apiBase";
 
 export const JCTM_CHANNEL_HANDLE = "templetvjctm";
 export const JCTM_CHANNEL_URL = `https://www.youtube.com/@${JCTM_CHANNEL_HANDLE}`;
@@ -47,10 +48,10 @@ async function checkLiveViaOembed(): Promise<LiveCheckResult> {
 }
 
 async function checkLiveViaCachedStatus(): Promise<LiveCheckResult | null> {
-  const domain = process.env.EXPO_PUBLIC_DOMAIN;
-  if (!domain) return null;
+  const apiBase = getApiBase();
+  if (!apiBase) return null;
   try {
-    const res = await fetch(`https://${domain}/api/youtube/live/status`, {
+    const res = await fetch(`${apiBase}/api/youtube/live/status`, {
       signal: AbortSignal.timeout(4000),
     });
     if (!res.ok) return null;
@@ -63,10 +64,10 @@ async function checkLiveViaCachedStatus(): Promise<LiveCheckResult | null> {
 }
 
 async function checkLiveViaApiServer(): Promise<LiveCheckResult | null> {
-  const domain = process.env.EXPO_PUBLIC_DOMAIN;
-  if (!domain) return null;
+  const apiBase = getApiBase();
+  if (!apiBase) return null;
   try {
-    const res = await fetch(`https://${domain}/api/youtube/live`, {
+    const res = await fetch(`${apiBase}/api/youtube/live`, {
       signal: AbortSignal.timeout(6000),
     });
     if (!res.ok) return null;

@@ -142,6 +142,11 @@ export default function WatchScreen() {
   }, []);
 
   useEffect(() => {
+    // Web browsers block unsolicited autoplay (and audio especially) — the
+    // user must tap a play control. Auto-starting playback on the web is
+    // bad UX and would silently fail anyway. Native (TV-like) clients keep
+    // the cinematic auto-start.
+    if (Platform.OS === "web") return;
     if (autoStartedRef.current || loading || sermons.length === 0) return;
     if (currentSermon || playerIsLive) { autoStartedRef.current = true; return; }
     autoStartedRef.current = true;

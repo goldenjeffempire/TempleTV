@@ -1,3 +1,5 @@
+import { getApiBase } from "@/lib/apiBase";
+
 export interface BroadcastItem {
   id: string;
   youtubeId: string;
@@ -35,18 +37,18 @@ export interface BroadcastCurrentResult {
   } | null;
 }
 
-function toAbsoluteUrl(url: string | null, domain: string): string | null {
+function toAbsoluteUrl(url: string | null, base: string): string | null {
   if (!url) return null;
   if (url.startsWith("http://") || url.startsWith("https://")) return url;
-  return `https://${domain}${url.startsWith("/") ? url : `/${url}`}`;
+  return `${base}${url.startsWith("/") ? url : `/${url}`}`;
 }
 
-function normalizeItem(item: BroadcastItem | null, domain: string): BroadcastItem | null {
+function normalizeItem(item: BroadcastItem | null, base: string): BroadcastItem | null {
   if (!item) return null;
   return {
     ...item,
-    localVideoUrl: toAbsoluteUrl(item.localVideoUrl, domain),
-    thumbnailUrl: toAbsoluteUrl(item.thumbnailUrl, domain) ?? item.thumbnailUrl,
+    localVideoUrl: toAbsoluteUrl(item.localVideoUrl, base),
+    thumbnailUrl: toAbsoluteUrl(item.thumbnailUrl, base) ?? item.thumbnailUrl,
   };
 }
 
@@ -71,10 +73,10 @@ export interface BroadcastGuideResult {
 }
 
 export async function fetchBroadcastGuide(): Promise<BroadcastGuideResult | null> {
-  const domain = process.env.EXPO_PUBLIC_DOMAIN;
-  if (!domain) return null;
+  const apiBase = getApiBase();
+  if (!apiBase) return null;
   try {
-    const res = await fetch(`https://${domain}/api/broadcast/guide`, {
+    const res = await fetch(`${apiBase}/api/broadcast/guide`, {
       signal: AbortSignal.timeout(6000),
     });
     if (!res.ok) return null;
@@ -83,8 +85,8 @@ export async function fetchBroadcastGuide(): Promise<BroadcastGuideResult | null
       ...data,
       items: data.items.map((item) => ({
         ...item,
-        localVideoUrl: toAbsoluteUrl(item.localVideoUrl, domain),
-        thumbnailUrl: toAbsoluteUrl(item.thumbnailUrl, domain) ?? item.thumbnailUrl,
+        localVideoUrl: toAbsoluteUrl(item.localVideoUrl, apiBase),
+        thumbnailUrl: toAbsoluteUrl(item.thumbnailUrl, apiBase) ?? item.thumbnailUrl,
       })),
     };
   } catch {
@@ -93,18 +95,18 @@ export async function fetchBroadcastGuide(): Promise<BroadcastGuideResult | null
 }
 
 export async function checkBroadcastCurrent(): Promise<BroadcastCurrentResult | null> {
-  const domain = process.env.EXPO_PUBLIC_DOMAIN;
-  if (!domain) return null;
+  const apiBase = getApiBase();
+  if (!apiBase) return null;
   try {
-    const res = await fetch(`https://${domain}/api/broadcast/current`, {
+    const res = await fetch(`${apiBase}/api/broadcast/current`, {
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return null;
     const data = (await res.json()) as BroadcastCurrentResult;
     return {
       ...data,
-      item: normalizeItem(data.item, domain),
-      nextItem: normalizeItem(data.nextItem, domain),
+      item: normalizeItem(data.item, apiBase),
+      nextItem: normalizeItem(data.nextItem, apiBase),
     };
   } catch {
     return null;
@@ -123,11 +125,11 @@ export type BroadcastRealtimeEvent =
 export function subscribeBroadcastEvents(
   handlers: Partial<Record<BroadcastRealtimeEvent, (payload: any) => void>>,
 ): { close: () => void } | null {
-  const domain = process.env.EXPO_PUBLIC_DOMAIN;
+  const apiBase = getApiBase();
   const EventSourceCtor = (globalThis as any).EventSource;
-  if (!domain || typeof EventSourceCtor !== "function") return null;
+  if (!apiBase || typeof EventSourceCtor !== "function") return null;
 
-  const source = new EventSourceCtor(`https://${domain}/api/broadcast/events`);
+  const source = new EventSourceCtor(`${apiBase}/api/broadcast/events`);
 
   const listenerEntries = (Object.entries(handlers) as Array<[BroadcastRealtimeEvent, (payload: any) => void]>)
     .map(([event, handler]) => {

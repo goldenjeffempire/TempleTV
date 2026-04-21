@@ -1,0 +1,31 @@
+/**
+ * Canonical API base URL resolver for the mobile/web bundle.
+ *
+ * Resolution order:
+ *   1. EXPO_PUBLIC_API_URL — set by EAS profiles (production / preview /
+ *      development) and by the web service in render.yaml. This is the
+ *      authoritative value going forward.
+ *   2. EXPO_PUBLIC_DOMAIN — legacy env from earlier Expo Go builds. Kept as
+ *      a fallback so existing CI / dev environments keep working.
+ *
+ * Returns "" when neither is set, so callers can early-return on no-op
+ * builds without throwing.
+ */
+export function getApiBase(): string {
+  const apiUrl = process.env.EXPO_PUBLIC_API_URL;
+  if (apiUrl) {
+    const trimmed = apiUrl.replace(/\/$/, "");
+    if (/^https?:\/\//i.test(trimmed)) return trimmed;
+    // Common mistake: someone set EXPO_PUBLIC_API_URL to a bare domain.
+    // Fall through to the EXPO_PUBLIC_DOMAIN branch below rather than
+    // emit a malformed `api.example.com/api/...` request.
+    if (typeof console !== "undefined") {
+      console.warn(
+        `[apiBase] EXPO_PUBLIC_API_URL "${apiUrl}" is missing a protocol; ignoring.`,
+      );
+    }
+  }
+  const domain = process.env.EXPO_PUBLIC_DOMAIN;
+  if (domain) return `https://${domain.replace(/^https?:\/\//i, "").replace(/\/$/, "")}`;
+  return "";
+}

@@ -4,6 +4,7 @@ import { Platform } from "react-native";
 import { parseYouTubeRss, type RssVideo } from "@/utils/xmlParser";
 import { APP_CONFIG, STORAGE_KEYS } from "@/constants/config";
 import { SERMONS } from "@/data/sermons";
+import { getApiBase } from "@/lib/apiBase";
 import type { Sermon, SermonCategory } from "@/types";
 
 const CATEGORY_KEYWORDS: Record<string, SermonCategory> = {
@@ -214,8 +215,7 @@ export function useYouTubeChannel(): UseYouTubeChannelResult {
       } catch {
       }
 
-      const domain = process.env.EXPO_PUBLIC_DOMAIN;
-      const apiBase = domain ? `https://${domain}` : "";
+      const apiBase = getApiBase();
 
       // On web, try the API server first (which includes RSS fallback)
       if (Platform.OS === "web" && apiBase) {

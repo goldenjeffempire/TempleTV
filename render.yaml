@@ -93,6 +93,8 @@ services:
     autoDeploy: true
     pullRequestPreviewsEnabled: false
     envVars:
+      - key: EXPO_PUBLIC_API_URL
+        value: https://api.templetv.org.ng
       - key: EXPO_PUBLIC_DOMAIN
         value: api.templetv.org.ng
       - key: BASE_PATH
