@@ -18,5 +18,6 @@ export const STORAGE_KEYS = {
   lastLiveCheck: "@temple_tv/last_live_check",
   rssCache: "@temple_tv/rss_cache",
   authToken: "@temple_tv/auth_token",
+  authRefreshToken: "@temple_tv/auth_refresh_token",
   authUser: "@temple_tv/auth_user",
 };

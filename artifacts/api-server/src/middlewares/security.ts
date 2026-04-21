@@ -1,12 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 import { randomUUID, timingSafeEqual } from "crypto";
+import { rateStore } from "../lib/rateStore";
 
-type Bucket = {
-  count: number;
-  resetAt: number;
-};
-
-const buckets = new Map<string, Bucket>();
 const WINDOW_MS = 60_000;
 
 function getClientIp(req: Request): string {
@@ -77,34 +72,27 @@ export function securityHeaders(_req: Request, res: Response, next: NextFunction
   next();
 }
 
-export function rateLimit(req: Request, res: Response, next: NextFunction) {
-  const now = Date.now();
+export async function rateLimit(req: Request, res: Response, next: NextFunction) {
   const key = `${getClientIp(req)}:${req.method}:${req.path.split("/").slice(0, 4).join("/")}`;
   const limit = limitForPath(req.path);
-  const bucket = buckets.get(key);
-
-  if (!bucket || bucket.resetAt <= now) {
-    buckets.set(key, { count: 1, resetAt: now + WINDOW_MS });
+  try {
+    const { count, resetAt } = await rateStore.hit(key, WINDOW_MS);
+    const remaining = Math.max(0, limit - count);
     res.setHeader("X-RateLimit-Limit", String(limit));
-    res.setHeader("X-RateLimit-Remaining", String(limit - 1));
+    res.setHeader("X-RateLimit-Remaining", String(remaining));
+    res.setHeader("X-RateLimit-Reset", String(Math.ceil(resetAt / 1000)));
+    if (count > limit) {
+      return res.status(429).json({
+        error: "rate_limited",
+        message: "Too many requests. Please wait before trying again.",
+        retryAfterSecs: Math.max(1, Math.ceil((resetAt - Date.now()) / 1000)),
+      });
+    }
+    return next();
+  } catch {
+    // Fail-open: never block legitimate traffic on rate-store outage.
     return next();
   }
-
-  bucket.count += 1;
-  const remaining = Math.max(0, limit - bucket.count);
-  res.setHeader("X-RateLimit-Limit", String(limit));
-  res.setHeader("X-RateLimit-Remaining", String(remaining));
-  res.setHeader("X-RateLimit-Reset", String(Math.ceil(bucket.resetAt / 1000)));
-
-  if (bucket.count > limit) {
-    return res.status(429).json({
-      error: "rate_limited",
-      message: "Too many requests. Please wait before trying again.",
-      retryAfterSecs: Math.max(1, Math.ceil((bucket.resetAt - now) / 1000)),
-    });
-  }
-
-  return next();
 }
 
 export function adminAccessControl(req: Request, res: Response, next: NextFunction) {
@@ -133,9 +121,3 @@ export function adminAccessControl(req: Request, res: Response, next: NextFuncti
   return next();
 }
 
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, bucket] of buckets.entries()) {
-    if (bucket.resetAt <= now) buckets.delete(key);
-  }
-}, WINDOW_MS).unref();

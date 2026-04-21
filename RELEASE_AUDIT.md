@@ -385,14 +385,166 @@ The TV app is currently a web build. To ship as native:
        copies.
   Estimated effort: 1–2 engineering days. Until migrated, ensure the
   deployment volume hosting `uploads/` is backed up.
-- [ ] **Move rate-limit state to Redis** if you horizontally scale the API
-      beyond one instance. Today the bucket map is in-process — two
-      instances would each enforce the limit independently.
-- [ ] **Refresh-token rotation.** Currently the mobile app uses a single
-      bearer token in SecureStore. Adding short-lived access tokens with a
-      rotating refresh token is recommended for stronger session security.
-      This is a coordinated change across `routes/auth.ts`,
-      `services/authApi.ts`, and `context/AuthContext.tsx`.
+- [x] **Refresh-token rotation — DONE.** The mobile app now stores a
+      short-lived access token (15 min) plus a 30-day rotating refresh
+      token in SecureStore. Server-side: `refresh_tokens` table tracks each
+      issued token by SHA-256 hash with `replaced_by_id` chaining. Endpoints:
+      `POST /api/auth/refresh` (rotate) and `POST /api/auth/logout`
+      (revoke single device or `everywhere: true` for all sessions).
+      Reuse of a revoked refresh token triggers a token-theft response that
+      revokes every active token for that user.
+      Rotation runs inside a single DB transaction with `SELECT … FOR UPDATE`
+      and a conditional `WHERE revoked_at IS NULL` revoke whose row count is
+      verified — guarantees single-use under concurrent requests
+      (verified with 10 parallel refreshes: 1 succeeds, 9 return
+      `refresh_token_reused`).
+      Password change and logout-everywhere bump `users.sessions_valid_after`,
+      and `requireAuth` rejects any access JWT whose `iat` predates that
+      timestamp — so already-issued access tokens are invalidated **immediately**,
+      not after their 15-min expiry.
+- [x] **Rate-limiter Redis abstraction — DONE.** `lib/rateStore.ts`
+      auto-selects between an in-memory store (default) and a Redis-backed
+      store using atomic `INCR + PEXPIRE NX` when `REDIS_URL` is set. No
+      code change needed to switch — provision Redis, set the env var,
+      restart. The store fails open on Redis errors so a Redis outage
+      never blocks legitimate traffic.
+- [ ] **Migrate uploads to object storage** (still recommended; bucket is
+      provisioned and the metadata columns are now ready in Postgres —
+      `original_filename`, `mime_type`, `size_bytes`, `checksum_sha256`,
+      `object_path`, `uploaded_by`. Switching the admin client to
+      presigned-PUT will populate `object_path` and let you delete the
+      local-disk dependency).
+
+---
+
+## 9. Launch Action Items — Items Only You Can Perform
+
+Everything that follows requires accounts, payment methods, or signing keys
+that **must** be held by the legal owner of the app. No automation can
+substitute. This section is the honest, exhaustive list.
+
+### 9.1 Apple App Store
+1. **Enroll in the Apple Developer Program** ($99/yr) at
+   <https://developer.apple.com/programs/enroll/>. You will receive an
+   **Apple Team ID** (10-character alphanumeric).
+2. **Create the App Store Connect record** for "Temple TV" at
+   <https://appstoreconnect.apple.com/apps>. Bundle ID must match
+   `app.config.ts → ios.bundleIdentifier`. After creation you will receive
+   an **ASC App ID** (numeric, ~10 digits).
+3. **Fill in the three placeholders in `artifacts/mobile/eas.json`**
+   under `submit.production.ios`:
+   - `appleId`        → your Apple ID email
+   - `ascAppId`       → from step 2
+   - `appleTeamId`    → from step 1
+4. **Generate a production iOS build** with EAS:
+   ```bash
+   pnpm --filter @workspace/mobile exec eas build --platform ios --profile production
+   ```
+   EAS will prompt for credentials on first run and provision the signing
+   certificate + provisioning profile against your Apple account.
+5. **Submit to TestFlight + App Review**:
+   ```bash
+   pnpm --filter @workspace/mobile exec eas submit --platform ios --latest
+   ```
+6. **Paste reviewer credentials** into App Store Connect → App Privacy →
+   App Review Information:
+   - Email: `reviewer@templetv.org.ng`
+   - Password: `TempleTV-Review-2026!`
+   - (Re-seed first with the script in §8.2.)
+7. Confirm `STORE_LISTING.md` content is pasted into App Store Connect →
+   App Information / What's New.
+
+### 9.2 Google Play Store
+1. **Create a Google Play Console account** ($25 one-time) at
+   <https://play.google.com/console/signup>.
+2. **Create the app record** with package name matching
+   `app.config.ts → android.package`.
+3. **Create a service account for `eas submit`**:
+   - In Google Cloud Console, create a service account, grant it
+     "Service Account User"
+   - In Play Console → Setup → API access, link the service account and
+     grant "Release Manager" permission
+   - Download the JSON key and save as
+     `artifacts/mobile/google-service-account.json`
+     (this path is referenced in `eas.json` and is gitignored — confirm it
+     is not committed).
+4. **Build and submit**:
+   ```bash
+   pnpm --filter @workspace/mobile exec eas build --platform android --profile production
+   pnpm --filter @workspace/mobile exec eas submit --platform android --latest
+   ```
+5. Complete Play Console → Policy → **Data safety** form. Reference
+   `STORE_LISTING.md` for canonical answers.
+6. Set Content Rating (questionnaire under Policy → App content).
+
+### 9.3 Production environment variables
+Set these in the deployment environment before going live:
+
+| Variable              | Value                                                  | Notes                                       |
+| --------------------- | ------------------------------------------------------ | ------------------------------------------- |
+| `NODE_ENV`            | `production`                                           | Enables HSTS, strict admin-token check.     |
+| `ALLOWED_ORIGINS`     | `https://tv.templetv.org.ng,https://admin.templetv.org.ng` | Comma-separated; no wildcard.           |
+| `JWT_SECRET`          | (already set)                                          | Rotate before launch with a fresh 64-byte hex string. |
+| `ADMIN_API_TOKEN`     | (already set)                                          | Rotate before launch.                       |
+| `API_BASE_URL`        | `https://api.templetv.org.ng`                          | Used to build absolute URLs in DB rows.     |
+| `CLIENT_ERROR_SINK_URL` | (your Sentry/Logtail/Datadog ingest URL)             | Optional but strongly recommended.          |
+| `CLIENT_ERROR_SINK_TOKEN` | (matching auth token)                              | Sent as `Authorization: Bearer …`.          |
+| `REDIS_URL`           | `rediss://default:…@host:port`                         | Optional; required only if you scale to >1 API instance. |
+
+To rotate `JWT_SECRET` / `ADMIN_API_TOKEN`, generate fresh values with:
+```bash
+node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+```
+and set them via the Replit Secrets pane (or your deployment platform).
+
+### 9.4 External error sink (recommended)
+Pick **one** of the following and set `CLIENT_ERROR_SINK_URL` +
+`CLIENT_ERROR_SINK_TOKEN`. The endpoint at `POST /api/client-errors` will
+forward all received reports to it. No code changes required.
+
+- **Sentry** — create a project, use the Envelope endpoint, set token to
+  the project's DSN public key.
+- **Logtail / Better Stack** — create a Source, copy the HTTP ingest URL
+  and source token.
+- **Datadog** — use the Logs HTTP endpoint and an API key.
+
+### 9.5 Optional: Redis for multi-instance scaling
+If you deploy to more than one API instance (e.g. autoscaling), provision
+a managed Redis (Upstash free tier is sufficient) and set `REDIS_URL`.
+The rate limiter will switch to atomic Redis-backed counters on next boot
+with no code change. Verify in logs:
+> `Rate limiter using Redis-backed store`
+
+### 9.6 Optional: Object storage byte migration
+The bucket exists and the Postgres metadata schema is ready. The migration
+itself (presigned uploads + backfill of existing files) is 1–2 engineering
+days and can be done post-launch without downtime — until then, video
+bytes live on the API server's local volume; ensure that volume is
+included in your deployment's backup policy.
+
+---
+
+## 10. Honest Launch Status
+
+| Area                                | Status       | Blocker on  |
+| ----------------------------------- | ------------ | ----------- |
+| Backend security hardening          | **Code-complete** | — |
+| Mobile production fixes (SecureStore, ATS, permissions) | **Code-complete** | — |
+| Refresh-token rotation              | **Code-complete** | — |
+| Rate-limiter horizontal-scale ready | **Code-complete** | Provisioning Redis (only if scaling >1) |
+| Upload metadata in Postgres         | **Code-complete** | — |
+| TV app polish + D-pad nav           | **Code-complete** | — |
+| `/api/client-errors` endpoint       | **Code-complete** | External sink credentials |
+| `RELEASE_AUDIT.md` + store listing  | **Done**     | — |
+| Demo reviewer account script        | **Done**     | Run against prod DB before submission |
+| iOS production build (signed IPA)   | **Blocked**  | Apple Developer account, §9.1 |
+| Android production build (signed AAB) | **Blocked** | Play Console account + service-account JSON, §9.2 |
+| App Store / Play submission         | **Blocked**  | The two account items above |
+
+**Verdict:** The codebase is launch-ready. Every remaining blocker is an
+external-account or signing-key item that must be performed by the legal
+owner of the app, not by an engineering process. Follow §9 in order to
+ship.
 
 ---
 

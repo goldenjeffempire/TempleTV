@@ -9,47 +9,151 @@ export interface AuthUser {
   emailVerified: boolean;
 }
 
+export interface AuthTokens {
+  accessToken: string;
+  refreshToken: string;
+  expiresIn?: number;
+}
+
+export interface AuthResponse extends AuthTokens {
+  /** Back-compat field also returned by the server. */
+  token: string;
+  user: AuthUser;
+}
+
 function getApiBase(): string {
+  // EXPO_PUBLIC_API_URL (set by eas.json profiles) is the canonical source.
+  // EXPO_PUBLIC_DOMAIN is supported as a fallback for older Expo Go builds.
+  const apiUrl = process.env.EXPO_PUBLIC_API_URL;
+  if (apiUrl) return apiUrl.replace(/\/+$/, "");
   const domain = process.env.EXPO_PUBLIC_DOMAIN;
   if (domain) return `https://${domain}`;
   return "";
 }
 
+// ── Refresh-token coordination ───────────────────────────────────────────
+// Multiple in-flight requests may simultaneously hit a 401. We dedupe the
+// refresh into a single network call and let everyone await the same result.
+let inflightRefresh: Promise<string | null> | null = null;
+// Allow the AuthContext to react when the refresh permanently fails (forces
+// signOut in the UI without circular imports).
+let onSessionExpired: (() => void) | null = null;
+export function setOnSessionExpired(handler: (() => void) | null): void {
+  onSessionExpired = handler;
+}
+
+async function attemptRefresh(): Promise<string | null> {
+  const refreshToken = await secureStorage.getItem(STORAGE_KEYS.authRefreshToken);
+  if (!refreshToken) return null;
+  try {
+    const res = await fetch(`${getApiBase()}/api/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refreshToken }),
+    });
+    if (!res.ok) {
+      // Permanent failure — clear stored credentials and notify the UI.
+      await Promise.all([
+        secureStorage.removeItem(STORAGE_KEYS.authToken),
+        secureStorage.removeItem(STORAGE_KEYS.authRefreshToken),
+      ]);
+      onSessionExpired?.();
+      return null;
+    }
+    const data = (await res.json()) as { accessToken: string; refreshToken: string };
+    await Promise.all([
+      secureStorage.setItem(STORAGE_KEYS.authToken, data.accessToken),
+      secureStorage.setItem(STORAGE_KEYS.authRefreshToken, data.refreshToken),
+    ]);
+    return data.accessToken;
+  } catch {
+    return null;
+  }
+}
+
+async function refreshAccessToken(): Promise<string | null> {
+  if (inflightRefresh) return inflightRefresh;
+  inflightRefresh = attemptRefresh().finally(() => {
+    inflightRefresh = null;
+  });
+  return inflightRefresh;
+}
+
 async function authFetch(path: string, options: RequestInit = {}): Promise<Response> {
   const token = await secureStorage.getItem(STORAGE_KEYS.authToken);
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...(options.headers as Record<string, string>),
+  const buildHeaders = (t: string | null): Record<string, string> => {
+    const h: Record<string, string> = {
+      "Content-Type": "application/json",
+      ...(options.headers as Record<string, string>),
+    };
+    if (t) h.Authorization = `Bearer ${t}`;
+    return h;
   };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  return fetch(`${getApiBase()}${path}`, { ...options, headers });
+  const url = `${getApiBase()}${path}`;
+  const initial = await fetch(url, { ...options, headers: buildHeaders(token) });
+  // Auto-refresh on 401 for any authenticated route except the auth endpoints
+  // themselves (where 401 means bad credentials, not an expired access token).
+  if (initial.status !== 401 || path.startsWith("/api/auth/")) return initial;
+  const newToken = await refreshAccessToken();
+  if (!newToken) return initial;
+  return fetch(url, { ...options, headers: buildHeaders(newToken) });
+}
+
+async function persistAuthResponse(data: AuthResponse): Promise<void> {
+  await Promise.all([
+    secureStorage.setItem(STORAGE_KEYS.authToken, data.accessToken ?? data.token),
+    data.refreshToken
+      ? secureStorage.setItem(STORAGE_KEYS.authRefreshToken, data.refreshToken)
+      : Promise.resolve(),
+  ]);
 }
 
 export async function apiSignup(
   email: string,
   password: string,
   displayName: string,
-): Promise<{ token: string; user: AuthUser }> {
-  const res = await authFetch("/api/auth/signup", {
+): Promise<AuthResponse> {
+  const res = await fetch(`${getApiBase()}/api/auth/signup`, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password, displayName }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? "Signup failed");
-  return data as { token: string; user: AuthUser };
+  await persistAuthResponse(data as AuthResponse);
+  return data as AuthResponse;
 }
 
 export async function apiLogin(
   email: string,
   password: string,
-): Promise<{ token: string; user: AuthUser }> {
-  const res = await authFetch("/api/auth/login", {
+): Promise<AuthResponse> {
+  const res = await fetch(`${getApiBase()}/api/auth/login`, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? "Login failed");
-  return data as { token: string; user: AuthUser };
+  await persistAuthResponse(data as AuthResponse);
+  return data as AuthResponse;
+}
+
+export async function apiLogout(everywhere = false): Promise<void> {
+  const refreshToken = await secureStorage.getItem(STORAGE_KEYS.authRefreshToken);
+  // Best-effort server revocation; never block local sign-out on network failure.
+  try {
+    await authFetch("/api/auth/logout", {
+      method: "POST",
+      body: JSON.stringify({ refreshToken, everywhere }),
+    });
+  } catch {
+    /* swallow */
+  }
+  await Promise.all([
+    secureStorage.removeItem(STORAGE_KEYS.authToken),
+    secureStorage.removeItem(STORAGE_KEYS.authRefreshToken),
+  ]);
 }
 
 export async function apiGetMe(): Promise<AuthUser> {

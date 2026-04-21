@@ -14,11 +14,19 @@ export interface PlatformStatus {
   };
 }
 
-export async function fetchPlatformStatus(): Promise<PlatformStatus | null> {
+function resolveApiBase(): string | null {
+  const apiUrl = process.env.EXPO_PUBLIC_API_URL;
+  if (apiUrl) return apiUrl.replace(/\/+$/, "");
   const domain = process.env.EXPO_PUBLIC_DOMAIN;
-  if (!domain) return null;
+  if (domain) return `https://${domain}`;
+  return null;
+}
+
+export async function fetchPlatformStatus(): Promise<PlatformStatus | null> {
+  const base = resolveApiBase();
+  if (!base) return null;
   try {
-    const res = await fetch(`https://${domain}/api/ops/status`, {
+    const res = await fetch(`${base}/api/ops/status`, {
       signal: AbortSignal.timeout(6000),
     });
     if (!res.ok) return null;

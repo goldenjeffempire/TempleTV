@@ -431,6 +431,15 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 ### Bug Fixes
 - **`pointerEvents` deprecation** in `BroadcastInfoStrip.tsx`: Moved prop from component prop to `style={{ pointerEvents: "none" }}` per React Native 0.73+ deprecation warning.
 
+## Production Hardening (Latest Session)
+- **Refresh-token auth**: 15-min access JWT + 30-day rotating refresh token (SHA-256-hashed in DB). Single-use guarantee enforced by transactional rotation with `SELECT … FOR UPDATE` and conditional revoke; reuse triggers full session revoke. Endpoints: `POST /api/auth/refresh`, `POST /api/auth/logout` (`everywhere: true` supported).
+- **Immediate global session invalidation**: `users.sessions_valid_after` column + `iat`-vs-epoch check in `requireAuth`. Password change and logout-everywhere bump the epoch so existing access JWTs are rejected the next request, not after 15 min.
+- **Pluggable rate-limiter**: `lib/rateStore.ts` auto-selects in-memory (default) or Redis (atomic `INCR + PEXPIRE NX`) when `REDIS_URL` is set. Fail-open on Redis errors.
+- **Upload metadata in Postgres**: videos table now stores originalFilename, mimeType, sizeBytes (bigint), checksumSha256, objectPath, uploadedBy. Streamed SHA-256 during upload; cleanup on assembly failure.
+- **Mobile auto-refresh**: `authApi.ts` dedupes parallel 401-driven refreshes via single in-flight promise; permanent failures call `setOnSessionExpired` hook to clear local creds.
+- **eas.json finalized** with preview/production channels and labeled REPLACE_ME placeholders for Apple-account-specific IDs.
+- **Honest launch checklist**: §9 of `RELEASE_AUDIT.md` enumerates every external action (Apple/Google account, EAS submit, env vars, optional Redis/error-sink) the owner must perform — codebase is launch-ready.
+
 ## Features Added (Session (previous)) — Enterprise Launch Readiness
 - **Launch readiness API**: Added protected `GET /api/admin/launch/readiness`, aggregating security, content, broadcast, HLS, cache, notification, monetization, and app launch configuration into go/no-go checks.
 - **Admin Launch Readiness page**: Added `/launch-readiness` with readiness score, blocker/warning counts, operational metrics, and actionable checklist grouped by Security & Access, Content & Broadcast, Streaming Pipeline, and Growth & Distribution.

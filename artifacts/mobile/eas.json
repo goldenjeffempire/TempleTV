@@ -22,6 +22,7 @@
     },
     "preview": {
       "distribution": "internal",
+      "channel": "preview",
       "ios": {
         "simulator": false,
         "resourceClass": "m-medium"
@@ -30,11 +31,13 @@
         "buildType": "apk"
       },
       "env": {
-        "APP_ENV": "preview"
+        "APP_ENV": "preview",
+        "EXPO_PUBLIC_API_URL": "https://api.templetv.org.ng"
       }
     },
     "production": {
       "autoIncrement": true,
+      "channel": "production",
       "ios": {
         "image": "latest",
         "resourceClass": "m-medium"
@@ -43,16 +46,17 @@
         "buildType": "app-bundle"
       },
       "env": {
-        "APP_ENV": "production"
+        "APP_ENV": "production",
+        "EXPO_PUBLIC_API_URL": "https://api.templetv.org.ng"
       }
     }
   },
   "submit": {
     "production": {
       "ios": {
-        "appleId": "support@templetv.jctm",
-        "ascAppId": "",
-        "appleTeamId": "",
+        "appleId": "REPLACE_WITH_YOUR_APPLE_ID_EMAIL",
+        "ascAppId": "REPLACE_WITH_ASC_APP_ID_FROM_APP_STORE_CONNECT",
+        "appleTeamId": "REPLACE_WITH_APPLE_TEAM_ID_FROM_DEVELOPER_PORTAL",
         "language": "en-US",
         "categories": ["Entertainment", "Education"]
       },

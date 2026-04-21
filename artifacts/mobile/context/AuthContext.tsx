@@ -2,15 +2,20 @@ import React, { createContext, useCallback, useContext, useEffect, useState } fr
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { secureStorage } from "@/lib/secureStorage";
 import { STORAGE_KEYS } from "@/constants/config";
-import { apiGetMe, type AuthUser } from "@/services/authApi";
+import { apiGetMe, apiLogout, setOnSessionExpired, type AuthUser, type AuthResponse } from "@/services/authApi";
 
 interface AuthContextValue {
   user: AuthUser | null;
   token: string | null;
   isLoading: boolean;
   isLoggedIn: boolean;
-  signIn: (token: string, user: AuthUser) => Promise<void>;
-  signOut: () => Promise<void>;
+  /**
+   * Persist the auth response from a login/signup call. Accepts either the
+   * full {@link AuthResponse} (preferred) or, for backward-compat, a single
+   * legacy access-token string.
+   */
+  signIn: (resp: AuthResponse | string, user: AuthUser) => Promise<void>;
+  signOut: (everywhere?: boolean) => Promise<void>;
   updateUser: (user: AuthUser) => void;
 }
 
@@ -24,7 +29,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const restore = async () => {
       try {
-        // Migration: if a token exists in legacy AsyncStorage, move it to SecureStore once.
+        // Migration: legacy AsyncStorage token → SecureStore (one-time).
         const legacyToken = await AsyncStorage.getItem(STORAGE_KEYS.authToken);
         if (legacyToken) {
           await secureStorage.setItem(STORAGE_KEYS.authToken, legacyToken);
@@ -38,6 +43,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (storedToken && storedUser) {
           setToken(storedToken);
           setUser(JSON.parse(storedUser) as AuthUser);
+          // apiGetMe() will auto-refresh under the hood if the access token is expired.
           apiGetMe()
             .then((freshUser) => {
               setUser(freshUser);
@@ -53,23 +59,41 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     restore();
   }, []);
 
-  const signIn = useCallback(async (newToken: string, newUser: AuthUser) => {
-    await Promise.all([
-      secureStorage.setItem(STORAGE_KEYS.authToken, newToken),
-      AsyncStorage.setItem(STORAGE_KEYS.authUser, JSON.stringify(newUser)),
-    ]);
-    setToken(newToken);
-    setUser(newUser);
-  }, []);
-
-  const signOut = useCallback(async () => {
+  const clearLocal = useCallback(async () => {
     await Promise.all([
       secureStorage.removeItem(STORAGE_KEYS.authToken),
+      secureStorage.removeItem(STORAGE_KEYS.authRefreshToken),
       AsyncStorage.removeItem(STORAGE_KEYS.authUser),
     ]);
     setToken(null);
     setUser(null);
   }, []);
+
+  // Wire authApi → context so a permanent refresh failure forces signOut.
+  useEffect(() => {
+    setOnSessionExpired(() => {
+      clearLocal().catch(() => {});
+    });
+    return () => setOnSessionExpired(null);
+  }, [clearLocal]);
+
+  const signIn = useCallback(async (resp: AuthResponse | string, newUser: AuthUser) => {
+    // authApi.apiLogin/apiSignup already persisted both tokens to SecureStore
+    // when given an AuthResponse; we only need to mirror state and the user.
+    const accessToken = typeof resp === "string" ? resp : (resp.accessToken ?? resp.token);
+    if (typeof resp === "string") {
+      // Legacy callers that only pass an access-token string: persist it here.
+      await secureStorage.setItem(STORAGE_KEYS.authToken, resp);
+    }
+    await AsyncStorage.setItem(STORAGE_KEYS.authUser, JSON.stringify(newUser));
+    setToken(accessToken);
+    setUser(newUser);
+  }, []);
+
+  const signOut = useCallback(async (everywhere = false) => {
+    await apiLogout(everywhere).catch(() => {});
+    await clearLocal();
+  }, [clearLocal]);
 
   const updateUser = useCallback((updated: AuthUser) => {
     setUser(updated);
