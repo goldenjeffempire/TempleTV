@@ -540,12 +540,13 @@ included in your deployment's backup policy.
 | Rate-limiter horizontal-scale ready | **Code-complete** | Provisioning Redis (only if scaling >1) |
 | Upload metadata in Postgres         | **Code-complete** | — |
 | TV app polish + D-pad nav           | **Code-complete** | — |
-| `/api/client-errors` endpoint       | **Code-complete** | External sink credentials |
+| `/api/client-errors` endpoint       | **Code-complete** | External sink credentials (optional — Sentry below covers the equivalent) |
+| Sentry error tracking (Express SDK) | **Done**     | DSN baked into `instrument.ts` + `render.yaml`; verified end-to-end with live event id `a0f7c6bd…` |
 | `RELEASE_AUDIT.md` + store listing  | **Done**     | — |
 | Demo reviewer account script        | **Done**     | Run against prod DB before submission |
 | iOS production build (signed IPA)   | **Blocked**  | Apple Developer account, §9.1 |
-| Android production build (signed AAB) | **Partially unblocked** | Play Console ✅ live (2026-04-21); still need: app record + service-account JSON, §9.2 steps 2–3 |
-| Play Store submission               | **Partially unblocked** | Same as above (account ✅, build + service account pending) |
+| Android production build (signed AAB) | **Partially unblocked** | Play Console ✅ live, service-account JSON ✅ in place (`artifacts/mobile/google-service-account.json`, gitignored, chmod 600); still need: create app record `com.templetv.jctm` and grant the service account "Release manager" role in Play Console → API access |
+| Play Store submission               | **Partially unblocked** | Same as above — once app record + role are set, run `eas build --platform android --profile production && eas submit` |
 | App Store submission                | **Blocked**  | Apple Developer Program enrollment |
 
 **Verdict:** The codebase is launch-ready. Apple is the only fully-blocked
