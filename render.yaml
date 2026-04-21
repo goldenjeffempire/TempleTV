@@ -35,6 +35,8 @@ services:
         value: https://e1d80a0a1acfca1dc8743cc701de446c@o4511258419462144.ingest.us.sentry.io/4511258444693504
       - key: SENTRY_RELEASE
         sync: false
+      - key: YOUTUBE_API_KEY
+        sync: false
       - key: DEFAULT_OBJECT_STORAGE_BUCKET_ID
         sync: false
       - key: PRIVATE_OBJECT_DIR
