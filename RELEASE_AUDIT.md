@@ -455,10 +455,16 @@ substitute. This section is the honest, exhaustive list.
    App Information / What's New.
 
 ### 9.2 Google Play Store
-1. **Create a Google Play Console account** ($25 one-time) at
-   <https://play.google.com/console/signup>.
+1. ✅ **Google Play Console account — DONE** (registered & paid 2026-04-21).
+   - Account type: **Personal**
+   - Developer name: **Jeffery Onome Emuodafevware**
+   - Developer account ID: `8018542095846733317`
+   - Account owner email: `templedeveloper1248@gmail.com`
+   - Public developer email: `templedeveloper@jctm.org.ng`
+   - Verified website: <https://templetv.org.ng>
+   - Status: identity verification complete, ready to create app records.
 2. **Create the app record** with package name matching
-   `app.config.ts → android.package`.
+   `app.config.ts → android.package` (currently `com.templetv.jctm`).
 3. **Create a service account for `eas submit`**:
    - In Google Cloud Console, create a service account, grant it
      "Service Account User"
@@ -538,13 +544,15 @@ included in your deployment's backup policy.
 | `RELEASE_AUDIT.md` + store listing  | **Done**     | — |
 | Demo reviewer account script        | **Done**     | Run against prod DB before submission |
 | iOS production build (signed IPA)   | **Blocked**  | Apple Developer account, §9.1 |
-| Android production build (signed AAB) | **Blocked** | Play Console account + service-account JSON, §9.2 |
-| App Store / Play submission         | **Blocked**  | The two account items above |
+| Android production build (signed AAB) | **Partially unblocked** | Play Console ✅ live (2026-04-21); still need: app record + service-account JSON, §9.2 steps 2–3 |
+| Play Store submission               | **Partially unblocked** | Same as above (account ✅, build + service account pending) |
+| App Store submission                | **Blocked**  | Apple Developer Program enrollment |
 
-**Verdict:** The codebase is launch-ready. Every remaining blocker is an
-external-account or signing-key item that must be performed by the legal
-owner of the app, not by an engineering process. Follow §9 in order to
-ship.
+**Verdict:** The codebase is launch-ready. Apple is the only fully-blocked
+platform (developer enrollment pending). Google Play is now unblocked at the
+account level — the remaining steps are mechanical: create the app record,
+generate the service-account JSON, and run `eas build` + `eas submit`. Follow
+§9 in order to ship.
 
 ---
 
