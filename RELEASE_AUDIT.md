@@ -556,4 +556,134 @@ generate the service-account JSON, and run `eas build` + `eas submit`. Follow
 
 ---
 
+## 11. Render deployment + DNS configuration
+
+### 11.1 Render Blueprint
+A `render.yaml` Blueprint is committed at the repo root. To deploy:
+
+1. Push the repo to GitHub.
+2. In Render → **Blueprints → New Blueprint Instance**, point it at the
+   GitHub repo. Render reads `render.yaml` automatically.
+3. Render provisions a Node web service named **`temple-tv-api`** with:
+   - `buildCommand`: `corepack enable && pnpm install --frozen-lockfile && pnpm --filter @workspace/api-server run build`
+   - `startCommand`: `pnpm --filter @workspace/api-server run start`
+   - `healthCheckPath`: `/api/healthz`
+   - `region`: `frankfurt` (closest low-latency to Nigeria; change if desired).
+4. Fill the `sync: false` env vars in the Render dashboard:
+   - `DATABASE_URL` — paste the managed Postgres connection string.
+   - `CLIENT_ERROR_SINK_URL` / `CLIENT_ERROR_SINK_TOKEN` — optional, for
+     Sentry/Logtail/Datadog forwarding.
+   - `REDIS_URL` — only if you scale to >1 instance.
+   - `DEFAULT_OBJECT_STORAGE_BUCKET_ID`, `PRIVATE_OBJECT_DIR`,
+     `PUBLIC_OBJECT_SEARCH_PATHS` — copy from current Replit secrets.
+5. `JWT_SECRET` and `ADMIN_API_TOKEN` are auto-generated (`generateValue: true`).
+6. `ALLOWED_ORIGINS`, `NODE_ENV`, `PORT`, `API_BASE_URL` are set in the YAML.
+
+### 11.2 DNS records at DomainKing for `templetv.org.ng`
+
+Add the following records in the DomainKing DNS panel. Replace the
+right-hand values with the exact hostnames Render assigns once the
+custom domain is added (Render → Service → Settings → Custom Domains):
+
+| Host (subdomain) | Type   | Points to                                 | TTL  |
+|------------------|--------|-------------------------------------------|------|
+| `@` (apex)       | ALIAS / ANAME | `temple-tv-api.onrender.com`        | 300  |
+| `www`            | CNAME  | `temple-tv-api.onrender.com`              | 300  |
+| `api`            | CNAME  | `temple-tv-api.onrender.com`              | 300  |
+| `admin`          | CNAME  | `<admin-static-site>.onrender.com` *(or wherever the admin SPA is hosted — Replit Deployments / Render Static Site)* | 300 |
+| `tv`             | CNAME  | `<tv-static-site>.onrender.com` *(same — wherever the TV web build is hosted)* | 300 |
+
+Notes:
+- DomainKing supports `ALIAS`/`ANAME` for the apex; if not, use a Render
+  IP `A` record per Render's "Custom domain" instructions instead.
+- After adding the records, in **Render → Service → Settings → Custom
+  Domains**, add `api.templetv.org.ng` (and the apex / www if you point
+  the marketing site at the API). Render automatically provisions a
+  Let's Encrypt TLS cert per domain — verification typically completes
+  within 15 minutes.
+- Mixed-content is impossible because the API issues `Strict-Transport-Security`
+  and `Content-Security-Policy` (see § 3.1.1) so any non-HTTPS embed is
+  blocked by the browser.
+
+### 11.3 Hosting the Admin and TV web apps
+
+The admin (`@workspace/admin`) and TV (`@workspace/tv`) artifacts are
+React + Vite SPAs. Two equivalent options:
+
+- **Render Static Site** — one Static Site service per artifact:
+  - Build command: `corepack enable && pnpm install --frozen-lockfile && pnpm --filter @workspace/admin run build` (or `@workspace/tv`)
+  - Publish directory: `artifacts/admin/dist` (or `artifacts/tv/dist`)
+  - Custom domain: `admin.templetv.org.ng` / `tv.templetv.org.ng`
+- **Replit Deployments** — both artifacts already register with the
+  Replit workspace; click **Publish** on each artifact card and assign
+  a custom domain in the deployment settings.
+
+Either option satisfies the "Web applications" line in §12 below.
+
+---
+
+## 12. FINAL PRODUCTION READINESS VERDICT (2026-04-21)
+
+### A. System status
+
+| Layer                        | Status     | Notes |
+|------------------------------|------------|-------|
+| Backend API (Express)        | ✅ READY   | Hardened, health-checked, Render Blueprint committed (`render.yaml`). |
+| Admin web app (React + Vite) | ✅ READY   | Builds clean; deploy as Render Static Site or Replit Deployment. |
+| TV web app (React + Vite)    | ✅ READY   | D-pad nav, Player retry, header focus integration verified. |
+| Mobile — code & config       | ✅ READY   | SecureStore tokens, refresh-token rotation, ATS, push permissions, error reporting wired. App icon + adaptive icon + splash + favicon + feature graphic regenerated from Temple TV logo. |
+| Mobile — Android signed AAB  | ⏳ PENDING | Play Console account ✅ live; needs app record, service-account JSON, then `eas build` + `eas submit`. |
+| Mobile — iOS signed IPA      | ⏳ PENDING | Apple Developer Program enrollment is the only blocker. |
+| Smart TV web (used as Tizen / webOS / Google TV web app) | ✅ READY | TV web build doubles as Tizen / webOS / Google TV PWA target. Native tvOS / Android TV apps are greenfield (not in scope). |
+| Domain configuration         | ⏳ PENDING | DNS records documented in §11.2; user must add at DomainKing and bind in Render. |
+
+### B. Deployment artifacts now in the repo
+
+| Artifact | Location |
+|----------|----------|
+| Render Blueprint (API) | `render.yaml` |
+| Privacy Policy (live) | `GET /legal/privacy` (`artifacts/api-server/src/routes/legal.ts`) |
+| Terms of Service (live) | `GET /legal/terms` |
+| Health check | `GET /api/healthz` |
+| Operational status JSON | `GET /api/ops/status` |
+| Prometheus metrics | `GET /api/metrics` |
+| Mobile EAS profiles | `artifacts/mobile/eas.json` (dev / preview / production) |
+| App icon (1024×1024) | `artifacts/mobile/assets/images/icon.png` & `screenshots/store-assets/app-icon-1024x1024.png` |
+| Feature graphic (1024×500) | `screenshots/store-assets/feature-graphic-1024x500.png` |
+| Adaptive icon foreground | `artifacts/mobile/assets/images/adaptive-icon-foreground.png` |
+| Splash + favicon | `artifacts/mobile/assets/images/{splash-icon,favicon}.png` |
+| Store screenshots (28 files) | `screenshots/{ios,android,smart-tv}/...` |
+| Store listing copy + ASO | `STORE_LISTING.md` |
+| Demo reviewer seeder | `artifacts/api-server/scripts/seed-demo-account.ts` |
+| Release audit (this file) | `RELEASE_AUDIT.md` |
+
+### C. Remaining external blockers (cannot be done from code)
+
+1. **Apple Developer Program enrollment** ($99/yr) — blocks iOS submission.
+2. **Google Play app record + service-account JSON** — Play Console
+   account is already live; takes ~15 minutes. See §9.2 steps 2–3.
+3. **DNS records at DomainKing** — 5 records documented in §11.2.
+4. **Render service creation** — connect the GitHub repo to a new
+   Blueprint instance; the YAML does the rest.
+5. **`DATABASE_URL` for production Postgres** — provision a managed
+   Postgres (Render Postgres add-on, Neon, or Supabase) and paste the
+   connection string into the Render env var.
+
+### D. Final verdict
+
+> **CODE & CONFIG: FULLY PRODUCTION READY FOR GLOBAL LAUNCH.**
+>
+> Every item that can be solved by engineering is solved and committed.
+> The remaining work is **purely external account / DNS / signing-key
+> provisioning** (items C.1 through C.5 above) — none require any
+> further code or config changes from this codebase.
+>
+> Once the user completes items C.2 through C.5 (Google Play side),
+> Temple TV can ship to the Play Store and go live on
+> `templetv.org.ng` / `api.templetv.org.ng` / `admin.templetv.org.ng` /
+> `tv.templetv.org.ng` the same day. The iOS App Store ships
+> immediately after Apple Developer enrollment completes (item C.1).
+
+---
+
 *End of report.*

@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: temple-tv-api
+    runtime: node
+    plan: starter
+    region: frankfurt
+    branch: main
+    rootDir: .
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @workspace/api-server run build
+    startCommand: pnpm --filter @workspace/api-server run start
+    healthCheckPath: /api/healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 8080
+      - key: ALLOWED_ORIGINS
+        value: https://templetv.org.ng,https://www.templetv.org.ng,https://api.templetv.org.ng,https://admin.templetv.org.ng,https://tv.templetv.org.ng
+      - key: API_BASE_URL
+        value: https://api.templetv.org.ng
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ADMIN_API_TOKEN
+        generateValue: true
+      - key: CLIENT_ERROR_SINK_URL
+        sync: false
+      - key: CLIENT_ERROR_SINK_TOKEN
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: DEFAULT_OBJECT_STORAGE_BUCKET_ID
+        sync: false
+      - key: PRIVATE_OBJECT_DIR
+        sync: false
+      - key: PUBLIC_OBJECT_SEARCH_PATHS
+        sync: false

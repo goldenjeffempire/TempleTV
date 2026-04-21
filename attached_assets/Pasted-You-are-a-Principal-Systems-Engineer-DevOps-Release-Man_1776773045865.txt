@@ -1,0 +1,210 @@
+You are a Principal Systems Engineer, DevOps Release Manager, Mobile App Store Compliance Expert, and Cross-Platform Deployment Architect.
+
+Your responsibility is to take the entire Temple TV platform and ensure it is FULLY PRODUCTION READY, FULLY FUNCTIONAL, FULLY STABLE, and READY FOR GLOBAL LAUNCH across all platforms.
+
+This includes:
+- Backend API (Render deployment)
+- Web applications (Admin + TV web)
+- Mobile applications (Android + iOS)
+- Smart TV applications (Apple TV + Android TV + web-based TV apps)
+- Custom domain (templetv.org.ng)
+
+---
+
+🎯 PRIMARY OBJECTIVE:
+Prepare, fix, validate, and finalize the entire Temple TV ecosystem so it can be deployed and published with ZERO blocking issues on:
+
+- :contentReference[oaicite:0]{index=0} (backend + web hosting)
+- :contentReference[oaicite:1]{index=1} (Android app launch)
+- :contentReference[oaicite:2]{index=2} (iOS app launch)
+- Smart TV ecosystems (Apple TV, Android TV, web-based TV platforms)
+- :contentReference[oaicite:3]{index=3} domain: templetv.org.ng
+
+---
+
+## 🚨 CORE REQUIREMENT:
+You must NOT stop at analysis.
+
+You must:
+✔ Identify ALL issues  
+✔ Fix ALL issues completely  
+✔ Optimize performance  
+✔ Harden security  
+✔ Ensure full compliance  
+✔ Prepare deployment artifacts  
+✔ Validate production readiness  
+
+This is a FULL RELEASE ENGINEERING TASK.
+
+---
+
+# 🧱 1. BACKEND (API SERVER)
+
+You MUST ensure:
+
+- Fully production-ready Express API
+- Secure authentication (JWT / refresh token flow if applicable)
+- No exposed secrets or debug logs
+- HTTPS enforced everywhere
+- CORS locked to:
+  - https://templetv.org.ng
+  - https://api.templetv.org.ng
+  - https://admin.templetv.org.ng
+  - https://tv.templetv.org.ng
+- File uploads validated (magic-byte + size limits)
+- Rate limiting is production-safe
+- Database queries optimized
+- Logging structured and production-safe
+- Health check endpoint available (/health)
+
+---
+
+# ☁️ 2. RENDER DEPLOYMENT READINESS
+
+You MUST prepare:
+
+- Production build pipeline (Node.js)
+- Correct start/build commands
+- Environment variables fully validated:
+  - NODE_ENV=production
+  - DATABASE_URL
+  - JWT_SECRET
+  - ALLOWED_ORIGINS
+- No local-only dependencies
+- Ensure stateless deployment readiness
+- Validate scalability for multi-instance deployment
+
+---
+
+# 🌐 3. DOMAIN CONFIGURATION (templetv.org.ng)
+
+You MUST ensure:
+
+- API mapped to:
+  api.templetv.org.ng
+- Admin mapped to:
+  admin.templetv.org.ng
+- TV web app mapped to:
+  tv.templetv.org.ng
+- SSL enabled for all subdomains
+- Correct DNS CNAME configuration prepared for DomainKing
+- No mixed-content (HTTP blocked)
+
+---
+
+# 📱 4. ANDROID APP (GOOGLE PLAY READY)
+
+You MUST ensure:
+
+- Production AAB build generated
+- App signing configured correctly
+- No debug code or logs
+- Proper versionCode/versionName set
+- Permissions minimized and justified
+- Secure storage used (no plaintext tokens)
+- Crash-free startup experience
+- Play Store compliance fully satisfied:
+  - Data Safety form ready
+  - Content rating prepared
+  - Privacy policy linked
+
+---
+
+# 🍏 5. iOS APP (APPLE APP STORE READY)
+
+You MUST ensure:
+
+- Production IPA build ready via EAS
+- App Store Connect configuration complete
+- Proper provisioning profiles + certificates
+- ATS (App Transport Security) fully enforced (HTTPS only)
+- No missing usage descriptions in Info.plist
+- No insecure storage (Keychain used properly)
+- App Store compliance fully satisfied:
+  - Privacy nutrition labels
+  - App tracking transparency (if applicable)
+  - App review guidelines compliance
+
+---
+
+# 📺 6. SMART TV APPS (APPLE TV + ANDROID TV + WEB TV)
+
+You MUST ensure:
+
+- 10-foot UI fully optimized
+- D-pad navigation fully functional
+- Remote control navigation tested and stable
+- Video playback optimized for TV environments
+- No UI overflow on large screens
+- Focus states clearly visible
+- Performance optimized for low-power devices
+
+---
+
+# 🎥 7. VIDEO STREAMING SYSTEM (CRITICAL)
+
+You MUST ensure:
+
+- No buffering or playback failures
+- Adaptive bitrate streaming implemented (HLS/DASH)
+- CDN-ready architecture
+- Fast startup time (<2s target)
+- Retry logic for failed streams
+- Stable playback across mobile + TV + web
+
+---
+
+# 🔐 8. SECURITY & COMPLIANCE
+
+You MUST ensure:
+
+- No exposed secrets in frontend or mobile apps
+- All sensitive data encrypted
+- OWASP Mobile Top 10 vulnerabilities fixed
+- Secure authentication flows
+- Privacy policy and terms of service valid and deployed
+- No unauthorized API access possible
+
+---
+
+# 🚀 9. FINAL DEPLOYMENT READINESS CHECK
+
+You MUST output:
+
+## A. SYSTEM STATUS
+- Backend: READY / NOT READY
+- Mobile Android: READY / NOT READY
+- Mobile iOS: READY / NOT READY
+- TV Apps: READY / NOT READY
+- Domain: READY / NOT READY
+
+## B. DEPLOYMENT ARTIFACTS GENERATED
+- Render deployment config
+- Android AAB
+- iOS IPA
+- TV builds
+- DNS configuration for templetv.org.ng
+
+## C. BLOCKERS (if any)
+List any remaining issues preventing launch
+
+## D. FINAL VERDICT
+One of:
+- "FULLY PRODUCTION READY FOR GLOBAL LAUNCH"
+OR
+- "NOT READY (WITH CRITICAL BLOCKERS)"
+
+---
+
+# 🎯 FINAL GOAL:
+Deliver a fully operational, production-grade Temple TV ecosystem that is:
+
+- Deployable on Render instantly
+- Publishable on Google Play Store
+- Publishable on Apple App Store
+- Compatible with Smart TV platforms
+- Fully secured and scalable
+- Connected to templetv.org.ng
+- Ready for real-world users at global scale
+
+No partial readiness is acceptable.
