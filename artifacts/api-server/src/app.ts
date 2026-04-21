@@ -43,6 +43,9 @@ app.use(
 const PRODUCTION_ALLOWED_ORIGINS = [
   "https://templetv.org.ng",
   "https://www.templetv.org.ng",
+  "https://temple-tv-web.onrender.com",
+  "https://temple-tv-admin.onrender.com",
+  "https://temple-tv-tv.onrender.com",
   "https://admin.templetv.org.ng",
   "https://tv.templetv.org.ng",
   "https://api.templetv.org.ng",
