@@ -32,8 +32,8 @@ if (Number.isNaN(port) || port <= 0) {
 
 const server = http.createServer(app);
 
-server.listen(port, () => {
-  logger.info({ port }, "Server listening");
+server.listen(port, "0.0.0.0", () => {
+  logger.info({ port, host: "0.0.0.0" }, "Server listening");
 
   resumePendingJobsOnStartup().catch((err) => {
     logger.error({ err }, "Failed to resume pending transcoding jobs");
