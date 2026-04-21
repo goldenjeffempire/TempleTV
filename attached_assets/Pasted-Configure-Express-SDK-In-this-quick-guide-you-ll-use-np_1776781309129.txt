@@ -1,0 +1,88 @@
+Configure Express SDK
+
+In this quick guide you'll use npm, yarn or pnpm to set up:
+
+
+Error Monitoring
+
+
+Logs
+
+
+Metrics
+
+
+Tracing
+
+
+Profiling
+Install
+
+Copy instructions
+Add the Sentry Node SDK as a dependency:
+npm
+yarn
+pnpm
+
+npm install @sentry/node --save
+Configure SDK
+
+Copy DSN
+Initialize Sentry as early as possible in your application's lifecycle.
+To initialize the SDK before everything else, create an external file called instrument.js/mjs.
+JavaScript
+instrument.(js|mjs)
+
+// Import with `import * as Sentry from "@sentry/node"` if you are using ESM
+const Sentry = require("@sentry/node");
+
+Sentry.init({
+  dsn: "https://e1d80a0a1acfca1dc8743cc701de446c@o4511258419462144.ingest.us.sentry.io/4511258444693504",
+  // Setting this option to true will send default PII data to Sentry.
+  // For example, automatic IP address collection on events
+  sendDefaultPii: true,
+});
+Make sure to import instrument.js/mjs at the top of your file. Set up the error handler after all controllers and before any other error middleware. This setup is typically done in your application's entry point file, which is usually index.(js|ts). If you're running your application in ESM mode, or looking for alternative ways to set up Sentry, read about installation methods in our docs.
+JavaScript
+index.(js|mjs)
+
+// IMPORTANT: Make sure to import `instrument.js` at the top of your file.
+// If you're using ECMAScript Modules (ESM) syntax, use `import "./instrument.js";`
+require("./instrument.js");
+
+// All other imports below
+// Import with `import * as Sentry from "@sentry/node"` if you are using ESM
+const Sentry = require("@sentry/node");
+const express = require("express");
+
+const app = express();
+
+// All your controllers should live here
+
+app.get("/", function rootHandler(req, res) {
+  res.end("Hello world!");
+});
+
+// The error handler must be registered before any other error middleware and after all controllers
+Sentry.setupExpressErrorHandler(app);
+
+// Optional fallthrough error handler
+app.use(function onError(err, req, res, next) {
+  // The error id is attached to `res.sentry` to be returned
+  // and optionally displayed to the user for support.
+  res.statusCode = 500;
+  res.end(res.sentry + "\n");
+});
+
+app.listen(3000);
+Upload Source Maps (Optional)
+
+Automatically upload your source maps to enable readable stack traces for Errors. If you prefer to manually set up source maps, please follow this guide.
+
+npx @sentry/wizard@latest -i sourcemaps --saas --org temple-tv --project node-express
+Verify
+This snippet contains an intentional error and can be used as a test to make sure that everything's working as expected.
+
+app.get("/debug-sentry", function mainHandler(req, res) {
+  throw new Error("My first Sentry error!");
+});

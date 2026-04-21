@@ -1,4 +1,5 @@
 import express, { type Express } from "express";
+import * as Sentry from "@sentry/node";
 import cors from "cors";
 import compression from "compression";
 import pinoHttp from "pino-http";
@@ -103,6 +104,8 @@ app.use("/api", router);
 app.use((_req: express.Request, res: express.Response) => {
   res.status(404).json({ error: "not_found", message: "The requested endpoint does not exist." });
 });
+
+Sentry.setupExpressErrorHandler(app);
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   logger.error({ err }, "Unhandled request error");

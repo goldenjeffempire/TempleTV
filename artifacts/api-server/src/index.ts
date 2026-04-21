@@ -1,3 +1,4 @@
+import "./instrument";
 import http from "http";
 import app from "./app";
 import { logger } from "./lib/logger";
