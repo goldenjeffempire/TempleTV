@@ -48,3 +48,71 @@ services:
         sync: false
       - key: PUBLIC_OBJECT_SEARCH_PATHS
         sync: false
+
+  - type: web
+    name: temple-tv-admin
+    runtime: static
+    branch: main
+    rootDir: .
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @workspace/admin run build
+    staticPublishPath: ./artifacts/admin/dist/public
+    autoDeploy: true
+    pullRequestPreviewsEnabled: false
+    envVars:
+      - key: VITE_API_URL
+        value: https://api.templetv.org.ng
+      - key: BASE_PATH
+        value: /
+      - key: PORT
+        value: 3000
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
+  - type: web
+    name: temple-tv-tv
+    runtime: static
+    branch: main
+    rootDir: .
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @workspace/tv run build
+    staticPublishPath: ./artifacts/tv/dist/public
+    autoDeploy: true
+    pullRequestPreviewsEnabled: false
+    envVars:
+      - key: VITE_API_URL
+        value: https://api.templetv.org.ng
+      - key: BASE_PATH
+        value: /
+      - key: PORT
+        value: 3000
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: SAMEORIGIN
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
