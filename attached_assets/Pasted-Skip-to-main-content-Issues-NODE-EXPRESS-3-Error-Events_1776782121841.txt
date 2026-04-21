@@ -1,0 +1,261 @@
+Skip to main content
+Issues
+
+NODE-EXPRESS-3
+Error
+Events (total)
+Users (90d)
+Level: Error
+Temple TV verification ping (safe to archive)
+1
+0
+New
+|
+?([eval1])
+
+Resolve
+
+
+Archive
+
+
+
+
+Priority
+High
+Assignee
+
+Unassigned
+
+All Envs
+
+Since First Seen
+Filter events…
+
+
+Event
+1
+
+Users
+0
+environment
+100%
+verification
+server_name
+100%
+aba9b7d4f0ff
+mechanism
+100%
+generic
+os
+100%
+Ubuntu Linux 24.04
+View all tags and feature flags
+
+Events
+in this issue
+First
+Latest
+Recommended
+View More Events
+
+Copy as
+ID: a0f7c6bd
+a minute ago
+|
+JSON
+Jump to:
+Highlights
+Stack Trace
+Trace
+Tags
+Context
+Backend
+|
+
+node
+v24.13.0
+verification
+
+Highlights
+
+Edit
+handled
+handled
+yes
+level
+level
+error
+transaction
+transaction
+--
+url
+url
+--
+Trace: Trace ID
+eb2f6d6dec5447dfa76df0bfed9b6748
+
+Stack Trace
+
+Display
+
+Copy as
+Error
+Temple TV verification ping (safe to archive)
+mechanism
+generic
+handled
+true
+/home/runner/workspace/artifacts/api-server/[eval1]:9:41
+In App
+Called from:
+node:internal/modules/esm/module_job
+in
+ModuleJob.run
+
+Show 3 more frames
+
+Trace Preview
+View Full Trace
+One other issue appears in the same trace.
+
+Temple TV API — Sentry integration verified
+0.00ms0.50ms1.00ms1.50ms2.00ms2.50ms3.00ms3.50ms4.00ms0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s0s
+
+2
+Trace
+—
+eb2f6d6dec5447dfa76df0bfed9b6748
+
+Info
+—
+Temple TV API — Sentry integration verified
+
+Error
+—
+Temple TV verification ping (safe to archive) Error node:internal/modules/esm/module_job ModuleJob.run ?([eval1])
+
+Tags
+
+
+
+
+
+environment
+environment
+verification
+handled
+handled
+yes
+level
+level
+error
+mechanism
+mechanism
+generic
+os
+os
+Ubuntu Linux 24.04
+os.name
+name
+Ubuntu Linux
+runtime
+runtime
+node v24.13.0
+runtime.name
+name
+node
+server_name
+server_name
+aba9b7d4f0ff
+
+Contexts
+User
+Geography
+The Dalles, United States (US)
+Runtime
+
+Name
+node
+Version
+v24.13.0
+Operating System
+Kernel Version
+6.14.11
+Name
+Ubuntu Linux
+Version
+24.04
+App
+Free Memory
+19.0 GiB
+Memory Usage
+129.5 MiB
+Start Time
+2026-04-21T14:33:59.861Z(a few seconds before this event)
+Culture
+Locale
+en-US
+Timezone
+UTC
+Device
+Architecture
+x64
+Boot Time
+2026-04-21T07:11:52.006Z(7 hours before this event)
+CPU Description
+AMD EPYC 9B14
+Free Memory
+19.0 GiB
+Memory Size
+62.8 GiB
+Processor Count
+8
+Processor Frequency (MHz)
+0
+Trace Details
+Span ID
+b4db75b27f287240
+Status
+unknown
+Trace ID
+eb2f6d6dec5447dfa76df0bfed9b6748
+
+Packages
+
+SDK
+
+Event Grouping Information
+Last seen
+a minute ago
+First seen
+a minute ago
+
+Seer Autofix
+Initial Guess
+
+The error likely stems from an unresolved import or missing function definition within the ES module loading process.
+
+Find Root Cause
+
+Issue Tracking
+Track this issue in Jira, GitHub, etc.
+
+Activity
+ 
+Add a comment…
+First Seen
+a minute ago
+Marked as high priority
+Similar Issues
+View
+Merged Issues
+View
+Privacy Policy
+Terms of Use
+Service Status
+API
+Docs
+Contribute
+
+Filter events…
