@@ -182,16 +182,23 @@ does not yet exist in the repository.
    `com.templetv.jctm`.
 3. Generate an iOS distribution certificate + provisioning profile (or let EAS
    manage credentials).
-4. Build with EAS: `eas build --platform ios --profile production`. Requires
-   `eas.json` `production` profile (not present — add when ready).
+4. Build with EAS: `eas build --platform ios --profile production`. The
+   `production` profile is already configured in `artifacts/mobile/eas.json`
+   (auto-incrementing build number, `m-medium` resource class). Before the
+   first submission, fill the two `submit.production.ios` placeholders
+   (`appleTeamId`, `ascAppId`) — see § 8.2.
 5. Submit: `eas submit --platform ios --latest`.
 6. App Store Review prerequisites (the audit changes already cover the
    technical ones):
    - ✅ Usage description strings (added).
    - ✅ ATS enabled correctly (fixed).
    - ✅ `ITSAppUsesNonExemptEncryption: false` (already present).
+   - ✅ Privacy policy URL — `https://<your-domain>/legal/privacy` (page
+     published in this pass).
+   - ✅ Terms of Service URL — `https://<your-domain>/legal/terms` (page
+     published in this pass).
    - ⏳ Screenshots (6.7", 6.5", 5.5", iPad Pro 12.9").
-   - ⏳ App Store description, keywords, privacy policy URL.
+   - ⏳ App Store description, keywords.
    - ⏳ Demo account credentials for review team.
 
 ### Android — Google Play
@@ -250,17 +257,94 @@ The TV app is currently a web build. To ship as native:
 
 ## 8. Operational checklist before public launch
 
-- [ ] Set `ALLOWED_ORIGINS` to production domain(s).
-- [ ] Set `NODE_ENV=production`.
-- [ ] Provision and migrate to object storage for uploads.
-- [ ] Configure managed Postgres backups.
-- [ ] Wire `POST /api/client-errors` to long-term log sink (Sentry, Datadog,
-      Logtail).
-- [ ] Add `eas.json` profiles and run first iOS / Android production builds.
-- [ ] Configure a privacy policy + ToS page.
-- [ ] Smoke test live broadcast flow end-to-end on at least one iOS device, one
-      Android device, one TV browser, one desktop browser.
-- [ ] Review rate-limit thresholds against expected traffic.
+### 8.1 Completed in this pass
+
+- [x] **Privacy policy + Terms of Service published.** Static HTML pages served
+      directly by the API server at:
+  - `GET /legal/privacy` — full Privacy Policy (data collected, third
+    parties, retention, children's privacy, contact)
+  - `GET /legal/terms` — full Terms of Service (eligibility, acceptable use,
+    IP, donations, disclaimers, limitation of liability)
+  - `GET /legal` — index page linking to both
+  These URLs are the ones to paste into the App Store Connect privacy URL
+  field and the Google Play Data Safety form. Source:
+  `artifacts/api-server/src/routes/legal.ts`.
+- [x] **Object storage bucket provisioned.** Replit App Storage (GCS-backed)
+      bucket created. Environment variables `DEFAULT_OBJECT_STORAGE_BUCKET_ID`,
+      `PUBLIC_OBJECT_SEARCH_PATHS`, `PRIVATE_OBJECT_DIR` are now set. The
+      upload pipeline still writes to local disk (`artifacts/api-server/uploads/`)
+      until the migration is performed — see § 8.3 for the migration plan.
+- [x] **`eas.json` profiles configured.** `development`, `preview`, and
+      `production` build profiles exist with iOS/Android targets,
+      auto-incrementing build numbers, and submit metadata. Two placeholders
+      remain for the user to fill before the first iOS submission — see § 8.2.
+- [x] **Rate-limit thresholds reviewed.** Current thresholds (per IP, per
+      minute): signup/login 10, other auth 30, admin upload 90, admin general
+      240, YouTube 120, fallback 600. Confirmed reasonable for expected
+      traffic. In-process bucket — see § 8.3 if multi-instance scaling is
+      planned.
+- [x] **Workflow hygiene.** Duplicate legacy workflows (`API Server`,
+      `Temple TV`, `Temple TV Admin`) removed. Only the artifact-managed
+      workflows now exist, eliminating port collisions on restart.
+
+### 8.2 Required before submission (user action)
+
+- [ ] **Set `ALLOWED_ORIGINS`** in the production deployment environment to
+      the comma-separated list of domains the API will accept browser
+      requests from (e.g. `https://templetv.example.com,https://admin.templetv.example.com`).
+- [ ] **Set `NODE_ENV=production`** in the production deployment.
+- [ ] **Set `ADMIN_API_TOKEN`** to a strong random secret (≥ 32 bytes,
+      hex/base64). Required in production — admin endpoints return 503 until
+      it is set. Distribute this token only to admin operators.
+- [ ] **Fill `eas.json` placeholders.** Open `artifacts/mobile/eas.json` →
+      `submit.production.ios` and supply:
+  - `appleTeamId` — your 10-character Apple Developer Team ID.
+  - `ascAppId` — the App Store Connect numeric app ID created when you
+    register the app in App Store Connect.
+- [ ] **Place Google Play service-account key.** Drop the JSON key file at
+      `artifacts/mobile/google-service-account.json` (already referenced
+      in `eas.json`). Do NOT commit it — it should be in `.gitignore`.
+- [ ] **Configure managed Postgres backups** in the deployment hosting
+      panel. Recommended: daily snapshots, 30-day retention.
+- [ ] **Wire `POST /api/client-errors` to a long-term log sink** (Sentry,
+      Datadog, Logtail). The endpoint already structured-logs every report
+      via Pino; add a Pino transport pointing at the chosen sink. No code
+      change required to the endpoint itself.
+- [ ] **Run the first iOS / Android production builds** via
+      `eas build --platform ios --profile production` and
+      `eas build --platform android --profile production`, then submit with
+      `eas submit`. Requires Apple Developer ($99/yr) and Google Play
+      ($25 one-time) accounts.
+- [ ] **Smoke test the live broadcast flow end-to-end** on at least one iOS
+      device, one Android device, one TV browser, one desktop browser.
+- [ ] **App store listing assets** — screenshots (6.7" iPhone, 12.9" iPad,
+      Android phone/tablet), feature graphic, app icon set, store
+      description, keywords, support URL, marketing URL. Out of scope for
+      this engineering pass.
+
+### 8.3 Recommended follow-up engineering work
+
+- [ ] **Migrate uploads to object storage.** The bucket is provisioned and
+      the SDK is available. The migration involves:
+    1. Generate presigned PUT URLs in `routes/admin.ts` instead of accepting
+       chunks via multipart.
+    2. Have the admin client upload directly to GCS, then call a finalize
+       endpoint with the `objectPath`.
+    3. Move HLS transcoding outputs to the bucket and serve via
+       `/api/storage/objects/*`.
+    4. One-time backfill: stream existing files from
+       `artifacts/api-server/uploads/` to GCS, update DB rows, delete local
+       copies.
+  Estimated effort: 1–2 engineering days. Until migrated, ensure the
+  deployment volume hosting `uploads/` is backed up.
+- [ ] **Move rate-limit state to Redis** if you horizontally scale the API
+      beyond one instance. Today the bucket map is in-process — two
+      instances would each enforce the limit independently.
+- [ ] **Refresh-token rotation.** Currently the mobile app uses a single
+      bearer token in SecureStore. Adding short-lived access tokens with a
+      rotating refresh token is recommended for stronger session security.
+      This is a coordinated change across `routes/auth.ts`,
+      `services/authApi.ts`, and `context/AuthContext.tsx`.
 
 ---
 

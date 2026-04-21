@@ -11,7 +11,9 @@
     "description": "Stream live worship, sermons, and teachings from Temple TV JCTM Broadcasting — Jesus Christ Temple Ministry.",
     "owner": "templetv",
     "privacy": "public",
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "splash": {
       "image": "./assets/images/icon.png",
       "resizeMode": "contain",
@@ -23,7 +25,11 @@
       "buildNumber": "1",
       "requireFullScreen": false,
       "infoPlist": {
-        "UIBackgroundModes": ["audio", "fetch", "remote-notification"],
+        "UIBackgroundModes": [
+          "audio",
+          "fetch",
+          "remote-notification"
+        ],
         "AVAudioSessionCategory": "AVAudioSessionCategoryPlayback",
         "ITSAppUsesNonExemptEncryption": false,
         "NSAppTransportSecurity": {
@@ -62,7 +68,7 @@
       ]
     },
     "web": {
-      "favicon": "./assets/images/icon.png",
+      "favicon": "./assets/images/favicon.png",
       "bundler": "metro"
     },
     "notification": {
