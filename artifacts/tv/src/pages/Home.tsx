@@ -64,12 +64,26 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
     [rows, byCategory, liveStatus, onPlay, onDetails],
   );
 
-  const { focusRow, getFocusItem } = useTVNav({
+  const onHeaderSelect = useCallback(
+    (itemIndex: number) => {
+      // Header items: 0 = Search, 1 = Guide
+      if (itemIndex === 0) onNavigateSearch();
+      else if (itemIndex === 1) onNavigateGuide();
+    },
+    [onNavigateGuide, onNavigateSearch],
+  );
+
+  const { focusRow, getFocusItem, focusZone, headerItem } = useTVNav({
     rowCount: rows.length,
     getRowItemCount,
     onSelect,
     enabled: true,
+    headerItemCount: 2,
+    onHeaderSelect,
   });
+
+  const searchHeaderFocused = focusZone === "header" && headerItem === 0;
+  const guideHeaderFocused = focusZone === "header" && headerItem === 1;
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -106,9 +120,11 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
             title="Search (S)"
             style={{
               display: "flex", alignItems: "center", gap: 8, padding: "9px 18px", borderRadius: 10,
-              background: searchButtonFocused ? "rgba(106,13,173,0.5)" : "rgba(255,255,255,0.08)",
-              border: `1px solid ${searchButtonFocused ? "rgba(106,13,173,0.7)" : "rgba(255,255,255,0.15)"}`,
+              background: (searchButtonFocused || searchHeaderFocused) ? "rgba(106,13,173,0.5)" : "rgba(255,255,255,0.08)",
+              border: `1px solid ${(searchButtonFocused || searchHeaderFocused) ? "rgba(106,13,173,0.7)" : "rgba(255,255,255,0.15)"}`,
               color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", transition: "all 0.15s",
+              outline: searchHeaderFocused ? "2px solid rgba(106,13,173,0.9)" : "none",
+              outlineOffset: 2,
             }}
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
@@ -123,9 +139,11 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
             title="TV Guide (G)"
             style={{
               display: "flex", alignItems: "center", gap: 8, padding: "9px 18px", borderRadius: 10,
-              background: guideButtonFocused ? "rgba(106,13,173,0.5)" : "rgba(255,255,255,0.08)",
-              border: `1px solid ${guideButtonFocused ? "rgba(106,13,173,0.7)" : "rgba(255,255,255,0.15)"}`,
+              background: (guideButtonFocused || guideHeaderFocused) ? "rgba(106,13,173,0.5)" : "rgba(255,255,255,0.08)",
+              border: `1px solid ${(guideButtonFocused || guideHeaderFocused) ? "rgba(106,13,173,0.7)" : "rgba(255,255,255,0.15)"}`,
               color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", transition: "all 0.15s",
+              outline: guideHeaderFocused ? "2px solid rgba(106,13,173,0.9)" : "none",
+              outlineOffset: 2,
             }}
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -192,7 +210,7 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
 
         <div style={{ paddingLeft: 60, paddingTop: 16 }}>
           <p style={{ fontSize: 13, color: "rgba(255,255,255,0.3)", letterSpacing: "0.04em" }}>
-            ↑ ↓ Navigate rows &nbsp;·&nbsp; ← → Select &nbsp;·&nbsp; ENTER Details &nbsp;·&nbsp; G Guide &nbsp;·&nbsp; S Search
+            ↑ ↓ Navigate rows (↑ from top row reaches Search / Guide) &nbsp;·&nbsp; ← → Select &nbsp;·&nbsp; ENTER Open &nbsp;·&nbsp; G Guide &nbsp;·&nbsp; S Search
           </p>
         </div>
       </div>

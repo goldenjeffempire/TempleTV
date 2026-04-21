@@ -99,7 +99,7 @@ Strict-Transport-Security: max-age=63072000; includeSubDomains; preload   # prod
 |---|---------|--------|
 | TV1 | YouTube iframe player had no error handling — black screen on failure | **Fixed** — `Player.tsx` rewritten with a 12-second load watchdog, two automatic retries on iframe error or load timeout, and an accessible error UI (auto-focused **Try again** button, **Enter** to retry, **Back** to return) |
 | TV2 | `byCategory` / `featured` recomputed on every render in `useData.ts` (cascades through `Home.tsx` D-pad nav) | **Fixed** — both memoized with `useMemo` keyed on `sermons` |
-| TV3 | Header (Search / Guide buttons) reachable only via keyboard shortcuts, not D-pad navigation | **Documented (deferred)** — see § 5. Header still operable via `S` / `G` keyboard shortcuts; full D-pad reachability requires a wider refactor of `useTVNav` to support out-of-grid focus targets |
+| TV3 | Header (Search / Guide buttons) reachable only via keyboard shortcuts, not D-pad navigation | **Fixed** — `useTVNav` extended with a `headerItemCount` / `onHeaderSelect` / `focusZone` API. ArrowUp from row 0 now moves focus into the header zone; ArrowDown exits back to the grid; ArrowLeft/Right cycles between Search and Guide; Enter activates. Buttons render a purple focus ring while in the header zone. Keyboard shortcuts `S` / `G` remain as fast-paths |
 
 ### 3.4 New endpoint: `POST /api/client-errors`
 
@@ -138,6 +138,24 @@ Strict-Transport-Security: max-age=63072000; includeSubDomains; preload   # prod
 ### TV
 - `artifacts/tv/src/pages/Player.tsx` — load watchdog, auto-retry, error UI
 - `artifacts/tv/src/hooks/useData.ts` — `useMemo` for `byCategory` / `featured`
+- `artifacts/tv/src/hooks/useTVNav.ts` — header zone (`headerItemCount`, `onHeaderSelect`, `focusZone`)
+- `artifacts/tv/src/pages/Home.tsx` — wired Search / Guide into the D-pad focus flow with purple ring
+
+### Production / launch collateral
+- `STORE_LISTING.md` — **new** — App Store + Play Store description, keywords,
+  data-safety form, age-rating answers, support / marketing URL plan,
+  reviewer demo-credential reference
+- `screenshots/store-assets/feature-graphic-1024x500.png` — **new** Play
+  Store feature graphic
+- `screenshots/store-assets/app-icon-1024x1024.png` — **new** master app
+  icon (Play Console auto-derives 512×512)
+- `artifacts/api-server/scripts/seed-demo-account.ts` — **new** idempotent
+  reviewer-account seeder (`reviewer@templetv.org.ng` / `TempleTV-Review-2026!`)
+- `artifacts/api-server/src/routes/client-errors.ts` — external log-sink
+  hook (`CLIENT_ERROR_SINK_URL` / `CLIENT_ERROR_SINK_TOKEN`) for
+  Logtail / Datadog / Sentry forwarding
+- `artifacts/api-server/src/app.ts` — production domain `templetv.org.ng`
+  (+ `www`, `admin`, `tv`, `api`) baked into the CORS allow-list
 
 ---
 
@@ -157,12 +175,13 @@ These are intentional follow-ups that did not fit safely in this pass:
    does not survive container restarts on a stateless host. Migrate to
    Replit App Storage (object-storage skill) or S3 + signed URLs before any
    non-trivial production traffic.
-4. **TV header in D-pad flow.** Requires extending `useTVNav` with a "header
-   row" concept (focus escape upward from row 0). Documented as a TODO in
-   `Home.tsx`.
+4. ~~**TV header in D-pad flow.**~~ **Done in this pass** — `useTVNav` now
+   exposes a header zone; ArrowUp from row 0 reaches Search / Guide.
 5. **Sentry / Crashlytics.** `POST /api/client-errors` is a minimal first-party
-   sink. For trend analysis, breadcrumbs, and source-map symbolication, install
-   `@sentry/react-native` and forward the same payload.
+   sink **with an external HTTP forwarder** (set `CLIENT_ERROR_SINK_URL`
+   to ship every report to Logtail/Datadog/Sentry). For full breadcrumbs and
+   source-map symbolication on mobile, install `@sentry/react-native` and
+   forward the same payload.
 6. **Database backups.** Configure automated PITR or daily logical backups on
    the production Postgres before launch.
 7. **Rate-limit store.** Current limiter is in-process. For multi-instance
@@ -201,8 +220,12 @@ does not yet exist in the repository.
      and `screenshots/ios/ipad-13/` (6 shots, 2064×2752). Apple auto-scales
      these down to all legacy iPhone/iPad sizes; no separate 6.7"/12.9" sets
      needed. See `screenshots/README.md`.
-   - ⏳ App Store description, keywords.
-   - ⏳ Demo account credentials for review team.
+   - ✅ App Store description, keywords, promotional text, what's-new copy
+     and age-rating answers — see `STORE_LISTING.md`.
+   - ✅ Demo account credentials for review team — `reviewer@templetv.org.ng`
+     / `TempleTV-Review-2026!`. Seeded by
+     `pnpm --filter @workspace/api-server exec tsx scripts/seed-demo-account.ts`
+     (idempotent — safe to re-run before each submission).
 
 ### Android — Google Play
 
@@ -213,10 +236,14 @@ does not yet exist in the repository.
 4. Submit: `eas submit --platform android --latest`.
 5. Play Console prerequisites:
    - ✅ Privacy policy URL — `https://<your-domain>/legal/privacy`.
-   - ⏳ Data safety form (we collect: account email, push token, watch
-     history, favorites — all on-server only).
-   - ⏳ Content rating questionnaire.
-   - ⏳ Feature graphic (1024×500) — to be created.
+   - ✅ Data safety form answers — see `STORE_LISTING.md` § _Data safety
+     form_ (full table covering email, display name, app interactions,
+     push tokens, crash logs).
+   - ✅ Content rating questionnaire answers — see `STORE_LISTING.md`
+     § _Content rating questionnaire (IARC)_. Final rating: **3+ /
+     Everyone**.
+   - ✅ Feature graphic (1024×500) — `screenshots/store-assets/feature-graphic-1024x500.png`.
+   - ✅ Master app icon (1024×1024) — `screenshots/store-assets/app-icon-1024x1024.png`.
    - ✅ Screenshots — `screenshots/android/phone/` (6 shots, 1080×1920) and
      `screenshots/android/tablet-10/` (6 shots, 1920×1200). Play Console
      uses the 10″ tablet set for 7″ tablet listings as well.
@@ -257,7 +284,7 @@ The TV app is currently a web build. To ship as native:
 | Errors reportable to server | ✅ `POST /api/client-errors` mounted; mobile `<ErrorBoundary>` wired |
 | TV Player error UI on failure | ✅ verified in `Player.tsx` (load watchdog + retry) |
 | `byCategory` memoized | ✅ verified in `useData.ts` (`useMemo([sermons])`) |
-| Header reachable via D-pad | ⏳ deferred (documented in § 5.4) |
+| Header reachable via D-pad | ✅ ArrowUp from row 0 enters header zone; ArrowLeft/Right cycles Search ⇄ Guide; Enter activates |
 
 ---
 
@@ -314,8 +341,11 @@ The TV app is currently a web build. To ship as native:
       panel. Recommended: daily snapshots, 30-day retention.
 - [ ] **Wire `POST /api/client-errors` to a long-term log sink** (Sentry,
       Datadog, Logtail). The endpoint already structured-logs every report
-      via Pino; add a Pino transport pointing at the chosen sink. No code
-      change required to the endpoint itself.
+      via Pino **and** ships each record to an external HTTP collector
+      whenever `CLIENT_ERROR_SINK_URL` is set (with optional
+      `CLIENT_ERROR_SINK_TOKEN` for Bearer auth). To enable in production,
+      simply set those two env vars on the deployment — no code change
+      required.
 - [ ] **Run the first iOS / Android production builds** via
       `eas build --platform ios --profile production` and
       `eas build --platform android --profile production`, then submit with
@@ -327,9 +357,18 @@ The TV app is currently a web build. To ship as native:
       under `screenshots/` (iPhone 6.9″ ×6, iPad 13″ ×6, Android phone ×6,
       Android 10″ tablet ×6, Smart-TV 1080p ×3, Smart-TV UHD marketing ×1).
       See `screenshots/README.md` for upload order and store-spec compliance.
-- [ ] **Remaining store listing assets** — feature graphic (1024×500),
-      adaptive app icon set, store description, keywords, support URL,
-      marketing URL. Out of scope for this engineering pass.
+- [x] **Store listing copy + key art delivered.**
+      Description, keywords, promotional text, what's-new, data-safety
+      answers, content-rating answers, support / marketing / privacy URL
+      plan: `STORE_LISTING.md`. Feature graphic and master app icon:
+      `screenshots/store-assets/`. The only remaining manual step is to
+      paste this copy into App Store Connect / Google Play Console after
+      the developer accounts are created and to swap the `<your-domain>`
+      placeholders for the production domain.
+- [x] **Reviewer demo account.** Idempotent seeder script
+      (`artifacts/api-server/scripts/seed-demo-account.ts`) creates or
+      refreshes `reviewer@templetv.org.ng`. Run against the production DB
+      before each store submission.
 
 ### 8.3 Recommended follow-up engineering work
 

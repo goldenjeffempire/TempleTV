@@ -24,6 +24,18 @@ uri = "file://artifacts/mobile/assets/images/sermon-placeholder.png"
 type = "image"
 title = "generated_image"
 
+[[generated]]
+id = "6tdL-acneknl9g4r9lv24"
+uri = "file://screenshots/store-assets/feature-graphic-1024x500.png"
+type = "image"
+title = "Temple TV feature graphic"
+
+[[generated]]
+id = "mRuHgUPnHGk44bFKsWccj"
+uri = "file://screenshots/store-assets/app-icon-1024x1024.png"
+type = "image"
+title = "Temple TV app icon"
+
 [[outputs]]
 id = "UPbzqm8if0zEfclLOZ34p"
 uri = "file://RELEASE_AUDIT.md"
