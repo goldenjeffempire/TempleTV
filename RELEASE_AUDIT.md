@@ -197,7 +197,10 @@ does not yet exist in the repository.
      published in this pass).
    - ✅ Terms of Service URL — `https://<your-domain>/legal/terms` (page
      published in this pass).
-   - ⏳ Screenshots (6.7", 6.5", 5.5", iPad Pro 12.9").
+   - ✅ Screenshots — `screenshots/ios/6.9-iphone/` (6 shots, 1320×2868)
+     and `screenshots/ios/ipad-13/` (6 shots, 2064×2752). Apple auto-scales
+     these down to all legacy iPhone/iPad sizes; no separate 6.7"/12.9" sets
+     needed. See `screenshots/README.md`.
    - ⏳ App Store description, keywords.
    - ⏳ Demo account credentials for review team.
 
@@ -209,11 +212,14 @@ does not yet exist in the repository.
    AAB).
 4. Submit: `eas submit --platform android --latest`.
 5. Play Console prerequisites:
-   - ⏳ Privacy policy URL.
+   - ✅ Privacy policy URL — `https://<your-domain>/legal/privacy`.
    - ⏳ Data safety form (we collect: account email, push token, watch
      history, favorites — all on-server only).
    - ⏳ Content rating questionnaire.
-   - ⏳ Feature graphic (1024×500), screenshots.
+   - ⏳ Feature graphic (1024×500) — to be created.
+   - ✅ Screenshots — `screenshots/android/phone/` (6 shots, 1080×1920) and
+     `screenshots/android/tablet-10/` (6 shots, 1920×1200). Play Console
+     uses the 10″ tablet set for 7″ tablet listings as well.
 
 ### TV web — distribution channels
 
@@ -317,10 +323,13 @@ The TV app is currently a web build. To ship as native:
       ($25 one-time) accounts.
 - [ ] **Smoke test the live broadcast flow end-to-end** on at least one iOS
       device, one Android device, one TV browser, one desktop browser.
-- [ ] **App store listing assets** — screenshots (6.7" iPhone, 12.9" iPad,
-      Android phone/tablet), feature graphic, app icon set, store
-      description, keywords, support URL, marketing URL. Out of scope for
-      this engineering pass.
+- [x] **App store screenshots** — 28 production-ready screenshots delivered
+      under `screenshots/` (iPhone 6.9″ ×6, iPad 13″ ×6, Android phone ×6,
+      Android 10″ tablet ×6, Smart-TV 1080p ×3, Smart-TV UHD marketing ×1).
+      See `screenshots/README.md` for upload order and store-spec compliance.
+- [ ] **Remaining store listing assets** — feature graphic (1024×500),
+      adaptive app icon set, store description, keywords, support URL,
+      marketing URL. Out of scope for this engineering pass.
 
 ### 8.3 Recommended follow-up engineering work
 
