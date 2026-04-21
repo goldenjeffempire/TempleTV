@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, boolean, integer } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, boolean, integer, bigint } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -19,6 +19,17 @@ export const videosTable = pgTable("managed_videos", {
   localVideoUrl: text("local_video_url"),
   hlsMasterUrl: text("hls_master_url"),
   transcodingStatus: text("transcoding_status").notNull().default("none"),
+  // ── Upload metadata (Postgres = source of truth, bucket = bytes) ─────────
+  // Populated for `videoSource === "local"` uploads. Nullable for legacy
+  // YouTube imports and rows that pre-date the metadata migration.
+  originalFilename: text("original_filename"),
+  mimeType: text("mime_type"),
+  sizeBytes: bigint("size_bytes", { mode: "number" }),
+  checksumSha256: text("checksum_sha256"),
+  // Object-storage path (e.g. "/objects/uploads/<uuid>"). Populated when the
+  // admin upload flow migrates from local disk to presigned-PUT GCS uploads.
+  objectPath: text("object_path"),
+  uploadedBy: text("uploaded_by"),
 });
 
 export const insertVideoSchema = createInsertSchema(videosTable).omit({ importedAt: true });

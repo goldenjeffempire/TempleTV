@@ -926,6 +926,15 @@ router.post("/admin/videos/upload", upload.fields([{ name: "video", maxCount: 1 
       ? `${baseUrl}/api/uploads/${thumbnailFile.filename}`
       : "";
 
+    // Capture upload metadata for this single-shot multipart path too.
+    const checksumSha256 = await new Promise<string>((resolve, reject) => {
+      const hash = createHash("sha256");
+      const stream = createReadStream(videoFile.path);
+      stream.on("data", (chunk) => hash.update(chunk));
+      stream.on("end", () => resolve(hash.digest("hex")));
+      stream.on("error", reject);
+    });
+
     const id = randomUUID();
     const pseudoYoutubeId = `local-${id}`;
 
@@ -945,6 +954,12 @@ router.post("/admin/videos/upload", upload.fields([{ name: "video", maxCount: 1 
         viewCount: 0,
         videoSource: "local",
         localVideoUrl,
+        originalFilename: videoFile.originalname ?? null,
+        mimeType: videoFile.mimetype ?? null,
+        sizeBytes: videoFile.size ?? null,
+        checksumSha256,
+        objectPath: null,
+        uploadedBy: null,
       })
       .returning();
 
@@ -1157,40 +1172,84 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
 
     await fs.rm(session.tmpDir, { recursive: true, force: true });
 
-    const devDomain = process.env.REPLIT_DEV_DOMAIN;
-    const baseUrl = process.env.API_BASE_URL ?? (devDomain ? `https://${devDomain}` : "");
-    const localVideoUrl = `${baseUrl}/api/uploads/${finalFilename}`;
-    const thumbnailUrl = session.thumbnailPath ? `${baseUrl}/api/uploads/${session.thumbnailPath}` : "";
+    // From here on, the assembled file lives at `finalPath`. Any failure
+    // before we successfully insert the DB row would orphan that file, so
+    // we wrap the remaining work in a try/catch that cleans up on failure.
+    try {
+      // ── Upload-metadata capture (Postgres is the source of truth) ───────
+      // Compute SHA-256 by streaming the assembled file (no full-file buffer).
+      const sizeBytes = (await fs.stat(finalPath)).size;
+      const checksumSha256 = await new Promise<string>((resolve, reject) => {
+        const hash = createHash("sha256");
+        const stream = createReadStream(finalPath);
+        stream.on("data", (chunk) => hash.update(chunk));
+        stream.on("end", () => resolve(hash.digest("hex")));
+        stream.on("error", reject);
+      });
+      // Derive a best-effort MIME type from the file extension. The chunked
+      // upload session doesn't carry the original Content-Type header, but
+      // the extension was set at /init time from the client-supplied filename.
+      const extToMime: Record<string, string> = {
+        ".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime",
+        ".webm": "video/webm", ".mkv": "video/x-matroska", ".avi": "video/x-msvideo",
+        ".flv": "video/x-flv", ".ogv": "video/ogg", ".ts": "video/mp2t",
+        ".3gp": "video/3gpp",
+      };
+      const mimeType = extToMime[session.ext.toLowerCase()] ?? "application/octet-stream";
 
-    const id = randomUUID();
-    const [video] = await db
-      .insert(videosTable)
-      .values({
-        id,
-        youtubeId: `local-${id}`,
-        title: session.metadata.title,
-        description: "",
-        thumbnailUrl,
-        duration: session.metadata.durationSecs > 0 ? String(session.metadata.durationSecs) : "",
-        category: session.metadata.category,
-        preacher: session.metadata.preacher,
-        publishedAt: null,
-        featured: session.metadata.featured,
-        viewCount: 0,
-        videoSource: "local",
-        localVideoUrl,
-      })
-      .returning();
+      const devDomain = process.env.REPLIT_DEV_DOMAIN;
+      const baseUrl = process.env.API_BASE_URL ?? (devDomain ? `https://${devDomain}` : "");
+      const localVideoUrl = `${baseUrl}/api/uploads/${finalFilename}`;
+      const thumbnailUrl = session.thumbnailPath ? `${baseUrl}/api/uploads/${session.thumbnailPath}` : "";
 
-    uploadSessions.delete(sessionId);
-    // Cancel any pending debounced session write — the tmpDir is gone
-    const pendingFlush = sessionFlushTimers.get(sessionId);
-    if (pendingFlush) { clearTimeout(pendingFlush); sessionFlushTimers.delete(sessionId); }
+      const id = randomUUID();
+      const [video] = await db
+        .insert(videosTable)
+        .values({
+          id,
+          youtubeId: `local-${id}`,
+          title: session.metadata.title,
+          description: "",
+          thumbnailUrl,
+          duration: session.metadata.durationSecs > 0 ? String(session.metadata.durationSecs) : "",
+          category: session.metadata.category,
+          preacher: session.metadata.preacher,
+          publishedAt: null,
+          featured: session.metadata.featured,
+          viewCount: 0,
+          videoSource: "local",
+          localVideoUrl,
+          // originalFilename / uploadedBy are not currently captured by the
+          // chunked /init flow — left null until that handler is extended.
+          originalFilename: null,
+          mimeType,
+          sizeBytes,
+          checksumSha256,
+          // objectPath stays null until the upload flow migrates to GCS
+          // presigned PUTs (see RELEASE_AUDIT.md § 8.3).
+          objectPath: null,
+          uploadedBy: null,
+        })
+        .returning();
 
-    await upsertBroadcastQueueVideo(video);
-    queueTranscodingJob(id, finalPath, 1).catch(() => {});
+      uploadSessions.delete(sessionId);
+      // Cancel any pending debounced session write — the tmpDir is gone
+      const pendingFlush = sessionFlushTimers.get(sessionId);
+      if (pendingFlush) { clearTimeout(pendingFlush); sessionFlushTimers.delete(sessionId); }
 
-    res.status(201).json(video);
+      await upsertBroadcastQueueVideo(video);
+      queueTranscodingJob(id, finalPath, 1).catch(() => {});
+
+      res.status(201).json(video);
+    } catch (postAssemblyErr) {
+      // Hash/stat/DB-insert failed after assembly. Delete the orphan file,
+      // tear down the in-memory session, and surface a retriable 500.
+      await fs.unlink(finalPath).catch(() => {});
+      uploadSessions.delete(sessionId);
+      const pendingFlush = sessionFlushTimers.get(sessionId);
+      if (pendingFlush) { clearTimeout(pendingFlush); sessionFlushTimers.delete(sessionId); }
+      throw postAssemblyErr;
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });
