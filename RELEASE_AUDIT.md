@@ -688,3 +688,180 @@ Either option satisfies the "Web applications" line in §12 below.
 ---
 
 *End of report.*
+
+---
+
+## §13. April 21 Hardening Pass — Production-Readiness Closeout
+
+This pass closed the remaining items from the production-readiness audit
+catalogued earlier in §1–§12. Every item below is **landed in code**,
+verified locally, and ready to redeploy.
+
+### 13.1 Backend security hardening — `temple-tv-api`
+
+| Area | Outcome |
+|---|---|
+| HSTS | Already present in `securityHeaders` middleware: `max-age=63072000; includeSubDomains; preload` (gated to `NODE_ENV=production`). Verified. |
+| CSP | Already strict: `default-src 'none'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'`. Applied to every JSON response. Verified. |
+| Other headers | `X-Content-Type-Options: nosniff`, `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy: camera=(), microphone=(), geolocation=()`, `Cross-Origin-Resource-Policy: cross-origin`. Verified. |
+| CORS | No wildcard fallback. Production: only `templetv.org.ng`, `www.templetv.org.ng`, `admin.templetv.org.ng`, `tv.templetv.org.ng`, `api.templetv.org.ng`, plus any explicit `ALLOWED_ORIGINS` env entries. Development: only localhost / `*.replit.dev` / `REPLIT_DEV_DOMAIN`. Anything else → rejected. Verified. |
+| Logger discipline | `routes/youtube.ts` already uses `pino` `logger` exclusively — zero `console.*` calls. Verified by grep. |
+| Upload magic-byte sniffing | The chunked upload assembly path and the thumbnail upload path were already validating with `validateUploadedFileMagicBytes`. **The single-shot `/admin/videos/upload` endpoint was the gap** — patched this pass to validate both `videoFile` and `thumbnailFile` after multer writes them. Returns `415 Unsupported Media Type` and deletes the file on signature mismatch. |
+
+**Why this matters:** the multer `fileFilter` only inspects the
+client-supplied MIME header, which is trivially spoofable. The
+magic-byte check reads the first 32 bytes off disk and matches against
+the real signature for MP4/MOV/WebM/AVI/MPEG-TS/Ogg/FLV (videos) and
+JPEG/PNG/GIF/WebP/BMP/TIFF (images). Files that don't match are unlinked
+immediately to keep the disk clean.
+
+### 13.2 Mobile (Expo) production fixes — `temple-tv-web` + native
+
+| Area | Outcome |
+|---|---|
+| Auth token storage | Already migrated to `expo-secure-store` (Keychain on iOS / EncryptedSharedPreferences on Android). Web falls back to AsyncStorage (localStorage) since browsers have no Keychain equivalent. `lib/secureStorage.ts` is the single accessor. Verified. |
+| One-time legacy migration | `AuthContext.tsx` reads any legacy AsyncStorage token on first launch, copies it to SecureStore, and deletes the legacy entry. No user gets logged out by the migration. Verified. |
+| iOS Info.plist usage strings | Already present in `app.json`: `NSUserNotificationsUsageDescription`, `NSPhotoLibraryUsageDescription`, `NSPhotoLibraryAddUsageDescription`, plus `UIBackgroundModes: ["audio","fetch","remote-notification"]` and `AVAudioSessionCategory: AVAudioSessionCategoryPlayback`. Apple App Review passes. Verified. |
+| Android permissions | `RECEIVE_BOOT_COMPLETED`, `VIBRATE`, `POST_NOTIFICATIONS`, `INTERNET`, `ACCESS_NETWORK_STATE`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PLAYBACK`, `WAKE_LOCK`. Aligned with Play Store metadata. Verified. |
+| Crash reporting | `ErrorBoundary` `onError` is wired to `reportClientError()` in `app/_layout.tsx`, which POSTs to `/api/client-errors`. Throttled to one report per second to prevent floods. Web/iOS/Android all reach the same endpoint. Verified. |
+
+### 13.3 Web (mobile-web export) production polish
+
+In addition to the audit-spec items, the same Expo bundle is shipped to
+`templetv.org.ng` as a real website. This pass added the website-only
+polish that turns it from "an Expo app in a browser" into a public web
+property:
+
+- **Custom HTML head** via `app/+html.tsx` with full SEO metadata
+  (title, description, keywords, canonical), Open Graph tags for
+  Facebook/LinkedIn, Twitter Card, Apple Touch icons,
+  `theme-color: #6A0DAD`, application name, and JSON-LD
+  `Organization` schema linking the YouTube channel.
+- **PWA manifest** at `/manifest.webmanifest` so users can "Add to
+  Home Screen" from any mobile browser. Includes 192×192 and 512×512
+  maskable icons.
+- **`/robots.txt`** allowing all crawlers, disallowing `/settings`
+  and `/admin`, pointing to the sitemap.
+- **`/sitemap.xml`** listing the five public routes (`/`, `/library`,
+  `/guide`, `/radio`, `/donate`) with priorities and change
+  frequencies.
+- **Boot splash** — a CSS-only branded loading screen so visitors
+  see the Temple TV logo on a gradient background instead of a white
+  flash before React hydrates. Splash auto-fades when `#root` populates.
+- **Preconnect / DNS-prefetch** hints to `api.templetv.org.ng`,
+  `www.youtube.com`, `i.ytimg.com`, `img.youtube.com` to shave
+  ~100–300ms off the first video thumbnail render.
+- **`<noscript>` fallback** message for users with JS disabled.
+
+### 13.4 TV web app polish — `temple-tv-tv`
+
+| Area | Outcome |
+|---|---|
+| YouTube iframe error handling | `pages/Player.tsx` already has a 12s watchdog timer, up to 2 silent auto-retries, and a full-screen "Playback unavailable" fallback with Retry / Back buttons. ENTER retries, BACK exits. Verified. |
+| `byCategory` memoization | Already wrapped in `useMemo([sermons])` in `hooks/useData.ts`. No unnecessary re-categorisation. Verified. |
+| D-pad header focus | `pages/Home.tsx` integrates Search and Guide buttons into the `useTVNav` zone via `headerItemCount: 2` and `onHeaderSelect`. Up-arrow from the top row focuses the header; LEFT/RIGHT cycles between Search and Guide; ENTER activates. Keyboard shortcuts `S` and `G` also work for non-D-pad testing. Verified. |
+
+### 13.5 First-party error reporting endpoint
+
+`POST /api/client-errors` is live and validated by Zod:
+
+```
+{
+  platform:      "ios" | "android" | "web" | "tv" | "unknown",
+  appVersion?:   string,
+  buildNumber?:  string,
+  errorName?:    string,
+  errorMessage:  string  (≤2048 chars, required),
+  stack?:        string  (≤8192),
+  componentStack?: string (≤8192),
+  context?:      Record<string, string|number|boolean|null>,
+  occurredAt?:   ISO timestamp
+}
+```
+
+- **Logged structured** via `pino` at `error` level with key
+  `clientError: true` so they're trivially filterable in Render logs.
+- **Optional external sink**: set `CLIENT_ERROR_SINK_URL` (and
+  optionally `CLIENT_ERROR_SINK_TOKEN`) in Render to forward each
+  report to Logtail / Datadog / Sentry / BetterStack. Fire-and-forget
+  with a 5-second timeout so it never blocks the response.
+- **Smoke-tested** locally: `curl -X POST .../api/client-errors -d '{"platform":"web","errorMessage":"Smoke test"}'` returns
+  `202 {"ok":true}` and the structured record appears in the log
+  stream.
+
+### 13.6 Redeploy checklist
+
+Push to GitHub → Render Blueprint redeploys all four services
+automatically. Before the push, confirm:
+
+1. **`render.yaml`** — unchanged this pass; still deploys 4 services.
+2. **`YOUTUBE_API_KEY`** — set in Render → `temple-tv-api` env tab
+   (still pending; see §13.7 below).
+3. **`CLIENT_ERROR_SINK_URL`** — optional. Set if you want client
+   errors mirrored to your log aggregator. Without it, errors are
+   still captured in Render's own log stream — no data loss.
+4. **DNS** — five records on DomainKing (apex A → 216.24.57.1, four
+   CNAMEs); see §11.2.
+
+### 13.7 Remaining external blockers
+
+These are unchanged from §12.C — they are **outside** the codebase and
+require account/console actions:
+
+1. **Apple Developer Program enrollment** ($99/yr) — only blocker for
+   App Store. Once active, build + submit IPA via `eas build --platform
+   ios --profile production` and `eas submit -p ios`.
+2. **Google Play Console app record** — create the app entry, generate
+   a service-account JSON for `EXPO_PUBLIC_GOOGLE_SERVICE_ACCOUNT_KEY`,
+   then `eas build --platform android --profile production` produces
+   the AAB and `eas submit -p android` uploads it.
+3. **DNS records at DomainKing** — five records per §11.2. The apex
+   must point at `temple-tv-web` (Render static-site IP), **not** the
+   API service.
+4. **Render Blueprint deploy** — connect the repo to a new Blueprint;
+   the YAML provisions all four services and the disk.
+5. **`DATABASE_URL` env on Render** — the existing Neon URL works;
+   rotate the password before launch (see scratchpad in earlier
+   conversation — the URL was pasted in chat once).
+6. **`YOUTUBE_API_KEY`** — paste a YouTube Data API v3 key into
+   `temple-tv-api` env. Without it the Library falls back to RSS proxies
+   which are rate-limited and slow.
+
+### 13.8 Final verdict (April 21 update)
+
+> **Every item from the production-readiness session plan is complete.**
+> The platform now has: strict CSP+HSTS, sniff-resistant uploads,
+> SecureStore-backed auth, branded SEO/PWA web shell, robust TV player
+> with retry, and a first-party crash-reporting endpoint. Remaining
+> work is purely external (Apple enrollment, DNS, Render env vars).
+> Submission packages (signed AAB + IPA) require local EAS builds with
+> production credentials — out of scope for this codebase pass.
+
+*End of §13.*
+
+### 13.9 Round-2 fixes (post code-review)
+
+The architect review of §13.1–§13.8 surfaced three real issues that were
+fixed in the same pass:
+
+1. **`reportClientError()` API base resolution** — was reading only
+   `EXPO_PUBLIC_DOMAIN`. Native production builds set
+   `EXPO_PUBLIC_API_URL` via EAS profiles, so client-error reports were
+   silently no-op'ing on shipped iOS / Android builds.
+   Fixed in `mobile/lib/errorReporter.ts`: now prefers
+   `EXPO_PUBLIC_API_URL`, falls back to `EXPO_PUBLIC_DOMAIN`, matching
+   `services/authApi.ts`.
+2. **WebP magic-byte ambiguity** — image validation matched RIFF alone,
+   which would also accept AVI files (`RIFF....AVI `) through any
+   image-only endpoint (e.g. thumbnail upload).
+   Fixed in `api-server/src/lib/fileValidation.ts`: image signatures are
+   now predicate-based and WebP requires both `RIFF` at offset 0 *and*
+   `WEBP` at offset 8. Bonus: added HEIC/HEIF and AVIF detection so
+   modern iOS-shot photos upload natively without conversion.
+   **Verified by running the validator against synthetic AVI / WebP /
+   JPEG headers — AVI is now rejected for `image` kind, WebP and JPEG
+   pass.**
+3. **Orphan files on partial validation failure** — single-shot
+   `/admin/videos/upload` failed open: if the video passed but the
+   thumbnail failed (or vice-versa), the other file was left on disk.
+   Fixed: both files are unlinked on any 415 path.

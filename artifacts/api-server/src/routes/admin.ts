@@ -902,6 +902,32 @@ router.post("/admin/videos/upload", upload.fields([{ name: "video", maxCount: 1 
       return res.status(400).json({ error: "Video file is required" });
     }
 
+    // Content-sniffing: confirm the bytes match the declared MIME type.
+    // The fileFilter only checks the client-provided MIME header, which is
+    // trivially spoofable. validateUploadedFileMagicBytes reads the first
+    // bytes off disk and deletes the file if the signature is wrong.
+    const videoCheck = await validateUploadedFileMagicBytes(videoFile.path, "video");
+    if (!videoCheck.valid) {
+      // Companion thumbnail (if any) is now an orphan — unlink it.
+      if (thumbnailFile) {
+        await fs.unlink(thumbnailFile.path).catch(() => {});
+      }
+      return res.status(415).json({
+        error: "Uploaded file does not appear to be a valid video (magic-byte mismatch)",
+      });
+    }
+    if (thumbnailFile) {
+      const thumbCheck = await validateUploadedFileMagicBytes(thumbnailFile.path, "image");
+      if (!thumbCheck.valid) {
+        // Video already passed, but the thumbnail is bogus — unlink the
+        // video too so we don't keep a half-uploaded asset on disk.
+        await fs.unlink(videoFile.path).catch(() => {});
+        return res.status(415).json({
+          error: "Uploaded thumbnail does not appear to be a valid image (magic-byte mismatch)",
+        });
+      }
+    }
+
     const { title, category, preacher, featured, durationSecs: durationSecsStr } = req.body as {
       title?: string;
       category?: string;
