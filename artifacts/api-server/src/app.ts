@@ -101,6 +101,20 @@ app.use("/api/hls", (req, res, next) => {
 app.use(legalRouter);
 app.use("/api", router);
 
+app.get("/", (_req: express.Request, res: express.Response) => {
+  res.status(200).json({
+    service: "Temple TV API",
+    status: "ok",
+    documentation: "https://templetv.org.ng",
+    endpoints: {
+      health: "/api/healthz",
+      api: "/api",
+      legal: "/legal/privacy, /legal/terms",
+    },
+    version: process.env.npm_package_version ?? "1.0.0",
+  });
+});
+
 app.use((_req: express.Request, res: express.Response) => {
   res.status(404).json({ error: "not_found", message: "The requested endpoint does not exist." });
 });
