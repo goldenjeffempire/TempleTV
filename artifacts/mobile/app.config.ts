@@ -50,7 +50,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       package: "com.templetv.jctm",
       versionCode: 1,
       adaptiveIcon: {
-        foregroundImage: "./assets/images/icon.png",
+        foregroundImage: "./assets/images/adaptive-icon-foreground.png",
         backgroundColor: "#F8F5FF",
       },
       permissions: [
