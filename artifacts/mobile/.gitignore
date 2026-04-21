@@ -39,3 +39,6 @@ yarn-error.*
 .vercel
 
 .env
+
+# Google Play service account key (sensitive — never commit)
+google-service-account.json
