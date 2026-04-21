@@ -10,6 +10,11 @@ services:
     startCommand: pnpm --filter @workspace/api-server run start
     healthCheckPath: /api/healthz
     autoDeploy: true
+    numInstances: 1
+    disk:
+      name: temple-tv-uploads
+      mountPath: /opt/render/project/src/artifacts/api-server/uploads
+      sizeGB: 10
     envVars:
       - key: NODE_ENV
         value: production
