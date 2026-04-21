@@ -39,13 +39,22 @@ app.use(
     },
   }),
 );
+const PRODUCTION_ALLOWED_ORIGINS = [
+  "https://templetv.org.ng",
+  "https://www.templetv.org.ng",
+  "https://admin.templetv.org.ng",
+  "https://tv.templetv.org.ng",
+  "https://api.templetv.org.ng",
+];
+
 app.use(cors({
   origin(origin, callback) {
     const configured = process.env.ALLOWED_ORIGINS?.split(",").map((value) => value.trim()).filter(Boolean) ?? [];
+    const allowList = [...PRODUCTION_ALLOWED_ORIGINS, ...configured];
     const isProd = process.env.NODE_ENV === "production";
 
     // Always allow same-origin / non-browser callers (no Origin header) and explicitly listed origins
-    if (!origin || configured.includes(origin)) {
+    if (!origin || allowList.includes(origin)) {
       callback(null, true);
       return;
     }
