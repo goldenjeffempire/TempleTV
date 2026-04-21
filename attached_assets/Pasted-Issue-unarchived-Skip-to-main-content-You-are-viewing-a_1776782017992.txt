@@ -1,0 +1,345 @@
+Issue unarchived
+Skip to main content
+You are viewing a sample error. Configure Sentry to start viewing real errors.
+Get Started
+Issues
+
+NODE-EXPRESS-1
+TypeError
+Events (total)
+Users (90d)
+Level: Error
+Object [object Object] has no method 'updateFrom'
+1
+1
+Ongoing
+|
+../../sentry/scripts/views.js in poll
+
+Resolve
+
+
+Archive
+
+
+
+
+Priority
+High
+Assignee
+
+Unassigned
+
+All Envs
+
+Since First Seen
+Filter events…
+
+
+Event
+1
+
+User
+1
+url
+100%
+http://example.com/foo
+user
+100%
+1
+sample_event
+100%
+yes
+browser.name
+100%
+Chrome
+View all tags and feature flags
+
+Events
+in this issue
+First
+Latest
+Recommended
+View More Events
+
+Copy as
+ID: fd9bc683
+3 minutes ago
+|
+JSON
+Jump to:
+Highlights
+Stack Trace
+Breadcrumbs
+Tags
+Context
+mail@example.org
+1
+
+Mac OS X
+10.13.4
+
+Highlights
+
+Edit
+handled
+handled
+--
+level
+level
+error
+transaction
+transaction
+--
+url
+url
+http://example.com/foo
+Trace: trace_id
+--
+
+Message
+This is an example Express exception
+
+Stack Trace
+
+Display
+
+Copy as
+TypeError
+Object [object Object] has no method 'updateFrom'
+Connect with Git Providers
+Install Git providers (GitHub, GitLab…) to enable features like code mapping and stack trace linking.
+Get Started
+
+Crashed in non-app:
+raven.js
+in
+apply
+../../sentry/scripts/views.js:389:46
+in
+poll
+In App
+        poll: function(){
+            var data;
+            if (!this.options.realtime || !this.options.pollUrl)
+                return window.setTimeout(this.poll, this.options.pollTime);
+            data = app.utils.getQueryParams();
+            data.cursor = this.cursor || undefined;
+            $.ajax({
+../../sentry/scripts/views.js:268:16
+in
+merge
+In App
+../../sentry/scripts/views.js:283:50
+in
+member
+In App
+
+Breadcrumbs
+
+
+
+Copy as
+Exception - This event
+error
+Apr 21, 3:30:07.405 PM WAT
+TypeError: Object [object Object] has no method 'updateFrom'
+UI Click
+info
+May 12, 2016 7:44:52.000 PM WAT
+div > form[name="post"] > button.btn.btn-small[name="submit"]
+Ajax
+info
+May 12, 2016 7:28:12.000 PM WAT
+POST: Http://example.com/ [200]
+
+{
+reason: OK
+}
+Console
+debug
+May 12, 2016 7:11:32.000 PM WAT
+This is a debug log message
+
+{
+baz: blah,
+foo: bar
+}
+Console
+fatal
+May 12, 2016 6:54:52.000 PM WAT
+This is a critical log message
+
+View 4 more
+
+HTTP Request
+
+
+GET
+/foo
+example.com
+Body
+
+{
+"hello": "world"
+}
+
+Query String
+foo
+bar
+Cookies
+foo
+bar
+biz
+baz
+Headers
+Content-Type
+application/json
+Referer
+http://example.com
+User-Agent
+Mozilla/5.0 (Windows NT 6.2; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/28.0.1500.72 Safari/537.36
+Environment
+ENV
+prod
+
+Tags
+
+
+
+
+browser
+browser
+Chrome 65.0.3325
+browser.name
+name
+Chrome
+client_os
+client_os
+Windows 8
+client_os.name
+name
+Windows
+level
+level
+error
+os
+os
+Mac OS X 10.13.4
+os.name
+name
+Mac OS X
+sample_event
+sample_event
+yes
+url
+url
+http://example.com/foo
+user
+user
+id:1
+
+Contexts
+User
+Email
+mail@example.org
+ID
+1
+IP Address
+127.0.0.1
+Browser
+
+Name
+Chrome
+Version
+65.0.3325
+Operating System
+
+Name
+Mac OS X
+Version
+10.13.4
+Client Operating System
+
+Name
+Windows
+Version
+8
+
+Additional Data
+
+
+emptyList	
+[]
+emptyMap	
+{}
+length	
+10837790
+results	
+
+[
+1,
+2,
+3,
+4,
+5
+]
+session	
+
+{
+foo: bar
+}
+unauthorized	
+false
+url	
+http://example.org/foo/bar/
+
+Packages
+
+Event Grouping Information
+Last seen
+3 minutes ago
+First seen
+3 minutes ago
+
+Seer Autofix
+Initial Guess
+
+The object being passed to a method expecting a specific class instance (likely a Sentry/Backbone model) is instead a generic [object Object].
+
+
+Issue Tracking
+Track this issue in Jira, GitHub, etc.
+
+Activity
+ 
+Add a comment…
+Unresolved
+a few seconds ago
+by Jeffery Emuodafevware
+Archived
+a few seconds ago
+by Jeffery Emuodafevware until it escalates
+Unresolved
+a few seconds ago
+by Jeffery Emuodafevware
+View 2 more
+
+People
+
+participating
+Similar Issues
+View
+Merged Issues
+View
+Privacy Policy
+Terms of Use
+Service Status
+API
+Docs
+Contribute
+
+Filter events…
+ Events
+0
+Apr 21 2:17 PM — 2:18 PM (WAT)
