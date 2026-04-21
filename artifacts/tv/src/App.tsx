@@ -8,8 +8,16 @@ import type { VideoItem } from "./lib/api";
 
 type Screen = "home" | "guide" | "search";
 
+function getInitialScreen(): Screen {
+  if (typeof window === "undefined") return "home";
+  const params = new URLSearchParams(window.location.search);
+  const requested = params.get("screen");
+  if (requested === "guide" || requested === "search") return requested;
+  return "home";
+}
+
 export default function App() {
-  const [screen, setScreen] = useState<Screen>("home");
+  const [screen, setScreen] = useState<Screen>(getInitialScreen);
   const [player, setPlayer] = useState<{ videoId: string; title: string } | null>(null);
   const [detailsVideo, setDetailsVideo] = useState<{ video: VideoItem; related: VideoItem[] } | null>(null);
 
