@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { secureStorage } from "@/lib/secureStorage";
 import { STORAGE_KEYS } from "@/constants/config";
 import { apiGetMe, type AuthUser } from "@/services/authApi";
 
@@ -23,8 +24,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const restore = async () => {
       try {
+        // Migration: if a token exists in legacy AsyncStorage, move it to SecureStore once.
+        const legacyToken = await AsyncStorage.getItem(STORAGE_KEYS.authToken);
+        if (legacyToken) {
+          await secureStorage.setItem(STORAGE_KEYS.authToken, legacyToken);
+          await AsyncStorage.removeItem(STORAGE_KEYS.authToken);
+        }
+
         const [storedToken, storedUser] = await Promise.all([
-          AsyncStorage.getItem(STORAGE_KEYS.authToken),
+          secureStorage.getItem(STORAGE_KEYS.authToken),
           AsyncStorage.getItem(STORAGE_KEYS.authUser),
         ]);
         if (storedToken && storedUser) {
@@ -47,7 +55,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signIn = useCallback(async (newToken: string, newUser: AuthUser) => {
     await Promise.all([
-      AsyncStorage.setItem(STORAGE_KEYS.authToken, newToken),
+      secureStorage.setItem(STORAGE_KEYS.authToken, newToken),
       AsyncStorage.setItem(STORAGE_KEYS.authUser, JSON.stringify(newUser)),
     ]);
     setToken(newToken);
@@ -56,7 +64,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = useCallback(async () => {
     await Promise.all([
-      AsyncStorage.removeItem(STORAGE_KEYS.authToken),
+      secureStorage.removeItem(STORAGE_KEYS.authToken),
       AsyncStorage.removeItem(STORAGE_KEYS.authUser),
     ]);
     setToken(null);

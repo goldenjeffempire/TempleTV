@@ -15,6 +15,7 @@ import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { reportClientError } from "@/lib/errorReporter";
 import { LiveBroadcastSupervisor } from "@/components/LiveBroadcastSupervisor";
 import { PlayerProvider } from "@/context/PlayerContext";
 import { AuthProvider } from "@/context/AuthContext";
@@ -153,7 +154,17 @@ export default function RootLayout() {
 
   return (
     <SafeAreaProvider style={{ flex: 1 }}>
-      <ErrorBoundary>
+      <ErrorBoundary
+        onError={(error, stackTrace) => {
+          reportClientError({
+            errorName: error.name,
+            errorMessage: error.message,
+            stack: error.stack,
+            componentStack: stackTrace,
+            context: { boundary: "root" },
+          });
+        }}
+      >
         <QueryClientProvider client={queryClient}>
           <AuthProvider>
             <PlayerProvider>

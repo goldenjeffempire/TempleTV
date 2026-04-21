@@ -1,4 +1,4 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import { secureStorage } from "@/lib/secureStorage";
 import { STORAGE_KEYS } from "@/constants/config";
 
 export interface AuthUser {
@@ -16,7 +16,7 @@ function getApiBase(): string {
 }
 
 async function authFetch(path: string, options: RequestInit = {}): Promise<Response> {
-  const token = await AsyncStorage.getItem(STORAGE_KEYS.authToken);
+  const token = await secureStorage.getItem(STORAGE_KEYS.authToken);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(options.headers as Record<string, string>),

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchVideos, fetchLiveStatus, type VideoItem, type LiveStatus } from "../lib/api";
 
 export interface Sermon extends VideoItem {
@@ -64,12 +64,16 @@ export function useSermons() {
     return () => { cancelled = true; };
   }, []);
 
-  const byCategory = CATEGORIES.reduce<Record<string, Sermon[]>>((acc, cat) => {
-    acc[cat] = sermons.filter((s) => s.category === cat);
-    return acc;
-  }, {});
+  const byCategory = useMemo(
+    () =>
+      CATEGORIES.reduce<Record<string, Sermon[]>>((acc, cat) => {
+        acc[cat] = sermons.filter((s) => s.category === cat);
+        return acc;
+      }, {}),
+    [sermons],
+  );
 
-  const featured = sermons.slice(0, 5);
+  const featured = useMemo(() => sermons.slice(0, 5), [sermons]);
   return { sermons, byCategory, featured, loading, error };
 }
 

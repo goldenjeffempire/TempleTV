@@ -26,7 +26,12 @@
         "UIBackgroundModes": ["audio", "fetch", "remote-notification"],
         "AVAudioSessionCategory": "AVAudioSessionCategoryPlayback",
         "ITSAppUsesNonExemptEncryption": false,
-        "NSAllowsArbitraryLoads": false
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": false
+        },
+        "NSUserNotificationsUsageDescription": "Temple TV uses notifications to alert you when a live broadcast or new sermon is available.",
+        "NSPhotoLibraryUsageDescription": "Temple TV needs access to your photo library so you can choose a profile picture.",
+        "NSPhotoLibraryAddUsageDescription": "Temple TV can save shared content (such as broadcast images) to your photo library."
       }
     },
     "android": {

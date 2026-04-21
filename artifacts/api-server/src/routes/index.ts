@@ -6,6 +6,7 @@ import broadcastRouter from "./broadcast";
 import authRouter from "./auth";
 import userRouter from "./user";
 import subscriptionsRouter from "./subscriptions";
+import clientErrorsRouter from "./client-errors";
 
 const router: IRouter = Router();
 
@@ -16,5 +17,6 @@ router.use(youtubeRouter);
 router.use(adminRouter);
 router.use(broadcastRouter);
 router.use(subscriptionsRouter);
+router.use(clientErrorsRouter);
 
 export default router;

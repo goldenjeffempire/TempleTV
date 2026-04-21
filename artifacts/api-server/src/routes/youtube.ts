@@ -10,6 +10,7 @@ import {
 } from "../lib/liveEvents";
 import { emitBroadcastState } from "./broadcast";
 import { cache } from "../lib/cache";
+import { logger } from "../lib/logger";
 
 const router = Router();
 
@@ -237,9 +238,9 @@ async function sendLiveAutoNotification(title: string, videoId: string | null) {
       sentCount: sent,
     });
 
-    console.log(`[LivePoller] Auto-notification sent: ${sent}/${tokens.length} devices`);
+    logger.info({ sent, total: tokens.length }, "[LivePoller] Auto-notification sent");
   } catch (err) {
-    console.error("[LivePoller] Failed to send auto-notification:", err);
+    logger.error({ err }, "[LivePoller] Failed to send auto-notification");
   }
 }
 
@@ -308,7 +309,10 @@ async function pollLiveStatus() {
 
   if (justWentLive && isNewStream && result.title) {
     lastNotifiedVideoId = result.videoId;
-    console.log(`[LivePoller] New live stream detected via ${result.method}: "${result.title}" (${result.videoId})`);
+    logger.info(
+      { method: result.method, title: result.title, videoId: result.videoId },
+      "[LivePoller] New live stream detected",
+    );
     await sendLiveAutoNotification(result.title, result.videoId);
   }
 
@@ -358,7 +362,7 @@ async function fetchAllVideosFromApi(): Promise<VideoItem[] | null> {
       );
       if (!res.ok) {
         const errText = await res.text();
-        console.error("YouTube playlistItems API error:", errText);
+        logger.error({ errText }, "YouTube playlistItems API error");
         return null;
       }
 
@@ -439,7 +443,7 @@ async function fetchAllVideosFromApi(): Promise<VideoItem[] | null> {
 
     return videos.length > 0 ? videos : null;
   } catch (err) {
-    console.error("fetchAllVideosFromApi error:", err);
+    logger.error({ err }, "fetchAllVideosFromApi error");
     return null;
   }
 }

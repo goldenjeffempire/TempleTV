@@ -41,12 +41,33 @@ app.use(
 app.use(cors({
   origin(origin, callback) {
     const configured = process.env.ALLOWED_ORIGINS?.split(",").map((value) => value.trim()).filter(Boolean) ?? [];
-    if (!origin || process.env.NODE_ENV !== "production" || configured.length === 0 || configured.includes(origin)) {
+    const isProd = process.env.NODE_ENV === "production";
+
+    // Always allow same-origin / non-browser callers (no Origin header) and explicitly listed origins
+    if (!origin || configured.includes(origin)) {
       callback(null, true);
       return;
     }
+
+    if (isProd) {
+      callback(new Error("Origin is not allowed by CORS"));
+      return;
+    }
+
+    // In development, allow Replit dev hosts and localhost only — not arbitrary origins
+    const replitDevDomain = process.env.REPLIT_DEV_DOMAIN;
+    const isReplitOrigin = Boolean(replitDevDomain) && origin.includes(replitDevDomain!);
+    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/i.test(origin);
+    const isReplitWorkspace = /\.replit\.dev(:\d+)?$/i.test(origin) || /\.repl\.co(:\d+)?$/i.test(origin);
+
+    if (isReplitOrigin || isLocalhost || isReplitWorkspace) {
+      callback(null, true);
+      return;
+    }
+
     callback(new Error("Origin is not allowed by CORS"));
   },
+  credentials: true,
 }));
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: "2mb" }));

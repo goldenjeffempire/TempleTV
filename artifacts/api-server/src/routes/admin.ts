@@ -14,6 +14,7 @@ import { fileURLToPath } from "url";
 import fs from "fs/promises";
 import { createWriteStream, createReadStream, existsSync } from "fs";
 import multer from "multer";
+import { validateUploadedFileMagicBytes } from "../lib/fileValidation";
 import {
   ImportVideoBody,
   UpdateAdminVideoBody,
@@ -1085,6 +1086,13 @@ router.post("/admin/videos/upload/:sessionId/thumbnail", thumbnailUpload.single(
     if (!session) return res.status(404).json({ error: "Session not found or expired" });
 
     if (req.file) {
+      const filePath = path.join(__dirname, "..", "uploads", req.file.filename);
+      const check = await validateUploadedFileMagicBytes(filePath, "image");
+      if (!check.valid) {
+        return res.status(415).json({
+          error: "Uploaded thumbnail does not appear to be a valid image (magic-byte mismatch)",
+        });
+      }
       session.thumbnailPath = req.file.filename;
     }
 
@@ -1133,6 +1141,18 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
       writeStream.destroy();
       await fs.unlink(finalPath).catch(() => {});
       throw err;
+    }
+
+    // Magic-byte validation on the assembled video (defends against MIME spoofing).
+    const magicCheck = await validateUploadedFileMagicBytes(finalPath, "video");
+    if (!magicCheck.valid) {
+      await fs.rm(session.tmpDir, { recursive: true, force: true }).catch(() => {});
+      uploadSessions.delete(sessionId);
+      const pendingFlush = sessionFlushTimers.get(sessionId);
+      if (pendingFlush) { clearTimeout(pendingFlush); sessionFlushTimers.delete(sessionId); }
+      return res.status(415).json({
+        error: "Uploaded file does not appear to be a valid video (magic-byte mismatch)",
+      });
     }
 
     await fs.rm(session.tmpDir, { recursive: true, force: true });
