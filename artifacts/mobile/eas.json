@@ -49,6 +49,33 @@
         "APP_ENV": "production",
         "EXPO_PUBLIC_API_URL": "https://api.templetv.org.ng"
       }
+    },
+    "firetv": {
+      "autoIncrement": true,
+      "channel": "firetv",
+      "android": {
+        "buildType": "apk",
+        "gradleCommand": ":app:assembleRelease",
+        "image": "latest"
+      },
+      "env": {
+        "APP_ENV": "production",
+        "EXPO_PUBLIC_API_URL": "https://api.templetv.org.ng",
+        "EXPO_PUBLIC_PLATFORM": "firetv"
+      }
+    },
+    "androidtv": {
+      "autoIncrement": true,
+      "channel": "androidtv",
+      "android": {
+        "buildType": "app-bundle",
+        "image": "latest"
+      },
+      "env": {
+        "APP_ENV": "production",
+        "EXPO_PUBLIC_API_URL": "https://api.templetv.org.ng",
+        "EXPO_PUBLIC_PLATFORM": "androidtv"
+      }
     }
   },
   "submit": {

@@ -1,0 +1,24 @@
+{
+  "id": "com.templetv.jctm",
+  "version": "1.0.0",
+  "vendor": "Jesus Christ Temple Ministry",
+  "type": "web",
+  "main": "index.html",
+  "title": "Temple TV",
+  "icon": "icon.png",
+  "largeIcon": "icon_large.png",
+  "bgImage": "splash.png",
+  "bgColor": "#000000",
+  "splashBackground": "#000000",
+  "resolution": "1920x1080",
+  "transparency": false,
+  "handlesRelaunch": true,
+  "allowVideoCapture": false,
+  "allowAudioCapture": false,
+  "requiredPermissions": [
+    "MEDIA.PLAYBACK",
+    "MEDIA.PLAYBACK.CONTROL",
+    "NETWORK.INTERNET",
+    "NETWORK.WIFI"
+  ]
+}

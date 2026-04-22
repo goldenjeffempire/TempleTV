@@ -2,6 +2,7 @@ import { Suspense, lazy, useCallback, useEffect, useState } from "react";
 import type { VideoItem } from "./lib/api";
 import { isLoggedIn as readIsLoggedIn, subscribeAuth } from "./lib/auth";
 import { AuthGateModal } from "./components/AuthGateModal";
+import { usePlatformInit } from "./hooks/usePlatformInit";
 
 const Home = lazy(() => import("./pages/Home").then((m) => ({ default: m.Home })));
 const TVGuide = lazy(() => import("./pages/TVGuide").then((m) => ({ default: m.TVGuide })));
@@ -33,6 +34,9 @@ function SplashFallback() {
 }
 
 export default function App() {
+  // Initialize platform-specific key registration and body classes
+  usePlatformInit();
+
   const [screen, setScreen] = useState<Screen>(getInitialScreen);
   const [player, setPlayer] = useState<{ videoId: string; title: string } | null>(null);
   const [detailsVideo, setDetailsVideo] = useState<{
@@ -40,10 +44,6 @@ export default function App() {
     related: VideoItem[];
   } | null>(null);
 
-  // ── Auth gating ──────────────────────────────────────────────────
-  // Track auth as React state so re-renders happen when the user pairs
-  // their device. The pending playback target is captured the moment
-  // gating happens so we can resume the exact same video on success.
   const [authed, setAuthed] = useState<boolean>(readIsLoggedIn);
   const [pendingPlay, setPendingPlay] = useState<
     | { videoId: string; title: string }
@@ -53,9 +53,6 @@ export default function App() {
 
   useEffect(() => subscribeAuth((next) => setAuthed(next)), []);
 
-  // gatedPlay() is the single funnel for ALL playback intents on the
-  // TV. If signed in we just open the player; otherwise we capture
-  // the target and pop the pairing modal.
   const gatedPlay = useCallback(
     (videoId: string, title: string) => {
       if (authed) {

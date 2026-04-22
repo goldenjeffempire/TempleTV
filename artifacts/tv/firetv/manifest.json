@@ -1,0 +1,26 @@
+{
+  "_comment": "Amazon Fire TV Web App Manifest — used when submitting via Amazon Appstore Web App Packager",
+  "name": "Temple TV",
+  "short_name": "Temple TV",
+  "description": "Live worship, sermons, and 24/7 broadcasting from Jesus Christ Temple Ministry. Stream faith-filled content on your Amazon Fire TV.",
+  "start_url": "https://tv.templetv.org.ng/",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "theme_color": "#000000",
+  "background_color": "#000000",
+  "lang": "en",
+  "scope": "https://tv.templetv.org.ng/",
+  "icons": [
+    { "src": "https://tv.templetv.org.ng/temple-tv-logo.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "https://tv.templetv.org.ng/favicon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ],
+  "categories": ["entertainment", "lifestyle"],
+  "prefer_related_applications": false,
+  "amazon": {
+    "fire_tv": {
+      "large_icon": "https://tv.templetv.org.ng/temple-tv-logo.png",
+      "banner": "https://tv.templetv.org.ng/temple-tv-logo.png",
+      "feature_graphic": "https://tv.templetv.org.ng/og-image.png"
+    }
+  }
+}

@@ -47,6 +47,7 @@
         "foregroundImage": "./assets/images/adaptive-icon-foreground.png",
         "backgroundColor": "#F8F5FF"
       },
+      "banner": "./assets/images/tv-banner.png",
       "permissions": [
         "android.permission.RECEIVE_BOOT_COMPLETED",
         "android.permission.VIBRATE",
@@ -56,6 +57,25 @@
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
         "android.permission.WAKE_LOCK"
+      ],
+      "intentFilters": [
+        {
+          "action": "android.intent.action.MAIN",
+          "category": ["android.intent.category.LEANBACK_LAUNCHER"],
+          "autoVerify": false
+        },
+        {
+          "action": "android.intent.action.VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "templetv.org.ng",
+              "pathPrefix": "/"
+            }
+          ],
+          "category": ["android.intent.category.DEFAULT", "android.intent.category.BROWSABLE"]
+        }
       ],
       "softwareKeyboardLayoutMode": "resize",
       "userInterfaceStyle": "light",
@@ -99,7 +119,8 @@
           "color": "#6A0DAD",
           "sounds": []
         }
-      ]
+      ],
+      "./plugins/android-tv.js"
     ],
     "extra": {
       "router": {
