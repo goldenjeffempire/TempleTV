@@ -1,0 +1,327 @@
+Deploy the Temple TV app to Amazon Fire TV using the Android TV architecture.
+
+1️⃣ Create Amazon Developer Account
+
+Go to:
+
+Amazon Appstore
+
+Create:
+
+Developer account
+Company profile
+Tax/payment setup
+2️⃣ Prepare Fire TV-Compatible App
+
+Your app must support:
+
+D-pad navigation
+Remote controls
+Focus-based UI
+Landscape layouts
+TV-safe spacing
+3️⃣ Configure Android Manifest
+
+Add Fire TV / TV launcher support:
+
+<uses-feature
+    android:name="android.software.leanback"
+    android:required="false" />
+
+Inside activity:
+
+<intent-filter>
+    <action android:name="android.intent.action.MAIN"/>
+    <category android:name="android.intent.category.LEANBACK_LAUNCHER"/>
+</intent-filter>
+4️⃣ Optimize Video Playback
+
+Must support:
+
+HLS streaming
+adaptive bitrate
+fullscreen playback
+
+Recommended:
+
+ExoPlayer
+HLS .m3u8
+5️⃣ Generate Production APK
+
+Build release:
+
+./gradlew assembleRelease
+
+Output:
+
+app-release.apk
+6️⃣ Test on Fire TV Device
+
+Enable developer mode on Fire TV.
+
+Install:
+
+adb install app-release.apk
+
+Test:
+
+remote navigation
+playback
+fullscreen
+buffering
+authentication
+7️⃣ Create Fire TV Store Assets
+
+Required:
+
+TV screenshots
+banner image
+app icon
+splash screen
+8️⃣ Upload to Amazon Developer Console
+
+Inside Amazon Appstore:
+
+Create app
+Upload APK
+Select Fire TV distribution
+9️⃣ Configure App Metadata
+
+Add:
+
+description
+categories
+privacy policy
+support URL
+🔟 Submit for Review
+
+Amazon reviews:
+
+playback quality
+remote support
+stability
+TV optimization
+📺 Samsung Smart TV (Tizen) — Full Setup Guide
+1️⃣ Create Samsung Developer Account
+
+Go to:
+
+Samsung Developers
+
+Register:
+
+Seller account
+TV seller permissions
+2️⃣ Install Tizen Studio
+
+Download:
+
+Tizen Studio
+TV extensions
+
+Install:
+
+Tizen SDK
+TV emulator
+3️⃣ Create TV Web App
+
+Recommended stack:
+
+React
+TypeScript
+TV-focused UI
+4️⃣ Configure TV Navigation
+
+Implement:
+
+D-pad movement
+focus engine
+remote key mapping
+
+Critical for approval.
+
+5️⃣ Optimize for TV Screens
+
+Use:
+
+1920x1080 layouts
+large typography
+TV-safe margins
+6️⃣ Configure App Metadata
+
+Inside:
+
+config.xml
+
+Define:
+
+app id
+permissions
+fullscreen behavior
+7️⃣ Build Production Package
+
+Generate:
+
+tizen build-web
+
+Package:
+
+tizen package -t wgt
+
+Output:
+
+app.wgt
+8️⃣ Test on Samsung TV Emulator
+
+Test:
+
+remote navigation
+playback
+performance
+focus transitions
+9️⃣ Create Seller Office Assets
+
+Need:
+
+TV screenshots
+promotional banners
+app icon
+🔟 Submit to Samsung Seller Office
+
+Upload:
+
+app.wgt
+
+inside:
+
+Samsung Developers
+
+1️⃣1️⃣ Certification Review
+
+Samsung checks:
+
+TV usability
+playback stability
+remote support
+crash prevention
+📺 LG webOS TV — Full Setup Guide
+1️⃣ Create LG Developer Account
+
+Go to:
+
+LG Developer
+
+Register developer account.
+
+2️⃣ Install webOS TV SDK
+
+Install:
+
+webOS CLI
+Emulator
+TV SDK
+3️⃣ Build TV-Compatible Web App
+
+Recommended:
+
+React
+TV-focused navigation system
+4️⃣ Implement Remote Navigation
+
+Must support:
+
+arrow keys
+OK/select button
+focus management
+5️⃣ Configure App Manifest
+
+Create:
+
+appinfo.json
+
+Define:
+
+app id
+version
+title
+resolution support
+6️⃣ Build Production Package
+
+Package app:
+
+ares-package .
+
+Output:
+
+app.ipk
+7️⃣ Test on Emulator / Real TV
+
+Validate:
+
+playback
+fullscreen
+remote navigation
+memory usage
+8️⃣ Create LG Store Assets
+
+Need:
+
+screenshots
+banners
+app icons
+9️⃣ Submit to LG Seller Lounge
+
+Upload:
+
+app.ipk
+
+through:
+
+LG Developer
+
+🔟 Review & Certification
+
+LG validates:
+
+playback quality
+remote interaction
+app stability
+🚀 FINAL RECOMMENDED ARCHITECTURE
+
+For Temple TV:
+
+Backend
+https://api.templetv.org.ng
+
+Shared by:
+
+Fire TV
+Samsung TV
+LG TV
+Web
+Mobile
+Streaming Format
+
+Use:
+
+HLS (.m3u8)
+
+for:
+
+adaptive streaming
+TV compatibility
+better buffering
+🔥 PRODUCTION CHECKLIST
+
+Before publishing ANY TV app:
+
+✅ Remote navigation works
+✅ Fullscreen playback stable
+✅ Authentication works
+✅ Live streaming works
+✅ “Watch Temple TV” works
+✅ Hero banners optimized
+✅ Memory usage optimized
+✅ No crashes
+✅ HTTPS enabled everywhere
+✅ CDN-enabled streaming
