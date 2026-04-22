@@ -7,7 +7,7 @@ import {
   useStopLiveOverride,
 } from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Video, ListVideo, Calendar, BellRing, Activity, Radio, Plus, Loader2, Square, Users } from "lucide-react";
+import { AlertCircle, Video, ListVideo, Calendar, BellRing, Activity, Radio, Plus, Loader2, Square, Users } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
@@ -17,9 +17,9 @@ import { useToast } from "@/hooks/use-toast";
 export default function Dashboard() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
-  const { data: stats, isLoading: isLoadingStats } = useGetAdminStats();
+  const { data: stats, isLoading: isLoadingStats, isError: isErrorStats, refetch: refetchStats } = useGetAdminStats();
   const { data: liveStatus } = useGetLiveStatus();
-  const { data: videosData, isLoading: isLoadingVideos } = useListAdminVideos({ limit: 4 });
+  const { data: videosData, isLoading: isLoadingVideos, isError: isErrorVideos } = useListAdminVideos({ limit: 4 });
   const startLiveOverride = useStartLiveOverride({
     mutation: {
       onSuccess: (result) => {
@@ -55,6 +55,21 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {isErrorStats && (
+        <div className="flex items-start gap-3 rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+          <div className="flex-1 space-y-1">
+            <p className="font-medium text-destructive">Couldn't load dashboard stats</p>
+            <p className="text-muted-foreground">
+              The admin stats endpoint returned an error. The numbers below may be stale.
+            </p>
+          </div>
+          <Button size="sm" variant="outline" onClick={() => refetchStats()}>
+            Retry
+          </Button>
+        </div>
+      )}
+
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -64,9 +79,9 @@ export default function Dashboard() {
           <CardContent>
             {isLoadingStats ? <Skeleton className="h-7 w-20" /> : (
               <>
-                <div className="text-2xl font-bold">{stats?.totalVideos || 0}</div>
+                <div className="text-2xl font-bold">{(stats?.totalVideos ?? 0).toLocaleString()}</div>
                 <p className="text-xs text-muted-foreground mt-1">
-                  +{stats?.recentImports || 0} recent imports
+                  +{stats?.recentImports ?? 0} recent imports
                 </p>
               </>
             )}
@@ -80,7 +95,7 @@ export default function Dashboard() {
           <CardContent>
             {isLoadingStats ? <Skeleton className="h-7 w-20" /> : (
               <>
-                <div className="text-2xl font-bold">{stats?.totalPlaylists || 0}</div>
+                <div className="text-2xl font-bold">{stats?.totalPlaylists ?? 0}</div>
                 <p className="text-xs text-muted-foreground mt-1">
                   Curated collections
                 </p>
@@ -96,7 +111,7 @@ export default function Dashboard() {
           <CardContent>
             {isLoadingStats ? <Skeleton className="h-7 w-20" /> : (
               <>
-                <div className="text-2xl font-bold">{stats?.activeScheduleEntries || 0}</div>
+                <div className="text-2xl font-bold">{stats?.activeScheduleEntries ?? 0}</div>
                 <p className="text-xs text-muted-foreground mt-1">
                   Active weekly slots
                 </p>
@@ -112,9 +127,9 @@ export default function Dashboard() {
           <CardContent>
             {isLoadingStats ? <Skeleton className="h-7 w-20" /> : (
               <>
-                <div className="text-2xl font-bold">{stats?.notificationsSentToday || 0}</div>
+                <div className="text-2xl font-bold">{stats?.notificationsSentToday ?? 0}</div>
                 <p className="text-xs text-muted-foreground mt-1">
-                  {(stats as any)?.registeredDevices ?? 0} registered devices
+                  {stats?.registeredDevices ?? 0} registered devices
                 </p>
               </>
             )}
@@ -222,6 +237,10 @@ export default function Dashboard() {
                     </div>
                   </div>
                 ))}
+              </div>
+            ) : isErrorVideos ? (
+              <div className="text-center py-8 text-sm border border-destructive/30 bg-destructive/5 text-destructive rounded-lg">
+                Couldn't load recent videos.
               </div>
             ) : videosData?.videos && videosData.videos.length > 0 ? (
               <div className="space-y-4">

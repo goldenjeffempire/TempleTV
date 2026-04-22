@@ -329,5 +329,129 @@ What still requires the operator (out of code scope):
 
 ---
 
+## §10 — Final Production-Readiness Pass (Apr 22, 2026)
+
+This section is the closing report for the production-readiness pass that
+was scoped to: backend security hardening, mobile production fixes, TV
+polish, security fixes, and a final report. Every task was executed and
+the result is summarised below.
+
+### 10.1 Scope of the pass
+
+| Track | Goal | Outcome |
+|---|---|---|
+| T001 | Backend security hardening | ✅ Verified complete |
+| T002 | Mobile (Expo) production fixes | ✅ Verified complete |
+| T003 | Smart-TV web app polish | ✅ Verified complete |
+| T004 | Server-side error reporting endpoint | ✅ Verified complete |
+| T005 | Final engineering report | ✅ This section |
+
+### 10.2 Verification matrix
+
+#### Backend (`artifacts/api-server`)
+
+| Item | File · Line | Verified |
+|---|---|---|
+| HSTS in production | `middlewares/security.ts:56-61` | `Strict-Transport-Security: max-age=63072000; includeSubDomains; preload` set when `NODE_ENV=production` |
+| Strict CSP | `middlewares/security.ts:63-71` | `default-src 'none'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'` |
+| CORS allowlist (no dev wildcard) | `app.ts:43-85` | Production: 8 explicit origins. Dev: localhost + `REPLIT_DEV_DOMAIN` + `*.replit.dev` / `*.repl.co` only. All others rejected. |
+| `console.*` removed from routes | `routes/**` | `grep -rn 'console\\.' artifacts/api-server/src/routes/` → 0 matches |
+| Magic-byte upload validation | `lib/fileValidation.ts` + `routes/admin.ts:909, 920, 1131, 1188` | All four upload paths (single video, chunked finalize, thumbnail, image) validate the actual file head bytes and unlink rejected files |
+| Admin route gate | `middlewares/security.ts:98-122` | `503` if token unconfigured, `401` if presented token wrong, constant-time compare |
+| Per-route rate limits | `middlewares/security.ts:15-23` | Auth: 10–30 / min; admin: 240 / min; uploads: 90 / min; YouTube: 120 / min |
+| Sentry server hookup | `app.ts:125` | `Sentry.setupExpressErrorHandler(app)` registered before final 500 handler |
+
+#### Mobile (`artifacts/mobile`)
+
+| Item | File · Line | Verified |
+|---|---|---|
+| Auth tokens in OS-level secure storage | `context/AuthContext.tsx:3, 35, 40, 64-65` | Both access + refresh tokens stored via `secureStorage` (Keychain / Keystore). One-time migration from legacy AsyncStorage on app boot |
+| Refresh-token rotation | `services/authApi.ts:45-80` | Single in-flight refresh dedupes parallel 401s; permanent failure clears credentials and notifies UI |
+| iOS notification permission string | `app.json:38` | `NSUserNotificationsUsageDescription` set with ministry-specific copy |
+| iOS photo permission strings | `app.json:39-40` | `NSPhotoLibraryUsageDescription` + `NSPhotoLibraryAddUsageDescription` set |
+| App Transport Security locked | `app.json:35-37` | `NSAllowsArbitraryLoads: false` |
+| Background modes for live worship | `app.json:28-32` | `audio`, `fetch`, `remote-notification` |
+| Android dangerous-permission denylist | `app.json:62-68` | Audio recording, external storage, location all blocked at manifest level |
+| ErrorBoundary → server reporting | `app/_layout.tsx:17-18, 157-180` + `lib/errorReporter.ts` | Top-level boundary fires `reportClientError(...)` which POSTs to `/api/client-errors` with platform, app version, build number, error name, message, stack and component stack |
+| Reporter hardening | `lib/errorReporter.ts` | 5 s timeout, 1 s client throttle, swallows network errors so reporting never throws |
+
+#### Smart-TV (`artifacts/tv`)
+
+| Item | File · Line | Verified |
+|---|---|---|
+| Player error handling + retry | `pages/Player.tsx:9-49, 96-100, 119-126, 136-209` | 12 s load watchdog → up to 2 silent auto-retries → friendly error UI with autofocused **Try again** + **Back**, ENTER-to-retry keyboard binding |
+| `byCategory` memoised | `hooks/useData.ts:67-74` | `useMemo` keyed on `[sermons]` — no per-render reduce |
+| `featured` memoised | `hooks/useData.ts:76` | `useMemo` keyed on `[sermons]` |
+| Header in D-pad focus flow | `pages/Home.tsx:77-87` + `hooks/useTVNav.ts` | `headerItemCount: 2` exposes Search and Guide as a header focus zone reachable by pressing ↑ from the top row |
+| In-platform YouTube playback | `pages/Player.tsx:79-94` | Uses `youtube-nocookie.com/embed/...` with `enablejsapi`, `origin`, `referrerPolicy=strict-origin-when-cross-origin` — no out-of-app redirect to youtube.com |
+
+#### Server-side error reporting (T004)
+
+| Item | File · Line | Verified |
+|---|---|---|
+| `POST /api/client-errors` | `routes/client-errors.ts:61-90` | Zod-validated payload, structured `logger.error` with `clientError: true`, returns `202 { ok: true }` |
+| External sink fan-out | `routes/client-errors.ts:24-45` | Optional `CLIENT_ERROR_SINK_URL` (+ `CLIENT_ERROR_SINK_TOKEN`) fire-and-forget POST with 5 s timeout — supports Logtail, Datadog, BetterStack, Sentry intake |
+| Wired into router | `routes/index.ts:9, 20` | Registered under `/api` prefix |
+
+#### Admin web (`artifacts/admin`) — UX hardening (carry-over from prior session)
+
+| Item | File | Verified |
+|---|---|---|
+| Full-page auth gate (no broken-skeleton state) | `components/auth-gate.tsx` | Probes `/api/admin/stats` on boot and shows a sign-in panel for `401` / `503` / network down — never lets the dashboard render against an unauthenticated session |
+| Proper key-entry modal (replaces `window.prompt()`) | `components/admin-key-dialog.tsx` | Password input with show/hide, server-side verify before save, error messaging, hidden username field for password-manager autofill, can be `required` (non-dismissible) when used by the gate |
+| Branded sidebar | `components/temple-tv-logo.tsx` + `components/layout.tsx` | Reusable Temple TV badge SVG matches the TV / favicon brand |
+| Real sign-out affordance | `components/layout.tsx` | Replaces hardcoded "AD" avatar — clears stored token with confirm dialog |
+| Dashboard error states | `pages/dashboard.tsx` | `isError` from React Query renders an inline retry banner; `??` instead of `||` so a real `0` count is preserved |
+
+### 10.3 What this codebase still requires from the operator
+
+These items are deliberately out of scope of any agent pass — they require
+human action against external accounts that the code cannot reach.
+
+1. **Rotate any credentials that appeared in earlier chat history**
+   - YouTube Data API key (Google Cloud Console → APIs & Services → Credentials → regenerate)
+   - Neon `DATABASE_URL` (Neon dashboard → Settings → Reset password)
+   - Update both Render and EAS secret stores after rotation.
+
+2. **Sign and submit the iOS build**
+   - Enroll in the Apple Developer Program ($99 / yr) if not already.
+   - In `eas.json` set the production profile's `ios.appleId`, `ascAppId`, `appleTeamId`.
+   - Run `eas build --platform ios --profile production`.
+   - Run `eas submit --platform ios --latest` to ship to App Store Connect.
+   - Complete the App Store listing using `STORE_LISTING.md` (already prepared).
+
+3. **Sign and submit the Android build**
+   - Create a Google Play Console developer account ($25 one-time).
+   - Generate an upload keystore via EAS (`eas credentials`).
+   - Run `eas build --platform android --profile production` to produce a signed AAB.
+   - Run `eas submit --platform android --latest`.
+   - Complete the Play listing using `STORE_LISTING.md`.
+
+4. **Deploy the four web/API services to Render**
+   - Render → Blueprints → "New Blueprint" → point at this repo's `render.yaml`.
+   - Set `ADMIN_API_TOKEN`, `JWT_SECRET`, `YOUTUBE_API_KEY`, `DATABASE_URL`, `SENTRY_DSN` (optional), `CLIENT_ERROR_SINK_URL` (optional) in the dashboard.
+   - Attach the four custom domains: `api.`, `admin.`, `tv.`, root → web → `templetv.org.ng`.
+
+5. **Seed the unified video catalogue**
+   - After first deploy, `POST /api/admin/youtube/sync` once with the admin Bearer token to populate `managed_videos`. The 60 s background poller takes over from there.
+
+### 10.4 What is out of scope (and why)
+
+| Item | Why excluded |
+|---|---|
+| Native tvOS / Tizen / webOS apps | This codebase contains none — they would be greenfield projects. The Smart-TV web app already covers Apple TV browser apps, Android TV / Google TV browsers, hospitality STBs, Tizen / webOS browsers, and Chromecast / AirPlay receivers via `tv.templetv.org.ng`. |
+| JWT refresh-token migration breaking change | Already in production; changing the contract would force every existing mobile install to re-authenticate. Documented as a future enhancement, not blocked on launch. |
+| App Store / Play Store screenshots & ASO copy | Asset-creation work belongs to the marketing/design team; the listing skeleton is in `STORE_LISTING.md`. |
+| Generating signed AAB / IPA from this environment | Requires Apple/Google developer-account credentials and platform signing keys that must remain offline. EAS profiles in `eas.json` are configured so the operator can run `eas build` from a local machine. |
+
+### 10.5 Final verdict
+
+**The Temple TV monorepo is production-ready.** Every code-side
+production-readiness item identified by the audit and the follow-up
+session plan has been verified. The only remaining gates between today
+and a public launch are external account actions enumerated in §10.3.
+
+---
+
 *Audit performed by the Replit agent.
 For a list of every code change, run `git log --oneline` from the project root.*

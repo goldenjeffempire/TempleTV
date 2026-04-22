@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Layout } from "@/components/layout";
+import { AuthGate } from "@/components/auth-gate";
 import NotFound from "@/pages/not-found";
 import Dashboard from "@/pages/dashboard";
 import Videos from "@/pages/videos";
@@ -32,6 +33,7 @@ const queryClient = new QueryClient({
 
 function Router() {
   return (
+    <AuthGate>
     <Layout>
       <Switch>
         <Route path="/" component={Dashboard} />
@@ -51,6 +53,7 @@ function Router() {
         <Route component={NotFound} />
       </Switch>
     </Layout>
+    </AuthGate>
   );
 }
 
