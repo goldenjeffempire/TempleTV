@@ -29,7 +29,24 @@ export function LiveHero({ liveStatus, focused, onSelect }: LiveHeroProps) {
       onClick={onSelect}
       onFocus={() => {}}
     >
-      {thumbUrl ? (
+      {focused && videoId ? (
+        <iframe
+          src={`https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&mute=1&controls=0&modestbranding=1&playsinline=1&loop=1&playlist=${videoId}&rel=0&iv_load_policy=3&disablekb=1`}
+          allow="autoplay; encrypted-media; picture-in-picture"
+          frameBorder={0}
+          style={{
+            position: "absolute",
+            top: "50%",
+            left: "50%",
+            width: "120%",
+            height: "120%",
+            transform: "translate(-50%, -50%)",
+            pointerEvents: "none",
+            border: 0,
+          }}
+          title="Temple TV ambient preview"
+        />
+      ) : thumbUrl ? (
         <img
           src={thumbUrl}
           alt="Live"
@@ -72,7 +89,7 @@ export function LiveHero({ liveStatus, focused, onSelect }: LiveHeroProps) {
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="white">
                     <path d="M8 5v14l11-7z" />
                   </svg>
-                  <span style={{ fontSize: 18, fontWeight: 700, color: "#fff" }}>Watch Live</span>
+                  <span style={{ fontSize: 18, fontWeight: 700, color: "#fff" }}>Watch Temple TV</span>
                 </div>
               </div>
             )}

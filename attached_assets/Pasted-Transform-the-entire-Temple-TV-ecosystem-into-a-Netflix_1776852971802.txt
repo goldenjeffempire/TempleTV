@@ -1,0 +1,301 @@
+Transform the entire Temple TV ecosystem into a **Netflix-style, cinematic, enterprise-grade streaming platform** with unified Web, TV, Mobile/App, and Admin systems.
+
+Reference YouTube Channel:
+https://www.youtube.com/@TEMPLETVJCTM
+
+The platform must behave like a modern OTT service (Netflix / YouTube TV / Prime Video level), but centered on Temple TV’s live + on-demand Christian content experience.
+
+========================================================
+CORE OBJECTIVE
+==============
+
+Build a fully synchronized multi-platform streaming system where:
+
+* Web Platform
+* TV Platform
+* Mobile App
+* Admin Dashboard
+* Backend API
+
+all operate from a single source of truth.
+
+Any content added, uploaded, scheduled, broadcasted, or modified in Admin must instantly reflect across all platforms.
+
+========================================================
+NETFLIX-STYLE CINEMATIC EXPERIENCE (HERO SYSTEM)
+================================================
+
+The homepage must feature **large cinematic hero banners** (Netflix-style “featured row” experience).
+
+Each hero banner must include:
+
+### 🎬 Primary CTA Button
+
+* **Button Label:** “Watch Temple TV”
+
+### Functionality of Button:
+
+When clicked, it must:
+
+* Launch a **full-screen live streaming experience**
+* Behave exactly like a **real TV channel feed**
+* Simulate “watching Temple TV broadcast” in real time
+* Automatically play:
+
+  * Live stream (if active)
+  * OR scheduled broadcast feed
+  * OR queued video stream (fallback mode)
+
+The experience must feel like:
+👉 “Turning on a live TV channel on a smart TV — but on mobile/web”
+
+No page reloads. No navigation friction. Instant immersive playback mode.
+
+========================================================
+LIVE BROADCAST SYSTEM (CORE REQUIREMENT)
+========================================
+
+Implement a real broadcast orchestration layer inside the platform.
+
+The system must support:
+
+### 1. Live Stream Mode
+
+* Stream active live content directly
+* Pulled from Admin-configured source
+
+### 2. Scheduled Broadcast Mode
+
+* Admin can schedule videos to play at specific times
+* System automatically switches content like a TV channel
+
+### 3. Queue Broadcast Mode
+
+* Admin can build a playlist queue (like a TV station)
+* System plays videos sequentially as a channel feed
+
+========================================================
+ADMIN DASHBOARD REQUIREMENTS (BROADCAST CONTROL CENTER)
+=======================================================
+
+The Admin panel becomes a **Broadcast Studio Control System**.
+
+It must support:
+
+### 🎥 Content Input Types
+
+* YouTube Video ID input (for syncing content)
+* Direct video upload (server or object storage)
+* Scheduled broadcast upload
+* Playlist queue creation
+
+### 🎬 Broadcast Management Features
+
+* Create “TV Channel Schedule”
+* Drag-and-drop video ordering
+* Set start/end broadcast times
+* Define live stream source URL
+* Switch between:
+
+  * Live Mode
+  * Scheduled Mode
+  * Playlist Mode
+
+### 📡 Broadcast Activation
+
+* Admin can “Go Live”
+* Instantly pushes content to:
+
+  * Web hero banner CTA playback
+  * TV app home screen
+  * Mobile app homepage
+
+========================================================
+UNIFIED STREAMING BEHAVIOR
+==========================
+
+When a user clicks:
+
+👉 “Watch Temple TV” button (Hero Banner)
+
+The system must:
+
+1. Detect current broadcast mode:
+
+   * Live stream active → play live
+   * Scheduled content → play scheduled feed
+   * Queue mode → play playlist stream
+
+2. Open **full-screen immersive player**
+
+3. Disable UI distractions
+
+4. Start continuous playback like a real TV channel
+
+5. Allow seamless switching between content without reload
+
+This must replicate the experience of:
+📺 “Watching a real TV broadcast channel on a phone or browser”
+
+========================================================
+YOUTUBE INTEGRATION (HYBRID CONTENT PIPELINE)
+=============================================
+
+Integrate:
+
+https://www.youtube.com/@TEMPLETVJCTM
+
+System must:
+
+* Sync videos automatically from YouTube
+* Allow Admin to select YouTube videos via ID
+* Merge YouTube content into broadcast queue
+* Use YouTube as fallback content source
+* Cache metadata and thumbnails
+* Avoid API rate exhaustion
+
+========================================================
+UNIFIED CONTENT ENGINE
+======================
+
+All platforms must share:
+
+* Same hero banners
+* Same live broadcast state
+* Same video queue system
+* Same thumbnails and metadata
+* Same watch progress tracking
+* Same recommendations
+* Same categories
+
+========================================================
+VIDEO PLAYER REQUIREMENTS
+=========================
+
+Build a premium OTT-level player:
+
+Must support:
+
+* Full-screen “TV Mode”
+* Auto-play broadcast stream
+* Resume playback
+* Adaptive bitrate streaming
+* Remote control navigation (TV)
+* Keyboard navigation (Web)
+* Mobile gesture controls
+* Buffer optimization
+* Seamless transitions between videos
+
+========================================================
+TV APP EXPERIENCE (SMART TV BEHAVIOR)
+=====================================
+
+Design like Netflix TV app:
+
+* D-pad navigation
+* Focus-based UI
+* Smooth carousel scrolling
+* Auto-preview on focus
+* Instant channel switching
+* Low-latency interaction
+* Minimal UI overlay
+
+========================================================
+WEB PLATFORM (NETFLIX UI SYSTEM)
+================================
+
+Implement:
+
+* Cinematic homepage layout
+* Hero banner carousel with live CTA
+* Horizontal content rails
+* Smooth hover animations
+* Auto-playing previews
+* Intelligent recommendations
+
+SEO + Performance:
+
+* SSR optimization
+* Schema markup
+* Open Graph
+* Fast indexing
+* Lazy loading
+* CDN optimization
+
+========================================================
+BACKEND API ARCHITECTURE
+========================
+
+Refactor into production-grade streaming backend:
+
+Must include:
+
+* Broadcast orchestration service
+* Video queue engine
+* Live stream controller
+* YouTube sync service
+* Content scheduling system
+* Recommendation engine
+
+Security:
+
+* JWT authentication
+* Role-based admin access
+* Secure API gateway
+* Rate limiting
+* Input validation
+
+========================================================
+DATABASE DESIGN
+===============
+
+Support:
+
+* videos
+* live streams
+* broadcast schedules
+* queues/playlists
+* hero banners
+* admin broadcast sessions
+* watch history
+* user sessions
+* YouTube sync metadata
+
+========================================================
+REAL-TIME SYSTEM BEHAVIOR
+=========================
+
+Ensure:
+
+* Live broadcast updates instantly across all platforms
+* Admin changes reflect immediately
+* Hero CTA always points to current active broadcast
+* No manual refresh required
+
+========================================================
+PRODUCTION REQUIREMENTS
+=======================
+
+System must be:
+
+* Scalable like Netflix architecture
+* Low-latency streaming optimized
+* Highly available
+* Fault tolerant
+* Cache optimized
+* Deployment ready (Render production)
+
+========================================================
+FINAL EXPERIENCE GOAL
+=====================
+
+The final product must feel like:
+
+👉 A Netflix-style Christian streaming platform
+👉 With a “Watch Temple TV” live channel experience
+👉 Controlled dynamically from Admin like a broadcast studio
+👉 Fully synchronized across Web, TV, and Mobile
+
+No mock systems. No placeholders.
+
+Everything must behave like a real-world OTT streaming platform ready for production deployment.

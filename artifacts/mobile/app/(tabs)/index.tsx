@@ -409,9 +409,7 @@ export default function WatchScreen() {
                     style={[styles.watchBtn, { backgroundColor: liveStatus.isLive ? "#FF0040" : c.primary }]}
                   >
                     <Feather name="play" size={15} color="#FFF" />
-                    <Text style={styles.watchBtnText}>
-                      {liveStatus.isLive || showScheduledLive ? "Join Live" : showBroadcast ? "Tune In Now" : "Watch Stream"}
-                    </Text>
+                    <Text style={styles.watchBtnText}>Watch Temple TV</Text>
                   </Pressable>
                 </View>
               </GlassCard>
