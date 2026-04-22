@@ -132,10 +132,20 @@ export async function probeVideo(file: File): Promise<ProbeResult> {
   });
 }
 
-export function shouldCompress(probe: ProbeResult, opts: CompressionOptions): boolean {
+// Files larger than this skip client-side compression and stream straight to
+// the server. WebCodecs in the browser cannot reliably handle multi-GB files:
+// mp4box parsing alone takes minutes, hardware encoders frequently reject
+// huge inputs ("Encoder creation error"), and idle codecs are reclaimed by
+// Chrome before the pipeline reaches steady state. The chunked-resumable
+// upload pipeline already handles big files gracefully, so we let the server
+// (or its post-upload jobs) do any transcoding instead.
+export const MAX_CLIENT_COMPRESS_BYTES = 1.5 * 1024 * 1024 * 1024; // 1.5 GB
+
+export function shouldCompress(probe: ProbeResult, opts: CompressionOptions, fileSize?: number): boolean {
   if (!isCompressionSupported()) return false;
   if (!probe.isMp4) return false; // only MP4 files supported
   if (probe.height === 0) return false;
+  if (typeof fileSize === "number" && fileSize > MAX_CLIENT_COMPRESS_BYTES) return false;
   const heightExceeds = probe.height > opts.maxHeight + 16;
   const bitrateExceeds = probe.estimatedBitrateBps > opts.targetBitrate * 1.3;
   return heightExceeds || bitrateExceeds;

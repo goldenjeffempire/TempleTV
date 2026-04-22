@@ -356,7 +356,7 @@ export default function Videos() {
         const probe = await probeVideo(task.file);
         updateTask(taskId, { probe });
 
-        if (shouldCompress(probe, DEFAULT_COMPRESSION_OPTS)) {
+        if (shouldCompress(probe, DEFAULT_COMPRESSION_OPTS, task.file.size)) {
           updateTask(taskId, {
             state: "compressing",
             compressionProgress: {
