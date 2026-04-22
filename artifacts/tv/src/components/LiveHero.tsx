@@ -350,7 +350,7 @@ export function LiveHero({ liveStatus, focused, onSelect }: LiveHeroProps) {
                   letterSpacing: "-0.01em",
                 }}
               >
-                Browse sermons
+                Watch Temple TV
               </span>
             </div>
           </>
