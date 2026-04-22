@@ -18,8 +18,16 @@ import { Feather } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
 import { useAuth } from "@/context/AuthContext";
 import { apiSignup } from "@/services/authApi";
+import { usePageSeo } from "@/hooks/usePageSeo";
 
 export default function SignupScreen() {
+  usePageSeo({
+    title: "Create Account | Temple TV",
+    description: "Create a free Temple TV account to save sermons, sync progress, and receive live notifications.",
+    path: "/signup",
+    noindex: true,
+  });
+
   const c = useColors();
   const insets = useSafeAreaInsets();
   const { signIn } = useAuth();

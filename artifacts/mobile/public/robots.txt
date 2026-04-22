@@ -1,6 +1,25 @@
+# Temple TV — robots policy
+# Public site; restrict private flows + utility routes.
+
 User-agent: *
 Allow: /
 Disallow: /settings
 Disallow: /admin
+Disallow: /login
+Disallow: /signup
+Disallow: /change-password
+Disallow: /+not-found
+Disallow: /_expo/
 
+# Hint commercial AI crawlers to respect content
+User-agent: GPTBot
+Allow: /
+Disallow: /settings
+Disallow: /login
+Disallow: /signup
+
+User-agent: Google-Extended
+Allow: /
+
+# Sitemap index — fans out to static pages + dynamic sermon catalogue
 Sitemap: https://templetv.org.ng/sitemap.xml

@@ -15,6 +15,7 @@ import * as Haptics from "expo-haptics";
 import * as Clipboard from "expo-clipboard";
 import { useColors } from "@/hooks/useColors";
 import { GlassCard } from "@/components/GlassCard";
+import { usePageSeo } from "@/hooks/usePageSeo";
 
 interface BankAccount {
   bank: string;
@@ -77,6 +78,20 @@ const GIVING_LINKS = [
 ];
 
 export default function DonateScreen() {
+  usePageSeo({
+    title: "Partner With Us — Give to Jesus Christ Temple Ministry",
+    description:
+      "Support the work of Jesus Christ Temple Ministry. Give securely online to help us reach more souls through Temple TV's worldwide broadcasting.",
+    path: "/donate",
+    structuredData: {
+      "@context": "https://schema.org",
+      "@type": "DonateAction",
+      recipient: { "@id": "https://templetv.org.ng/#organization" },
+      name: "Partner With Temple TV",
+      description: "Give to support Temple TV's broadcasting mission.",
+    },
+  });
+
   const c = useColors();
   const insets = useSafeAreaInsets();
   const [copiedKey, setCopiedKey] = useState<string | null>(null);

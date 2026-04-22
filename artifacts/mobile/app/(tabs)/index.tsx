@@ -33,6 +33,7 @@ import { useFeaturedVideos } from "@/hooks/useFeaturedVideos";
 import { useWatchProgress } from "@/hooks/useWatchProgress";
 import { checkBroadcastCurrent, subscribeBroadcastEvents, type BroadcastCurrentResult } from "@/services/broadcast";
 import { navigateToSermon } from "@/utils/navigation";
+import { usePageSeo } from "@/hooks/usePageSeo";
 import type { Sermon } from "@/types";
 
 const broadcastProgressStyles = StyleSheet.create({
@@ -87,6 +88,13 @@ function BroadcastProgress({ broadcastCurrent }: { broadcastCurrent: BroadcastCu
 }
 
 export default function WatchScreen() {
+  usePageSeo({
+    title: "Temple TV — Live Worship, Sermons & 24/7 Broadcasting",
+    description:
+      "Join Jesus Christ Temple Ministry live. Stream worship services, sermons, and 24/7 Christian broadcasting on web, mobile, and Smart TV.",
+    path: "/",
+  });
+
   const c = useColors();
   const insets = useSafeAreaInsets();
   const { currentSermon, isLive: playerIsLive, playSermon, playLive, setQueue } = usePlayer();

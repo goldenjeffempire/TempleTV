@@ -34,6 +34,7 @@ import { checkBroadcastCurrent, subscribeBroadcastEvents, type BroadcastCurrentR
 import { ChannelBug } from "@/components/ChannelBug";
 import { BroadcastInfoStrip } from "@/components/BroadcastInfoStrip";
 import type { Sermon } from "@/types";
+import { usePageSeo } from "@/hooks/usePageSeo";
 
 function formatTime(seconds: number): string {
   if (!seconds || isNaN(seconds)) return "0:00";
@@ -240,6 +241,59 @@ export default function PlayerScreen() {
 
   const isLive = live === "true";
   const isBroadcastMode = paramBroadcastMode === "true";
+
+  // Per-page SEO: emits a Schema.org VideoObject for this sermon (or
+  // BroadcastEvent when watching the live stream). This is what makes
+  // individual sermons eligible for Google's Video search carousel and
+  // for rich-result thumbnails in regular search.
+  const seoVideoId = paramVideoId ?? ctxSermon?.youtubeId ?? "";
+  const seoTitle = paramTitle ?? ctxSermon?.title ?? (isLive ? "Live Now — Temple TV" : "Watch Sermon");
+  const seoThumb = paramThumbnail ?? ctxSermon?.thumbnail ?? `https://i.ytimg.com/vi/${seoVideoId}/hqdefault.jpg`;
+  const seoPreacher = paramPreacher ?? ctxSermon?.preacher ?? "Jesus Christ Temple Ministry";
+  const seoDescription = ctxSermon?.description
+    ? String(ctxSermon.description).slice(0, 240)
+    : `${seoTitle} — watch on Temple TV. Preached by ${seoPreacher}.`;
+  // Only emit a real publishedAt — synthesizing "now" pollutes structured-data
+  // quality signals and risks disqualification from Google's Video carousel.
+  const seoUploadDate = (() => {
+    const raw = ctxSermon?.publishedAt;
+    if (!raw) return undefined;
+    const d = new Date(raw);
+    return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+  })();
+  const seoStructuredData = isLive
+    ? {
+        "@context": "https://schema.org",
+        "@type": "BroadcastEvent",
+        name: seoTitle,
+        description: seoDescription,
+        isLiveBroadcast: true,
+        videoFormat: "HD",
+        publishedOn: { "@id": "https://templetv.org.ng/#broadcast" },
+      }
+    : seoVideoId && seoUploadDate
+      ? {
+          "@context": "https://schema.org",
+          "@type": "VideoObject",
+          name: seoTitle,
+          description: seoDescription,
+          thumbnailUrl: seoThumb,
+          uploadDate: seoUploadDate,
+          contentUrl: `https://www.youtube.com/watch?v=${seoVideoId}`,
+          embedUrl: `https://www.youtube.com/embed/${seoVideoId}`,
+          publisher: { "@id": "https://templetv.org.ng/#organization" },
+          author: { "@type": "Person", name: seoPreacher },
+          inLanguage: "en",
+          isFamilyFriendly: true,
+        }
+      : undefined;
+  usePageSeo({
+    title: `${seoTitle} | Temple TV`,
+    description: seoDescription,
+    path: seoVideoId ? `/player?videoId=${encodeURIComponent(seoVideoId)}` : "/player",
+    image: seoThumb,
+    structuredData: seoStructuredData,
+  });
   const [broadcastInfo, setBroadcastInfo] = useState<BroadcastCurrentResult | null>(null);
   const [broadcastRecovering, setBroadcastRecovering] = useState(false);
   const scrollRef = useRef<ScrollView>(null);

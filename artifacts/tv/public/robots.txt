@@ -1,0 +1,7 @@
+# Temple TV Smart-TV web app
+# Allow indexing — this surface is a live worship experience optimised for TVs.
+User-agent: *
+Allow: /
+Disallow: /admin
+
+Sitemap: https://templetv.org.ng/sitemap.xml

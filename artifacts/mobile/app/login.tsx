@@ -19,8 +19,16 @@ import { Feather } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
 import { useAuth } from "@/context/AuthContext";
 import { apiLogin } from "@/services/authApi";
+import { usePageSeo } from "@/hooks/usePageSeo";
 
 export default function LoginScreen() {
+  usePageSeo({
+    title: "Sign In | Temple TV",
+    description: "Sign in to your Temple TV account to continue watching where you left off.",
+    path: "/login",
+    noindex: true,
+  });
+
   const c = useColors();
   const insets = useSafeAreaInsets();
   const { signIn } = useAuth();

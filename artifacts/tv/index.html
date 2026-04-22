@@ -3,17 +3,92 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
-    <title>Temple TV Smart TV</title>
+
+    <title>Temple TV — Live Worship & Sermons on Smart TV | JCTM</title>
+    <meta name="description" content="Watch Temple TV on your Smart TV. Live worship, sermons, and 24/7 broadcasting from Jesus Christ Temple Ministry — optimised for 10-foot viewing with remote-friendly navigation." />
+    <meta name="keywords" content="Temple TV Smart TV, JCTM Smart TV, live worship Smart TV, online church TV, Christian sermons TV, Nigeria gospel TV, faith broadcasting" />
+    <meta name="author" content="Jesus Christ Temple Ministry" />
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />
+    <meta name="googlebot" content="index, follow, max-image-preview:large" />
+    <link rel="canonical" href="https://tv.templetv.org.ng/" />
+
+    <meta name="theme-color" content="#000000" />
+    <meta name="application-name" content="Temple TV" />
+    <meta name="format-detection" content="telephone=no" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Temple TV" />
+    <meta property="og:title" content="Temple TV — Live Worship & Sermons on Smart TV" />
+    <meta property="og:description" content="Live worship, sermons, and 24/7 broadcasting from Jesus Christ Temple Ministry, optimised for Smart TVs." />
+    <meta property="og:url" content="https://tv.templetv.org.ng/" />
+    <meta property="og:image" content="https://templetv.org.ng/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Temple TV — Smart TV experience" />
+    <meta property="og:locale" content="en_US" />
+
+    <!-- Twitter / X -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Temple TV — Live Worship & Sermons on Smart TV" />
+    <meta name="twitter:description" content="Live worship, sermons, and 24/7 broadcasting from Jesus Christ Temple Ministry, optimised for Smart TVs." />
+    <meta name="twitter:image" content="https://templetv.org.ng/og-image.png" />
+
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="preconnect" href="https://www.youtube-nocookie.com">
-    <link rel="preconnect" href="https://www.youtube.com">
-    <link rel="preconnect" href="https://i.ytimg.com">
-    <link rel="dns-prefetch" href="https://img.youtube.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="manifest" href="/manifest.webmanifest" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="preconnect" href="https://www.youtube-nocookie.com" />
+    <link rel="preconnect" href="https://www.youtube.com" />
+    <link rel="preconnect" href="https://i.ytimg.com" />
+    <link rel="dns-prefetch" href="https://img.youtube.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+
+    <!-- Structured data: Organization + WebSite + BroadcastService -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "Organization",
+          "@id": "https://templetv.org.ng/#organization",
+          "name": "Jesus Christ Temple Ministry",
+          "alternateName": "Temple TV",
+          "url": "https://templetv.org.ng/",
+          "logo": "https://templetv.org.ng/icon.png",
+          "sameAs": [
+            "https://www.youtube.com/channel/UCPFFvkE-KGpR37qJgvYriJg"
+          ]
+        },
+        {
+          "@type": "WebSite",
+          "@id": "https://tv.templetv.org.ng/#website",
+          "url": "https://tv.templetv.org.ng/",
+          "name": "Temple TV — Smart TV",
+          "publisher": { "@id": "https://templetv.org.ng/#organization" },
+          "inLanguage": "en"
+        },
+        {
+          "@type": "BroadcastService",
+          "name": "Temple TV Live",
+          "broadcaster": { "@id": "https://templetv.org.ng/#organization" },
+          "broadcastDisplayName": "Temple TV",
+          "inLanguage": "en",
+          "videoFormat": "HD",
+          "url": "https://tv.templetv.org.ng/"
+        }
+      ]
+    }
+    </script>
   </head>
   <body>
+    <noscript>
+      <div style="padding:24px;font-family:system-ui,sans-serif;text-align:center;color:#fff;background:#000;">
+        <h1>Temple TV requires JavaScript</h1>
+        <p>Enable JavaScript on your Smart TV browser to watch live worship and sermons.</p>
+      </div>
+    </noscript>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

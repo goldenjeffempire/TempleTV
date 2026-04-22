@@ -19,6 +19,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useColors } from "@/hooks/useColors";
 import { GlassCard } from "@/components/GlassCard";
 import { fetchBroadcastGuide, type BroadcastGuideItem } from "@/services/broadcast";
+import { usePageSeo } from "@/hooks/usePageSeo";
 
 const REMINDERS_KEY = "@temple_tv/guide_reminders";
 
@@ -188,6 +189,13 @@ function GuideItemCard({
 }
 
 export default function GuideScreen() {
+  usePageSeo({
+    title: "Live TV Guide & Programme Schedule | Temple TV",
+    description:
+      "See what's on Temple TV right now and what's coming up next. Live worship, sermons, and special programmes — set reminders so you never miss a service.",
+    path: "/guide",
+  });
+
   const c = useColors();
   const insets = useSafeAreaInsets();
   const fadeAnim = useRef(new Animated.Value(Platform.OS === "web" ? 1 : 0)).current;

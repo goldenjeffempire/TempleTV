@@ -7,6 +7,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import router from "./routes";
 import legalRouter from "./routes/legal";
+import sitemapRouter from "./routes/sitemap";
 import { logger } from "./lib/logger";
 import { adminAccessControl, rateLimit, requestId, securityHeaders } from "./middlewares/security";
 import { requestMetrics } from "./middlewares/observability";
@@ -102,6 +103,7 @@ app.use("/api/hls", (req, res, next) => {
 }, express.static(path.join(__dirname, "..", "uploads", "hls")));
 
 app.use(legalRouter);
+app.use(sitemapRouter);
 app.use("/api", router);
 
 app.get("/", (_req: express.Request, res: express.Response) => {

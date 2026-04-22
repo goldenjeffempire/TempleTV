@@ -23,6 +23,7 @@ import { useWatchProgress } from "@/hooks/useWatchProgress";
 import { usePlaylists, usePlaylistDetail } from "@/hooks/usePlaylists";
 import { useDownloads } from "@/hooks/useDownloads";
 import { CategoryPills } from "@/components/CategoryPills";
+import { usePageSeo } from "@/hooks/usePageSeo";
 import { SermonCard } from "@/components/SermonCard";
 import { SkeletonHorizontalCard } from "@/components/SkeletonCard";
 import { navigateToSermon } from "@/utils/navigation";
@@ -86,6 +87,25 @@ function applySortAndFilter(
 }
 
 export default function LibraryScreen() {
+  usePageSeo({
+    title: "Sermon Library — Faith, Healing, Deliverance & More | Temple TV",
+    description:
+      "Browse the complete Temple TV sermon library. Filter by category — Faith, Healing, Deliverance, Worship, Teachings, and Special Programs — and watch on any device.",
+    path: "/library",
+    structuredData: {
+      "@context": "https://schema.org",
+      "@type": "CollectionPage",
+      name: "Temple TV Sermon Library",
+      description:
+        "Searchable library of sermons and teachings from Jesus Christ Temple Ministry.",
+      isPartOf: { "@id": "https://templetv.org.ng/#website" },
+      about: {
+        "@type": "Thing",
+        name: "Christian sermons and Bible teachings",
+      },
+    },
+  });
+
   const c = useColors();
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ category?: string }>();

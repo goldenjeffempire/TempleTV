@@ -21,8 +21,11 @@ export default function Root({ children }: PropsWithChildren) {
         <meta name="description" content={DESCRIPTION} />
         <meta name="keywords" content="Temple TV, JCTM, Jesus Christ Temple Ministry, live worship, sermons, online church, Christian teachings, Nigeria church, gospel streaming" />
         <meta name="author" content="Jesus Christ Temple Ministry" />
-        <meta name="robots" content="index, follow" />
+        <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
+        <meta name="googlebot" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
         <link rel="canonical" href={SITE_URL} />
+        <link rel="alternate" hrefLang="en" href={SITE_URL} />
+        <link rel="alternate" hrefLang="x-default" href={SITE_URL} />
 
         <meta name="theme-color" content="#6A0DAD" />
         <meta name="application-name" content="Temple TV" />
@@ -40,6 +43,7 @@ export default function Root({ children }: PropsWithChildren) {
         <meta property="og:image" content={OG_IMAGE} />
         <meta property="og:image:width" content="1200" />
         <meta property="og:image:height" content="630" />
+        <meta property="og:image:alt" content="Temple TV — Live Worship & Sermons" />
         <meta property="og:locale" content="en_US" />
 
         <meta name="twitter:card" content="summary_large_image" />
@@ -56,20 +60,73 @@ export default function Root({ children }: PropsWithChildren) {
         <link rel="preconnect" href="https://i.ytimg.com" />
         <link rel="dns-prefetch" href="https://img.youtube.com" />
 
+        {/*
+          Single @graph payload combining Organization, WebSite (with sitelinks
+          SearchAction), and the always-on BroadcastService. Google prefers a
+          consolidated graph over multiple disconnected JSON-LD blocks.
+        */}
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{
             __html: JSON.stringify({
               "@context": "https://schema.org",
-              "@type": "Organization",
-              name: "Jesus Christ Temple Ministry",
-              alternateName: "Temple TV",
-              url: SITE_URL,
-              logo: `${SITE_URL}/icon.png`,
-              sameAs: [
-                "https://www.youtube.com/channel/UCPFFvkE-KGpR37qJgvYriJg",
+              "@graph": [
+                {
+                  "@type": "Organization",
+                  "@id": `${SITE_URL}/#organization`,
+                  name: "Jesus Christ Temple Ministry",
+                  alternateName: "Temple TV",
+                  url: SITE_URL,
+                  logo: {
+                    "@type": "ImageObject",
+                    url: `${SITE_URL}/icon-512.png`,
+                    width: 512,
+                    height: 512,
+                  },
+                  sameAs: [
+                    "https://www.youtube.com/channel/UCPFFvkE-KGpR37qJgvYriJg",
+                  ],
+                  description: DESCRIPTION,
+                },
+                {
+                  "@type": "WebSite",
+                  "@id": `${SITE_URL}/#website`,
+                  url: SITE_URL,
+                  name: "Temple TV",
+                  description: DESCRIPTION,
+                  publisher: { "@id": `${SITE_URL}/#organization` },
+                  inLanguage: "en",
+                  potentialAction: {
+                    "@type": "SearchAction",
+                    target: {
+                      "@type": "EntryPoint",
+                      urlTemplate: `${SITE_URL}/library?q={search_term_string}`,
+                    },
+                    "query-input": "required name=search_term_string",
+                  },
+                },
+                {
+                  "@type": "BroadcastService",
+                  "@id": `${SITE_URL}/#broadcast`,
+                  name: "Temple TV Live",
+                  broadcaster: { "@id": `${SITE_URL}/#organization` },
+                  broadcastDisplayName: "Temple TV",
+                  inLanguage: "en",
+                  videoFormat: "HD",
+                  url: SITE_URL,
+                },
+                {
+                  "@type": "MobileApplication",
+                  name: "Temple TV",
+                  operatingSystem: "iOS, Android, Web",
+                  applicationCategory: "LifestyleApplication",
+                  offers: {
+                    "@type": "Offer",
+                    price: "0",
+                    priceCurrency: "USD",
+                  },
+                },
               ],
-              description: DESCRIPTION,
             }),
           }}
         />

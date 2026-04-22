@@ -21,6 +21,7 @@ import { usePlayer } from "@/context/PlayerContext";
 import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
 import { checkBroadcastCurrent, type BroadcastCurrentResult } from "@/services/broadcast";
 import type { LoopMode, Sermon, SermonCategory } from "@/types";
+import { usePageSeo } from "@/hooks/usePageSeo";
 
 const PLACEHOLDER = require("@/assets/images/sermon-placeholder.png");
 
@@ -63,6 +64,22 @@ function fmtTimer(secs: number): string {
 }
 
 export default function RadioScreen() {
+  usePageSeo({
+    title: "Temple TV Radio — Audio Sermons & Worship 24/7",
+    description:
+      "Listen to Temple TV sermons and worship as a continuous radio stream. Background playback, sleep timer, and audio-only mode for low-bandwidth listening.",
+    path: "/radio",
+    structuredData: {
+      "@context": "https://schema.org",
+      "@type": "RadioStation",
+      name: "Temple TV Radio",
+      description: "24/7 Christian audio sermons and worship from Jesus Christ Temple Ministry.",
+      broadcastFrequency: "Online streaming",
+      url: "https://templetv.org.ng/radio",
+      sameAs: ["https://templetv.org.ng/"],
+    },
+  });
+
   const c = useColors();
   const insets = useSafeAreaInsets();
   const {

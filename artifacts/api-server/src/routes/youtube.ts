@@ -326,7 +326,7 @@ async function pollLiveStatus() {
 pollLiveStatus();
 startSSEHeartbeat();
 
-interface VideoItem {
+export interface VideoItem {
   videoId: string;
   title: string;
   description: string;
@@ -335,6 +335,20 @@ interface VideoItem {
   channelName: string;
   duration: string;
   viewCount: string;
+}
+
+/**
+ * Returns the cached video catalogue if available, falling back to the
+ * in-memory stale cache. Designed for read-only consumers (e.g. sitemap
+ * generation) that should never trigger a YouTube API fetch on the hot path.
+ */
+export async function getCachedVideosForSeo(): Promise<VideoItem[]> {
+  const cached = await cache.get<VideoItem[]>(YOUTUBE_VIDEOS_CACHE_KEY);
+  if (cached && cached.length > 0) return cached;
+  if (_videosCacheFallback && _videosCacheFallback.videos.length > 0) {
+    return _videosCacheFallback.videos;
+  }
+  return [];
 }
 
 // In-memory fallback if Redis not available (cache module handles tier selection)
