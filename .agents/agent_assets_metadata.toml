@@ -36,8 +36,104 @@ uri = "file://screenshots/store-assets/app-icon-1024x1024.png"
 type = "image"
 title = "Temple TV app icon"
 
+[[generated]]
+id = "5vC8clEE_m65e0CccPn0I"
+uri = "file://artifacts/mobile/store-assets/icon-512x512.png"
+type = "image"
+title = "temple-tv-app-icon"
+
+[[generated]]
+id = "nvtsH9vkYATqYQaDTEXtc"
+uri = "file://artifacts/mobile/store-assets/feature-graphic-1024x500.png"
+type = "image"
+title = "temple-tv-feature-graphic"
+
+[[generated]]
+id = "DW-5cdd85kYmtyqS5GBNF"
+uri = "file://artifacts/mobile/store-assets/screenshots/01-home.png"
+type = "image"
+title = "screenshot-home"
+
+[[generated]]
+id = "4SGKR4_nfoCwPU7LtmeRq"
+uri = "file://artifacts/mobile/store-assets/screenshots/02-live-stream.png"
+type = "image"
+title = "screenshot-live"
+
+[[generated]]
+id = "LbwuVeVHfrkq8YgPVmjDi"
+uri = "file://artifacts/mobile/store-assets/screenshots/03-categories.png"
+type = "image"
+title = "screenshot-categories"
+
+[[generated]]
+id = "4qmvAUxGeHriFtE0rpD70"
+uri = "file://artifacts/mobile/store-assets/screenshots/04-sermon-detail.png"
+type = "image"
+title = "screenshot-sermon-detail"
+
+[[generated]]
+id = "6GnnpCx8DM_eRFgervM-X"
+uri = "file://artifacts/mobile/store-assets/screenshots/05-search.png"
+type = "image"
+title = "screenshot-search"
+
+[[generated]]
+id = "nrA7CwIhbCLBWOlZS-xHy"
+uri = "file://artifacts/mobile/store-assets/screenshots/06-video-player.png"
+type = "image"
+title = "screenshot-video-player"
+
 [[outputs]]
 id = "UPbzqm8if0zEfclLOZ34p"
 uri = "file://RELEASE_AUDIT.md"
 type = "text"
 title = "Temple TV — Production Release Audit"
+
+[[outputs]]
+id = "sZNyLCHJ2HUjlBqHs1pMi"
+uri = "file://artifacts/mobile/store-assets/icon-512x512.png"
+type = "image"
+title = "App Icon — 512×512 PNG"
+
+[[outputs]]
+id = "5gTEsMDJ9zazORsHyCSJ2"
+uri = "file://artifacts/mobile/store-assets/feature-graphic-1024x500.png"
+type = "image"
+title = "Feature Graphic — 1024×500 PNG"
+
+[[outputs]]
+id = "jcYDk3i0kAwOcC9A5gYwK"
+uri = "file://artifacts/mobile/store-assets/screenshots/01-home.png"
+type = "image"
+title = "Screenshot 1 — Home Screen"
+
+[[outputs]]
+id = "uuSZxUYxrLwDqF_YvGdWx"
+uri = "file://artifacts/mobile/store-assets/screenshots/02-live-stream.png"
+type = "image"
+title = "Screenshot 2 — Live Stream"
+
+[[outputs]]
+id = "jKaNfD-7xYr5YFLhi0XY2"
+uri = "file://artifacts/mobile/store-assets/screenshots/03-categories.png"
+type = "image"
+title = "Screenshot 3 — Categories"
+
+[[outputs]]
+id = "nIMsFR5Ul9qwsLZdBXV7U"
+uri = "file://artifacts/mobile/store-assets/screenshots/04-sermon-detail.png"
+type = "image"
+title = "Screenshot 4 — Sermon Detail"
+
+[[outputs]]
+id = "FeLmgWVJ4FJwDRVVH5atU"
+uri = "file://artifacts/mobile/store-assets/screenshots/05-search.png"
+type = "image"
+title = "Screenshot 5 — Search"
+
+[[outputs]]
+id = "SVdgCgG9PSAw4W9PtuZ6c"
+uri = "file://artifacts/mobile/store-assets/screenshots/06-video-player.png"
+type = "image"
+title = "Screenshot 6 — Video Player"

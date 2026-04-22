@@ -1,0 +1,107 @@
+You are a senior mobile app deployment engineer and UI/UX production designer.
+
+Your task is to prepare a complete Amazon Appstore submission package for a mobile application called “Temple TV”, a video streaming platform for faith-based and inspirational content.
+
+🎯 Objective
+
+Generate ALL required app store assets in production-ready form, including builds, branding assets, and store metadata.
+
+📦 Required Outputs
+1. 📱 Release Build
+Generate a production-ready Android release build
+Output:
+Signed APK (required)
+Optional AAB (Android App Bundle) if supported
+Ensure:
+Debug mode disabled
+App is optimized for release
+No console logs or development artifacts
+Proper versioning set (v1.0.0)
+2. 🎨 App Icon
+Create a high-resolution app icon
+Requirements:
+512x512 (Amazon standard)
+Transparent or solid background
+Modern, minimal, premium design
+Must reflect “Temple TV” branding (faith + streaming/media)
+Output formats:
+PNG (primary)
+SVG (source vector)
+3. 📸 Screenshots
+
+Generate Amazon Appstore-ready screenshots:
+
+6–8 high-quality screenshots
+Dimensions:
+Phone: 1080x1920 or higher
+Show:
+Home screen UI
+Video player interface
+Categories / playlists
+Live streaming section (if available)
+Search experience
+Clean modern UI flow
+Style:
+Realistic mobile mockups
+Clean UI presentation
+No placeholder lorem ipsum
+4. 🖼 Feature Graphic / Banner
+Create a feature banner image
+Size: 1024 x 500 px
+Must include:
+“Temple TV” branding
+Tagline: “Anywhere You Go, Stay Connected to Faith”
+Modern cinematic design
+Streaming/media visual theme
+Output: PNG (high quality)
+5. 🔒 Privacy Policy URL
+
+Generate a professional privacy policy page and provide:
+
+A deployable HTML page OR markdown version ready for hosting
+Include:
+Data collection explanation
+No misuse of user data statement
+Contact email: templedeveloper@jctm.org.ng
+Provide a deploy-ready URL structure suggestion like:
+https://jctm.org.ng/privacy-policy
+6. 📝 App Description (Amazon Listing Optimized)
+
+Write a high-conversion Amazon Appstore description including:
+
+App overview
+Key features:
+Live streaming
+On-demand videos
+Clean UI experience
+Cross-device access
+Benefits for users
+SEO optimized keywords:
+faith streaming app
+gospel TV
+Christian video platform
+inspirational media app
+Tone:
+Professional, modern, and engaging
+Length:
+1500–3000 characters
+⚙️ Technical Constraints
+Ensure all assets are production-ready
+Maintain consistent branding across all outputs
+Follow Amazon Appstore compliance standards
+Optimize for mobile performance and clarity
+No placeholder or incomplete assets allowed
+🚀 Final Output Format
+
+Return outputs in clearly separated sections:
+
+APK/AAB Build Instructions + Output Path
+App Icon (downloadable files)
+Screenshots (with descriptions)
+Feature Graphic (downloadable)
+Privacy Policy (HTML + URL suggestion)
+App Description (final store-ready text)
+
+UI improvements for Temple TV
+Improve branding consistency
+Optimize for Amazon ranking (ASO)
