@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { randomUUID } from "crypto";
 import { db, userFavoritesTable, userWatchHistoryTable } from "@workspace/db";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, gte } from "drizzle-orm";
 import { requireAuth } from "../middlewares/requireAuth";
 import { z } from "zod";
 
@@ -124,6 +124,32 @@ router.post("/user/history", requireAuth, async (req, res) => {
   }
 
   res.json({ success: true });
+});
+
+router.get("/user/continue-watching", requireAuth, async (req, res) => {
+  const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
+  const rows = await db
+    .select()
+    .from(userWatchHistoryTable)
+    .where(
+      and(
+        eq(userWatchHistoryTable.userId, req.user!.id),
+        gte(userWatchHistoryTable.progressSecs, 30),
+      ),
+    )
+    .orderBy(desc(userWatchHistoryTable.watchedAt))
+    .limit(limit);
+
+  res.json({
+    items: rows.map((r) => ({
+      videoId: r.videoId,
+      videoTitle: r.videoTitle,
+      videoThumbnail: r.videoThumbnail,
+      videoCategory: r.videoCategory,
+      progressSecs: r.progressSecs,
+      watchedAt: r.watchedAt,
+    })),
+  });
 });
 
 router.delete("/user/history", requireAuth, async (req, res) => {

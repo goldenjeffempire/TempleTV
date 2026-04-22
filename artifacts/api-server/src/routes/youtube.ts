@@ -708,6 +708,73 @@ router.get("/youtube/live/status", (_req, res) => {
   });
 });
 
+router.post("/admin/youtube/sync", async (req, res) => {
+  if (!YOUTUBE_API_KEY) {
+    res.status(503).json({ error: "youtube_api_key_missing" });
+    return;
+  }
+  const startedAt = Date.now();
+  logger.info("admin-triggered YouTube channel re-sync started");
+
+  try {
+    const fresh = await fetchAllVideosFromApi();
+    if (!fresh) {
+      res.status(502).json({ error: "youtube_api_unavailable" });
+      return;
+    }
+
+    const { db, videosTable } = await import("@workspace/db");
+    const { sql } = await import("drizzle-orm");
+    const { randomUUID } = await import("crypto");
+
+    let inserted = 0;
+    let updated = 0;
+    for (const v of fresh) {
+      // xmax = 0 in RETURNING reliably distinguishes INSERT from UPDATE in
+      // Postgres ON CONFLICT (xmax is set to the locking xact for an updated
+      // row, 0 for a freshly-inserted one).
+      const result = await db
+        .insert(videosTable)
+        .values({
+          id: randomUUID(),
+          youtubeId: v.videoId,
+          title: v.title,
+          description: v.description ?? "",
+          thumbnailUrl: v.thumbnailUrl ?? "",
+          duration: v.duration ?? "",
+          category: "sermon",
+          preacher: "",
+          publishedAt: v.publishedAt ?? null,
+          viewCount: Number(v.viewCount) || 0,
+          featured: false,
+          videoSource: "youtube",
+        })
+        .onConflictDoUpdate({
+          target: videosTable.youtubeId,
+          set: {
+            title: v.title,
+            description: v.description ?? "",
+            thumbnailUrl: v.thumbnailUrl ?? "",
+            duration: v.duration ?? "",
+            publishedAt: v.publishedAt ?? null,
+            viewCount: sql`GREATEST(${videosTable.viewCount}, ${Number(v.viewCount) || 0})`,
+          },
+        })
+        .returning({ id: videosTable.id, wasInsert: sql<boolean>`xmax = 0` });
+
+      if (result[0]?.wasInsert) inserted += 1;
+      else updated += 1;
+    }
+
+    const elapsedMs = Date.now() - startedAt;
+    logger.info({ total: fresh.length, inserted, updated, elapsedMs }, "YouTube channel re-sync complete");
+    res.json({ ok: true, total: fresh.length, inserted, updated, elapsedMs });
+  } catch (err) {
+    logger.error({ err }, "YouTube channel re-sync failed");
+    res.status(500).json({ error: "sync_failed" });
+  }
+});
+
 router.get("/youtube/live/events", (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");

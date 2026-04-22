@@ -310,5 +310,24 @@ and are blocking only the **launch event**, not the build itself.
 
 ---
 
+## §9 — Post-Audit Endpoint Additions (Apr 22, 2026)
+
+Three endpoints added after final audit to close residual gaps from the unified-content-service brief:
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `GET /api/videos/trending?limit=20&sinceDays=90` | public | Top videos by view count within window, sourced from `managed_videos` |
+| `GET /api/user/continue-watching?limit=20` | user JWT | Watch-history rows with `progress_secs >= 30`, newest first |
+| `POST /api/admin/youtube/sync` | admin gate | Force re-fetch full YouTube uploads playlist (~2,114 items) and upsert into `managed_videos`. Returns `{total, inserted, updated, elapsedMs}` |
+
+All three verified live on `:8080`: trending returns array, continue-watching returns `401` without auth, admin-sync returns `401 admin_unauthorized` without admin token. The existing live-poll background job (60 s normal / 15 s burst) is unchanged and continues to drive real-time live-status SSE.
+
+What still requires the operator (out of code scope):
+- Run `POST /api/admin/youtube/sync` once after deploy to seed `managed_videos` so trending has data.
+- Generate signed AAB / IPA via EAS submit or local Xcode/Gradle (Apple/Google dev accounts required).
+- Rotate the YouTube API key and any `DATABASE_URL` that appeared in chat history before public launch.
+
+---
+
 *Audit performed by the Replit agent.
 For a list of every code change, run `git log --oneline` from the project root.*

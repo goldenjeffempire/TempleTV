@@ -1433,6 +1433,41 @@ router.post("/videos/:youtubeId/view", async (req, res) => {
   }
 });
 
+router.get("/videos/trending", async (req, res) => {
+  try {
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
+    const sinceDays = Math.min(365, Math.max(1, Number(req.query.sinceDays) || 90));
+    const sinceDate = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000);
+
+    const videos = await db
+      .select()
+      .from(videosTable)
+      .where(sql`${videosTable.importedAt} >= ${sinceDate.toISOString()}`)
+      .orderBy(desc(videosTable.viewCount), desc(videosTable.importedAt))
+      .limit(limit);
+
+    res.json(videos.map((v) => ({
+      id: v.id,
+      youtubeId: v.youtubeId,
+      title: v.title,
+      description: v.description,
+      thumbnailUrl: v.thumbnailUrl,
+      duration: v.duration,
+      category: v.category,
+      preacher: v.preacher,
+      publishedAt: v.publishedAt,
+      views: v.viewCount,
+      videoSource: v.videoSource,
+      localVideoUrl: v.localVideoUrl,
+      hlsMasterUrl: v.hlsMasterUrl,
+      transcodingStatus: v.transcodingStatus,
+    })));
+  } catch (err) {
+    logger.error({ err }, "/videos/trending failed");
+    res.status(500).json({ error: "internal_error" });
+  }
+});
+
 router.get("/videos/featured", async (req, res) => {
   try {
     const videos = await db
