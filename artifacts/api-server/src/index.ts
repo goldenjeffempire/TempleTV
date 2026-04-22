@@ -4,6 +4,7 @@ import { logger } from "./lib/logger";
 import { resumePendingJobsOnStartup } from "./lib/transcoder";
 import { startNotificationScheduler } from "./lib/notification-scheduler";
 import { startSSEHeartbeat, closeAllSSEClients } from "./lib/liveEvents";
+import { startYoutubeCatalogueScheduler } from "./routes/youtube";
 
 const REQUIRED_ENV_VARS = ["DATABASE_URL", "JWT_SECRET"] as const;
 
@@ -40,6 +41,7 @@ server.listen(port, "0.0.0.0", () => {
 
   startNotificationScheduler();
   startSSEHeartbeat();
+  startYoutubeCatalogueScheduler();
 });
 
 server.on("error", (err) => {

@@ -219,7 +219,7 @@ export default function Videos() {
     const newUrl = `${window.location.pathname}${params.toString() ? "?" + params.toString() : ""}`;
     window.history.replaceState(null, "", newUrl);
   }, []);
-  const { data, isLoading } = useListAdminVideos({ search, limit: 50 });
+  const { data, isLoading, isError, refetch } = useListAdminVideos({ search, limit: 50 });
   const [isImporting, setIsImporting] = useState(false);
   const [importUrl, setImportUrl] = useState("");
   const [editingVideo, setEditingVideo] = useState<VideoRow | null>(null);
@@ -934,7 +934,16 @@ export default function Videos() {
               </div>
             ))}
           </div>
-        ) : data?.videos.length === 0 ? (
+        ) : isError ? (
+          <div className="p-12 text-center flex flex-col items-center gap-3">
+            <Video className="h-12 w-12 opacity-20" />
+            <p className="text-lg font-medium text-destructive">Couldn't load videos</p>
+            <p className="text-sm text-muted-foreground max-w-sm">
+              The video library endpoint returned an error. Please try again.
+            </p>
+            <Button variant="outline" size="sm" onClick={() => refetch()}>Retry</Button>
+          </div>
+        ) : !data?.videos || data.videos.length === 0 ? (
           <div className="p-12 text-center text-muted-foreground flex flex-col items-center">
             <Video className="h-12 w-12 mb-4 opacity-20" />
             <p className="text-lg font-medium text-foreground">No videos found</p>
@@ -942,7 +951,7 @@ export default function Videos() {
           </div>
         ) : (
           <div className="divide-y">
-            {(data?.videos as unknown as VideoRow[]).map((video: VideoRow) => {
+            {(data.videos as unknown as VideoRow[]).map((video: VideoRow) => {
               const v = video;
               const isLocal = v.videoSource === "local";
               return (

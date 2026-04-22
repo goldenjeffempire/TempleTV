@@ -708,32 +708,140 @@ router.get("/youtube/live/status", (_req, res) => {
   });
 });
 
-router.post("/admin/youtube/sync", async (req, res) => {
-  if (!YOUTUBE_API_KEY) {
-    res.status(503).json({ error: "youtube_api_key_missing" });
-    return;
+// ---------------------------------------------------------------------------
+// Automatic YouTube channel catalogue sync
+// ---------------------------------------------------------------------------
+// Strategy:
+//  1. On server boot run one sync immediately (warmup).
+//  2. On warmup we seed the "known video IDs" set from whatever the YouTube
+//     API returns so we DON'T spam every legacy video as a "new upload" push.
+//  3. Every CATALOGUE_SYNC_INTERVAL_MS thereafter, refresh and detect any
+//     IDs not in the set as freshly-uploaded → log + send a push.
+//  4. The same routine is reused by the admin-triggered POST endpoint, but
+//     callers from the endpoint pass `notifyOnNew=false` (avoid duplicates).
+// ---------------------------------------------------------------------------
+const CATALOGUE_SYNC_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+const knownVideoIds = new Set<string>();
+let catalogueWarmupComplete = false;
+let catalogueSyncTimer: ReturnType<typeof setTimeout> | null = null;
+let lastCatalogueSyncAt = 0;
+let lastCatalogueSyncResult: {
+  ok: boolean;
+  total?: number;
+  inserted?: number;
+  updated?: number;
+  newVideoIds?: string[];
+  error?: string;
+  elapsedMs?: number;
+  at: number;
+} | null = null;
+
+export function getCatalogueSyncStatus() {
+  return {
+    lastRunAt: lastCatalogueSyncAt,
+    intervalMs: CATALOGUE_SYNC_INTERVAL_MS,
+    knownVideoCount: knownVideoIds.size,
+    warmupComplete: catalogueWarmupComplete,
+    lastResult: lastCatalogueSyncResult,
+  };
+}
+
+async function sendNewVideoNotification(video: VideoItem) {
+  try {
+    const tokenRows = await db.select({ token: pushTokensTable.token }).from(pushTokensTable);
+    const tokens = tokenRows.map((r) => r.token);
+    if (tokens.length === 0) return;
+
+    const messages = tokens.map((token) => ({
+      to: token,
+      title: "🆕 New on Temple TV",
+      body: video.title,
+      sound: "default",
+      data: { type: "video", videoId: video.videoId },
+    }));
+
+    let sent = 0;
+    const CHUNK_SIZE = 100;
+    for (let i = 0; i < messages.length; i += CHUNK_SIZE) {
+      const chunk = messages.slice(i, i + CHUNK_SIZE);
+      try {
+        const res = await fetch(EXPO_PUSH_API, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify(chunk),
+          signal: AbortSignal.timeout(15000),
+        });
+        if (res.ok) {
+          const result = (await res.json()) as { data?: Array<{ status: string }> };
+          for (const s of result.data ?? []) if (s.status === "ok") sent++;
+        }
+      } catch {
+        // ignore per-chunk failure; continue to next chunk
+      }
+    }
+
+    await db.insert(notificationsTable).values({
+      id: randomUUID(),
+      title: "New on Temple TV",
+      body: video.title,
+      type: "video",
+      videoId: video.videoId,
+      sentCount: sent,
+    });
+
+    logger.info({ videoId: video.videoId, sent }, "[YouTubeSync] New-video notification sent");
+  } catch (err) {
+    logger.error({ err }, "[YouTubeSync] Failed to send new-video notification");
   }
+}
+
+export async function runYoutubeCatalogueSync(opts: { notifyOnNew?: boolean } = {}): Promise<{
+  ok: boolean;
+  total?: number;
+  inserted?: number;
+  updated?: number;
+  newVideoIds?: string[];
+  error?: string;
+  elapsedMs?: number;
+}> {
   const startedAt = Date.now();
-  logger.info("admin-triggered YouTube channel re-sync started");
+  if (!YOUTUBE_API_KEY) {
+    const result = { ok: false, error: "youtube_api_key_missing", elapsedMs: 0 };
+    lastCatalogueSyncAt = startedAt;
+    lastCatalogueSyncResult = { ...result, at: startedAt };
+    return result;
+  }
 
   try {
     const fresh = await fetchAllVideosFromApi();
-    if (!fresh) {
-      res.status(502).json({ error: "youtube_api_unavailable" });
-      return;
+    if (!fresh || fresh.length === 0) {
+      const result = { ok: false, error: "youtube_api_unavailable", elapsedMs: Date.now() - startedAt };
+      lastCatalogueSyncAt = startedAt;
+      lastCatalogueSyncResult = { ...result, at: startedAt };
+      return result;
     }
 
-    const { db, videosTable } = await import("@workspace/db");
+    // Refresh in-memory + redis cache so /youtube/videos serves fast.
+    await cache.set(YOUTUBE_VIDEOS_CACHE_KEY, fresh, CACHE_TTL_MS);
+    _videosCacheFallback = { videos: fresh, timestamp: Date.now() };
+
+    // Detect new videos relative to the in-memory known-set.
+    const newVideos: VideoItem[] = [];
+    if (catalogueWarmupComplete) {
+      for (const v of fresh) {
+        if (!knownVideoIds.has(v.videoId)) newVideos.push(v);
+      }
+    }
+    for (const v of fresh) knownVideoIds.add(v.videoId);
+
+    // Persist to DB so other surfaces (admin/videos table) reflect channel state.
+    const { db: dbInstance, videosTable } = await import("@workspace/db");
     const { sql } = await import("drizzle-orm");
-    const { randomUUID } = await import("crypto");
 
     let inserted = 0;
     let updated = 0;
     for (const v of fresh) {
-      // xmax = 0 in RETURNING reliably distinguishes INSERT from UPDATE in
-      // Postgres ON CONFLICT (xmax is set to the locking xact for an updated
-      // row, 0 for a freshly-inserted one).
-      const result = await db
+      const result = await dbInstance
         .insert(videosTable)
         .values({
           id: randomUUID(),
@@ -766,13 +874,69 @@ router.post("/admin/youtube/sync", async (req, res) => {
       else updated += 1;
     }
 
+    if (!catalogueWarmupComplete) {
+      catalogueWarmupComplete = true;
+      logger.info({ totalSeeded: fresh.length }, "[YouTubeSync] Warmup complete (no notifications sent for seed)");
+    } else if (opts.notifyOnNew && newVideos.length > 0) {
+      // To avoid spamming, push notifications only for up to the 3 most recent new uploads.
+      const sorted = [...newVideos].sort(
+        (a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime(),
+      );
+      for (const v of sorted.slice(0, 3)) {
+        await sendNewVideoNotification(v);
+      }
+    }
+
     const elapsedMs = Date.now() - startedAt;
-    logger.info({ total: fresh.length, inserted, updated, elapsedMs }, "YouTube channel re-sync complete");
-    res.json({ ok: true, total: fresh.length, inserted, updated, elapsedMs });
+    const summary = {
+      ok: true as const,
+      total: fresh.length,
+      inserted,
+      updated,
+      newVideoIds: newVideos.map((v) => v.videoId),
+      elapsedMs,
+    };
+    lastCatalogueSyncAt = startedAt;
+    lastCatalogueSyncResult = { ...summary, at: startedAt };
+    logger.info(summary, "[YouTubeSync] Catalogue sync complete");
+    return summary;
   } catch (err) {
-    logger.error({ err }, "YouTube channel re-sync failed");
-    res.status(500).json({ error: "sync_failed" });
+    const elapsedMs = Date.now() - startedAt;
+    logger.error({ err, elapsedMs }, "[YouTubeSync] Catalogue sync failed");
+    const result = { ok: false, error: "sync_failed", elapsedMs };
+    lastCatalogueSyncAt = startedAt;
+    lastCatalogueSyncResult = { ...result, at: startedAt };
+    return result;
   }
+}
+
+export function startYoutubeCatalogueScheduler() {
+  const tick = async () => {
+    try {
+      await runYoutubeCatalogueSync({ notifyOnNew: true });
+    } catch (err) {
+      logger.error({ err }, "[YouTubeSync] Scheduled tick crashed");
+    }
+    catalogueSyncTimer = setTimeout(tick, CATALOGUE_SYNC_INTERVAL_MS);
+  };
+  // Kick off first run immediately on startup; subsequent runs every interval.
+  if (catalogueSyncTimer) clearTimeout(catalogueSyncTimer);
+  catalogueSyncTimer = setTimeout(tick, 0);
+  logger.info({ intervalMs: CATALOGUE_SYNC_INTERVAL_MS }, "[YouTubeSync] Scheduler started");
+}
+
+router.post("/admin/youtube/sync", async (req, res) => {
+  const result = await runYoutubeCatalogueSync({ notifyOnNew: false });
+  if (!result.ok) {
+    const status = result.error === "youtube_api_key_missing" ? 503 : 502;
+    res.status(status).json(result);
+    return;
+  }
+  res.json(result);
+});
+
+router.get("/admin/youtube/sync/status", (_req, res) => {
+  res.json(getCatalogueSyncStatus());
 });
 
 router.get("/youtube/live/events", (req, res) => {
