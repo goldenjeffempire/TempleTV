@@ -6,8 +6,15 @@ interface PlayerProps {
   onBack: () => void;
 }
 
-const LOAD_TIMEOUT_MS = 12_000;
-const MAX_AUTO_RETRIES = 2;
+// Tightened from 12s to 8s — Smart-TV users notice anything over ~6s as
+// "broken." If the iframe hasn't reported load by 8s we already know we
+// need to retry from a different network path.
+const LOAD_TIMEOUT_MS = 8_000;
+const MAX_AUTO_RETRIES = 3;
+// Exponential backoff between auto-retries (ms). The first retry fires
+// almost immediately to recover from a single dropped TLS handshake;
+// later retries space out so we don't hammer the YouTube edge.
+const RETRY_BACKOFF_MS = [400, 1500, 4000];
 
 export function Player({ videoId, title, onBack }: PlayerProps) {
   const [showControls, setShowControls] = useState(true);
@@ -17,6 +24,11 @@ export function Player({ videoId, title, onBack }: PlayerProps) {
   const [isLoaded, setIsLoaded] = useState(false);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Tracks the deferred remount inside the watchdog so we can cancel it
+  // if the user navigates away or the videoId changes mid-backoff.
+  // Without this, a stray retry can fire after teardown and trigger a
+  // ghost iframe remount on the next page.
+  const retryRemountTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const resetHideTimer = () => {
     if (hideTimer.current) clearTimeout(hideTimer.current);
@@ -25,15 +37,23 @@ export function Player({ videoId, title, onBack }: PlayerProps) {
   };
 
   // Watchdog: if iframe never reports load within timeout, treat as failed
+  // and schedule the next retry with exponential backoff.
   useEffect(() => {
     setIsLoaded(false);
     setLoadError(null);
     if (loadTimer.current) clearTimeout(loadTimer.current);
+    if (retryRemountTimer.current) clearTimeout(retryRemountTimer.current);
     loadTimer.current = setTimeout(() => {
       if (!isLoaded) {
         if (autoRetries < MAX_AUTO_RETRIES) {
+          const nextDelay = RETRY_BACKOFF_MS[autoRetries] ?? 4000;
           setAutoRetries((n) => n + 1);
-          setRetryKey((k) => k + 1);
+          // Brief pause before remount so the previous iframe fully tears
+          // down. Tracked in a ref so unmount/videoId-change cancels it.
+          retryRemountTimer.current = setTimeout(
+            () => setRetryKey((k) => k + 1),
+            nextDelay,
+          );
         } else {
           setLoadError(
             "We couldn't start playback. Please check the connection and try again.",
@@ -44,9 +64,23 @@ export function Player({ videoId, title, onBack }: PlayerProps) {
 
     return () => {
       if (loadTimer.current) clearTimeout(loadTimer.current);
+      if (retryRemountTimer.current) clearTimeout(retryRemountTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [retryKey, videoId]);
+
+  // Auto-recover when the TV regains its network connection.
+  useEffect(() => {
+    const handleOnline = () => {
+      if (loadError) {
+        setAutoRetries(0);
+        setLoadError(null);
+        setRetryKey((k) => k + 1);
+      }
+    };
+    window.addEventListener("online", handleOnline);
+    return () => window.removeEventListener("online", handleOnline);
+  }, [loadError]);
 
   useEffect(() => {
     resetHideTimer();

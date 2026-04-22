@@ -12,6 +12,17 @@
     <meta name="googlebot" content="index, follow, max-image-preview:large" />
     <link rel="canonical" href="https://tv.templetv.org.ng/" />
 
+    <!-- Preconnect to YouTube edge so the embedded player is ready before
+         the user picks a sermon. Big win on Smart-TV CPUs which have
+         slow TLS handshakes. -->
+    <link rel="preconnect" href="https://www.youtube-nocookie.com" crossorigin />
+    <link rel="preconnect" href="https://www.youtube.com" crossorigin />
+    <link rel="preconnect" href="https://i.ytimg.com" crossorigin />
+    <link rel="preconnect" href="https://s.ytimg.com" crossorigin />
+    <link rel="dns-prefetch" href="https://www.youtube-nocookie.com" />
+    <link rel="dns-prefetch" href="https://i.ytimg.com" />
+    <link rel="dns-prefetch" href="https://googlevideo.com" />
+
     <meta name="theme-color" content="#000000" />
     <meta name="application-name" content="Temple TV" />
     <meta name="format-detection" content="telephone=no" />

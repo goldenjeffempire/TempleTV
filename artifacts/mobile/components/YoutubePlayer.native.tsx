@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
+  AppState,
+  type AppStateStatus,
   Image,
   Linking,
   Platform,
@@ -184,6 +186,9 @@ export function YoutubePlayer({
   const [playerError, setPlayerError] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
   const [activeVideoId, setActiveVideoId] = useState(videoId);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastBackgroundedAtRef = useRef<number>(0);
+  const wasPlayingOnBackgroundRef = useRef<boolean>(false);
   const transitionOpacity = useRef(new Animated.Value(0)).current;
   const isMountedRef = useRef(true);
   const playerRef = useRef<any>(null);
@@ -195,8 +200,54 @@ export function YoutubePlayer({
     return () => {
       isMountedRef.current = false;
       if (tickRef.current) clearInterval(tickRef.current);
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
     };
   }, []);
+
+  // AppState recovery: when the app returns from background after a long
+  // period (>30s), the YouTube WebView can lose its connection silently.
+  // Capture the user's position BEFORE background so we can resume there,
+  // then nudge play. Critically: never seek to 0 — that would restart a
+  // 90-minute sermon on a brief context switch.
+  const lastKnownPositionRef = useRef<number>(0);
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", async (next: AppStateStatus) => {
+      if (!isMountedRef.current) return;
+      if (next === "background" || next === "inactive") {
+        lastBackgroundedAtRef.current = Date.now();
+        wasPlayingOnBackgroundRef.current = playing;
+        // Snapshot the current position so we can restore it on resume.
+        try {
+          const t = await playerRef.current?.getCurrentTime?.();
+          if (typeof t === "number" && t > 0) lastKnownPositionRef.current = t;
+        } catch {}
+      } else if (next === "active") {
+        const downtime = Date.now() - lastBackgroundedAtRef.current;
+        if (downtime > 30000 && wasPlayingOnBackgroundRef.current && activeVideoId) {
+          // First try a soft nudge (set playing). If the player is healthy
+          // it resumes from where YT stopped it. Only seek-back if our
+          // snapshot diverges meaningfully from current time (e.g. WebView
+          // reloaded mid-suspend and lost position).
+          setTimeout(async () => {
+            if (!isMountedRef.current) return;
+            setPlaying(true);
+            try {
+              const nowT = await playerRef.current?.getCurrentTime?.();
+              const saved = lastKnownPositionRef.current;
+              if (
+                typeof nowT === "number" &&
+                saved > 0 &&
+                Math.abs(nowT - saved) > 5
+              ) {
+                playerRef.current?.seekTo?.(saved, true);
+              }
+            } catch {}
+          }, 250);
+        }
+      }
+    });
+    return () => sub.remove();
+  }, [playing, activeVideoId]);
 
   useEffect(() => {
     // Compare-and-swap: each instance owns the refs it set. On unmount,
@@ -326,15 +377,22 @@ export function YoutubePlayer({
     }
   };
 
+  // Exponential backoff: 600ms, 1.5s, 3s, 6s. Bounded at 4 attempts so a
+  // permanently broken video surfaces a hard-error UI quickly with an
+  // "Open on YouTube" fallback. Real network blips usually recover by
+  // attempt 2; the longer tail covers cell-tower handoffs.
   const handlePlayerError = useCallback(() => {
     if (!isMountedRef.current) return;
-    if (retryCount < 2) {
+    const RETRY_DELAYS = [600, 1500, 3000, 6000];
+    if (retryCount < RETRY_DELAYS.length) {
+      const delay = RETRY_DELAYS[retryCount];
       setRetryCount((count) => count + 1);
       setPlayerReady(false);
       setPlaying(false);
-      setTimeout(() => {
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = setTimeout(() => {
         if (isMountedRef.current) setPlaying(true);
-      }, 900);
+      }, delay);
       return;
     }
     setPlayerError(true);

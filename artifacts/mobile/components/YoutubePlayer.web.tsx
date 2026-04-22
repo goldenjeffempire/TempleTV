@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Linking,
   Platform,
   Pressable,
   StyleSheet,
@@ -18,11 +19,40 @@ declare global {
     onYouTubeIframeAPIReady: (() => void) | undefined;
     __ytApiReady: boolean;
     __ytApiCallbacks: Array<() => void>;
+    __ttPreconnected: boolean;
+  }
+}
+
+// One-shot preconnect / DNS-prefetch to YouTube edge domains so the iframe
+// kicks off TLS + DNS work in parallel with our JS bundle. Saves 100-300ms
+// on cold loads, and is a no-op once injected. Idempotent across mounts.
+function ensurePreconnect() {
+  if (typeof document === "undefined") return;
+  if (window.__ttPreconnected) return;
+  window.__ttPreconnected = true;
+  const hosts = [
+    "https://www.youtube-nocookie.com",
+    "https://www.youtube.com",
+    "https://i.ytimg.com",
+    "https://s.ytimg.com",
+    "https://yt3.ggpht.com",
+  ];
+  for (const href of hosts) {
+    const pre = document.createElement("link");
+    pre.rel = "preconnect";
+    pre.href = href;
+    pre.crossOrigin = "anonymous";
+    document.head.appendChild(pre);
+    const dns = document.createElement("link");
+    dns.rel = "dns-prefetch";
+    dns.href = href;
+    document.head.appendChild(dns);
   }
 }
 
 function loadYTApi(): Promise<void> {
   return new Promise((resolve) => {
+    if (typeof window === "undefined") { resolve(); return; }
     if (window.__ytApiReady) { resolve(); return; }
     if (!window.__ytApiCallbacks) window.__ytApiCallbacks = [];
     window.__ytApiCallbacks.push(resolve);
@@ -36,6 +66,7 @@ function loadYTApi(): Promise<void> {
       };
       const tag = document.createElement("script");
       tag.src = "https://www.youtube.com/iframe_api";
+      tag.async = true;
       document.head.appendChild(tag);
     }
   });
@@ -58,6 +89,14 @@ interface YoutubePlayerProps {
   onToggleAudioMode?: () => void;
 }
 
+// Exponential-backoff retry schedule (ms). Capped at 4 attempts so a permanently
+// broken video doesn't burn CPU forever. Real network blips usually recover
+// inside the first 2 attempts; the longer tail covers DNS / cell-tower flips.
+const RETRY_BACKOFF_MS = [800, 2000, 4000, 8000];
+// If currentTime fails to advance for this long while we believe playback is
+// active, treat it as a stall and try to nudge the player.
+const STALL_THRESHOLD_MS = 8000;
+
 export function YoutubePlayer({
   videoId,
   isLive,
@@ -78,26 +117,36 @@ export function YoutubePlayer({
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isMountedRef = useRef(true);
   const currentVideoIdRef = useRef(videoId);
+  const retryCountRef = useRef(0);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastTickTimeRef = useRef<number>(0);
+  const lastTickAtRef = useRef<number>(0);
+  const stallNudgesRef = useRef(0);
+  const isLogicallyPlayingRef = useRef(false);
+  // Tracks YT.PlayerState.BUFFERING separately from PLAYING so the stall
+  // watchdog can't false-positive on a long, legitimate buffer (slow 3G,
+  // ad insertion, quality renegotiation). Real stalls only count when YT
+  // *thinks* it's playing but currentTime hasn't advanced.
+  const isBufferingRef = useRef(false);
+  const wasPlayingBeforeOfflineRef = useRef(false);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
+  const [error, setError] = useState<"network" | "playback" | null>(null);
+  const [reconnecting, setReconnecting] = useState(false);
 
   currentVideoIdRef.current = videoId;
+
+  // Preconnect to YouTube edge domains as early as possible.
+  useEffect(() => {
+    ensurePreconnect();
+  }, []);
 
   const stopTick = useCallback(() => {
     if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
   }, []);
 
-  const startTick = useCallback(() => {
-    stopTick();
-    tickRef.current = setInterval(() => {
-      if (!isMountedRef.current || !playerRef.current) return;
-      try {
-        const t = playerRef.current.getCurrentTime?.() ?? 0;
-        const d = playerRef.current.getDuration?.() ?? 0;
-        updatePlayback(t, d);
-      } catch { stopTick(); }
-    }, 500);
-  }, [stopTick, updatePlayback]);
+  const clearRetryTimer = useCallback(() => {
+    if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
+  }, []);
 
   // Owner-token refs so cleanup only clears refs THIS instance set.
   // Prevents the race where an unmounting player wipes the refs a newly
@@ -106,6 +155,49 @@ export function YoutubePlayer({
   const ownedPauseRef = useRef<(() => void) | null>(null);
   const ownedSeekRef = useRef<((t: number) => void) | null>(null);
   const ownedVolumeRef = useRef<((v: number) => void) | null>(null);
+
+  const startTick = useCallback(() => {
+    stopTick();
+    lastTickTimeRef.current = 0;
+    lastTickAtRef.current = Date.now();
+    stallNudgesRef.current = 0;
+    tickRef.current = setInterval(() => {
+      if (!isMountedRef.current || !playerRef.current) return;
+      // Pause progress polling while the tab is hidden — saves CPU and
+      // avoids running into browser timer-throttling oddities.
+      if (typeof document !== "undefined" && document.hidden) return;
+      try {
+        const t = playerRef.current.getCurrentTime?.() ?? 0;
+        const d = playerRef.current.getDuration?.() ?? 0;
+        updatePlayback(t, d);
+
+        // Stall watchdog: only trigger when YT thinks it's playing AND we
+        // think it's playing AND we are NOT in YT's buffering state AND
+        // time has truly frozen — never on live edge (duration keeps
+        // growing), never on buffering, never on PAUSED.
+        if (!isLive && isLogicallyPlayingRef.current && !isBufferingRef.current) {
+          const now = Date.now();
+          if (t > lastTickTimeRef.current + 0.05) {
+            lastTickTimeRef.current = t;
+            lastTickAtRef.current = now;
+          } else if (now - lastTickAtRef.current > STALL_THRESHOLD_MS) {
+            lastTickAtRef.current = now;
+            // Two soft nudges (re-issue play) before falling back to a
+            // hard reinit. Avoids flicker for transient micro-buffering.
+            if (stallNudgesRef.current < 2) {
+              stallNudgesRef.current += 1;
+              try { playerRef.current.playVideo?.(); } catch {}
+            } else {
+              stallNudgesRef.current = 0;
+              setReconnecting(true);
+              scheduleRetry("network");
+            }
+          }
+        }
+      } catch { stopTick(); }
+    }, 500);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stopTick, updatePlayback, isLive]);
 
   const registerPlayerRefs = useCallback((p: any) => {
     const playFn = () => { try { p.playVideo(); } catch {} };
@@ -132,25 +224,36 @@ export function YoutubePlayer({
       playerRef.current = null;
     }
 
-    const src = isLive
-      ? `https://www.youtube.com/embed/live_stream?channel=${JCTM_CHANNEL_ID}&autoplay=${autoPlay ? 1 : 0}&rel=0&modestbranding=1&enablejsapi=1`
-      : videoId
-        ? null
-        : null;
-
     if (!videoId && !isLive) { setLoading(false); return; }
 
     setLoading(true);
-    setError(false);
+    setError(null);
 
+    // Use youtube-nocookie.com for privacy + cookieless faster initial paint.
     if (isLive) {
+      const src =
+        `https://www.youtube-nocookie.com/embed/live_stream` +
+        `?channel=${JCTM_CHANNEL_ID}` +
+        `&autoplay=${autoPlay ? 1 : 0}` +
+        `&rel=0&modestbranding=1&playsinline=1&enablejsapi=1` +
+        `&origin=${encodeURIComponent(window.location.origin)}`;
       const iframe = document.createElement("iframe");
-      iframe.src = src!;
-      iframe.allow = "autoplay; encrypted-media; fullscreen; picture-in-picture";
+      iframe.src = src;
+      iframe.title = "Live broadcast";
+      iframe.allow = "autoplay; encrypted-media; fullscreen; picture-in-picture; accelerometer; gyroscope";
       iframe.allowFullscreen = true;
-      iframe.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;border:none;background:#000;";
-      iframe.onload = () => { if (isMountedRef.current) setLoading(false); };
-      iframe.onerror = () => { if (isMountedRef.current) setError(true); };
+      iframe.referrerPolicy = "strict-origin-when-cross-origin";
+      iframe.style.cssText =
+        "position:absolute;top:0;left:0;width:100%;height:100%;border:none;background:#000;display:block;";
+      iframe.onload = () => {
+        if (!isMountedRef.current) return;
+        setLoading(false);
+        setReconnecting(false);
+        retryCountRef.current = 0;
+      };
+      iframe.onerror = () => {
+        if (isMountedRef.current) scheduleRetry("network");
+      };
       el.innerHTML = "";
       el.appendChild(iframe);
       return;
@@ -158,6 +261,7 @@ export function YoutubePlayer({
 
     try {
       const p = new window.YT.Player(containerId.current, {
+        host: "https://www.youtube-nocookie.com",
         videoId,
         playerVars: {
           autoplay: autoPlay ? 1 : 0,
@@ -167,49 +271,106 @@ export function YoutubePlayer({
           origin: window.location.origin,
           enablejsapi: 1,
           fs: 1,
+          iv_load_policy: 3,
+          cc_load_policy: 0,
+          start: startPositionSecs && startPositionSecs > 0 ? Math.floor(startPositionSecs) : undefined,
         },
         events: {
           onReady: (e: any) => {
             if (!isMountedRef.current) return;
             playerRef.current = e.target;
             registerPlayerRefs(e.target);
-            e.target.setVolume(volume);
+            try { e.target.setVolume(volume); } catch {}
             setLoading(false);
+            setReconnecting(false);
+            retryCountRef.current = 0;
           },
           onStateChange: (e: any) => {
             if (!isMountedRef.current) return;
             const YT = window.YT;
             if (e.data === YT.PlayerState.ENDED) {
+              isLogicallyPlayingRef.current = false;
+              isBufferingRef.current = false;
               stopTick();
               onEnd?.();
             } else if (e.data === YT.PlayerState.PLAYING) {
+              isLogicallyPlayingRef.current = true;
+              isBufferingRef.current = false;
+              // Reset stall accounting on every transition into PLAYING so
+              // we never count "buffer time" as "stall time."
+              lastTickAtRef.current = Date.now();
+              stallNudgesRef.current = 0;
               startTick();
               onPlay?.();
             } else if (e.data === YT.PlayerState.PAUSED) {
+              isLogicallyPlayingRef.current = false;
+              isBufferingRef.current = false;
               stopTick();
               onPause?.();
             } else if (e.data === YT.PlayerState.BUFFERING) {
-              // keep ticking so progress bar updates
+              // Mark buffering so the watchdog stays quiet, and keep ticking
+              // so the progress bar still updates if the player advances.
+              isBufferingRef.current = true;
+              lastTickAtRef.current = Date.now();
             }
           },
-          onError: () => {
-            onError?.();
-            if (isMountedRef.current) { setError(true); setLoading(false); }
+          onError: (e: any) => {
+            // YT error codes: 2 invalid id, 5 HTML5, 100 not found,
+            // 101/150 embedding disabled. The first three are recoverable;
+            // the last two are not — surface them as playback errors.
+            const code = e?.data;
+            const recoverable = code === 2 || code === 5 || code === 100;
+            if (recoverable) {
+              scheduleRetry("network");
+            } else {
+              isLogicallyPlayingRef.current = false;
+              stopTick();
+              onError?.();
+              if (isMountedRef.current) { setError("playback"); setLoading(false); setReconnecting(false); }
+            }
           },
         },
       });
       playerRef.current = p;
     } catch (err) {
-      setError(true);
-      setLoading(false);
+      scheduleRetry("network");
     }
-  }, [videoId, isLive, autoPlay, volume, registerPlayerRefs, startTick, stopTick, onEnd, onError, onPlay, onPause]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoId, isLive, autoPlay, volume, registerPlayerRefs, startTick, stopTick, onEnd, onError, onPlay, onPause, startPositionSecs]);
+
+  // Exponential-backoff retry. Bounded; falls back to a hard error UI when
+  // exhausted so the user always has an actionable surface (Retry / Open on
+  // YouTube). Marked as 'any' to break the init/retry circular dep.
+  const scheduleRetry = useCallback((kind: "network" | "playback") => {
+    if (!isMountedRef.current) return;
+    clearRetryTimer();
+    const attempt = retryCountRef.current;
+    if (attempt >= RETRY_BACKOFF_MS.length) {
+      isLogicallyPlayingRef.current = false;
+      stopTick();
+      setError(kind);
+      setLoading(false);
+      setReconnecting(false);
+      onError?.();
+      return;
+    }
+    setReconnecting(true);
+    setError(null);
+    const delay = RETRY_BACKOFF_MS[attempt];
+    retryCountRef.current = attempt + 1;
+    retryTimerRef.current = setTimeout(() => {
+      if (!isMountedRef.current) return;
+      loadYTApi().then(() => { if (isMountedRef.current) initPlayer(); });
+    }, delay);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clearRetryTimer, stopTick, onError, initPlayer]);
 
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
       stopTick();
+      clearRetryTimer();
       if (playerRef.current) {
         try { playerRef.current.destroy(); } catch {}
         playerRef.current = null;
@@ -223,32 +384,114 @@ export function YoutubePlayer({
       ownedSeekRef.current = null;
       ownedVolumeRef.current = null;
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
+    retryCountRef.current = 0;
     if (isLive) { initPlayer(); return; }
     if (!videoId) return;
     loadYTApi().then(() => {
       if (isMountedRef.current) initPlayer();
     });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [videoId, isLive]);
 
-  const handleRetry = useCallback(() => {
-    setError(false);
+  // Network + visibility recovery. When the browser comes back online or
+  // the user returns to the tab after a long backgrounding, attempt to
+  // resume playback from where it stopped. This is what makes the player
+  // feel "always-on" like Netflix / YouTube web.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleOffline = () => {
+      wasPlayingBeforeOfflineRef.current = isLogicallyPlayingRef.current;
+      setReconnecting(true);
+    };
+    const handleOnline = () => {
+      if (!isMountedRef.current) return;
+      // If the player itself is healthy, just nudge it; otherwise re-init.
+      try {
+        if (playerRef.current?.getPlayerState && wasPlayingBeforeOfflineRef.current) {
+          playerRef.current.playVideo?.();
+          setReconnecting(false);
+        } else {
+          retryCountRef.current = 0;
+          loadYTApi().then(() => { if (isMountedRef.current) initPlayer(); });
+        }
+      } catch {
+        retryCountRef.current = 0;
+        loadYTApi().then(() => { if (isMountedRef.current) initPlayer(); });
+      }
+    };
+    const handleVisibility = () => {
+      if (typeof document === "undefined") return;
+      // Coming back to a foregrounded tab: reset the stall watchdog so the
+      // throttled background time doesn't trip a false-positive nudge.
+      if (!document.hidden) {
+        lastTickAtRef.current = Date.now();
+      }
+    };
+    window.addEventListener("offline", handleOffline);
+    window.addEventListener("online", handleOnline);
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      window.removeEventListener("offline", handleOffline);
+      window.removeEventListener("online", handleOnline);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleManualRetry = useCallback(() => {
+    retryCountRef.current = 0;
+    setError(null);
+    setReconnecting(true);
     loadYTApi().then(() => {
       if (isMountedRef.current) initPlayer();
     });
   }, [initPlayer]);
 
+  const handleOpenYouTube = useCallback(() => {
+    const url = videoId
+      ? `https://www.youtube.com/watch?v=${videoId}`
+      : `https://www.youtube.com/@${channelHandle}/live`;
+    if (Platform.OS === "web") {
+      window.open(url, "_blank", "noopener,noreferrer");
+    } else {
+      Linking.openURL(url).catch(() => {});
+    }
+  }, [videoId, channelHandle]);
+
   if (error) {
+    const heading = error === "network" ? "Connection lost" : "Playback unavailable";
+    const sub =
+      error === "network"
+        ? "We couldn't reach YouTube. Check your network and try again."
+        : "This video can't be embedded right now. You can still watch it on YouTube.";
     return (
-      <View style={[styles.container, { backgroundColor: "#0a0a0a" }]}>
-        <View style={styles.centeredOverlay}>
-          <Feather name="alert-circle" size={32} color={c.mutedForeground} />
-          <Text style={[styles.hintText, { color: c.mutedForeground }]}>Could not load player</Text>
-          <Pressable onPress={handleRetry} style={[styles.retryBtn, { backgroundColor: c.primary }]}>
-            <Text style={styles.retryText}>Retry</Text>
-          </Pressable>
+      <View style={styles.container}>
+        <View style={styles.errorOverlay}>
+          <View style={styles.errorIconWrap}>
+            <Feather name={error === "network" ? "wifi-off" : "alert-triangle"} size={28} color="#fff" />
+          </View>
+          <Text style={styles.errorHeading}>{heading}</Text>
+          <Text style={styles.errorSub}>{sub}</Text>
+          <View style={styles.errorBtnRow}>
+            <Pressable
+              onPress={handleManualRetry}
+              style={({ pressed }) => [styles.primaryBtn, { backgroundColor: c.primary, opacity: pressed ? 0.85 : 1 }]}
+            >
+              <Feather name="refresh-cw" size={14} color="#FFF" />
+              <Text style={styles.primaryBtnText}>Try again</Text>
+            </Pressable>
+            <Pressable
+              onPress={handleOpenYouTube}
+              style={({ pressed }) => [styles.secondaryBtn, { opacity: pressed ? 0.7 : 1 }]}
+            >
+              <Feather name="external-link" size={14} color="#FFF" />
+              <Text style={styles.secondaryBtnText}>Open on YouTube</Text>
+            </Pressable>
+          </View>
         </View>
       </View>
     );
@@ -261,11 +504,15 @@ export function YoutubePlayer({
         id={containerId.current}
         style={styles.playerInner}
       />
-      {loading && (
-        <View style={styles.loadingOverlay}>
-          {videoId && Platform.OS === "web"
+      {(loading || reconnecting) && (
+        <View style={styles.loadingOverlay} pointerEvents="none">
+          {videoId
             ? React.createElement("img", {
                 src: `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
+                onError: (e: any) => {
+                  // maxres doesn't exist for every video; fall back to hq.
+                  if (e?.currentTarget) e.currentTarget.src = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+                },
                 alt: "",
                 "aria-hidden": "true",
                 style: {
@@ -275,14 +522,20 @@ export function YoutubePlayer({
                   width: "100%",
                   height: "100%",
                   objectFit: "cover",
-                  filter: "brightness(0.55) blur(2px)",
+                  filter: "brightness(0.45) blur(6px)",
+                  transform: "scale(1.04)",
+                  transition: "opacity 300ms ease",
                 },
               })
             : null}
           <View style={styles.loadingCenter}>
-            <ActivityIndicator color={c.primary} size="large" />
-            <Text style={[styles.hintText, { color: "rgba(255,255,255,0.85)", letterSpacing: 1 }]}>
-              {isLive ? "Connecting to live stream…" : "Loading player…"}
+            <ActivityIndicator color="#fff" size="large" />
+            <Text style={styles.loadingText}>
+              {reconnecting
+                ? "Reconnecting…"
+                : isLive
+                  ? "Connecting to live stream…"
+                  : "Preparing playback"}
             </Text>
           </View>
         </View>
@@ -292,7 +545,7 @@ export function YoutubePlayer({
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#000" },
+  container: { flex: 1, backgroundColor: "#000", overflow: "hidden" },
   playerInner: { flex: 1, backgroundColor: "#000" },
   loadingOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -304,19 +557,69 @@ const styles = StyleSheet.create({
   loadingCenter: {
     alignItems: "center",
     justifyContent: "center",
-    gap: 10,
-    paddingHorizontal: 20,
-    paddingVertical: 14,
+    gap: 12,
+    paddingHorizontal: 24,
+    paddingVertical: 16,
     borderRadius: 14,
-    backgroundColor: "rgba(0,0,0,0.5)",
+    backgroundColor: "rgba(0,0,0,0.45)",
   },
-  centeredOverlay: {
+  loadingText: {
+    fontSize: 12,
+    fontFamily: "Inter_700Bold",
+    color: "rgba(255,255,255,0.85)",
+    letterSpacing: 2,
+    textTransform: "uppercase",
+  },
+  errorOverlay: {
     ...StyleSheet.absoluteFillObject,
+    backgroundColor: "#070707",
     alignItems: "center",
     justifyContent: "center",
-    gap: 12,
+    gap: 14,
+    paddingHorizontal: 28,
   },
-  hintText: { fontSize: 13, fontFamily: "Inter_400Regular" },
-  retryBtn: { paddingHorizontal: 20, paddingVertical: 10, borderRadius: 20, marginTop: 4 },
-  retryText: { color: "#FFF", fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  errorIconWrap: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 4,
+  },
+  errorHeading: {
+    fontSize: 20,
+    fontFamily: "Inter_700Bold",
+    color: "#fff",
+    textAlign: "center",
+  },
+  errorSub: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    color: "rgba(255,255,255,0.65)",
+    textAlign: "center",
+    maxWidth: 380,
+    lineHeight: 18,
+  },
+  errorBtnRow: { flexDirection: "row", gap: 10, marginTop: 8 },
+  primaryBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 18,
+    paddingVertical: 11,
+    borderRadius: 22,
+  },
+  primaryBtnText: { color: "#FFF", fontSize: 14, fontFamily: "Inter_700Bold" },
+  secondaryBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 18,
+    paddingVertical: 11,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.2)",
+  },
+  secondaryBtnText: { color: "#FFF", fontSize: 14, fontFamily: "Inter_600SemiBold" },
 });

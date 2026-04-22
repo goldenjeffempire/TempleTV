@@ -27,6 +27,20 @@ export default function Root({ children }: PropsWithChildren) {
         <link rel="alternate" hrefLang="en" href={SITE_URL} />
         <link rel="alternate" hrefLang="x-default" href={SITE_URL} />
 
+        {/*
+         * Preconnect / DNS-prefetch to YouTube edge domains. Saves 100-300ms
+         * on the first sermon load by overlapping TLS + DNS with our JS bundle.
+         * Includes the cookieless youtube-nocookie host the player prefers.
+         */}
+        <link rel="preconnect" href="https://www.youtube-nocookie.com" crossOrigin="anonymous" />
+        <link rel="preconnect" href="https://www.youtube.com" crossOrigin="anonymous" />
+        <link rel="preconnect" href="https://i.ytimg.com" crossOrigin="anonymous" />
+        <link rel="preconnect" href="https://s.ytimg.com" crossOrigin="anonymous" />
+        <link rel="preconnect" href="https://yt3.ggpht.com" crossOrigin="anonymous" />
+        <link rel="dns-prefetch" href="https://www.youtube-nocookie.com" />
+        <link rel="dns-prefetch" href="https://i.ytimg.com" />
+        <link rel="dns-prefetch" href="https://googlevideo.com" />
+
         <meta name="theme-color" content="#6A0DAD" />
         <meta name="application-name" content="Temple TV" />
         <meta name="apple-mobile-web-app-capable" content="yes" />

@@ -180,9 +180,20 @@ export default function PlayerScreen() {
   const insets = useSafeAreaInsets();
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const availableHeight = screenHeight - insets.top - insets.bottom;
+  // Responsive sizing strategy:
+  //  • Mobile portrait (<768px): full width 16:9, capped at 45% of viewport.
+  //  • Tablet / small laptop (768-1280px): tighter cap so the page still
+  //    shows metadata below the fold, capped at 55% of viewport height.
+  //  • Desktop (>1280px): centre the player on a 1280px column for a
+  //    cinema-style layout — the video doesn't need to spill into the
+  //    margins like a recipe blog.
+  const isDesktop = screenWidth >= 1280;
+  const isTablet = screenWidth >= 768 && screenWidth < 1280;
+  const playerColumnWidth = isDesktop ? 1280 : screenWidth;
+  const heightCapRatio = isDesktop ? 0.7 : isTablet ? 0.55 : 0.45;
   const videoPlayerHeight = Math.min(
-    Math.round(screenWidth * (9 / 16)),
-    Math.round(availableHeight * 0.45),
+    Math.round(playerColumnWidth * (9 / 16)),
+    Math.round(availableHeight * heightCapRatio),
   );
   const params = useLocalSearchParams<{
     videoId?: string;
