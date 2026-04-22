@@ -1037,8 +1037,18 @@ router.post("/admin/videos/upload/init", async (req, res) => {
     };
 
     uploadSessions.set(sessionId, session);
-    await writeSessionToDisk(session);
-    res.json({ sessionId, totalChunks: session.totalChunks });
+    writeSessionToDisk(session);
+
+    // Explicitly set Cache-Control and Content-Type before sending so that
+    // the compression middleware (which buffers responses) and any proxy
+    // layer cannot strip or cache the body.
+    const payload = JSON.stringify({ sessionId, totalChunks: session.totalChunks });
+    res
+      .status(200)
+      .setHeader("Cache-Control", "no-store, no-cache, must-revalidate")
+      .setHeader("Content-Type", "application/json; charset=utf-8")
+      .setHeader("Content-Length", Buffer.byteLength(payload))
+      .end(payload);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });

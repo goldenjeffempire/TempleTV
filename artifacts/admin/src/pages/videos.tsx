@@ -439,20 +439,49 @@ export default function Videos() {
       const title = task.title || task.file.name.replace(/\.[^/.]+$/, "");
 
       if (!sid) {
-        const initRes = await fetch("/api/admin/videos/upload/init", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            title,
-            category: task.category,
-            preacher: task.preacher,
-            featured: String(task.featured),
-            durationSecs: durationSecs > 0 ? String(durationSecs) : undefined,
-            totalChunks: String(totalChunks),
-            totalBytes: String(task.file.size),
-            ext,
-          }),
+        const initBody = JSON.stringify({
+          title,
+          category: task.category,
+          preacher: task.preacher,
+          featured: String(task.featured),
+          durationSecs: durationSecs > 0 ? String(durationSecs) : undefined,
+          totalChunks: String(totalChunks),
+          totalBytes: String(uploadFile.size),
+          ext,
         });
+
+        // Retry the init request up to 3 times — the Replit/Vite dev proxy
+        // occasionally drops the response body (HTTP 200 with empty body) due
+        // to HTTP/1.1 → HTTP/2 protocol translation under load. Retrying with
+        // a short backoff reliably recovers from this transient condition.
+        let initRes: Response | null = null;
+        let initError: Error | null = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          if (attempt > 0) await new Promise((r) => setTimeout(r, 600 * attempt));
+          try {
+            initRes = await fetch("/api/admin/videos/upload/init", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "Cache-Control": "no-store",
+              },
+              body: initBody,
+            });
+            // If we got a non-empty body we can proceed regardless of status
+            const clone = initRes.clone();
+            const preview = await clone.text();
+            if (preview.length > 0) break;
+            // Empty body on 200 — retry
+            initError = new Error(
+              `Init response: empty response (HTTP ${initRes.status}). Retrying… (attempt ${attempt + 1}/3)`
+            );
+          } catch (e) {
+            initError = e instanceof Error ? e : new Error(String(e));
+          }
+          initRes = null;
+        }
+
+        if (!initRes) throw initError ?? new Error("Failed to initialize upload after 3 attempts");
 
         if (!initRes.ok) {
           const err = await readJsonOrThrow<{ error?: string }>(initRes, "Init failed").catch((e) => {
