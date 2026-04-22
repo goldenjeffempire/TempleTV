@@ -797,7 +797,7 @@ router.get("/admin/launch/readiness", async (_req, res) => {
             "Donations and premium access",
             donationConfigured ? "ready" : "warning",
             donationConfigured ? "Donation or payment configuration is present." : "Donation/payment configuration is not present.",
-            "Connect the approved giving or subscription provider.",
+            "Connect the approved giving provider.",
           ),
           launchCheck(
             "app-store",

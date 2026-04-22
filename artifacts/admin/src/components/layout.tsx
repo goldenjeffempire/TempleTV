@@ -17,7 +17,6 @@ import {
   MonitorPlay,
   Rocket,
   Users,
-  CreditCard,
   Signal,
   LogOut,
 } from "lucide-react";
@@ -58,7 +57,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
     { href: "/transcoding", label: "Transcoding Queue", icon: Cpu },
     { href: "/live-control", label: "Live Control", icon: Signal },
     { href: "/live-monitor", label: "Live Monitor", icon: MonitorPlay },
-    { href: "/subscriptions", label: "Subscriptions", icon: CreditCard },
     { href: "/operations", label: "Operations", icon: ShieldCheck },
     { href: "/launch-readiness", label: "Launch Readiness", icon: Rocket },
   ];

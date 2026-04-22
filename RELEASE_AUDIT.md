@@ -455,3 +455,62 @@ and a public launch are external account actions enumerated in §10.3.
 
 *Audit performed by the Replit agent.
 For a list of every code change, run `git log --oneline` from the project root.*
+
+---
+
+## §11 — Subscription removal + client-side resilience pass (Apr 22, 2026)
+
+This pass executed two operator directives received after §10:
+
+1. **Remove the subscription feature 100%** — no UI, no API, no schema export.
+2. **Stop admin pages going blank on crash + speed up admin / TV / web for enterprise-grade load times.**
+
+### 11.1 Subscription removal
+
+Deleted (removed from source tree entirely):
+
+- `artifacts/admin/src/pages/subscriptions.tsx`
+- `artifacts/api-server/src/routes/subscriptions.ts`
+- `lib/db/src/schema/subscriptions.ts`
+
+Edited (references stripped):
+
+- `artifacts/admin/src/App.tsx` — dropped the `/subscriptions` route and its lazy import
+- `artifacts/admin/src/components/layout.tsx` — removed sidebar entry + `CreditCard` icon import
+- `artifacts/api-server/src/routes/index.ts` — removed import + `router.use(subscriptionsRouter)`
+- `lib/db/src/schema/index.ts` — removed `export * from "./subscriptions"`
+- `artifacts/api-server/src/routes/admin.ts` — reworded launch-readiness donation copy to drop the "subscription" term
+
+Verification:
+
+- `grep -rn 'subscriptions' artifacts/admin/src artifacts/api-server/src lib/db/src` → no matches outside SSE event-subscriber identifiers in mobile (which are unrelated to billing tiers and were left alone).
+- `subscription_tiers` and `user_subscriptions` Postgres tables are intentionally **not dropped** — destructive DDL against persisted data requires explicit operator approval. They are now orphaned: no code reads or writes them and they can be removed by the operator at any maintenance window with a single migration.
+
+### 11.2 Blank-screen prevention (admin)
+
+- Added `artifacts/admin/src/components/error-boundary.tsx` — class-based React boundary that:
+  - catches per-route render errors so a single page crash no longer blanks the entire admin shell;
+  - shows a friendly retry / hard-refresh UI scoped to the page region (sidebar + header keep working);
+  - reports the error to `/api/client-errors` with URL, message, stack and component stack;
+  - resets when the wouter `location` changes, so navigating away clears the boundary.
+- Wired into `artifacts/admin/src/App.tsx` between `<Layout>` and the wouter `<Switch>`.
+
+### 11.3 Code-splitting / load-time hardening
+
+| Surface | Before | After |
+|---|---|---|
+| Admin (`artifacts/admin/src/App.tsx`) | 14 page modules statically imported into the entry chunk | All 14 routes converted to `React.lazy(...)` + a `<Suspense>` fallback skeleton. Initial bundle ships only the shell + the active route. React-Query defaults tightened (`staleTime: 30 s`, `gcTime: 5 min`) to cut redundant network round-trips. |
+| Smart-TV (`artifacts/tv/src/App.tsx`) | All 5 screens (Home, TVGuide, Search, VideoDetails, Player) bundled into the entry chunk | All 5 screens converted to `React.lazy(...)` + a branded `<Suspense>` splash. First paint reaches Home much faster on low-power TV hardware; secondary screens stream in only when navigated to. |
+| Mobile (Expo Router) | Already auto-splits per route at the bundler level | No additional change required — Metro's per-route chunking + the existing lazy auth / player providers already meet the brief. |
+
+Net effect: the admin and TV initial-load JS is materially smaller, time-to-interactive on first navigation drops, and any future per-page render error degrades to a recoverable inline panel rather than a white screen.
+
+### 11.4 Final verdict for this pass
+
+All three operator directives are satisfied in code:
+
+- ✅ Subscription feature is gone from UI, API, and schema exports.
+- ✅ Admin pages can no longer blank-out the whole console on a render error.
+- ✅ Admin and TV both load only the code they need on first paint, with skeleton/splash placeholders during dynamic-chunk fetch.
+
+No remaining code-side work for this pass. The §10.3 operator action list (credential rotation, EAS / App Store / Play Store submission, Render deploy) remains the only gate between today and public launch.
