@@ -1,0 +1,193 @@
+Design and implement a fully functional, enterprise-grade streaming platform for Temple TV that works across:
+
+Web (Netflix-style UI)
+Mobile App (iOS + Android)
+Smart TV Apps (Android TV, Samsung Tizen, LG webOS, Fire TV, Apple TV)
+Admin Dashboard (broadcast control center)
+Backend API (single source of truth)
+
+All platforms must be fully synchronized and consume the same API:
+
+👉 https://api.templetv.org.ng
+
+🧱 SYSTEM ARCHITECTURE (REQUIRED)
+
+Build a centralized streaming backend with:
+
+Core Services:
+Video management system
+Live streaming system
+Broadcast scheduling engine
+YouTube integration (Temple TV channel sync)
+Video upload + encoding pipeline
+Queue-based playback system
+Recommendation engine
+Watch history tracking
+📺 NETFLIX-STYLE FRONTEND EXPERIENCE
+Web + TV + Mobile UI Requirements:
+
+Build a cinematic Netflix-style interface:
+
+Large hero banners with featured content
+Horizontal scroll content rows
+Auto-playing previews on focus
+Smooth animations and transitions
+“Continue Watching” section
+“Trending Now” section
+“Live TV” section
+🎬 HERO SECTION REQUIREMENT (CRITICAL)
+
+Each hero banner MUST include:
+
+Primary CTA Button:
+
+👉 “Watch Temple TV”
+
+Functionality:
+
+When clicked:
+
+Launch full-screen TV Mode player
+Start live broadcast experience
+Behave like a real TV channel stream
+No page reloads
+Instant playback
+Playback Source Logic:
+
+The system must automatically choose:
+
+Live stream (if active)
+Scheduled broadcast (if set)
+Video queue playlist (fallback mode)
+📡 LIVE BROADCAST SYSTEM (TV ENGINE)
+
+Build a full broadcast engine that supports:
+
+Live streaming input
+Scheduled programming (TV guide system)
+Playlist-based TV channel simulation
+Admin-controlled “Go Live” system
+
+This must behave like a real TV station backend.
+
+🧑‍💻 ADMIN DASHBOARD (BROADCAST CONTROL CENTER)
+
+Build a full production admin system that supports:
+
+Content Input:
+Upload videos directly
+Add YouTube video IDs (Temple TV channel sync)
+Create broadcast schedules
+Build video queues/playlists
+Broadcast Control:
+Switch between Live / Scheduled / Playlist mode
+Start/stop live broadcast
+Reorder playlist items (drag & drop)
+Assign videos to time slots
+Output:
+
+All admin changes must instantly reflect on:
+
+Web hero banner
+TV apps
+Mobile apps
+📺 SMART TV APPS (ALL PLATFORMS)
+
+Build TV-ready applications for:
+
+Android TV (Google Play)
+Amazon Fire TV
+Samsung Tizen
+LG webOS
+Apple TV
+TV Requirements:
+D-pad navigation support
+Focus-based UI system
+Netflix-style browsing
+Fast remote response
+Auto-preview on focus
+Full-screen playback mode
+📺 VIDEO PLAYER SYSTEM
+
+Build a unified video player with:
+
+Full-screen TV Mode
+Auto-play next content
+Resume playback
+Adaptive streaming
+Buffer optimization
+Subtitle support
+Keyboard + remote control support
+📺 YOUTUBE INTEGRATION
+
+Integrate:
+
+👉 https://www.youtube.com/@TEMPLETVJCTM
+
+System must:
+
+Auto-sync videos and metadata
+Allow manual YouTube ID import
+Merge YouTube content into broadcast queue
+Cache thumbnails and metadata
+Avoid API quota overuse
+⚙️ BACKEND REQUIREMENTS
+
+Refactor backend into a scalable OTT system:
+
+Broadcast orchestration engine
+Video queue scheduler
+Live stream controller
+YouTube sync service
+Recommendation engine
+Authentication system
+Role-based admin system
+🗄️ DATABASE DESIGN
+
+Support:
+
+users
+videos
+live streams
+broadcast schedules
+playlists/queues
+watch history
+hero banners
+admin actions
+YouTube sync metadata
+🔐 AUTHENTICATION SYSTEM
+
+Implement:
+
+Sign-up / login system
+Gated video playback for non-authenticated users
+Persistent sessions
+Role-based admin access
+🚀 DEPLOYMENT REQUIREMENTS
+
+Prepare system for production deployment:
+
+Docker-ready services
+CI/CD pipeline support
+Environment separation (dev/staging/prod)
+Logging + monitoring (Sentry integration)
+Scalable cloud deployment (Render/VPS compatible)
+📊 PERFORMANCE REQUIREMENTS
+Ultra-fast loading times
+CDN-ready media delivery
+Lazy loading UI
+Optimized API responses
+Low-latency streaming experience
+🎯 FINAL OUTPUT
+
+Deliver a fully functional, Netflix-style Temple TV streaming ecosystem that:
+
+Works across ALL TV platforms
+Has a unified broadcast system controlled from Admin
+Supports live, scheduled, and queued TV streaming
+Has a cinematic homepage with “Watch Temple TV” hero CTA
+Is fully production-ready and deployable in real-world environments
+
+No mock systems. No placeholders. No partial implementations.
+
+Everything must be fully integrated, scalable, and production-grade like Netflix or YouTube TV.

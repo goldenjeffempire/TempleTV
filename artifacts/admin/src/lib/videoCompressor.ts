@@ -182,11 +182,22 @@ export async function compressVideo(
     });
 
     // ── VideoEncoder ─────────────────────────────────────────────────────────
-    let framesEncoded = 0;
+    let framesEncoded = 0; // counts output chunks emitted by the encoder
+    let framesSubmitted = 0; // counts encode() calls we've submitted
     let totalFrames = Math.max(1, Math.round(probe.durationSecs * opts.targetFps));
     let encodeStartMs = 0;
 
-    const videoEncoder = new VideoEncoder({
+    // Forward-declared so the error handler below can re-arm lazy
+    // configuration if Chrome reclaims an idle codec.
+    let chosenConfig: VideoEncoderConfig | null = null;
+    let videoEncoder: VideoEncoder;
+
+    const isReclaimedError = (e: unknown): boolean => {
+      const msg = e instanceof Error ? e.message : String(e ?? "");
+      return /reclaim/i.test(msg);
+    };
+
+    videoEncoder = new VideoEncoder({
       output: (chunk, meta) => {
         if (signal.aborted) return;
         muxer.addVideoChunk(chunk, meta);
@@ -276,48 +287,74 @@ export async function compressVideo(
       hardwareAcceleration: "prefer-software",
     });
 
-    // Promise that resolves once the encoder is configured (or rejects on
-    // hard failure). Everything that calls videoEncoder.encode() — i.e. the
-    // decoder→encoder pipeline driven by feedChunk()/processFrame() — must
-    // await this. Otherwise we hit InvalidStateError when the first decoded
-    // frame arrives before configure() has completed.
-    const encoderConfiguredPromise: Promise<void> = (async () => {
-      let chosenConfig: VideoEncoderConfig | null = null;
+    // ── Probe candidates (does NOT configure the encoder yet) ───────────────
+    // We must NOT call videoEncoder.configure() here. Chrome reclaims any
+    // configured WebCodecs encoder that sits idle for ~30 seconds, and on
+    // huge inputs (multi-GB files) mp4box parsing alone can take that long
+    // before the first decoded frame is ready to encode. The symptom is the
+    // "Codec reclaimed due to inactivity" error.
+    //
+    // Instead, probe candidates in parallel with file parsing and store the
+    // winning config in `chosenConfig`. The actual configure() happens
+    // lazily inside processFrame() right before the first frame is encoded,
+    // and again any time Chrome reclaims the codec mid-stream.
+    const chosenConfigPromise: Promise<VideoEncoderConfig> = (async () => {
       let probeError: unknown = null;
       for (const candidate of candidates) {
         try {
           const support = await VideoEncoder.isConfigSupported(candidate);
           if (support.supported && support.config) {
-            chosenConfig = support.config;
-            break;
+            return support.config;
           }
         } catch (err) {
           probeError = err;
         }
       }
-
-      if (!chosenConfig) {
-        throw new Error(
-          `Cannot create H.264 encoder for ${outWidth}×${outHeight}@${opts.targetFps}fps ` +
-          `(${Math.round(opts.targetBitrate / 1000)} kbps). Your browser's WebCodecs ` +
-          `implementation rejected every variant we tried (hardware + software, full + half bitrate, ` +
-          `Main + Baseline profile). Try uploading without client compression, or use a smaller source video.` +
-          (probeError instanceof Error ? ` Last probe error: ${probeError.message}` : "")
-        );
-      }
-
-      try {
-        videoEncoder.configure(chosenConfig);
-      } catch (err) {
-        throw new Error(
-          `Encoder creation error: ${err instanceof Error ? err.message : String(err)}. ` +
-          `Config was ${chosenConfig.codec} ${chosenConfig.width}×${chosenConfig.height}@` +
-          `${chosenConfig.framerate ?? "?"}fps, ${Math.round((chosenConfig.bitrate ?? 0) / 1000)} kbps, ` +
-          `accel=${chosenConfig.hardwareAcceleration ?? "default"}.`
-        );
-      }
+      throw new Error(
+        `Cannot create H.264 encoder for ${outWidth}×${outHeight}@${opts.targetFps}fps ` +
+        `(${Math.round(opts.targetBitrate / 1000)} kbps). Your browser's WebCodecs ` +
+        `implementation rejected every variant we tried (hardware + software, full + half bitrate, ` +
+        `Main + Baseline profile). Try uploading without client compression, or use a smaller source video.` +
+        (probeError instanceof Error ? ` Last probe error: ${probeError.message}` : "")
+      );
     })();
-    encoderConfiguredPromise.catch(reject);
+    chosenConfigPromise.then((c) => { chosenConfig = c; }).catch(reject);
+
+    // Lazily (re)configure the encoder. Called from processFrame() right
+    // before encode() if the encoder is unconfigured, either because this
+    // is the first frame or because Chrome reclaimed an idle codec.
+    //
+    // Single-flight: concurrent decoded frames may all see "unconfigured"
+    // and call this in parallel; we collapse them onto one in-flight
+    // promise so configure() is never called twice in a row.
+    let configureInFlight: Promise<void> | null = null;
+    // Tracks every async processFrame() call so finalize can wait for them
+    // all to submit their videoEncoder.encode() before flushing.
+    const inFlightFrames = new Set<Promise<void>>();
+    const ensureEncoderConfigured = (): Promise<void> => {
+      if (videoEncoder.state === "configured") return Promise.resolve();
+      if (configureInFlight) return configureInFlight;
+      configureInFlight = (async () => {
+        if ((videoEncoder.state as string) === "configured") return;
+        if (videoEncoder.state === "closed") {
+          throw new Error("Video encoder was closed before configuration.");
+        }
+        const cfg = chosenConfig ?? (await chosenConfigPromise);
+        if ((videoEncoder.state as string) === "configured") return;
+        try {
+          videoEncoder.configure(cfg);
+        } catch (err) {
+          throw new Error(
+            `Encoder creation error: ${err instanceof Error ? err.message : String(err)}. ` +
+            `Config was ${cfg.codec} ${cfg.width}×${cfg.height}@` +
+            `${cfg.framerate ?? "?"}fps, ${Math.round((cfg.bitrate ?? 0) / 1000)} kbps, ` +
+            `accel=${cfg.hardwareAcceleration ?? "default"}.`
+          );
+        }
+      })();
+      configureInFlight.finally(() => { configureInFlight = null; });
+      return configureInFlight;
+    };
 
     // ── AudioEncoder ─────────────────────────────────────────────────────────
     let audioEncoderReady = false;
@@ -353,17 +390,19 @@ export async function compressVideo(
     const processFrame = async (frame: VideoFrame) => {
       if (signal.aborted) { frame.close(); return; }
 
-      // Wait for encoder configuration to complete before encoding any frame.
-      // Decoded frames can arrive before VideoEncoder.configure() returns
-      // (since we probe candidates asynchronously); encoding before that is
-      // an InvalidStateError. The await is essentially free once the encoder
-      // is configured.
+      // Lazy (re)configure right before encoding. This avoids the
+      // "Codec reclaimed due to inactivity" error: we never leave the
+      // encoder configured-but-idle while waiting for mp4box parsing or
+      // decoder warmup on huge inputs. If Chrome reclaimed the codec
+      // mid-stream the state will be "unconfigured" again, and this call
+      // re-configures it transparently.
       try {
-        await encoderConfiguredPromise;
-      } catch {
-        // encoderConfiguredPromise has already rejected the outer promise;
-        // just drop this frame cleanly.
+        await ensureEncoderConfigured();
+      } catch (err) {
+        // Hard configure failure — propagate to the outer promise so the
+        // caller sees the descriptive error instead of silently stalling.
         frame.close();
+        reject(err instanceof Error ? err : new Error(String(err)));
         return;
       }
 
@@ -379,14 +418,43 @@ export async function compressVideo(
         frameToEncode = frame;
       }
 
-      const keyFrame = framesEncoded % (opts.targetFps * 2) === 0; // keyframe every 2s
-      videoEncoder.encode(frameToEncode, { keyFrame });
+      const keyFrame = framesSubmitted % (opts.targetFps * 2) === 0; // keyframe every 2s
+      try {
+        videoEncoder.encode(frameToEncode, { keyFrame });
+        framesSubmitted++;
+      } catch (err) {
+        // If Chrome reclaimed the codec between our state check and the
+        // encode call, retry once after re-configuring. The first frame
+        // after a reclaim must be a keyframe.
+        if (isReclaimedError(err) || (err instanceof DOMException && err.name === "InvalidStateError")) {
+          try {
+            await ensureEncoderConfigured();
+            videoEncoder.encode(frameToEncode, { keyFrame: true });
+            framesSubmitted++;
+          } catch (retryErr) {
+            frameToEncode.close();
+            reject(retryErr instanceof Error ? retryErr : new Error(String(retryErr)));
+            return;
+          }
+        } else {
+          frameToEncode.close();
+          reject(err instanceof Error ? err : new Error(String(err)));
+          return;
+        }
+      }
       frameToEncode.close();
     };
 
     videoDecoder = new VideoDecoder({
       output: (frame) => {
-        processFrame(frame).catch(reject);
+        // Track every in-flight processFrame so finalize can wait for them
+        // all to submit their videoEncoder.encode() calls before flushing.
+        // Without this, videoDecoder.flush() can resolve while async
+        // processFrame promises still haven't reached their encode() call,
+        // and the encoder could be reclaimed during finalize's audio flush.
+        const p = processFrame(frame).catch(reject);
+        inFlightFrames.add(p);
+        p.finally(() => inFlightFrames.delete(p));
       },
       error: (e) => reject(e),
     });
@@ -460,23 +528,67 @@ export async function compressVideo(
       }
       pendingSamples = [];
 
-      // Flush decoders + encoders
+      // Flush decoders + encoders. Order matters here:
+      //   1. Flush the video decoder so all decoded VideoFrames are emitted.
+      //   2. Wait for every async processFrame() promise to complete so that
+      //      every videoEncoder.encode() call has been submitted. (The
+      //      decoder output callback fires processFrame asynchronously, so
+      //      decoder.flush() resolving does NOT guarantee all encode() calls
+      //      have been made.)
+      //   3. Flush the video encoder IMMEDIATELY — in parallel with the
+      //      audio path — so it never sits idle while the audio encoder
+      //      drains (which can take many seconds and would let Chrome
+      //      reclaim the video codec).
       try {
         await videoDecoder.flush();
         videoDecoder.close();
 
-        if (audioDecoder) {
-          await audioDecoder.flush();
-          audioDecoder.close();
-        }
+        // Wait for every in-flight processFrame to actually call encode().
+        await Promise.all(Array.from(inFlightFrames));
 
-        if (audioEncoder) {
-          await audioEncoder.flush();
-          audioEncoder.close();
-        }
+        const videoFlushPromise = (async () => {
+          // Re-arm the encoder if it was reclaimed while idle. Gate on
+          // framesSubmitted (encode() calls we made) — NOT framesEncoded
+          // (which counts output chunks) — because output chunks may lag
+          // behind submissions, especially at the tail end of the stream.
+          if (videoEncoder.state === "unconfigured" && framesSubmitted > 0) {
+            await ensureEncoderConfigured();
+          }
+          if (videoEncoder.state === "configured") {
+            try {
+              await videoEncoder.flush();
+            } catch (err) {
+              // Reclaimed between the state check and flush(): re-arm and
+              // retry once. We can't recover frames already lost from the
+              // encoder's internal queue, but completing the flush still
+              // emits anything that survived.
+              if (isReclaimedError(err) || (err instanceof DOMException && err.name === "InvalidStateError")) {
+                await ensureEncoderConfigured();
+                if ((videoEncoder.state as string) === "configured") {
+                  await videoEncoder.flush();
+                }
+              } else {
+                throw err;
+              }
+            }
+          }
+          if (videoEncoder.state !== "closed") {
+            videoEncoder.close();
+          }
+        })();
 
-        await videoEncoder.flush();
-        videoEncoder.close();
+        const audioFlushPromise = (async () => {
+          if (audioDecoder) {
+            await audioDecoder.flush();
+            audioDecoder.close();
+          }
+          if (audioEncoder) {
+            await audioEncoder.flush();
+            audioEncoder.close();
+          }
+        })();
+
+        await Promise.all([videoFlushPromise, audioFlushPromise]);
 
         muxer.finalize();
 
@@ -628,13 +740,12 @@ export async function compressVideo(
       reject(new DOMException("Aborted", "AbortError"));
     }, { once: true });
 
-    // Don't start streaming the file into mp4box until the encoder is
-    // configured. mp4box parsing itself is independent, but waiting here
-    // means any encoder-config failure surfaces immediately with our clear
-    // error message instead of after the analyze phase.
-    encoderConfiguredPromise.then(() => {
-      if (signal.aborted) return;
-      feedChunk().catch(reject);
-    }).catch(() => { /* already rejected via .catch(reject) above */ });
+    // Start mp4box parsing immediately — in parallel with isConfigSupported()
+    // probing. We deliberately do NOT wait for chosenConfigPromise here:
+    // probing takes ~tens of ms while parsing a multi-GB file takes many
+    // seconds, and a configured-but-idle encoder gets reclaimed by Chrome
+    // after ~30 s. The encoder is configured lazily inside processFrame()
+    // right before the first frame is encoded.
+    feedChunk().catch(reject);
   });
 }
