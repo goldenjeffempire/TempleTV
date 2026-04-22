@@ -18,6 +18,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { reportClientError } from "@/lib/errorReporter";
 import { LiveBroadcastSupervisor } from "@/components/LiveBroadcastSupervisor";
 import { PersistentAudioPlayer } from "@/components/PersistentAudioPlayer";
+import { AuthGateModal } from "@/components/AuthGateModal";
 import { PlayerProvider } from "@/context/PlayerContext";
 import { AuthProvider } from "@/context/AuthContext";
 import { setupTrackPlayer } from "@/services/nowPlaying";
@@ -119,6 +120,14 @@ function RootLayoutNav() {
           animation: "slide_from_bottom",
         }}
       />
+      <Stack.Screen
+        name="link"
+        options={{
+          headerShown: false,
+          presentation: "modal",
+          animation: "slide_from_bottom",
+        }}
+      />
     </Stack>
   );
 }
@@ -174,6 +183,12 @@ export default function RootLayout() {
                 <KeyboardProvider>
                   <RootLayoutNav />
                   <PersistentAudioPlayer />
+                  {/*
+                   * AuthGateModal is rendered at the root so it can be
+                   * triggered from any screen (including non-React utility
+                   * functions) and overlays every navigation surface.
+                   */}
+                  <AuthGateModal />
                 </KeyboardProvider>
               </GestureHandlerRootView>
             </PlayerProvider>

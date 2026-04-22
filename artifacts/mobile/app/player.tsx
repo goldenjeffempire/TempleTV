@@ -28,6 +28,7 @@ import { SermonCard } from "@/components/SermonCard";
 import { LiveBadge } from "@/components/LiveBadge";
 import { GlassCard } from "@/components/GlassCard";
 import { usePlayer, usePlayerProgress } from "@/context/PlayerContext";
+import { useAuth } from "@/context/AuthContext";
 import { SERMONS } from "@/data/sermons";
 import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
 import { checkBroadcastCurrent, subscribeBroadcastEvents, type BroadcastCurrentResult } from "@/services/broadcast";
@@ -178,6 +179,37 @@ const volStyles = StyleSheet.create({
 export default function PlayerScreen() {
   const c = useColors();
   const insets = useSafeAreaInsets();
+  // Defensive gate for the /player route itself. Most playback paths go
+  // through navigateToSermon (which gates upstream), but deep links and
+  // shared URLs land here directly. If the user is not authenticated,
+  // bounce back and pop the gate so they can sign in without losing the
+  // intended target.
+  //
+  // We must early-return BEFORE any other player hooks run so the
+  // YouTube iframe / track-player isn't briefly initialised while the
+  // navigation is mid-flight. The `gateTriggered` ref guarantees we
+  // only fire openAuthGate + router.back once per mount, even if the
+  // effect re-runs in StrictMode.
+  const { isLoggedIn, isLoading: authLoading, openAuthGate } = useAuth();
+  const routeParams = useLocalSearchParams() as Record<string, string | undefined>;
+  const gateTriggered = useRef(false);
+  useEffect(() => {
+    if (authLoading || isLoggedIn || gateTriggered.current) return;
+    gateTriggered.current = true;
+    const cleanParams: Record<string, string> = {};
+    Object.entries(routeParams).forEach(([k, v]) => {
+      if (typeof v === "string") cleanParams[k] = v;
+    });
+    openAuthGate({
+      pathname: "/player",
+      params: cleanParams,
+      reason: "Sign up free to watch this sermon and unlock the full library.",
+    });
+    if (router.canGoBack()) router.back();
+    else router.replace("/");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authLoading, isLoggedIn]);
+
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const availableHeight = screenHeight - insets.top - insets.bottom;
   // Responsive sizing strategy:

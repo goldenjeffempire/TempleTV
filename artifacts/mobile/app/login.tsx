@@ -31,7 +31,7 @@ export default function LoginScreen() {
 
   const c = useColors();
   const insets = useSafeAreaInsets();
-  const { signIn } = useAuth();
+  const { signIn, consumePendingPlayback } = useAuth();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -49,7 +49,14 @@ export default function LoginScreen() {
     try {
       const { token, user } = await apiLogin(trimmedEmail, password);
       await signIn(token, user);
-      router.replace("/");
+      // Resume the playback the user was attempting before being gated.
+      // If there isn't one, fall back to home.
+      const pending = consumePendingPlayback();
+      if (pending) {
+        router.replace({ pathname: pending.pathname as any, params: pending.params });
+      } else {
+        router.replace("/");
+      }
     } catch (err) {
       Alert.alert("Login Failed", err instanceof Error ? err.message : "Please try again.");
     } finally {

@@ -1,0 +1,77 @@
+Eliminate all encoder initialization failures and ensure the video upload system works reliably across development and production environments.
+
+🚨 REQUIREMENT
+
+The system must fully support video upload → processing → encoding → storage without any failures such as:
+
+“Encoder creation error”
+FFmpeg initialization failure
+unsupported codec crashes
+memory/CPU timeout issues
+broken streaming pipeline initialization
+🔧 REQUIRED FIXES
+1. Encoder Initialization Stability
+Fix all encoder creation failures at runtime
+Ensure encoder initializes only after full input validation
+Implement proper lifecycle management for encoding sessions
+2. FFmpeg / Encoding Engine Hardening
+Ensure FFmpeg is properly installed, accessible, and compatible in production
+Validate binary path resolution in all environments (local + production)
+Standardize encoding configuration:
+Video codec: libx264
+Audio codec: aac
+Output format: mp4
+3. Input Validation Layer (CRITICAL)
+
+Before encoding starts:
+
+Validate file integrity
+Detect codec type (use FFprobe or equivalent)
+Reject corrupted or unsupported uploads early
+Ensure safe fallback for invalid media
+4. Resource & Performance Handling
+Prevent CPU/memory overload during encoding
+Add queue-based processing for uploads
+Implement retry mechanism for failed encoding jobs
+Add timeout handling for long-running encoding tasks
+5. Production Environment Fixes
+
+Ensure compatibility with deployment environments such as Render or similar cloud services:
+
+Verify FFmpeg availability in container/runtime
+Fix missing system dependencies
+Ensure persistent storage access for temporary encoding files
+Handle environment variable differences between dev and prod
+6. Fault Tolerance & Recovery System
+
+Implement:
+
+Encoder retry fallback (auto retry with lower resolution if failure occurs)
+Graceful degradation (skip encoding if pipeline fails, store raw upload safely)
+Error logging and observability (Sentry or equivalent)
+7. Pipeline Architecture Refactor
+
+Refactor upload flow into a robust pipeline:
+
+Upload received
+File validated
+Metadata extracted (FFprobe)
+Encoding job queued
+Encoder initialized safely
+Transcoded output generated
+File stored
+Status updated
+🧠 FINAL OUTCOME
+
+Deliver a fully stable, enterprise-grade video encoding system that:
+
+Never throws “Encoder creation error”
+Handles all file types safely
+Scales under load
+Works consistently across local and production environments
+Provides reliable upload-to-stream pipeline like Netflix/YouTube-level systems
+🚀 SUCCESS CRITERIA
+0 encoder initialization crashes
+100% successful upload pipeline for valid media
+Automatic recovery from encoding failures
+Production-ready reliability under real user traffic

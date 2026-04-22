@@ -32,7 +32,7 @@ import { sendLiveServiceNotification } from "@/services/notifications";
 import { useFeaturedVideos } from "@/hooks/useFeaturedVideos";
 import { useWatchProgress } from "@/hooks/useWatchProgress";
 import { checkBroadcastCurrent, subscribeBroadcastEvents, type BroadcastCurrentResult } from "@/services/broadcast";
-import { navigateToSermon } from "@/utils/navigation";
+import { navigateToSermon, navigateToPlayer as gatedNavigateToPlayer } from "@/utils/navigation";
 import { usePageSeo } from "@/hooks/usePageSeo";
 import type { Sermon } from "@/types";
 
@@ -211,7 +211,7 @@ export default function WatchScreen() {
 
   const navigateToPlayer = useCallback((params: Record<string, string>) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    router.push({ pathname: "/player", params });
+    gatedNavigateToPlayer(params, "Sign up free to watch this — it only takes a moment.");
   }, []);
 
   const handleSermonPress = useCallback((sermon: Sermon) => {

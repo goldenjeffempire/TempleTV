@@ -7,7 +7,7 @@ import { router } from "expo-router";
 import { useColors } from "@/hooks/useColors";
 import { LiveBadge } from "@/components/LiveBadge";
 import { usePlayer, usePlayerProgress } from "@/context/PlayerContext";
-import { navigateToSermon } from "@/utils/navigation";
+import { navigateToSermon, navigateToPlayer } from "@/utils/navigation";
 
 export function MiniPlayer() {
   const c = useColors();
@@ -42,7 +42,10 @@ export function MiniPlayer() {
 
   const handlePress = () => {
     if (isLive) {
-      router.push({ pathname: "/player", params: { live: "true", title: "Temple TV Live", preacher: "Temple TV JCTM" } });
+      navigateToPlayer(
+        { live: "true", title: "Temple TV Live", preacher: "Temple TV JCTM" },
+        "Sign up free to watch the live broadcast.",
+      );
     } else if (currentSermon) {
       navigateToSermon(currentSermon);
     }

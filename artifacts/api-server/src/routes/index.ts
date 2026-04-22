@@ -4,12 +4,14 @@ import youtubeRouter from "./youtube";
 import adminRouter from "./admin";
 import broadcastRouter from "./broadcast";
 import authRouter from "./auth";
+import deviceLinkRouter from "./device-link";
 import userRouter from "./user";
 import clientErrorsRouter from "./client-errors";
 
 const router: IRouter = Router();
 
 router.use(authRouter);
+router.use(deviceLinkRouter);
 router.use(userRouter);
 router.use(healthRouter);
 router.use(youtubeRouter);

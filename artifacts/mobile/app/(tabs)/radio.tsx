@@ -13,7 +13,7 @@ import { Feather } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
-import { navigateToSermon } from "@/utils/navigation";
+import { navigateToSermon, navigateToPlayer } from "@/utils/navigation";
 import { useColors } from "@/hooks/useColors";
 import { GlassCard } from "@/components/GlassCard";
 import { ChannelBug } from "@/components/ChannelBug";
@@ -137,9 +137,15 @@ export default function RadioScreen() {
     const item = broadcastInfo.item;
     const startMs = String(broadcastPosition * 1000);
     if (item.videoSource === "local" && item.localVideoUrl) {
-      router.push({ pathname: "/player", params: { broadcastMode: "true", localVideoUrl: item.localVideoUrl, title: item.title, thumbnail: item.thumbnailUrl, startPositionMs: startMs, radioOnly: "true" } });
+      navigateToPlayer(
+        { broadcastMode: "true", localVideoUrl: item.localVideoUrl, title: item.title, thumbnail: item.thumbnailUrl, startPositionMs: startMs, radioOnly: "true" },
+        "Sign up free to follow the live radio broadcast.",
+      );
     } else if (item.youtubeId) {
-      router.push({ pathname: "/player", params: { broadcastMode: "true", videoId: item.youtubeId, title: item.title, thumbnail: item.thumbnailUrl, startPositionMs: startMs, radioOnly: "true" } });
+      navigateToPlayer(
+        { broadcastMode: "true", videoId: item.youtubeId, title: item.title, thumbnail: item.thumbnailUrl, startPositionMs: startMs, radioOnly: "true" },
+        "Sign up free to follow the live radio broadcast.",
+      );
     }
   }, [autoMirror]);
 

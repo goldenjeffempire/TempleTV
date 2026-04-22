@@ -30,7 +30,7 @@ export default function SignupScreen() {
 
   const c = useColors();
   const insets = useSafeAreaInsets();
-  const { signIn } = useAuth();
+  const { signIn, consumePendingPlayback } = useAuth();
 
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
@@ -60,7 +60,13 @@ export default function SignupScreen() {
     try {
       const { token, user } = await apiSignup(trimmedEmail, password, trimmedName);
       await signIn(token, user);
-      router.replace("/");
+      // Resume the playback the user was attempting before being gated.
+      const pending = consumePendingPlayback();
+      if (pending) {
+        router.replace({ pathname: pending.pathname as any, params: pending.params });
+      } else {
+        router.replace("/");
+      }
     } catch (err) {
       Alert.alert("Signup Failed", err instanceof Error ? err.message : "Please try again.");
     } finally {
