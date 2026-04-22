@@ -1,18 +1,5 @@
-import React, { useState } from "react";
-import {
-  ActivityIndicator,
-  Image,
-  Linking,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
-import { Feather } from "@expo/vector-icons";
-import * as WebBrowser from "expo-web-browser";
-import * as Haptics from "expo-haptics";
-import { useColors } from "@/hooks/useColors";
+import React, { useEffect, useMemo, useRef } from "react";
+import { Platform, StyleSheet, View } from "react-native";
 
 interface YoutubePlayerProps {
   videoId?: string;
@@ -31,81 +18,195 @@ interface YoutubePlayerProps {
   onToggleAudioMode?: () => void;
 }
 
+const ORIGIN =
+  typeof window !== "undefined" && window.location?.origin
+    ? window.location.origin
+    : "https://templetv.org.ng";
+
+function buildEmbedUrl({
+  videoId,
+  isLive,
+  channelHandle,
+  autoPlay,
+  startPositionSecs,
+}: Pick<YoutubePlayerProps, "videoId" | "isLive" | "channelHandle" | "autoPlay" | "startPositionSecs">): string {
+  const params = new URLSearchParams({
+    enablejsapi: "1",
+    playsinline: "1",
+    rel: "0",
+    modestbranding: "1",
+    fs: "1",
+    origin: ORIGIN,
+  });
+  // Browsers block autoplay with sound. Mute when auto-starting so the
+  // video actually plays; the visitor can unmute from the player controls.
+  if (autoPlay) {
+    params.set("autoplay", "1");
+    params.set("mute", "1");
+  } else {
+    params.set("autoplay", "0");
+  }
+  if (startPositionSecs && startPositionSecs > 0) {
+    params.set("start", String(Math.floor(startPositionSecs)));
+  }
+  if (isLive && channelHandle) {
+    // For the live tile, use the channel "live" deep-link via the
+    // user_uploads list trick — when the channel is live this is what
+    // YouTube returns.
+    params.set("listType", "user_uploads");
+    params.set("list", channelHandle);
+    return `https://www.youtube-nocookie.com/embed?${params.toString()}`;
+  }
+  if (!videoId) {
+    return "";
+  }
+  return `https://www.youtube-nocookie.com/embed/${videoId}?${params.toString()}`;
+}
+
+/**
+ * Web variant of the YouTube player. Embeds the video in-page via a
+ * standard <iframe> (no redirect to youtube.com) and bridges the
+ * IFrame Player API's postMessage events back to the parent component
+ * so progress, autoplay, and "play next" wiring keep working.
+ *
+ * Native (iOS/Android) uses YoutubePlayer.native.tsx via Expo's
+ * platform-specific resolution.
+ */
 export function YoutubePlayer({
   videoId,
   isLive,
-  thumbnailUrl,
   channelHandle = "templetvjctm",
   autoPlay,
+  startPositionSecs,
   onEnd,
+  onError,
   onPlay,
   onPause,
 }: YoutubePlayerProps) {
-  const c = useColors();
-  const [loading, setLoading] = useState(false);
+  if (Platform.OS !== "web") {
+    return null;
+  }
 
-  const openVideo = async () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    setLoading(true);
-    try {
-      let url: string;
-      if (isLive) {
-        url = `https://www.youtube.com/@${channelHandle}/live`;
-      } else if (videoId) {
-        if (Platform.OS !== "web") {
-          const youtubeApp = `youtube://watch?v=${videoId}`;
-          const canOpen = await Linking.canOpenURL(youtubeApp);
-          if (canOpen) {
-            await Linking.openURL(youtubeApp);
-            return;
-          }
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const callbacksRef = useRef({ onEnd, onError, onPlay, onPause });
+  callbacksRef.current = { onEnd, onError, onPlay, onPause };
+
+  const src = useMemo(
+    () => buildEmbedUrl({ videoId, isLive, channelHandle, autoPlay, startPositionSecs }),
+    // startPositionSecs intentionally excluded so seeking from the
+    // parent doesn't force-remount the iframe mid-playback.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [videoId, isLive, channelHandle, autoPlay],
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const ALLOWED_HOSTS = new Set([
+      "www.youtube.com",
+      "youtube.com",
+      "www.youtube-nocookie.com",
+      "youtube-nocookie.com",
+    ]);
+
+    function handleMessage(event: MessageEvent) {
+      // Strict origin check — substring matching would let
+      // attacker-controlled hosts like youtube.com.evil.tld through.
+      let host = "";
+      try {
+        host = new URL(event.origin).hostname;
+      } catch {
+        return;
+      }
+      if (!ALLOWED_HOSTS.has(host)) return;
+      // Only accept messages from THIS iframe's window so a sibling
+      // YouTube embed on the page can't trigger our state callbacks.
+      if (event.source !== iframeRef.current?.contentWindow) return;
+      let data: any = event.data;
+      if (typeof data === "string") {
+        try {
+          data = JSON.parse(data);
+        } catch {
+          return;
         }
-        url = `https://www.youtube.com/watch?v=${videoId}`;
-      } else {
-        url = `https://www.youtube.com/@${channelHandle}`;
       }
+      if (!data || typeof data !== "object") return;
+      const cbs = callbacksRef.current;
+      if (data.event === "onStateChange") {
+        // YT.PlayerState: -1 unstarted, 0 ended, 1 playing, 2 paused, 3 buffering, 5 cued
+        const state = data.info;
+        if (state === 0) cbs.onEnd?.();
+        else if (state === 1) cbs.onPlay?.();
+        else if (state === 2) cbs.onPause?.();
+      } else if (data.event === "onError") {
+        cbs.onError?.();
+      }
+    }
 
-      if (Platform.OS === "web") {
-        window.open(url, "_blank");
-      } else {
-        await WebBrowser.openBrowserAsync(url, {
-          toolbarColor: "#000000",
-          controlsColor: "#6A0DAD",
-          presentationStyle: WebBrowser.WebBrowserPresentationStyle.FULL_SCREEN,
-        });
-      }
-    } finally {
-      setLoading(false);
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, []);
+
+  // Once the iframe loads, opt-in to state-change events. The IFrame
+  // Player API requires us to send a "listening" message and then a
+  // "addEventListener" message to start receiving callbacks.
+  const handleLoad = () => {
+    const iframe = iframeRef.current;
+    if (!iframe?.contentWindow) return;
+    try {
+      iframe.contentWindow.postMessage(
+        JSON.stringify({ event: "listening", id: "tt-yt-player" }),
+        "*",
+      );
+      iframe.contentWindow.postMessage(
+        JSON.stringify({
+          event: "command",
+          func: "addEventListener",
+          args: ["onStateChange"],
+        }),
+        "*",
+      );
+      iframe.contentWindow.postMessage(
+        JSON.stringify({
+          event: "command",
+          func: "addEventListener",
+          args: ["onError"],
+        }),
+        "*",
+      );
+    } catch {
+      // Cross-origin restriction — events just won't fire, the video
+      // still plays normally via the native YouTube controls.
     }
   };
 
-  const thumb = thumbnailUrl ?? (videoId ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` : null);
+  if (!src) {
+    return <View style={styles.container} />;
+  }
 
+  // react-native-web renders View as a div — embed a real <iframe> child.
   return (
     <View style={styles.container}>
-      {thumb && (
-        <Image source={{ uri: thumb }} style={styles.thumbnail} resizeMode="cover" />
-      )}
-      <View style={[styles.overlay, { backgroundColor: "rgba(0,0,0,0.35)" }]}>
-        <Pressable
-          onPress={openVideo}
-          style={({ pressed }) => [
-            styles.playButton,
-            {
-              backgroundColor: loading ? c.primary : "#FF0000",
-              opacity: pressed ? 0.8 : 1,
-              transform: [{ scale: pressed ? 0.92 : 1 }],
-            },
-          ]}
-        >
-          {loading ? (
-            <ActivityIndicator color="#FFF" size="small" />
-          ) : (
-            <Feather name="play" size={28} color="#FFF" />
-          )}
-        </Pressable>
-        <Text style={styles.tapHint}>Opens on YouTube</Text>
-      </View>
+      {React.createElement("iframe", {
+        ref: iframeRef,
+        src,
+        title: "Temple TV video player",
+        allow:
+          "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen",
+        allowFullScreen: true,
+        referrerPolicy: "strict-origin-when-cross-origin",
+        onLoad: handleLoad,
+        style: {
+          position: "absolute",
+          top: 0,
+          left: 0,
+          width: "100%",
+          height: "100%",
+          border: "0",
+          display: "block",
+          backgroundColor: "#000",
+        },
+      })}
     </View>
   );
 }
@@ -113,32 +214,8 @@ export function YoutubePlayer({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#0a0a0a",
+    backgroundColor: "#000",
     position: "relative",
-  },
-  thumbnail: {
-    ...StyleSheet.absoluteFillObject,
-    width: "100%",
-    height: "100%",
-  },
-  overlay: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 10,
-  },
-  playButton: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingLeft: 4,
-    boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
-  },
-  tapHint: {
-    color: "rgba(255,255,255,0.5)",
-    fontSize: 12,
-    fontFamily: "Inter_400Regular",
+    overflow: "hidden",
   },
 });
