@@ -34,6 +34,31 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 
+// ─── Safe response parsing ─────────────────────────────────────────────────────
+// Reading res.json() directly throws "Failed to execute 'json' on 'Response':
+// Unexpected end of JSON input" whenever the body is empty or non-JSON (proxy
+// timeout, 502 Bad Gateway, HTML error page from a load balancer, etc.) — and
+// that opaque error completely hides the underlying HTTP status. This helper
+// reads the body as text first, attempts JSON.parse, and on failure throws an
+// error that includes the real status code, status text, and body snippet.
+async function readJsonOrThrow<T>(res: Response, label: string): Promise<T> {
+  const text = await res.text();
+  if (!text) {
+    throw new Error(
+      `${label}: empty response (HTTP ${res.status} ${res.statusText || "no status text"}). ` +
+      `The request did not reach the server or was truncated by a proxy/network hop.`
+    );
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(
+      `${label}: server returned non-JSON response (HTTP ${res.status} ${res.statusText || ""}). ` +
+      `Body snippet: ${text.slice(0, 200)}`
+    );
+  }
+}
+
 // ─── Upload engine constants ───────────────────────────────────────────────────
 const CHUNK_SIZE = 8 * 1024 * 1024;         // 8 MB — fine-grained retry + adaptive network
 const MAX_CONCURRENT_PER_FILE = 6;           // parallel chunk streams per file
@@ -430,11 +455,13 @@ export default function Videos() {
         });
 
         if (!initRes.ok) {
-          const err = (await initRes.json()) as { error?: string };
-          throw new Error(err.error ?? "Failed to initialize upload");
+          const err = await readJsonOrThrow<{ error?: string }>(initRes, "Init failed").catch((e) => {
+            throw new Error(e instanceof Error ? e.message : String(e));
+          });
+          throw new Error(err.error ?? `Failed to initialize upload (HTTP ${initRes.status})`);
         }
 
-        const { sessionId: newSid } = (await initRes.json()) as { sessionId: string };
+        const { sessionId: newSid } = await readJsonOrThrow<{ sessionId: string }>(initRes, "Init response");
         sid = newSid;
 
         // Save session for single-file recovery
@@ -602,8 +629,10 @@ export default function Videos() {
       updateTask(taskId, { state: "finalizing" });
       const finalRes = await fetch(`/api/admin/videos/upload/${sid}/finalize`, { method: "POST" });
       if (!finalRes.ok) {
-        const err = (await finalRes.json()) as { error?: string };
-        throw new Error(err.error ?? "Finalization failed");
+        const err = await readJsonOrThrow<{ error?: string }>(finalRes, "Finalize failed").catch((e) => {
+          throw new Error(e instanceof Error ? e.message : String(e));
+        });
+        throw new Error(err.error ?? `Finalization failed (HTTP ${finalRes.status})`);
       }
 
       updateTask(taskId, { state: "done", progress: 100 });
@@ -705,7 +734,7 @@ export default function Videos() {
         updateTask(id, { state: "pending", sessionId: null });
         return;
       }
-      const status = (await statusRes.json()) as { uploadedChunkIndices?: number[] };
+      const status = await readJsonOrThrow<{ uploadedChunkIndices?: number[] }>(statusRes, "Status check");
       const uploadedSet = new Set<number>(status.uploadedChunkIndices ?? []);
       runFileUpload(id, { sid: task.sessionId, uploadedChunks: uploadedSet });
     } catch {
@@ -779,7 +808,7 @@ export default function Videos() {
         toast({ title: "Previous session expired. Please upload again.", variant: "destructive" });
         return;
       }
-      const status = (await statusRes.json()) as { uploadedChunkIndices?: number[] };
+      const status = await readJsonOrThrow<{ uploadedChunkIndices?: number[] }>(statusRes, "Resume status");
       const uploadedSet = new Set<number>(status.uploadedChunkIndices ?? []);
       runFileUpload(id, { sid: pendingResume.sessionId, uploadedChunks: uploadedSet });
     } catch {
