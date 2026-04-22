@@ -1,10 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { keyEventToAction } from "../lib/tvKeys";
+import { HlsVideoPlayer } from "../components/HlsVideoPlayer";
 
 interface PlayerProps {
   videoId: string;
   title: string;
   onBack: () => void;
+  /** When set, an HLS .m3u8 stream is played instead of the YouTube iframe. */
+  hlsUrl?: string;
+  /** Resume the HLS stream at this second offset (synced 24/7 broadcast). */
+  startPositionSecs?: number;
 }
 
 const LOAD_TIMEOUT_MS = 8_000;
@@ -29,7 +34,26 @@ function ytCommand(
   );
 }
 
-export function Player({ videoId, title, onBack }: PlayerProps) {
+/**
+ * Public router component.
+ * Selects the HLS player for uploaded content or the YouTube iframe for YouTube IDs.
+ */
+export function Player({ videoId, title, onBack, hlsUrl, startPositionSecs = 0 }: PlayerProps) {
+  if (hlsUrl) {
+    return (
+      <HlsVideoPlayer
+        hlsUrl={hlsUrl}
+        title={title}
+        onBack={onBack}
+        startPositionSecs={startPositionSecs}
+      />
+    );
+  }
+  return <YouTubePlayer videoId={videoId} title={title} onBack={onBack} />;
+}
+
+/** Internal YouTube-iframe player (only rendered when no hlsUrl is provided). */
+function YouTubePlayer({ videoId, title, onBack }: { videoId: string; title: string; onBack: () => void }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const [showControls, setShowControls] = useState(true);

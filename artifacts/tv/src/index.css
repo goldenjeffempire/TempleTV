@@ -218,3 +218,8 @@ html, body, #root {
     padding: 2rem;
   }
 }
+
+/* ── HLS player spinner ─────────────────────────────────────────────────── */
+@keyframes tt-spin {
+  to { transform: rotate(360deg); }
+}

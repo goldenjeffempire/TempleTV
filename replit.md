@@ -43,7 +43,9 @@ The platform is built as a monorepo using `pnpm workspaces`, Node.js 24, and Typ
     - **Design System:** Glassmorphism-style UI with theme-aware glass backgrounds.
     - **Smart TV UI:** 10-foot UI design with large fonts, prominent focus rings, and D-pad/remote navigation.
 - **Key Features:**
-    - **Video Playback:** In-app YouTube video player (`react-native-youtube-iframe`) with seek bar on all platforms, continuous streaming engine, and automatic advancement.
+    - **Video Playback:** Dual-player architecture per platform:
+        - **YouTube content:** `react-native-youtube-iframe` (mobile), YouTube IFrame API (TV/web) with D-pad remote control, seek OSD, play/pause overlay.
+        - **Local/uploaded HLS content:** `HlsVideoPlayer` component (`artifacts/tv/src/components/HlsVideoPlayer.tsx`) on Smart TV — uses `hls.js` for adaptive bitrate (ABR) on Chromium/Firefox/Samsung/LG browsers, native HLS for Safari/WKWebView. Features: 5-level ABR quality ladder auto-selection, real-time quality badge, fullscreen HTML5 API, seek ±15s OSD, D-pad/remote key handler, cinematic loading veil, buffering spinner, 3-attempt error recovery. TV `Player.tsx` routes between the two players based on whether `hlsUrl` is present. Mobile uses `expo-av` with ExoPlayer on Android (native HLS ABR); mobile web now uses `hls.js` via HTML5 `<video>` (replaced the old open-in-tab button in `LocalVideoPlayer.tsx`). Broadcast sync position (`positionSecs`) is threaded from the TVGuide through `App.gatedPlay` into `Player.startPositionSecs` so viewers join the 24/7 broadcast in-sync.
     - **Content Organization:** Categorization of sermons (Faith, Healing, Deliverance, Worship, Teachings, Special Programs) with search, filtering, and sorting capabilities.
     - **Radio Mode:** Audio-only mode with background playback, sleep timer, and video-to-audio toggle. Powered by a persistent root-level audio engine (`PersistentAudioPlayer`) mounted in `_layout.tsx` — a hidden, offscreen YouTube iframe that owns playback whenever a sermon is selected, surviving tab navigation. The visible `/player` route takes ownership when active to prevent double-playback. Player refs use a compare-and-swap ownership pattern so racing mount/unmount transitions never null out the active controls.
     - **Offline Capabilities:** Offline video downloads using `expo-file-system` and offline metadata caching.
@@ -66,7 +68,8 @@ The platform is built as a monorepo using `pnpm workspaces`, Node.js 24, and Typ
 - **Live Streaming/Video Platform:** YouTube Live
 - **Payment Gateways (Donations):** Paystack, Flutterwave
 - **In-App Video Player:** `react-native-youtube-iframe`
-- **Audio/Video Playback:** `expo-av`
+- **HLS Adaptive Streaming:** `hls.js` (TV web + mobile web fallback)
+- **Audio/Video Playback:** `expo-av` (mobile native — ExoPlayer HLS on Android)
 - **File System (Mobile):** `expo-file-system`
 - **Caching:** Redis
 - **Containerization:** Docker, Nginx

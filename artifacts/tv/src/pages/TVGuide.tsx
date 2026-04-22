@@ -5,7 +5,14 @@ import { keyEventToAction } from "../lib/tvKeys";
 
 interface TVGuideProps {
   onBack: () => void;
-  onPlay: (youtubeId: string, title: string) => void;
+  /**
+   * Called when the user selects the currently-playing item.
+   * @param youtubeId  YouTube video ID (or empty string for local content)
+   * @param title      Display title
+   * @param hlsUrl     HLS master-playlist URL for local/uploaded content
+   * @param startSecs  Broadcast sync offset in seconds
+   */
+  onPlay: (youtubeId: string, title: string, hlsUrl?: string, startSecs?: number) => void;
 }
 
 function fmtTime(ms: number): string {
@@ -87,8 +94,12 @@ export function TVGuide({ onBack, onPlay }: TVGuideProps) {
     } else if (action === "select") {
       e.preventDefault();
       const item = items[focusedIndex];
-      if (item?.isCurrent && item.youtubeId) {
-        onPlay(item.youtubeId, item.title);
+      if (item?.isCurrent) {
+        if (item.videoSource === "local" && item.localVideoUrl) {
+          onPlay("", item.title, item.localVideoUrl, item.positionSecs);
+        } else if (item.youtubeId) {
+          onPlay(item.youtubeId, item.title, undefined, item.positionSecs);
+        }
       } else if (item && !item.isCurrent) {
         setSelectedIndex(focusedIndex);
         setActionMode("action");
@@ -274,8 +285,12 @@ export function TVGuide({ onBack, onPlay }: TVGuideProps) {
               ref={(el) => { cardRefs.current[idx] = el; }}
               onClick={() => {
                 setFocusedIndex(idx);
-                if (isCurrentProgram && item.youtubeId) {
-                  onPlay(item.youtubeId, item.title);
+                if (isCurrentProgram) {
+                  if (item.videoSource === "local" && item.localVideoUrl) {
+                    onPlay("", item.title, item.localVideoUrl, item.positionSecs);
+                  } else if (item.youtubeId) {
+                    onPlay(item.youtubeId, item.title, undefined, item.positionSecs);
+                  }
                 } else if (isUpcoming) {
                   toggleReminder(item.id);
                 }
@@ -428,12 +443,14 @@ export function TVGuide({ onBack, onPlay }: TVGuideProps) {
               {/* Reminder */}
               <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
                 {isCurrentProgram ? (
-                  item.youtubeId ? (
+                  (item.youtubeId || (item.videoSource === "local" && item.localVideoUrl)) ? (
                     <div style={{
                       display: "flex",
                       alignItems: "center",
                       gap: 4,
-                      background: "rgba(106,13,173,0.5)",
+                      background: item.videoSource === "local"
+                        ? "rgba(106,13,173,0.55)"
+                        : "rgba(106,13,173,0.5)",
                       borderRadius: 8,
                       padding: "4px 10px",
                       fontSize: 12,
@@ -441,7 +458,7 @@ export function TVGuide({ onBack, onPlay }: TVGuideProps) {
                       fontWeight: 600,
                     }}>
                       <PlayIcon />
-                      <span>Watch</span>
+                      <span>{item.videoSource === "local" ? "HLS" : "Watch"}</span>
                     </div>
                   ) : null
                 ) : (

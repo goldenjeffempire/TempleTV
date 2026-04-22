@@ -178,6 +178,10 @@ export function LocalVideoPlayer({
   const transitionOpacity = useRef(new Animated.Value(1)).current;
   const rntp = Platform.OS !== "web" && isTrackPlayerSetup();
 
+  // Web-only: HTML5 video element ref + hls.js instance ref
+  const webVideoRef = useRef<HTMLVideoElement | null>(null);
+  const webHlsRef = useRef<any>(null);
+
   const playerHeight = Math.min(Math.round(width * (9 / 16)), 260);
 
   useEffect(() => {
@@ -286,6 +290,55 @@ export function LocalVideoPlayer({
     [loading, onEnd, onError, onPlay, onPause, startPositionMs, transitionOpacity, updatePlayback]
   );
 
+  // Web HLS player init
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    const video = webVideoRef.current;
+    if (!video) return;
+
+    // Clean up any previous hls instance
+    if (webHlsRef.current) {
+      webHlsRef.current.destroy();
+      webHlsRef.current = null;
+    }
+
+    let Hls: any;
+    try { Hls = require("hls.js"); } catch { return; }
+    // require returns the module, which may have a .default for ESM
+    const HlsClass = Hls?.default ?? Hls;
+    if (!HlsClass) return;
+
+    if (HlsClass.isSupported && HlsClass.isSupported()) {
+      const hls = new HlsClass({ startLevel: -1, maxBufferLength: 30 });
+      webHlsRef.current = hls;
+      hls.loadSource(effectiveUrl);
+      hls.attachMedia(video);
+      hls.on("hlsManifestParsed", () => {
+        if (startPositionMs > 0) video.currentTime = startPositionMs / 1000;
+        if (autoPlay) video.play().catch(() => {});
+      });
+    } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      video.src = effectiveUrl;
+      if (startPositionMs > 0) {
+        video.addEventListener("loadedmetadata", () => {
+          video.currentTime = startPositionMs / 1000;
+        }, { once: true });
+      }
+      if (autoPlay) video.play().catch(() => {});
+    } else {
+      // Direct MP4 fallback
+      video.src = effectiveUrl;
+      if (autoPlay) video.play().catch(() => {});
+    }
+
+    return () => {
+      if (webHlsRef.current) {
+        webHlsRef.current.destroy();
+        webHlsRef.current = null;
+      }
+    };
+  }, [effectiveUrl]);
+
   if (Platform.OS !== "web") {
     if (isRadioMode) {
       return (
@@ -343,30 +396,39 @@ export function LocalVideoPlayer({
     }
   }
 
+  // Web HLS player using hls.js
   return (
     <View style={[styles.container, { height: playerHeight }]}>
-      {thumbnailUrl ? (
-        <Image source={{ uri: thumbnailUrl }} style={styles.thumbnail} resizeMode="cover" />
-      ) : (
-        <View style={[styles.thumbnail, { backgroundColor: "#111" }]} />
-      )}
-      <View style={[styles.overlayCenter, { backgroundColor: "rgba(0,0,0,0.45)" }]}>
-        <Pressable
-          style={[styles.playButton, { backgroundColor: c.primary }]}
-          onPress={() => {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-            if (Platform.OS === "web") {
-              window.open(videoUrl, "_blank");
-            }
-          }}
-        >
-          <Feather name="play" size={28} color="#FFF" />
-        </Pressable>
-        {title && (
-          <Text style={styles.tapHint} numberOfLines={1}>
-            {title}
-          </Text>
-        )}
+      {React.createElement("video", {
+        ref: (el: HTMLVideoElement | null) => {
+          (webVideoRef as any).current = el;
+        },
+        controls: true,
+        playsInline: true,
+        preload: "auto",
+        crossOrigin: "anonymous",
+        style: {
+          width: "100%",
+          height: "100%",
+          objectFit: "contain",
+          background: "#000",
+          display: "block",
+        },
+        onPlay: () => onPlay?.(),
+        onPause: () => onPause?.(),
+        onEnded: () => onEnd?.(),
+        onError: () => onError?.(),
+        onTimeUpdate: (e: any) => {
+          const v = e.target as HTMLVideoElement;
+          if (v.duration) updatePlayback(v.currentTime, v.duration);
+        },
+      })}
+      {/* HLS / ABR badge */}
+      <View style={[styles.modeBadge, { right: 12, left: undefined }]}>
+        <Feather name="layers" size={12} color="#FFF" />
+        <Text style={styles.modeBadgeText}>
+          {hlsMasterUrl ? "HLS ABR" : "MP4"}
+        </Text>
       </View>
     </View>
   );

@@ -38,28 +38,35 @@ export default function App() {
   usePlatformInit();
 
   const [screen, setScreen] = useState<Screen>(getInitialScreen);
-  const [player, setPlayer] = useState<{ videoId: string; title: string } | null>(null);
+  const [player, setPlayer] = useState<{
+    videoId: string;
+    title: string;
+    hlsUrl?: string;
+    startPositionSecs?: number;
+  } | null>(null);
   const [detailsVideo, setDetailsVideo] = useState<{
     video: VideoItem;
     related: VideoItem[];
   } | null>(null);
 
   const [authed, setAuthed] = useState<boolean>(readIsLoggedIn);
-  const [pendingPlay, setPendingPlay] = useState<
-    | { videoId: string; title: string }
-    | null
-  >(null);
+  const [pendingPlay, setPendingPlay] = useState<{
+    videoId: string;
+    title: string;
+    hlsUrl?: string;
+    startPositionSecs?: number;
+  } | null>(null);
   const [gateOpen, setGateOpen] = useState(false);
 
   useEffect(() => subscribeAuth((next) => setAuthed(next)), []);
 
   const gatedPlay = useCallback(
-    (videoId: string, title: string) => {
+    (videoId: string, title: string, hlsUrl?: string, startPositionSecs?: number) => {
       if (authed) {
-        setPlayer({ videoId, title });
+        setPlayer({ videoId, title, hlsUrl, startPositionSecs });
         return;
       }
-      setPendingPlay({ videoId, title });
+      setPendingPlay({ videoId, title, hlsUrl, startPositionSecs });
       setGateOpen(true);
     },
     [authed],
@@ -86,6 +93,8 @@ export default function App() {
         videoId={player.videoId}
         title={player.title}
         onBack={() => setPlayer(null)}
+        hlsUrl={player.hlsUrl}
+        startPositionSecs={player.startPositionSecs}
       />
     );
   } else if (detailsVideo) {
@@ -107,7 +116,7 @@ export default function App() {
     content = (
       <TVGuide
         onBack={() => setScreen("home")}
-        onPlay={(videoId, title) => gatedPlay(videoId, title)}
+        onPlay={(videoId, title, hlsUrl, startSecs) => gatedPlay(videoId, title, hlsUrl, startSecs)}
       />
     );
   } else if (screen === "search") {
