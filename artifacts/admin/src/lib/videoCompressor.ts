@@ -222,15 +222,102 @@ export async function compressVideo(
     // macroblock boundaries (e.g. 1920x1080 -> 1920x1088 = 2,088,960).
     const codecString = pickAvcMainCodecString(outWidth, outHeight, opts.targetFps);
 
-    videoEncoder.configure({
+    // ── Resilient encoder configuration ──────────────────────────────────────
+    // VideoEncoder.configure() throws "Encoder creation error" when the
+    // browser/hardware can't honor the requested config — most often because:
+    //   • The hardware H.264 encoder doesn't support the requested level
+    //     (e.g. Intel QSV refusing 4K@60 at very high bitrates).
+    //   • The combination of codec/width/height/bitrate exceeds platform
+    //     limits even though each individual value is legal.
+    //   • Hardware acceleration was requested but no GPU encoder is present.
+    //
+    // Use isConfigSupported() to probe each variant first (this never throws),
+    // then fall back through: prefer-hardware → no-preference → prefer-software,
+    // and finally try halving the bitrate. This converts the obscure browser
+    // error into a graceful degradation chain. We also try the H.264 Baseline
+    // profile as a last resort since it has the broadest decoder/encoder
+    // support and many chips will accept it where Main fails.
+    const baselineCodec = codecString.replace(/^avc1\.4d40/, "avc1.42e0");
+    type Pref = NonNullable<VideoEncoderConfig["hardwareAcceleration"]>;
+    const baseConfig: VideoEncoderConfig = {
       codec: codecString,
       width: outWidth,
       height: outHeight,
       bitrate: opts.targetBitrate,
       framerate: opts.targetFps,
       latencyMode: "quality",
-      hardwareAcceleration: opts.hardwareAcceleration ?? "prefer-hardware",
+    };
+    const candidates: VideoEncoderConfig[] = [];
+    const explicitPref = opts.hardwareAcceleration;
+    const allAccels: Pref[] = ["prefer-hardware", "no-preference", "prefer-software"];
+    // Try the explicit preference first if given, then degrade through the
+    // remaining options. This honors caller intent without removing the
+    // safety net.
+    const accelOrder: Pref[] = explicitPref
+      ? [explicitPref, ...allAccels.filter((a) => a !== explicitPref)]
+      : allAccels;
+    for (const accel of accelOrder) {
+      candidates.push({ ...baseConfig, hardwareAcceleration: accel });
+    }
+    // Bitrate-halved variants (some hardware encoders cap at ~20 Mbps even
+    // when the level technically allows more).
+    for (const accel of accelOrder) {
+      candidates.push({
+        ...baseConfig,
+        bitrate: Math.max(500_000, Math.round(opts.targetBitrate / 2)),
+        hardwareAcceleration: accel,
+      });
+    }
+    // Last-resort: Baseline profile, software, conservative bitrate.
+    candidates.push({
+      ...baseConfig,
+      codec: baselineCodec,
+      bitrate: Math.max(500_000, Math.round(opts.targetBitrate / 2)),
+      hardwareAcceleration: "prefer-software",
     });
+
+    // Promise that resolves once the encoder is configured (or rejects on
+    // hard failure). Everything that calls videoEncoder.encode() — i.e. the
+    // decoder→encoder pipeline driven by feedChunk()/processFrame() — must
+    // await this. Otherwise we hit InvalidStateError when the first decoded
+    // frame arrives before configure() has completed.
+    const encoderConfiguredPromise: Promise<void> = (async () => {
+      let chosenConfig: VideoEncoderConfig | null = null;
+      let probeError: unknown = null;
+      for (const candidate of candidates) {
+        try {
+          const support = await VideoEncoder.isConfigSupported(candidate);
+          if (support.supported && support.config) {
+            chosenConfig = support.config;
+            break;
+          }
+        } catch (err) {
+          probeError = err;
+        }
+      }
+
+      if (!chosenConfig) {
+        throw new Error(
+          `Cannot create H.264 encoder for ${outWidth}×${outHeight}@${opts.targetFps}fps ` +
+          `(${Math.round(opts.targetBitrate / 1000)} kbps). Your browser's WebCodecs ` +
+          `implementation rejected every variant we tried (hardware + software, full + half bitrate, ` +
+          `Main + Baseline profile). Try uploading without client compression, or use a smaller source video.` +
+          (probeError instanceof Error ? ` Last probe error: ${probeError.message}` : "")
+        );
+      }
+
+      try {
+        videoEncoder.configure(chosenConfig);
+      } catch (err) {
+        throw new Error(
+          `Encoder creation error: ${err instanceof Error ? err.message : String(err)}. ` +
+          `Config was ${chosenConfig.codec} ${chosenConfig.width}×${chosenConfig.height}@` +
+          `${chosenConfig.framerate ?? "?"}fps, ${Math.round((chosenConfig.bitrate ?? 0) / 1000)} kbps, ` +
+          `accel=${chosenConfig.hardwareAcceleration ?? "default"}.`
+        );
+      }
+    })();
+    encoderConfiguredPromise.catch(reject);
 
     // ── AudioEncoder ─────────────────────────────────────────────────────────
     let audioEncoderReady = false;
@@ -265,6 +352,20 @@ export async function compressVideo(
 
     const processFrame = async (frame: VideoFrame) => {
       if (signal.aborted) { frame.close(); return; }
+
+      // Wait for encoder configuration to complete before encoding any frame.
+      // Decoded frames can arrive before VideoEncoder.configure() returns
+      // (since we probe candidates asynchronously); encoding before that is
+      // an InvalidStateError. The await is essentially free once the encoder
+      // is configured.
+      try {
+        await encoderConfiguredPromise;
+      } catch {
+        // encoderConfiguredPromise has already rejected the outer promise;
+        // just drop this frame cleanly.
+        frame.close();
+        return;
+      }
 
       let frameToEncode: VideoFrame;
       if (needsScale && offscreenCanvas && ctx2d) {
@@ -527,6 +628,13 @@ export async function compressVideo(
       reject(new DOMException("Aborted", "AbortError"));
     }, { once: true });
 
-    feedChunk().catch(reject);
+    // Don't start streaming the file into mp4box until the encoder is
+    // configured. mp4box parsing itself is independent, but waiting here
+    // means any encoder-config failure surfaces immediately with our clear
+    // error message instead of after the analyze phase.
+    encoderConfiguredPromise.then(() => {
+      if (signal.aborted) return;
+      feedChunk().catch(reject);
+    }).catch(() => { /* already rejected via .catch(reject) above */ });
   });
 }
