@@ -1,15 +1,21 @@
-import { spawn } from "child_process";
 import { promises as fs } from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { randomUUID } from "crypto";
 import { db, videosTable, transcodingJobsTable, broadcastQueueTable } from "@workspace/db";
-import { eq, and, desc, asc } from "drizzle-orm";
+import { eq, and, desc, asc, or, isNull, lte, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { broadcastLiveEvent } from "./liveEvents";
 import { cache } from "./cache";
 import { objectStorageClient } from "./objectStorage";
 import { createReadStream } from "fs";
+import {
+  runFfmpeg,
+  validateAndProbeInput,
+  assertFfmpegAvailable,
+  isFfmpegReady,
+  TerminalTranscodeError,
+} from "./ffmpeg";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, "..", "uploads");
@@ -129,108 +135,12 @@ function parseDurationToSeconds(dur: string): number {
   return parseInt(match[1]) * 3600 + parseInt(match[2]) * 60 + parseFloat(match[3]);
 }
 
-function runFFmpeg(
-  args: string[],
-  onProgress?: (percent: number) => void
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
-
-    let totalDuration = 0;
-    let stderr = "";
-
-    proc.stderr.on("data", (chunk: Buffer) => {
-      const text = chunk.toString();
-      stderr += text;
-
-      if (totalDuration === 0) {
-        const durMatch = text.match(/Duration:\s*(\d+:\d+:\d+\.?\d*)/);
-        if (durMatch) {
-          totalDuration = parseDurationToSeconds(durMatch[1]);
-        }
-      }
-
-      if (onProgress && totalDuration > 0) {
-        const timeMatch = text.match(/time=(\d+:\d+:\d+\.?\d*)/);
-        if (timeMatch) {
-          const currentTime = parseDurationToSeconds(timeMatch[1]);
-          const pct = Math.min(100, Math.round((currentTime / totalDuration) * 100));
-          onProgress(pct);
-        }
-      }
-    });
-
-    proc.on("close", (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        const lastLines = stderr.split("\n").slice(-5).join("\n");
-        reject(new Error(`FFmpeg exited with code ${code}: ${lastLines}`));
-      }
-    });
-
-    proc.on("error", (err) => {
-      reject(new Error(`Failed to spawn FFmpeg: ${err.message}`));
-    });
-  });
-}
-
-async function probeDuration(inputPath: string): Promise<number> {
-  return new Promise((resolve) => {
-    const proc = spawn("ffprobe", [
-      "-v", "error",
-      "-show_entries", "format=duration",
-      "-of", "default=noprint_wrappers=1:nokey=1",
-      inputPath,
-    ], { stdio: ["ignore", "pipe", "ignore"] });
-
-    let output = "";
-    proc.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); });
-    proc.on("close", () => {
-      const val = parseFloat(output.trim());
-      resolve(Number.isFinite(val) && val > 0 ? Math.round(val) : 0);
-    });
-    proc.on("error", () => resolve(0));
-  });
-}
-
-async function probeVideoInfo(inputPath: string): Promise<{ width: number; height: number; fps: number }> {
-  return new Promise((resolve) => {
-    const proc = spawn("ffprobe", [
-      "-v", "error",
-      "-select_streams", "v:0",
-      "-show_entries", "stream=width,height,r_frame_rate",
-      "-of", "json",
-      inputPath,
-    ], { stdio: ["ignore", "pipe", "ignore"] });
-
-    let output = "";
-    proc.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); });
-    proc.on("close", () => {
-      try {
-        const parsed = JSON.parse(output) as { streams?: Array<{ width?: number; height?: number; r_frame_rate?: string }> };
-        const stream = parsed.streams?.[0];
-        const width = stream?.width ?? 0;
-        const height = stream?.height ?? 0;
-        let fps = 30;
-        if (stream?.r_frame_rate) {
-          const [num, den] = stream.r_frame_rate.split("/").map(Number);
-          if (num && den && den > 0) fps = Math.round(num / den);
-        }
-        resolve({ width, height, fps });
-      } catch {
-        resolve({ width: 0, height: 0, fps: 30 });
-      }
-    });
-    proc.on("error", () => resolve({ width: 0, height: 0, fps: 30 }));
-  });
-}
-
 async function transcodeQuality(
   inputPath: string,
   outputDir: string,
   profile: QualityProfile,
   sourceHeight: number,
+  sourceDurationSec: number,
   onProgress?: (pct: number) => void
 ): Promise<boolean> {
   // Skip profiles higher than source (no upscaling)
@@ -273,7 +183,19 @@ async function transcodeQuality(
     playlistPath,
   ];
 
-  await runFFmpeg(args, onProgress);
+  // Wall-clock cap: generous 20× source duration, floored at 5 min, ceilinged
+  // at 4 h. Idle watchdog: 90 s of silence kills the process.
+  const wallClockMs = Math.min(
+    4 * 60 * 60 * 1000,
+    Math.max(5 * 60 * 1000, Math.ceil(sourceDurationSec * 20) * 1000),
+  );
+
+  await runFfmpeg({
+    args,
+    onProgress,
+    idleTimeoutMs: 90_000,
+    maxWallClockMs: wallClockMs,
+  });
   return true;
 }
 
@@ -351,23 +273,85 @@ async function collectFiles(dir: string): Promise<string[]> {
 
 let isWorkerRunning = false;
 
+// Backoff schedule for auto-retry: 30 s → 1 min → 2 min (2^n × 30s).
+function backoffDelayMs(attempt: number): number {
+  return Math.min(15 * 60 * 1000, 30_000 * Math.pow(2, Math.max(0, attempt - 1)));
+}
+
 async function processNextJob(): Promise<boolean> {
-  const rows = await db
-    .select()
-    .from(transcodingJobsTable)
-    .where(eq(transcodingJobsTable.status, "queued"))
-    .orderBy(desc(transcodingJobsTable.priority), asc(transcodingJobsTable.createdAt))
-    .limit(1);
+  // Hard-gate on ffmpeg readiness. If the binaries weren't verified at boot,
+  // try once more here lazily; if still missing, exit early WITHOUT touching
+  // the queue (so attempts aren't burned on infrastructure failures).
+  if (!isFfmpegReady()) {
+    try {
+      await assertFfmpegAvailable();
+    } catch (err) {
+      logger.error(
+        { err: err instanceof Error ? err.message : String(err) },
+        "Skipping job processing — ffmpeg unavailable",
+      );
+      return false;
+    }
+  }
 
-  const job = rows[0];
-  if (!job) return false;
+  // Atomically claim the next eligible job using PostgreSQL's
+  // FOR UPDATE SKIP LOCKED — the canonical job-queue pattern. This
+  // eliminates the SELECT-then-UPDATE race so multiple workers (or
+  // multiple instances) can never claim the same row.
+  const claimed = await db.execute<{
+    id: string;
+    video_id: string;
+    video_path: string;
+    attempts: number;
+    max_attempts: number;
+  }>(sql`
+    UPDATE transcoding_jobs
+    SET status       = 'processing',
+        started_at   = NOW(),
+        progress     = 0,
+        attempts     = attempts + 1,
+        next_retry_at = NULL
+    WHERE id = (
+      SELECT id FROM transcoding_jobs
+      WHERE status = 'queued'
+        AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+      ORDER BY priority DESC, created_at ASC
+      LIMIT 1
+      FOR UPDATE SKIP LOCKED
+    )
+    RETURNING id, video_id, video_path, attempts, max_attempts
+  `);
 
-  logger.info({ jobId: job.id, videoId: job.videoId }, "Starting transcoding job");
+  const claimedRow = (claimed as unknown as { rows?: Array<{
+    id: string;
+    video_id: string;
+    video_path: string;
+    attempts: number;
+    max_attempts: number;
+  }> }).rows ?? (claimed as unknown as Array<{
+    id: string;
+    video_id: string;
+    video_path: string;
+    attempts: number;
+    max_attempts: number;
+  }>);
 
-  await db
-    .update(transcodingJobsTable)
-    .set({ status: "processing", startedAt: new Date(), progress: 0 })
-    .where(eq(transcodingJobsTable.id, job.id));
+  const claimedJob = Array.isArray(claimedRow) ? claimedRow[0] : undefined;
+  if (!claimedJob) return false;
+
+  const job = {
+    id: claimedJob.id,
+    videoId: claimedJob.video_id,
+    videoPath: claimedJob.video_path,
+    attempts: claimedJob.attempts,
+    maxAttempts: claimedJob.max_attempts,
+  };
+  const attemptNumber = job.attempts;
+
+  logger.info(
+    { jobId: job.id, videoId: job.videoId, attempt: attemptNumber, max: job.maxAttempts },
+    "Starting transcoding job",
+  );
 
   await db
     .update(videosTable)
@@ -379,16 +363,21 @@ async function processNextJob(): Promise<boolean> {
     videoId: job.videoId,
     status: "processing",
     progress: 0,
+    attempt: attemptNumber,
   });
 
   try {
     const hlsVideoDir = path.join(HLS_DIR, job.videoId);
     await fs.mkdir(hlsVideoDir, { recursive: true });
 
-    // Probe source video to skip upscale variants
-    const { height: sourceHeight } = await probeVideoInfo(job.videoPath);
+    // Strict input validation — fail fast with a clear reason if the source
+    // is corrupt, unsupported, or missing a video stream.
+    const probed = await validateAndProbeInput(job.videoPath);
+    const sourceHeight = probed.height;
+    const sourceDurationSec = probed.durationSec;
 
     const producedProfiles: QualityProfile[] = [];
+    const variantFailures: Array<{ profile: string; error: string }> = [];
 
     for (let i = 0; i < QUALITY_PROFILES.length; i++) {
       const profile = QUALITY_PROFILES[i]!;
@@ -401,31 +390,55 @@ async function processNextJob(): Promise<boolean> {
 
       let lastBroadcastPct = -1;
 
-      const produced = await transcodeQuality(
-        job.videoPath,
-        qualityOutputDir,
-        profile,
-        sourceHeight,
-        async (pct) => {
-          const overall = profileBaseProgress + Math.round((pct / 100) * profileProgressRange);
-          await db
-            .update(transcodingJobsTable)
-            .set({ progress: overall })
-            .where(eq(transcodingJobsTable.id, job.id));
+      // Per-variant fallback: a single quality failure is logged and skipped;
+      // the job only fails if ZERO variants are produced.
+      try {
+        const produced = await transcodeQuality(
+          job.videoPath,
+          qualityOutputDir,
+          profile,
+          sourceHeight,
+          sourceDurationSec,
+          async (pct) => {
+            const overall = profileBaseProgress + Math.round((pct / 100) * profileProgressRange);
+            await db
+              .update(transcodingJobsTable)
+              .set({ progress: overall })
+              .where(eq(transcodingJobsTable.id, job.id));
 
-          if (overall - lastBroadcastPct >= 3) {
-            lastBroadcastPct = overall;
-            broadcastLiveEvent("transcoding-update", {
-              jobId: job.id,
-              videoId: job.videoId,
-              status: "processing",
-              progress: overall,
-            });
-          }
-        }
+            if (overall - lastBroadcastPct >= 3) {
+              lastBroadcastPct = overall;
+              broadcastLiveEvent("transcoding-update", {
+                jobId: job.id,
+                videoId: job.videoId,
+                status: "processing",
+                progress: overall,
+              });
+            }
+          },
+        );
+
+        if (produced) producedProfiles.push(profile);
+      } catch (variantErr) {
+        const errMsg = variantErr instanceof Error ? variantErr.message : String(variantErr);
+        logger.warn(
+          { jobId: job.id, profile: profile.name, err: errMsg },
+          "Variant transcode failed — skipping this quality and continuing",
+        );
+        variantFailures.push({ profile: profile.name, error: errMsg });
+        // Clean partial output so the master playlist doesn't reference it.
+        await fs.rm(qualityOutputDir, { recursive: true, force: true }).catch(() => {});
+      }
+    }
+
+    if (producedProfiles.length === 0) {
+      const summary = variantFailures
+        .map((v) => `${v.profile}: ${v.error}`)
+        .join(" | ")
+        .slice(0, 1000);
+      throw new Error(
+        `All ${QUALITY_PROFILES.length} quality variants failed${summary ? ` — ${summary}` : ""}`,
       );
-
-      if (produced) producedProfiles.push(profile);
     }
 
     await generateMasterPlaylist(hlsVideoDir, producedProfiles);
@@ -434,11 +447,20 @@ async function processNextJob(): Promise<boolean> {
     const baseUrl = process.env.API_BASE_URL ?? (devDomain ? `https://${devDomain}` : "");
     const hlsMasterUrl = `${baseUrl}/api/hls/${job.videoId}/master.m3u8`;
 
-    const probedDuration = await probeDuration(job.videoPath);
+    const probedDuration = Math.round(sourceDurationSec);
+    const partialNote =
+      variantFailures.length > 0
+        ? `Partial: produced ${producedProfiles.length}/${QUALITY_PROFILES.length} variants (skipped ${variantFailures.map((v) => v.profile).join(", ")})`
+        : null;
 
     await db
       .update(transcodingJobsTable)
-      .set({ status: "done", progress: 100, completedAt: new Date() })
+      .set({
+        status: "done",
+        progress: 100,
+        completedAt: new Date(),
+        errorMessage: partialNote,
+      })
       .where(eq(transcodingJobsTable.id, job.id));
 
     const videoUpdates: Partial<typeof videosTable.$inferInsert> = {
@@ -465,7 +487,16 @@ async function processNextJob(): Promise<boolean> {
 
     await cache.del("broadcast:queue");
 
-    logger.info({ jobId: job.id, videoId: job.videoId, hlsMasterUrl }, "Transcoding complete");
+    logger.info(
+      {
+        jobId: job.id,
+        videoId: job.videoId,
+        hlsMasterUrl,
+        variants: producedProfiles.map((p) => p.name),
+        skipped: variantFailures.map((v) => v.profile),
+      },
+      "Transcoding complete",
+    );
 
     broadcastLiveEvent("transcoding-update", {
       jobId: job.id,
@@ -485,24 +516,71 @@ async function processNextJob(): Promise<boolean> {
     uploadHlsToGcs(job.videoId, hlsVideoDir).catch(() => {});
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.error({ jobId: job.id, err: msg }, "Transcoding job failed");
+    // Terminal errors (corrupt input, no video stream, etc.) skip retries —
+    // re-running the encoder against the same broken file would just fail
+    // identically and burn through the retry budget.
+    const isTerminal = err instanceof TerminalTranscodeError;
+    const willRetry = !isTerminal && attemptNumber < job.maxAttempts;
 
-    await db
-      .update(transcodingJobsTable)
-      .set({ status: "failed", errorMessage: msg })
-      .where(eq(transcodingJobsTable.id, job.id));
+    if (willRetry) {
+      const delayMs = backoffDelayMs(attemptNumber);
+      const retryAt = new Date(Date.now() + delayMs);
+      logger.warn(
+        { jobId: job.id, attempt: attemptNumber, max: job.maxAttempts, retryAt, err: msg },
+        "Transcoding attempt failed — scheduling auto-retry",
+      );
 
-    await db
-      .update(videosTable)
-      .set({ transcodingStatus: "failed" })
-      .where(eq(videosTable.id, job.videoId));
+      await db
+        .update(transcodingJobsTable)
+        .set({
+          status: "queued",
+          progress: 0,
+          errorMessage: `Attempt ${attemptNumber}/${job.maxAttempts} failed: ${msg}`,
+          startedAt: null,
+          nextRetryAt: retryAt,
+        })
+        .where(eq(transcodingJobsTable.id, job.id));
 
-    broadcastLiveEvent("transcoding-update", {
-      jobId: job.id,
-      videoId: job.videoId,
-      status: "failed",
-      error: msg,
-    });
+      await db
+        .update(videosTable)
+        .set({ transcodingStatus: "queued" })
+        .where(eq(videosTable.id, job.videoId));
+
+      broadcastLiveEvent("transcoding-update", {
+        jobId: job.id,
+        videoId: job.videoId,
+        status: "queued",
+        attempt: attemptNumber,
+        nextRetryAt: retryAt.toISOString(),
+        error: msg,
+      });
+    } else {
+      logger.error(
+        { jobId: job.id, attempt: attemptNumber, err: msg },
+        "Transcoding job permanently failed (max attempts exhausted)",
+      );
+
+      await db
+        .update(transcodingJobsTable)
+        .set({
+          status: "failed",
+          errorMessage: `Failed after ${attemptNumber} attempts: ${msg}`,
+          completedAt: new Date(),
+        })
+        .where(eq(transcodingJobsTable.id, job.id));
+
+      await db
+        .update(videosTable)
+        .set({ transcodingStatus: "failed" })
+        .where(eq(videosTable.id, job.videoId));
+
+      broadcastLiveEvent("transcoding-update", {
+        jobId: job.id,
+        videoId: job.videoId,
+        status: "failed",
+        error: msg,
+      });
+    }
   }
 
   return true;
@@ -520,6 +598,50 @@ async function startWorker(): Promise<void> {
   } finally {
     isWorkerRunning = false;
     logger.info("Transcoding worker idle — queue empty");
+  }
+}
+
+// ── Retry tick ────────────────────────────────────────────────────────────────
+// Wake every 30 s and run the worker if there are queued jobs (including
+// auto-retry jobs whose backoff has elapsed). This is what makes scheduled
+// retries actually fire without requiring a new upload to trigger them.
+let retryTickHandle: NodeJS.Timeout | null = null;
+
+export function startRetryTick(intervalMs = 30_000): void {
+  if (retryTickHandle) return;
+  retryTickHandle = setInterval(() => {
+    if (isWorkerRunning) return;
+    db.select({ id: transcodingJobsTable.id })
+      .from(transcodingJobsTable)
+      .where(
+        and(
+          eq(transcodingJobsTable.status, "queued"),
+          or(
+            isNull(transcodingJobsTable.nextRetryAt),
+            lte(transcodingJobsTable.nextRetryAt, new Date()),
+          ),
+        ),
+      )
+      .limit(1)
+      .then((rows: Array<{ id: string }>) => {
+        if (rows.length > 0) {
+          startWorker().catch((err: unknown) =>
+            logger.error({ err }, "Retry tick: worker crashed"),
+          );
+        }
+      })
+      .catch((err: unknown) =>
+        logger.error({ err }, "Retry tick: query failed"),
+      );
+  }, intervalMs);
+  retryTickHandle.unref();
+  logger.info({ intervalMs }, "Transcoding retry tick started");
+}
+
+export function stopRetryTick(): void {
+  if (retryTickHandle) {
+    clearInterval(retryTickHandle);
+    retryTickHandle = null;
   }
 }
 
@@ -556,9 +678,19 @@ export async function queueTranscodingJob(
 }
 
 export async function retryTranscodingJob(jobId: string): Promise<void> {
+  // Manual retry from admin UI — reset attempts so the user gets a fresh
+  // retry budget (3 more attempts) instead of immediately re-failing.
   await db
     .update(transcodingJobsTable)
-    .set({ status: "queued", progress: 0, errorMessage: null, startedAt: null, completedAt: null })
+    .set({
+      status: "queued",
+      progress: 0,
+      errorMessage: null,
+      startedAt: null,
+      completedAt: null,
+      attempts: 0,
+      nextRetryAt: null,
+    })
     .where(and(eq(transcodingJobsTable.id, jobId), eq(transcodingJobsTable.status, "failed")));
 
   const rows = await db.select().from(transcodingJobsTable).where(eq(transcodingJobsTable.id, jobId));
@@ -582,9 +714,18 @@ export async function resumePendingJobsOnStartup(): Promise<void> {
 
   for (const job of stuck) {
     logger.warn({ jobId: job.id }, "Resetting stuck processing job to queued");
+    // Decrement attempts so the crash-recovery replay doesn't burn through
+    // the retry budget (the previous attempt never ran to completion).
+    const restoredAttempts = Math.max(0, job.attempts - 1);
     await db
       .update(transcodingJobsTable)
-      .set({ status: "queued", progress: 0, startedAt: null })
+      .set({
+        status: "queued",
+        progress: 0,
+        startedAt: null,
+        attempts: restoredAttempts,
+        nextRetryAt: null,
+      })
       .where(eq(transcodingJobsTable.id, job.id));
     await db
       .update(videosTable)

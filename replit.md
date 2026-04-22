@@ -27,7 +27,14 @@ The platform is built as a monorepo using `pnpm workspaces`, Node.js 24, and Typ
 - **Monorepo Management:** `pnpm` for package management and workspace organization.
 - **Cross-Platform Mobile:** Expo (React Native) with `expo-router` for mobile development.
 - **Admin Dashboard:** React/Vite for the administrative interface.
-- **Adaptive Streaming:** HLS transcoding (FFmpeg) with adaptive bitrate (ABR) streaming for uploaded videos, served via Replit Object Storage (GCS).
+- **Adaptive Streaming:** HLS transcoding (FFmpeg) with adaptive bitrate (ABR) streaming for uploaded videos, served via Replit Object Storage (GCS). The transcoding pipeline (`artifacts/api-server/src/lib/transcoder.ts` + `lib/ffmpeg.ts`) is hardened for enterprise reliability:
+    - **Boot-time preflight** (`assertFfmpegAvailable`) resolves and caches the `ffmpeg`/`ffprobe` binary paths once at server startup, honors `FFMPEG_PATH`/`FFPROBE_PATH` env overrides, and fails loud with an actionable error if either binary is missing.
+    - **Strict input validation** (`validateAndProbeInput`) probes container + all streams before the encoder is initialized, throwing a `TerminalTranscodeError` for corrupt files / no video stream / invalid dimensions / zero duration / sub-1KB uploads. Terminal errors skip retries — they're permanent failures of the asset, not the system.
+    - **Idle + wall-clock watchdogs** (`runFfmpeg`) kill any ffmpeg process that goes silent for 90s or exceeds a per-encode wall-clock cap (clamped between 5 min and 4 h, scaled by source duration). Kills are SIGTERM with a 5s grace before SIGKILL. Eliminates hung-encoder zombies.
+    - **Atomic job claiming** uses Postgres `UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED) RETURNING *` so multiple workers (or future multi-instance deployments) can never claim the same row.
+    - **Per-variant fallback**: a single quality variant failure is logged, its partial output cleaned up, and the remaining ladder continues; the job only fails if ZERO variants are produced.
+    - **Auto-retry with exponential backoff**: transient failures schedule `nextRetryAt = now + 30s/1m/2m...` (capped at 15m) for up to `maxAttempts` (default 3). The `startRetryTick` interval (30s) wakes the worker so backoff retries fire even with no new uploads. Crash-recovery (`resumePendingJobsOnStartup`) decrements `attempts` so an interrupted attempt doesn't burn the retry budget.
+    - **Partial-success transparency**: jobs that succeed with a degraded ladder record `Partial: produced N/5 variants (skipped …)` in `errorMessage` so admins see degradation in the queue UI.
 - **Caching:** Dual-layer Redis/in-memory caching for API responses and YouTube data, with transparent fallback.
 - **Authentication:** JWT-based user authentication with refresh tokens, account management, and server-side storage for favorites and watch history.
 - **Notifications:** Expo Push API for scheduled and instant push notifications.

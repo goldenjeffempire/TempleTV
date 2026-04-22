@@ -1,7 +1,8 @@
 import http from "http";
 import app from "./app";
 import { logger } from "./lib/logger";
-import { resumePendingJobsOnStartup } from "./lib/transcoder";
+import { resumePendingJobsOnStartup, startRetryTick } from "./lib/transcoder";
+import { assertFfmpegAvailable } from "./lib/ffmpeg";
 import { startNotificationScheduler } from "./lib/notification-scheduler";
 import { startSSEHeartbeat, closeAllSSEClients } from "./lib/liveEvents";
 import { startYoutubeCatalogueScheduler } from "./routes/youtube";
@@ -35,9 +36,23 @@ const server = http.createServer(app);
 server.listen(port, "0.0.0.0", () => {
   logger.info({ port, host: "0.0.0.0" }, "Server listening");
 
-  resumePendingJobsOnStartup().catch((err) => {
-    logger.error({ err }, "Failed to resume pending transcoding jobs");
-  });
+  // Verify ffmpeg + ffprobe are present BEFORE the worker can pick up jobs.
+  // We log loudly on failure but don't crash — the rest of the API still
+  // serves traffic, and uploads can still be received; only the transcoder
+  // is gated behind this check.
+  assertFfmpegAvailable()
+    .then(() => {
+      resumePendingJobsOnStartup().catch((err) => {
+        logger.error({ err }, "Failed to resume pending transcoding jobs");
+      });
+      startRetryTick();
+    })
+    .catch((err) => {
+      logger.error(
+        { err: err instanceof Error ? err.message : String(err) },
+        "FFmpeg preflight failed — transcoder disabled until binaries are available",
+      );
+    });
 
   startNotificationScheduler();
   startSSEHeartbeat();
