@@ -129,3 +129,26 @@ html, body, #root {
   /* Hero gets its focus ring from the inner element; nothing extra here. */
 }
 
+/*
+ * Hide elements meaningless on touch devices (e.g. "Press ENTER to retry"
+ * keyboard hints in the player). Uses pointer:coarse to detect touch as
+ * the primary input — works on phones/tablets, stays visible on TVs and
+ * desktops with mice/remotes.
+ */
+@media (pointer: coarse) {
+  .tt-hide-on-touch {
+    display: none !important;
+  }
+}
+
+/*
+ * Mobile YouTube player polish: ensure the iframe always fills the
+ * viewport, and disable text selection on the chrome overlays so a
+ * tap on the back button doesn't accidentally select the title.
+ */
+@media (max-width: 640px) {
+  iframe[title] {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+

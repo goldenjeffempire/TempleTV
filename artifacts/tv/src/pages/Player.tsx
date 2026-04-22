@@ -136,7 +136,14 @@ export function Player({ videoId, title, onBack }: PlayerProps) {
   return (
     <div
       className="fixed inset-0 flex flex-col items-center justify-center"
-      style={{ background: "#000", zIndex: 100 }}
+      style={{
+        background: "#000",
+        zIndex: 100,
+        // dvh handles mobile browser chrome (URL bar) collapsing properly;
+        // falls back to vh on browsers without dynamic viewport units.
+        height: "100dvh",
+        width: "100vw",
+      }}
     >
       {/* Cinematic loading veil — visible until the iframe reports ready */}
       {!loadError && !isLoaded && (
@@ -204,6 +211,9 @@ export function Player({ videoId, title, onBack }: PlayerProps) {
             height: "100%",
             border: "none",
             display: "block",
+            // Prevent iOS Safari from over-zooming the iframe when the
+            // user double-taps; YouTube handles its own gestures.
+            touchAction: "manipulation",
           }}
         />
       )}
@@ -216,33 +226,58 @@ export function Player({ videoId, title, onBack }: PlayerProps) {
             flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
-            gap: 24,
-            padding: "0 60px",
+            gap: "clamp(14px, 2.5vw, 24px)",
+            padding: "0 clamp(20px, 6vw, 60px)",
             textAlign: "center",
+            width: "100%",
+            maxWidth: 720,
           }}
         >
           <div
             aria-hidden
             style={{
-              width: 64,
-              height: 64,
-              borderRadius: 32,
+              width: "clamp(48px, 8vw, 64px)",
+              height: "clamp(48px, 8vw, 64px)",
+              borderRadius: "50%",
               background: "rgba(255,255,255,0.08)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              fontSize: 30,
+              fontSize: "clamp(22px, 4vw, 30px)",
             }}
           >
             ⚠️
           </div>
-          <h2 style={{ fontSize: 32, fontWeight: 700, color: "#fff", margin: 0 }}>
+          <h2
+            style={{
+              fontSize: "clamp(20px, 4.2vw, 32px)",
+              fontWeight: 700,
+              color: "#fff",
+              margin: 0,
+              lineHeight: 1.2,
+            }}
+          >
             Playback unavailable
           </h2>
-          <p style={{ fontSize: 18, color: "rgba(255,255,255,0.7)", maxWidth: 720 }}>
+          <p
+            style={{
+              fontSize: "clamp(14px, 2.2vw, 18px)",
+              color: "rgba(255,255,255,0.7)",
+              maxWidth: 560,
+              lineHeight: 1.5,
+              margin: 0,
+            }}
+          >
             {loadError}
           </p>
-          <div style={{ display: "flex", gap: 16 }}>
+          <div
+            style={{
+              display: "flex",
+              gap: "clamp(10px, 2vw, 16px)",
+              flexWrap: "wrap",
+              justifyContent: "center",
+            }}
+          >
             <button
               autoFocus
               onClick={handleManualRetry}
@@ -251,11 +286,12 @@ export function Player({ videoId, title, onBack }: PlayerProps) {
                 color: "#fff",
                 border: "none",
                 borderRadius: 12,
-                padding: "14px 32px",
-                fontSize: 18,
+                padding: "clamp(12px, 2vw, 14px) clamp(22px, 4vw, 32px)",
+                fontSize: "clamp(15px, 2.2vw, 18px)",
                 fontWeight: 700,
                 cursor: "pointer",
                 outline: "none",
+                minHeight: 44,
               }}
             >
               Try again
@@ -267,16 +303,25 @@ export function Player({ videoId, title, onBack }: PlayerProps) {
                 color: "#fff",
                 border: "none",
                 borderRadius: 12,
-                padding: "14px 32px",
-                fontSize: 18,
+                padding: "clamp(12px, 2vw, 14px) clamp(22px, 4vw, 32px)",
+                fontSize: "clamp(15px, 2.2vw, 18px)",
                 fontWeight: 600,
                 cursor: "pointer",
+                minHeight: 44,
               }}
             >
               Back
             </button>
           </div>
-          <p style={{ fontSize: 14, color: "rgba(255,255,255,0.4)", marginTop: 8 }}>
+          {/* Keyboard hint is irrelevant on touch — hide on small screens */}
+          <p
+            className="tt-hide-on-touch"
+            style={{
+              fontSize: 14,
+              color: "rgba(255,255,255,0.4)",
+              marginTop: 8,
+            }}
+          >
             Press <strong style={{ color: "#fff" }}>ENTER</strong> to retry,{" "}
             <strong style={{ color: "#fff" }}>BACK</strong> to return
           </p>
@@ -289,29 +334,49 @@ export function Player({ videoId, title, onBack }: PlayerProps) {
           style={{
             background:
               "linear-gradient(to bottom, rgba(0,0,0,0.85) 0%, transparent 100%)",
-            padding: "28px 48px 60px",
+            // Top: respect notch/safe-area on iOS; horizontal scales with viewport.
+            padding:
+              "calc(env(safe-area-inset-top, 0px) + clamp(14px, 3vw, 28px)) clamp(16px, 4vw, 48px) clamp(32px, 6vw, 60px)",
             pointerEvents: "none",
           }}
         >
-          <div className="flex items-center gap-4">
+          <div
+            className="flex items-center"
+            style={{ gap: "clamp(10px, 2vw, 16px)" }}
+          >
             <button
               style={{
                 background: "rgba(255,255,255,0.12)",
                 border: "none",
                 borderRadius: 10,
-                padding: "10px 16px",
+                padding: "clamp(8px, 1.6vw, 10px) clamp(12px, 2.4vw, 16px)",
                 color: "#fff",
-                fontSize: 16,
+                fontSize: "clamp(14px, 2vw, 16px)",
                 cursor: "pointer",
                 pointerEvents: "auto",
                 backdropFilter: "blur(4px)",
+                minHeight: 40,
+                flexShrink: 0,
               }}
               onClick={onBack}
+              aria-label="Back"
             >
               ← Back
             </button>
             <h2
-              style={{ fontSize: 28, fontWeight: 700, color: "#fff", flex: 1 }}
+              style={{
+                fontSize: "clamp(15px, 2.6vw, 28px)",
+                fontWeight: 700,
+                color: "#fff",
+                flex: 1,
+                margin: 0,
+                // Truncate long titles on narrow screens
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                textShadow: "0 2px 12px rgba(0,0,0,0.6)",
+              }}
+              title={title}
             >
               {title}
             </h2>
@@ -319,19 +384,27 @@ export function Player({ videoId, title, onBack }: PlayerProps) {
         </div>
       )}
 
+      {/* Bottom keyboard hint — hidden on touch devices where it's meaningless */}
       {!loadError && (
         <div
-          className="absolute inset-x-0 bottom-0"
+          className="absolute inset-x-0 bottom-0 tt-hide-on-touch"
           style={{
             background:
               "linear-gradient(to top, rgba(0,0,0,0.7) 0%, transparent 100%)",
-            padding: "60px 48px 24px",
+            padding:
+              "clamp(32px, 6vw, 60px) clamp(16px, 4vw, 48px) calc(env(safe-area-inset-bottom, 0px) + clamp(16px, 2.4vw, 24px))",
             pointerEvents: "none",
             opacity: showControls ? 1 : 0,
             transition: "opacity 0.3s ease",
           }}
         >
-          <p style={{ fontSize: 16, color: "rgba(255,255,255,0.6)" }}>
+          <p
+            style={{
+              fontSize: "clamp(13px, 1.6vw, 16px)",
+              color: "rgba(255,255,255,0.6)",
+              margin: 0,
+            }}
+          >
             Press <strong style={{ color: "#fff" }}>ESC</strong> or{" "}
             <strong style={{ color: "#fff" }}>BACK</strong> to return
           </p>

@@ -36,8 +36,10 @@ export function LiveHero({ liveStatus, focused, onSelect }: LiveHeroProps) {
       className={`relative overflow-hidden ${focused ? "tv-hero-focused" : ""}`}
       style={{
         width: "100%",
+        // Scales gracefully: short on phones, dominant on TV/desktop.
+        // 70dvh handles mobile browser chrome (URL bar) properly.
         height: "min(82vh, 820px)",
-        minHeight: 520,
+        minHeight: "max(60dvh, 360px)",
         background: "#070707",
         cursor: "pointer",
         outline: "none",
@@ -129,10 +131,13 @@ export function LiveHero({ liveStatus, focused, onSelect }: LiveHeroProps) {
           left: 0,
           right: 0,
           bottom: 0,
-          padding: "0 60px 80px",
+          // Horizontal padding scales 16px (phone) → 60px (TV/desktop).
+          // Bottom padding scales 32px → 80px and respects iOS safe-area.
+          padding:
+            "0 clamp(16px, 4vw, 60px) calc(env(safe-area-inset-bottom, 0px) + clamp(32px, 6vw, 80px))",
           display: "flex",
           flexDirection: "column",
-          gap: 18,
+          gap: "clamp(10px, 1.6vw, 18px)",
           maxWidth: 980,
           opacity: mounted ? 1 : 0,
           transform: mounted ? "translateY(0)" : "translateY(24px)",
@@ -190,44 +195,75 @@ export function LiveHero({ liveStatus, focused, onSelect }: LiveHeroProps) {
             >
               Live worship & teachings from Jesus Christ Temple Ministry — streaming right now.
             </p>
-            <div className="flex items-center gap-3" style={{ marginTop: 8 }}>
+            <div
+              className="flex items-center"
+              style={{
+                gap: "clamp(8px, 1.4vw, 12px)",
+                marginTop: 8,
+                flexWrap: "wrap",
+              }}
+            >
               <div
-                className="flex items-center gap-3 rounded-xl"
+                className="flex items-center rounded-xl"
                 style={{
                   background: focused ? "#fff" : "rgba(255,255,255,0.92)",
                   color: "#0a0a0a",
-                  padding: "16px 32px",
+                  padding: "clamp(12px, 1.8vw, 16px) clamp(20px, 3.2vw, 32px)",
+                  gap: "clamp(8px, 1.2vw, 12px)",
                   width: "fit-content",
                   boxShadow: focused
                     ? "0 12px 36px rgba(255,255,255,0.25)"
                     : "0 6px 20px rgba(0,0,0,0.4)",
                   transform: focused ? "scale(1.04)" : "scale(1)",
                   transition: "all 0.18s ease",
+                  minHeight: 44,
                 }}
               >
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                  style={{ width: "clamp(18px, 2vw, 22px)", height: "auto" }}
+                >
                   <path d="M8 5v14l11-7z" />
                 </svg>
-                <span style={{ fontSize: 19, fontWeight: 800, letterSpacing: "-0.01em" }}>
+                <span
+                  style={{
+                    fontSize: "clamp(15px, 1.8vw, 19px)",
+                    fontWeight: 800,
+                    letterSpacing: "-0.01em",
+                  }}
+                >
                   Watch Live
                 </span>
               </div>
               <div
-                className="flex items-center gap-2 rounded-xl"
+                className="flex items-center rounded-xl"
                 style={{
                   background: "rgba(109,109,110,0.7)",
                   color: "#fff",
-                  padding: "16px 26px",
+                  padding: "clamp(12px, 1.8vw, 16px) clamp(16px, 2.6vw, 26px)",
+                  gap: "clamp(6px, 1vw, 8px)",
                   backdropFilter: "blur(6px)",
                   border: "1px solid rgba(255,255,255,0.12)",
+                  minHeight: 44,
                 }}
               >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  style={{ width: "clamp(16px, 1.8vw, 18px)", height: "auto" }}
+                >
                   <circle cx="12" cy="12" r="10" />
                   <line x1="12" y1="8" x2="12" y2="12" />
                   <line x1="12" y1="16" x2="12.01" y2="16" />
                 </svg>
-                <span style={{ fontSize: 16, fontWeight: 600 }}>More info</span>
+                <span style={{ fontSize: "clamp(13px, 1.5vw, 16px)", fontWeight: 600 }}>
+                  More info
+                </span>
               </div>
             </div>
           </>
@@ -284,11 +320,12 @@ export function LiveHero({ liveStatus, focused, onSelect }: LiveHeroProps) {
               Jesus Christ Temple Ministry — Spirit-filled broadcasts, worship, and teachings any time you need them.
             </p>
             <div
-              className="flex items-center gap-2 rounded-xl"
+              className="flex items-center rounded-xl"
               style={{
                 background: focused ? "hsl(0 78% 50%)" : "rgba(220,38,38,0.85)",
                 color: "#fff",
-                padding: "16px 32px",
+                padding: "clamp(12px, 1.8vw, 16px) clamp(20px, 3.2vw, 32px)",
+                gap: "clamp(6px, 1vw, 10px)",
                 width: "fit-content",
                 marginTop: 8,
                 boxShadow: focused
@@ -296,12 +333,23 @@ export function LiveHero({ liveStatus, focused, onSelect }: LiveHeroProps) {
                   : "0 6px 20px rgba(0,0,0,0.35)",
                 transform: focused ? "scale(1.04)" : "scale(1)",
                 transition: "all 0.18s ease",
+                minHeight: 44,
               }}
             >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+              <svg
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                style={{ width: "clamp(16px, 1.8vw, 20px)", height: "auto" }}
+              >
                 <path d="M8 5v14l11-7z" />
               </svg>
-              <span style={{ fontSize: 18, fontWeight: 800, letterSpacing: "-0.01em" }}>
+              <span
+                style={{
+                  fontSize: "clamp(14px, 1.7vw, 18px)",
+                  fontWeight: 800,
+                  letterSpacing: "-0.01em",
+                }}
+              >
                 Browse sermons
               </span>
             </div>
