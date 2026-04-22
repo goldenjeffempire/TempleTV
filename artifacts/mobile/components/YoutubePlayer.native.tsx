@@ -177,7 +177,7 @@ export function YoutubePlayer({
 }: YoutubePlayerProps) {
   const c = useColors();
   const { width, height: screenHeight } = useWindowDimensions();
-  const { updatePlayback, playerPlayRef, playerPauseRef, playerSeekRef, dataSaver, isRadioMode } = usePlayer();
+  const { updatePlayback, playerPlayRef, playerPauseRef, playerSeekRef, playerVolumeRef, dataSaver, isRadioMode, volume } = usePlayer();
   const [loading, setLoading] = useState(false);
   const [playing, setPlaying] = useState(autoPlay);
   const [playerReady, setPlayerReady] = useState(false);
@@ -199,12 +199,30 @@ export function YoutubePlayer({
   }, []);
 
   useEffect(() => {
-    playerPlayRef.current = () => { if (isMountedRef.current) setPlaying(true); };
-    playerPauseRef.current = () => { if (isMountedRef.current) setPlaying(false); };
-    playerSeekRef.current = (t: number) => {
+    // Compare-and-swap: each instance owns the refs it set. On unmount,
+    // only clear the refs if they still point at THIS instance's handlers.
+    // Prevents the "ref ownership race" where an old player's cleanup
+    // wipes the refs a freshly-mounted player just registered (e.g. when
+    // navigating between the persistent root player and the /player route).
+    const playFn = () => { if (isMountedRef.current) setPlaying(true); };
+    const pauseFn = () => { if (isMountedRef.current) setPlaying(false); };
+    const seekFn = (t: number) => {
       if (isMountedRef.current) playerRef.current?.seekTo?.(t, true);
     };
-  }, [playerPlayRef, playerPauseRef, playerSeekRef]);
+    const volFn = (v: number) => {
+      try { playerRef.current?.setVolume?.(Math.max(0, Math.min(100, v))); } catch {}
+    };
+    playerPlayRef.current = playFn;
+    playerPauseRef.current = pauseFn;
+    playerSeekRef.current = seekFn;
+    playerVolumeRef.current = volFn;
+    return () => {
+      if (playerPlayRef.current === playFn) playerPlayRef.current = null;
+      if (playerPauseRef.current === pauseFn) playerPauseRef.current = null;
+      if (playerSeekRef.current === seekFn) playerSeekRef.current = null;
+      if (playerVolumeRef.current === volFn) playerVolumeRef.current = null;
+    };
+  }, [playerPlayRef, playerPauseRef, playerSeekRef, playerVolumeRef]);
 
   useEffect(() => {
     if (videoId && videoId !== activeVideoId) {
@@ -244,11 +262,13 @@ export function YoutubePlayer({
     playerRef.current = ref;
     setPlayerReady(true);
     Animated.timing(transitionOpacity, { toValue: 0, duration: 350, useNativeDriver: true }).start();
+    // Apply user's saved volume so radio plays at the level they expect.
+    try { ref?.setVolume?.(Math.max(0, Math.min(100, volume))); } catch {}
     if (startPositionSecs && startPositionSecs > 0 && !hasSeededStartRef.current) {
       hasSeededStartRef.current = true;
       setTimeout(() => { try { ref?.seekTo?.(startPositionSecs, true); } catch {} }, 500);
     }
-  }, [transitionOpacity, startPositionSecs]);
+  }, [transitionOpacity, startPositionSecs, volume]);
 
   const onChangeState = useCallback(
     (state: string) => {

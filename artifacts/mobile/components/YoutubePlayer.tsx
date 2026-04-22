@@ -38,14 +38,10 @@ function buildEmbedUrl({
     fs: "1",
     origin: ORIGIN,
   });
-  // Browsers block autoplay with sound. Mute when auto-starting so the
-  // video actually plays; the visitor can unmute from the player controls.
-  if (autoPlay) {
-    params.set("autoplay", "1");
-    params.set("mute", "1");
-  } else {
-    params.set("autoplay", "0");
-  }
+  // When autoplay is initiated by a user gesture (radio play tap, etc.)
+  // browsers permit sound. Only mute autoplay for ambient previews where
+  // sound would be disruptive — the caller handles that case explicitly.
+  params.set("autoplay", autoPlay ? "1" : "0");
   if (startPositionSecs && startPositionSecs > 0) {
     params.set("start", String(Math.floor(startPositionSecs)));
   }

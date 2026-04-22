@@ -17,6 +17,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { reportClientError } from "@/lib/errorReporter";
 import { LiveBroadcastSupervisor } from "@/components/LiveBroadcastSupervisor";
+import { PersistentAudioPlayer } from "@/components/PersistentAudioPlayer";
 import { PlayerProvider } from "@/context/PlayerContext";
 import { AuthProvider } from "@/context/AuthContext";
 import { setupTrackPlayer } from "@/services/nowPlaying";
@@ -172,6 +173,7 @@ export default function RootLayout() {
               <GestureHandlerRootView style={{ flex: 1 }}>
                 <KeyboardProvider>
                   <RootLayoutNav />
+                  <PersistentAudioPlayer />
                 </KeyboardProvider>
               </GestureHandlerRootView>
             </PlayerProvider>

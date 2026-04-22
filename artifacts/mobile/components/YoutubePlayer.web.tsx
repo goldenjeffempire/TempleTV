@@ -99,11 +99,27 @@ export function YoutubePlayer({
     }, 500);
   }, [stopTick, updatePlayback]);
 
+  // Owner-token refs so cleanup only clears refs THIS instance set.
+  // Prevents the race where an unmounting player wipes the refs a newly
+  // mounted player just registered (persistent ↔ /player route swap).
+  const ownedPlayRef = useRef<(() => void) | null>(null);
+  const ownedPauseRef = useRef<(() => void) | null>(null);
+  const ownedSeekRef = useRef<((t: number) => void) | null>(null);
+  const ownedVolumeRef = useRef<((v: number) => void) | null>(null);
+
   const registerPlayerRefs = useCallback((p: any) => {
-    playerPlayRef.current = () => { try { p.playVideo(); } catch {} };
-    playerPauseRef.current = () => { try { p.pauseVideo(); } catch {} };
-    playerSeekRef.current = (t: number) => { try { p.seekTo(t, true); } catch {} };
-    playerVolumeRef.current = (v: number) => { try { p.setVolume(v); } catch {} };
+    const playFn = () => { try { p.playVideo(); } catch {} };
+    const pauseFn = () => { try { p.pauseVideo(); } catch {} };
+    const seekFn = (t: number) => { try { p.seekTo(t, true); } catch {} };
+    const volFn = (v: number) => { try { p.setVolume(v); } catch {} };
+    ownedPlayRef.current = playFn;
+    ownedPauseRef.current = pauseFn;
+    ownedSeekRef.current = seekFn;
+    ownedVolumeRef.current = volFn;
+    playerPlayRef.current = playFn;
+    playerPauseRef.current = pauseFn;
+    playerSeekRef.current = seekFn;
+    playerVolumeRef.current = volFn;
   }, [playerPlayRef, playerPauseRef, playerSeekRef, playerVolumeRef]);
 
   const initPlayer = useCallback(() => {
@@ -198,10 +214,14 @@ export function YoutubePlayer({
         try { playerRef.current.destroy(); } catch {}
         playerRef.current = null;
       }
-      playerPlayRef.current = null;
-      playerPauseRef.current = null;
-      playerSeekRef.current = null;
-      playerVolumeRef.current = null;
+      if (playerPlayRef.current === ownedPlayRef.current) playerPlayRef.current = null;
+      if (playerPauseRef.current === ownedPauseRef.current) playerPauseRef.current = null;
+      if (playerSeekRef.current === ownedSeekRef.current) playerSeekRef.current = null;
+      if (playerVolumeRef.current === ownedVolumeRef.current) playerVolumeRef.current = null;
+      ownedPlayRef.current = null;
+      ownedPauseRef.current = null;
+      ownedSeekRef.current = null;
+      ownedVolumeRef.current = null;
     };
   }, []);
 
