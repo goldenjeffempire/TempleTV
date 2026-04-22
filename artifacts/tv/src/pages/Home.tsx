@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LiveHero } from "../components/LiveHero";
+import { TempleTvLogo } from "../components/TempleTvLogo";
 import { SermonRow } from "../components/SermonRow";
 import { Clock } from "../components/Clock";
 import { useTVNav } from "../hooks/useTVNav";
@@ -98,18 +99,7 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
     <div style={{ width: "100vw", height: "100vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 60px", flexShrink: 0 }}>
-        <div className="flex items-center gap-4">
-          <div className="flex items-center justify-center rounded-xl" style={{ width: 42, height: 42, background: "hsl(0 78% 50%)" }}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
-              <path d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-9 12L8 9l1.41-1.41L12 10.17l2.59-2.58L16 9l-4 6z" />
-              <path d="M8 15V9l8 3-8 3z" />
-            </svg>
-          </div>
-          <div>
-            <span style={{ fontSize: 24, fontWeight: 800, color: "#fff", letterSpacing: "-0.01em" }}>Temple TV</span>
-            <span style={{ fontSize: 14, color: "rgba(255,255,255,0.4)", marginLeft: 8 }}>JCTM</span>
-          </div>
-        </div>
+        <TempleTvLogo size={48} withWordmark />
 
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           {/* Search button */}
