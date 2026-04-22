@@ -27,6 +27,60 @@ export interface CompressionProgress {
 
 export type ProgressCallback = (p: CompressionProgress) => void;
 
+// ── H.264 level selection ────────────────────────────────────────────────────
+
+/**
+ * H.264 Main-Profile level table.
+ * `maxArea`   – max coded picture size (luma samples), with 16-px MB rounding.
+ * `maxMbps`   – max macroblock processing rate (used to upgrade for high fps).
+ * `hex`       – the level byte appended to "avc1.4d40" in the codec string.
+ *
+ * Reference: ITU-T H.264 Annex A, Table A-1.
+ */
+const AVC_MAIN_LEVELS: ReadonlyArray<{ level: string; maxArea: number; maxMbps: number; hex: string }> = [
+  { level: "3.0", maxArea:   414720, maxMbps:   40500, hex: "1e" },
+  { level: "3.1", maxArea:   921600, maxMbps:  108000, hex: "1f" },
+  { level: "3.2", maxArea:  1310720, maxMbps:  216000, hex: "20" },
+  { level: "4.0", maxArea:  2097152, maxMbps:  245760, hex: "28" },
+  { level: "4.1", maxArea:  2097152, maxMbps:  245760, hex: "29" },
+  { level: "4.2", maxArea:  2228224, maxMbps:  522240, hex: "2a" },
+  { level: "5.0", maxArea:  5652480, maxMbps:  589824, hex: "32" },
+  { level: "5.1", maxArea:  9437184, maxMbps:  983040, hex: "33" },
+  { level: "5.2", maxArea:  9437184, maxMbps: 2073600, hex: "34" },
+];
+
+/**
+ * Choose the lowest H.264 Main-Profile level that supports the given coded
+ * picture area (rounded up to 16-px macroblocks) and macroblock rate at the
+ * target framerate. Returns a WebCodecs codec string like "avc1.4d4029".
+ *
+ * Examples:
+ *   1280x720  @ 30fps -> avc1.4d401f (Level 3.1)
+ *   1920x1080 @ 30fps -> avc1.4d4029 (Level 4.1)
+ *   1920x1080 @ 60fps -> avc1.4d402a (Level 4.2)
+ *   3840x2160 @ 30fps -> avc1.4d4033 (Level 5.1)
+ */
+export function pickAvcMainCodecString(width: number, height: number, fps: number): string {
+  // Round up to macroblock boundaries (16x16). This is what the AVC level
+  // limit actually checks — e.g. 1080 rounds up to 1088.
+  const mbW = Math.ceil(Math.max(1, width) / 16);
+  const mbH = Math.ceil(Math.max(1, height) / 16);
+  const codedArea = mbW * 16 * mbH * 16;
+  const safeFps = Math.max(1, fps || 30);
+  const mbps = mbW * mbH * safeFps;
+
+  for (const lvl of AVC_MAIN_LEVELS) {
+    if (codedArea <= lvl.maxArea && mbps <= lvl.maxMbps) {
+      return `avc1.4d40${lvl.hex}`;
+    }
+  }
+  // Fallback to the highest level we know about; the encoder will reject it
+  // if the source genuinely exceeds H.264 capabilities (>4K), which is
+  // expected behavior we want to surface clearly.
+  const top = AVC_MAIN_LEVELS[AVC_MAIN_LEVELS.length - 1];
+  return `avc1.4d40${top.hex}`;
+}
+
 // ── Capability check ─────────────────────────────────────────────────────────
 
 export function isCompressionSupported(): boolean {
@@ -161,8 +215,15 @@ export async function compressVideo(
       error: (e) => reject(e),
     });
 
+    // Select the lowest H.264 Main-Profile level whose max coded picture size
+    // is large enough for this resolution. Hardcoding Level 3.1 fails on
+    // anything above 720p with: "coded area exceeds maximum coded area
+    // supported by the AVC level". Coded area is rounded up to 16-pixel
+    // macroblock boundaries (e.g. 1920x1080 -> 1920x1088 = 2,088,960).
+    const codecString = pickAvcMainCodecString(outWidth, outHeight, opts.targetFps);
+
     videoEncoder.configure({
-      codec: "avc1.4d401f",    // H.264 Main Profile Level 3.1 — broad device support
+      codec: codecString,
       width: outWidth,
       height: outHeight,
       bitrate: opts.targetBitrate,

@@ -82,6 +82,47 @@ const QUALITY_PROFILES: QualityProfile[] = [
   },
 ];
 
+/**
+ * Pick the correct HLS CODECS string for an H.264 Main-Profile rendition.
+ * Each variant in the master manifest must declare a codec string whose AVC
+ * level can actually contain the rendition's coded picture size (rounded
+ * up to 16-px macroblocks). Advertising Level 3.1 for a 1080p variant
+ * triggers strict players to reject it with: "coded area exceeds maximum
+ * coded area supported by the AVC level".
+ *
+ * We encode every variant with `-profile:v main -level:v 4.1`, but the
+ * declared codec must reflect the rendition's resolution so that bitrate-
+ * adaptive players negotiate it correctly on hardware-limited devices.
+ *
+ * Reference: ITU-T H.264 Annex A, Table A-1.
+ */
+function avcMainCodecForResolution(width: number, height: number, fps = 30): string {
+  const mbW = Math.ceil(Math.max(1, width) / 16);
+  const mbH = Math.ceil(Math.max(1, height) / 16);
+  const codedArea = mbW * 16 * mbH * 16;
+  const mbps = mbW * mbH * Math.max(1, fps);
+  const levels: Array<[number, number, string]> = [
+    [  414720,   40500, "1e"], // 3.0
+    [  921600,  108000, "1f"], // 3.1
+    [ 1310720,  216000, "20"], // 3.2
+    [ 2097152,  245760, "28"], // 4.0
+    [ 2097152,  245760, "29"], // 4.1
+    [ 2228224,  522240, "2a"], // 4.2
+    [ 5652480,  589824, "32"], // 5.0
+    [ 9437184,  983040, "33"], // 5.1
+    [ 9437184, 2073600, "34"], // 5.2
+  ];
+  for (const [area, rate, hex] of levels) {
+    if (codedArea <= area && mbps <= rate) return `avc1.4d40${hex}`;
+  }
+  return "avc1.4d4034";
+}
+
+function parseResolution(resolution: string): { width: number; height: number } {
+  const [w, h] = resolution.split("x").map((n) => parseInt(n, 10));
+  return { width: Number.isFinite(w) ? w : 0, height: Number.isFinite(h) ? h : 0 };
+}
+
 function parseDurationToSeconds(dur: string): number {
   const match = dur.match(/(\d+):(\d+):(\d+\.?\d*)/);
   if (!match) return 0;
@@ -250,8 +291,10 @@ async function generateMasterPlaylist(
     const playlistPath = path.join(hlsVideoDir, profile.name, "index.m3u8");
     try {
       await fs.access(playlistPath);
+      const { width, height } = parseResolution(profile.resolution);
+      const videoCodec = avcMainCodecForResolution(width, height, 30);
       lines.push(
-        `#EXT-X-STREAM-INF:BANDWIDTH=${profile.bandwidth},RESOLUTION=${profile.resolution},CODECS="avc1.4d401f,mp4a.40.2",NAME="${profile.name}"`
+        `#EXT-X-STREAM-INF:BANDWIDTH=${profile.bandwidth},RESOLUTION=${profile.resolution},CODECS="${videoCodec},mp4a.40.2",NAME="${profile.name}"`
       );
       lines.push(`${profile.name}/index.m3u8`);
       lines.push("");
