@@ -76,7 +76,22 @@ export function Player({ videoId, title, onBack }: PlayerProps) {
     };
   }, [onBack, showControls, loadError]);
 
-  const embedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1&controls=0&rel=0&modestbranding=1&iv_load_policy=3&cc_load_policy=0&playsinline=1`;
+  const embedOrigin =
+    typeof window !== "undefined" && window.location?.origin
+      ? window.location.origin
+      : "https://templetv.org.ng";
+  const embedParams = new URLSearchParams({
+    autoplay: "1",
+    controls: "0",
+    rel: "0",
+    modestbranding: "1",
+    iv_load_policy: "3",
+    cc_load_policy: "0",
+    playsinline: "1",
+    enablejsapi: "1",
+    origin: embedOrigin,
+  });
+  const embedUrl = `https://www.youtube-nocookie.com/embed/${videoId}?${embedParams.toString()}`;
 
   const handleManualRetry = () => {
     setAutoRetries(0);
@@ -94,8 +109,9 @@ export function Player({ videoId, title, onBack }: PlayerProps) {
           key={retryKey}
           src={embedUrl}
           title={title}
-          allow="autoplay; encrypted-media; fullscreen"
+          allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
           allowFullScreen
+          referrerPolicy="strict-origin-when-cross-origin"
           onLoad={() => {
             setIsLoaded(true);
             if (loadTimer.current) clearTimeout(loadTimer.current);
