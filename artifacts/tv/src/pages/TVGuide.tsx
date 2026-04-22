@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useGuide } from "../hooks/useGuide";
 import { Clock } from "../components/Clock";
+import { keyEventToAction } from "../lib/tvKeys";
 
 interface TVGuideProps {
   onBack: () => void;
@@ -65,8 +66,10 @@ export function TVGuide({ onBack, onPlay }: TVGuideProps) {
   }, [focusedIndex]);
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    const action = keyEventToAction(e);
+
     if (actionMode === "action") {
-      if (e.key === "Escape" || e.key === "Backspace" || e.key === "ArrowLeft") {
+      if (action === "back" || action === "exit" || action === "left") {
         e.preventDefault();
         setActionMode("browse");
         setSelectedIndex(null);
@@ -75,13 +78,13 @@ export function TVGuide({ onBack, onPlay }: TVGuideProps) {
       return;
     }
 
-    if (e.key === "ArrowUp") {
+    if (action === "up") {
       e.preventDefault();
       setFocusedIndex((i) => Math.max(0, i - 1));
-    } else if (e.key === "ArrowDown") {
+    } else if (action === "down") {
       e.preventDefault();
       setFocusedIndex((i) => Math.min(totalItems - 1, i + 1));
-    } else if (e.key === "Enter" || e.key === " ") {
+    } else if (action === "select") {
       e.preventDefault();
       const item = items[focusedIndex];
       if (item?.isCurrent && item.youtubeId) {
@@ -96,7 +99,7 @@ export function TVGuide({ onBack, onPlay }: TVGuideProps) {
       if (item && !item.isCurrent) {
         toggleReminder(item.id);
       }
-    } else if (e.key === "Escape" || e.key === "Backspace") {
+    } else if (action === "back" || action === "exit") {
       e.preventDefault();
       onBack();
     }

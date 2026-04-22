@@ -1,4 +1,4 @@
-import React, { useRef } from "react";
+import React from "react";
 import { SermonCard } from "./SermonCard";
 import type { Sermon } from "../hooks/useData";
 
@@ -22,26 +22,51 @@ export function SermonRow({
   if (sermons.length === 0) return null;
 
   return (
-    <div style={{ marginBottom: 32 }}>
+    <div
+      className={`tv-row ${rowFocused ? "tv-row-focused" : ""}`}
+      style={{ marginBottom: 36 }}
+    >
+      {/* Row label — slightly larger, brighter when this row is active */}
       <h2
         style={{
-          fontSize: 22,
+          fontSize: "clamp(18px, 1.6vw, 24px)",
           fontWeight: 700,
-          color: "rgba(255,255,255,0.85)",
-          marginBottom: 16,
-          paddingLeft: 60,
+          color: rowFocused ? "#fff" : "rgba(255,255,255,0.6)",
+          marginBottom: 18,
+          paddingLeft: "var(--tv-safe-h, 60px)",
           letterSpacing: "0.01em",
+          transition: "color 0.2s ease",
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
         }}
       >
+        {/* Active row indicator bar */}
+        {rowFocused && (
+          <span
+            aria-hidden
+            style={{
+              display: "inline-block",
+              width: 4,
+              height: "1em",
+              borderRadius: 2,
+              background: "hsl(var(--primary))",
+              marginRight: 2,
+              flexShrink: 0,
+            }}
+          />
+        )}
         {title}
       </h2>
+
+      {/* Horizontally scrollable card strip */}
       <div
         style={{
           display: "flex",
-          gap: 16,
-          paddingLeft: 60,
-          paddingRight: 60,
-          paddingBottom: 8,
+          gap: 18,
+          paddingLeft: "var(--tv-safe-h, 60px)",
+          paddingRight: "var(--tv-safe-h, 60px)",
+          paddingBottom: 10,
           overflowX: "hidden",
         }}
       >

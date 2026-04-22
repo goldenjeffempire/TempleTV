@@ -180,20 +180,22 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
         </div>
 
         {loading ? (
-          <div style={{ paddingLeft: 60, paddingTop: 8 }}>
+          <div style={{ paddingLeft: "var(--tv-safe-h, 60px)", paddingTop: 8 }}>
             {[0, 1, 2].map((i) => (
               <div key={i} style={{ marginBottom: 40 }}>
                 <div className="skeleton" style={{ width: 180, height: 22, marginBottom: 16 }} />
-                <div style={{ display: "flex", gap: 16 }}>
+                <div style={{ display: "flex", gap: 18 }}>
                   {[0, 1, 2, 3, 4].map((j) => (
-                    <div key={j} className="skeleton" style={{ width: 320, height: 180, borderRadius: 12 }} />
+                    <div key={j} className="skeleton" style={{ width: 348, height: 196, borderRadius: 14 }} />
                   ))}
                 </div>
               </div>
             ))}
           </div>
         ) : (
-          CATEGORIES.map((cat, catIndex) => {
+          /* tv-rows-active dims unfocused rows — see SermonRow / index.css */
+          <div className={focusZone === "grid" ? "tv-rows-active" : ""}>
+          {CATEGORIES.map((cat, catIndex) => {
             const rowSermons = byCategory[cat] ?? [];
             if (rowSermons.length === 0) return null;
             const rowIndex = catIndex + 1;
@@ -211,7 +213,8 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
                 }}
               />
             );
-          })
+          })}
+          </div>
         )}
 
         <div style={{ paddingLeft: 60, paddingTop: 16 }}>

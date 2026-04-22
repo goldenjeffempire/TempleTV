@@ -26,8 +26,20 @@
   --accent: 0 0% 14%;
   --border: 0 0% 20%;
   --app-font-sans: 'Inter', 'Helvetica Neue', Arial, sans-serif;
+
+  /* ── TV Safe Zone ─────────────────────────────────────────────────────────
+     5 % on each side = 96 px on a 1920-px display (Samsung / LG spec).
+     Using clamp so the safe area scales correctly on 720p and 4K panels too.
+  ── */
+  --tv-safe-h: clamp(48px, 5vw, 96px);
+  --tv-safe-v: clamp(32px, 4vh, 72px);
+
+  /* Focus accent — bright white + purple glow */
+  --tv-focus-ring: 0 0 0 4px #fff, 0 0 0 7px rgba(106, 13, 173, 0.55), 0 8px 32px rgba(0,0,0,0.7);
+  --tv-focus-ring-primary: 0 0 0 4px hsl(var(--primary)), 0 0 0 7px rgba(220,38,38,0.4), 0 8px 32px rgba(0,0,0,0.7);
 }
 
+/* ── Base ──────────────────────────────────────────────────────────────── */
 * {
   box-sizing: border-box;
   margin: 0;
@@ -38,65 +50,94 @@
 html, body, #root {
   width: 100%;
   height: 100%;
+  /* Force landscape on TV — never allow portrait reflow */
+  min-width: 640px;
   background: hsl(var(--background));
   color: hsl(var(--foreground));
   font-family: var(--app-font-sans);
+  /* 10-foot base: 18 px at 1080p scales with viewport */
+  font-size: clamp(15px, 1.25vw, 20px);
   overflow: hidden;
   cursor: none;
 }
 
-/* Remove default focus outline - we handle it ourselves */
+/* Remove default browser focus outline — we draw our own */
 * { outline: none; }
 
-/* TV focus ring */
+/* ── TV Focus Rings ─────────────────────────────────────────────────────── */
+
+/* Standard white focus ring with purple depth-glow */
 .tv-focused {
-  outline: 4px solid #fff !important;
-  outline-offset: 3px;
-  transform: scale(1.04);
+  box-shadow: var(--tv-focus-ring) !important;
+  transform: scale(1.07);
   z-index: 10;
+  transition: box-shadow 0.12s ease, transform 0.12s ease !important;
 }
 
+/* Primary (red) accent focus — for hero CTA buttons */
 .tv-focused-primary {
-  outline: 4px solid hsl(var(--primary)) !important;
-  outline-offset: 3px;
-  transform: scale(1.04);
+  box-shadow: var(--tv-focus-ring-primary) !important;
+  transform: scale(1.06);
   z-index: 10;
 }
 
-/* Smooth transitions */
-.tv-card {
-  transition: transform 0.15s ease, outline 0.1s ease;
-  will-change: transform;
+/* ── TV Safe-Zone utility class ──────────────────────────────────────────── */
+.tv-safe-x {
+  padding-left: var(--tv-safe-h);
+  padding-right: var(--tv-safe-h);
 }
 
-/* Scrollbar hidden for TV */
+/* ── Card & Row base ─────────────────────────────────────────────────────── */
+.tv-card {
+  transition: transform 0.15s ease, box-shadow 0.12s ease;
+  will-change: transform;
+  flex-shrink: 0;
+}
+
+/* Dim ALL sibling rows — the focused one stays at full opacity */
+.tv-row {
+  transition: opacity 0.2s ease;
+}
+.tv-rows-active .tv-row:not(.tv-row-focused) {
+  opacity: 0.45;
+}
+.tv-rows-active .tv-row.tv-row-focused {
+  opacity: 1;
+}
+
+/* ── Scrollbars hidden on TV ─────────────────────────────────────────────── */
 ::-webkit-scrollbar { display: none; }
 * { scrollbar-width: none; }
 
-/* Live pulse */
+/* ── Animations ──────────────────────────────────────────────────────────── */
+
+/* Live pulse dot */
 @keyframes pulse-live {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  50%       { opacity: 0.35; }
 }
 .live-pulse { animation: pulse-live 1.4s ease-in-out infinite; }
 
-/* Gradient overlay */
+/* Spinner */
+@keyframes tt-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Gradient overlays ───────────────────────────────────────────────────── */
 .gradient-bottom {
   background: linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.5) 40%, transparent 100%);
 }
-
 .gradient-left {
   background: linear-gradient(to right, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.5) 40%, transparent 100%);
 }
 
-/* Progress bar */
+/* ── Progress bar ─────────────────────────────────────────────────────────── */
 .progress-track {
   height: 3px;
   background: rgba(255,255,255,0.2);
   border-radius: 2px;
   overflow: hidden;
 }
-
 .progress-fill {
   height: 100%;
   background: hsl(var(--primary));
@@ -104,9 +145,9 @@ html, body, #root {
   transition: width 0.5s ease;
 }
 
-/* Shimmer skeleton */
+/* ── Shimmer skeleton ─────────────────────────────────────────────────────── */
 @keyframes shimmer {
-  0% { background-position: -100% 0; }
+  0%   { background-position: -100% 0; }
   100% { background-position: 200% 0; }
 }
 .skeleton {
@@ -116,39 +157,64 @@ html, body, #root {
   border-radius: 8px;
 }
 
-/* Text truncation */
+/* ── Text truncation helpers ─────────────────────────────────────────────── */
 .line-clamp-1 { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
 .line-clamp-2 { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 
-
-@keyframes tt-spin {
-  to { transform: rotate(360deg); }
+/* ── Hero focus shell ─────────────────────────────────────────────────────── */
+.tv-hero-focused {
+  /* Focus ring applied by inner element — nothing extra needed */
 }
 
-.tv-hero-focused {
-  /* Hero gets its focus ring from the inner element; nothing extra here. */
+/* ── Remote-hint bar at the bottom of each page ──────────────────────────── */
+.tv-hint-bar {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 10px var(--tv-safe-h);
+  border-top: 1px solid rgba(255,255,255,0.06);
+  flex-shrink: 0;
+}
+.tv-hint-bar kbd {
+  background: rgba(255,255,255,0.10);
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 0.7rem;
+  color: rgba(255,255,255,0.65);
+  font-family: inherit;
+  letter-spacing: 0.04em;
+}
+.tv-hint-bar span {
+  font-size: 0.75rem;
+  color: rgba(255,255,255,0.28);
 }
 
 /*
- * Hide elements meaningless on touch devices (e.g. "Press ENTER to retry"
- * keyboard hints in the player). Uses pointer:coarse to detect touch as
- * the primary input — works on phones/tablets, stays visible on TVs and
- * desktops with mice/remotes.
+ * Hide touch-only hints on TV (pointer: fine = mouse / remote, not touch).
+ * Inverse of the old coarse-pointer rule.
  */
 @media (pointer: coarse) {
-  .tt-hide-on-touch {
-    display: none !important;
-  }
+  .tt-hide-on-touch { display: none !important; }
 }
 
 /*
- * Mobile YouTube player polish: ensure the iframe always fills the
- * viewport, and disable text selection on the chrome overlays so a
- * tap on the back button doesn't accidentally select the title.
+ * Landscape-only guard — if somehow the TV browser is in portrait (very rare),
+ * show a rotation message instead of a broken layout.
  */
-@media (max-width: 640px) {
-  iframe[title] {
-    -webkit-tap-highlight-color: transparent;
+@media (orientation: portrait) and (max-width: 900px) {
+  body::before {
+    content: "Please rotate your device to landscape";
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #000;
+    color: rgba(255,255,255,0.6);
+    font-size: 1.1rem;
+    text-align: center;
+    padding: 2rem;
   }
 }
-

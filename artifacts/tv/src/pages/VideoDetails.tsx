@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { VideoItem } from "../lib/api";
+import { keyEventToAction } from "../lib/tvKeys";
 
 interface VideoDetailsProps {
   video: VideoItem;
@@ -22,18 +23,20 @@ export function VideoDetails({ video, relatedVideos, onPlay, onBack, onPlayRelat
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape" || e.key === "Backspace") { e.preventDefault(); onBack(); return; }
+      const action = keyEventToAction(e);
+
+      if (action === "back" || action === "exit") { e.preventDefault(); onBack(); return; }
 
       if (focused === "play") {
-        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onPlay(); }
-        else if ((e.key === "ArrowDown" || e.key === "ArrowRight") && relatedVideos.length > 0) {
+        if (action === "select") { e.preventDefault(); onPlay(); }
+        else if ((action === "down" || action === "right") && relatedVideos.length > 0) {
           e.preventDefault(); setFocused("related"); setRelatedIdx(0);
         }
       } else {
-        if (e.key === "ArrowUp" && relatedIdx === 0) { e.preventDefault(); setFocused("play"); }
-        else if (e.key === "ArrowUp") { e.preventDefault(); setRelatedIdx(i => Math.max(0, i - 1)); }
-        else if (e.key === "ArrowDown") { e.preventDefault(); setRelatedIdx(i => Math.min(relatedVideos.length - 1, i + 1)); }
-        else if (e.key === "Enter" || e.key === " ") {
+        if (action === "up" && relatedIdx === 0) { e.preventDefault(); setFocused("play"); }
+        else if (action === "up") { e.preventDefault(); setRelatedIdx(i => Math.max(0, i - 1)); }
+        else if (action === "down") { e.preventDefault(); setRelatedIdx(i => Math.min(relatedVideos.length - 1, i + 1)); }
+        else if (action === "select") {
           e.preventDefault();
           const v = relatedVideos[relatedIdx];
           if (v) onPlayRelated(v.videoId, v.title);

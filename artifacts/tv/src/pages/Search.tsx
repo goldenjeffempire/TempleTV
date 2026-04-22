@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearch } from "../hooks/useSearch";
 import { Clock } from "../components/Clock";
 import type { VideoItem } from "../lib/api";
+import { keyEventToAction } from "../lib/tvKeys";
 
 const KEYBOARD_ROWS = [
   ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
@@ -119,9 +120,10 @@ export function Search({ onBack, onPlay, onDetails }: SearchProps) {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      const action = keyEventToAction(e);
       const rowCount = KEYBOARD_ROWS.length;
 
-      if (e.key === "Escape" || e.key === "Backspace") {
+      if (action === "back" || action === "exit") {
         e.preventDefault();
         if (focusArea === "results") { setFocusArea("keyboard"); return; }
         onBack();
@@ -130,15 +132,15 @@ export function Search({ onBack, onPlay, onDetails }: SearchProps) {
 
       if (focusArea === "keyboard") {
         const rowLen = KEYBOARD_ROWS[kbRow]?.length ?? 10;
-        if (e.key === "ArrowUp") { e.preventDefault(); setKbRow((r) => Math.max(0, r - 1)); }
-        else if (e.key === "ArrowDown") {
+        if (action === "up") { e.preventDefault(); setKbRow((r) => Math.max(0, r - 1)); }
+        else if (action === "down") {
           e.preventDefault();
           if (kbRow === rowCount - 1 && displayResults.length > 0) { setFocusArea("results"); setResultIdx(0); }
           else setKbRow((r) => Math.min(rowCount - 1, r + 1));
         }
-        else if (e.key === "ArrowLeft") { e.preventDefault(); setKbCol((c) => Math.max(0, c - 1)); }
-        else if (e.key === "ArrowRight") { e.preventDefault(); setKbCol((c) => Math.min(rowLen - 1, c + 1)); }
-        else if (e.key === "Enter" || e.key === " ") {
+        else if (action === "left") { e.preventDefault(); setKbCol((c) => Math.max(0, c - 1)); }
+        else if (action === "right") { e.preventDefault(); setKbCol((c) => Math.min(rowLen - 1, c + 1)); }
+        else if (action === "select") {
           e.preventDefault();
           const char = KEYBOARD_ROWS[kbRow]?.[kbCol];
           if (char) handleKeyChar(char);
@@ -146,18 +148,14 @@ export function Search({ onBack, onPlay, onDetails }: SearchProps) {
         else if (e.key.length === 1 && /[a-zA-Z0-9 ]/.test(e.key)) {
           search(query + e.key.toUpperCase());
         }
-        else if (e.key === "Backspace" && query.length > 0) {
-          e.preventDefault();
-          search(query.slice(0, -1));
-        }
       } else {
-        if (e.key === "ArrowUp") {
+        if (action === "up") {
           e.preventDefault();
           if (resultIdx === 0) { setFocusArea("keyboard"); }
           else setResultIdx((i) => Math.max(0, i - 1));
         }
-        else if (e.key === "ArrowDown") { e.preventDefault(); setResultIdx((i) => Math.min(displayResults.length - 1, i + 1)); }
-        else if (e.key === "Enter" || e.key === " ") {
+        else if (action === "down") { e.preventDefault(); setResultIdx((i) => Math.min(displayResults.length - 1, i + 1)); }
+        else if (action === "select") {
           e.preventDefault();
           const v = displayResults[resultIdx];
           if (v) onPlay(v.videoId, v.title);
