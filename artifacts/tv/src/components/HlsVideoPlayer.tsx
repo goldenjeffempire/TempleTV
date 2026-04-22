@@ -16,6 +16,35 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import Hls from "hls.js";
 import { keyEventToAction } from "../lib/tvKeys";
+import { isTizen } from "../lib/platform";
+import { registerStreamReconnect } from "../lib/lifecycle";
+
+// ── Samsung AVPlay ambient declarations ───────────────────────────────────
+declare global {
+  interface Window {
+    webapis?: {
+      avplay?: {
+        open: (url: string) => void;
+        close: () => void;
+        prepare: () => void;
+        play: () => void;
+        pause: () => void;
+        stop: () => void;
+        seekTo: (ms: number) => void;
+        getCurrentTime: () => number;
+        getDuration: () => number;
+        setDisplayRect: (x: number, y: number, w: number, h: number) => void;
+        setListener: (listener: {
+          onbufferingstart?: () => void;
+          onbufferingcomplete?: () => void;
+          oncurrentplaytime?: (ms: number) => void;
+          onevent?: (type: string, data: unknown) => void;
+          onerror?: (msg: string) => void;
+        }) => void;
+      };
+    };
+  }
+}
 
 interface HlsVideoPlayerProps {
   hlsUrl: string;
@@ -57,6 +86,9 @@ export function HlsVideoPlayer({
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  // Samsung AVPlay: tracks whether we're using the native avplay engine
+  const avplayActiveRef = useRef(false);
+  const avplayPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [showControls, setShowControls] = useState(true);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -205,6 +237,48 @@ export function HlsVideoPlayer({
       video.play().catch(() => {});
       setIsLoaded(true);
       setIsBuffering(false);
+    } else if (isTizen && window.webapis?.avplay) {
+      // ── Samsung AVPlay path (older Tizen without MSE / hls.js support) ───
+      // AVPlay is Samsung's native media engine — supports HLS out-of-the-box.
+      // It renders fullscreen natively so the HTML video element is hidden.
+      const avplay = window.webapis.avplay;
+      try {
+        avplay.open(hlsUrl);
+        // Fill the full HD raster — AVPlay clips to this rect inside the page.
+        const W = window.screen?.width ?? 1920;
+        const H = window.screen?.height ?? 1080;
+        avplay.setDisplayRect(0, 0, W, H);
+        avplay.setListener({
+          onbufferingstart: () => setIsBuffering(true),
+          onbufferingcomplete: () => { setIsBuffering(false); setIsLoaded(true); },
+          oncurrentplaytime: (ms) => setCurrentTime(ms / 1_000),
+          onerror: (msg) => {
+            setError(`Playback error: ${msg}`);
+            setIsBuffering(false);
+          },
+        });
+        if (startPositionSecs > 0) avplay.seekTo(Math.floor(startPositionSecs * 1_000));
+        avplay.prepare();
+        avplay.play();
+        avplayActiveRef.current = true;
+        setIsPlaying(true);
+        setIsLoaded(true);
+        setIsBuffering(false);
+        // Poll duration (not always available immediately via event).
+        if (avplayPollRef.current) clearInterval(avplayPollRef.current);
+        avplayPollRef.current = setInterval(() => {
+          try {
+            const dur = avplay.getDuration?.() ?? 0;
+            if (dur > 0) setDuration(dur / 1_000);
+          } catch {}
+        }, 2_000);
+        // Hide the HTML video element — AVPlay renders separately.
+        if (videoRef.current) videoRef.current.style.display = "none";
+      } catch {
+        try { avplay.close(); } catch {}
+        avplayActiveRef.current = false;
+        setError("Playback failed. Please try again.");
+      }
     } else {
       setError("HLS streaming is not supported by this browser. Please update your browser or TV firmware.");
     }
@@ -212,7 +286,26 @@ export function HlsVideoPlayer({
 
   useEffect(() => {
     initHls();
+    // ── Lifecycle reconnect on TV resume (suspend → resume) ───────────────
+    const offReconnect = registerStreamReconnect(() => {
+      // Only reconnect if not already destroyed.
+      if (avplayActiveRef.current) {
+        // AVPlay: just resume
+        try { window.webapis?.avplay?.play(); setIsPlaying(true); } catch {}
+      } else {
+        initHls();
+      }
+    });
     return () => {
+      offReconnect();
+      // ── AVPlay teardown ─────────────────────────────────────────────────
+      if (avplayActiveRef.current) {
+        try { window.webapis?.avplay?.stop(); } catch {}
+        try { window.webapis?.avplay?.close(); } catch {}
+        avplayActiveRef.current = false;
+      }
+      if (avplayPollRef.current) { clearInterval(avplayPollRef.current); avplayPollRef.current = null; }
+      // ── hls.js teardown ─────────────────────────────────────────────────
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
@@ -277,7 +370,7 @@ export function HlsVideoPlayer({
       }
 
       const video = videoRef.current;
-      if (!video) return;
+      const avplay = avplayActiveRef.current ? window.webapis?.avplay : undefined;
 
       switch (action) {
         case "back":
@@ -288,27 +381,39 @@ export function HlsVideoPlayer({
 
         case "playpause":
           e.preventDefault();
-          if (video.paused) video.play().catch(() => {});
-          else video.pause();
+          if (avplay) {
+            if (isPlaying) { try { avplay.pause(); setIsPlaying(false); } catch {} }
+            else { try { avplay.play(); setIsPlaying(true); } catch {} }
+          } else if (video) {
+            if (video.paused) video.play().catch(() => {});
+            else video.pause();
+          }
           resetHideTimer();
           break;
 
         case "play":
           e.preventDefault();
-          video.play().catch(() => {});
+          if (avplay) { try { avplay.play(); setIsPlaying(true); } catch {} }
+          else if (video) video.play().catch(() => {});
           resetHideTimer();
           break;
 
         case "pause":
         case "stop":
           e.preventDefault();
-          video.pause();
+          if (avplay) { try { avplay.pause(); setIsPlaying(false); } catch {} }
+          else if (video) video.pause();
           resetHideTimer();
           break;
 
         case "fastforward": {
           e.preventDefault();
-          video.currentTime = Math.min(video.duration || Infinity, video.currentTime + SEEK_STEP);
+          if (avplay) {
+            const pos = (avplay.getCurrentTime?.() ?? currentTime * 1_000) + SEEK_STEP * 1_000;
+            try { avplay.seekTo(Math.floor(pos)); } catch {}
+          } else if (video) {
+            video.currentTime = Math.min(video.duration || Infinity, video.currentTime + SEEK_STEP);
+          }
           showSeekOsd(`+${SEEK_STEP}s`);
           resetHideTimer();
           break;
@@ -316,7 +421,12 @@ export function HlsVideoPlayer({
 
         case "rewind": {
           e.preventDefault();
-          video.currentTime = Math.max(0, video.currentTime - SEEK_STEP);
+          if (avplay) {
+            const pos = Math.max(0, (avplay.getCurrentTime?.() ?? currentTime * 1_000) - SEEK_STEP * 1_000);
+            try { avplay.seekTo(Math.floor(pos)); } catch {}
+          } else if (video) {
+            video.currentTime = Math.max(0, video.currentTime - SEEK_STEP);
+          }
           showSeekOsd(`−${SEEK_STEP}s`);
           resetHideTimer();
           break;
@@ -331,8 +441,13 @@ export function HlsVideoPlayer({
         // Pressing Enter in error-free state toggles play/pause.
         case "select":
           e.preventDefault();
-          if (video.paused) video.play().catch(() => {});
-          else video.pause();
+          if (avplay) {
+            if (isPlaying) { try { avplay.pause(); setIsPlaying(false); } catch {} }
+            else { try { avplay.play(); setIsPlaying(true); } catch {} }
+          } else if (video) {
+            if (video.paused) video.play().catch(() => {});
+            else video.pause();
+          }
           resetHideTimer();
           break;
 

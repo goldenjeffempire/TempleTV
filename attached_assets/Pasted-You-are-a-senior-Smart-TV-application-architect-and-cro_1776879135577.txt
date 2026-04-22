@@ -1,0 +1,205 @@
+You are a senior Smart TV application architect and cross-platform TV engineer specializing in:
+
+LG webOS Smart TV development (web-based apps)
+Samsung Tizen Smart TV development (web-based apps)
+10-foot UI/TV remote navigation systems
+HLS/streaming video platforms
+
+Your task is to build a production-ready dual Smart TV application named “Temple TV”, optimized for faith-based video streaming content.
+
+The solution must support both LG Smart TVs and Samsung Smart TVs, while respecting each platform’s unique packaging and deployment requirements.
+
+🎯 CORE OBJECTIVE
+
+Build a cross-platform Smart TV streaming app that:
+
+Streams video content (HLS .m3u8 preferred)
+Fully supports remote control navigation (D-pad)
+Uses a unified UI/UX system optimized for 10-foot viewing
+Can be deployed separately to:
+LG webOS (.ipk package)
+Samsung Tizen (.wgt package)
+Uses modular architecture so shared logic is reusable across platforms
+🧱 ARCHITECTURE REQUIREMENT (VERY IMPORTANT)
+
+Design a shared core + platform adapters architecture:
+
+TempleTV/
+ ├── shared/
+ │    ├── ui/
+ │    ├── player/
+ │    ├── navigation/
+ │    ├── api/
+ │
+ ├── lg-webos/
+ │    ├── appinfo.json
+ │    ├── index.html
+ │    ├── js/
+ │    ├── css/
+ │
+ ├── samsung-tizen/
+ │    ├── config.xml
+ │    ├── index.html
+ │    ├── js/
+ │    ├── css/
+📺 UI/UX REQUIREMENTS (BOTH PLATFORMS)
+
+Design a TV-first interface (10-foot UI):
+
+Home Screen:
+Featured video banner
+Categories row (horizontal scroll)
+Continue Watching section
+Live / Featured content
+Search functionality
+UI Rules:
+Large tiles (TV readable)
+High contrast design
+Minimal text density
+Overscan-safe layout
+Smooth focus transitions
+🎮 REMOTE CONTROL NAVIGATION SYSTEM (CRITICAL)
+
+Implement a shared navigation engine:
+
+D-pad support:
+Up / Down / Left / Right
+Enter = Select
+Back = Return
+
+Features:
+
+Focus tracking system
+Visible focus highlight state
+Auto-scroll focused element into view
+Circular or bounded navigation logic
+
+Must work identically on:
+
+LG remote
+Samsung remote
+🎬 VIDEO STREAMING ENGINE
+
+Implement a unified video player supporting:
+
+HLS streaming (.m3u8)
+Adaptive bitrate playback
+Auto fullscreen on play
+Pause/resume via remote
+
+Ensure compatibility:
+
+LG webOS video tag support
+Samsung Tizen AVPlay API fallback (if needed)
+📦 PLATFORM-SPECIFIC REQUIREMENTS
+📺 LG webOS (web app)
+
+Must include:
+
+appinfo.json
+index.html entry point
+packaged as .ipk
+supports:
+ares CLI build system
+Developer Mode testing
+
+Lifecycle handling:
+
+visibilitychange
+suspend/resume events
+
+Build output:
+
+ares-package TempleTV
+📺 Samsung Tizen
+
+Must include:
+
+config.xml
+web-based app structure
+packaged as .wgt
+
+Supports:
+
+Tizen Studio packaging
+Samsung TV emulator testing
+
+Lifecycle handling:
+
+page visibility API
+tizen app control lifecycle events
+
+Build output:
+
+tizen build-web
+tizen package -t wgt
+⚡ PERFORMANCE REQUIREMENTS
+Fast startup (< 5 seconds)
+Lazy loading of video content
+Optimized images for TV resolution
+No heavy frameworks unless necessary
+Memory-safe video playback
+🔐 APP LIFECYCLE MANAGEMENT
+
+Handle:
+
+App launch initialization
+App pause/resume
+Exit cleanup
+Stream reconnection on resume
+🎨 DESIGN SYSTEM
+
+Use a unified design system:
+
+Dark theme optimized for TV viewing
+Soft glow focus states
+Large typography
+Smooth transitions (no laggy animations)
+Brand identity: Temple TV (faith + streaming + inspiration)
+📡 BACKEND ASSUMPTION
+
+App consumes an API:
+
+Video catalog endpoint
+Categories endpoint
+Live stream endpoint
+
+Support:
+
+JSON-based API
+CDN video streaming (HLS)
+📦 OUTPUT REQUIREMENTS
+
+Return:
+
+1. Full cross-platform project structure
+2. LG webOS implementation (IPK-ready)
+3. Samsung Tizen implementation (WGT-ready)
+4. Shared core modules (navigation, UI, player)
+5. Video player implementation
+6. Remote control navigation system
+7. Build & deployment instructions:
+LG: ares CLI steps
+Samsung: Tizen Studio steps
+🚀 FINAL GOAL
+
+Deliver a production-ready Temple TV Smart TV ecosystem that:
+
+Runs on LG Smart TVs (webOS)
+Runs on Samsung Smart TVs (Tizen)
+Shares 70–90% reusable codebase
+Is optimized for real-world TV deployment
+Is ready for app store submission on both platforms
+⚠️ STRICT CONSTRAINTS
+Must NOT use mobile UI assumptions
+Must NOT rely on touch interactions
+Must fully support remote navigation
+Must respect both LG + Samsung packaging formats
+Must be production-grade and store-ready
+
+Continue Watching (watch history tracking)
+Multi-profile support
+Search autocomplete
+Live streaming scheduler
+Firebase or backend integration
+Parental control mode

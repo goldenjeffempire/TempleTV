@@ -2,9 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { LiveHero } from "../components/LiveHero";
 import { TempleTvLogo } from "../components/TempleTvLogo";
 import { SermonRow } from "../components/SermonRow";
+import { ContinueWatchingCard } from "../components/ContinueWatchingCard";
 import { Clock } from "../components/Clock";
 import { useTVNav } from "../hooks/useTVNav";
 import { useSermons, useLiveStatus } from "../hooks/useData";
+import { useWatchHistory } from "../hooks/useWatchHistory";
 import type { VideoItem } from "../lib/api";
 
 const CATEGORIES = [
@@ -26,35 +28,46 @@ interface HomeProps {
 export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: HomeProps) {
   const { byCategory, sermons, loading } = useSermons();
   const liveStatus = useLiveStatus();
+  const { continueWatching } = useWatchHistory();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [guideButtonFocused, setGuideButtonFocused] = useState(false);
   const [searchButtonFocused, setSearchButtonFocused] = useState(false);
 
+  const hasContinueWatching = continueWatching.length > 0;
+
+  // ── Build a unified rows array for useTVNav ───────────────────────────
+  // Row 0: Live hero (always present as placeholder — count = 1 even when off-air)
+  // Row 1: Continue Watching (only when history exists)
+  // Row 2+: Content categories
   const rows = [
-    { key: "__live__", label: "Live", items: liveStatus?.isLive ? 1 : 0 },
+    { key: "__live__", label: "Live", items: 1 },
+    ...(hasContinueWatching ? [{ key: "__continue__", label: "Continue Watching", items: continueWatching.length }] : []),
     ...CATEGORIES.map((cat) => ({ key: cat, label: cat, items: (byCategory[cat] ?? []).length })),
-  ].filter((r) => r.items > 0 || r.key === "__live__");
+  ].filter((r) => r.items > 0);
 
   const getRowItemCount = useCallback(
-    (rowIndex: number) => {
-      const row = rows[rowIndex];
-      if (!row) return 0;
-      if (row.key === "__live__") return 1;
-      return byCategory[row.key]?.length ?? 0;
-    },
-    [rows, byCategory],
+    (rowIndex: number) => rows[rowIndex]?.items ?? 0,
+    [rows],
   );
 
   const onSelect = useCallback(
     (rowIndex: number, itemIndex: number) => {
       const row = rows[rowIndex];
       if (!row) return;
+
       if (row.key === "__live__") {
         if (liveStatus?.isLive && liveStatus.videoId) {
           onPlay(liveStatus.videoId, liveStatus.title ?? "Live Stream");
         }
         return;
       }
+
+      if (row.key === "__continue__") {
+        const entry = continueWatching[itemIndex];
+        if (entry) onPlay(entry.videoId, entry.title);
+        return;
+      }
+
       const rowSermons = byCategory[row.key] ?? [];
       const sermon = rowSermons[itemIndex];
       if (sermon) {
@@ -62,12 +75,11 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
         onDetails(sermon, related);
       }
     },
-    [rows, byCategory, liveStatus, onPlay, onDetails],
+    [rows, byCategory, liveStatus, onPlay, onDetails, continueWatching],
   );
 
   const onHeaderSelect = useCallback(
     (itemIndex: number) => {
-      // Header items: 0 = Search, 1 = Guide
       if (itemIndex === 0) onNavigateSearch();
       else if (itemIndex === 1) onNavigateGuide();
     },
@@ -95,9 +107,14 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
     return () => window.removeEventListener("keydown", handler);
   }, [onNavigateGuide, onNavigateSearch]);
 
+  // Determine Continue Watching row index (dynamic — 1 if it exists)
+  const cwRowIndex = hasContinueWatching ? 1 : -1;
+  // Category row offset — 1 if live-only, 2 if CW also exists
+  const catRowOffset = hasContinueWatching ? 2 : 1;
+
   return (
     <div style={{ width: "100vw", height: "100vh", position: "relative", overflow: "hidden", background: "#070707" }}>
-      {/* Netflix-style transparent header — sits over the cinematic hero */}
+      {/* Netflix-style transparent header */}
       <div
         style={{
           position: "absolute",
@@ -118,7 +135,6 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 10, pointerEvents: "auto" }}>
-          {/* Search button */}
           <button
             onClick={onNavigateSearch}
             onFocus={() => setSearchButtonFocused(true)}
@@ -133,11 +149,12 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
               outlineOffset: 2,
             }}
           >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+            </svg>
             Search
           </button>
 
-          {/* Guide button */}
           <button
             onClick={onNavigateGuide}
             onFocus={() => setGuideButtonFocused(true)}
@@ -165,8 +182,9 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
         </div>
       </div>
 
-      {/* Scrollable content — hero is full-bleed at the top, rows below */}
+      {/* Scrollable content */}
       <div ref={scrollRef} style={{ position: "absolute", inset: 0, overflowY: "auto", overflowX: "hidden", paddingBottom: 40 }}>
+        {/* Hero */}
         <div style={{ marginBottom: 24 }}>
           <LiveHero
             liveStatus={liveStatus}
@@ -193,33 +211,90 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
             ))}
           </div>
         ) : (
-          /* tv-rows-active dims unfocused rows — see SermonRow / index.css */
           <div className={focusZone === "grid" ? "tv-rows-active" : ""}>
-          {CATEGORIES.map((cat, catIndex) => {
-            const rowSermons = byCategory[cat] ?? [];
-            if (rowSermons.length === 0) return null;
-            const rowIndex = catIndex + 1;
-            return (
-              <SermonRow
-                key={cat}
-                title={cat}
-                sermons={rowSermons}
-                focusedIndex={getFocusItem(rowIndex)}
-                rowFocused={focusRow === rowIndex}
-                onCardFocus={() => {}}
-                onCardSelect={(sermon) => {
-                  const related = rowSermons.filter((s) => s.videoId !== sermon.videoId);
-                  onDetails(sermon, related);
-                }}
-              />
-            );
-          })}
+
+            {/* ── Continue Watching row ─────────────────────────────────── */}
+            {hasContinueWatching && (
+              <div
+                className={`tv-row ${focusRow === cwRowIndex ? "tv-row-focused" : ""}`}
+                style={{ marginBottom: 36 }}
+              >
+                <h2 style={{
+                  fontSize: "clamp(18px, 1.6vw, 24px)",
+                  fontWeight: 700,
+                  color: focusRow === cwRowIndex ? "#fff" : "rgba(255,255,255,0.6)",
+                  marginBottom: 18,
+                  paddingLeft: "var(--tv-safe-h, 60px)",
+                  letterSpacing: "0.01em",
+                  transition: "color 0.2s ease",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                }}>
+                  <span style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: 28,
+                    height: 28,
+                    borderRadius: "50%",
+                    background: "linear-gradient(135deg, #7c3aed, #a855f7)",
+                    flexShrink: 0,
+                  }}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="white">
+                      <path d="M8 5v14l11-7z"/>
+                    </svg>
+                  </span>
+                  Continue Watching
+                </h2>
+                <div style={{
+                  display: "flex",
+                  gap: 18,
+                  paddingLeft: "var(--tv-safe-h, 60px)",
+                  paddingRight: "var(--tv-safe-h, 60px)",
+                  overflowX: "auto",
+                  scrollbarWidth: "none",
+                  msOverflowStyle: "none",
+                }}>
+                  {continueWatching.map((entry, idx) => (
+                    <ContinueWatchingCard
+                      key={entry.videoId}
+                      entry={entry}
+                      focused={focusRow === cwRowIndex && getFocusItem(cwRowIndex) === idx}
+                      onFocus={() => {}}
+                      onClick={() => onPlay(entry.videoId, entry.title)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ── Category rows ─────────────────────────────────────────── */}
+            {CATEGORIES.map((cat, catIndex) => {
+              const rowSermons = byCategory[cat] ?? [];
+              if (rowSermons.length === 0) return null;
+              const rowIndex = catIndex + catRowOffset;
+              return (
+                <SermonRow
+                  key={cat}
+                  title={cat}
+                  sermons={rowSermons}
+                  focusedIndex={getFocusItem(rowIndex)}
+                  rowFocused={focusRow === rowIndex}
+                  onCardFocus={() => {}}
+                  onCardSelect={(sermon) => {
+                    const related = rowSermons.filter((s) => s.videoId !== sermon.videoId);
+                    onDetails(sermon, related);
+                  }}
+                />
+              );
+            })}
           </div>
         )}
 
         <div style={{ paddingLeft: 60, paddingTop: 16 }}>
           <p style={{ fontSize: 13, color: "rgba(255,255,255,0.3)", letterSpacing: "0.04em" }}>
-            ↑ ↓ Navigate rows (↑ from top row reaches Search / Guide) &nbsp;·&nbsp; ← → Select &nbsp;·&nbsp; ENTER Open &nbsp;·&nbsp; G Guide &nbsp;·&nbsp; S Search
+            ↑ ↓ Navigate rows &nbsp;·&nbsp; ← → Select &nbsp;·&nbsp; ENTER Open &nbsp;·&nbsp; G Guide &nbsp;·&nbsp; S Search
           </p>
         </div>
       </div>

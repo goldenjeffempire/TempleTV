@@ -1,5 +1,18 @@
+/**
+ * usePlatformInit — Smart TV platform bootstrap
+ * ================================================
+ * Runs once on app mount. Handles:
+ *  • Tizen media-key registration (colour/media/exit keys)
+ *  • LG webOS back-key and Magic Remote hover→focus
+ *  • Platform lifecycle (suspend/resume) via lifecycle.ts
+ *  • Scroll prevention (D-pad arrows should not scroll the page)
+ *  • Context-menu suppression
+ *  • data-tv attribute for CSS platform selectors
+ */
+
 import { useEffect } from "react";
 import { isTizen, isWebOS } from "../lib/platform";
+import { initLifecycle } from "../lib/lifecycle";
 
 declare global {
   interface Window {
@@ -8,6 +21,12 @@ declare global {
         registerKey: (name: string) => void;
         unregisterKey: (name: string) => void;
         getSupportedKeys: () => Array<{ name: string; code: number }>;
+      };
+      application?: {
+        getCurrentApplication: () => {
+          exit: () => void;
+          getRequestedAppControl?: () => unknown;
+        };
       };
     };
     webOS?: {
@@ -18,22 +37,12 @@ declare global {
   }
 }
 
+// Keys to register on Tizen (Samsung remote color/media/number keys).
 const TIZEN_MEDIA_KEYS = [
-  "MediaPlayPause",
-  "MediaPlay",
-  "MediaPause",
-  "MediaStop",
-  "MediaFastForward",
-  "MediaRewind",
-  "MediaTrackPrevious",
-  "MediaTrackNext",
-  "ColorF0Red",
-  "ColorF1Green",
-  "ColorF2Yellow",
-  "ColorF3Blue",
-  "Exit",
-  "Info",
-  "Menu",
+  "MediaPlayPause", "MediaPlay", "MediaPause", "MediaStop",
+  "MediaFastForward", "MediaRewind", "MediaTrackPrevious", "MediaTrackNext",
+  "ColorF0Red", "ColorF1Green", "ColorF2Yellow", "ColorF3Blue",
+  "Exit", "Info", "Menu",
   "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
 ];
 
@@ -44,51 +53,100 @@ function registerTizenKeys(): void {
   );
   for (const key of TIZEN_MEDIA_KEYS) {
     if (supported.has(key)) {
-      try {
-        window.tizen.tvinputdevice.registerKey(key);
-      } catch {
-        // Key may already be registered — safe to ignore.
-      }
+      try { window.tizen.tvinputdevice.registerKey(key); } catch { /* already registered */ }
     }
   }
 }
 
 function suppressContextMenu(): void {
-  document.addEventListener("contextmenu", (e) => e.preventDefault(), {
-    capture: true,
-  });
+  document.addEventListener("contextmenu", (e) => e.preventDefault(), { capture: true });
 }
 
 function preventDefaultTVScrolling(): void {
   document.addEventListener(
     "keydown",
-    (e) => {
-      if ([37, 38, 39, 40].includes(e.keyCode)) {
-        e.preventDefault();
+    (e) => { if ([37, 38, 39, 40].includes(e.keyCode)) e.preventDefault(); },
+    { capture: true, passive: false },
+  );
+}
+
+/**
+ * LG Magic Remote — Pointer → Focus
+ * ====================================
+ * LG's Magic Remote has a laser-pointer cursor. Elements that receive
+ * `mouseover` while the cursor is active should receive keyboard focus so
+ * the D-pad navigation system stays in sync.
+ *
+ * Strategy: any element with tabIndex >= 0 (or role=button) that receives a
+ * mouseover fires .focus() — this lets SermonCard and button elements
+ * auto-focus when hovered by the Magic Remote pointer.
+ *
+ * We only enable this on webOS to avoid interfering with mouse users on
+ * desktop/generic browsers.
+ */
+function initMagicRemoteHoverFocus(): void {
+  if (!isWebOS) return;
+
+  let pointerVisible = false;
+
+  // webOS fires a "cursorStateChange" custom event when the Magic Remote
+  // pointer appears/disappears (the user puts it down or picks it up).
+  document.addEventListener("cursorStateChange", (e: Event) => {
+    pointerVisible = (e as CustomEvent).detail?.visibility ?? false;
+  });
+
+  document.addEventListener(
+    "mouseover",
+    (e: MouseEvent) => {
+      // Only honour hover→focus when the pointer is visible.
+      // Without this, touch/keyboard navigation triggers spurious focus changes.
+      if (!pointerVisible) return;
+      const el = e.target as HTMLElement | null;
+      if (!el) return;
+      // Walk up the DOM to find the nearest focusable ancestor (including the
+      // element itself) — this handles nested SVGs and img tags inside cards.
+      let node: HTMLElement | null = el;
+      while (node && node !== document.body) {
+        const ti = parseInt(node.getAttribute("tabindex") ?? "-1", 10);
+        const role = node.getAttribute("role");
+        if (ti >= 0 || role === "button" || node.tagName === "BUTTON" || node.tagName === "A") {
+          node.focus({ preventScroll: true });
+          break;
+        }
+        node = node.parentElement;
       }
     },
-    { capture: true, passive: false },
+    { capture: false, passive: true },
   );
 }
 
 export function usePlatformInit(): void {
   useEffect(() => {
+    // ── Universal ────────────────────────────────────────────────────────
     suppressContextMenu();
     preventDefaultTVScrolling();
 
+    // ── Tizen ────────────────────────────────────────────────────────────
     if (isTizen) {
       registerTizenKeys();
     }
 
+    // ── LG webOS ─────────────────────────────────────────────────────────
     if (isWebOS) {
+      // Back key → system if no more history
       document.addEventListener("keydown", (e) => {
         if (e.keyCode === 461 || e.key === "GoBack") {
           e.preventDefault();
           window.history.back();
         }
       });
+      initMagicRemoteHoverFocus();
     }
 
+    // ── Platform lifecycle (suspend / resume / deep-links) ────────────────
+    initLifecycle();
+
+    // ── CSS data attribute for platform-specific styles ───────────────────
     document.documentElement.setAttribute(
       "data-tv",
       isTizen ? "tizen" : isWebOS ? "webos" : "generic",
