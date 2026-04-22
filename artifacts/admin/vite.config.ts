@@ -49,6 +49,20 @@ export default defineConfig({
     port,
     host: "0.0.0.0",
     allowedHosts: true,
+    proxy: {
+      "/api/admin/videos/upload": {
+        target: "http://localhost:8080",
+        changeOrigin: true,
+        secure: false,
+        timeout: 300_000,
+        proxyTimeout: 300_000,
+      },
+      "/api": {
+        target: "http://localhost:8080",
+        changeOrigin: true,
+        secure: false,
+      },
+    },
     fs: {
       strict: true,
       deny: ["**/.*"],
