@@ -104,12 +104,53 @@ export function Player({ videoId, title, onBack }: PlayerProps) {
       className="fixed inset-0 flex flex-col items-center justify-center"
       style={{ background: "#000", zIndex: 100 }}
     >
+      {/* Cinematic loading veil — visible until the iframe reports ready */}
+      {!loadError && !isLoaded && (
+        <div
+          aria-hidden
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 18,
+            background:
+              "radial-gradient(circle at 50% 40%, #1a0010 0%, #050505 70%)",
+            zIndex: 5,
+          }}
+        >
+          <div
+            style={{
+              width: 56,
+              height: 56,
+              borderRadius: "50%",
+              border: "3px solid rgba(255,255,255,0.12)",
+              borderTopColor: "hsl(0 78% 55%)",
+              animation: "tt-spin 0.9s linear infinite",
+            }}
+          />
+          <p
+            style={{
+              fontSize: 14,
+              letterSpacing: "0.18em",
+              fontWeight: 700,
+              color: "rgba(255,255,255,0.55)",
+              textTransform: "uppercase",
+            }}
+          >
+            {autoRetries > 0 ? "Reconnecting…" : "Preparing playback"}
+          </p>
+        </div>
+      )}
+
       {!loadError && (
         <iframe
           key={retryKey}
           src={embedUrl}
           title={title}
-          allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
+          allow="autoplay; encrypted-media; fullscreen; picture-in-picture; accelerometer; gyroscope"
           allowFullScreen
           referrerPolicy="strict-origin-when-cross-origin"
           onLoad={() => {

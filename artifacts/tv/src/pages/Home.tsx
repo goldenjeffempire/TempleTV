@@ -96,12 +96,28 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
   }, [onNavigateGuide, onNavigateSearch]);
 
   return (
-    <div style={{ width: "100vw", height: "100vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
-      {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 60px", flexShrink: 0 }}>
-        <TempleTvLogo size={48} withWordmark />
+    <div style={{ width: "100vw", height: "100vh", position: "relative", overflow: "hidden", background: "#070707" }}>
+      {/* Netflix-style transparent header — sits over the cinematic hero */}
+      <div
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          right: 0,
+          zIndex: 20,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "22px 60px 36px",
+          background: "linear-gradient(180deg, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.45) 60%, rgba(0,0,0,0) 100%)",
+          pointerEvents: "none",
+        }}
+      >
+        <div style={{ pointerEvents: "auto" }}>
+          <TempleTvLogo size={44} withWordmark />
+        </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, pointerEvents: "auto" }}>
           {/* Search button */}
           <button
             onClick={onNavigateSearch}
@@ -149,8 +165,8 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
         </div>
       </div>
 
-      {/* Scrollable content */}
-      <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", overflowX: "hidden", paddingBottom: 40 }}>
+      {/* Scrollable content — hero is full-bleed at the top, rows below */}
+      <div ref={scrollRef} style={{ position: "absolute", inset: 0, overflowY: "auto", overflowX: "hidden", paddingBottom: 40 }}>
         <div style={{ marginBottom: 24 }}>
           <LiveHero
             liveStatus={liveStatus}

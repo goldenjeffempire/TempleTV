@@ -119,3 +119,13 @@ html, body, #root {
 /* Text truncation */
 .line-clamp-1 { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
 .line-clamp-2 { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+
+
+@keyframes tt-spin {
+  to { transform: rotate(360deg); }
+}
+
+.tv-hero-focused {
+  /* Hero gets its focus ring from the inner element; nothing extra here. */
+}
+

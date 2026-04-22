@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -241,11 +242,29 @@ export function YoutubePlayer({
         style={styles.playerInner}
       />
       {loading && (
-        <View style={[styles.loadingOverlay, { backgroundColor: "#0a0a0a" }]}>
-          <ActivityIndicator color={c.primary} size="large" />
-          <Text style={[styles.hintText, { color: "rgba(255,255,255,0.6)" }]}>
-            {isLive ? "Connecting to live stream..." : "Loading player..."}
-          </Text>
+        <View style={styles.loadingOverlay}>
+          {videoId && Platform.OS === "web"
+            ? React.createElement("img", {
+                src: `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
+                alt: "",
+                "aria-hidden": "true",
+                style: {
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "cover",
+                  filter: "brightness(0.55) blur(2px)",
+                },
+              })
+            : null}
+          <View style={styles.loadingCenter}>
+            <ActivityIndicator color={c.primary} size="large" />
+            <Text style={[styles.hintText, { color: "rgba(255,255,255,0.85)", letterSpacing: 1 }]}>
+              {isLive ? "Connecting to live stream…" : "Loading player…"}
+            </Text>
+          </View>
         </View>
       )}
     </View>
@@ -257,9 +276,19 @@ const styles = StyleSheet.create({
   playerInner: { flex: 1, backgroundColor: "#000" },
   loadingOverlay: {
     ...StyleSheet.absoluteFillObject,
+    backgroundColor: "#050505",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  loadingCenter: {
     alignItems: "center",
     justifyContent: "center",
     gap: 10,
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderRadius: 14,
+    backgroundColor: "rgba(0,0,0,0.5)",
   },
   centeredOverlay: {
     ...StyleSheet.absoluteFillObject,
