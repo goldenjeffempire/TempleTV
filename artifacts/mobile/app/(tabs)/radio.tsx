@@ -100,6 +100,7 @@ export default function RadioScreen() {
     queue,
     currentIndex,
     setQueue,
+    stopPlayback,
   } = usePlayer();
   const { sermons } = useYouTubeChannel();
   const webTopPad = Platform.OS === "web" ? 67 : 0;
@@ -156,7 +157,11 @@ export default function RadioScreen() {
       setSleepTimerSecs((prev) => {
         if (prev <= 1) {
           if (sleepTimerRef.current) clearInterval(sleepTimerRef.current);
-          togglePlay();
+          // Sleep timer fully tears down playback (clears the iframe and
+          // notification) instead of merely pausing — otherwise audio
+          // resources stay alive and the lock-screen "Now Playing" tile
+          // lingers, which defeats the purpose of a sleep timer.
+          stopPlayback();
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           return 0;
         }
@@ -276,6 +281,13 @@ export default function RadioScreen() {
     } else {
       togglePlay();
     }
+  };
+
+  const handleStop = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    if (sleepTimerRef.current) clearInterval(sleepTimerRef.current);
+    setSleepTimerSecs(0);
+    stopPlayback();
   };
 
   const handleWatchVideo = () => {
@@ -415,6 +427,24 @@ export default function RadioScreen() {
               <Feather name="skip-forward" size={30} color={c.foreground} />
             </Pressable>
           </View>
+
+          {(currentSermon || isPlaying) && (
+            <Pressable
+              onPress={handleStop}
+              accessibilityLabel="Stop radio playback"
+              style={({ pressed }) => [
+                styles.stopBtn,
+                {
+                  borderColor: c.border,
+                  backgroundColor: pressed ? c.primary : "transparent",
+                  opacity: pressed ? 0.85 : 1,
+                },
+              ]}
+            >
+              <Feather name="square" size={14} color={c.foreground} />
+              <Text style={[styles.stopBtnText, { color: c.foreground }]}>Stop</Text>
+            </Pressable>
+          )}
 
           <View style={styles.modeControls}>
             <Pressable
@@ -679,6 +709,18 @@ const styles = StyleSheet.create({
   nowTitle: { fontSize: 19, fontFamily: "Inter_700Bold", textAlign: "center", paddingHorizontal: 24, lineHeight: 26 },
   nowPreacher: { fontSize: 14, fontFamily: "Inter_400Regular" },
   controls: { flexDirection: "row", alignItems: "center", gap: 36, marginTop: 4 },
+  stopBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    marginTop: 2,
+    minHeight: 36,
+  },
+  stopBtnText: { fontSize: 12, fontFamily: "Inter_600SemiBold" },
   playButton: { width: 68, height: 68, borderRadius: 34, alignItems: "center", justifyContent: "center", paddingLeft: 3 },
   modeControls: { flexDirection: "row", gap: 10, marginTop: 4 },
   modeBtn: {

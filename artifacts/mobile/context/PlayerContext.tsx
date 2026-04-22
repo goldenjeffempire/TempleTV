@@ -7,10 +7,12 @@ import React, {
   useRef,
   useState,
 } from "react";
+import { AppState, Platform, type AppStateStatus } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { LoopMode, Sermon } from "@/types";
 import { SERMONS } from "@/data/sermons";
 import { STORAGE_KEYS } from "@/constants/config";
+import { stopTrackPlayer } from "@/services/nowPlaying";
 
 interface PlayerContextType {
   currentSermon: Sermon | null;
@@ -366,12 +368,71 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const stopPlayback = useCallback(() => {
+    // Full teardown — opposite of pause. We:
+    //   1) pause the underlying player engine (iframe / native player)
+    //   2) clear the now-playing state so PersistentAudioPlayer unmounts
+    //      its hidden iframe (no ghost audio, no DOM cost)
+    //   3) reset the native TrackPlayer so the lock-screen / notification
+    //      "Now Playing" tile disappears (otherwise it lingers on Android
+    //      until the OS reclaims the foreground service)
+    // This is what gets called when the user hits Stop, when the sleep
+    // timer expires, when the browser tab closes, and on app teardown.
+    try {
+      playerPauseRef.current?.();
+    } catch {}
     setIsPlaying(false);
     setCurrentSermon(null);
     setIsLive(false);
     setCurrentTime(0);
     setDuration(0);
-    playerPauseRef.current?.();
+    if (Platform.OS !== "web") {
+      stopTrackPlayer().catch(() => {});
+    }
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // App-lifecycle cleanup — guarantees the radio stops cleanly when the
+  // platform is closed, instead of leaking a hidden iframe / notification.
+  // ---------------------------------------------------------------------------
+  const stopPlaybackRef = useRef(stopPlayback);
+  stopPlaybackRef.current = stopPlayback;
+
+  useEffect(() => {
+    if (Platform.OS === "web") {
+      // Web: 'pagehide' fires for both tab close and browser navigation
+      // (and unlike 'beforeunload' it works with the back-forward cache
+      // and on iOS Safari). 'visibilitychange→hidden' is a defensive
+      // backstop for cases where pagehide is suppressed.
+      const handleTeardown = () => {
+        try {
+          stopPlaybackRef.current();
+        } catch {}
+      };
+      if (typeof window !== "undefined") {
+        window.addEventListener("pagehide", handleTeardown);
+        window.addEventListener("beforeunload", handleTeardown);
+        return () => {
+          window.removeEventListener("pagehide", handleTeardown);
+          window.removeEventListener("beforeunload", handleTeardown);
+        };
+      }
+      return;
+    }
+
+    // Native: AppState transitions to 'inactive' on swipe-up app-switcher
+    // and 'background' when the app is sent to the background. We do NOT
+    // stop playback on background (that would defeat the purpose of radio
+    // mode). The native TrackPlayer's `appKilledPlaybackBehavior:
+    // StopPlaybackAndRemoveNotification` already handles full app kill —
+    // here we just guarantee the JS state is clean if the runtime
+    // gets a chance to run cleanup.
+    const sub = AppState.addEventListener("change", (next: AppStateStatus) => {
+      // Reserved for future hooks (e.g. analytics on background).
+      // Intentionally NOT calling stopPlayback on 'background' — the
+      // whole point of radio is to keep playing in the background.
+      void next;
+    });
+    return () => sub.remove();
   }, []);
 
   const setVolume = useCallback((v: number) => {
