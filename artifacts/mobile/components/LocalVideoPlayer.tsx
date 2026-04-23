@@ -169,7 +169,7 @@ export function LocalVideoPlayer({
   const effectiveUrl = hlsMasterUrl || videoUrl;
   const c = useColors();
   const { width } = useWindowDimensions();
-  const { updatePlayback, playerPlayRef, playerPauseRef, playerSeekRef, isPlaying, dataSaver, isRadioMode } = usePlayer();
+  const { updatePlayback, playerPlayRef, playerPauseRef, playerSeekRef, isPlaying, dataSaver, isRadioMode, toggleRadioMode } = usePlayer();
   const [status, setStatus] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const retryCountRef = useRef(0);
@@ -397,39 +397,71 @@ export function LocalVideoPlayer({
   }
 
   // Web HLS player using hls.js
+  // In radio mode: keep the <video> element alive (hls.js / audio continues)
+  // but hide it behind the audio card overlay — zero buffering on mode switch.
   return (
-    <View style={[styles.container, { height: playerHeight }]}>
-      {React.createElement("video", {
-        ref: (el: HTMLVideoElement | null) => {
-          (webVideoRef as any).current = el;
-        },
-        controls: true,
-        playsInline: true,
-        preload: "auto",
-        crossOrigin: "anonymous",
-        style: {
-          width: "100%",
-          height: "100%",
-          objectFit: "contain",
-          background: "#000",
-          display: "block",
-        },
-        onPlay: () => onPlay?.(),
-        onPause: () => onPause?.(),
-        onEnded: () => onEnd?.(),
-        onError: () => onError?.(),
-        onTimeUpdate: (e: any) => {
-          const v = e.target as HTMLVideoElement;
-          if (v.duration) updatePlayback(v.currentTime, v.duration);
-        },
-      })}
-      {/* HLS / ABR badge */}
-      <View style={[styles.modeBadge, { right: 12, left: undefined }]}>
-        <Feather name="layers" size={12} color="#FFF" />
-        <Text style={styles.modeBadgeText}>
-          {hlsMasterUrl ? "HLS ABR" : "MP4"}
-        </Text>
+    <View style={[styles.container, !isRadioMode && { height: playerHeight }]}>
+      {/* Video element — always mounted, hidden in radio mode so audio plays on */}
+      <View
+        style={
+          isRadioMode
+            ? { position: "absolute", width: 1, height: 1, opacity: 0, overflow: "hidden" }
+            : { flex: 1 }
+        }
+      >
+        {React.createElement("video", {
+          ref: (el: HTMLVideoElement | null) => {
+            (webVideoRef as any).current = el;
+            // Wire context refs to the HTML5 video element so the play/pause/seek
+            // controls in the player screen and radio tab work on web.
+            if (el) {
+              playerPlayRef.current = () => el.play().catch(() => {});
+              playerPauseRef.current = () => { el.pause(); };
+              playerSeekRef.current = (t: number) => { el.currentTime = t; };
+            }
+          },
+          controls: !isRadioMode,
+          playsInline: true,
+          preload: "auto",
+          crossOrigin: "anonymous",
+          style: {
+            width: "100%",
+            height: isRadioMode ? "1px" : "100%",
+            objectFit: "contain",
+            background: "#000",
+            display: "block",
+          },
+          onPlay: () => onPlay?.(),
+          onPause: () => onPause?.(),
+          onEnded: () => onEnd?.(),
+          onError: () => onError?.(),
+          onTimeUpdate: (e: any) => {
+            const v = e.target as HTMLVideoElement;
+            if (v.duration) updatePlayback(v.currentTime, v.duration);
+          },
+        })}
       </View>
+
+      {/* Radio mode audio card overlay */}
+      {isRadioMode && (
+        <LocalAudioModeCard
+          thumbnailUrl={thumbnailUrl}
+          title={title}
+          isPlaying={isPlaying}
+          loading={false}
+          onToggle={toggleRadioMode}
+        />
+      )}
+
+      {/* HLS / ABR badge — only in video mode */}
+      {!isRadioMode && (
+        <View style={[styles.modeBadge, { right: 12, left: undefined }]}>
+          <Feather name="layers" size={12} color="#FFF" />
+          <Text style={styles.modeBadgeText}>
+            {hlsMasterUrl ? "HLS ABR" : "MP4"}
+          </Text>
+        </View>
+      )}
     </View>
   );
 }

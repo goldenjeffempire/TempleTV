@@ -1,0 +1,17 @@
+Enhance the streaming system so that the Radio Mode feature dynamically switches the media experience between video streaming and audio-only streaming in real time.
+
+Requirements:
+
+* When a user enables Radio Mode, the platform must automatically disable video playback and seamlessly switch the active stream into audio-only mode while maintaining uninterrupted playback.
+* While Radio Mode is active, any content streamed from the TV Channel section — including content launched through the “Watch Temple TV” feature — must automatically convert into audio-only playback.
+* The video player should intelligently hide or disable video rendering when Radio Mode is enabled to reduce bandwidth usage, improve performance, and optimize background listening.
+* When Radio Mode is turned off, the platform must automatically restore full video streaming playback without requiring the user to reload the stream.
+* Ensure seamless transition between video mode and audio-only mode with no playback interruption, lag, or unnecessary buffering.
+* Preserve stream synchronization, playback state, progress tracking, and stream continuity during mode switching.
+* Optimize the implementation for low bandwidth environments, mobile devices, and unstable network conditions.
+* Ensure compatibility across web, mobile, smart TV, and embedded streaming environments.
+* Add intelligent state management so the platform consistently remembers and applies the active streaming mode across navigation and playback sessions.
+* Implement enterprise-grade handling for media session management, adaptive streaming behavior, failover recovery, and playback resilience.
+* Ensure the feature is production-ready, highly scalable, performant, and fully tested for real-world streaming usage scenarios.
+
+The final implementation should deliver a seamless enterprise-grade hybrid TV and radio streaming experience where users can instantly switch between full video streaming and audio-only radio mode across all live content.

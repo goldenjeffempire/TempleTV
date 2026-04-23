@@ -711,7 +711,7 @@ export default function PlayerScreen() {
             </Pressable>
             <View style={{ flex: 1 }} />
             {isLive && <LiveBadge size="medium" />}
-            {!isLive && !paramLocalVideoUrl && Platform.OS !== "web" && (
+            {!isLive && !paramLocalVideoUrl && (
               <Pressable
                 onPress={handleToggleAudioMode}
                 style={[styles.audioToggleBtn, isRadioMode && { backgroundColor: "rgba(106,13,173,0.6)" }]}

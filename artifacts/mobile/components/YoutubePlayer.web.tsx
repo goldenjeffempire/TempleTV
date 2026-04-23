@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Animated,
+  Image,
   Linking,
   Platform,
   Pressable,
@@ -89,6 +91,114 @@ interface YoutubePlayerProps {
   onToggleAudioMode?: () => void;
 }
 
+function WebAudioModeCard({
+  videoId,
+  thumbnailUrl,
+  title,
+  preacher,
+  isLive,
+  isLoading,
+  onSwitchToVideo,
+}: {
+  videoId?: string;
+  thumbnailUrl?: string;
+  title?: string;
+  preacher?: string;
+  isLive?: boolean;
+  isLoading: boolean;
+  onSwitchToVideo?: () => void;
+}) {
+  const rotateAnim = useRef(new Animated.Value(0)).current;
+  const waveAnim1 = useRef(new Animated.Value(0.3)).current;
+  const waveAnim2 = useRef(new Animated.Value(0.6)).current;
+  const waveAnim3 = useRef(new Animated.Value(0.4)).current;
+  const waveAnim4 = useRef(new Animated.Value(0.8)).current;
+  const waveAnim5 = useRef(new Animated.Value(0.5)).current;
+
+  useEffect(() => {
+    const ND = false;
+    const rotate = Animated.loop(
+      Animated.timing(rotateAnim, { toValue: 1, duration: 12000, useNativeDriver: ND }),
+    );
+    const makeWave = (anim: Animated.Value, delay: number, duration: number) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(delay),
+          Animated.timing(anim, { toValue: 1, duration, useNativeDriver: ND }),
+          Animated.timing(anim, { toValue: 0.15, duration, useNativeDriver: ND }),
+        ]),
+      );
+    rotate.start();
+    const w1 = makeWave(waveAnim1, 0, 420);
+    const w2 = makeWave(waveAnim2, 120, 560);
+    const w3 = makeWave(waveAnim3, 240, 380);
+    const w4 = makeWave(waveAnim4, 80, 500);
+    const w5 = makeWave(waveAnim5, 320, 460);
+    w1.start(); w2.start(); w3.start(); w4.start(); w5.start();
+    return () => {
+      rotate.stop(); w1.stop(); w2.stop(); w3.stop(); w4.stop(); w5.stop();
+    };
+  }, []);
+
+  const spin = rotateAnim.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
+  const thumb = thumbnailUrl ?? (videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : null);
+
+  return (
+    <View style={webAudioStyles.card}>
+      <View style={webAudioStyles.badge}>
+        <Feather name="headphones" size={11} color="#B47FEB" />
+        <Text style={webAudioStyles.badgeText}>
+          {isLive ? "LIVE · AUDIO MODE" : "AUDIO MODE"}
+        </Text>
+      </View>
+
+      <Animated.View style={{ transform: [{ rotate: spin }] }}>
+        <View style={webAudioStyles.discOuter}>
+          <View style={webAudioStyles.discMid}>
+            {thumb ? (
+              <Image source={{ uri: thumb }} style={webAudioStyles.discImage} />
+            ) : (
+              <View style={[webAudioStyles.discImage, { backgroundColor: "rgba(106,13,173,0.2)", alignItems: "center", justifyContent: "center" }]}>
+                <Feather name="radio" size={32} color="rgba(106,13,173,0.6)" />
+              </View>
+            )}
+            <View style={webAudioStyles.discCenter}>
+              {isLoading ? (
+                <ActivityIndicator color="#6A0DAD" size="small" />
+              ) : (
+                <Feather name="headphones" size={16} color="#6A0DAD" />
+              )}
+            </View>
+          </View>
+        </View>
+      </Animated.View>
+
+      <View style={webAudioStyles.waveRow}>
+        {[waveAnim1, waveAnim2, waveAnim3, waveAnim4, waveAnim5].map((anim, i) => (
+          <Animated.View key={i} style={[webAudioStyles.waveBar, { opacity: anim }]} />
+        ))}
+      </View>
+
+      {(title || preacher) && (
+        <View style={webAudioStyles.meta}>
+          {title ? <Text style={webAudioStyles.metaTitle} numberOfLines={2}>{title}</Text> : null}
+          {preacher ? <Text style={webAudioStyles.metaPreacher} numberOfLines={1}>{preacher}</Text> : null}
+        </View>
+      )}
+
+      {onSwitchToVideo && (
+        <Pressable
+          onPress={onSwitchToVideo}
+          style={({ pressed }) => [webAudioStyles.switchBtn, { opacity: pressed ? 0.7 : 1 }]}
+        >
+          <Feather name="video" size={13} color="#B47FEB" />
+          <Text style={webAudioStyles.switchBtnText}>Switch to Video</Text>
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
 // Exponential-backoff retry schedule (ms). Capped at 4 attempts so a permanently
 // broken video doesn't burn CPU forever. Real network blips usually recover
 // inside the first 2 attempts; the longer tail covers DNS / cell-tower flips.
@@ -103,14 +213,26 @@ export function YoutubePlayer({
   channelHandle = "templetvjctm",
   autoPlay = true,
   startPositionSecs,
+  title,
+  preacher,
+  thumbnailUrl,
   onEnd,
   onError,
   onPlay,
   onPause,
+  onToggleAudioMode,
 }: YoutubePlayerProps) {
   const c = useColors();
-  const { updatePlayback, playerPlayRef, playerPauseRef, playerSeekRef, playerVolumeRef, volume } =
-    usePlayer();
+  const {
+    updatePlayback,
+    playerPlayRef,
+    playerPauseRef,
+    playerSeekRef,
+    playerVolumeRef,
+    volume,
+    isRadioMode,
+    toggleRadioMode,
+  } = usePlayer();
 
   const containerId = useRef(`yt-player-${Math.random().toString(36).slice(2)}`);
   const playerRef = useRef<any>(null);
@@ -497,20 +619,29 @@ export function YoutubePlayer({
     );
   }
 
+  // Radio / audio-only mode:
+  // Keep the iframe alive in a 1×1 invisible box so playback continues
+  // uninterrupted, then overlay the full-size audio card. Toggling radio
+  // mode off removes the overlay — zero player reinit, zero buffering.
+  const handleSwitchToVideo = onToggleAudioMode ?? toggleRadioMode;
+
   return (
     <View style={styles.container}>
+      {/* The iframe container — always mounted so playback never stops.
+          In radio mode it's shrunk to 1×1 and made invisible. */}
       <View
         nativeID={containerId.current}
         id={containerId.current}
-        style={styles.playerInner}
+        style={isRadioMode ? styles.playerInnerHidden : styles.playerInner}
       />
-      {(loading || reconnecting) && (
+
+      {/* Normal loading/reconnecting overlay (hidden in radio mode — the card handles UX) */}
+      {(loading || reconnecting) && !isRadioMode && (
         <View style={styles.loadingOverlay} pointerEvents="none">
           {videoId
             ? React.createElement("img", {
                 src: `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
                 onError: (e: any) => {
-                  // maxres doesn't exist for every video; fall back to hq.
                   if (e?.currentTarget) e.currentTarget.src = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
                 },
                 alt: "",
@@ -540,13 +671,106 @@ export function YoutubePlayer({
           </View>
         </View>
       )}
+
+      {/* Audio mode card — full-size overlay shown when radio mode is active */}
+      {isRadioMode && (
+        <View style={[StyleSheet.absoluteFillObject, { zIndex: 10 }]}>
+          <WebAudioModeCard
+            videoId={videoId}
+            thumbnailUrl={thumbnailUrl}
+            title={title}
+            preacher={preacher}
+            isLive={isLive}
+            isLoading={loading || reconnecting}
+            onSwitchToVideo={handleSwitchToVideo}
+          />
+        </View>
+      )}
     </View>
   );
 }
 
+const webAudioStyles = StyleSheet.create({
+  card: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.92)",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 14,
+    paddingVertical: 20,
+    paddingHorizontal: 16,
+  },
+  badge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 20,
+    borderWidth: 1,
+    backgroundColor: "rgba(106,13,173,0.25)",
+    borderColor: "rgba(106,13,173,0.4)",
+  },
+  badgeText: { fontSize: 10, fontFamily: "Inter_700Bold", letterSpacing: 1.2, color: "#B47FEB" },
+  discOuter: {
+    width: 150,
+    height: 150,
+    borderRadius: 75,
+    borderWidth: 2,
+    borderColor: "rgba(106,13,173,0.5)",
+    padding: 6,
+  },
+  discMid: {
+    flex: 1,
+    borderRadius: 69,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
+    backgroundColor: "rgba(106,13,173,0.15)",
+  },
+  discImage: { width: "100%", height: "100%", borderRadius: 69 },
+  discCenter: {
+    position: "absolute",
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#000",
+  },
+  waveRow: { flexDirection: "row", alignItems: "center", gap: 3, height: 20 },
+  waveBar: { width: 3, height: 18, borderRadius: 2, backgroundColor: "#6A0DAD" },
+  meta: { alignItems: "center", gap: 3, paddingHorizontal: 24 },
+  metaTitle: { fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF", textAlign: "center", lineHeight: 20 },
+  metaPreacher: { fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.5)", textAlign: "center" },
+  switchBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "rgba(106,13,173,0.5)",
+    backgroundColor: "rgba(106,13,173,0.15)",
+  },
+  switchBtnText: { fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#B47FEB" },
+});
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#000", overflow: "hidden" },
   playerInner: { flex: 1, backgroundColor: "#000" },
+  // Hidden player: 1×1, invisible, pointer-events off — keeps the iframe
+  // alive so audio continues while the audio card overlay is shown.
+  playerInnerHidden: {
+    position: "absolute",
+    width: 1,
+    height: 1,
+    opacity: 0,
+    overflow: "hidden",
+    pointerEvents: "none",
+  } as any,
   loadingOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "#050505",
