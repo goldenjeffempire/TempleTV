@@ -761,8 +761,9 @@ export default function Videos() {
           ? `${failedCount} file${failedCount > 1 ? "s" : ""} failed — check errors and retry.`
           : "All content was automatically added to the broadcast queue.",
       });
-      // Invalidate all admin-videos queries (prefix match) and force an immediate refetch
-      // so the library reflects the new uploads without the user needing to reload.
+      // Jump back to page 1 so the newly uploaded video (sorted by importedAt DESC)
+      // is visible immediately. Then invalidate the cache and trigger a fresh fetch.
+      setPage(1);
       queryClient.invalidateQueries({ queryKey: getListAdminVideosQueryKey() });
       refetch();
     }
@@ -779,11 +780,12 @@ export default function Videos() {
         // Second refetch after dialog closes — ensures the library is showing
         // fresh data even if the first refetch (called right after upload) had
         // not yet returned when the dialog auto-dismissed.
+        setPage(1);
         queryClient.invalidateQueries({ queryKey: getListAdminVideosQueryKey() });
         refetch();
       }, 1500);
     }
-  }, [defaultForm, runFileUpload, toast, queryClient, refetch, clearSession, forceUpdate]);
+  }, [defaultForm, runFileUpload, toast, queryClient, refetch, setPage, clearSession, forceUpdate]);
 
   // ── Pause a single file ─────────────────────────────────────────────────────
   const pauseTask = useCallback((id: string) => {

@@ -1266,6 +1266,9 @@ export default function Broadcast() {
         storageKey="ttv-broadcast-upload-v1"
         onUploadsComplete={() => {
           loadAll();
+          // Safety-net: re-fetch 2 s later in case the first call
+          // raced against any remaining async work on the server.
+          setTimeout(loadAll, 2000);
         }}
       />
     </div>

@@ -1365,15 +1365,26 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
         "Upload finalized — pipeline assembly complete",
       );
 
-      res.status(201).json({ ...video, _assemblyMs: assemblyMs });
+      // ── Broadcast-queue registration (BEFORE 201 response) ───────────────
+      // This MUST complete before we send the 201 so that the client's
+      // immediate loadAll() / refetch() call sees the video in the queue.
+      // If this step fails the video is still in the DB — we log the error
+      // and set broadcastQueued=false in the response so the client can
+      // surface a warning without blocking the upload success toast.
+      let broadcastQueued = false;
+      try {
+        await upsertBroadcastQueueVideo(video);
+        broadcastQueued = true;
+      } catch (bqErr) {
+        logger.error(
+          { err: bqErr, videoId: id },
+          "upsertBroadcastQueueVideo failed after finalize — video is in DB but may not appear in broadcast queue immediately",
+        );
+      }
 
-      // Post-response async work — must not throw or affect the 201 already sent.
-      // upsertBroadcastQueueVideo is fire-and-forget: a failure here must never
-      // cause the file to be deleted or the client to see an error, because the
-      // video row is already committed to the DB.
-      upsertBroadcastQueueVideo(video).catch((err) => {
-        logger.error({ err, videoId: id }, "upsertBroadcastQueueVideo failed after finalize — video is in DB but may not appear in broadcast queue");
-      });
+      res.status(201).json({ ...video, _assemblyMs: assemblyMs, broadcastQueued });
+
+      // Transcoding is a background job — does not affect queue visibility.
       queueTranscodingJob(id, finalPath, 1).catch(() => {});
     } catch (postAssemblyErr) {
       // Hash/stat/DB-insert failed after assembly (before DB write). Delete
