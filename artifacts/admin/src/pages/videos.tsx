@@ -450,12 +450,13 @@ export default function Videos() {
           ext,
         });
 
-        // The server embeds the session ID in both the JSON body AND in
-        // X-Upload-Session-Id / X-Upload-Total-Chunks response headers.
-        // Headers are NEVER dropped by any proxy layer. We read the body
-        // first (fast path) and fall back to headers if the body arrives
-        // empty — making this completely resilient to HTTP/2 proxy body
-        // truncation that occasionally occurs in the Replit dev environment.
+        // POST /api/admin/videos/upload/init responds with a 303 See Other
+        // redirect to /api/upload-session/:sessionId. fetch() follows this
+        // automatically. The session ID is embedded in the final URL, which
+        // the browser sets as response.url from the Location header — a
+        // standard HTTP header that ALWAYS survives HTTP/2 proxy translation.
+        // We extract the UUID directly from response.url, bypassing any
+        // response body or custom header that Replit's proxy might drop.
         let initRes: Response;
         let lastInitError: Error | null = null;
         for (let attempt = 0; ; attempt++) {
@@ -463,39 +464,41 @@ export default function Videos() {
           try {
             initRes = await fetch("/api/admin/videos/upload/init", {
               method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "Cache-Control": "no-store",
-              },
+              headers: { "Content-Type": "application/json" },
               body: initBody,
             });
-            break; // got a response — proceed regardless of body content
+            break;
           } catch (e) {
             lastInitError = e instanceof Error ? e : new Error(String(e));
             if (attempt >= 2) throw new Error(`Upload init network error after 3 attempts: ${lastInitError.message}`);
           }
         }
 
-        if (!initRes!.ok) {
-          const err = await readJsonOrThrow<{ error?: string }>(initRes!, "Init failed").catch((e) => {
-            throw new Error(e instanceof Error ? e.message : String(e));
-          });
-          throw new Error(err.error ?? `Failed to initialize upload (HTTP ${initRes!.status})`);
-        }
+        // Primary path: extract UUID from response.url (set by browser from Location header).
+        // Pattern: /api/upload-session/<uuid>
+        const uuidRe = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+        const urlMatch = initRes!.url.match(uuidRe);
+        let newSid = urlMatch ? urlMatch[0] : "";
 
-        // Read body, then fall back to response headers if body was dropped by proxy.
-        const initText = await initRes!.text();
-        let newSid: string;
-        if (initText) {
-          const parsed = (() => { try { return JSON.parse(initText) as { sessionId?: string }; } catch { return null; } })();
-          newSid = parsed?.sessionId ?? initRes!.headers.get("x-upload-session-id") ?? "";
-        } else {
-          newSid = initRes!.headers.get("x-upload-session-id") ?? "";
+        // Fallback: try to read JSON body if URL didn't contain a UUID
+        // (e.g. future server versions that skip the redirect on fast paths).
+        if (!newSid) {
+          if (!initRes!.ok) {
+            const err = await readJsonOrThrow<{ error?: string }>(initRes!, "Init failed").catch((e) => {
+              throw new Error(e instanceof Error ? e.message : String(e));
+            });
+            throw new Error(err.error ?? `Failed to initialize upload (HTTP ${initRes!.status})`);
+          }
+          const text = await initRes!.text();
+          const parsed = (() => { try { return JSON.parse(text) as { sessionId?: string }; } catch { return null; } })();
+          newSid = parsed?.sessionId ?? "";
         }
 
         if (!newSid) {
-          const hdrs = `x-upload-session-id=${initRes!.headers.get("x-upload-session-id")} body=${JSON.stringify(initText.slice(0, 80))}`;
-          throw new Error(`Init response: could not extract sessionId (HTTP ${initRes!.status}). ${hdrs}`);
+          throw new Error(
+            `Upload init failed: could not read session ID. ` +
+            `url=${initRes!.url} status=${initRes!.status}`
+          );
         }
 
         sid = newSid;

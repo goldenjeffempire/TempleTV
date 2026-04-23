@@ -996,6 +996,23 @@ router.post("/admin/videos/upload", upload.fields([{ name: "video", maxCount: 1 
   }
 });
 
+// ── Public session-info endpoint (no admin token required) ───────────────────
+// The upload init endpoint below redirects here (303 See Other) after creating
+// a session. Because response bodies and custom headers can be stripped by
+// Replit's HTTP/1.1 ↔ HTTP/2 proxy translation layer, the client reads the
+// session ID from response.url (which is set from the Location header — a
+// standard HTTP header that ALWAYS survives HTTP/2 conversion) rather than from
+// the response body. This endpoint is public because the session UUID is
+// cryptographically random (122 bits) and therefore unguessable.
+router.get("/upload-session/:sessionId", (req, res) => {
+  const { sessionId } = req.params as { sessionId: string };
+  const session = uploadSessions.get(sessionId);
+  if (!session) return res.status(404).json({ error: "Upload session not found" });
+  return res
+    .setHeader("Cache-Control", "no-store")
+    .json({ sessionId: session.id, totalChunks: session.totalChunks });
+});
+
 router.post("/admin/videos/upload/init", async (req, res) => {
   try {
     const { title, category, preacher, featured, durationSecs, totalChunks, totalBytes, ext } = req.body as {
@@ -1039,21 +1056,14 @@ router.post("/admin/videos/upload/init", async (req, res) => {
     uploadSessions.set(sessionId, session);
     writeSessionToDisk(session);
 
-    // Return session data in BOTH headers and body.
-    // Headers are never dropped by any proxy layer (unlike response bodies
-    // which can be silently truncated by HTTP/1.1 ↔ HTTP/2 translation).
-    // The client reads the body first and falls back to headers if the body
-    // is empty — making this endpoint resilient to any proxy body-stripping.
-    const payload = JSON.stringify({ sessionId, totalChunks: session.totalChunks });
+    // Use a 303 See Other redirect so the client's fetch() automatically
+    // follows to GET /api/upload-session/:sessionId. The session ID is
+    // embedded in the Location URL — a standard header that survives
+    // all proxy layers. The client reads response.url to extract it,
+    // completely bypassing the body/custom-header stripping issue.
     res
-      .status(200)
-      .setHeader("Cache-Control", "no-store, no-cache, must-revalidate")
-      .setHeader("Content-Type", "application/json; charset=utf-8")
-      .setHeader("Content-Length", Buffer.byteLength(payload))
-      .setHeader("X-Upload-Session-Id", sessionId)
-      .setHeader("X-Upload-Total-Chunks", String(session.totalChunks))
-      .setHeader("Access-Control-Expose-Headers", "X-Upload-Session-Id, X-Upload-Total-Chunks")
-      .end(payload);
+      .setHeader("Cache-Control", "no-store")
+      .redirect(303, `/api/upload-session/${sessionId}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });
