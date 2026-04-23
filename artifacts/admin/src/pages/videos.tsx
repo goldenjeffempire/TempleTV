@@ -29,6 +29,7 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { getListAdminVideosQueryKey } from "@workspace/api-client-react";
+import { getAdminToken } from "@/lib/admin-access";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -230,6 +231,8 @@ async function uploadChunk(
     signal.addEventListener("abort", () => xhr.abort(), { once: true });
 
     xhr.open("POST", `/api/admin/videos/upload/${sessionId}/chunk`);
+    const token = getAdminToken();
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
     xhr.send(formData);
   });
 }
