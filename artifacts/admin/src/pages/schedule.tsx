@@ -1,23 +1,49 @@
 import { useState } from "react";
 import { useListSchedule, useCreateScheduleEntry, useUpdateScheduleEntry, useDeleteScheduleEntry, getListScheduleQueryKey, useListAdminVideos, useListPlaylists } from "@workspace/api-client-react";
 import { Button } from "@/components/ui/button";
-import { Plus, Loader2, Calendar as CalendarIcon, Clock, Trash2 } from "lucide-react";
+import { Plus, Loader2, Clock, Trash2, AlertTriangle } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+function timeToMinutes(t: string) {
+  const [h, m] = t.split(":").map(Number);
+  return (h ?? 0) * 60 + (m ?? 0);
+}
+
+function slotsOverlap(a: { startTime: string; endTime?: string | null }, b: { startTime: string; endTime?: string | null }) {
+  const aStart = timeToMinutes(a.startTime);
+  const aEnd = a.endTime ? timeToMinutes(a.endTime) : aStart + 60;
+  const bStart = timeToMinutes(b.startTime);
+  const bEnd = b.endTime ? timeToMinutes(b.endTime) : bStart + 60;
+  return aStart < bEnd && bStart < aEnd;
+}
 
 export default function Schedule() {
   const { data: schedule, isLoading } = useListSchedule();
   const { data: videos } = useListAdminVideos({ limit: 100 });
   const { data: playlists } = useListPlaylists();
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
   const createEntry = useCreateScheduleEntry();
   const deleteEntry = useDeleteScheduleEntry();
   const updateEntry = useUpdateScheduleEntry();
@@ -25,11 +51,11 @@ export default function Schedule() {
   const queryClient = useQueryClient();
 
   const [formData, setFormData] = useState({
-    title: "", dayOfWeek: 0, startTime: "09:00", endTime: "10:30", contentType: "live" as any, contentId: "", isRecurring: true, isActive: true
+    title: "", dayOfWeek: 0, startTime: "09:00", endTime: "10:30", contentType: "live" as "live" | "playlist" | "video", contentId: "", isRecurring: true, isActive: true
   });
 
   const resetContentType = (contentType: string) => {
-    setFormData({ ...formData, contentType, contentId: "" });
+    setFormData({ ...formData, contentType: contentType as "live" | "playlist" | "video", contentId: "" });
   };
 
   const handleCreate = (e: React.FormEvent) => {
@@ -48,13 +74,14 @@ export default function Schedule() {
     });
   };
 
-  const handleDelete = (id: string) => {
-    if (!confirm("Delete this schedule entry?")) return;
+  const doDelete = (id: string) => {
+    setDeleteId(null);
     deleteEntry.mutate({ id }, {
       onSuccess: () => {
         toast({ title: "Entry deleted" });
         queryClient.invalidateQueries({ queryKey: getListScheduleQueryKey() });
-      }
+      },
+      onError: () => toast({ title: "Failed to delete entry", variant: "destructive" })
     });
   };
 
@@ -148,42 +175,107 @@ export default function Schedule() {
         </Dialog>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-7">
-        {DAYS.map((day, dayIndex) => {
-          const dayEntries = schedule?.filter(e => e.dayOfWeek === dayIndex).sort((a, b) => a.startTime.localeCompare(b.startTime)) || [];
-          
-          return (
-            <div key={day} className="flex flex-col gap-3">
-              <div className="font-semibold text-sm pb-2 border-b">{day}</div>
-              {isLoading ? (
-                <Skeleton className="h-24 w-full rounded-lg" />
-              ) : dayEntries.length === 0 ? (
-                <div className="text-xs text-muted-foreground py-4 text-center border border-dashed rounded-lg bg-muted/10">No events</div>
-              ) : (
-                dayEntries.map(entry => (
-                  <div key={entry.id} className={`p-3 rounded-lg border text-sm relative group transition-colors ${entry.isActive ? 'bg-card border-border hover:border-primary/50' : 'bg-muted/50 border-transparent opacity-60'}`}>
-                    <div className="flex items-start justify-between mb-1">
-                      <div className="font-medium truncate pr-4">{entry.title}</div>
-                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity absolute right-2 top-2 bg-background/80 p-1 rounded-md backdrop-blur-sm">
-                        <Switch checked={entry.isActive} onCheckedChange={c => handleToggle(entry.id, c)} className="scale-75" />
-                        <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive hover:bg-destructive/10" onClick={() => handleDelete(entry.id)}>
-                          <Trash2 className="w-3 h-3" />
-                        </Button>
+      <AlertDialog open={deleteId !== null} onOpenChange={(open) => { if (!open) setDeleteId(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Schedule Entry?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This schedule slot will be permanently removed. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => deleteId && doDelete(deleteId)}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <TooltipProvider>
+        <div className="grid gap-6 lg:grid-cols-7">
+          {DAYS.map((day, dayIndex) => {
+            const dayEntries = schedule?.filter(e => e.dayOfWeek === dayIndex).sort((a, b) => a.startTime.localeCompare(b.startTime)) || [];
+            
+            const entriesWithOverlap = new Set<string>();
+            for (let i = 0; i < dayEntries.length; i++) {
+              for (let j = i + 1; j < dayEntries.length; j++) {
+                if (slotsOverlap(dayEntries[i], dayEntries[j])) {
+                  entriesWithOverlap.add(dayEntries[i].id);
+                  entriesWithOverlap.add(dayEntries[j].id);
+                }
+              }
+            }
+            
+            return (
+              <div key={day} className="flex flex-col gap-3">
+                <div className="font-semibold text-sm pb-2 border-b">{day}</div>
+                {isLoading ? (
+                  <Skeleton className="h-24 w-full rounded-lg" />
+                ) : dayEntries.length === 0 ? (
+                  <div className="text-xs text-muted-foreground py-4 text-center border border-dashed rounded-lg bg-muted/10">No events</div>
+                ) : (
+                  dayEntries.map(entry => {
+                    const hasOverlap = entriesWithOverlap.has(entry.id);
+                    return (
+                      <div key={entry.id} className={`p-3 rounded-lg border text-sm relative group transition-colors ${
+                        hasOverlap
+                          ? 'bg-amber-500/5 border-amber-500/40'
+                          : entry.isActive
+                            ? 'bg-card border-border hover:border-primary/50'
+                            : 'bg-muted/50 border-transparent opacity-60'
+                      }`}>
+                        {hasOverlap && (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <AlertTriangle className="w-3 h-3 text-amber-500 absolute top-2 left-2" />
+                            </TooltipTrigger>
+                            <TooltipContent side="top">
+                              <p className="text-xs">Time overlap with another slot on this day</p>
+                            </TooltipContent>
+                          </Tooltip>
+                        )}
+                        <div className="flex items-start justify-between mb-1">
+                          <div className={`font-medium truncate pr-4 ${hasOverlap ? "pl-4" : ""}`}>{entry.title}</div>
+                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity absolute right-2 top-2 bg-background/80 p-1 rounded-md backdrop-blur-sm">
+                            <Switch checked={entry.isActive} onCheckedChange={c => handleToggle(entry.id, c)} className="scale-75" />
+                            <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive hover:bg-destructive/10" onClick={() => setDeleteId(entry.id)}>
+                              <Trash2 className="w-3 h-3" />
+                            </Button>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 text-xs text-muted-foreground mt-2">
+                          <Clock className="w-3 h-3" />
+                          {entry.startTime} {entry.endTime && `– ${entry.endTime}`}
+                        </div>
+                        <div className="mt-2 inline-flex text-[10px] font-medium px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground uppercase tracking-wider">
+                          {entry.contentType}
+                        </div>
                       </div>
-                    </div>
-                    <div className="flex items-center gap-1 text-xs text-muted-foreground mt-2">
-                      <Clock className="w-3 h-3" />
-                      {entry.startTime} {entry.endTime && `- ${entry.endTime}`}
-                    </div>
-                    <div className="mt-2 inline-flex text-[10px] font-medium px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground uppercase tracking-wider">
-                      {entry.contentType}{entry.contentId ? " selected" : ""}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          );
-        })}
+                    );
+                  })
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </TooltipProvider>
+
+      <div className="flex items-center gap-2 text-xs text-muted-foreground border-t pt-4">
+        <Clock className="w-3.5 h-3.5" />
+        <span>All times are in server timezone (UTC). <Badge variant="outline" className="text-[10px] px-1.5 py-0 ml-1">UTC</Badge></span>
+        {schedule && schedule.some((_, i, arr) => {
+          const entry = arr[i];
+          return arr.some((other, j) => j !== i && other.dayOfWeek === entry.dayOfWeek && slotsOverlap(entry, other));
+        }) && (
+          <span className="flex items-center gap-1 ml-2 text-amber-600">
+            <AlertTriangle className="w-3.5 h-3.5" />
+            Some time slots overlap — review highlighted entries.
+          </span>
+        )}
       </div>
     </div>
   );

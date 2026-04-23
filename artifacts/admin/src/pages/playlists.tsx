@@ -14,11 +14,21 @@ import {
 } from "@workspace/api-client-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Plus, ListVideo, Trash2, GripVertical, Loader2, X, Search } from "lucide-react";
+import { Plus, ListVideo, Trash2, GripVertical, Loader2, X, Search, Clock } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -49,6 +59,22 @@ type LocalPlaylistVideo = {
   category: string;
   duration: string;
 };
+
+function parseDurationToSeconds(duration: string): number {
+  if (!duration) return 0;
+  const parts = duration.split(":").map(Number);
+  if (parts.length === 3) return (parts[0] ?? 0) * 3600 + (parts[1] ?? 0) * 60 + (parts[2] ?? 0);
+  if (parts.length === 2) return (parts[0] ?? 0) * 60 + (parts[1] ?? 0);
+  return 0;
+}
+
+function formatTotalDuration(seconds: number): string {
+  if (seconds === 0) return "—";
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m total`;
+  return `${m}m total`;
+}
 
 function SortableVideoItem({
   video,
@@ -87,7 +113,10 @@ function SortableVideoItem({
       </div>
       <div className="flex-1 min-w-0">
         <div className="font-medium truncate text-sm">{video.title}</div>
-        <div className="text-xs text-muted-foreground mt-0.5 capitalize">{video.category}</div>
+        <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1.5 capitalize">
+          {video.category}
+          {video.duration && <><span>·</span><Clock className="w-3 h-3" />{video.duration}</>}
+        </div>
       </div>
       <Button
         variant="ghost"
@@ -105,6 +134,8 @@ export default function Playlists() {
   const { data: playlists, isLoading } = useListPlaylists();
   const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
 
   const createPlaylist = useCreatePlaylist();
   const deletePlaylist = useDeletePlaylist();
@@ -135,9 +166,8 @@ export default function Playlists() {
     );
   };
 
-  const handleDelete = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!confirm("Delete this playlist?")) return;
+  const doDelete = (id: string) => {
+    setDeleteTarget(null);
     deletePlaylist.mutate(
       { id },
       {
@@ -146,12 +176,12 @@ export default function Playlists() {
           if (selectedPlaylistId === id) setSelectedPlaylistId(null);
           queryClient.invalidateQueries({ queryKey: getListPlaylistsQueryKey() });
         },
+        onError: () => toast({ title: "Failed to delete playlist", variant: "destructive" }),
       }
     );
   };
 
-  const handleToggleActive = (id: string, isActive: boolean, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const handleToggleActive = (id: string, isActive: boolean) => {
     updatePlaylist.mutate(
       { id, data: { isActive } },
       {
@@ -271,14 +301,14 @@ export default function Playlists() {
                 <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                   <Switch
                     checked={p.isActive}
-                    onCheckedChange={(c) => handleToggleActive(p.id, c, { stopPropagation: () => {} } as React.MouseEvent)}
+                    onCheckedChange={(c) => handleToggleActive(p.id, c)}
                     className="scale-75"
                   />
                   <Button
                     variant="ghost"
                     size="icon"
                     className="h-7 w-7 text-destructive hover:bg-destructive/10"
-                    onClick={(evt) => handleDelete(p.id, evt)}
+                    onClick={(e) => { e.stopPropagation(); setDeleteTarget({ id: p.id, name: p.name }); }}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
@@ -299,6 +329,26 @@ export default function Playlists() {
           </div>
         )}
       </div>
+
+      <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Playlist?</AlertDialogTitle>
+            <AlertDialogDescription>
+              <strong>"{deleteTarget?.name}"</strong> and all its video associations will be permanently deleted. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => deleteTarget && doDelete(deleteTarget.id)}
+            >
+              Delete Playlist
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -337,7 +387,10 @@ function PlaylistDetail({ id }: { id: string }) {
       { id, data: { videoIds } },
       {
         onSuccess: () => queryClient.invalidateQueries({ queryKey: getGetPlaylistQueryKey(id) }),
-        onError: () => toast({ title: "Failed to reorder", variant: "destructive" }),
+        onError: () => {
+          toast({ title: "Failed to save new order — refreshing", variant: "destructive" });
+          queryClient.invalidateQueries({ queryKey: getGetPlaylistQueryKey(id) });
+        },
       }
     );
   };
@@ -367,6 +420,7 @@ function PlaylistDetail({ id }: { id: string }) {
           queryClient.invalidateQueries({ queryKey: getGetPlaylistQueryKey(id) });
           queryClient.invalidateQueries({ queryKey: getListPlaylistsQueryKey() });
         },
+        onError: () => toast({ title: "Failed to remove video", variant: "destructive" }),
       }
     );
   };
@@ -377,6 +431,9 @@ function PlaylistDetail({ id }: { id: string }) {
       !existingVideoIds.has(v.id) &&
       (videoSearch === "" || v.title.toLowerCase().includes(videoSearch.toLowerCase()) || (v.preacher ?? "").toLowerCase().includes(videoSearch.toLowerCase()))
   );
+
+  const totalDurationSecs = (playlist?.videos as unknown as LocalPlaylistVideo[] ?? [])
+    .reduce((acc, v) => acc + parseDurationToSeconds(v.duration), 0);
 
   if (isLoading)
     return (
@@ -394,10 +451,19 @@ function PlaylistDetail({ id }: { id: string }) {
         <div>
           <h2 className="text-xl font-bold">{playlist.name}</h2>
           <p className="text-muted-foreground text-sm mt-1">{playlist.description || "No description."}</p>
-          <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground">
+          <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground flex-wrap">
             <span>{playlist.videos.length} videos</span>
             <span>·</span>
             <span className="capitalize">Mode: {playlist.loopMode}</span>
+            {totalDurationSecs > 0 && (
+              <>
+                <span>·</span>
+                <span className="flex items-center gap-1">
+                  <Clock className="w-3 h-3" />
+                  {formatTotalDuration(totalDurationSecs)}
+                </span>
+              </>
+            )}
           </div>
         </div>
         <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>
@@ -438,7 +504,7 @@ function PlaylistDetail({ id }: { id: string }) {
                       <img src={video.thumbnailUrl} className="w-14 h-9 object-cover rounded shrink-0" alt="" />
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium truncate">{video.title}</p>
-                        <p className="text-xs text-muted-foreground capitalize">{video.category}</p>
+                        <p className="text-xs text-muted-foreground capitalize">{video.category}{video.duration ? ` · ${video.duration}` : ""}</p>
                       </div>
                     </button>
                   ))

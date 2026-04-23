@@ -4,6 +4,13 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Cpu,
   Clock,
   CheckCircle2,
@@ -17,6 +24,7 @@ import {
   Zap,
   Activity,
   Ban,
+  ChevronDown,
 } from "lucide-react";
 
 type JobStatus = "queued" | "processing" | "done" | "failed" | "cancelled";
@@ -114,6 +122,7 @@ export default function Transcoding() {
   const [loading, setLoading] = useState(true);
   const [retrying, setRetrying] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
   const { toast } = useToast();
 
   const fetchQueue = useCallback(async () => {
@@ -153,6 +162,21 @@ export default function Transcoding() {
     }
   };
 
+  const handleClearHistory = async (status: "done" | "failed" | "cancelled" | "all") => {
+    setClearing(true);
+    try {
+      const res = await fetch(`/api/admin/transcoding/clear?status=${status}`, { method: "DELETE" });
+      const json = await res.json() as { cleared?: number; error?: string };
+      if (!res.ok) throw new Error(json.error ?? "Failed to clear history");
+      toast({ title: `Cleared ${json.cleared} ${status === "all" ? "completed" : status} job${json.cleared !== 1 ? "s" : ""}` });
+      await fetchQueue();
+    } catch (err) {
+      toast({ title: err instanceof Error ? err.message : "Failed to clear history", variant: "destructive" });
+    } finally {
+      setClearing(false);
+    }
+  };
+
   const handleCancel = async (jobId: string) => {
     setCancelling(jobId);
     try {
@@ -187,10 +211,42 @@ export default function Transcoding() {
             Monitor video encoding jobs across 1080p, 720p, and 480p quality variants.
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={fetchQueue}>
-          <RefreshCw className="w-4 h-4 mr-2" />
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          {completedJobs.length > 0 && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" disabled={clearing}>
+                  {clearing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Trash2 className="w-4 h-4 mr-2" />}
+                  Clear History
+                  <ChevronDown className="w-3.5 h-3.5 ml-1.5 text-muted-foreground" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => handleClearHistory("done")}>
+                  <CheckCircle2 className="w-4 h-4 mr-2 text-green-600" />
+                  Clear completed
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleClearHistory("failed")}>
+                  <XCircle className="w-4 h-4 mr-2 text-red-600" />
+                  Clear failed
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleClearHistory("cancelled")}>
+                  <Ban className="w-4 h-4 mr-2 text-muted-foreground" />
+                  Clear cancelled
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => handleClearHistory("all")} className="text-destructive focus:text-destructive">
+                  <Trash2 className="w-4 h-4 mr-2" />
+                  Clear all history
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+          <Button variant="outline" size="sm" onClick={fetchQueue}>
+            <RefreshCw className="w-4 h-4 mr-2" />
+            Refresh
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -324,6 +380,7 @@ interface JobRowProps {
 }
 
 function JobRow({ job, onRetry, onCancel, retrying, cancelling }: JobRowProps) {
+  const [expanded, setExpanded] = useState(false);
   return (
     <div className="bg-card border rounded-lg p-4">
       <div className="flex items-start gap-4">
@@ -377,9 +434,19 @@ function JobRow({ job, onRetry, onCancel, retrying, cancelling }: JobRowProps) {
           )}
 
           {job.status === "failed" && job.errorMessage && (
-            <div className="mt-1.5 flex items-start gap-1.5 text-xs text-red-600">
-              <XCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-              <span className="line-clamp-2">{job.errorMessage}</span>
+            <div className="mt-1.5 text-xs text-red-600">
+              <button
+                className="flex items-start gap-1.5 hover:underline text-left w-full"
+                onClick={() => setExpanded((v) => !v)}
+              >
+                <XCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                <span className={expanded ? "" : "line-clamp-1"}>{job.errorMessage}</span>
+              </button>
+              {job.errorMessage.length > 80 && (
+                <button onClick={() => setExpanded((v) => !v)} className="ml-5 text-red-400 hover:text-red-600">
+                  {expanded ? "Show less" : "Show full error"}
+                </button>
+              )}
             </div>
           )}
         </div>

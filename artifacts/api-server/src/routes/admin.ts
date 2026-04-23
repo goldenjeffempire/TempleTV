@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, scheduledNotificationsTable, pushTokensTable, liveOverridesTable, transcodingJobsTable, broadcastQueueTable, usersTable } from "@workspace/db";
-import { eq, ilike, or, count, sql, desc, asc, and, lte } from "drizzle-orm";
+import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, scheduledNotificationsTable, pushTokensTable, liveOverridesTable, transcodingJobsTable, broadcastQueueTable, usersTable, userWatchHistoryTable } from "@workspace/db";
+import { eq, ilike, or, count, sql, desc, asc, and, lte, gte, inArray } from "drizzle-orm";
 import { queueTranscodingJob, retryTranscodingJob } from "../lib/transcoder";
 import { broadcastLiveEvent, addSSEClient, removeSSEClient, getSSEClientCount } from "../lib/liveEvents";
 import { getLiveStatus, getLiveMonitorData } from "./youtube";
@@ -1997,43 +1997,54 @@ router.get("/admin/analytics", async (req, res) => {
     const parsed = GetAnalyticsQueryParams.safeParse(req.query);
     const period = parsed.success ? (parsed.data.period ?? "30d") : "30d";
     const days = period === "7d" ? 7 : period === "90d" ? 90 : 30;
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
-    const [totalViewsResult] = await db
-      .select({ total: sql<number>`coalesce(sum(view_count), 0)` })
-      .from(videosTable);
-
-    const topVideosRows = await db
-      .select({
-        youtubeId: videosTable.youtubeId,
-        title: videosTable.title,
-        views: videosTable.viewCount,
-        thumbnailUrl: videosTable.thumbnailUrl,
-      })
-      .from(videosTable)
-      .orderBy(desc(videosTable.viewCount))
-      .limit(5);
-
-    const categoryRows = await db
-      .select({ category: videosTable.category, count: count() })
-      .from(videosTable)
-      .groupBy(videosTable.category);
+    const [
+      totalViewsResult,
+      topVideosRows,
+      categoryRows,
+      dailyWatchRows,
+      uniqueViewersResult,
+      avgWatchTimeResult,
+      liveEventsResult,
+    ] = await Promise.all([
+      db.select({ total: sql<number>`coalesce(sum(view_count), 0)` }).from(videosTable),
+      db
+        .select({
+          youtubeId: videosTable.youtubeId,
+          title: videosTable.title,
+          views: videosTable.viewCount,
+          thumbnailUrl: videosTable.thumbnailUrl,
+        })
+        .from(videosTable)
+        .orderBy(desc(videosTable.viewCount))
+        .limit(5),
+      db.select({ category: videosTable.category, count: count() }).from(videosTable).groupBy(videosTable.category),
+      db
+        .select({
+          date: sql<string>`to_char(watched_at AT TIME ZONE 'UTC', 'YYYY-MM-DD')`,
+          views: count(),
+        })
+        .from(userWatchHistoryTable)
+        .where(gte(userWatchHistoryTable.watchedAt, cutoff))
+        .groupBy(sql`to_char(watched_at AT TIME ZONE 'UTC', 'YYYY-MM-DD')`)
+        .orderBy(sql`to_char(watched_at AT TIME ZONE 'UTC', 'YYYY-MM-DD')`),
+      db
+        .select({ count: sql<number>`count(DISTINCT user_id)` })
+        .from(userWatchHistoryTable)
+        .where(gte(userWatchHistoryTable.watchedAt, cutoff)),
+      db
+        .select({ avgSecs: sql<number>`coalesce(round(avg(progress_secs)), 0)` })
+        .from(userWatchHistoryTable)
+        .where(gte(userWatchHistoryTable.watchedAt, cutoff)),
+      db
+        .select({ count: count() })
+        .from(liveOverridesTable)
+        .where(gte(liveOverridesTable.createdAt, cutoff)),
+    ]);
 
     const totalCatCount = categoryRows.reduce((s, r) => s + r.count, 0);
-
-    const [notifResult] = await db.select({ count: count() }).from(notificationsTable);
-    const [deviceResult] = await db.select({ count: count() }).from(pushTokensTable);
-
-    const notifHistory = await db
-      .select({ sentAt: notificationsTable.sentAt, sentCount: notificationsTable.sentCount })
-      .from(notificationsTable)
-      .orderBy(desc(notificationsTable.sentAt))
-      .limit(days);
-
-    const dailyViewsMap = new Map<string, number>();
-    for (const n of notifHistory) {
-      const d = new Date(n.sentAt).toISOString().split("T")[0];
-      dailyViewsMap.set(d, (dailyViewsMap.get(d) ?? 0) + (n.sentCount ?? 0));
-    }
+    const dailyViewsMap = new Map<string, number>(dailyWatchRows.map((r) => [r.date, Number(r.views)]));
 
     const dailyViews = Array.from({ length: days }, (_, i) => {
       const d = new Date();
@@ -2044,10 +2055,10 @@ router.get("/admin/analytics", async (req, res) => {
 
     res.json({
       period,
-      totalViews: Number(totalViewsResult?.total ?? 0),
-      uniqueViewers: Number(deviceResult?.count ?? 0),
-      avgWatchTimeMinutes: 24.5,
-      liveStreamEvents: notifResult?.count ?? 0,
+      totalViews: Number(totalViewsResult[0]?.total ?? 0),
+      uniqueViewers: Number(uniqueViewersResult[0]?.count ?? 0),
+      avgWatchTimeMinutes: Math.round(Number(avgWatchTimeResult[0]?.avgSecs ?? 0) / 60),
+      liveStreamEvents: Number(liveEventsResult[0]?.count ?? 0),
       topVideos: topVideosRows,
       categoryBreakdown: categoryRows.map((r) => ({
         category: r.category,
@@ -2417,6 +2428,25 @@ router.post("/admin/transcoding/requeue/:videoId", async (req, res) => {
     const { priority = 0 } = req.body as { priority?: number };
     const jobId = await queueTranscodingJob(videoId, localFilePath, priority);
     res.status(201).json({ jobId });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.delete("/admin/transcoding/clear", async (req, res) => {
+  try {
+    const { status } = req.query as { status?: string };
+    const allowed = ["done", "failed", "cancelled"];
+    const statuses: string[] = status === "all" ? allowed : allowed.filter((s) => s === status);
+    if (statuses.length === 0) {
+      return void res.status(400).json({ error: "Invalid status. Use done, failed, cancelled, or all." });
+    }
+    const result = await db
+      .delete(transcodingJobsTable)
+      .where(inArray(transcodingJobsTable.status, statuses as ("done" | "failed" | "cancelled")[]))
+      .returning({ id: transcodingJobsTable.id });
+    res.json({ cleared: result.length, statuses });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });

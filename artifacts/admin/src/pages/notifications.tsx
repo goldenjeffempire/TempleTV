@@ -11,6 +11,16 @@ import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "").replace(/\/admin\/?$/, "") + "/api";
 
@@ -63,6 +73,9 @@ export default function Notifications() {
   const [schedSending, setSchedSending] = useState(false);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
 
+  const [sendConfirmOpen, setSendConfirmOpen] = useState(false);
+  const [cancelConfirmId, setCancelConfirmId] = useState<string | null>(null);
+
   const fetchScheduled = useCallback(async () => {
     setSchedLoading(true);
     try {
@@ -79,18 +92,24 @@ export default function Notifications() {
     return () => clearInterval(id);
   }, [fetchScheduled]);
 
-  const handleSend = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!confirm("Send this push notification to all subscribers?")) return;
-
+  const doSend = () => {
     sendNotification.mutate({ data: formData }, {
       onSuccess: (res) => {
         toast({ title: "Notification Sent", description: `Successfully sent to ${res.sent} devices. Failed: ${res.failed}` });
         setFormData({ title: "", body: "", type: "announcement", videoId: "" });
         queryClient.invalidateQueries({ queryKey: getListNotificationHistoryQueryKey() });
+        setSendConfirmOpen(false);
       },
-      onError: () => toast({ title: "Failed to send notification", variant: "destructive" }),
+      onError: () => {
+        toast({ title: "Failed to send notification", variant: "destructive" });
+        setSendConfirmOpen(false);
+      },
     });
+  };
+
+  const handleSend = (e: React.FormEvent) => {
+    e.preventDefault();
+    setSendConfirmOpen(true);
   };
 
   const handleSchedule = async (e: React.FormEvent) => {
@@ -120,9 +139,9 @@ export default function Notifications() {
     }
   };
 
-  const handleCancel = async (id: string) => {
-    if (!confirm("Cancel this scheduled notification?")) return;
+  const doCancel = async (id: string) => {
     setCancellingId(id);
+    setCancelConfirmId(null);
     try {
       const res = await fetch(`${BASE}/admin/notifications/scheduled/${id}`, { method: "DELETE" });
       const data = await res.json();
@@ -150,6 +169,48 @@ export default function Notifications() {
         <h1 className="text-3xl font-bold tracking-tight">Push Notifications</h1>
         <p className="text-muted-foreground mt-1">Send alerts directly to the congregation app.</p>
       </div>
+
+      <AlertDialog open={sendConfirmOpen} onOpenChange={setSendConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Send Push Notification?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will be delivered <strong>immediately</strong> to all registered devices.
+              <br /><br />
+              <span className="font-medium text-foreground">"{formData.title}"</span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Review Again</AlertDialogCancel>
+            <AlertDialogAction onClick={doSend} disabled={sendNotification.isPending}>
+              {sendNotification.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
+              Send Now
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={cancelConfirmId !== null} onOpenChange={(open) => { if (!open) setCancelConfirmId(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Cancel Scheduled Notification?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This scheduled notification will be permanently cancelled and will not be sent.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep It</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => cancelConfirmId && doCancel(cancelConfirmId)}
+              disabled={cancellingId !== null}
+            >
+              {cancellingId ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+              Cancel Notification
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Tabs defaultValue="instant">
         <TabsList>
@@ -201,17 +262,17 @@ export default function Notifications() {
                   </div>
                   {(formData.type === "live_service" || formData.type === "new_sermon") && (
                     <div className="space-y-2">
-                      <Label>Video ID (Optional)</Label>
+                      <Label>Video ID <span className="text-muted-foreground font-normal">(Optional)</span></Label>
                       <Input value={formData.videoId} onChange={(e) => setFormData({ ...formData, videoId: e.target.value })} placeholder="YouTube Video ID to open on tap" />
                     </div>
                   )}
                   <div className="p-3 bg-blue-500/10 text-blue-600 rounded-md text-sm flex gap-2 items-start mt-4 border border-blue-500/20">
                     <Info className="w-4 h-4 shrink-0 mt-0.5" />
-                    <p>Notifications are delivered instantly. Please review your message carefully before sending.</p>
+                    <p>Notifications are delivered instantly. You will be asked to confirm before sending.</p>
                   </div>
-                  <Button type="submit" className="w-full" disabled={sendNotification.isPending}>
-                    {sendNotification.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
-                    Send Push Notification
+                  <Button type="submit" className="w-full" disabled={!formData.title || !formData.body}>
+                    <Send className="w-4 h-4 mr-2" />
+                    Review & Send
                   </Button>
                 </form>
               </CardContent>
@@ -286,7 +347,7 @@ export default function Notifications() {
                   </div>
                   {(schedForm.type === "live_service" || schedForm.type === "new_sermon") && (
                     <div className="space-y-2">
-                      <Label>Video ID (Optional)</Label>
+                      <Label>Video ID <span className="text-muted-foreground font-normal">(Optional)</span></Label>
                       <Input value={schedForm.videoId} onChange={(e) => setSchedForm({ ...schedForm, videoId: e.target.value })} placeholder="YouTube Video ID" />
                     </div>
                   )}
@@ -343,7 +404,7 @@ export default function Notifications() {
                             variant="ghost"
                             size="icon"
                             className="text-destructive hover:text-destructive shrink-0"
-                            onClick={() => handleCancel(n.id)}
+                            onClick={() => setCancelConfirmId(n.id)}
                             disabled={cancellingId === n.id}
                           >
                             {cancellingId === n.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}

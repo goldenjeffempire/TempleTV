@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   getGetLiveStatusQueryKey,
   useGetAdminStats,
@@ -10,9 +11,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AlertCircle, Video, ListVideo, Calendar, BellRing, Activity, Radio, Plus, Loader2, Square, Users } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Link } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 export default function Dashboard() {
   const queryClient = useQueryClient();
@@ -20,11 +24,16 @@ export default function Dashboard() {
   const { data: stats, isLoading: isLoadingStats, isError: isErrorStats, refetch: refetchStats } = useGetAdminStats();
   const { data: liveStatus } = useGetLiveStatus();
   const { data: videosData, isLoading: isLoadingVideos, isError: isErrorVideos } = useListAdminVideos({ limit: 4 });
+
+  const [goLiveOpen, setGoLiveOpen] = useState(false);
+  const [goLiveForm, setGoLiveForm] = useState({ title: "Temple TV Live Service", durationMinutes: 120 });
+
   const startLiveOverride = useStartLiveOverride({
     mutation: {
       onSuccess: (result) => {
         toast({ title: "Live override started", description: `Push sent to ${result.push.sent} devices.` });
         queryClient.invalidateQueries({ queryKey: getGetLiveStatusQueryKey() });
+        setGoLiveOpen(false);
       },
       onError: () => toast({ title: "Failed to start live override", variant: "destructive" }),
     },
@@ -39,6 +48,17 @@ export default function Dashboard() {
     },
   });
   const manualOverrideActive = Boolean(liveStatus?.liveOverride);
+
+  const handleGoLive = (e: React.FormEvent) => {
+    e.preventDefault();
+    startLiveOverride.mutate({
+      data: {
+        title: goLiveForm.title.trim() || "Temple TV Live Service",
+        durationMinutes: Math.max(1, goLiveForm.durationMinutes),
+        notify: true,
+      },
+    });
+  };
 
   return (
     <div className="space-y-6">
@@ -70,7 +90,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Total Videos</CardTitle>
@@ -80,9 +100,7 @@ export default function Dashboard() {
             {isLoadingStats ? <Skeleton className="h-7 w-20" /> : (
               <>
                 <div className="text-2xl font-bold">{(stats?.totalVideos ?? 0).toLocaleString()}</div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  +{stats?.recentImports ?? 0} recent imports
-                </p>
+                <p className="text-xs text-muted-foreground mt-1">+{stats?.recentImports ?? 0} recent imports</p>
               </>
             )}
           </CardContent>
@@ -96,9 +114,7 @@ export default function Dashboard() {
             {isLoadingStats ? <Skeleton className="h-7 w-20" /> : (
               <>
                 <div className="text-2xl font-bold">{stats?.totalPlaylists ?? 0}</div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Curated collections
-                </p>
+                <p className="text-xs text-muted-foreground mt-1">Curated collections</p>
               </>
             )}
           </CardContent>
@@ -112,9 +128,7 @@ export default function Dashboard() {
             {isLoadingStats ? <Skeleton className="h-7 w-20" /> : (
               <>
                 <div className="text-2xl font-bold">{stats?.activeScheduleEntries ?? 0}</div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Active weekly slots
-                </p>
+                <p className="text-xs text-muted-foreground mt-1">Active weekly slots</p>
               </>
             )}
           </CardContent>
@@ -128,17 +142,12 @@ export default function Dashboard() {
             {isLoadingStats ? <Skeleton className="h-7 w-20" /> : (
               <>
                 <div className="text-2xl font-bold">{stats?.notificationsSentToday ?? 0}</div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  {stats?.registeredDevices ?? 0} registered devices
-                </p>
+                <p className="text-xs text-muted-foreground mt-1">{stats?.registeredDevices ?? 0} registered devices</p>
               </>
             )}
           </CardContent>
         </Card>
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <Card className="lg:col-span-1 border-primary/20 bg-primary/5">
+        <Card className="border-primary/20 bg-primary/5">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Registered Members</CardTitle>
             <Users className="h-4 w-4 text-primary" />
@@ -206,12 +215,8 @@ export default function Dashboard() {
                     Stop
                   </Button>
                 ) : (
-                  <Button
-                    size="sm"
-                    onClick={() => startLiveOverride.mutate({ data: { title: "Temple TV Live Service", durationMinutes: 120, notify: true } })}
-                    disabled={startLiveOverride.isPending}
-                  >
-                    {startLiveOverride.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Radio className="w-4 h-4 mr-2" />}
+                  <Button size="sm" onClick={() => setGoLiveOpen(true)}>
+                    <Radio className="w-4 h-4 mr-2" />
                     Go Live
                   </Button>
                 )}
@@ -273,6 +278,49 @@ export default function Dashboard() {
           </CardContent>
         </Card>
       </div>
+
+      <Dialog open={goLiveOpen} onOpenChange={setGoLiveOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Start Live Override</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleGoLive} className="space-y-4 mt-2">
+            <div className="space-y-2">
+              <Label>Broadcast Title</Label>
+              <Input
+                value={goLiveForm.title}
+                onChange={(e) => setGoLiveForm({ ...goLiveForm, title: e.target.value })}
+                placeholder="e.g. Sunday Morning Service"
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Duration (minutes)</Label>
+              <Input
+                type="number"
+                min={1}
+                max={720}
+                value={goLiveForm.durationMinutes}
+                onChange={(e) => setGoLiveForm({ ...goLiveForm, durationMinutes: parseInt(e.target.value) || 120 })}
+                required
+              />
+              <p className="text-xs text-muted-foreground">The override will automatically expire after this duration.</p>
+            </div>
+            <div className="p-3 bg-amber-500/10 text-amber-700 dark:text-amber-400 rounded-md text-xs border border-amber-500/20">
+              This forces all connected apps into live mode and sends a push notification to all subscribers.
+            </div>
+            <div className="flex gap-2">
+              <Button type="button" variant="outline" className="flex-1" onClick={() => setGoLiveOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" className="flex-1" disabled={startLiveOverride.isPending}>
+                {startLiveOverride.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Radio className="w-4 h-4 mr-2" />}
+                Go Live
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

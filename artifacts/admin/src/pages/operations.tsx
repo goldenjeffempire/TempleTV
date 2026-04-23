@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
+import { Link } from "wouter";
 
 type CheckStatus = "ok" | "degraded" | "critical";
 
@@ -243,15 +244,15 @@ export default function Operations() {
               </CardHeader>
               <CardContent className="grid grid-cols-2 gap-3">
                 {[
-                  ["Videos", status.database.counts.videos],
-                  ["Local uploads", status.database.counts.localVideos],
-                  ["Playlists", status.database.counts.playlists],
-                  ["Schedule slots", status.database.counts.activeScheduleEntries],
-                ].map(([label, value]) => (
-                  <div key={label} className="rounded-lg border bg-muted/30 p-3">
-                    <div className="text-2xl font-bold">{value}</div>
+                  { label: "Videos", value: status.database.counts.videos, href: "/videos" },
+                  { label: "Local uploads", value: status.database.counts.localVideos, href: "/videos" },
+                  { label: "Playlists", value: status.database.counts.playlists, href: "/playlists" },
+                  { label: "Schedule slots", value: status.database.counts.activeScheduleEntries, href: "/schedule" },
+                ].map(({ label, value, href }) => (
+                  <Link key={label} href={href} className="rounded-lg border bg-muted/30 p-3 block hover:bg-muted/60 hover:border-primary/40 transition-colors group">
+                    <div className="text-2xl font-bold group-hover:text-primary transition-colors">{value}</div>
                     <div className="text-xs text-muted-foreground">{label}</div>
-                  </div>
+                  </Link>
                 ))}
               </CardContent>
             </Card>
@@ -311,16 +312,16 @@ export default function Operations() {
               </div>
               <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                 {[
-                  ["Processing", status.videoPipeline.processing],
-                  ["Queued", status.videoPipeline.queued],
-                  ["Done", status.videoPipeline.done],
-                  ["Failed", status.videoPipeline.failed],
-                  ["Cancelled", status.videoPipeline.cancelled],
-                ].map(([label, value]) => (
-                  <div key={label} className="rounded-lg border p-3">
-                    <div className="text-xl font-semibold">{value}</div>
+                  { label: "Processing", value: status.videoPipeline.processing, href: "/transcoding" },
+                  { label: "Queued", value: status.videoPipeline.queued, href: "/transcoding" },
+                  { label: "Done", value: status.videoPipeline.done, href: "/transcoding" },
+                  { label: "Failed", value: status.videoPipeline.failed, href: "/transcoding", danger: status.videoPipeline.failed > 0 },
+                  { label: "Cancelled", value: status.videoPipeline.cancelled, href: "/transcoding" },
+                ].map(({ label, value, href, danger }) => (
+                  <Link key={label} href={href} className={`rounded-lg border p-3 block hover:border-primary/40 hover:bg-muted/40 transition-colors group ${danger ? "border-red-500/30 bg-red-500/5" : ""}`}>
+                    <div className={`text-xl font-semibold group-hover:text-primary transition-colors ${danger ? "text-red-600" : ""}`}>{value}</div>
                     <div className="text-xs text-muted-foreground">{label}</div>
-                  </div>
+                  </Link>
                 ))}
               </div>
               <div className="grid md:grid-cols-2 gap-3 pt-2">
