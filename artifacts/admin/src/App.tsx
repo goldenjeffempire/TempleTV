@@ -7,6 +7,7 @@ import { AuthGate } from "@/components/auth-gate";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { Skeleton } from "@/components/ui/skeleton";
 import { applyAutoTheme } from "@/lib/theme";
+import { SSEProvider } from "@/contexts/SSEContext";
 import { Suspense, lazy, useEffect } from "react";
 
 const Dashboard = lazy(() => import("@/pages/dashboard"));
@@ -79,9 +80,11 @@ function RoutedContent() {
 function Router() {
   return (
     <AuthGate>
-      <Layout>
-        <RoutedContent />
-      </Layout>
+      <SSEProvider>
+        <Layout>
+          <RoutedContent />
+        </Layout>
+      </SSEProvider>
     </AuthGate>
   );
 }

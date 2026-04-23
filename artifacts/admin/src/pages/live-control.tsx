@@ -1,405 +1,380 @@
 import { useEffect, useRef, useState } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Radio, Smartphone, Globe, Tv, Mic, Users } from "lucide-react";
-import { toast } from "sonner";
+import { Separator } from "@/components/ui/separator";
+import {
+  Radio,
+  Smartphone,
+  Globe,
+  Tv,
+  Mic,
+  Users,
+  Clock,
+  Square,
+  Zap,
+  Info,
+  CheckCircle2,
+} from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import { useSSE, useSSEEvent } from "@/contexts/SSEContext";
+import { liveApi, type LiveOverride } from "@/services/adminApi";
+import { PageHeader } from "@/components/shared/page-header";
+import { cn } from "@/lib/utils";
 
-interface LiveOverride {
-  id: string;
-  title: string;
-  isActive: boolean;
-  hlsStreamUrl: string | null;
-  rtmpIngestKey: string | null;
-  streamNotes: string | null;
-  startedAt: string;
-  endsAt: string | null;
-}
-
-function elapsed(startedAt: string): string {
+function elapsedStr(startedAt: string | null | undefined): string {
+  if (!startedAt) return "";
   const secs = Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000);
   const h = Math.floor(secs / 3600),
     m = Math.floor((secs % 3600) / 60),
     s = secs % 60;
-  if (h > 0) return `${h}h ${m}m on air`;
+  if (h > 0) return `${h}h ${m}m ${s}s on air`;
   if (m > 0) return `${m}m ${s}s on air`;
   return `${s}s on air`;
 }
 
-export default function LiveControl() {
-  const [activeOverride, setActiveOverride] = useState<LiveOverride | null>(null);
-  const [allOverrides, setAllOverrides] = useState<LiveOverride[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [starting, setStarting] = useState(false);
-  const [connectedClients, setConnectedClients] = useState<number | null>(null);
-  const [elapsedStr, setElapsedStr] = useState("");
+const INITIAL_FORM = {
+  title: "Temple TV Live Service",
+  hlsStreamUrl: "",
+  rtmpIngestKey: "",
+  streamNotes: "",
+  durationMins: "120",
+  notify: true,
+};
 
-  const [form, setForm] = useState({
-    title: "",
-    hlsStreamUrl: "",
-    rtmpIngestKey: "",
-    streamNotes: "",
-    durationMins: "",
+const PLATFORMS = [
+  { icon: Smartphone, label: "Mobile", desc: "iOS & Android — HLS adaptive player" },
+  { icon: Globe, label: "Web Browser", desc: "HLS.js or YouTube embed" },
+  { icon: Tv, label: "Smart TV", desc: "TV web app — YouTube iframe" },
+  { icon: Mic, label: "Radio Mode", desc: "Audio-only from the same stream" },
+];
+
+export default function LiveControl() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const { state: sseState } = useSSE();
+
+  const { data: liveStatus, isLoading } = useQuery({
+    queryKey: ["admin-live-status"],
+    queryFn: ({ signal }) => liveApi.getStatus(signal),
+    refetchInterval: 15_000,
   });
 
-  const esRef = useRef<EventSource | null>(null);
+  const activeOverride: LiveOverride | null = liveStatus?.liveOverride ?? null;
 
-  const fetchOverrides = async () => {
-    try {
-      const res = await fetch("/api/admin/live-overrides");
-      if (res.ok) {
-        const data = (await res.json()) as LiveOverride[];
-        setAllOverrides(data);
-        setActiveOverride(data.find((o) => o.isActive) ?? null);
-      } else if (res.status === 401) {
-        toast.error("Authentication failed. Please re-enter your admin token.");
-      }
-    } catch {
-      toast.error("Failed to load broadcast state");
-    } finally {
-      setLoading(false);
-    }
-  };
+  const [form, setForm] = useState(INITIAL_FORM);
+  const [ticker, setTicker] = useState("");
+  const tickRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
+
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["admin-live-status"] });
+
+  const startLive = useMutation({
+    mutationFn: (data: Parameters<typeof liveApi.startOverride>[0]) =>
+      liveApi.startOverride(data),
+    onSuccess: (res) => {
+      toast({
+        title: "Live broadcast started",
+        description: `Push sent to ${res.push?.sent ?? 0} devices.`,
+      });
+      invalidate();
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to start broadcast", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const stopLive = useMutation({
+    mutationFn: () => liveApi.stopOverride(),
+    onSuccess: () => {
+      toast({ title: "Broadcast ended", description: "Resuming automated queue." });
+      invalidate();
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to end broadcast", description: err.message, variant: "destructive" });
+    },
+  });
+
+  useSSEEvent("override-expired", () => {
+    invalidate();
+    toast({ title: "Broadcast auto-ended", description: "Duration limit reached." });
+  });
+
+  useSSEEvent("status", () => invalidate());
 
   useEffect(() => {
-    fetchOverrides();
-  }, []);
-
-  useEffect(() => {
-    if (!activeOverride) {
-      setElapsedStr("");
+    if (!activeOverride?.startedAt) {
+      setTicker("");
+      clearInterval(tickRef.current);
       return;
     }
-    const tick = () => setElapsedStr(elapsed(activeOverride.startedAt));
+    const tick = () => setTicker(elapsedStr(activeOverride.startedAt));
     tick();
-    const i = setInterval(tick, 1000);
-    return () => clearInterval(i);
-  }, [activeOverride]);
+    tickRef.current = setInterval(tick, 1000);
+    return () => clearInterval(tickRef.current);
+  }, [activeOverride?.startedAt]);
 
-  useEffect(() => {
-    const es = new EventSource("/api/broadcast/events");
-    esRef.current = es;
-    es.addEventListener("broadcast-current-updated", () => fetchOverrides());
-    return () => es.close();
-  }, []);
-
-  useEffect(() => {
-    const poll = async () => {
-      try {
-        const res = await fetch("/api/health");
-        if (res.ok) {
-          const data = (await res.json()) as { sseClients?: number };
-          if (typeof data.sseClients === "number") setConnectedClients(data.sseClients);
-        }
-      } catch {
-        // health probe failures are non-critical
-      }
-    };
-    poll();
-    const i = setInterval(poll, 10_000);
-    return () => clearInterval(i);
-  }, []);
-
-  const goLive = async () => {
+  const handleGoLive = (e: React.FormEvent) => {
+    e.preventDefault();
     if (!form.title.trim()) return;
-    setStarting(true);
-    try {
-      const endsAt = form.durationMins
-        ? new Date(Date.now() + Number(form.durationMins) * 60 * 1000).toISOString()
-        : null;
-      const res = await fetch("/api/admin/live-overrides", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: form.title,
-          hlsStreamUrl: form.hlsStreamUrl || null,
-          rtmpIngestKey: form.rtmpIngestKey || null,
-          streamNotes: form.streamNotes || null,
-          endsAt,
-        }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      toast.success("🔴 Broadcast pushed to all platforms");
-      setForm({ title: "", hlsStreamUrl: "", rtmpIngestKey: "", streamNotes: "", durationMins: "" });
-      await fetchOverrides();
-    } catch {
-      toast.error("Failed to start broadcast");
-    } finally {
-      setStarting(false);
-    }
+    startLive.mutate({
+      title: form.title.trim(),
+      hlsStreamUrl: form.hlsStreamUrl.trim() || undefined,
+      rtmpIngestKey: form.rtmpIngestKey.trim() || undefined,
+      streamNotes: form.streamNotes.trim() || undefined,
+      durationMinutes: form.durationMins ? Math.max(1, parseInt(form.durationMins, 10)) : undefined,
+      notify: form.notify,
+    });
   };
 
-  const endBroadcast = async (id: string) => {
-    try {
-      const res = await fetch(`/api/admin/live-overrides/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ isActive: false }),
-      });
-      if (!res.ok) throw new Error();
-      toast.success("Broadcast ended");
-      await fetchOverrides();
-    } catch {
-      toast.error("Failed to end broadcast");
-    }
+  const handleEndBroadcast = () => {
+    if (!activeOverride) return;
+    if (!window.confirm("End the live broadcast? Viewers will return to the automated queue.")) return;
+    stopLive.mutate();
   };
 
-  if (loading) {
+  if (isLoading) {
     return (
-      <div className="container mx-auto p-6 max-w-5xl space-y-6">
-        <Skeleton className="h-32 rounded-lg" />
-        <Skeleton className="h-64 rounded-lg" />
+      <div className="space-y-6">
+        <Skeleton className="h-10 w-64" />
+        <Skeleton className="h-40 rounded-xl" />
+        <Skeleton className="h-72 rounded-xl" />
       </div>
     );
   }
 
-  const platforms = [
-    { icon: Smartphone, label: "Mobile", desc: "iOS & Android via HLS player" },
-    { icon: Globe, label: "Web", desc: "Browser HLS or YouTube embed" },
-    { icon: Tv, label: "Smart TV", desc: "TV web app via YouTube iframe" },
-    { icon: Mic, label: "Radio", desc: "Audio-only from same stream" },
-  ];
-
   return (
-    <div className="container mx-auto p-6 max-w-5xl space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Live Control</h1>
-        <p className="text-muted-foreground mt-1">
-          Override the schedule and push a live broadcast to every Temple TV surface.
-        </p>
-      </div>
-
-      {/* Live Status Banner */}
-      <Card
-        className={
-          activeOverride
-            ? "border-red-500/40 bg-red-500/5"
-            : ""
+    <div className="space-y-6 max-w-4xl">
+      <PageHeader
+        title="Live Control"
+        description="Override the automated queue and push a live broadcast to every Temple TV surface instantly."
+        badge={
+          <div className={cn(
+            "inline-flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full border",
+            sseState === "connected"
+              ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20"
+              : "bg-amber-500/10 text-amber-600 border-amber-500/20",
+          )}>
+            <span className={cn(
+              "h-1.5 w-1.5 rounded-full",
+              sseState === "connected" ? "bg-emerald-500" : "bg-amber-500 animate-pulse",
+            )} />
+            {sseState === "connected" ? "Live sync active" : "Reconnecting…"}
+          </div>
         }
-      >
+      />
+
+      {/* Status Banner */}
+      <Card className={cn(activeOverride ? "border-red-400/40 bg-red-500/5 dark:bg-red-950/20" : "")}>
         <CardContent className="p-6">
           <div className="flex items-center justify-between flex-wrap gap-4">
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-4">
               {activeOverride ? (
-                <span className="relative flex h-3 w-3">
+                <div className="relative flex h-4 w-4 shrink-0">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
-                  <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500" />
-                </span>
+                  <span className="relative inline-flex rounded-full h-4 w-4 bg-red-500" />
+                </div>
               ) : (
                 <Radio className="h-5 w-5 text-muted-foreground" />
               )}
               <div>
-                <h2 className="text-xl font-bold">
-                  {activeOverride ? "LIVE ON AIR" : "Off Air"}
+                <h2 className={cn("text-xl font-bold", activeOverride ? "text-red-600 dark:text-red-400" : "")}>
+                  {activeOverride ? "LIVE ON AIR" : "Off Air — Automated Queue Running"}
                 </h2>
-                {activeOverride && (
+                {activeOverride ? (
                   <p className="text-sm text-muted-foreground mt-0.5">
-                    {activeOverride.title} · {elapsedStr}
+                    <span className="font-medium text-foreground">{activeOverride.title}</span>
+                    {ticker && <> · {ticker}</>}
+                    {activeOverride.endsAt && (
+                      <> · ends {new Date(activeOverride.endsAt).toLocaleTimeString()}</>
+                    )}
+                  </p>
+                ) : (
+                  <p className="text-sm text-muted-foreground mt-0.5">
+                    All platforms are playing from the broadcast queue.
                   </p>
                 )}
               </div>
             </div>
-            {connectedClients !== null && (
-              <div className="text-right flex items-center gap-2">
-                <Users className="h-5 w-5 text-muted-foreground" />
-                <div>
-                  <div className="text-2xl font-bold leading-tight">{connectedClients}</div>
-                  <div className="text-xs text-muted-foreground">Connected viewers</div>
-                </div>
+            {liveStatus && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Users className="w-4 h-4" />
+                <span>{liveStatus.viewerCount} viewers</span>
               </div>
             )}
           </div>
 
           {activeOverride && (
             <>
-              <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {activeOverride.hlsStreamUrl && (
-                  <div className="rounded-lg border bg-card p-3">
-                    <div className="text-xs text-muted-foreground mb-1">HLS Stream URL</div>
-                    <div className="text-xs font-mono truncate">{activeOverride.hlsStreamUrl}</div>
+              <Separator className="my-4" />
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
+                <div className="rounded-lg border bg-background p-3">
+                  <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">Started</div>
+                  <div className="text-xs">
+                    {activeOverride.startedAt
+                      ? new Date(activeOverride.startedAt).toLocaleTimeString()
+                      : "—"}
                   </div>
-                )}
-                {activeOverride.rtmpIngestKey && (
-                  <div className="rounded-lg border bg-card p-3">
-                    <div className="text-xs text-muted-foreground mb-1">RTMP Key</div>
-                    <div className="text-xs font-mono">
-                      ••••••••{activeOverride.rtmpIngestKey.slice(-4)}
-                    </div>
-                  </div>
-                )}
+                </div>
                 {activeOverride.endsAt && (
-                  <div className="rounded-lg border bg-card p-3">
-                    <div className="text-xs text-muted-foreground mb-1">Scheduled End</div>
-                    <div className="text-xs">
-                      {new Date(activeOverride.endsAt).toLocaleTimeString()}
-                    </div>
+                  <div className="rounded-lg border bg-background p-3">
+                    <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">Auto-ends</div>
+                    <div className="text-xs">{new Date(activeOverride.endsAt).toLocaleTimeString()}</div>
                   </div>
                 )}
               </div>
               <Button
                 variant="destructive"
-                className="mt-4"
-                onClick={() => endBroadcast(activeOverride.id)}
+                onClick={handleEndBroadcast}
+                disabled={stopLive.isPending}
+                className="gap-2"
               >
-                End Broadcast
+                <Square className="w-4 h-4 fill-current" />
+                {stopLive.isPending ? "Ending…" : "End Broadcast"}
               </Button>
             </>
           )}
         </CardContent>
       </Card>
 
-      {/* Start Broadcast Form */}
+      {/* Start Form */}
       {!activeOverride && (
         <Card>
           <CardHeader>
-            <CardTitle>Start a Live Broadcast</CardTitle>
-            <p className="text-sm text-muted-foreground mt-1">
+            <CardTitle className="flex items-center gap-2">
+              <Zap className="w-5 h-5 text-primary" />
+              Start a Live Broadcast
+            </CardTitle>
+            <CardDescription>
               Going live instantly overrides the scheduled queue on all platforms — mobile, web,
-              Smart TV, and radio mode.
-            </p>
+              Smart TV, and radio. All connected devices switch within seconds.
+            </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="bc-title">Broadcast Title *</Label>
-              <Input
-                id="bc-title"
-                placeholder="e.g. Sunday Service — Live"
-                value={form.title}
-                onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
-              />
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <CardContent>
+            <form onSubmit={handleGoLive} className="space-y-5">
               <div className="space-y-1.5">
-                <Label htmlFor="bc-hls">HLS Stream URL</Label>
+                <Label htmlFor="bc-title">
+                  Broadcast Title <span className="text-destructive">*</span>
+                </Label>
                 <Input
-                  id="bc-hls"
-                  type="url"
-                  placeholder="https://… .m3u8 (or leave empty for YouTube live)"
-                  value={form.hlsStreamUrl}
-                  onChange={(e) => setForm((f) => ({ ...f, hlsStreamUrl: e.target.value }))}
-                  className="font-mono text-sm"
-                />
-                <p className="text-xs text-muted-foreground">
-                  Mux, Cloudflare Stream, Wowza, or any HLS source.
-                </p>
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="bc-rtmp">RTMP Ingest Key</Label>
-                <Input
-                  id="bc-rtmp"
-                  placeholder="Stream key from your RTMP provider"
-                  value={form.rtmpIngestKey}
-                  onChange={(e) => setForm((f) => ({ ...f, rtmpIngestKey: e.target.value }))}
-                  className="font-mono text-sm"
-                />
-                <p className="text-xs text-muted-foreground">
-                  Stored for reference; ingestion uses your encoder.
-                </p>
-              </div>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <Label htmlFor="bc-dur">Auto-end after (minutes)</Label>
-                <Input
-                  id="bc-dur"
-                  type="number"
-                  min="1"
-                  placeholder="e.g. 120"
-                  value={form.durationMins}
-                  onChange={(e) => setForm((f) => ({ ...f, durationMins: e.target.value }))}
+                  id="bc-title"
+                  placeholder="e.g. Sunday Service — Live"
+                  value={form.title}
+                  onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+                  required
                 />
               </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="bc-notes">Internal Notes</Label>
-                <Input
-                  id="bc-notes"
-                  placeholder="e.g. Pastor John preaching — Youth Sunday"
-                  value={form.streamNotes}
-                  onChange={(e) => setForm((f) => ({ ...f, streamNotes: e.target.value }))}
-                />
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <Label htmlFor="bc-hls">HLS Stream URL</Label>
+                  <Input
+                    id="bc-hls"
+                    type="url"
+                    placeholder="https://stream.example.com/live.m3u8"
+                    value={form.hlsStreamUrl}
+                    onChange={(e) => setForm((f) => ({ ...f, hlsStreamUrl: e.target.value }))}
+                    className="font-mono text-sm"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Mux, Cloudflare Stream, or any HLS source. Leave empty to use YouTube Live detection.
+                  </p>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="bc-rtmp">RTMP Ingest Key</Label>
+                  <Input
+                    id="bc-rtmp"
+                    placeholder="Stream key from encoder"
+                    value={form.rtmpIngestKey}
+                    onChange={(e) => setForm((f) => ({ ...f, rtmpIngestKey: e.target.value }))}
+                    className="font-mono text-sm"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Stored for reference — ingestion is handled by your encoder.
+                  </p>
+                </div>
               </div>
-            </div>
-            <Card className="bg-muted/30">
-              <CardContent className="p-4">
-                <h4 className="text-sm font-semibold mb-2">How sync works</h4>
-                <ul className="text-xs text-muted-foreground space-y-1">
-                  <li>• Going live instantly pushes broadcast state to every connected client via Server-Sent Events.</li>
-                  <li>• Mobile, Smart TV, web, and radio mode all switch to this stream within seconds.</li>
-                  <li>• If an HLS URL is provided, all platforms play it directly — zero re-encoding delay.</li>
-                  <li>• If no HLS URL, platforms fall back to YouTube Live detection via the YouTube Data API.</li>
-                </ul>
-              </CardContent>
-            </Card>
-            <Button
-              size="lg"
-              onClick={goLive}
-              disabled={starting || !form.title.trim()}
-              className="bg-red-600 hover:bg-red-500 text-white"
-            >
-              {starting ? "Starting…" : "🔴 Go Live — Push to All Platforms"}
-            </Button>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <Label htmlFor="bc-dur">
+                    <Clock className="w-3.5 h-3.5 inline mr-1" />
+                    Auto-end after (minutes)
+                  </Label>
+                  <Input
+                    id="bc-dur"
+                    type="number"
+                    min="1"
+                    max="1440"
+                    placeholder="e.g. 120"
+                    value={form.durationMins}
+                    onChange={(e) => setForm((f) => ({ ...f, durationMins: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="bc-notes">Internal Notes</Label>
+                  <Input
+                    id="bc-notes"
+                    placeholder="e.g. Pastor John — Youth Sunday"
+                    value={form.streamNotes}
+                    onChange={(e) => setForm((f) => ({ ...f, streamNotes: e.target.value }))}
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-start gap-3 rounded-lg border bg-blue-500/5 border-blue-500/20 p-4">
+                <Info className="w-4 h-4 text-blue-500 shrink-0 mt-0.5" />
+                <div className="text-xs text-muted-foreground space-y-1">
+                  <p>Broadcast state propagates to every connected client via Server-Sent Events in real time.</p>
+                  <p>Mobile, Smart TV, web, and radio mode all switch to this stream within seconds — no refresh needed.</p>
+                  {!form.hlsStreamUrl && (
+                    <p>Without an HLS URL, platforms fall back to YouTube Live detection via the YouTube Data API.</p>
+                  )}
+                </div>
+              </div>
+
+              <Button
+                type="submit"
+                size="lg"
+                className="bg-red-600 hover:bg-red-500 text-white gap-2 w-full sm:w-auto"
+                disabled={startLive.isPending || !form.title.trim()}
+              >
+                <span className="h-2 w-2 rounded-full bg-white animate-pulse" />
+                {startLive.isPending ? "Starting broadcast…" : "Go Live — Push to All Platforms"}
+              </Button>
+            </form>
           </CardContent>
         </Card>
       )}
 
-      {/* Architecture */}
+      {/* Platform Distribution */}
       <Card>
         <CardHeader>
-          <CardTitle>Broadcast Architecture</CardTitle>
+          <CardTitle>Platform Distribution</CardTitle>
+          <CardDescription>Live state synchronises to every surface simultaneously.</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {platforms.map((p) => (
-              <div
-                key={p.label}
-                className="rounded-lg border bg-card p-4 text-center"
-              >
+            {PLATFORMS.map((p) => (
+              <div key={p.label} className="rounded-lg border bg-card p-4 text-center">
                 <p.icon className="h-6 w-6 mx-auto mb-2 text-muted-foreground" />
                 <div className="text-sm font-semibold">{p.label}</div>
-                <div className="text-xs text-muted-foreground mt-1">{p.desc}</div>
-                <Badge
-                  variant={activeOverride ? "default" : "outline"}
-                  className="mt-2 text-xs"
-                >
-                  {activeOverride ? "In Sync" : "Standby"}
-                </Badge>
+                <div className="text-xs text-muted-foreground mt-1 leading-snug">{p.desc}</div>
+                <div className={cn(
+                  "mt-3 inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full border",
+                  activeOverride
+                    ? "bg-red-500/10 text-red-600 border-red-500/20"
+                    : "bg-muted text-muted-foreground border-border",
+                )}>
+                  {activeOverride ? <><CheckCircle2 className="w-3 h-3" /> In sync</> : "Standby"}
+                </div>
               </div>
             ))}
           </div>
         </CardContent>
       </Card>
-
-      {/* History */}
-      {allOverrides.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Broadcast History</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {allOverrides.slice(0, 10).map((o) => (
-                <div
-                  key={o.id}
-                  className="flex items-center justify-between py-2 border-b last:border-0"
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <Badge variant={o.isActive ? "destructive" : "secondary"}>
-                      {o.isActive ? "LIVE" : "ended"}
-                    </Badge>
-                    <span className="text-sm truncate">{o.title}</span>
-                  </div>
-                  <div className="text-xs text-muted-foreground whitespace-nowrap ml-3">
-                    {new Date(o.startedAt).toLocaleString()}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
     </div>
   );
 }
