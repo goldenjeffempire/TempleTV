@@ -23,7 +23,27 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
   "Special Programs": ["conference", "special", "convention", "program", "service", "crusade", "revival", "anniversary"],
 };
 
+// Maps admin-set category slugs to display category names used by the TV app.
+const API_CATEGORY_MAP: Record<string, string> = {
+  faith: "Faith",
+  healing: "Healing",
+  deliverance: "Deliverance",
+  worship: "Worship",
+  music: "Worship",
+  sermon: "Teachings",
+  teaching: "Teachings",
+  teachings: "Teachings",
+  prophecy: "Faith",
+  special: "Special Programs",
+  "special programs": "Special Programs",
+};
+
 function categorizeVideo(video: VideoItem, index: number): string {
+  // For local uploads the admin already chose a category — honour it directly.
+  if (video.videoSource === "local" && video.apiCategory) {
+    const mapped = API_CATEGORY_MAP[video.apiCategory.toLowerCase()];
+    if (mapped) return mapped;
+  }
   const text = `${video.title} ${video.description}`.toLowerCase();
   for (const [category, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
     if (keywords.some((kw) => text.includes(kw))) {
@@ -40,6 +60,8 @@ function categorize(videos: VideoItem[]): Sermon[] {
   }));
 }
 
+const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes — picks up newly uploaded videos
+
 export function useSermons() {
   const [sermons, setSermons] = useState<Sermon[]>([]);
   const [loading, setLoading] = useState(true);
@@ -47,21 +69,28 @@ export function useSermons() {
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    fetchVideos()
-      .then((videos) => {
-        if (!cancelled) {
-          setSermons(categorize(videos));
-          setLoading(false);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load");
-          setLoading(false);
-        }
-      });
-    return () => { cancelled = true; };
+
+    const load = (isInitial: boolean) => {
+      if (isInitial) setLoading(true);
+      fetchVideos()
+        .then((videos) => {
+          if (!cancelled) {
+            setSermons(categorize(videos));
+            setLoading(false);
+          }
+        })
+        .catch((err) => {
+          if (!cancelled && isInitial) {
+            setError(err instanceof Error ? err.message : "Failed to load");
+            setLoading(false);
+          }
+          // Swallow background refresh errors — stale data is fine
+        });
+    };
+
+    load(true);
+    const timer = setInterval(() => load(false), POLL_INTERVAL_MS);
+    return () => { cancelled = true; clearInterval(timer); };
   }, []);
 
   const byCategory = useMemo(

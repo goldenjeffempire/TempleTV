@@ -46,6 +46,37 @@ function mapCategory(cat: string): SermonCategory {
   return CATEGORY_MAP[cat] ?? "Teachings";
 }
 
+/**
+ * Convert a duration value from the API into a display string like "1:23:45".
+ * The API stores local-video durations as plain seconds ("5400") and YouTube
+ * durations as ISO 8601 ("PT1H23M45S").  Both are handled here.
+ */
+function formatDuration(raw: string | null | undefined): string {
+  if (!raw) return "";
+
+  // ISO 8601 — YouTube format
+  const iso = raw.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (iso) {
+    const h = parseInt(iso[1] ?? "0");
+    const m = parseInt(iso[2] ?? "0");
+    const s = parseInt(iso[3] ?? "0");
+    if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+    return `${m}:${String(s).padStart(2, "0")}`;
+  }
+
+  // Plain seconds — local upload format
+  const totalSec = parseInt(raw, 10);
+  if (!isNaN(totalSec) && totalSec > 0) {
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+    return `${m}:${String(s).padStart(2, "0")}`;
+  }
+
+  return "";
+}
+
 function apiVideoToSermon(v: ApiVideo): Sermon {
   return {
     id: v.id,
@@ -53,7 +84,7 @@ function apiVideoToSermon(v: ApiVideo): Sermon {
     description: v.description ?? "",
     youtubeId: v.youtubeId,
     thumbnailUrl: v.thumbnailUrl ?? "",
-    duration: v.duration ?? "",
+    duration: formatDuration(v.duration),
     category: mapCategory(v.category),
     preacher: v.preacher || "Temple TV JCTM",
     date: (v.publishedAt ?? v.importedAt ?? "").slice(0, 10),

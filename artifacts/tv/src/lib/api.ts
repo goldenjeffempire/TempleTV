@@ -16,6 +16,8 @@ export interface VideoItem {
   viewCount: string;
   videoSource: "youtube" | "local";
   localVideoUrl: string | null;
+  /** Category as set by the admin (e.g. "sermon", "music"). Used directly for local uploads. */
+  apiCategory: string;
 }
 
 export interface LiveStatus {
@@ -93,6 +95,7 @@ function dbVideoToVideoItem(v: DbVideo): VideoItem {
     viewCount: String(v.viewCount ?? 0),
     videoSource: isLocal ? "local" : "youtube",
     localVideoUrl: v.hlsMasterUrl ?? v.localVideoUrl ?? null,
+    apiCategory: v.category ?? "",
   };
 }
 

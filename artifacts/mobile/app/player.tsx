@@ -291,7 +291,7 @@ export default function PlayerScreen() {
   // for rich-result thumbnails in regular search.
   const seoVideoId = paramVideoId ?? ctxSermon?.youtubeId ?? "";
   const seoTitle = paramTitle ?? ctxSermon?.title ?? (isLive ? "Live Now — Temple TV" : "Watch Sermon");
-  const seoThumb = paramThumbnail ?? ctxSermon?.thumbnail ?? `https://i.ytimg.com/vi/${seoVideoId}/hqdefault.jpg`;
+  const seoThumb = paramThumbnail ?? ctxSermon?.thumbnailUrl ?? `https://i.ytimg.com/vi/${seoVideoId}/hqdefault.jpg`;
   const seoPreacher = paramPreacher ?? ctxSermon?.preacher ?? "Jesus Christ Temple Ministry";
   const seoDescription = ctxSermon?.description
     ? String(ctxSermon.description).slice(0, 240)
@@ -299,7 +299,7 @@ export default function PlayerScreen() {
   // Only emit a real publishedAt — synthesizing "now" pollutes structured-data
   // quality signals and risks disqualification from Google's Video carousel.
   const seoUploadDate = (() => {
-    const raw = ctxSermon?.publishedAt;
+    const raw = ctxSermon?.date;
     if (!raw) return undefined;
     const d = new Date(raw);
     return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
