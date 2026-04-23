@@ -544,15 +544,35 @@ router.get("/admin/broadcast", async (_req, res) => {
 });
 
 router.post("/admin/broadcast", async (req, res) => {
-  const { videoId, youtubeId, title, thumbnailUrl, durationSecs, localVideoUrl, videoSource } = req.body as {
+  const body = req.body as {
     videoId?: string;
     youtubeId?: string;
-    title: string;
+    title?: string;
     thumbnailUrl?: string;
     durationSecs?: number;
     localVideoUrl?: string;
     videoSource?: string;
   };
+
+  let { videoId, youtubeId, title, thumbnailUrl, localVideoUrl, videoSource } = body;
+  let resolvedDurationSecs = body.durationSecs ?? 0;
+
+  // When videoId is provided, look up the video from the DB and fill in any
+  // missing fields. This allows callers to add a video to the queue by ID only.
+  if (videoId) {
+    const [video] = await db.select().from(videosTable).where(eq(videosTable.id, videoId)).limit(1);
+    if (video) {
+      title = title ?? video.title;
+      youtubeId = youtubeId ?? video.youtubeId;
+      thumbnailUrl = thumbnailUrl ?? video.thumbnailUrl ?? "";
+      localVideoUrl = localVideoUrl ?? video.hlsMasterUrl ?? video.localVideoUrl ?? undefined;
+      videoSource = videoSource ?? video.videoSource;
+      if (resolvedDurationSecs <= 0 && video.duration) {
+        const detected = parseDurationSecs(video.duration);
+        if (detected > 0) resolvedDurationSecs = detected;
+      }
+    }
+  }
 
   if (!title?.trim()) {
     return void res.status(400).json({ error: "title is required" });
@@ -565,16 +585,6 @@ router.post("/admin/broadcast", async (req, res) => {
     return void res.status(400).json({ error: "localVideoUrl is required for local videos" });
   }
 
-  let resolvedDurationSecs = durationSecs ?? 0;
-
-  if (resolvedDurationSecs <= 0 && videoId) {
-    const [video] = await db.select().from(videosTable).where(eq(videosTable.id, videoId)).limit(1);
-    if (video?.duration) {
-      const detected = parseDurationSecs(video.duration);
-      if (detected > 60) resolvedDurationSecs = detected;
-    }
-  }
-
   if (resolvedDurationSecs <= 0) resolvedDurationSecs = 1800;
 
   const existing = await db
@@ -582,26 +592,51 @@ router.post("/admin/broadcast", async (req, res) => {
     .from(broadcastQueueTable)
     .orderBy(asc(broadcastQueueTable.sortOrder));
 
-  const maxOrder = existing.length > 0 ? Math.max(...existing.map((i) => i.sortOrder)) + 1 : 0;
+  // Deduplication: if this videoId is already in the queue, update it in place
+  // rather than inserting a duplicate.
+  const existingMatch = videoId ? existing.find((i) => i.videoId === videoId) : null;
 
-  const [item] = await db
-    .insert(broadcastQueueTable)
-    .values({
-      id: randomUUID(),
-      videoId: videoId ?? null,
-      youtubeId: youtubeId ?? "",
-      title: title.trim(),
-      thumbnailUrl: thumbnailUrl ?? "",
-      durationSecs: resolvedDurationSecs,
-      localVideoUrl: localVideoUrl ?? null,
-      videoSource: resolvedSource,
-      sortOrder: maxOrder,
-    })
-    .returning();
+  let item: (typeof broadcastQueueTable.$inferSelect) | undefined;
+
+  if (existingMatch) {
+    const [updated] = await db
+      .update(broadcastQueueTable)
+      .set({
+        youtubeId: youtubeId ?? existingMatch.youtubeId,
+        title: title.trim(),
+        thumbnailUrl: thumbnailUrl ?? existingMatch.thumbnailUrl,
+        durationSecs: resolvedDurationSecs,
+        localVideoUrl: localVideoUrl ?? existingMatch.localVideoUrl,
+        videoSource: resolvedSource,
+        isActive: true,
+      })
+      .where(eq(broadcastQueueTable.id, existingMatch.id))
+      .returning();
+    item = updated;
+  } else {
+    const maxOrder = existing.length > 0 ? Math.max(...existing.map((i) => i.sortOrder)) + 1 : 0;
+    const [inserted] = await db
+      .insert(broadcastQueueTable)
+      .values({
+        id: randomUUID(),
+        videoId: videoId ?? null,
+        youtubeId: youtubeId ?? "",
+        title: title.trim(),
+        thumbnailUrl: thumbnailUrl ?? "",
+        durationSecs: resolvedDurationSecs,
+        localVideoUrl: localVideoUrl ?? null,
+        videoSource: resolvedSource,
+        sortOrder: maxOrder,
+      })
+      .returning();
+    item = inserted;
+  }
+
+  if (!item) return void res.status(500).json({ error: "Failed to save queue item" });
 
   await invalidateBroadcastCache();
-  broadcastLiveEvent("broadcast-queue-updated", { id: item.id, reason: "added", queuedAt: new Date().toISOString() });
-  emitBroadcastState("queue-added", { id: item.id });
+  broadcastLiveEvent("broadcast-queue-updated", { id: item.id, reason: existingMatch ? "updated" : "added", queuedAt: new Date().toISOString() });
+  emitBroadcastState(existingMatch ? "queue-updated" : "queue-added", { id: item.id });
   res.status(201).json(item);
 });
 

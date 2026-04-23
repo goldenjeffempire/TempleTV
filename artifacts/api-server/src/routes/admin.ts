@@ -1033,6 +1033,13 @@ router.post("/admin/videos/upload", upload.fields([{ name: "video", maxCount: 1 
       })
       .returning();
 
+    // Register in broadcast queue (best-effort — video is already saved to DB)
+    try {
+      await upsertBroadcastQueueVideo(video);
+    } catch (bqErr) {
+      logger.error({ err: bqErr, videoId: video?.id }, "upsertBroadcastQueueVideo failed after simple upload");
+    }
+
     res.status(201).json(video);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";

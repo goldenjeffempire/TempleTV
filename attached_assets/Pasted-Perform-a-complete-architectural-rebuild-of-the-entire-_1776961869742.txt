@@ -1,0 +1,59 @@
+Perform a complete architectural rebuild of the entire Admin Panel from the ground up using modern enterprise-grade engineering standards, scalable system design principles, and production-ready development practices.
+
+Objective:
+
+Replace the existing Admin Panel implementation with a fully redesigned, optimized, maintainable, secure, and high-performance administrative platform suitable for real-world large-scale broadcasting and streaming operations.
+
+Core Requirements:
+
+* Rebuild the entire Admin Panel architecture from scratch with a clean, modular, and scalable foundation.
+* Remove all obsolete, redundant, unused, duplicated, experimental, temporary, and unnecessary code, files, dependencies, and legacy components that negatively impact maintainability, security, performance, or scalability.
+* Eliminate technical debt and refactor unstable or poorly structured implementations.
+* Design the new architecture using enterprise-grade software engineering principles including:
+
+  * Modular architecture
+  * Separation of concerns
+  * Scalable component structure
+  * Reusable service layers
+  * Maintainable state management
+  * Clean API integration patterns
+  * Fault-tolerant workflows
+* Build a modern, professional, responsive, and highly intuitive administrative interface optimized for:
+
+  * Desktop environments
+  * Tablet interfaces
+  * Smart administrative workflows
+  * High-efficiency media operations
+* Ensure the Admin Panel supports all critical platform operations including:
+
+  * Video management
+  * Broadcast queue management
+  * Live streaming controls
+  * Media uploads
+  * Scheduling systems
+  * Playlist management
+  * User management
+  * Authentication and permissions
+  * Analytics and monitoring
+  * System configuration management
+* Implement enterprise-grade authentication and role-based access control (RBAC) systems.
+* Ensure secure administrative operations with proper authorization validation, audit logging, and activity tracking.
+* Optimize frontend and backend performance for high-speed operations and scalability.
+* Implement robust API handling, caching strategies, state synchronization, and real-time update mechanisms.
+* Ensure all upload systems, broadcast workflows, and media management operations function reliably and efficiently.
+* Build resilient error handling, recovery systems, validation layers, and operational safeguards throughout the platform.
+* Ensure full synchronization between frontend interfaces, backend services, databases, storage infrastructure, and broadcast systems.
+* Improve maintainability through clean code standards, structured folder organization, proper documentation, and extensible architecture patterns.
+* Remove all dead routes, broken integrations, unused assets, deprecated services, and abandoned logic paths.
+* Ensure the system is optimized for long-term scalability, future feature expansion, and enterprise operational stability.
+* Implement comprehensive monitoring, logging, diagnostics, and observability tooling for administrative operations.
+* Ensure compatibility across modern browsers and administrative environments.
+* Optimize accessibility, usability, responsiveness, and workflow efficiency for administrators and broadcast operators.
+
+Expected Final Outcome:
+
+Deliver a fully rebuilt, modernized, production-ready, enterprise-grade Admin Panel engineered for professional broadcasting and streaming operations with exceptional reliability, scalability, security, maintainability, and operational performance.
+
+The final Admin Panel should function as a world-class broadcast management and media operations system capable of supporting large-scale real-world streaming infrastructure with clean architecture, optimized workflows, and enterprise operational standards.
+
+“Temple TV Anywhere You Go”

@@ -1019,7 +1019,7 @@ export default function Broadcast() {
       const res = await adminFetch("/api/admin/broadcast/reorder", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: newQueue.map((i) => i.id) }),
+        body: JSON.stringify({ orderedIds: newQueue.map((i) => i.id) }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
     } catch (e) {
