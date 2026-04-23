@@ -13,10 +13,12 @@ export const refreshTokensTable = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     replacedById: text("replaced_by_id"),
     userAgent: text("user_agent"),
     ip: text("ip"),
+    deviceName: text("device_name"),
   },
   (t) => ({
     userIdx: index("refresh_tokens_user_id_idx").on(t.userId),

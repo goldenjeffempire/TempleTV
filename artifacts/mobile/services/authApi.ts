@@ -1,5 +1,13 @@
+import { Platform } from "react-native";
 import { secureStorage } from "@/lib/secureStorage";
 import { STORAGE_KEYS } from "@/constants/config";
+
+function getDeviceName(): string {
+  const os = Platform.OS;
+  if (os === "ios") return "iPhone / iPad";
+  if (os === "android") return "Android Device";
+  return "Mobile App";
+}
 
 export interface AuthUser {
   id: string;
@@ -49,7 +57,7 @@ async function attemptRefresh(): Promise<string | null> {
     const res = await fetch(`${getApiBase()}/api/auth/refresh`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refreshToken }),
+      body: JSON.stringify({ refreshToken, deviceName: getDeviceName() }),
     });
     if (!res.ok) {
       // Permanent failure — clear stored credentials and notify the UI.
@@ -116,7 +124,7 @@ export async function apiSignup(
   const res = await fetch(`${getApiBase()}/api/auth/signup`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password, displayName }),
+    body: JSON.stringify({ email, password, displayName, deviceName: getDeviceName() }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? "Signup failed");
@@ -131,7 +139,7 @@ export async function apiLogin(
   const res = await fetch(`${getApiBase()}/api/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email, password, deviceName: getDeviceName() }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? "Login failed");

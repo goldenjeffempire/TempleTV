@@ -3,7 +3,7 @@ import jwt from "jsonwebtoken";
 import { createHash, randomBytes, randomUUID } from "crypto";
 import { sql } from "drizzle-orm";
 import { db, usersTable, refreshTokensTable } from "@workspace/db";
-import { and, eq, isNull, lt } from "drizzle-orm";
+import { and, eq, isNull, lt, desc, isNotNull } from "drizzle-orm";
 import type { PublicUser } from "@workspace/db";
 
 declare global {
@@ -17,8 +17,11 @@ declare global {
 // ── TTLs ──────────────────────────────────────────────────────────────────
 // Access tokens are short-lived; refresh tokens are long-lived but
 // single-use and revocable (rotation on every refresh).
-export const ACCESS_TOKEN_TTL_SECONDS = 15 * 60; // 15 minutes
-export const REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
+// Sliding window: on every successful rotation the expiry is extended
+// by REFRESH_TOKEN_TTL_SECONDS from now — so active users never get
+// logged out as long as the app is used at least once every 90 days.
+export const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;          // 15 minutes
+export const REFRESH_TOKEN_TTL_SECONDS = 90 * 24 * 60 * 60; // 90 days (sliding)
 
 function getJwtSecret(): string {
   const secret = process.env.JWT_SECRET;
@@ -62,9 +65,13 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     }
 
     // Reject tokens minted before the most recent global session reset
-    // (password change, logout-everywhere). `iat` is in seconds.
+    // (password change, logout-everywhere). `iat` is in whole seconds while
+    // sessionsValidAfter has millisecond precision, so a token issued in the
+    // same wall-clock second as the reset would be incorrectly rejected.
+    // Adding a 1-second grace window prevents that false-positive while still
+    // blocking tokens issued before the reset second.
     const tokenIssuedAtMs = (payload.iat ?? 0) * 1000;
-    if (tokenIssuedAtMs < row.sessionsValidAfter.getTime()) {
+    if (tokenIssuedAtMs + 1000 < row.sessionsValidAfter.getTime()) {
       res.status(401).json({ error: "Session has been invalidated" });
       return;
     }
@@ -111,7 +118,7 @@ function getClientIp(req: Request): string | null {
 export async function issueRefreshToken(
   userId: string,
   req: Request,
-  replacedById?: string,
+  options?: { replacedById?: string; deviceName?: string },
 ): Promise<{ id: string; raw: string; expiresAt: Date }> {
   const id = randomUUID();
   const raw = `${id}.${randomBytes(48).toString("base64url")}`;
@@ -123,7 +130,9 @@ export async function issueRefreshToken(
     expiresAt,
     userAgent: getClientUserAgent(req),
     ip: getClientIp(req),
-    replacedById: replacedById ?? null,
+    replacedById: options?.replacedById ?? null,
+    deviceName: options?.deviceName?.slice(0, 120) ?? null,
+    lastUsedAt: new Date(),
   });
   return { id, raw, expiresAt };
 }
@@ -132,8 +141,9 @@ export async function issueRefreshToken(
 export async function issueAuthTokens(
   userId: string,
   req: Request,
+  deviceName?: string,
 ): Promise<{ accessToken: string; refreshToken: string; accessTokenExpiresInSecs: number }> {
-  const refresh = await issueRefreshToken(userId, req);
+  const refresh = await issueRefreshToken(userId, req, { deviceName });
   // Opportunistic cleanup: drop expired tokens for this user.
   db.delete(refreshTokensTable)
     .where(
@@ -159,10 +169,16 @@ export async function issueAuthTokens(
  *
  * If a previously-revoked token is re-presented, all sibling tokens for that
  * user are revoked as a precaution against token theft.
+ *
+ * Sliding window: the replacement token's expiry is always set to
+ * REFRESH_TOKEN_TTL_SECONDS from NOW, not from the original issuance time.
+ * This means active users (who refresh at least once per 90 days) are never
+ * logged out involuntarily.
  */
 export async function rotateRefreshToken(
   presentedRaw: string,
   req: Request,
+  deviceName?: string,
 ): Promise<{
   userId: string;
   accessToken: string;
@@ -172,6 +188,7 @@ export async function rotateRefreshToken(
   const tokenHash = hashRefreshToken(presentedRaw);
   const userAgent = getClientUserAgent(req);
   const ip = getClientIp(req);
+  const now = new Date();
 
   return await db.transaction(async (tx) => {
     // Row-lock the presented token to serialize concurrent rotations.
@@ -191,12 +208,12 @@ export async function rotateRefreshToken(
       // active token for the user as a token-theft response.
       await tx
         .update(refreshTokensTable)
-        .set({ revokedAt: new Date() })
+        .set({ revokedAt: now })
         .where(and(eq(refreshTokensTable.userId, row.userId), isNull(refreshTokensTable.revokedAt)));
       throw new Error("refresh_token_reused");
     }
 
-    if (row.expiresAt.getTime() <= Date.now()) {
+    if (row.expiresAt.getTime() <= now.getTime()) {
       throw new Error("expired_refresh_token");
     }
 
@@ -204,7 +221,7 @@ export async function rotateRefreshToken(
     // us verify exactly one row was claimed by this transaction.
     const claimed = await tx
       .update(refreshTokensTable)
-      .set({ revokedAt: new Date() })
+      .set({ revokedAt: now, lastUsedAt: now })
       .where(and(eq(refreshTokensTable.id, row.id), isNull(refreshTokensTable.revokedAt)))
       .returning({ id: refreshTokensTable.id });
 
@@ -213,18 +230,24 @@ export async function rotateRefreshToken(
       throw new Error("refresh_token_reused");
     }
 
-    // Mint the replacement inside the same transaction.
+    // Sliding window: new token expires 90 days from NOW (not from original issuance).
+    const newExpiresAt = new Date(now.getTime() + REFRESH_TOKEN_TTL_SECONDS * 1000);
     const newId = randomUUID();
     const newRaw = `${newId}.${randomBytes(48).toString("base64url")}`;
-    const expiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_SECONDS * 1000);
+
+    // Carry forward the device name from the old token (or accept an updated one).
+    const resolvedDeviceName = deviceName ?? row.deviceName;
+
     await tx.insert(refreshTokensTable).values({
       id: newId,
       userId: row.userId,
       tokenHash: hashRefreshToken(newRaw),
-      expiresAt,
+      expiresAt: newExpiresAt,
       userAgent,
       ip,
       replacedById: null,
+      deviceName: resolvedDeviceName?.slice(0, 120) ?? null,
+      lastUsedAt: now,
     });
 
     // Link the old row to its replacement for forensic traceability.
@@ -269,4 +292,57 @@ export async function revokeAllRefreshTokensForUser(userId: string): Promise<voi
     .update(refreshTokensTable)
     .set({ revokedAt: new Date() })
     .where(and(eq(refreshTokensTable.userId, userId), isNull(refreshTokensTable.revokedAt)));
+}
+
+/** Revoke a specific session by ID for a given user (session management). */
+export async function revokeSessionById(userId: string, sessionId: string): Promise<boolean> {
+  const result = await db
+    .update(refreshTokensTable)
+    .set({ revokedAt: new Date() })
+    .where(
+      and(
+        eq(refreshTokensTable.id, sessionId),
+        eq(refreshTokensTable.userId, userId),
+        isNull(refreshTokensTable.revokedAt),
+      ),
+    )
+    .returning({ id: refreshTokensTable.id });
+  return result.length > 0;
+}
+
+export interface SessionInfo {
+  id: string;
+  deviceName: string | null;
+  userAgent: string | null;
+  ip: string | null;
+  createdAt: Date;
+  lastUsedAt: Date | null;
+  expiresAt: Date;
+}
+
+/** List all active (non-revoked, non-expired) sessions for a user. */
+export async function listActiveSessions(userId: string): Promise<SessionInfo[]> {
+  const rows = await db
+    .select({
+      id: refreshTokensTable.id,
+      deviceName: refreshTokensTable.deviceName,
+      userAgent: refreshTokensTable.userAgent,
+      ip: refreshTokensTable.ip,
+      createdAt: refreshTokensTable.createdAt,
+      lastUsedAt: refreshTokensTable.lastUsedAt,
+      expiresAt: refreshTokensTable.expiresAt,
+    })
+    .from(refreshTokensTable)
+    .where(
+      and(
+        eq(refreshTokensTable.userId, userId),
+        isNull(refreshTokensTable.revokedAt),
+        isNotNull(refreshTokensTable.id),
+      ),
+    )
+    .orderBy(desc(refreshTokensTable.lastUsedAt))
+    .limit(50);
+
+  const now = new Date();
+  return rows.filter((r) => r.expiresAt > now);
 }

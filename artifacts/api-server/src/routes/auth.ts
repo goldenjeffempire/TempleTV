@@ -9,6 +9,8 @@ import {
   rotateRefreshToken,
   revokeRefreshToken,
   revokeAllRefreshTokensForUser,
+  revokeSessionById,
+  listActiveSessions,
   bumpSessionEpoch,
   ACCESS_TOKEN_TTL_SECONDS,
 } from "../middlewares/requireAuth";
@@ -16,25 +18,74 @@ import { z } from "zod";
 
 const router = Router();
 
+// ── Per-user brute-force login protection ─────────────────────────────────
+// Tracks failed attempts per normalized email. After MAX_FAILURES consecutive
+// failures the account is locked for LOCKOUT_MS. The counter resets on a
+// successful login. This is in-memory (resets on restart) which is intentional:
+// a restart clears the lock as a safe fallback and avoids schema churn.
+const MAX_FAILURES = 10;
+const LOCKOUT_MS = 15 * 60 * 1000; // 15 minutes
+
+interface FailureRecord {
+  count: number;
+  lockedUntil: number | null;
+}
+const loginFailures = new Map<string, FailureRecord>();
+
+function getFailureRecord(email: string): FailureRecord {
+  return loginFailures.get(email) ?? { count: 0, lockedUntil: null };
+}
+
+function recordFailure(email: string): void {
+  const rec = getFailureRecord(email);
+  const newCount = rec.count + 1;
+  loginFailures.set(email, {
+    count: newCount,
+    lockedUntil: newCount >= MAX_FAILURES ? Date.now() + LOCKOUT_MS : null,
+  });
+}
+
+function clearFailures(email: string): void {
+  loginFailures.delete(email);
+}
+
+function isLockedOut(email: string): { locked: boolean; retryAfterSecs?: number } {
+  const rec = getFailureRecord(email);
+  if (rec.lockedUntil === null) return { locked: false };
+  const remaining = rec.lockedUntil - Date.now();
+  if (remaining <= 0) {
+    loginFailures.delete(email);
+    return { locked: false };
+  }
+  return { locked: true, retryAfterSecs: Math.ceil(remaining / 1000) };
+}
+
+// ── Validation schemas ─────────────────────────────────────────────────────
+
 const SignupBody = z.object({
   email: z.string().email(),
   password: z.string().min(8, "Password must be at least 8 characters"),
   displayName: z.string().min(1).max(80),
+  deviceName: z.string().max(120).optional(),
 });
 
 const LoginBody = z.object({
   email: z.string().email(),
   password: z.string().min(1),
+  deviceName: z.string().max(120).optional(),
 });
 
 const RefreshBody = z.object({
   refreshToken: z.string().min(10),
+  deviceName: z.string().max(120).optional(),
 });
 
 const LogoutBody = z.object({
   refreshToken: z.string().min(10).optional(),
   everywhere: z.boolean().optional(),
 });
+
+// ── Routes ─────────────────────────────────────────────────────────────────
 
 router.post("/auth/signup", async (req, res) => {
   const parsed = SignupBody.safeParse(req.body);
@@ -43,7 +94,7 @@ router.post("/auth/signup", async (req, res) => {
     return;
   }
 
-  const { email, password, displayName } = parsed.data;
+  const { email, password, displayName, deviceName } = parsed.data;
   const normalizedEmail = email.toLowerCase().trim();
 
   const [existing] = await db
@@ -67,9 +118,8 @@ router.post("/auth/signup", async (req, res) => {
     displayName: displayName.trim(),
   });
 
-  const tokens = await issueAuthTokens(userId, req);
+  const tokens = await issueAuthTokens(userId, req, deviceName);
   res.status(201).json({
-    // `token` retained for backward-compat with older mobile builds.
     token: tokens.accessToken,
     accessToken: tokens.accessToken,
     refreshToken: tokens.refreshToken,
@@ -85,8 +135,19 @@ router.post("/auth/login", async (req, res) => {
     return;
   }
 
-  const { email, password } = parsed.data;
+  const { email, password, deviceName } = parsed.data;
   const normalizedEmail = email.toLowerCase().trim();
+
+  // Check for account lockout before hitting the DB.
+  const lockStatus = isLockedOut(normalizedEmail);
+  if (lockStatus.locked) {
+    res.status(429).json({
+      error: "account_temporarily_locked",
+      message: "Too many failed login attempts. Please try again later.",
+      retryAfterSecs: lockStatus.retryAfterSecs,
+    });
+    return;
+  }
 
   const [user] = await db
     .select()
@@ -94,18 +155,22 @@ router.post("/auth/login", async (req, res) => {
     .where(eq(usersTable.email, normalizedEmail))
     .limit(1);
 
-  if (!user) {
+  // Use a constant-time comparison path: always run bcrypt even if user not
+  // found (prevents user-enumeration via timing differences).
+  const dummyHash = "$2b$12$invalidhashfortimingnormalization.AAAAAAAAAAAAAAAAAAA";
+  const passwordValid = user
+    ? await bcrypt.compare(password, user.passwordHash)
+    : await bcrypt.compare(password, dummyHash).then(() => false);
+
+  if (!user || !passwordValid) {
+    recordFailure(normalizedEmail);
     res.status(401).json({ error: "Invalid email or password" });
     return;
   }
 
-  const passwordValid = await bcrypt.compare(password, user.passwordHash);
-  if (!passwordValid) {
-    res.status(401).json({ error: "Invalid email or password" });
-    return;
-  }
+  clearFailures(normalizedEmail);
 
-  const tokens = await issueAuthTokens(user.id, req);
+  const tokens = await issueAuthTokens(user.id, req, deviceName);
   res.json({
     token: tokens.accessToken,
     accessToken: tokens.accessToken,
@@ -128,7 +193,7 @@ router.post("/auth/refresh", async (req, res) => {
     return;
   }
   try {
-    const tokens = await rotateRefreshToken(parsed.data.refreshToken, req);
+    const tokens = await rotateRefreshToken(parsed.data.refreshToken, req, parsed.data.deviceName);
     res.json({
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
@@ -136,8 +201,7 @@ router.post("/auth/refresh", async (req, res) => {
     });
   } catch (err) {
     const code = err instanceof Error ? err.message : "invalid_refresh_token";
-    const status = code === "refresh_token_reused" ? 401 : 401;
-    res.status(status).json({ error: code });
+    res.status(401).json({ error: code });
   }
 });
 
@@ -148,7 +212,6 @@ router.post("/auth/logout", async (req, res) => {
     return;
   }
   if (parsed.data.everywhere) {
-    // Logout-everywhere requires an authenticated request.
     const auth = req.headers.authorization;
     if (!auth?.startsWith("Bearer ")) {
       res.status(401).json({ error: "Authentication required for logout-everywhere" });
@@ -156,7 +219,6 @@ router.post("/auth/logout", async (req, res) => {
     }
     return requireAuth(req, res, async () => {
       await revokeAllRefreshTokensForUser(req.user!.id);
-      // Also bump session epoch so any access token already issued is rejected.
       await bumpSessionEpoch(req.user!.id);
       res.json({ success: true, scope: "everywhere" });
     });
@@ -170,6 +232,29 @@ router.post("/auth/logout", async (req, res) => {
 router.get("/auth/me", requireAuth, (req, res) => {
   res.json({ user: req.user, accessTokenTtlSecs: ACCESS_TOKEN_TTL_SECONDS });
 });
+
+// ── Session management ─────────────────────────────────────────────────────
+
+router.get("/auth/sessions", requireAuth, async (req, res) => {
+  const sessions = await listActiveSessions(req.user!.id);
+  res.json({ sessions });
+});
+
+router.delete("/auth/sessions/:sessionId", requireAuth, async (req, res) => {
+  const { sessionId } = req.params;
+  if (!sessionId) {
+    res.status(400).json({ error: "Session ID required" });
+    return;
+  }
+  const revoked = await revokeSessionById(req.user!.id, sessionId);
+  if (!revoked) {
+    res.status(404).json({ error: "Session not found or already revoked" });
+    return;
+  }
+  res.json({ success: true });
+});
+
+// ── Profile & password management ─────────────────────────────────────────
 
 router.patch("/auth/profile", requireAuth, async (req, res) => {
   const UpdateBody = z.object({
