@@ -34,8 +34,12 @@ function getPresentedAdminToken(req: Request): string | null {
   if (auth?.startsWith("Bearer ")) return auth.slice("Bearer ".length).trim();
   const header = req.headers["x-admin-token"];
   if (typeof header === "string") return header.trim();
-  const queryToken = req.query.adminToken;
-  if (typeof queryToken === "string") return queryToken.trim();
+  // Query-param token accepted only in non-production to avoid credentials
+  // appearing in server logs, proxy access logs, and browser history.
+  if (process.env.NODE_ENV !== "production") {
+    const queryToken = req.query.adminToken;
+    if (typeof queryToken === "string") return queryToken.trim();
+  }
   return null;
 }
 

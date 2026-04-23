@@ -485,7 +485,8 @@ export default function Broadcast() {
           thumbnailUrl: video.thumbnailUrl,
           videoSource: video.videoSource ?? "youtube",
           localVideoUrl: video.localVideoUrl ?? null,
-          durationSecs: 1800,
+          // Omit durationSecs — the server auto-looks up the real duration from
+          // the video record when this field is absent or zero.
         }),
       });
       if (!res.ok) throw new Error("Failed to add");

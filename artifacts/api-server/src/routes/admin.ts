@@ -1573,21 +1573,23 @@ router.get("/videos/featured", async (req, res) => {
 
 router.get("/playlists", async (req, res) => {
   try {
-    const playlists = await db
-      .select()
-      .from(playlistsTable)
-      .where(eq(playlistsTable.isActive, true))
-      .orderBy(desc(playlistsTable.createdAt));
-    const withCounts = await Promise.all(
-      playlists.map(async (p) => {
-        const [countResult] = await db
-          .select({ count: count() })
-          .from(playlistVideosTable)
-          .where(eq(playlistVideosTable.playlistId, p.id));
-        return { ...p, videoCount: countResult?.count ?? 0 };
+    const rows = await db
+      .select({
+        id: playlistsTable.id,
+        name: playlistsTable.name,
+        description: playlistsTable.description,
+        loopMode: playlistsTable.loopMode,
+        isActive: playlistsTable.isActive,
+        createdAt: playlistsTable.createdAt,
+        updatedAt: playlistsTable.updatedAt,
+        videoCount: sql<number>`CAST(COUNT(${playlistVideosTable.id}) AS INTEGER)`,
       })
-    );
-    res.json(withCounts);
+      .from(playlistsTable)
+      .leftJoin(playlistVideosTable, eq(playlistVideosTable.playlistId, playlistsTable.id))
+      .where(eq(playlistsTable.isActive, true))
+      .groupBy(playlistsTable.id)
+      .orderBy(desc(playlistsTable.createdAt));
+    res.json(rows);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });
@@ -1627,17 +1629,22 @@ async function getPlaylistWithVideos(id: string) {
 
 router.get("/admin/playlists", async (req, res) => {
   try {
-    const playlists = await db.select().from(playlistsTable).orderBy(desc(playlistsTable.createdAt));
-    const withCounts = await Promise.all(
-      playlists.map(async (p) => {
-        const [countResult] = await db
-          .select({ count: count() })
-          .from(playlistVideosTable)
-          .where(eq(playlistVideosTable.playlistId, p.id));
-        return { ...p, videoCount: countResult?.count ?? 0 };
+    const rows = await db
+      .select({
+        id: playlistsTable.id,
+        name: playlistsTable.name,
+        description: playlistsTable.description,
+        loopMode: playlistsTable.loopMode,
+        isActive: playlistsTable.isActive,
+        createdAt: playlistsTable.createdAt,
+        updatedAt: playlistsTable.updatedAt,
+        videoCount: sql<number>`CAST(COUNT(${playlistVideosTable.id}) AS INTEGER)`,
       })
-    );
-    res.json(withCounts);
+      .from(playlistsTable)
+      .leftJoin(playlistVideosTable, eq(playlistVideosTable.playlistId, playlistsTable.id))
+      .groupBy(playlistsTable.id)
+      .orderBy(desc(playlistsTable.createdAt));
+    res.json(rows);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });

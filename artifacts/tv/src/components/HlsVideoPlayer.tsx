@@ -171,6 +171,10 @@ export function HlsVideoPlayer({
         startLevel: -1,           // -1 = let ABR pick
         autoStartLoad: true,
         lowLatencyMode: false,    // VOD mode
+        // Let hls.js handle the initial seek internally — it ensures the seek
+        // lands after segments are buffered, preventing hangs on Smart TV decoders.
+        // -1 means "default" (beginning for VOD, live edge for live).
+        startPosition: startPositionSecs > 0 ? startPositionSecs : -1,
         // Conservative buffer targets for TV RAM constraints.
         maxBufferLength: 60,
         maxMaxBufferLength: 120,
@@ -192,7 +196,6 @@ export function HlsVideoPlayer({
       hls.on(Hls.Events.MANIFEST_PARSED, (_e, data) => {
         setIsLoaded(true);
         setIsBuffering(false);
-        if (startPositionSecs > 0) video.currentTime = startPositionSecs;
         video.play().catch(() => {});
         // Report available quality levels to the OSD.
         setQualityLabel(`Auto (${data.levels.length} levels)`);

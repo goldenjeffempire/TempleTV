@@ -1,14 +1,21 @@
-import { pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, index } from "drizzle-orm/pg-core";
 import { usersTable } from "./users";
 
-export const userFavoritesTable = pgTable("user_favorites", {
-  id: text("id").primaryKey(),
-  userId: text("user_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
-  videoId: text("video_id").notNull(),
-  videoTitle: text("video_title").notNull(),
-  videoThumbnail: text("video_thumbnail").notNull().default(""),
-  videoCategory: text("video_category").notNull().default(""),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const userFavoritesTable = pgTable(
+  "user_favorites",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
+    videoId: text("video_id").notNull(),
+    videoTitle: text("video_title").notNull(),
+    videoThumbnail: text("video_thumbnail").notNull().default(""),
+    videoCategory: text("video_category").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    userIdx: index("user_favorites_user_id_idx").on(t.userId),
+    userVideoIdx: index("user_favorites_user_video_idx").on(t.userId, t.videoId),
+  }),
+);
 
 export type UserFavorite = typeof userFavoritesTable.$inferSelect;
