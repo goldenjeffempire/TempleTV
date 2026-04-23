@@ -108,6 +108,9 @@ interface FileTask {
   concurrency: number;
   checksumOk: number;
   checksumFailed: number;
+  stallCount: number;
+  speedRaw: number;
+  networkType: string;
   // Compression fields
   skipCompression: boolean;
   compressionProgress: CompressionProgress | null;
@@ -379,6 +382,9 @@ export default function Videos() {
         concurrency: MAX_CONCURRENT_PER_FILE,
         checksumOk: 0,
         checksumFailed: 0,
+        stallCount: 0,
+        speedRaw: 0,
+        networkType: "unknown",
         skipCompression: false,
         compressionProgress: null,
         compressedBlob: null,
@@ -856,6 +862,7 @@ export default function Videos() {
       speedSamples: [], bytesRef: 0, startTime: Date.now(),
       durationSecs: 0, concurrency: MAX_CONCURRENT_PER_FILE,
       checksumOk: 0, checksumFailed: 0,
+      stallCount: 0, speedRaw: 0, networkType: "unknown",
       skipCompression: true, // skip compression on resume — file was already processed
       compressionProgress: null,
       compressedBlob: null,

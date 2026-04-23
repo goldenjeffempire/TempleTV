@@ -77,6 +77,9 @@ import {
   formatFileSize,
   formatSpeed,
   formatEta,
+  getNetworkAwareConcurrency,
+  emaSpeed,
+  networkTypeLabel,
 } from "@/lib/uploadEngine";
 
 const DEFAULT_COMPRESSION_OPTS: CompressionOptions = {
@@ -199,6 +202,7 @@ export function VideoUploadModal({
       const videos = files.filter((f) => f.type.startsWith("video/"));
       if (videos.length === 0) return;
       tasksRef.current.clear();
+      const { concurrency: netConcurrency, networkType } = getNetworkAwareConcurrency();
       for (const file of videos) {
         const id = crypto.randomUUID();
         const task: FileTask = {
@@ -213,6 +217,7 @@ export function VideoUploadModal({
           progress: 0,
           bytesUploaded: 0,
           speed: 0,
+          speedRaw: 0,
           eta: 0,
           chunksTotal: 0,
           chunksDone: 0,
@@ -222,13 +227,15 @@ export function VideoUploadModal({
           bytesRef: 0,
           startTime: 0,
           durationSecs: 0,
-          concurrency: MAX_CONCURRENT_PER_FILE,
+          concurrency: netConcurrency,
           checksumOk: 0,
           checksumFailed: 0,
+          stallCount: 0,
           skipCompression: false,
           compressionProgress: null,
           compressedBlob: null,
           probe: null,
+          networkType,
         };
         tasksRef.current.set(id, task);
       }
@@ -462,11 +469,15 @@ export function VideoUploadModal({
           t.speedSamples.push({ time: now, bytes: t.bytesRef });
           if (t.speedSamples.length > SPEED_SAMPLES) t.speedSamples.shift();
           if (t.speedSamples.length >= 2) {
+            // Raw speed from the sliding window
             const oldest = t.speedSamples[0]!;
             const newest = t.speedSamples[t.speedSamples.length - 1]!;
             const elapsed = (newest.time - oldest.time) / 1000;
             const bytesDelta = newest.bytes - oldest.bytes;
-            t.speed = elapsed > 0 ? Math.round(bytesDelta / elapsed) : 0;
+            const rawSpeed = elapsed > 0 ? Math.round(bytesDelta / elapsed) : 0;
+            // EMA smoothing — reduces jitter from TCP bursts / network variance
+            t.speedRaw = rawSpeed;
+            t.speed = Math.round(emaSpeed(t.speed, rawSpeed));
             const remaining = uploadFile.size - t.bytesRef;
             t.eta = t.speed > 0 ? remaining / t.speed : 0;
           }
@@ -507,18 +518,40 @@ export function VideoUploadModal({
                 t.chunksDone = chunksDoneLocal;
                 t.progress = Math.round((chunksDoneLocal / totalChunks) * 100);
                 t.checksumOk++;
-                if (t.speed > 15 * 1024 * 1024 && t.concurrency < MAX_CONCURRENCY)
+                // Aggressive concurrency scaling: ramp up faster on fast links,
+                // scale down quickly on congestion, use EMA speed for decisions.
+                const spd = t.speed;
+                if (spd > 20 * 1024 * 1024 && t.concurrency < MAX_CONCURRENCY)
+                  t.concurrency = Math.min(t.concurrency + 3, MAX_CONCURRENCY);
+                else if (spd > 10 * 1024 * 1024 && t.concurrency < MAX_CONCURRENCY)
                   t.concurrency = Math.min(t.concurrency + 2, MAX_CONCURRENCY);
-                else if (t.speed > 5 * 1024 * 1024 && t.concurrency < MAX_CONCURRENCY)
+                else if (spd > 3 * 1024 * 1024 && t.concurrency < MAX_CONCURRENCY)
                   t.concurrency = Math.min(t.concurrency + 1, MAX_CONCURRENCY);
-                else if (t.speed < 512 * 1024 && t.speed > 0 && t.concurrency > MIN_CONCURRENCY)
+                else if (spd < 256 * 1024 && spd > 0 && t.concurrency > MIN_CONCURRENCY)
+                  t.concurrency = Math.max(t.concurrency - 2, MIN_CONCURRENCY);
+                else if (spd < 768 * 1024 && spd > 0 && t.concurrency > MIN_CONCURRENCY)
                   t.concurrency = Math.max(t.concurrency - 1, MIN_CONCURRENCY);
               }
               forceUpdate();
               return;
             } catch (err) {
-              if ((err as Error).name === "AbortError") throw err;
+              const errName = (err as Error).name;
+              if (errName === "AbortError") throw err;
               const errMsg = (err as Error).message || "";
+
+              // Stall recovery: reset EMA on the task so it recalibrates
+              if (errName === "StallError") {
+                const t = tasksRef.current.get(taskId);
+                if (t) {
+                  t.stallCount = (t.stallCount ?? 0) + 1;
+                  t.speed = 0; // force EMA reset so new measurement is clean
+                  t.speedSamples = [];
+                  // Reduce concurrency — stall implies network pressure
+                  t.concurrency = Math.max(Math.floor(t.concurrency * 0.6), MIN_CONCURRENCY);
+                  forceUpdate();
+                }
+              }
+
               if (errMsg.includes("checksum")) {
                 prefetchPool.delete(chunkIdx);
                 const t = tasksRef.current.get(taskId);
@@ -765,9 +798,12 @@ export function VideoUploadModal({
         bytesRef: 0,
         startTime: Date.now(),
         durationSecs: 0,
-        concurrency: MAX_CONCURRENT_PER_FILE,
+        concurrency: getNetworkAwareConcurrency().concurrency,
         checksumOk: 0,
         checksumFailed: 0,
+        stallCount: 0,
+        speedRaw: 0,
+        networkType: getNetworkAwareConcurrency().networkType,
         skipCompression: true,
         compressionProgress: null,
         compressedBlob: null,
@@ -1346,6 +1382,26 @@ function FileTaskCard({
                         <span className="flex items-center gap-1 text-green-600">
                           <ShieldCheck className="w-2.5 h-2.5" />
                           {task.checksumOk}
+                        </span>
+                      </>
+                    )}
+                    {(task.stallCount ?? 0) > 0 && (
+                      <>
+                        <span>·</span>
+                        <span
+                          className="flex items-center gap-1 text-amber-600"
+                          title={`${task.stallCount} stalled chunk(s) auto-recovered`}
+                        >
+                          <Activity className="w-2.5 h-2.5" />
+                          {task.stallCount}↺
+                        </span>
+                      </>
+                    )}
+                    {networkTypeLabel(task.networkType ?? "") && (
+                      <>
+                        <span>·</span>
+                        <span className="text-slate-400">
+                          {networkTypeLabel(task.networkType ?? "")}
                         </span>
                       </>
                     )}
