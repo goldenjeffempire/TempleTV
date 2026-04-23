@@ -7,7 +7,7 @@ interface VideoDetailsProps {
   relatedVideos: VideoItem[];
   onPlay: () => void;
   onBack: () => void;
-  onPlayRelated: (videoId: string, title: string) => void;
+  onPlayRelated: (videoId: string, title: string, hlsUrl?: string) => void;
 }
 
 export function VideoDetails({ video, relatedVideos, onPlay, onBack, onPlayRelated }: VideoDetailsProps) {
@@ -39,7 +39,7 @@ export function VideoDetails({ video, relatedVideos, onPlay, onBack, onPlayRelat
         else if (action === "select") {
           e.preventDefault();
           const v = relatedVideos[relatedIdx];
-          if (v) onPlayRelated(v.videoId, v.title);
+          if (v) onPlayRelated(v.videoId, v.title, v.localVideoUrl ?? undefined);
         }
       }
     };
@@ -147,7 +147,7 @@ export function VideoDetails({ video, relatedVideos, onPlay, onBack, onPlayRelat
                 <div
                   key={v.videoId}
                   ref={(el) => { relatedRef.current[idx] = el; }}
-                  onClick={() => { setFocused("related"); setRelatedIdx(idx); onPlayRelated(v.videoId, v.title); }}
+                  onClick={() => { setFocused("related"); setRelatedIdx(idx); onPlayRelated(v.videoId, v.title, v.localVideoUrl ?? undefined); }}
                   style={{
                     display: "flex",
                     gap: 12,

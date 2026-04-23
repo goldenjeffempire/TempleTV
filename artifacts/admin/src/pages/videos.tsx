@@ -728,7 +728,10 @@ export default function Videos() {
           ? `${failedCount} file${failedCount > 1 ? "s" : ""} failed — check errors and retry.`
           : "All content was automatically added to the broadcast queue.",
       });
+      // Invalidate all admin-videos queries (prefix match) and force an immediate refetch
+      // so the library reflects the new uploads without the user needing to reload.
       queryClient.invalidateQueries({ queryKey: getListAdminVideosQueryKey() });
+      refetch();
     }
 
     // Auto-close if all succeeded

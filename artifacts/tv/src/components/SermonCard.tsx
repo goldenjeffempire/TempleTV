@@ -49,7 +49,12 @@ export const SermonCard = React.memo(function SermonCard({
     >
       {/* Thumbnail */}
       <img
-        src={sermon.thumbnailUrl || `https://img.youtube.com/vi/${sermon.videoId}/hqdefault.jpg`}
+        src={
+          sermon.thumbnailUrl ||
+          (sermon.videoSource !== "local"
+            ? `https://img.youtube.com/vi/${sermon.videoId}/hqdefault.jpg`
+            : "")
+        }
         alt={sermon.title}
         style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
         loading="lazy"
@@ -102,13 +107,25 @@ export const SermonCard = React.memo(function SermonCard({
   );
 });
 
-function formatDuration(iso: string): string {
-  if (!iso) return "";
-  const m = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
-  if (!m) return iso;
-  const h = parseInt(m[1] ?? "0");
-  const min = parseInt(m[2] ?? "0");
-  const sec = parseInt(m[3] ?? "0");
-  if (h > 0) return `${h}:${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
-  return `${min}:${String(sec).padStart(2, "0")}`;
+function formatDuration(dur: string): string {
+  if (!dur) return "";
+  // Handle ISO 8601 duration (YouTube format): PT1H23M45S
+  const iso = dur.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (iso) {
+    const h = parseInt(iso[1] ?? "0");
+    const min = parseInt(iso[2] ?? "0");
+    const sec = parseInt(iso[3] ?? "0");
+    if (h > 0) return `${h}:${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+    return `${min}:${String(sec).padStart(2, "0")}`;
+  }
+  // Handle plain seconds (local video format): "5400"
+  const totalSec = parseInt(dur, 10);
+  if (!isNaN(totalSec)) {
+    const h = Math.floor(totalSec / 3600);
+    const min = Math.floor((totalSec % 3600) / 60);
+    const sec = totalSec % 60;
+    if (h > 0) return `${h}:${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+    return `${min}:${String(sec).padStart(2, "0")}`;
+  }
+  return dur;
 }

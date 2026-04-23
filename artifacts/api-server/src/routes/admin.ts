@@ -843,6 +843,44 @@ router.get("/admin/launch/readiness", async (_req, res) => {
   }
 });
 
+// ── Public video catalogue (no admin token required) ──────────────────────────
+// Consumed by the mobile app, TV app, and any other unauthenticated client.
+// Returns all videos (YouTube + local) ordered by importedAt DESC.
+router.get("/videos", async (req, res) => {
+  try {
+    const rawLimit = parseInt(String(req.query.limit ?? "100"), 10);
+    const limit = isNaN(rawLimit) || rawLimit < 1 ? 100 : Math.min(rawLimit, 500);
+    const rawPage = parseInt(String(req.query.page ?? "1"), 10);
+    const page = isNaN(rawPage) || rawPage < 1 ? 1 : rawPage;
+    const offset = (page - 1) * limit;
+    const search = typeof req.query.search === "string" ? req.query.search.trim() : undefined;
+    const source = typeof req.query.source === "string" ? req.query.source.trim() : undefined;
+
+    const conditions = [];
+    if (search) conditions.push(or(ilike(videosTable.title, `%${search}%`), ilike(videosTable.preacher, `%${search}%`)));
+    if (source === "local") conditions.push(eq(videosTable.videoSource, "local"));
+    if (source === "youtube") conditions.push(eq(videosTable.videoSource, "youtube"));
+
+    const [rows, [totalResult]] = await Promise.all([
+      db.select().from(videosTable)
+        .where(conditions.length ? and(...conditions) : undefined)
+        .orderBy(desc(videosTable.importedAt))
+        .limit(limit)
+        .offset(offset),
+      db.select({ count: count() }).from(videosTable)
+        .where(conditions.length ? and(...conditions) : undefined),
+    ]);
+
+    const total = totalResult?.count ?? 0;
+
+    res.setHeader("Cache-Control", "no-cache");
+    res.json({ videos: rows, total, page, totalPages: Math.ceil(total / limit) });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
 router.get("/admin/videos", async (req, res) => {
   try {
     const parsed = ListAdminVideosQueryParams.safeParse(req.query);

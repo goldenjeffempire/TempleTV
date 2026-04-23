@@ -103,12 +103,16 @@ export default function App() {
         video={detailsVideo.video}
         relatedVideos={detailsVideo.related}
         onPlay={() =>
-          gatedPlay(detailsVideo.video.videoId, detailsVideo.video.title)
+          gatedPlay(
+            detailsVideo.video.videoId,
+            detailsVideo.video.title,
+            detailsVideo.video.localVideoUrl ?? undefined,
+          )
         }
         onBack={() => setDetailsVideo(null)}
-        onPlayRelated={(videoId, title) => {
+        onPlayRelated={(videoId, title, hlsUrl) => {
           setDetailsVideo(null);
-          gatedPlay(videoId, title);
+          gatedPlay(videoId, title, hlsUrl);
         }}
       />
     );
@@ -123,7 +127,7 @@ export default function App() {
     content = (
       <Search
         onBack={() => setScreen("home")}
-        onPlay={(videoId, title) => gatedPlay(videoId, title)}
+        onPlay={(videoId, title, hlsUrl) => gatedPlay(videoId, title, hlsUrl)}
         onDetails={(video) => {
           setDetailsVideo({ video, related: [] });
         }}

@@ -14,6 +14,8 @@ export interface VideoItem {
   channelName: string;
   duration: string;
   viewCount: string;
+  videoSource: "youtube" | "local";
+  localVideoUrl: string | null;
 }
 
 export interface LiveStatus {
@@ -60,13 +62,51 @@ export interface GuideResponse {
   liveOverride?: { title: string } | null;
 }
 
+// Shape returned by the public /api/videos endpoint (DB format).
+interface DbVideo {
+  id: string;
+  youtubeId: string;
+  title: string;
+  description: string;
+  thumbnailUrl: string;
+  duration: string;
+  category: string;
+  preacher: string;
+  publishedAt: string | null;
+  importedAt: string;
+  viewCount: number;
+  videoSource: string;
+  localVideoUrl: string | null;
+  hlsMasterUrl: string | null;
+}
+
+function dbVideoToVideoItem(v: DbVideo): VideoItem {
+  const isLocal = v.videoSource === "local";
+  return {
+    videoId: isLocal ? v.id : (v.youtubeId ?? v.id),
+    title: v.title,
+    description: v.description ?? "",
+    publishedAt: v.publishedAt ?? v.importedAt ?? "",
+    thumbnailUrl: v.thumbnailUrl ?? "",
+    channelName: v.preacher || "Temple TV JCTM",
+    duration: v.duration ?? "",
+    viewCount: String(v.viewCount ?? 0),
+    videoSource: isLocal ? "local" : "youtube",
+    localVideoUrl: v.hlsMasterUrl ?? v.localVideoUrl ?? null,
+  };
+}
+
+/**
+ * Fetch all videos (YouTube + local uploads) from the public catalogue endpoint.
+ * This is the canonical source of truth for the TV library.
+ */
 export async function fetchVideos(): Promise<VideoItem[]> {
-  const res = await fetch(apiUrl("/youtube/videos"), {
+  const res = await fetch(apiUrl("/videos?limit=500"), {
     signal: AbortSignal.timeout(12000),
   });
   if (!res.ok) throw new Error("Failed to fetch videos");
-  const data = await res.json() as { videos: VideoItem[] };
-  return data.videos ?? [];
+  const data = await res.json() as { videos: DbVideo[] };
+  return (data.videos ?? []).map(dbVideoToVideoItem);
 }
 
 export async function fetchLiveStatus(): Promise<LiveStatus> {

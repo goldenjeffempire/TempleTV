@@ -13,7 +13,7 @@ const KEYBOARD_ROWS = [
 
 interface SearchProps {
   onBack: () => void;
-  onPlay: (videoId: string, title: string) => void;
+  onPlay: (videoId: string, title: string, hlsUrl?: string) => void;
   onDetails: (video: VideoItem) => void;
 }
 
@@ -158,7 +158,7 @@ export function Search({ onBack, onPlay, onDetails }: SearchProps) {
         else if (action === "select") {
           e.preventDefault();
           const v = displayResults[resultIdx];
-          if (v) onPlay(v.videoId, v.title);
+          if (v) onPlay(v.videoId, v.title, v.localVideoUrl ?? undefined);
         }
       }
     };
@@ -246,7 +246,7 @@ export function Search({ onBack, onPlay, onDetails }: SearchProps) {
                     key={video.videoId}
                     video={video}
                     focused={focusArea === "results" && resultIdx === idx}
-                    onSelect={() => { setFocusArea("results"); setResultIdx(idx); onPlay(video.videoId, video.title); }}
+                    onSelect={() => { setFocusArea("results"); setResultIdx(idx); onPlay(video.videoId, video.title, video.localVideoUrl ?? undefined); }}
                   />
                 ))}
               </div>

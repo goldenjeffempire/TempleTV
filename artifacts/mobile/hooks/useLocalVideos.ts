@@ -3,7 +3,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { Sermon, SermonCategory } from "@/types";
 
 const CACHE_KEY = "@temple_tv/local_videos_cache";
-const CACHE_TTL_MS = 5 * 60 * 1000;
+// Cache is only used as an offline fallback — fresh data is always fetched on mount.
+const CACHE_TTL_MS = 10 * 60 * 1000;
 
 const CATEGORY_MAP: Record<string, SermonCategory> = {
   Faith: "Faith",
@@ -38,6 +39,7 @@ interface ApiVideo {
   viewCount: number;
   videoSource: string;
   localVideoUrl?: string | null;
+  hlsMasterUrl?: string | null;
 }
 
 function mapCategory(cat: string): SermonCategory {
@@ -57,7 +59,8 @@ function apiVideoToSermon(v: ApiVideo): Sermon {
     date: (v.publishedAt ?? v.importedAt ?? "").slice(0, 10),
     views: v.viewCount,
     videoSource: (v.videoSource as "youtube" | "local") ?? "youtube",
-    localVideoUrl: v.localVideoUrl ?? undefined,
+    // Prefer HLS master playlist for local videos (adaptive bitrate), fall back to raw file.
+    localVideoUrl: v.hlsMasterUrl ?? v.localVideoUrl ?? undefined,
   };
 }
 
@@ -68,17 +71,23 @@ export function useLocalVideos() {
 
   const fetchVideos = useCallback(async (force = false) => {
     try {
-      if (!force) {
+      // Stale-while-revalidate: serve whatever is in the cache immediately for
+      // instant UI, then always hit the network so uploads are reflected ASAP.
+      let cacheIsFresh = false;
+      try {
         const cached = await AsyncStorage.getItem(CACHE_KEY);
         if (cached) {
           const { data, timestamp } = JSON.parse(cached) as { data: Sermon[]; timestamp: number };
-          if (Array.isArray(data) && Date.now() - timestamp < CACHE_TTL_MS) {
+          if (Array.isArray(data) && data.length > 0) {
             setVideos(data);
             setLoading(false);
-            return;
+            cacheIsFresh = Date.now() - timestamp < CACHE_TTL_MS;
           }
         }
-      }
+      } catch {}
+
+      // Skip the network call only when cache is fresh and we are not forcing.
+      if (cacheIsFresh && !force) return;
 
       const domain = process.env.EXPO_PUBLIC_DOMAIN;
       if (!domain) {
@@ -86,10 +95,11 @@ export function useLocalVideos() {
         return;
       }
 
-      const res = await fetch(`https://${domain}/api/admin/videos?limit=200`, {
-        signal: AbortSignal.timeout(10000),
+      // Use the public /api/videos endpoint — no admin token required.
+      const res = await fetch(`https://${domain}/api/videos?limit=500`, {
+        signal: AbortSignal.timeout(15000),
       });
-      if (!res.ok) throw new Error("Failed to fetch videos");
+      if (!res.ok) throw new Error(`Failed to fetch videos: ${res.status}`);
 
       const json = (await res.json()) as { videos: ApiVideo[] };
       const mapped = (json.videos ?? []).map(apiVideoToSermon);
@@ -112,7 +122,10 @@ export function useLocalVideos() {
   useEffect(() => {
     if (!fetchedRef.current) {
       fetchedRef.current = true;
-      fetchVideos();
+      // Always fetch fresh on mount so newly uploaded videos appear immediately.
+      // The fetchVideos implementation still serves cached data immediately as
+      // a placeholder while the network request is in flight.
+      fetchVideos(true);
     }
   }, [fetchVideos]);
 
