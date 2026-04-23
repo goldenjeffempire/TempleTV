@@ -2150,6 +2150,10 @@ router.get("/admin/live/events", async (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Accel-Buffering", "no");
+
+  // Disable Nagle buffering so each SSE frame is sent immediately
+  req.socket?.setNoDelay(true);
+
   res.flushHeaders();
 
   const client = addSSEClient(res);
@@ -2157,7 +2161,12 @@ router.get("/admin/live/events", async (req, res) => {
   try {
     const payload = await buildLiveStatusPayload();
     res.write(`event: status\ndata: ${JSON.stringify(payload)}\n\n`);
-  } catch {}
+    // Flush compression/proxy buffers so the frame reaches the client now
+    const r = res as unknown as { flush?: () => void };
+    if (typeof r.flush === "function") r.flush();
+  } catch (err) {
+    console.error("[SSE /admin/live/events] initial write failed:", err);
+  }
 
   req.on("close", () => removeSSEClient(client));
 });

@@ -17,7 +17,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app: Express = express();
 
 app.set("trust proxy", 1);
-app.use(compression({ threshold: 1024 }));
+// Skip compression for SSE (text/event-stream) — compressed chunked encoding
+// causes the data to be buffered until the compressor's internal buffer fills,
+// which prevents event frames from reaching clients in real time.
+app.use(compression({
+  threshold: 1024,
+  filter: (req, res) => {
+    if (res.getHeader("Content-Type") === "text/event-stream") return false;
+    return compression.filter(req, res);
+  },
+}));
 app.use(requestId);
 app.use(securityHeaders);
 app.use(rateLimit);

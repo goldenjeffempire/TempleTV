@@ -488,17 +488,30 @@ router.get("/broadcast/events", async (req, res) => {
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Accel-Buffering", "no");
   res.setHeader("Access-Control-Allow-Origin", "*");
+
+  // Disable Nagle buffering so each SSE frame is sent immediately
+  req.socket?.setNoDelay(true);
+
   res.flushHeaders();
+
+  const flushRes = () => {
+    const r = res as unknown as { flush?: () => void };
+    if (typeof r.flush === "function") r.flush();
+  };
 
   // Tell clients to retry connection after 5s on disconnect
   res.write("retry: 5000\n\n");
+  flushRes();
 
   const client = addSSEClient(res);
 
   try {
     const current = await buildBroadcastCurrentPayload();
     res.write(`event: broadcast-current-updated\ndata: ${JSON.stringify({ reason: "connected", current })}\n\n`);
-  } catch {}
+    flushRes();
+  } catch (err) {
+    console.error("[SSE /broadcast/events] initial write failed:", err);
+  }
 
   req.on("close", () => removeSSEClient(client));
 });

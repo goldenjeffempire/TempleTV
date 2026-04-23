@@ -909,6 +909,9 @@ export default function Broadcast() {
     es.addEventListener("open", () => {
       setSseState("connected");
       reconnectAttempt.current = 0;
+      // Refresh data immediately on every (re)connect so stale/error state
+      // is cleared without waiting for the next 30-second poll.
+      loadAll();
     });
 
     es.addEventListener("broadcast-queue-updated", () => {
