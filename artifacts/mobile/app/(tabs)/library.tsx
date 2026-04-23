@@ -110,6 +110,8 @@ export default function LibraryScreen() {
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ category?: string }>();
   const { sermons, loading, refresh } = useYouTubeChannel();
+  // Only pull the locally uploaded videos — YouTube content already comes through useYouTubeChannel.
+  const { localOnly: localVideos, loading: localLoading, refresh: refreshLocal } = useLocalVideos();
   const { favorites, isFavorite, toggleFavorite } = useFavorites();
   const { history, hasWatched } = useWatchHistory();
   const { getProgress } = useWatchProgress();
@@ -132,11 +134,25 @@ export default function LibraryScreen() {
   }, [params.category]);
   const webTopPad = Platform.OS === "web" ? 67 : 0;
 
+  // Merge YouTube sermons and locally uploaded videos, de-duplicated by ID,
+  // with local uploads first so they are visible at the top of the default sort.
+  const allSermons = useMemo(() => {
+    const seen = new Set<string>();
+    const merged: Sermon[] = [];
+    for (const v of localVideos) {
+      if (!seen.has(v.id)) { seen.add(v.id); merged.push(v); }
+    }
+    for (const s of sermons) {
+      if (!seen.has(s.id)) { seen.add(s.id); merged.push(s); }
+    }
+    return merged;
+  }, [localVideos, sermons]);
+
   const sourceData = useMemo(() => {
     if (viewMode === "favorites") return favorites;
     if (viewMode === "history") return history.map((h) => h.sermon);
-    return sermons;
-  }, [viewMode, sermons, favorites, history]);
+    return allSermons;
+  }, [viewMode, allSermons, favorites, history]);
 
   const filtered = useMemo(
     () => applySortAndFilter(sourceData, search, category, sortMode, viewMode),
@@ -154,7 +170,7 @@ export default function LibraryScreen() {
 
   const handleRefresh = async () => {
     setRefreshing(true);
-    await refresh();
+    await Promise.all([refresh(), refreshLocal()]);
     setRefreshing(false);
   };
 
@@ -403,7 +419,7 @@ export default function LibraryScreen() {
             }
           />
         )
-      ) : loading && viewMode === "all" ? (
+      ) : (loading || localLoading) && viewMode === "all" ? (
         <FlatList
           data={[1, 2, 3, 4, 5]}
           keyExtractor={(i) => String(i)}
