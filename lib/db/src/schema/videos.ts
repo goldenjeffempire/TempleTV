@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, boolean, integer, bigint } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, boolean, integer, bigint, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -30,7 +30,14 @@ export const videosTable = pgTable("managed_videos", {
   // admin upload flow migrates from local disk to presigned-PUT GCS uploads.
   objectPath: text("object_path"),
   uploadedBy: text("uploaded_by"),
-});
+}, (table) => [
+  index("idx_managed_videos_imported_at").on(table.importedAt),
+  index("idx_managed_videos_category").on(table.category),
+  index("idx_managed_videos_video_source").on(table.videoSource),
+  index("idx_managed_videos_transcoding_status").on(table.transcodingStatus),
+  index("idx_managed_videos_title").on(table.title),
+  index("idx_managed_videos_preacher").on(table.preacher),
+]);
 
 export const insertVideoSchema = createInsertSchema(videosTable).omit({ importedAt: true });
 export type InsertVideo = z.infer<typeof insertVideoSchema>;

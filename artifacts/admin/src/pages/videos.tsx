@@ -160,6 +160,29 @@ function formatEta(seconds: number) {
   return `${m}m ${s}s`;
 }
 
+function formatDuration(dur: string): string {
+  if (!dur) return "";
+  const totalSec = parseInt(dur, 10);
+  if (!isNaN(totalSec) && totalSec > 0) {
+    const h = Math.floor(totalSec / 3600);
+    const min = Math.floor((totalSec % 3600) / 60);
+    const sec = totalSec % 60;
+    if (h > 0) return `${h}:${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+    return `${min}:${String(sec).padStart(2, "0")}`;
+  }
+  const iso = dur.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (iso) {
+    const h = parseInt(iso[1] ?? "0");
+    const min = parseInt(iso[2] ?? "0");
+    const sec = parseInt(iso[3] ?? "0");
+    if (h > 0) return `${h}:${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+    return `${min}:${String(sec).padStart(2, "0")}`;
+  }
+  const parts = dur.split(":").map(Number);
+  if (parts.every((p) => !isNaN(p))) return dur;
+  return "";
+}
+
 function exponentialBackoff(attempt: number): number {
   const base = Math.min(500 * Math.pow(2, attempt), 16000);
   return base + Math.random() * base * 0.3;
@@ -460,6 +483,7 @@ export default function Videos() {
           totalChunks: String(totalChunks),
           totalBytes: String(uploadFile.size),
           ext,
+          originalFilename: uploadFile.name,
         });
 
         let lastInitError: Error | null = null;
@@ -1027,9 +1051,9 @@ export default function Videos() {
                         <HardDrive className="w-8 h-8 text-muted-foreground opacity-40" />
                       </div>
                     )}
-                    {v.duration && (
+                    {formatDuration(v.duration) && (
                       <div className="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1 py-0.5 rounded font-mono">
-                        {v.duration}
+                        {formatDuration(v.duration)}
                       </div>
                     )}
                     {v.featured && (

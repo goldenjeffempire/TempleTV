@@ -93,6 +93,7 @@ interface ChunkedSession {
     preacher: string;
     featured: boolean;
     durationSecs: number;
+    originalFilename: string;
   };
   thumbnailPath?: string;
   createdAt: Date;
@@ -183,7 +184,10 @@ async function recoverSessionsFromDisk(): Promise<void> {
           tmpDir: meta.tmpDir,
           totalBytes: meta.totalBytes,
           receivedBytes: meta.receivedBytes,
-          metadata: meta.metadata,
+          metadata: {
+            ...meta.metadata,
+            originalFilename: meta.metadata.originalFilename ?? "",
+          },
           thumbnailPath: meta.thumbnailPath,
           createdAt: new Date(meta.createdAt),
           lastActivity,
@@ -889,40 +893,33 @@ router.get("/admin/videos", async (req, res) => {
     const limit = params.limit ?? 20;
     const offset = (page - 1) * limit;
 
-    let rows: typeof videosTable.$inferSelect[];
+    const conditions = [];
     if (params.search) {
-      rows = await db
-        .select()
-        .from(videosTable)
-        .where(or(ilike(videosTable.title, `%${params.search}%`), ilike(videosTable.preacher, `%${params.search}%`)))
-        .orderBy(desc(videosTable.importedAt))
-        .limit(limit)
-        .offset(offset);
-    } else if (params.category) {
-      rows = await db
-        .select()
-        .from(videosTable)
-        .where(eq(videosTable.category, params.category))
-        .orderBy(desc(videosTable.importedAt))
-        .limit(limit)
-        .offset(offset);
-    } else {
-      rows = await db
-        .select()
-        .from(videosTable)
-        .orderBy(desc(videosTable.importedAt))
-        .limit(limit)
-        .offset(offset);
+      conditions.push(or(ilike(videosTable.title, `%${params.search}%`), ilike(videosTable.preacher, `%${params.search}%`)));
     }
+    if (params.category) {
+      conditions.push(eq(videosTable.category, params.category));
+    }
+    const whereClause = conditions.length ? and(...conditions) : undefined;
 
-    const [totalResult] = await db.select({ count: count() }).from(videosTable);
+    const [rows, [totalResult]] = await Promise.all([
+      db
+        .select()
+        .from(videosTable)
+        .where(whereClause)
+        .orderBy(desc(videosTable.importedAt))
+        .limit(limit)
+        .offset(offset),
+      db.select({ count: count() }).from(videosTable).where(whereClause),
+    ]);
+
     const total = totalResult?.count ?? 0;
 
-    res.json({
+    res.setHeader("Cache-Control", "no-store").json({
       videos: rows,
       total,
       page,
-      totalPages: Math.ceil(total / limit),
+      totalPages: Math.max(1, Math.ceil(total / limit)),
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -1053,7 +1050,7 @@ router.get("/upload-session/:sessionId", (req, res) => {
 
 router.post("/admin/videos/upload/init", async (req, res) => {
   try {
-    const { title, category, preacher, featured, durationSecs, totalChunks, totalBytes, ext, sessionId: clientSessionId } = req.body as {
+    const { title, category, preacher, featured, durationSecs, totalChunks, totalBytes, ext, sessionId: clientSessionId, originalFilename } = req.body as {
       title?: string;
       category?: string;
       preacher?: string;
@@ -1063,6 +1060,7 @@ router.post("/admin/videos/upload/init", async (req, res) => {
       totalBytes?: string;
       ext?: string;
       sessionId?: string;
+      originalFilename?: string;
     };
 
     if (!title?.trim()) return void res.status(400).json({ error: "Title is required" });
@@ -1099,6 +1097,7 @@ router.post("/admin/videos/upload/init", async (req, res) => {
         preacher: preacher ?? "",
         featured: featured === "true",
         durationSecs: durationSecs ? parseInt(durationSecs, 10) : 0,
+        originalFilename: originalFilename?.trim() ?? "",
       },
       createdAt: now,
       lastActivity: now,
@@ -1315,9 +1314,7 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
           viewCount: 0,
           videoSource: "local",
           localVideoUrl,
-          // originalFilename / uploadedBy are not currently captured by the
-          // chunked /init flow — left null until that handler is extended.
-          originalFilename: null,
+          originalFilename: session.metadata.originalFilename || null,
           mimeType,
           sizeBytes,
           checksumSha256,
