@@ -439,7 +439,16 @@ export default function Videos() {
       const title = task.title || task.file.name.replace(/\.[^/.]+$/, "");
 
       if (!sid) {
+        // Generate the session ID on the client and send it to the server.
+        // This is the only approach that works reliably across all proxy layers
+        // (Replit dev proxy, Nginx, Cloudflare, etc.) — response bodies and
+        // custom headers can be silently stripped or rewritten; the client
+        // simply never receives them. By generating the UUID here we need
+        // zero data back from the server — just a 204 acknowledgement.
+        const newSid = crypto.randomUUID();
+
         const initBody = JSON.stringify({
+          sessionId: newSid,
           title,
           category: task.category,
           preacher: task.preacher,
@@ -450,55 +459,35 @@ export default function Videos() {
           ext,
         });
 
-        // POST /api/admin/videos/upload/init responds with a 303 See Other
-        // redirect to /api/upload-session/:sessionId. fetch() follows this
-        // automatically. The session ID is embedded in the final URL, which
-        // the browser sets as response.url from the Location header — a
-        // standard HTTP header that ALWAYS survives HTTP/2 proxy translation.
-        // We extract the UUID directly from response.url, bypassing any
-        // response body or custom header that Replit's proxy might drop.
-        let initRes: Response;
         let lastInitError: Error | null = null;
         for (let attempt = 0; ; attempt++) {
           if (attempt > 0) await new Promise((r) => setTimeout(r, 500 * attempt));
+          let initRes: Response;
           try {
             initRes = await fetch("/api/admin/videos/upload/init", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: initBody,
             });
-            break;
           } catch (e) {
             lastInitError = e instanceof Error ? e : new Error(String(e));
             if (attempt >= 2) throw new Error(`Upload init network error after 3 attempts: ${lastInitError.message}`);
+            continue;
           }
-        }
 
-        // Primary path: extract UUID from response.url (set by browser from Location header).
-        // Pattern: /api/upload-session/<uuid>
-        const uuidRe = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
-        const urlMatch = initRes!.url.match(uuidRe);
-        let newSid = urlMatch ? urlMatch[0] : "";
+          // 204 = created, 200 = old server still returning OK, both are fine
+          if (initRes.ok) break;
 
-        // Fallback: try to read JSON body if URL didn't contain a UUID
-        // (e.g. future server versions that skip the redirect on fast paths).
-        if (!newSid) {
-          if (!initRes!.ok) {
-            const err = await readJsonOrThrow<{ error?: string }>(initRes!, "Init failed").catch((e) => {
-              throw new Error(e instanceof Error ? e.message : String(e));
-            });
-            throw new Error(err.error ?? `Failed to initialize upload (HTTP ${initRes!.status})`);
+          // 4xx = permanent error (bad request, auth failure) — read body and throw
+          if (initRes.status >= 400 && initRes.status < 500) {
+            const text = await initRes.text().catch(() => "");
+            const parsed = (() => { try { return JSON.parse(text) as { error?: string }; } catch { return null; } })();
+            throw new Error(parsed?.error ?? `Upload init rejected (HTTP ${initRes.status}): ${text.slice(0, 120)}`);
           }
-          const text = await initRes!.text();
-          const parsed = (() => { try { return JSON.parse(text) as { sessionId?: string }; } catch { return null; } })();
-          newSid = parsed?.sessionId ?? "";
-        }
 
-        if (!newSid) {
-          throw new Error(
-            `Upload init failed: could not read session ID. ` +
-            `url=${initRes!.url} status=${initRes!.status}`
-          );
+          // 5xx = server error — retry
+          lastInitError = new Error(`Upload init HTTP ${initRes.status}`);
+          if (attempt >= 2) throw new Error(`Upload init failed after 3 attempts: ${lastInitError.message}`);
         }
 
         sid = newSid;

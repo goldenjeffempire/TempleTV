@@ -1015,7 +1015,7 @@ router.get("/upload-session/:sessionId", (req, res) => {
 
 router.post("/admin/videos/upload/init", async (req, res) => {
   try {
-    const { title, category, preacher, featured, durationSecs, totalChunks, totalBytes, ext } = req.body as {
+    const { title, category, preacher, featured, durationSecs, totalChunks, totalBytes, ext, sessionId: clientSessionId } = req.body as {
       title?: string;
       category?: string;
       preacher?: string;
@@ -1024,12 +1024,25 @@ router.post("/admin/videos/upload/init", async (req, res) => {
       totalChunks?: string;
       totalBytes?: string;
       ext?: string;
+      sessionId?: string;
     };
 
     if (!title?.trim()) return res.status(400).json({ error: "Title is required" });
     if (!totalChunks || !totalBytes) return res.status(400).json({ error: "totalChunks and totalBytes are required" });
 
-    const sessionId = randomUUID();
+    // The client generates a UUID and sends it here. This sidesteps all proxy
+    // issues — no response body or headers need to carry the session ID back.
+    // We validate the format strictly so clients can't inject arbitrary IDs.
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    const sessionId = (clientSessionId && uuidPattern.test(clientSessionId))
+      ? clientSessionId
+      : randomUUID();
+
+    // Reject if this session already exists (prevents double-init on retries)
+    if (uploadSessions.has(sessionId)) {
+      return res.status(204).end();
+    }
+
     const tmpDir = path.join(__dirname, "..", "uploads", "tmp", sessionId);
     await fs.mkdir(tmpDir, { recursive: true });
 
@@ -1056,14 +1069,8 @@ router.post("/admin/videos/upload/init", async (req, res) => {
     uploadSessions.set(sessionId, session);
     writeSessionToDisk(session);
 
-    // Use a 303 See Other redirect so the client's fetch() automatically
-    // follows to GET /api/upload-session/:sessionId. The session ID is
-    // embedded in the Location URL — a standard header that survives
-    // all proxy layers. The client reads response.url to extract it,
-    // completely bypassing the body/custom-header stripping issue.
-    res
-      .setHeader("Cache-Control", "no-store")
-      .redirect(303, `/api/upload-session/${sessionId}`);
+    // 204 No Content — the client already knows the session ID it generated.
+    res.setHeader("Cache-Control", "no-store").status(204).end();
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });
