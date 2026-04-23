@@ -57,12 +57,8 @@ import {
   type CompressionOptions,
 } from "@/lib/videoCompressor";
 import {
-  CHUNK_SIZE,
-  MAX_CONCURRENT_PER_FILE,
-  MAX_CONCURRENT_FILES,
   MIN_CONCURRENCY,
-  MAX_CONCURRENCY,
-  PREFETCH_AHEAD,
+  MAX_CONCURRENT_FILES,
   RENDER_THROTTLE_MS,
   MAX_RETRIES,
   SPEED_SAMPLES,
@@ -77,7 +73,7 @@ import {
   formatFileSize,
   formatSpeed,
   formatEta,
-  getNetworkAwareConcurrency,
+  getAdaptiveNetworkParams,
   emaSpeed,
   networkTypeLabel,
 } from "@/lib/uploadEngine";
@@ -202,7 +198,7 @@ export function VideoUploadModal({
       const videos = files.filter((f) => f.type.startsWith("video/"));
       if (videos.length === 0) return;
       tasksRef.current.clear();
-      const { concurrency: netConcurrency, networkType } = getNetworkAwareConcurrency();
+      const netParams = getAdaptiveNetworkParams();
       for (const file of videos) {
         const id = crypto.randomUUID();
         const task: FileTask = {
@@ -227,7 +223,7 @@ export function VideoUploadModal({
           bytesRef: 0,
           startTime: 0,
           durationSecs: 0,
-          concurrency: netConcurrency,
+          concurrency: netParams.maxConcurrency,
           checksumOk: 0,
           checksumFailed: 0,
           stallCount: 0,
@@ -235,7 +231,13 @@ export function VideoUploadModal({
           compressionProgress: null,
           compressedBlob: null,
           probe: null,
-          networkType,
+          // ── Adaptive network params ──────────────────────────────────────
+          chunkSize: netParams.chunkSize,
+          maxConcurrency: netParams.maxConcurrency,
+          prefetchAhead: netParams.prefetchAhead,
+          stallTimeoutMs: netParams.stallTimeoutMs,
+          networkType: netParams.networkType,
+          tier: netParams.tier,
         };
         tasksRef.current.set(id, task);
       }
@@ -315,7 +317,9 @@ export function VideoUploadModal({
         }
 
         const durationSecs = await detectVideoDuration(uploadFile);
-        const totalChunks = Math.ceil(uploadFile.size / CHUNK_SIZE);
+        // Use this task's adaptive chunk size (determined at task creation from network)
+        const chunkSize = tasksRef.current.get(taskId)?.chunkSize ?? 8 * 1024 * 1024;
+        const totalChunks = Math.ceil(uploadFile.size / chunkSize);
         const ext = uploadFile.name.includes(".")
           ? `.${uploadFile.name.split(".").pop()}`
           : ".mp4";
@@ -402,6 +406,7 @@ export function VideoUploadModal({
               fileName: task.file.name,
               fileSize: task.file.size,
               totalChunks,
+              chunkSize,
               form: {
                 title,
                 category: currentTask.category,
@@ -431,13 +436,18 @@ export function VideoUploadModal({
         }
         const prefetchPool = new Map<number, Promise<PreparedChunk>>();
 
+        // Snapshot the task's adaptive params once (they don't change mid-upload)
+        const taskSnap = tasksRef.current.get(taskId)!;
+        const prefetchAhead = taskSnap.prefetchAhead;
+        const taskStallMs = taskSnap.stallTimeoutMs;
+
         const prepareChunk = (chunkIdx: number): Promise<PreparedChunk> => {
           if (!prefetchPool.has(chunkIdx)) {
             prefetchPool.set(
               chunkIdx,
               (async () => {
-                const start = chunkIdx * CHUNK_SIZE;
-                const end = Math.min(start + CHUNK_SIZE, uploadFile.size);
+                const start = chunkIdx * chunkSize;
+                const end = Math.min(start + chunkSize, uploadFile.size);
                 const buffer = await uploadFile.slice(start, end).arrayBuffer();
                 const checksum = await computeSha256(buffer);
                 return { buffer, checksum };
@@ -451,7 +461,7 @@ export function VideoUploadModal({
         for (let i = 0; i < totalChunks; i++) {
           if (!alreadyUploaded.has(i)) queue.push(i);
         }
-        queue.slice(0, PREFETCH_AHEAD).forEach(prepareChunk);
+        queue.slice(0, prefetchAhead).forEach(prepareChunk);
 
         let chunksDoneLocal = alreadyUploaded.size;
         updateTask(taskId, {
@@ -497,7 +507,7 @@ export function VideoUploadModal({
           if (abortCtrl.signal.aborted)
             throw Object.assign(new Error("Aborted"), { name: "AbortError" });
           const { buffer, checksum } = await prepareChunk(chunkIdx);
-          const nextPrefetch = queueCursor + PREFETCH_AHEAD;
+          const nextPrefetch = queueCursor + prefetchAhead;
           if (nextPrefetch < queue.length) prepareChunk(queue[nextPrefetch]!);
 
           let attempt = 0;
@@ -510,6 +520,7 @@ export function VideoUploadModal({
                 checksum,
                 abortCtrl.signal,
                 onChunkProgress,
+                taskStallMs,
               );
               prefetchPool.delete(chunkIdx);
               chunksDoneLocal++;
@@ -518,18 +529,26 @@ export function VideoUploadModal({
                 t.chunksDone = chunksDoneLocal;
                 t.progress = Math.round((chunksDoneLocal / totalChunks) * 100);
                 t.checksumOk++;
-                // Aggressive concurrency scaling: ramp up faster on fast links,
-                // scale down quickly on congestion, use EMA speed for decisions.
+                // Speed-adaptive concurrency scaling.
+                // Ramp up aggressively on fast networks, ramp down on congestion.
                 const spd = t.speed;
-                if (spd > 20 * 1024 * 1024 && t.concurrency < MAX_CONCURRENCY)
-                  t.concurrency = Math.min(t.concurrency + 3, MAX_CONCURRENCY);
-                else if (spd > 10 * 1024 * 1024 && t.concurrency < MAX_CONCURRENCY)
-                  t.concurrency = Math.min(t.concurrency + 2, MAX_CONCURRENCY);
-                else if (spd > 3 * 1024 * 1024 && t.concurrency < MAX_CONCURRENCY)
-                  t.concurrency = Math.min(t.concurrency + 1, MAX_CONCURRENCY);
+                const MB = 1024 * 1024;
+                const cap = t.maxConcurrency;
+                if (spd > 100 * MB && t.concurrency < cap)
+                  t.concurrency = Math.min(t.concurrency + 8, cap);   // 5G ultra-fast
+                else if (spd > 50 * MB && t.concurrency < cap)
+                  t.concurrency = Math.min(t.concurrency + 6, cap);   // 5G
+                else if (spd > 20 * MB && t.concurrency < cap)
+                  t.concurrency = Math.min(t.concurrency + 4, cap);   // fast Wi-Fi
+                else if (spd > 10 * MB && t.concurrency < cap)
+                  t.concurrency = Math.min(t.concurrency + 3, cap);   // 4G+
+                else if (spd > 3 * MB && t.concurrency < cap)
+                  t.concurrency = Math.min(t.concurrency + 1, cap);   // 4G
                 else if (spd < 256 * 1024 && spd > 0 && t.concurrency > MIN_CONCURRENCY)
-                  t.concurrency = Math.max(t.concurrency - 2, MIN_CONCURRENCY);
+                  t.concurrency = Math.max(t.concurrency - 3, MIN_CONCURRENCY);
                 else if (spd < 768 * 1024 && spd > 0 && t.concurrency > MIN_CONCURRENCY)
+                  t.concurrency = Math.max(t.concurrency - 2, MIN_CONCURRENCY);
+                else if (spd < 2 * MB && spd > 0 && t.concurrency > MIN_CONCURRENCY + 1)
                   t.concurrency = Math.max(t.concurrency - 1, MIN_CONCURRENCY);
               }
               forceUpdate();
@@ -777,6 +796,10 @@ export function VideoUploadModal({
     async (file: File) => {
       if (!pendingResume) return;
       const id = crypto.randomUUID();
+      // Re-detect network params for this resume; use stored chunkSize to
+      // preserve the chunk boundaries the server already has on disk.
+      const netParams = getAdaptiveNetworkParams();
+      const resumedChunkSize = pendingResume.chunkSize ?? netParams.chunkSize;
       const task: FileTask = {
         id,
         file,
@@ -798,16 +821,22 @@ export function VideoUploadModal({
         bytesRef: 0,
         startTime: Date.now(),
         durationSecs: 0,
-        concurrency: getNetworkAwareConcurrency().concurrency,
+        concurrency: netParams.maxConcurrency,
         checksumOk: 0,
         checksumFailed: 0,
         stallCount: 0,
         speedRaw: 0,
-        networkType: getNetworkAwareConcurrency().networkType,
         skipCompression: true,
         compressionProgress: null,
         compressedBlob: null,
         probe: null,
+        // Adaptive network params — chunkSize MUST match what was originally sent
+        chunkSize: resumedChunkSize,
+        maxConcurrency: netParams.maxConcurrency,
+        prefetchAhead: netParams.prefetchAhead,
+        stallTimeoutMs: netParams.stallTimeoutMs,
+        networkType: netParams.networkType,
+        tier: netParams.tier,
       };
       tasksRef.current.clear();
       tasksRef.current.set(id, task);
@@ -1397,11 +1426,11 @@ function FileTaskCard({
                         </span>
                       </>
                     )}
-                    {networkTypeLabel(task.networkType ?? "") && (
+                    {networkTypeLabel(task.networkType ?? "", task.tier) && (
                       <>
                         <span>·</span>
                         <span className="text-slate-400">
-                          {networkTypeLabel(task.networkType ?? "")}
+                          {networkTypeLabel(task.networkType ?? "", task.tier)}
                         </span>
                       </>
                     )}
