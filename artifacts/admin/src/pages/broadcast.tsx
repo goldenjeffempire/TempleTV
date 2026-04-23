@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { VideoUploadModal } from "@/components/VideoUploadModal";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -43,6 +44,7 @@ import {
   BellOff,
   XCircle,
   CheckCircle2,
+  Upload,
 } from "lucide-react";
 
 /* ─────────────────────────────── types ──────────────────────────── */
@@ -192,6 +194,7 @@ export default function Broadcast() {
   const [lastRealtimeAt, setLastRealtimeAt] = useState<Date | null>(null);
 
   const [showAddDialog, setShowAddDialog] = useState(false);
+  const [showUploadDialog, setShowUploadDialog] = useState(false);
   const [showGoLiveDialog, setShowGoLiveDialog] = useState(false);
   const [showEndDialog, setShowEndDialog] = useState(false);
 
@@ -625,9 +628,17 @@ export default function Broadcast() {
               Go Live
             </Button>
           )}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setShowUploadDialog(true)}
+          >
+            <Upload className="w-4 h-4 mr-1.5" />
+            Upload Video
+          </Button>
           <Button size="sm" onClick={() => setShowAddDialog(true)}>
             <Plus className="w-4 h-4 mr-1.5" />
-            Add Video
+            Add from Library
           </Button>
         </div>
       </div>
@@ -903,10 +914,15 @@ export default function Broadcast() {
           <div className="p-12 text-center">
             <Radio className="w-10 h-10 text-muted-foreground mx-auto mb-3 opacity-30" />
             <p className="font-medium text-muted-foreground">No videos in broadcast queue</p>
-            <p className="text-sm text-muted-foreground/60 mt-1">Add videos to start the 24/7 automatic broadcast</p>
-            <Button className="mt-4" onClick={() => setShowAddDialog(true)}>
-              <Plus className="w-4 h-4 mr-1" />Add First Video
-            </Button>
+            <p className="text-sm text-muted-foreground/60 mt-1">Upload or add videos to start the 24/7 automatic broadcast</p>
+            <div className="flex items-center justify-center gap-2 mt-4">
+              <Button variant="outline" onClick={() => setShowUploadDialog(true)}>
+                <Upload className="w-4 h-4 mr-1" />Upload Video
+              </Button>
+              <Button onClick={() => setShowAddDialog(true)}>
+                <Plus className="w-4 h-4 mr-1" />Add from Library
+              </Button>
+            </div>
           </div>
         ) : (
           <div className="p-3 space-y-1.5">
@@ -1241,6 +1257,17 @@ export default function Broadcast() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* ── Direct upload to broadcast queue ───────────────────────────────── */}
+      <VideoUploadModal
+        open={showUploadDialog}
+        onOpenChange={setShowUploadDialog}
+        broadcastMode
+        storageKey="ttv-broadcast-upload-v1"
+        onUploadsComplete={() => {
+          loadAll();
+        }}
+      />
     </div>
   );
 }

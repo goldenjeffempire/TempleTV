@@ -263,14 +263,17 @@ async function uploadChunk(
 // ─── Main component ────────────────────────────────────────────────────────────
 export default function Videos() {
   const [search, setSearchRaw] = useState(() => new URLSearchParams(window.location.search).get("q") ?? "");
+  const [page, setPage] = useState(1);
   const setSearch = useCallback((val: string) => {
     setSearchRaw(val);
+    setPage(1);
     const params = new URLSearchParams(window.location.search);
     if (val) params.set("q", val); else params.delete("q");
     const newUrl = `${window.location.pathname}${params.toString() ? "?" + params.toString() : ""}`;
     window.history.replaceState(null, "", newUrl);
   }, []);
-  const { data, isLoading, isError, refetch } = useListAdminVideos({ search, limit: 50 });
+  const ITEMS_PER_PAGE = 50;
+  const { data, isLoading, isError, refetch } = useListAdminVideos({ search, page, limit: ITEMS_PER_PAGE });
   const [isImporting, setIsImporting] = useState(false);
   const [importUrl, setImportUrl] = useState("");
   const [editingVideo, setEditingVideo] = useState<VideoRow | null>(null);
@@ -1078,7 +1081,7 @@ export default function Videos() {
           </div>
         ) : (
           <div className="divide-y">
-            {(data.videos as unknown as VideoRow[]).map((video: VideoRow) => {
+            {(data.videos as unknown as VideoRow[]).map((video: VideoRow, _idx: number) => {
               const v = video;
               const isLocal = v.videoSource === "local";
               return (
@@ -1206,6 +1209,60 @@ export default function Videos() {
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {/* ── Pagination controls ─────────────────────────────────────────── */}
+        {data && (data.totalPages ?? 1) > 1 && (
+          <div className="flex items-center justify-between px-4 py-3 border-t bg-muted/20">
+            <span className="text-xs text-muted-foreground">
+              Page {data.page ?? page} of {data.totalPages} · {data.total?.toLocaleString()} videos total
+            </span>
+            <div className="flex items-center gap-1">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 px-3 text-xs"
+                disabled={page <= 1 || isLoading}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                ← Prev
+              </Button>
+              {Array.from({ length: Math.min(7, data.totalPages ?? 1) }, (_, i) => {
+                const totalPgs = data.totalPages ?? 1;
+                let pg: number;
+                if (totalPgs <= 7) {
+                  pg = i + 1;
+                } else if (page <= 4) {
+                  pg = i + 1;
+                } else if (page >= totalPgs - 3) {
+                  pg = totalPgs - 6 + i;
+                } else {
+                  pg = page - 3 + i;
+                }
+                return (
+                  <Button
+                    key={pg}
+                    size="sm"
+                    variant={pg === page ? "default" : "ghost"}
+                    className="h-8 w-8 p-0 text-xs"
+                    disabled={isLoading}
+                    onClick={() => setPage(pg)}
+                  >
+                    {pg}
+                  </Button>
+                );
+              })}
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 px-3 text-xs"
+                disabled={page >= (data.totalPages ?? 1) || isLoading}
+                onClick={() => setPage((p) => Math.min(data.totalPages ?? p, p + 1))}
+              >
+                Next →
+              </Button>
+            </div>
           </div>
         )}
       </div>
