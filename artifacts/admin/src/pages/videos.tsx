@@ -6,7 +6,7 @@ import {
   Search, Plus, Loader2, MoreVertical, Trash2, Youtube, ExternalLink,
   Video, Star, Edit, Upload, HardDrive, Play, Pause, X, CheckCircle2,
   AlertCircle, Zap, RotateCcw, Clock, Activity, Cpu, Layers,
-  FileVideo, ShieldCheck, Wifi, TrendingUp, Minimize2, Gauge, Server,
+  FileVideo, ShieldCheck, Wifi, TrendingUp, Minimize2, Gauge, Server, Radio,
 } from "lucide-react";
 import {
   isCompressionSupported,
@@ -767,9 +767,14 @@ export default function Videos() {
         setThumbnailFile(null);
         forceUpdate();
         clearSession();
+        // Second refetch after dialog closes — ensures the library is showing
+        // fresh data even if the first refetch (called right after upload) had
+        // not yet returned when the dialog auto-dismissed.
+        queryClient.invalidateQueries({ queryKey: getListAdminVideosQueryKey() });
+        refetch();
       }, 1500);
     }
-  }, [defaultForm, runFileUpload, toast, queryClient, clearSession, forceUpdate]);
+  }, [defaultForm, runFileUpload, toast, queryClient, refetch, clearSession, forceUpdate]);
 
   // ── Pause a single file ─────────────────────────────────────────────────────
   const pauseTask = useCallback((id: string) => {
@@ -923,6 +928,41 @@ export default function Videos() {
         onError: () => toast({ title: "Failed to delete video", variant: "destructive" }),
       }
     );
+  };
+
+  const handleQueueForBroadcast = async (v: VideoRow) => {
+    try {
+      const streamUrl = v.hlsMasterUrl || v.localVideoUrl || null;
+      const body: Record<string, unknown> = {
+        videoId: v.id,
+        title: v.title,
+        thumbnailUrl: v.thumbnailUrl ?? "",
+        videoSource: v.videoSource ?? "youtube",
+        durationSecs: v.duration ? Number(v.duration) || undefined : undefined,
+      };
+      if (v.videoSource === "local") {
+        if (!streamUrl) {
+          toast({ title: "No playable URL yet", description: "Wait for transcoding to finish before queuing.", variant: "destructive" });
+          return;
+        }
+        body.localVideoUrl = streamUrl;
+      } else {
+        body.youtubeId = v.youtubeId;
+      }
+      const res = await fetch("/api/admin/broadcast", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        toast({ title: "Queued for broadcast", description: v.title });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast({ title: "Failed to queue", description: (err as { error?: string }).error ?? "Unknown error", variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "Network error — could not queue for broadcast", variant: "destructive" });
+    }
   };
 
   const openEdit = (video: VideoRow) => {
@@ -1152,6 +1192,10 @@ export default function Videos() {
                             </a>
                           </DropdownMenuItem>
                         )}
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem className="cursor-pointer" onClick={() => handleQueueForBroadcast(v)}>
+                          <Radio className="h-4 w-4 mr-2" /> Queue for Broadcast
+                        </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem className="text-destructive focus:bg-destructive/10 focus:text-destructive cursor-pointer" onClick={() => handleDelete(v.id)}>
                           <Trash2 className="h-4 w-4 mr-2" /> Delete

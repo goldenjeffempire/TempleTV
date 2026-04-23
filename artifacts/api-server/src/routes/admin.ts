@@ -1330,13 +1330,19 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
       const pendingFlush = sessionFlushTimers.get(sessionId);
       if (pendingFlush) { clearTimeout(pendingFlush); sessionFlushTimers.delete(sessionId); }
 
-      await upsertBroadcastQueueVideo(video);
-      queueTranscodingJob(id, finalPath, 1).catch(() => {});
-
       res.status(201).json(video);
+
+      // Post-response async work — must not throw or affect the 201 already sent.
+      // upsertBroadcastQueueVideo is fire-and-forget: a failure here must never
+      // cause the file to be deleted or the client to see an error, because the
+      // video row is already committed to the DB.
+      upsertBroadcastQueueVideo(video).catch((err) => {
+        logger.error({ err, videoId: id }, "upsertBroadcastQueueVideo failed after finalize — video is in DB but may not appear in broadcast queue");
+      });
+      queueTranscodingJob(id, finalPath, 1).catch(() => {});
     } catch (postAssemblyErr) {
-      // Hash/stat/DB-insert failed after assembly. Delete the orphan file,
-      // tear down the in-memory session, and surface a retriable 500.
+      // Hash/stat/DB-insert failed after assembly (before DB write). Delete
+      // the orphan file, tear down the in-memory session, surface a 500.
       await fs.unlink(finalPath).catch(() => {});
       uploadSessions.delete(sessionId);
       const pendingFlush = sessionFlushTimers.get(sessionId);

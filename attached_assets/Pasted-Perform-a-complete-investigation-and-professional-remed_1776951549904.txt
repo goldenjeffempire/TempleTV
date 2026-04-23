@@ -1,0 +1,25 @@
+Perform a complete investigation and professional remediation of the video upload and media synchronization system to resolve all issues preventing uploaded videos from being properly processed, displayed, and made available for broadcasting operations.
+
+Current Issue:
+After uploading a local video through the Video Library in the Admin Panel, the system incorrectly displays “No Video Found,” and the uploaded video does not appear in the broadcast management system for actions such as “Queue for Broadcast” or “Broadcast Now.”
+
+Requirements:
+
+* Fix the entire video upload pipeline to ensure all uploaded local video files are successfully processed, validated, stored, indexed, and permanently persisted in the database.
+* Ensure newly uploaded videos immediately appear in the Video Library within the Admin Panel after successful upload completion.
+* Resolve all synchronization issues between the upload service, database records, storage layer, media indexing system, and frontend rendering components.
+* Ensure uploaded videos are automatically registered and made available within the broadcasting workflow, including:
+
+  * Queue for Broadcast
+  * Broadcast Now
+  * Scheduled Broadcasting
+  * Playlist and media queue management
+* Verify that uploaded media metadata is correctly generated and stored, including title, file path, duration, thumbnails, format information, and broadcast availability state.
+* Fix any backend API, caching, state management, database query, or asynchronous processing issues that may prevent uploaded videos from appearing across the platform.
+* Implement robust upload verification, logging, and error-handling mechanisms to detect and prevent silent upload failures or incomplete processing states.
+* Ensure the system properly refreshes and synchronizes media availability across all administrative interfaces without requiring manual reloads or server restarts.
+* Optimize the architecture for scalability, reliability, and high-performance media handling in production environments.
+* Strengthen security validation for uploaded files and media access permissions.
+* Refactor and modernize affected components where necessary to ensure maintainability, stability, and enterprise-grade operational standards.
+
+The final implementation should deliver a fully functional, reliable, and production-ready media upload and broadcasting system where every uploaded video is instantly accessible in the Video Library and immediately available for broadcast operations across the platform.
