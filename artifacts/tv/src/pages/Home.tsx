@@ -216,7 +216,7 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
             {/* ── Continue Watching row ─────────────────────────────────── */}
             {hasContinueWatching && (
               <div
-                className={`tv-row ${focusRow === cwRowIndex ? "tv-row-focused" : ""}`}
+                className={`tv-row tv-row-continue-watching ${focusRow === cwRowIndex ? "tv-row-focused" : ""}`}
                 style={{ marginBottom: 36 }}
               >
                 <h2 style={{

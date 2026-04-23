@@ -285,6 +285,16 @@ export default function PlayerScreen() {
   const isLive = live === "true";
   const isBroadcastMode = paramBroadcastMode === "true";
 
+  const noPlaybackRef = useRef(false);
+  useEffect(() => {
+    if (authLoading || !isLoggedIn || noPlaybackRef.current) return;
+    if (isLive || isBroadcastMode) return;
+    if (paramVideoId || paramLocalVideoUrl) return;
+    noPlaybackRef.current = true;
+    if (router.canGoBack()) router.back();
+    else router.replace("/");
+  }, [authLoading, isLoggedIn, isLive, isBroadcastMode, paramVideoId, paramLocalVideoUrl]);
+
   // Per-page SEO: emits a Schema.org VideoObject for this sermon (or
   // BroadcastEvent when watching the live stream). This is what makes
   // individual sermons eligible for Google's Video search carousel and

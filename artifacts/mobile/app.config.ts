@@ -19,7 +19,6 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     description:
       "Stream live worship, sermons, and teachings from Temple TV JCTM Broadcasting — Jesus Christ Temple Ministry.",
     owner: "templetv",
-    privacy: "public",
     assetBundlePatterns: ["**/*"],
     splash: {
       image: "./assets/images/icon.png",

@@ -601,7 +601,7 @@ router.get("/youtube/videos", async (req, res) => {
     const cached = await cache.get<VideoItem[]>(YOUTUBE_VIDEOS_CACHE_KEY);
     if (cached !== null) {
       res.setHeader("X-Cache", "HIT");
-      return res.json({ videos: cached, total: cached.length });
+      return void res.json({ videos: cached, total: cached.length });
     }
 
     let videos = await fetchAllVideosFromApi();
@@ -614,16 +614,16 @@ router.get("/youtube/videos", async (req, res) => {
       // Serve stale memory fallback if available rather than returning an error
       if (_videosCacheFallback) {
         res.setHeader("X-Cache", "STALE");
-        return res.json({ videos: _videosCacheFallback.videos, total: _videosCacheFallback.videos.length });
+        return void res.json({ videos: _videosCacheFallback.videos, total: _videosCacheFallback.videos.length });
       }
-      return res.status(502).json({ error: "Could not fetch videos from YouTube." });
+      return void res.status(502).json({ error: "Could not fetch videos from YouTube." });
     }
 
     await cache.set(YOUTUBE_VIDEOS_CACHE_KEY, videos, CACHE_TTL_MS);
     _videosCacheFallback = { videos, timestamp: Date.now() };
     res.setHeader("Cache-Control", "public, max-age=600");
     res.setHeader("X-Source", videos[0]?.duration ? "youtube-api" : "rss");
-    return res.json({ videos, total: videos.length });
+    return void res.json({ videos, total: videos.length });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });
@@ -636,7 +636,7 @@ router.get("/youtube/rss", async (req, res) => {
     if (cachedXml !== null) {
       res.setHeader("Content-Type", "application/xml; charset=utf-8");
       res.setHeader("X-Cache", "HIT");
-      return res.send(cachedXml);
+      return void res.send(cachedXml);
     }
 
     if (YOUTUBE_API_KEY) {
@@ -646,7 +646,7 @@ router.get("/youtube/rss", async (req, res) => {
         await cache.set(YOUTUBE_RSS_CACHE_KEY, xml, CACHE_TTL_MS);
         res.setHeader("Content-Type", "application/xml; charset=utf-8");
         res.setHeader("X-Source", "youtube-api-cached");
-        return res.send(xml);
+        return void res.send(xml);
       }
       const videos = await fetchAllVideosFromApi();
       if (videos && videos.length > 0) {
@@ -656,7 +656,7 @@ router.get("/youtube/rss", async (req, res) => {
         await cache.set(YOUTUBE_RSS_CACHE_KEY, xml, CACHE_TTL_MS);
         res.setHeader("Content-Type", "application/xml; charset=utf-8");
         res.setHeader("X-Source", "youtube-api");
-        return res.send(xml);
+        return void res.send(xml);
       }
     }
 
@@ -680,7 +680,7 @@ router.get("/youtube/rss", async (req, res) => {
     }
 
     if (!xml) {
-      return res.status(502).json({
+      return void res.status(502).json({
         error: "Could not fetch YouTube RSS feed. Fallback data will be used.",
       });
     }

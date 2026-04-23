@@ -1,11 +1,11 @@
 import React from "react";
-import { StyleSheet, View, useColorScheme, type ViewStyle } from "react-native";
+import { StyleSheet, View, useColorScheme, type StyleProp, type ViewStyle } from "react-native";
 import { useColors } from "@/hooks/useColors";
 import colors from "@/constants/colors";
 
 interface GlassCardProps {
   children: React.ReactNode;
-  style?: ViewStyle;
+  style?: StyleProp<ViewStyle>;
   intensity?: "low" | "medium" | "high";
 }
 

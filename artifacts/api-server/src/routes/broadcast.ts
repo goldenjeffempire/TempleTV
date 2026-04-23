@@ -21,6 +21,34 @@ const router = Router();
 type BroadcastItem = typeof broadcastQueueTable.$inferSelect;
 type ScheduleEntry = typeof scheduleTable.$inferSelect;
 
+type BroadcastCurrentPayload = {
+  item: BroadcastItem | null;
+  nextItem: BroadcastItem | null;
+  index: number;
+  positionSecs: number;
+  totalSecs: number;
+  queueLength: number;
+  progressPercent: number;
+  syncedAt: string;
+  serverTimeMs: number;
+  failoverReason: string | null;
+  activeSchedule: {
+    id: string;
+    title: string;
+    contentType: string;
+    contentId: string | null;
+    startTime: string;
+    endTime: string | null;
+  } | null;
+  liveOverride: {
+    id: string;
+    title: string;
+    startedAt: string;
+    endsAt: string | null;
+    remainingSecs?: number | null;
+  } | null;
+};
+
 const CACHE_KEYS = {
   liveOverride: "broadcast:live_override",
   scheduleEntries: "broadcast:schedule_entries",
@@ -91,26 +119,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
     getBroadcastQueue(),
   ]);
 
-  let result: ReturnType<typeof calculateCurrentFromItems> & {
-    syncedAt: string;
-    serverTimeMs: number;
-    activeSchedule: {
-      id: string;
-      title: string;
-      contentType: string;
-      contentId: string | null;
-      startTime: string;
-      endTime: string | null;
-    } | null;
-    liveOverride: {
-      id: string;
-      title: string;
-      startedAt: string;
-      endsAt: string | null;
-      remainingSecs?: number | null;
-    } | null;
-    failoverReason?: string | null;
-  };
+  let result: BroadcastCurrentPayload;
 
   if (activeLiveOverride) {
     result = {
@@ -396,7 +405,7 @@ router.get("/broadcast/guide", async (_req, res) => {
   try {
     const activeLiveOverride = await getActiveLiveOverride();
     if (activeLiveOverride) {
-      return res.json({ items: [], liveOverride: { title: activeLiveOverride.title } });
+      return void res.json({ items: [], liveOverride: { title: activeLiveOverride.title } });
     }
 
     const activeScheduleEntries = await getScheduleEntries();
@@ -406,7 +415,7 @@ router.get("/broadcast/guide", async (_req, res) => {
       : await getBroadcastQueue();
 
     const playableItems = items.filter((item) => item.durationSecs > 0);
-    if (playableItems.length === 0) return res.json({ items: [] });
+    if (playableItems.length === 0) return void res.json({ items: [] });
 
     const totalSecs = playableItems.reduce((acc, i) => acc + i.durationSecs, 0);
     const epochSecs = Math.floor(Date.now() / 1000);
@@ -546,14 +555,14 @@ router.post("/admin/broadcast", async (req, res) => {
   };
 
   if (!title?.trim()) {
-    return res.status(400).json({ error: "title is required" });
+    return void res.status(400).json({ error: "title is required" });
   }
   const resolvedSource = videoSource ?? (localVideoUrl ? "local" : "youtube");
   if (resolvedSource === "youtube" && !youtubeId) {
-    return res.status(400).json({ error: "youtubeId is required for YouTube videos" });
+    return void res.status(400).json({ error: "youtubeId is required for YouTube videos" });
   }
   if (resolvedSource === "local" && !localVideoUrl) {
-    return res.status(400).json({ error: "localVideoUrl is required for local videos" });
+    return void res.status(400).json({ error: "localVideoUrl is required for local videos" });
   }
 
   let resolvedDurationSecs = durationSecs ?? 0;
@@ -608,18 +617,18 @@ router.patch("/admin/broadcast/:id", async (req, res) => {
     const updates: Partial<typeof broadcastQueueTable.$inferInsert> = {};
     if (durationSecs !== undefined) {
       if (typeof durationSecs !== "number" || durationSecs < 0) {
-        return res.status(400).json({ error: "durationSecs must be a non-negative number" });
+        return void res.status(400).json({ error: "durationSecs must be a non-negative number" });
       }
       updates.durationSecs = Math.round(durationSecs);
     }
     if (isActive !== undefined) updates.isActive = isActive;
     if (title !== undefined) {
-      if (!title.trim()) return res.status(400).json({ error: "title cannot be empty" });
+      if (!title.trim()) return void res.status(400).json({ error: "title cannot be empty" });
       updates.title = title.trim();
     }
 
     if (Object.keys(updates).length === 0) {
-      return res.status(400).json({ error: "No valid fields to update" });
+      return void res.status(400).json({ error: "No valid fields to update" });
     }
 
     const [updated] = await db
@@ -628,7 +637,7 @@ router.patch("/admin/broadcast/:id", async (req, res) => {
       .where(eq(broadcastQueueTable.id, id))
       .returning();
 
-    if (!updated) return res.status(404).json({ error: "Item not found" });
+    if (!updated) return void res.status(404).json({ error: "Item not found" });
     await invalidateBroadcastCache();
     broadcastLiveEvent("broadcast-queue-updated", { id, reason: "updated", queuedAt: new Date().toISOString() });
     emitBroadcastState("queue-updated", { id });
@@ -646,7 +655,7 @@ router.delete("/admin/broadcast/:id", async (req, res) => {
       .delete(broadcastQueueTable)
       .where(eq(broadcastQueueTable.id, id))
       .returning();
-    if (!deleted) return res.status(404).json({ error: "Item not found" });
+    if (!deleted) return void res.status(404).json({ error: "Item not found" });
     await invalidateBroadcastCache();
     broadcastLiveEvent("broadcast-queue-updated", { id, reason: "deleted", queuedAt: new Date().toISOString() });
     emitBroadcastState("queue-deleted", { id });
@@ -661,10 +670,10 @@ router.put("/admin/broadcast/reorder", async (req, res) => {
   try {
     const { orderedIds } = req.body as { orderedIds: string[] };
     if (!Array.isArray(orderedIds) || orderedIds.some((id) => typeof id !== "string")) {
-      return res.status(400).json({ error: "orderedIds must be an array of strings" });
+      return void res.status(400).json({ error: "orderedIds must be an array of strings" });
     }
     if (orderedIds.length === 0) {
-      return res.status(400).json({ error: "orderedIds cannot be empty" });
+      return void res.status(400).json({ error: "orderedIds cannot be empty" });
     }
 
     // Use a transaction so all sort orders are updated atomically

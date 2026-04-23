@@ -95,7 +95,7 @@ function ResultCard({ video, focused, onSelect }: { video: VideoItem; focused: b
 }
 
 export function Search({ onBack, onPlay, onDetails }: SearchProps) {
-  const { query, results, loading, search, allVideos } = useSearch();
+  const { query, results, loading, error, search, allVideos, retry } = useSearch();
   const [focusArea, setFocusArea] = useState<"keyboard" | "results">("keyboard");
   const [kbRow, setKbRow] = useState(0);
   const [kbCol, setKbCol] = useState(0);
@@ -184,7 +184,7 @@ export function Search({ onBack, onPlay, onDetails }: SearchProps) {
               <span style={{ fontSize: 22, fontWeight: 800, color: "#fff" }}>Search</span>
             </div>
             <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginTop: 2 }}>
-              {loading ? "Loading library…" : `${allVideos.length} videos available`}
+              {loading ? "Loading library…" : error ? "Could not load library" : `${allVideos.length} videos available`}
             </div>
           </div>
         </div>
@@ -229,7 +229,18 @@ export function Search({ onBack, onPlay, onDetails }: SearchProps) {
 
         {/* Results panel */}
         <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "8px 60px 40px 20px", borderLeft: "1px solid rgba(255,255,255,0.06)" }}>
-          {displayResults.length === 0 && query.trim() ? (
+          {error && allVideos.length === 0 ? (
+            <div style={{ paddingTop: 60, textAlign: "center" }}>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>⚠️</div>
+              <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 16, marginBottom: 20 }}>Could not load video library</div>
+              <button
+                onClick={retry}
+                style={{ background: "rgba(106,13,173,0.6)", border: "1px solid rgba(168,85,247,0.5)", borderRadius: 10, padding: "10px 28px", color: "#fff", fontSize: 15, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}
+              >
+                Retry
+              </button>
+            </div>
+          ) : displayResults.length === 0 && query.trim() ? (
             <div style={{ paddingTop: 60, textAlign: "center" }}>
               <div style={{ fontSize: 40, marginBottom: 12 }}>🔍</div>
               <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 16 }}>No results for "{query}"</div>

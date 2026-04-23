@@ -19,6 +19,7 @@ export interface AdminStats {
   recentImports: number;
   topCategory: string;
   registeredUsers: number;
+  registeredDevices: number;
 }
 
 export interface AdminUser {
@@ -43,6 +44,10 @@ export interface ManagedVideo {
   importedAt: string;
   viewCount?: number;
   featured: boolean;
+  videoSource?: string;
+  localVideoUrl?: string | null;
+  hlsMasterUrl?: string | null;
+  transcodingStatus?: string;
 }
 
 export interface VideoListResponse {

@@ -937,7 +937,7 @@ router.post("/admin/videos/upload", upload.fields([{ name: "video", maxCount: 1 
     const thumbnailFile = files?.thumbnail?.[0];
 
     if (!videoFile) {
-      return res.status(400).json({ error: "Video file is required" });
+      return void res.status(400).json({ error: "Video file is required" });
     }
 
     // Content-sniffing: confirm the bytes match the declared MIME type.
@@ -950,7 +950,7 @@ router.post("/admin/videos/upload", upload.fields([{ name: "video", maxCount: 1 
       if (thumbnailFile) {
         await fs.unlink(thumbnailFile.path).catch(() => {});
       }
-      return res.status(415).json({
+      return void res.status(415).json({
         error: "Uploaded file does not appear to be a valid video (magic-byte mismatch)",
       });
     }
@@ -960,7 +960,7 @@ router.post("/admin/videos/upload", upload.fields([{ name: "video", maxCount: 1 
         // Video already passed, but the thumbnail is bogus — unlink the
         // video too so we don't keep a half-uploaded asset on disk.
         await fs.unlink(videoFile.path).catch(() => {});
-        return res.status(415).json({
+        return void res.status(415).json({
           error: "Uploaded thumbnail does not appear to be a valid image (magic-byte mismatch)",
         });
       }
@@ -975,7 +975,7 @@ router.post("/admin/videos/upload", upload.fields([{ name: "video", maxCount: 1 
     };
 
     if (!title?.trim()) {
-      return res.status(400).json({ error: "Title is required" });
+      return void res.status(400).json({ error: "Title is required" });
     }
 
     const durationSecsNum = durationSecsStr ? parseInt(durationSecsStr, 10) : null;
@@ -1045,7 +1045,7 @@ router.post("/admin/videos/upload", upload.fields([{ name: "video", maxCount: 1 
 router.get("/upload-session/:sessionId", (req, res) => {
   const { sessionId } = req.params as { sessionId: string };
   const session = uploadSessions.get(sessionId);
-  if (!session) return res.status(404).json({ error: "Upload session not found" });
+  if (!session) return void res.status(404).json({ error: "Upload session not found" });
   return res
     .setHeader("Cache-Control", "no-store")
     .json({ sessionId: session.id, totalChunks: session.totalChunks });
@@ -1065,8 +1065,8 @@ router.post("/admin/videos/upload/init", async (req, res) => {
       sessionId?: string;
     };
 
-    if (!title?.trim()) return res.status(400).json({ error: "Title is required" });
-    if (!totalChunks || !totalBytes) return res.status(400).json({ error: "totalChunks and totalBytes are required" });
+    if (!title?.trim()) return void res.status(400).json({ error: "Title is required" });
+    if (!totalChunks || !totalBytes) return void res.status(400).json({ error: "totalChunks and totalBytes are required" });
 
     // The client generates a UUID and sends it here. This sidesteps all proxy
     // issues — no response body or headers need to carry the session ID back.
@@ -1078,7 +1078,7 @@ router.post("/admin/videos/upload/init", async (req, res) => {
 
     // Reject if this session already exists (prevents double-init on retries)
     if (uploadSessions.has(sessionId)) {
-      return res.status(204).end();
+      return void res.status(204).end();
     }
 
     const tmpDir = path.join(__dirname, "..", "uploads", "tmp", sessionId);
@@ -1121,14 +1121,14 @@ router.post("/admin/videos/upload/:sessionId/chunk", chunkUpload.single("chunk")
     const { chunkIndex, checksum } = req.body as { chunkIndex?: string; checksum?: string };
 
     const session = uploadSessions.get(sessionId);
-    if (!session) return res.status(404).json({ error: "Upload session not found or expired" });
+    if (!session) return void res.status(404).json({ error: "Upload session not found or expired" });
 
     const chunk = req.file;
-    if (!chunk) return res.status(400).json({ error: "No chunk data provided" });
+    if (!chunk) return void res.status(400).json({ error: "No chunk data provided" });
 
     const idx = parseInt(chunkIndex ?? "0", 10);
     if (isNaN(idx) || idx < 0 || idx >= session.totalChunks) {
-      return res.status(400).json({ error: `Invalid chunk index: ${idx}` });
+      return void res.status(400).json({ error: `Invalid chunk index: ${idx}` });
     }
 
     // Verify SHA-256 checksum when provided — uses async Web Crypto so the
@@ -1138,7 +1138,7 @@ router.post("/admin/videos/upload/:sessionId/chunk", chunkUpload.single("chunk")
       const actualChecksum = Buffer.from(hashBuf).toString("hex");
       if (actualChecksum !== checksum) {
         logger.warn({ sessionId, chunkIndex: idx, expected: checksum, actual: actualChecksum }, "Chunk checksum mismatch");
-        return res.status(400).json({ error: `Checksum mismatch for chunk ${idx} — data corrupted in transit` });
+        return void res.status(400).json({ error: `Checksum mismatch for chunk ${idx} — data corrupted in transit` });
       }
     }
 
@@ -1170,7 +1170,7 @@ router.post("/admin/videos/upload/:sessionId/chunk", chunkUpload.single("chunk")
 router.get("/admin/videos/upload/:sessionId/status", (req, res) => {
   const { sessionId } = req.params as { sessionId: string };
   const session = uploadSessions.get(sessionId);
-  if (!session) return res.status(404).json({ error: "Session not found" });
+  if (!session) return void res.status(404).json({ error: "Session not found" });
 
   const missingChunks: number[] = [];
   for (let i = 0; i < session.totalChunks; i++) {
@@ -1194,13 +1194,13 @@ router.post("/admin/videos/upload/:sessionId/thumbnail", thumbnailUpload.single(
   try {
     const { sessionId } = req.params as { sessionId: string };
     const session = uploadSessions.get(sessionId);
-    if (!session) return res.status(404).json({ error: "Session not found or expired" });
+    if (!session) return void res.status(404).json({ error: "Session not found or expired" });
 
     if (req.file) {
       const filePath = path.join(__dirname, "..", "uploads", req.file.filename);
       const check = await validateUploadedFileMagicBytes(filePath, "image");
       if (!check.valid) {
-        return res.status(415).json({
+        return void res.status(415).json({
           error: "Uploaded thumbnail does not appear to be a valid image (magic-byte mismatch)",
         });
       }
@@ -1218,7 +1218,7 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
   try {
     const { sessionId } = req.params as { sessionId: string };
     const session = uploadSessions.get(sessionId);
-    if (!session) return res.status(404).json({ error: "Session not found or expired" });
+    if (!session) return void res.status(404).json({ error: "Session not found or expired" });
 
     const missingChunks: number[] = [];
     for (let i = 0; i < session.totalChunks; i++) {
@@ -1226,7 +1226,7 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
     }
 
     if (missingChunks.length > 0) {
-      return res.status(400).json({ error: `Missing chunks: ${missingChunks.join(", ")}`, missingChunks });
+      return void res.status(400).json({ error: `Missing chunks: ${missingChunks.join(", ")}`, missingChunks });
     }
 
     const finalFilename = `${randomUUID()}${session.ext}`;
@@ -1261,7 +1261,7 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
       uploadSessions.delete(sessionId);
       const pendingFlush = sessionFlushTimers.get(sessionId);
       if (pendingFlush) { clearTimeout(pendingFlush); sessionFlushTimers.delete(sessionId); }
-      return res.status(415).json({
+      return void res.status(415).json({
         error: "Uploaded file does not appear to be a valid video (magic-byte mismatch)",
       });
     }
@@ -1366,7 +1366,7 @@ router.post("/admin/videos/import", async (req, res) => {
   try {
     const parsed = ImportVideoBody.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid request body" });
+      return void res.status(400).json({ error: "Invalid request body" });
     }
     const { youtubeId, category, preacher, featured } = parsed.data;
 
@@ -1433,11 +1433,11 @@ router.put("/admin/videos/:id", async (req, res) => {
     const { id } = UpdateAdminVideoParams.parse(req.params);
     const body = UpdateAdminVideoBody.safeParse(req.body);
     if (!body.success) {
-      return res.status(400).json({ error: "Invalid body" });
+      return void res.status(400).json({ error: "Invalid body" });
     }
     const updates = Object.fromEntries(Object.entries(body.data).filter(([, v]) => v !== undefined));
     const [video] = await db.update(videosTable).set(updates).where(eq(videosTable.id, id)).returning();
-    if (!video) return res.status(404).json({ error: "Video not found" });
+    if (!video) return void res.status(404).json({ error: "Video not found" });
     await upsertBroadcastQueueVideo(video);
     res.json(video);
   } catch (err) {
@@ -1598,7 +1598,7 @@ router.get("/playlists/:id", async (req, res) => {
       .select()
       .from(playlistsTable)
       .where(eq(playlistsTable.id, id));
-    if (!playlist) return res.status(404).json({ error: "Playlist not found" });
+    if (!playlist) return void res.status(404).json({ error: "Playlist not found" });
     const videos = await db
       .select()
       .from(playlistVideosTable)
@@ -1644,7 +1644,7 @@ router.get("/admin/playlists", async (req, res) => {
 router.post("/admin/playlists", async (req, res) => {
   try {
     const parsed = CreatePlaylistBody.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: "Invalid body" });
+    if (!parsed.success) return void res.status(400).json({ error: "Invalid body" });
     const { name, description, loopMode, isActive } = parsed.data;
     const [playlist] = await db
       .insert(playlistsTable)
@@ -1667,7 +1667,7 @@ router.get("/admin/playlists/:id", async (req, res) => {
   try {
     const { id } = GetPlaylistParams.parse(req.params);
     const result = await getPlaylistWithVideos(id);
-    if (!result) return res.status(404).json({ error: "Playlist not found" });
+    if (!result) return void res.status(404).json({ error: "Playlist not found" });
     res.json(result);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -1679,10 +1679,10 @@ router.put("/admin/playlists/:id", async (req, res) => {
   try {
     const { id } = UpdatePlaylistParams.parse(req.params);
     const parsed = UpdatePlaylistBody.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: "Invalid body" });
+    if (!parsed.success) return void res.status(400).json({ error: "Invalid body" });
     const updates = Object.fromEntries(Object.entries(parsed.data).filter(([, v]) => v !== undefined));
     const [playlist] = await db.update(playlistsTable).set(updates).where(eq(playlistsTable.id, id)).returning();
-    if (!playlist) return res.status(404).json({ error: "Playlist not found" });
+    if (!playlist) return void res.status(404).json({ error: "Playlist not found" });
     const [countResult] = await db
       .select({ count: count() })
       .from(playlistVideosTable)
@@ -1709,11 +1709,11 @@ router.post("/admin/playlists/:id/videos", async (req, res) => {
   try {
     const { id } = AddVideoToPlaylistParams.parse(req.params);
     const parsed = AddVideoToPlaylistBody.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: "Invalid body" });
+    if (!parsed.success) return void res.status(400).json({ error: "Invalid body" });
     const { videoId } = parsed.data;
 
     const [video] = await db.select().from(videosTable).where(eq(videosTable.id, videoId));
-    if (!video) return res.status(404).json({ error: "Video not found" });
+    if (!video) return void res.status(404).json({ error: "Video not found" });
 
     const existing = await db
       .select()
@@ -1760,7 +1760,7 @@ router.put("/admin/playlists/:id/reorder", async (req, res) => {
   try {
     const { id } = ReorderPlaylistParams.parse(req.params);
     const parsed = ReorderPlaylistBody.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: "Invalid body" });
+    if (!parsed.success) return void res.status(400).json({ error: "Invalid body" });
     const { videoIds } = parsed.data;
 
     for (let i = 0; i < videoIds.length; i++) {
@@ -1794,7 +1794,7 @@ router.get("/admin/schedule", async (req, res) => {
 router.post("/admin/schedule", async (req, res) => {
   try {
     const parsed = CreateScheduleEntryBody.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: "Invalid body" });
+    if (!parsed.success) return void res.status(400).json({ error: "Invalid body" });
     const [entry] = await db
       .insert(scheduleTable)
       .values({
@@ -1818,10 +1818,10 @@ router.put("/admin/schedule/:id", async (req, res) => {
   try {
     const { id } = UpdateScheduleEntryParams.parse(req.params);
     const parsed = UpdateScheduleEntryBody.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: "Invalid body" });
+    if (!parsed.success) return void res.status(400).json({ error: "Invalid body" });
     const updates = Object.fromEntries(Object.entries(parsed.data).filter(([, v]) => v !== undefined));
     const [entry] = await db.update(scheduleTable).set(updates).where(eq(scheduleTable.id, id)).returning();
-    if (!entry) return res.status(404).json({ error: "Schedule entry not found" });
+    if (!entry) return void res.status(404).json({ error: "Schedule entry not found" });
     await invalidateBroadcastCache();
     broadcastLiveEvent("broadcast-schedule-updated", { id: entry.id, reason: "updated", queuedAt: new Date().toISOString() });
     emitBroadcastState("schedule-updated", { id: entry.id });
@@ -1850,10 +1850,10 @@ router.post("/push-tokens", async (req, res) => {
   try {
     const { token, platform } = req.body as { token?: string; platform?: string };
     if (!token || typeof token !== "string" || token.length === 0) {
-      return res.status(400).json({ error: "token is required" });
+      return void res.status(400).json({ error: "token is required" });
     }
     if (platform !== "ios" && platform !== "android") {
-      return res.status(400).json({ error: "platform must be ios or android" });
+      return void res.status(400).json({ error: "platform must be ios or android" });
     }
 
     await db
@@ -1874,7 +1874,7 @@ router.post("/push-tokens", async (req, res) => {
 router.post("/admin/notifications/send", async (req, res) => {
   try {
     const parsed = SendPushNotificationBody.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: "Invalid body" });
+    if (!parsed.success) return void res.status(400).json({ error: "Invalid body" });
     const { title, body, type, videoId } = parsed.data;
 
     const tokenRows = await db.select({ token: pushTokensTable.token }).from(pushTokensTable);
@@ -1947,11 +1947,11 @@ router.post("/admin/notifications/schedule", async (req, res) => {
       scheduledAt: string;
     };
     if (!title || !body || !type || !scheduledAt) {
-      return res.status(400).json({ error: "title, body, type, and scheduledAt are required" });
+      return void res.status(400).json({ error: "title, body, type, and scheduledAt are required" });
     }
     const schedDate = new Date(scheduledAt);
     if (isNaN(schedDate.getTime()) || schedDate <= new Date()) {
-      return res.status(400).json({ error: "scheduledAt must be a valid future date" });
+      return void res.status(400).json({ error: "scheduledAt must be a valid future date" });
     }
     const row = {
       id: randomUUID(),
@@ -1977,9 +1977,9 @@ router.delete("/admin/notifications/scheduled/:id", async (req, res) => {
       .select()
       .from(scheduledNotificationsTable)
       .where(eq(scheduledNotificationsTable.id, id));
-    if (rows.length === 0) return res.status(404).json({ error: "Not found" });
+    if (rows.length === 0) return void res.status(404).json({ error: "Not found" });
     if (rows[0].status !== "pending") {
-      return res.status(400).json({ error: "Only pending notifications can be cancelled" });
+      return void res.status(400).json({ error: "Only pending notifications can be cancelled" });
     }
     await db
       .update(scheduledNotificationsTable)
@@ -2190,7 +2190,7 @@ router.patch("/admin/live-overrides/:id", async (req, res) => {
     if (streamNotes !== undefined) updates.streamNotes = streamNotes;
     if (endsAt !== undefined) updates.endsAt = endsAt ? new Date(endsAt) : null;
     const [updated] = await db.update(liveOverridesTable).set(updates).where(eq(liveOverridesTable.id, id)).returning();
-    if (!updated) return res.status(404).json({ error: "Override not found" });
+    if (!updated) return void res.status(404).json({ error: "Override not found" });
     await invalidateBroadcastCache();
     emitBroadcastState("live-updated", { id });
     res.json(updated);
@@ -2262,7 +2262,7 @@ router.post("/admin/live/override/start", async (req, res) => {
 router.post("/admin/live/override/stop", async (_req, res) => {
   try {
     const active = await getActiveLiveOverride();
-    if (!active) return res.json({ ok: true, stopped: 0 });
+    if (!active) return void res.json({ ok: true, stopped: 0 });
     await db
       .update(liveOverridesTable)
       .set({ isActive: false, endsAt: new Date() })
@@ -2285,7 +2285,7 @@ router.post("/admin/live/override/extend", async (req, res) => {
     const { extraMinutes = 30 } = req.body as { extraMinutes?: number };
     const safe = Number.isFinite(extraMinutes) ? Math.max(5, Math.min(240, extraMinutes)) : 30;
     const active = await getActiveLiveOverride();
-    if (!active) return res.status(404).json({ error: "No active live override" });
+    if (!active) return void res.status(404).json({ error: "No active live override" });
     const base = active.endsAt && active.endsAt > new Date() ? active.endsAt : new Date();
     const newEndsAt = new Date(base.getTime() + safe * 60 * 1000);
     const [updated] = await db
@@ -2351,7 +2351,7 @@ router.get("/admin/transcoding/jobs/:jobId", async (req, res) => {
       .where(eq(transcodingJobsTable.id, jobId));
 
     const row = rows[0];
-    if (!row) return res.status(404).json({ error: "Job not found" });
+    if (!row) return void res.status(404).json({ error: "Job not found" });
 
     res.json({ ...row.job, videoTitle: row.videoTitle ?? "Unknown", videoThumbnail: row.videoThumbnail ?? "" });
   } catch (err) {
@@ -2380,7 +2380,7 @@ router.delete("/admin/transcoding/:jobId", async (req, res) => {
       .where(and(eq(transcodingJobsTable.id, jobId), eq(transcodingJobsTable.status, "queued")));
 
     if (rows.length === 0) {
-      return res.status(400).json({ error: "Only queued jobs can be cancelled" });
+      return void res.status(400).json({ error: "Only queued jobs can be cancelled" });
     }
 
     await db
@@ -2405,13 +2405,13 @@ router.post("/admin/transcoding/requeue/:videoId", async (req, res) => {
     const { videoId } = req.params as { videoId: string };
     const videos = await db.select().from(videosTable).where(eq(videosTable.id, videoId));
     const video = videos[0];
-    if (!video) return res.status(404).json({ error: "Video not found" });
+    if (!video) return void res.status(404).json({ error: "Video not found" });
     if (video.videoSource !== "local" || !video.localVideoUrl) {
-      return res.status(400).json({ error: "Only locally uploaded videos can be transcoded" });
+      return void res.status(400).json({ error: "Only locally uploaded videos can be transcoded" });
     }
 
     const urlPath = video.localVideoUrl.split("/api/uploads/")[1];
-    if (!urlPath) return res.status(400).json({ error: "Could not determine local file path" });
+    if (!urlPath) return void res.status(400).json({ error: "Could not determine local file path" });
 
     const localFilePath = path.join(__dirname, "..", "uploads", urlPath);
     const { priority = 0 } = req.body as { priority?: number };

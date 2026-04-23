@@ -241,7 +241,7 @@ router.get("/auth/sessions", requireAuth, async (req, res) => {
 });
 
 router.delete("/auth/sessions/:sessionId", requireAuth, async (req, res) => {
-  const { sessionId } = req.params;
+  const { sessionId } = req.params as { sessionId: string };
   if (!sessionId) {
     res.status(400).json({ error: "Session ID required" });
     return;
