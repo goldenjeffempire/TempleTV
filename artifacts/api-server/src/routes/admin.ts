@@ -893,12 +893,21 @@ router.get("/admin/videos", async (req, res) => {
     const limit = params.limit ?? 20;
     const offset = (page - 1) * limit;
 
+    // source is not in the generated Zod schema so we read it directly from req.query
+    const source = typeof req.query.source === "string" ? req.query.source.trim() : undefined;
+    const transcodingStatus = typeof req.query.transcodingStatus === "string" ? req.query.transcodingStatus.trim() : undefined;
+
     const conditions = [];
     if (params.search) {
       conditions.push(or(ilike(videosTable.title, `%${params.search}%`), ilike(videosTable.preacher, `%${params.search}%`)));
     }
     if (params.category) {
       conditions.push(eq(videosTable.category, params.category));
+    }
+    if (source === "local") conditions.push(eq(videosTable.videoSource, "local"));
+    if (source === "youtube") conditions.push(eq(videosTable.videoSource, "youtube"));
+    if (transcodingStatus && transcodingStatus !== "all") {
+      conditions.push(eq(videosTable.transcodingStatus, transcodingStatus));
     }
     const whereClause = conditions.length ? and(...conditions) : undefined;
 

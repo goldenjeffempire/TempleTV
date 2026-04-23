@@ -4,7 +4,10 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
+import { Separator } from "@/components/ui/separator";
 import {
   Dialog,
   DialogContent,
@@ -13,46 +16,32 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { Switch } from "@/components/ui/switch";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { getAdminEventSourceUrl } from "@/lib/admin-access";
-import { useListAdminVideos } from "@workspace/api-client-react";
 import {
-  Radio,
-  Trash2,
-  Plus,
-  ChevronUp,
-  ChevronDown,
-  Clock,
-  Play,
-  Loader2,
-  Search,
-  HardDrive,
-  Youtube,
-  RefreshCw,
-  Tv,
-  Signal,
-  Mic,
-  SkipForward,
-  Calendar,
-  ListVideo,
-  AlertCircle,
-  Headphones,
-  SmartphoneIcon,
-  Timer,
-  Bell,
-  BellOff,
-  XCircle,
-  CheckCircle2,
-  Upload,
+  Radio, Trash2, Plus, ChevronUp, ChevronDown, Clock, Play,
+  Loader2, Search, HardDrive, Youtube, RefreshCw, Tv, Signal,
+  Mic, SkipForward, AlertCircle, Timer, Bell, BellOff, XCircle,
+  CheckCircle2, Upload, Wifi, WifiOff, Activity, Zap, Video,
 } from "lucide-react";
 
-/* ─────────────────────────────── types ──────────────────────────── */
+// ─── Types ────────────────────────────────────────────────────────────────────
 type BroadcastItem = {
   id: string;
-  youtubeId: string;
+  videoId: string | null;
+  youtubeId: string | null;
   title: string;
-  thumbnailUrl: string;
+  thumbnailUrl: string | null;
   durationSecs: number;
   localVideoUrl: string | null;
   videoSource: string;
@@ -73,21 +62,9 @@ type CurrentBroadcast = {
     title: string;
     startedAt: string;
     endsAt: string | null;
+    elapsedSecs: number | null;
+    remainingSecs: number | null;
   } | null;
-  failoverReason?: string | null;
-};
-
-type GuideItem = {
-  id: string;
-  title: string;
-  thumbnailUrl: string;
-  durationSecs: number;
-  startMs: number;
-  endMs: number;
-  isCurrent: boolean;
-  positionSecs: number;
-  progressPercent: number;
-  videoSource: string;
 };
 
 type LiveStatus = {
@@ -106,11 +83,24 @@ type LiveStatus = {
   } | null;
 };
 
-/* ─────────────────────────────── helpers ────────────────────────── */
+type LibraryVideo = {
+  id: string;
+  youtubeId: string | null;
+  title: string;
+  thumbnailUrl: string | null;
+  duration: string | null;
+  category: string | null;
+  videoSource: string;
+};
+
+type SseState = "connecting" | "connected" | "reconnecting" | "offline";
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 function fmtDuration(secs: number): string {
+  if (!secs || secs < 0) return "0:00";
   const h = Math.floor(secs / 3600);
   const m = Math.floor((secs % 3600) / 60);
-  const s = secs % 60;
+  const s = Math.floor(secs % 60);
   if (h > 0) return `${h}h ${m}m`;
   if (m > 0) return `${m}m ${s}s`;
   return `${s}s`;
@@ -124,41 +114,31 @@ function fmtHMS(secs: number): string {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
-function fmtTotalTime(secs: number): string {
-  const h = Math.floor(secs / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  if (h > 0) return `${h}h ${m}m cycle`;
-  return `${m}m cycle`;
+function fmtWallClock(date: Date): string {
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function fmtWallClock(ms: number): string {
-  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+function parseDurationSecs(dur: string | null): number {
+  if (!dur) return 0;
+  const n = parseInt(dur, 10);
+  if (!isNaN(n)) return n;
+  const iso = dur.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (iso) {
+    return (parseInt(iso[1] ?? "0") * 3600) +
+      (parseInt(iso[2] ?? "0") * 60) +
+      parseInt(iso[3] ?? "0");
+  }
+  return 0;
 }
 
-function fmtTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+async function adminFetch(url: string, opts?: RequestInit): Promise<Response> {
+  const token = window.localStorage.getItem("temple-tv-admin-token")?.trim();
+  const headers: Record<string, string> = { ...(opts?.headers as Record<string, string>) };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  return fetch(url, { ...opts, headers });
 }
 
-function fmtEndPreview(durationMinutes: number): string {
-  const end = new Date(Date.now() + durationMinutes * 60 * 1000);
-  return end.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-/* ─────────────────────────────── LiveClock ─────────────────────── */
-function LiveClock() {
-  const [time, setTime] = useState(new Date());
-  useEffect(() => {
-    const t = setInterval(() => setTime(new Date()), 1000);
-    return () => clearInterval(t);
-  }, []);
-  return (
-    <span className="font-mono text-sm tabular-nums">
-      {time.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-    </span>
-  );
-}
-
-/* ─────────────────────────────── presets ───────────────────────── */
+// ─── Constants ────────────────────────────────────────────────────────────────
 const SERVICE_PRESETS = [
   { label: "Morning Service", icon: "☀️" },
   { label: "Evening Service", icon: "🌙" },
@@ -178,79 +158,461 @@ const DURATION_PRESETS = [
 ];
 
 const EXTEND_PRESETS = [
-  { label: "+ 15 min", value: 15 },
-  { label: "+ 30 min", value: 30 },
-  { label: "+ 1 hr", value: 60 },
+  { label: "+15m", value: 15 },
+  { label: "+30m", value: 30 },
+  { label: "+1hr", value: 60 },
 ];
 
-/* ─────────────────────────────── component ─────────────────────── */
-export default function Broadcast() {
-  const [queue, setQueue] = useState<BroadcastItem[]>([]);
-  const [current, setCurrent] = useState<CurrentBroadcast | null>(null);
-  const [guide, setGuide] = useState<GuideItem[]>([]);
-  const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [realtimeState, setRealtimeState] = useState<"connecting" | "connected" | "reconnecting" | "offline">("connecting");
-  const [lastRealtimeAt, setLastRealtimeAt] = useState<Date | null>(null);
+// ─── Live Clock ───────────────────────────────────────────────────────────────
+function LiveClock() {
+  const [time, setTime] = useState(new Date());
+  useEffect(() => {
+    const t = setInterval(() => setTime(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <span className="font-mono tabular-nums text-sm">
+      {time.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+    </span>
+  );
+}
 
-  const [showAddDialog, setShowAddDialog] = useState(false);
-  const [showUploadDialog, setShowUploadDialog] = useState(false);
-  const [showGoLiveDialog, setShowGoLiveDialog] = useState(false);
-  const [showEndDialog, setShowEndDialog] = useState(false);
+// ─── Now Playing Card ─────────────────────────────────────────────────────────
+function NowPlayingCard({
+  current,
+  livePosition,
+}: {
+  current: CurrentBroadcast | null;
+  livePosition: number;
+}) {
+  const override = current?.liveOverride;
+  const item = current?.item;
+  const totalSecs = current?.totalSecs ?? 1;
 
-  const [addSearch, setAddSearch] = useState("");
-  const [addingId, setAddingId] = useState<string | null>(null);
-  const [editingDuration, setEditingDuration] = useState<string | null>(null);
+  if (!current) {
+    return (
+      <div className="rounded-xl border bg-card p-4 space-y-3">
+        <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+          <Activity className="w-4 h-4" />
+          Now Playing
+        </div>
+        <div className="flex items-center gap-3">
+          <Skeleton className="w-20 h-14 rounded" />
+          <div className="space-y-2 flex-1">
+            <Skeleton className="h-4 w-3/4" />
+            <Skeleton className="h-3 w-1/2" />
+          </div>
+        </div>
+        <Skeleton className="h-1.5 w-full rounded-full" />
+      </div>
+    );
+  }
+
+  if (override) {
+    const elapsed = override.elapsedSecs ?? 0;
+    const remaining = override.remainingSecs;
+    const total = (elapsed + (remaining ?? 0)) || 1;
+    const progress = Math.min(100, (elapsed / total) * 100);
+
+    return (
+      <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="relative flex h-2.5 w-2.5">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500" />
+            </span>
+            <span className="text-sm font-semibold text-red-600">LIVE</span>
+          </div>
+          {remaining != null && (
+            <span className="text-xs text-muted-foreground font-mono">{fmtHMS(remaining)} remaining</span>
+          )}
+        </div>
+        <div>
+          <p className="font-semibold text-base leading-tight">{override.title}</p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Started {new Date(override.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+            {override.endsAt && ` · Ends ${new Date(override.endsAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
+          </p>
+        </div>
+        <Progress value={progress} className="h-1.5" />
+      </div>
+    );
+  }
+
+  if (!item) {
+    return (
+      <div className="rounded-xl border bg-card p-4">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Activity className="w-4 h-4" />
+          <span>Queue is empty — nothing playing</span>
+        </div>
+      </div>
+    );
+  }
+
+  const progress = totalSecs > 0 ? Math.min(100, (livePosition / totalSecs) * 100) : 0;
+  const remaining = Math.max(0, totalSecs - livePosition);
+
+  return (
+    <div className="rounded-xl border bg-card p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="relative flex h-2.5 w-2.5">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75" />
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
+          </span>
+          <span className="text-sm font-medium text-emerald-600">On Air</span>
+        </div>
+        <span className="text-xs text-muted-foreground font-mono">{fmtHMS(livePosition)} / {fmtHMS(totalSecs)}</span>
+      </div>
+
+      <div className="flex gap-3">
+        {item.thumbnailUrl ? (
+          <img
+            src={item.thumbnailUrl}
+            alt=""
+            className="w-[88px] h-14 object-cover rounded border border-border shrink-0"
+          />
+        ) : (
+          <div className="w-[88px] h-14 rounded border border-border bg-muted flex items-center justify-center shrink-0">
+            <Video className="w-5 h-5 text-muted-foreground/40" />
+          </div>
+        )}
+        <div className="flex-1 min-w-0">
+          <p className="font-semibold text-sm leading-tight line-clamp-2">{item.title}</p>
+          <div className="flex items-center gap-2 mt-1">
+            {item.videoSource === "youtube"
+              ? <Youtube className="w-3 h-3 text-red-500" />
+              : <HardDrive className="w-3 h-3 text-indigo-500" />
+            }
+            <span className="text-xs text-muted-foreground font-mono">{fmtHMS(remaining)} left</span>
+          </div>
+        </div>
+      </div>
+
+      <Progress value={progress} className="h-1.5" />
+
+      {current.nextItem && (
+        <div className="flex items-center gap-2 pt-1 border-t border-dashed">
+          <SkipForward className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+          <span className="text-xs text-muted-foreground truncate">
+            Up next: <span className="text-foreground">{current.nextItem.title}</span>
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Live Override Panel ──────────────────────────────────────────────────────
+function LiveOverridePanel({
+  liveStatus,
+  onGoLive,
+  onEndLive,
+  onExtend,
+  onNotify,
+}: {
+  liveStatus: LiveStatus | null;
+  onGoLive: () => void;
+  onEndLive: () => void;
+  onExtend: (minutes: number) => void;
+  onNotify: () => void;
+}) {
+  const override = liveStatus?.liveOverride;
+  const [extendLoading, setExtendLoading] = useState<number | null>(null);
+
+  async function handleExtend(minutes: number) {
+    setExtendLoading(minutes);
+    try { await onExtend(minutes); } finally { setExtendLoading(null); }
+  }
+
+  if (!override) {
+    return (
+      <div className="rounded-xl border bg-card p-4">
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-sm font-medium flex items-center gap-2">
+            <Mic className="w-4 h-4 text-muted-foreground" />
+            Live Broadcast Control
+          </span>
+          <Badge variant="outline" className="text-[10px] py-0 text-muted-foreground">Auto</Badge>
+        </div>
+        <p className="text-xs text-muted-foreground mb-3">
+          Currently streaming the automated broadcast queue. Start a live override to pre-empt with a manual broadcast.
+        </p>
+        <Button size="sm" className="w-full" onClick={onGoLive}>
+          <Radio className="w-4 h-4 mr-2 text-red-400" />
+          Go Live Now
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-4">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-sm font-semibold text-red-600 flex items-center gap-2">
+          <Radio className="w-4 h-4 animate-pulse" />
+          Live Override Active
+        </span>
+        {override.remainingSecs != null && (
+          <span className="text-xs font-mono text-muted-foreground">{fmtHMS(override.remainingSecs)} left</span>
+        )}
+      </div>
+      <p className="text-sm font-medium mb-1">{override.title}</p>
+      {override.endsAt && (
+        <p className="text-xs text-muted-foreground mb-3">
+          Ends at {new Date(override.endsAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+        </p>
+      )}
+      <div className="flex flex-wrap gap-1.5 mb-3">
+        {EXTEND_PRESETS.map((p) => (
+          <Button
+            key={p.value}
+            variant="outline"
+            size="sm"
+            className="h-7 text-xs"
+            onClick={() => handleExtend(p.value)}
+            disabled={extendLoading === p.value}
+          >
+            {extendLoading === p.value ? <Loader2 className="w-3 h-3 animate-spin" /> : p.label}
+          </Button>
+        ))}
+        <Button variant="outline" size="sm" className="h-7 text-xs" onClick={onNotify}>
+          <Bell className="w-3 h-3 mr-1" />
+          Notify
+        </Button>
+      </div>
+      <Button variant="destructive" size="sm" className="w-full" onClick={onEndLive}>
+        <XCircle className="w-4 h-4 mr-2" />
+        End Live & Resume Queue
+      </Button>
+    </div>
+  );
+}
+
+// ─── Broadcast Guide ──────────────────────────────────────────────────────────
+function BroadcastGuide({ queue, positionSecs }: { queue: BroadcastItem[]; positionSecs: number }) {
+  const activeItems = queue.filter((i) => i.isActive);
+  if (activeItems.length === 0) return null;
+
+  const totalCycle = activeItems.reduce((s, i) => s + i.durationSecs, 0);
+  if (totalCycle === 0) return null;
+
+  const nowMs = Date.now();
+  const posMs = positionSecs * 1000;
+  const totalMs = totalCycle * 1000;
+
+  const cyclePositionMs = posMs % totalMs;
+  let accMs = 0;
+  let currentIdx = 0;
+  let offsetInCurrentMs = 0;
+  for (let i = 0; i < activeItems.length; i++) {
+    const itemMs = activeItems[i].durationSecs * 1000;
+    if (cyclePositionMs < accMs + itemMs) {
+      currentIdx = i;
+      offsetInCurrentMs = cyclePositionMs - accMs;
+      break;
+    }
+    accMs += itemMs;
+  }
+
+  const guideItems = [];
+  let wallMs = nowMs - offsetInCurrentMs;
+  for (let j = 0; j < Math.min(activeItems.length, 8); j++) {
+    const idx = (currentIdx + j) % activeItems.length;
+    const item = activeItems[idx];
+    guideItems.push({ item, startMs: wallMs, isCurrent: j === 0 });
+    wallMs += item.durationSecs * 1000;
+  }
+
+  return (
+    <div className="rounded-xl border bg-card p-4">
+      <p className="text-sm font-medium flex items-center gap-2 mb-3">
+        <Timer className="w-4 h-4 text-muted-foreground" />
+        Broadcast Guide
+        <span className="ml-auto text-xs text-muted-foreground font-normal">
+          {fmtDuration(totalCycle)} cycle
+        </span>
+      </p>
+      <div className="space-y-1">
+        {guideItems.map(({ item, startMs, isCurrent }) => (
+          <div
+            key={`${item.id}-${startMs}`}
+            className={`flex items-center gap-2.5 py-1.5 px-2 rounded-md text-xs ${isCurrent ? "bg-primary/10 font-medium" : "text-muted-foreground"}`}
+          >
+            <span className="font-mono w-11 shrink-0">{fmtWallClock(new Date(startMs))}</span>
+            <span className="truncate flex-1">{item.title}</span>
+            <span className="font-mono shrink-0">{fmtDuration(item.durationSecs)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Queue Item ───────────────────────────────────────────────────────────────
+function QueueItem({
+  item,
+  index,
+  total,
+  isFirst,
+  isLast,
+  onMoveUp,
+  onMoveDown,
+  onRemove,
+  onDurationEdit,
+  wallClockStart,
+}: {
+  item: BroadcastItem;
+  index: number;
+  total: number;
+  isFirst: boolean;
+  isLast: boolean;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  onRemove: () => void;
+  onDurationEdit: (durationSecs: number) => void;
+  wallClockStart: Date;
+}) {
+  const [editingDuration, setEditingDuration] = useState(false);
   const [durationInput, setDurationInput] = useState("");
 
-  // Go Live form state
-  const [glTitle, setGlTitle] = useState("");
-  const [glDuration, setGlDuration] = useState(120);
-  const [glCustomDuration, setGlCustomDuration] = useState("");
-  const [glUseCustom, setGlUseCustom] = useState(false);
-  const [glNotify, setGlNotify] = useState(true);
-  const [glPreset, setGlPreset] = useState<string | null>(null);
-  const [goingLive, setGoingLive] = useState(false);
-  const [endingLive, setEndingLive] = useState(false);
-  const [extendingLive, setExtendingLive] = useState(false);
-  const [sendingNotif, setSendingNotif] = useState(false);
+  function startEdit() {
+    const m = Math.floor(item.durationSecs / 60);
+    const s = item.durationSecs % 60;
+    setDurationInput(s > 0 ? `${m}:${String(s).padStart(2, "0")}` : `${m}`);
+    setEditingDuration(true);
+  }
 
-  // Live countdown ticker
-  const [countdown, setCountdown] = useState<number | null>(null);
-  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  function commitEdit() {
+    setEditingDuration(false);
+    const parts = durationInput.trim().split(":").map(Number);
+    let secs = 0;
+    if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+      secs = parts[0] * 60 + parts[1];
+    } else if (parts.length === 1 && !isNaN(parts[0])) {
+      secs = parts[0] * 60;
+    }
+    if (secs > 0 && secs !== item.durationSecs) {
+      onDurationEdit(secs);
+    }
+  }
 
-  // Local position ticker for on-air panel
-  const [livePosition, setLivePosition] = useState(0);
-  const tickerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  return (
+    <div className={`group flex items-center gap-3 px-3 py-2.5 rounded-lg border bg-card transition-colors hover:bg-muted/40 ${!item.isActive ? "opacity-50" : ""}`}>
+      {/* Position */}
+      <span className="text-xs text-muted-foreground w-5 text-center shrink-0 tabular-nums">{index + 1}</span>
 
-  const { toast } = useToast();
-  const { data: videoLibrary } = useListAdminVideos({ search: addSearch, limit: 50 });
+      {/* Thumbnail */}
+      {item.thumbnailUrl ? (
+        <img
+          src={item.thumbnailUrl}
+          alt=""
+          className="w-[60px] h-9 object-cover rounded border border-border shrink-0"
+        />
+      ) : (
+        <div className="w-[60px] h-9 rounded border border-border bg-muted flex items-center justify-center shrink-0">
+          <Video className="w-3.5 h-3.5 text-muted-foreground/40" />
+        </div>
+      )}
 
-  /* ── data loading ────────────────────────────────────────────── */
-  const loadAll = useCallback(async () => {
+      {/* Info */}
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium truncate leading-tight">{item.title}</p>
+        <div className="flex items-center gap-2 mt-0.5">
+          {item.videoSource === "youtube"
+            ? <Youtube className="w-3 h-3 text-red-400 shrink-0" />
+            : <HardDrive className="w-3 h-3 text-indigo-400 shrink-0" />
+          }
+          <button
+            className="text-xs text-muted-foreground font-mono hover:text-foreground hover:underline transition-colors"
+            onClick={startEdit}
+            title="Click to edit duration"
+          >
+            {editingDuration ? (
+              <input
+                autoFocus
+                className="w-16 text-xs font-mono bg-transparent border-b border-primary outline-none"
+                value={durationInput}
+                onChange={(e) => setDurationInput(e.target.value)}
+                onBlur={commitEdit}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commitEdit();
+                  if (e.key === "Escape") setEditingDuration(false);
+                }}
+                onClick={(e) => e.stopPropagation()}
+              />
+            ) : (
+              fmtDuration(item.durationSecs)
+            )}
+          </button>
+          <span className="text-[10px] text-muted-foreground/60">@ {fmtWallClock(wallClockStart)}</span>
+        </div>
+      </div>
+
+      {/* Controls */}
+      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7"
+          disabled={isFirst}
+          onClick={onMoveUp}
+          title="Move up"
+        >
+          <ChevronUp className="w-3.5 h-3.5" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7"
+          disabled={isLast}
+          onClick={onMoveDown}
+          title="Move down"
+        >
+          <ChevronDown className="w-3.5 h-3.5" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7 text-destructive hover:text-destructive hover:bg-destructive/10"
+          onClick={onRemove}
+          title="Remove from queue"
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Add from Library Dialog ──────────────────────────────────────────────────
+function AddFromLibraryDialog({
+  open,
+  onOpenChange,
+  onAdd,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  onAdd: (video: LibraryVideo) => Promise<void>;
+}) {
+  const [search, setSearch] = useState("");
+  const [querySearch, setQuerySearch] = useState("");
+  const [videos, setVideos] = useState<LibraryVideo[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [addingId, setAddingId] = useState<string | null>(null);
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  const fetchVideos = useCallback(async (q: string) => {
+    setLoading(true);
     try {
-      const [qRes, cRes, gRes, lRes] = await Promise.all([
-        fetch("/api/admin/broadcast"),
-        fetch("/api/broadcast/current"),
-        fetch("/api/broadcast/guide"),
-        fetch("/api/admin/live"),
-      ]);
-      if (qRes.ok) setQueue(await qRes.json());
-      if (cRes.ok) {
-        const c = await cRes.json();
-        setCurrent(c);
-        setLivePosition(c.positionSecs ?? 0);
-      }
-      if (gRes.ok) {
-        const g = await gRes.json();
-        setGuide(g.items ?? []);
-      }
-      if (lRes.ok) {
-        const ls = await lRes.json();
-        setLiveStatus(ls);
-        if (ls.liveOverride?.remainingSecs != null) {
-          setCountdown(ls.liveOverride.remainingSecs);
-        }
+      const params = new URLSearchParams({ limit: "30" });
+      if (q) params.set("search", q);
+      const res = await adminFetch(`/api/admin/videos?${params}`);
+      if (res.ok) {
+        const data = await res.json();
+        setVideos(data.videos ?? []);
       }
     } finally {
       setLoading(false);
@@ -258,1019 +620,763 @@ export default function Broadcast() {
   }, []);
 
   useEffect(() => {
-    loadAll();
-    const interval = setInterval(loadAll, 30000);
-    return () => clearInterval(interval);
-  }, [loadAll]);
+    if (open) fetchVideos(querySearch);
+  }, [open, querySearch, fetchVideos]);
 
-  /* ── SSE real-time live status ───────────────────────────────── */
-  useEffect(() => {
-    let es: EventSource | null = null;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    let attempt = 0;
-    let destroyed = false;
-
-    const connect = () => {
-      if (destroyed) return;
-      try {
-        setRealtimeState(attempt > 0 ? "reconnecting" : "connecting");
-        es = new EventSource(getAdminEventSourceUrl("/api/admin/live/events"));
-
-        es.addEventListener("status", (e: MessageEvent) => {
-          try {
-            const ls = JSON.parse(e.data) as LiveStatus;
-            setLiveStatus(ls);
-            setLastRealtimeAt(new Date());
-            if (ls.liveOverride?.remainingSecs != null) {
-              setCountdown(ls.liveOverride.remainingSecs);
-            } else if (!ls.liveOverride) {
-              setCountdown(null);
-            }
-            attempt = 0;
-          } catch {}
-        });
-
-        es.addEventListener("override-expired", () => {
-          setLastRealtimeAt(new Date());
-          loadAll();
-        });
-
-        es.addEventListener("broadcast-queue-updated", () => {
-          setLastRealtimeAt(new Date());
-          loadAll();
-        });
-
-        es.addEventListener("broadcast-current-updated", (e: MessageEvent) => {
-          try {
-            const payload = JSON.parse(e.data);
-            if (payload?.current) {
-              setCurrent(payload.current);
-              setLivePosition(payload.current.positionSecs ?? 0);
-            }
-          } catch {}
-          setLastRealtimeAt(new Date());
-          loadAll();
-        });
-
-        es.addEventListener("broadcast-schedule-updated", () => {
-          setLastRealtimeAt(new Date());
-          loadAll();
-        });
-
-        es.addEventListener("broadcast-control-updated", () => {
-          setLastRealtimeAt(new Date());
-          loadAll();
-        });
-
-        es.onopen = () => {
-          attempt = 0;
-          setRealtimeState("connected");
-        };
-
-        es.onerror = () => {
-          es?.close();
-          es = null;
-          if (destroyed) return;
-          setRealtimeState("reconnecting");
-          const delay = Math.min(1000 * Math.pow(2, attempt), 30_000);
-          attempt++;
-          reconnectTimer = setTimeout(connect, delay);
-        };
-      } catch {}
-    };
-
-    connect();
-
-    return () => {
-      destroyed = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      es?.close();
-      setRealtimeState("offline");
-    };
-  }, [loadAll]);
-
-  // Position ticker
-  useEffect(() => {
-    if (tickerRef.current) clearInterval(tickerRef.current);
-    if (current?.item && !current.liveOverride) {
-      tickerRef.current = setInterval(() => setLivePosition((p) => p + 1), 1000);
-    }
-    return () => { if (tickerRef.current) clearInterval(tickerRef.current); };
-  }, [current?.item?.id, !!current?.liveOverride]);
-
-  // Countdown ticker for live override
-  useEffect(() => {
-    if (countdownRef.current) clearInterval(countdownRef.current);
-    if (liveStatus?.liveOverride?.remainingSecs != null) {
-      countdownRef.current = setInterval(() => setCountdown((c) => (c !== null ? Math.max(0, c - 1) : null)), 1000);
-    } else {
-      setCountdown(null);
-    }
-    return () => { if (countdownRef.current) clearInterval(countdownRef.current); };
-  }, [liveStatus?.liveOverride?.id]);
-
-  /* ── actions ─────────────────────────────────────────────────── */
-  const handleGoLive = async () => {
-    const finalTitle = glTitle.trim();
-    if (!finalTitle) {
-      toast({ title: "Please enter a broadcast title", variant: "destructive" });
-      return;
-    }
-    const mins = glUseCustom
-      ? Math.max(5, Math.min(480, parseInt(glCustomDuration, 10) || 120))
-      : glDuration;
-
-    setGoingLive(true);
-    try {
-      const res = await fetch("/api/admin/live/override/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: finalTitle, durationMinutes: mins, notify: glNotify }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error((err as any).error ?? "Failed to go live");
-      }
-      const data = await res.json();
-      toast({
-        title: "🔴 You're LIVE!",
-        description: glNotify && data.push?.sent > 0
-          ? `Push notifications sent to ${data.push.sent} device${data.push.sent !== 1 ? "s" : ""}`
-          : "Live broadcast started — no push tokens registered yet",
-      });
-      setShowGoLiveDialog(false);
-      await loadAll();
-    } catch (err) {
-      toast({ title: err instanceof Error ? err.message : "Failed to go live", variant: "destructive" });
-    } finally {
-      setGoingLive(false);
-    }
+  const handleSearchChange = (value: string) => {
+    setSearch(value);
+    clearTimeout(searchTimer.current);
+    searchTimer.current = setTimeout(() => setQuerySearch(value), 350);
   };
 
-  const handleEndLive = async () => {
-    setEndingLive(true);
-    try {
-      const res = await fetch("/api/admin/live/override/stop", { method: "POST" });
-      if (!res.ok) throw new Error("Failed to end broadcast");
-      toast({ title: "Live broadcast ended", description: "Automatic queue will resume." });
-      setShowEndDialog(false);
-      setCountdown(null);
-      await loadAll();
-    } catch {
-      toast({ title: "Failed to end broadcast", variant: "destructive" });
-    } finally {
-      setEndingLive(false);
-    }
-  };
-
-  const handleExtend = async (extraMinutes: number) => {
-    setExtendingLive(true);
-    try {
-      const res = await fetch("/api/admin/live/override/extend", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ extraMinutes }),
-      });
-      if (!res.ok) throw new Error("Failed to extend");
-      const data = await res.json();
-      const newEndsAt = data.override?.endsAt;
-      toast({
-        title: `Extended by ${extraMinutes} min`,
-        description: newEndsAt
-          ? `New end time: ${fmtTime(newEndsAt)}`
-          : undefined,
-      });
-      await loadAll();
-    } catch {
-      toast({ title: "Failed to extend broadcast", variant: "destructive" });
-    } finally {
-      setExtendingLive(false);
-    }
-  };
-
-  const handleNotifyViewers = async () => {
-    const lo = liveStatus?.liveOverride;
-    if (!lo) return;
-    setSendingNotif(true);
-    try {
-      const res = await fetch("/api/admin/notifications/send", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: "Temple TV is LIVE now!",
-          body: lo.title,
-          type: "live_service",
-        }),
-      });
-      if (!res.ok) throw new Error("Failed");
-      const data = await res.json();
-      toast({
-        title: "Notifications sent",
-        description: `Sent to ${data.sent ?? 0} device${(data.sent ?? 0) !== 1 ? "s" : ""}`,
-      });
-    } catch {
-      toast({ title: "Failed to send notifications", variant: "destructive" });
-    } finally {
-      setSendingNotif(false);
-    }
-  };
-
-  const addToQueue = async (video: { id: string; youtubeId: string; title: string; thumbnailUrl: string; videoSource?: string; localVideoUrl?: string | null }) => {
+  async function handleAdd(video: LibraryVideo) {
     setAddingId(video.id);
     try {
-      const res = await fetch("/api/admin/broadcast", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          videoId: video.id,
-          youtubeId: video.youtubeId,
-          title: video.title,
-          thumbnailUrl: video.thumbnailUrl,
-          videoSource: video.videoSource ?? "youtube",
-          localVideoUrl: video.localVideoUrl ?? null,
-          // Omit durationSecs — the server auto-looks up the real duration from
-          // the video record when this field is absent or zero.
-        }),
-      });
-      if (!res.ok) throw new Error("Failed to add");
-      toast({ title: "Added to broadcast queue" });
-      setShowAddDialog(false);
-      await loadAll();
-    } catch {
-      toast({ title: "Failed to add video", variant: "destructive" });
+      await onAdd(video);
     } finally {
       setAddingId(null);
     }
-  };
-
-  const removeFromQueue = async (id: string) => {
-    try {
-      await fetch(`/api/admin/broadcast/${id}`, { method: "DELETE" });
-      toast({ title: "Removed from queue" });
-      await loadAll();
-    } catch {
-      toast({ title: "Failed to remove", variant: "destructive" });
-    }
-  };
-
-  const move = async (index: number, direction: "up" | "down") => {
-    const newQueue = [...queue];
-    const swapIndex = direction === "up" ? index - 1 : index + 1;
-    if (swapIndex < 0 || swapIndex >= newQueue.length) return;
-    [newQueue[index], newQueue[swapIndex]] = [newQueue[swapIndex]!, newQueue[index]!];
-    setQueue(newQueue);
-    try {
-      await fetch("/api/admin/broadcast/reorder", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orderedIds: newQueue.map((i) => i.id) }),
-      });
-      await loadAll();
-    } catch {
-      toast({ title: "Failed to reorder", variant: "destructive" });
-    }
-  };
-
-  const saveDuration = async (id: string) => {
-    const mins = parseInt(durationInput, 10);
-    if (isNaN(mins) || mins < 1) {
-      toast({ title: "Enter a valid duration in minutes", variant: "destructive" });
-      return;
-    }
-    try {
-      await fetch(`/api/admin/broadcast/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ durationSecs: mins * 60 }),
-      });
-      toast({ title: "Duration updated" });
-      setEditingDuration(null);
-      await loadAll();
-    } catch {
-      toast({ title: "Failed to update", variant: "destructive" });
-    }
-  };
-
-  /* ── derived values ───────────────────────────────────────────── */
-  const totalSecs = queue.reduce((acc, i) => acc + i.durationSecs, 0);
-  const isOnAir = !!liveStatus?.isLive;
-  const hasLiveOverride = !!liveStatus?.liveOverride;
-  const lo = liveStatus?.liveOverride;
-  const currentProgress = current?.item
-    ? Math.min(100, (livePosition / current.item.durationSecs) * 100)
-    : 0;
-  const remaining = current?.item ? Math.max(0, current.item.durationSecs - livePosition) : 0;
-  const liveDurationSecs = lo
-    ? Math.max(0, new Date(lo.endsAt ?? lo.startedAt).getTime() - new Date(lo.startedAt).getTime()) / 1000
-    : 0;
-  const liveProgress = lo && liveDurationSecs > 0 && countdown !== null
-    ? Math.min(100, Math.max(0, ((liveDurationSecs - countdown) / liveDurationSecs) * 100))
-    : 0;
-
-  /* ── effective duration for go live dialog ────────────────────── */
-  const effectiveDuration = glUseCustom
-    ? Math.max(5, parseInt(glCustomDuration, 10) || 120)
-    : glDuration;
+  }
 
   return (
-    <div className="space-y-5">
-      {/* ── Header ── */}
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-            <Tv className="w-6 h-6" />
-            Broadcast Control
-          </h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            24/7 continuous channel — manage your on-air lineup and live events
-          </p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap justify-end">
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-muted/50 border text-sm">
-            <div className={`w-2 h-2 rounded-full flex-shrink-0 ${isOnAir ? "bg-red-500 animate-pulse" : "bg-muted-foreground/40"}`} />
-            <LiveClock />
-            {liveStatus?.deviceCount != null && liveStatus.deviceCount > 0 && (
-              <span className="text-xs text-muted-foreground border-l pl-2 ml-1">
-                <SmartphoneIcon className="w-3 h-3 inline mr-1" />{liveStatus.deviceCount}
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-muted/40 border text-xs">
-            <div className={`w-2 h-2 rounded-full ${
-              realtimeState === "connected"
-                ? "bg-green-500"
-                : realtimeState === "reconnecting"
-                  ? "bg-yellow-500 animate-pulse"
-                  : "bg-muted-foreground/40"
-            }`} />
-            <span className="capitalize">{realtimeState}</span>
-            {lastRealtimeAt && (
-              <span className="text-muted-foreground border-l pl-2">
-                update {lastRealtimeAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-              </span>
-            )}
-          </div>
-          <Button size="sm" variant="outline" onClick={loadAll}>
-            <RefreshCw className="w-4 h-4" />
-          </Button>
-          {hasLiveOverride ? (
-            <Button size="sm" variant="destructive" onClick={() => setShowEndDialog(true)}>
-              <Signal className="w-4 h-4 mr-1.5" />
-              End Live
-            </Button>
-          ) : (
-            <Button
-              size="sm"
-              className="bg-red-600 hover:bg-red-700 text-white shadow-sm"
-              onClick={() => setShowGoLiveDialog(true)}
-            >
-              <Mic className="w-4 h-4 mr-1.5" />
-              Go Live
-            </Button>
-          )}
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => setShowUploadDialog(true)}
-          >
-            <Upload className="w-4 h-4 mr-1.5" />
-            Upload Video
-          </Button>
-          <Button size="sm" onClick={() => setShowAddDialog(true)}>
-            <Plus className="w-4 h-4 mr-1.5" />
+    <Dialog open={open} onOpenChange={(o) => { if (!o) { setSearch(""); setQuerySearch(""); } onOpenChange(o); }}>
+      <DialogContent className="sm:max-w-lg max-h-[80vh] flex flex-col gap-0 p-0">
+        <DialogHeader className="px-6 pt-6 pb-4 border-b">
+          <DialogTitle className="flex items-center gap-2">
+            <Plus className="w-5 h-5" />
             Add from Library
-          </Button>
-        </div>
-      </div>
-
-      {/* ── YouTube live detection banner ── */}
-      {liveStatus?.ytLive && !hasLiveOverride && (
-        <div className="rounded-xl border border-yellow-500/40 bg-yellow-500/5 p-4 flex items-center gap-3">
-          <Youtube className="w-5 h-5 text-yellow-600 dark:text-yellow-400 shrink-0" />
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-yellow-700 dark:text-yellow-300">YouTube Live Detected</p>
-            <p className="text-xs text-muted-foreground truncate">{liveStatus.ytTitle}</p>
-          </div>
-          <Button size="sm" variant="outline" className="border-yellow-500/40 text-yellow-700 dark:text-yellow-300"
-            onClick={() => {
-              setGlTitle(liveStatus.ytTitle ?? "Temple TV Live Service");
-              setShowGoLiveDialog(true);
-            }}>
-            <Signal className="w-3.5 h-3.5 mr-1" />
-            Go Live Now
-          </Button>
-        </div>
-      )}
-
-      {/* ── LIVE STATUS PANEL ── */}
-      {hasLiveOverride && lo && (
-        <div className="rounded-xl border-2 border-red-500/50 bg-red-500/5 overflow-hidden">
-          {/* Top bar */}
-          <div className="flex items-center justify-between px-4 py-2.5 bg-red-500/10 border-b border-red-500/20">
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1.5 bg-red-500 text-white px-2.5 py-1 rounded-full text-xs font-bold tracking-wide">
-                <span className="relative flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-white"></span>
-                </span>
-                LIVE ON AIR
-              </div>
-              <span className="text-sm font-semibold truncate max-w-xs">{lo.title}</span>
-            </div>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              {liveStatus?.deviceCount != null && (
-                <span className="flex items-center gap-1">
-                  <SmartphoneIcon className="w-3.5 h-3.5" />
-                  {liveStatus.deviceCount} registered device{liveStatus.deviceCount !== 1 ? "s" : ""}
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* Main content */}
-          <div className="p-4 space-y-3">
-            {/* Times row */}
-            <div className="flex items-center gap-6 text-sm">
-              <div>
-                <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">Started</p>
-                <p className="font-mono font-semibold">{fmtTime(lo.startedAt)}</p>
-              </div>
-              {lo.endsAt && (
-                <div>
-                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">Scheduled End</p>
-                  <p className="font-mono font-semibold">{fmtTime(lo.endsAt)}</p>
-                </div>
-              )}
-              {lo.elapsedSecs != null && (
-                <div>
-                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">On Air For</p>
-                  <p className="font-mono font-semibold text-green-600 dark:text-green-400">{fmtHMS(lo.elapsedSecs)}</p>
-                </div>
-              )}
-              {countdown !== null && (
-                <div>
-                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">Remaining</p>
-                  <p className={`font-mono font-bold tabular-nums ${countdown < 300 ? "text-red-500" : "text-foreground"}`}>
-                    {fmtHMS(countdown)}
-                  </p>
-                </div>
-              )}
-            </div>
-
-            {/* Progress bar */}
-            {lo.endsAt && liveDurationSecs > 0 && (
-              <div className="space-y-1">
-                <div className="h-2 bg-red-500/15 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-red-500 rounded-full transition-all duration-1000"
-                    style={{ width: `${liveProgress}%` }}
-                  />
-                </div>
-                <div className="flex justify-between text-[10px] text-muted-foreground">
-                  <span>{Math.round(liveProgress)}% elapsed</span>
-                  <span>{fmtDuration(liveDurationSecs)} total</span>
-                </div>
-              </div>
-            )}
-
-            {/* Action buttons */}
-            <div className="flex items-center gap-2 flex-wrap pt-1">
-              {EXTEND_PRESETS.map((p) => (
-                <Button
-                  key={p.value}
-                  size="sm"
-                  variant="outline"
-                  className="text-xs h-8"
-                  disabled={extendingLive}
-                  onClick={() => handleExtend(p.value)}
-                >
-                  {extendingLive ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Timer className="w-3 h-3 mr-1" />}
-                  {p.label}
-                </Button>
-              ))}
-              <Button
-                size="sm"
-                variant="outline"
-                className="text-xs h-8"
-                disabled={sendingNotif}
-                onClick={handleNotifyViewers}
-              >
-                {sendingNotif
-                  ? <Loader2 className="w-3 h-3 animate-spin mr-1.5" />
-                  : <Bell className="w-3 h-3 mr-1.5" />}
-                Notify Viewers
-              </Button>
-              <Button
-                size="sm"
-                variant="destructive"
-                className="text-xs h-8 ml-auto"
-                onClick={() => setShowEndDialog(true)}
-              >
-                <XCircle className="w-3.5 h-3.5 mr-1.5" />
-                End Live Broadcast
-              </Button>
-            </div>
+          </DialogTitle>
+          <DialogDescription>Search and add videos to the broadcast queue.</DialogDescription>
+        </DialogHeader>
+        <div className="px-6 pt-4 pb-2">
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+            <Input
+              className="pl-9"
+              placeholder="Search videos…"
+              value={search}
+              onChange={(e) => handleSearchChange(e.target.value)}
+              autoFocus
+            />
           </div>
         </div>
-      )}
-
-      {/* ── On Air Now (automatic queue) ── */}
-      {current?.item && !hasLiveOverride && (
-        <div className="rounded-xl border bg-card overflow-hidden">
-          <div className="px-4 py-2.5 bg-muted/30 border-b flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1.5 bg-red-500/15 text-red-500 px-2.5 py-1 rounded-full text-xs font-bold border border-red-500/25">
-                <Radio className="w-3 h-3" />
-                ON AIR — AUTOMATED
-              </div>
-              <span className="text-xs text-muted-foreground">
-                {(current.index ?? 0) + 1} of {queue.length} · {fmtTotalTime(totalSecs)}
-              </span>
-            </div>
-            <div className="flex items-center gap-1 text-xs text-muted-foreground">
-              <Headphones className="w-3.5 h-3.5" />
-              Radio mirror active
-            </div>
-          </div>
-          <div className="p-4 flex items-start gap-4">
-            <div className="relative shrink-0">
-              {current.item.thumbnailUrl ? (
-                <img src={current.item.thumbnailUrl} alt="" className="w-32 h-20 object-cover rounded-lg shadow-sm" />
-              ) : (
-                <div className="w-32 h-20 bg-muted rounded-lg flex items-center justify-center">
-                  <Play className="w-6 h-6 text-muted-foreground" />
-                </div>
-              )}
-              <div className="absolute -top-1.5 -right-1.5 w-3.5 h-3.5 rounded-full bg-red-500 border-2 border-background animate-pulse" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="font-semibold text-base truncate">{current.item.title}</p>
-              <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground">
-                <span className="text-green-600 dark:text-green-400 font-medium">{fmtDuration(livePosition)} elapsed</span>
-                <span>·</span>
-                <span>{fmtDuration(remaining)} remaining</span>
-                <Badge variant="secondary" className="text-xs h-4 ml-1">
-                  {current.item.videoSource === "local"
-                    ? <><HardDrive className="w-3 h-3 mr-1" />Local</>
-                    : <><Youtube className="w-3 h-3 mr-1" />YouTube</>}
-                </Badge>
-              </div>
-              <div className="mt-2.5 space-y-1">
-                <div className="flex justify-between text-[10px] text-muted-foreground">
-                  <span>{Math.round(currentProgress)}% complete</span>
-                  <span>{fmtDuration(current.item.durationSecs)} total</span>
-                </div>
-                <div className="h-1.5 bg-muted rounded-full overflow-hidden">
-                  <div className="h-full bg-red-500 rounded-full transition-all duration-1000" style={{ width: `${currentProgress}%` }} />
+        <div className="flex-1 overflow-y-auto px-6 py-2 min-h-0 space-y-1">
+          {loading ? (
+            Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-3 p-2">
+                <Skeleton className="w-14 h-9 rounded" />
+                <div className="flex-1 space-y-1.5">
+                  <Skeleton className="h-4 w-3/4" />
+                  <Skeleton className="h-3 w-1/2" />
                 </div>
               </div>
+            ))
+          ) : videos.length === 0 ? (
+            <div className="py-8 text-center text-sm text-muted-foreground">
+              {querySearch ? "No videos found" : "Search for a video to add"}
             </div>
-            {current.nextItem && (
-              <div className="shrink-0 hidden md:block w-32">
-                <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1.5 flex items-center gap-1">
-                  <SkipForward className="w-3 h-3" />Up Next
-                </p>
-                {current.nextItem.thumbnailUrl && (
-                  <img src={current.nextItem.thumbnailUrl} alt="" className="w-full h-16 object-cover rounded opacity-60 mb-1" />
-                )}
-                <p className="text-xs text-muted-foreground line-clamp-2 leading-tight">{current.nextItem.title}</p>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ── EPG Program Guide ── */}
-      {guide.length > 1 && !hasLiveOverride && (
-        <div className="rounded-xl border bg-card">
-          <div className="px-4 py-2.5 border-b flex items-center gap-2">
-            <Calendar className="w-4 h-4 text-muted-foreground" />
-            <h2 className="text-sm font-semibold">Program Guide</h2>
-            <span className="text-xs text-muted-foreground ml-1">Next {Math.min(8, guide.length)} programs</span>
-          </div>
-          <div className="p-3 flex gap-2 overflow-x-auto pb-4 scrollbar-thin">
-            {guide.slice(0, 8).map((item, idx) => (
+          ) : (
+            videos.map((video) => (
               <div
-                key={`${item.id}-${idx}`}
-                className={`shrink-0 w-40 rounded-lg border p-2 space-y-1.5 ${item.isCurrent ? "border-red-500/40 bg-red-500/5" : "bg-muted/20"}`}
+                key={video.id}
+                className="flex items-center gap-3 p-2 rounded-lg hover:bg-muted/50 transition-colors"
               >
-                <div className="relative">
-                  {item.thumbnailUrl ? (
-                    <img src={item.thumbnailUrl} alt="" className="w-full h-[72px] object-cover rounded" />
-                  ) : (
-                    <div className="w-full h-[72px] bg-muted rounded flex items-center justify-center">
-                      <Play className="w-5 h-5 text-muted-foreground" />
-                    </div>
-                  )}
-                  {item.isCurrent && (
-                    <div className="absolute inset-0 rounded flex items-center justify-center bg-black/40">
-                      <div className="flex items-center gap-1 text-white text-[10px] font-bold bg-red-500 px-2 py-0.5 rounded-full">
-                        <Radio className="w-2.5 h-2.5" />ON AIR
-                      </div>
-                    </div>
-                  )}
-                </div>
-                <p className="text-xs font-medium line-clamp-2 leading-tight">{item.title}</p>
-                <div className="flex justify-between text-[10px] text-muted-foreground">
-                  <span>{fmtWallClock(item.startMs)}</span>
-                  <span>{fmtDuration(item.durationSecs)}</span>
-                </div>
-                {item.isCurrent && (
-                  <div className="h-1 bg-muted rounded-full overflow-hidden">
-                    <div className="h-full bg-red-500 rounded-full" style={{ width: `${item.progressPercent}%` }} />
+                {video.thumbnailUrl ? (
+                  <img src={video.thumbnailUrl} alt="" className="w-14 h-9 object-cover rounded border border-border shrink-0" />
+                ) : (
+                  <div className="w-14 h-9 rounded border border-border bg-muted shrink-0 flex items-center justify-center">
+                    <Video className="w-3.5 h-3.5 text-muted-foreground/40" />
                   </div>
                 )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* ── Broadcast Queue ── */}
-      <div className="rounded-xl border bg-card">
-        <div className="px-4 py-2.5 border-b flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <ListVideo className="w-4 h-4 text-muted-foreground" />
-            <h2 className="text-sm font-semibold">Broadcast Queue</h2>
-            {totalSecs > 0 && (
-              <Badge variant="outline" className="text-xs">
-                <Clock className="w-3 h-3 mr-1" />{fmtTotalTime(totalSecs)}
-              </Badge>
-            )}
-          </div>
-          <span className="text-xs text-muted-foreground">{queue.length} video{queue.length !== 1 ? "s" : ""} · loops continuously</span>
-        </div>
-
-        {loading ? (
-          <div className="p-3 space-y-2">
-            {[1, 2, 3].map((i) => (
-              <div key={i} className="flex items-center gap-3 p-3 rounded-lg border">
-                <Skeleton className="w-20 h-12 rounded shrink-0" />
-                <div className="flex-1 space-y-2"><Skeleton className="h-4 w-48" /><Skeleton className="h-3 w-24" /></div>
-              </div>
-            ))}
-          </div>
-        ) : queue.length === 0 ? (
-          <div className="p-12 text-center">
-            <Radio className="w-10 h-10 text-muted-foreground mx-auto mb-3 opacity-30" />
-            <p className="font-medium text-muted-foreground">No videos in broadcast queue</p>
-            <p className="text-sm text-muted-foreground/60 mt-1">Upload or add videos to start the 24/7 automatic broadcast</p>
-            <div className="flex items-center justify-center gap-2 mt-4">
-              <Button variant="outline" onClick={() => setShowUploadDialog(true)}>
-                <Upload className="w-4 h-4 mr-1" />Upload Video
-              </Button>
-              <Button onClick={() => setShowAddDialog(true)}>
-                <Plus className="w-4 h-4 mr-1" />Add from Library
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <div className="p-3 space-y-1.5">
-            {queue.map((item, index) => {
-              const isCurrent = current?.item?.id === item.id && !hasLiveOverride;
-              return (
-                <div
-                  key={item.id}
-                  className={`rounded-lg border p-3 flex items-center gap-3 transition-all ${isCurrent ? "border-red-500/40 bg-red-500/5 shadow-sm" : "bg-card hover:bg-muted/20"}`}
-                >
-                  <span className="text-xs text-muted-foreground font-mono w-5 text-center shrink-0">{index + 1}</span>
-                  <div className="flex flex-col gap-0.5">
-                    <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => move(index, "up")} disabled={index === 0}>
-                      <ChevronUp className="w-3 h-3" />
-                    </Button>
-                    <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => move(index, "down")} disabled={index === queue.length - 1}>
-                      <ChevronDown className="w-3 h-3" />
-                    </Button>
-                  </div>
-                  <div className="relative shrink-0">
-                    {item.thumbnailUrl ? (
-                      <img src={item.thumbnailUrl} alt="" className="w-20 h-12 object-cover rounded" />
-                    ) : (
-                      <div className="w-20 h-12 bg-muted rounded flex items-center justify-center">
-                        <Play className="w-4 h-4 text-muted-foreground" />
-                      </div>
-                    )}
-                    {isCurrent && (
-                      <div className="absolute inset-0 rounded flex items-center justify-center bg-black/50">
-                        <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">{item.title}</p>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <Badge variant="secondary" className="text-xs h-5">
-                        {item.videoSource === "local"
-                          ? <><HardDrive className="w-3 h-3 mr-1" />Local</>
-                          : <><Youtube className="w-3 h-3 mr-1" />YouTube</>}
-                      </Badge>
-                      {isCurrent && (
-                        <Badge className="text-xs h-5 bg-red-500 text-white border-0">
-                          <Radio className="w-3 h-3 mr-1" />ON AIR
-                        </Badge>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    {editingDuration === item.id ? (
-                      <div className="flex items-center gap-1">
-                        <Input
-                          className="h-7 w-16 text-xs"
-                          value={durationInput}
-                          onChange={(e) => setDurationInput(e.target.value)}
-                          placeholder="min"
-                          type="number"
-                          min={1}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") saveDuration(item.id);
-                            if (e.key === "Escape") setEditingDuration(null);
-                          }}
-                          autoFocus
-                        />
-                        <Button variant="default" size="sm" className="h-7 text-xs px-2" onClick={() => saveDuration(item.id)}>✓</Button>
-                        <Button variant="ghost" size="sm" className="h-7 text-xs px-2" onClick={() => setEditingDuration(null)}>✕</Button>
-                      </div>
-                    ) : (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-7 text-xs gap-1"
-                        onClick={() => { setEditingDuration(item.id); setDurationInput(String(Math.round(item.durationSecs / 60))); }}
-                      >
-                        <Clock className="w-3 h-3" />
-                        {fmtDuration(item.durationSecs)}
-                      </Button>
-                    )}
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 text-destructive hover:text-destructive hover:bg-destructive/10"
-                      onClick={() => removeFromQueue(item.id)}
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </Button>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium truncate">{video.title}</p>
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    {video.videoSource === "youtube" ? <Youtube className="w-3 h-3 text-red-400" /> : <HardDrive className="w-3 h-3 text-indigo-400" />}
+                    {video.category && <span className="capitalize">{video.category}</span>}
                   </div>
                 </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* ════════════════ GO LIVE DIALOG ════════════════ */}
-      <Dialog open={showGoLiveDialog} onOpenChange={(o) => { if (!goingLive) setShowGoLiveDialog(o); }}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-base">
-              <span className="flex h-7 w-7 items-center justify-center rounded-full bg-red-500/15 text-red-500">
-                <Signal className="w-4 h-4" />
-              </span>
-              Start Live Broadcast
-            </DialogTitle>
-            <DialogDescription>
-              This pre-empts the automated queue for all viewers and radio listeners.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-1">
-            {/* Service type presets */}
-            <div className="space-y-2">
-              <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Quick Presets</Label>
-              <div className="grid grid-cols-3 gap-1.5">
-                {SERVICE_PRESETS.map((p) => (
-                  <button
-                    key={p.label}
-                    type="button"
-                    onClick={() => {
-                      setGlPreset(p.label);
-                      setGlTitle(p.label);
-                    }}
-                    className={`text-left px-3 py-2 rounded-lg border text-xs font-medium transition-all ${
-                      glPreset === p.label
-                        ? "border-red-500 bg-red-500/10 text-red-600 dark:text-red-400"
-                        : "border-border bg-muted/30 hover:bg-muted/60 text-foreground"
-                    }`}
-                  >
-                    <span className="mr-1">{p.icon}</span>{p.label}
-                  </button>
-                ))}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0 h-7"
+                  onClick={() => handleAdd(video)}
+                  disabled={addingId === video.id}
+                >
+                  {addingId === video.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                </Button>
               </div>
-            </div>
+            ))
+          )}
+        </div>
+        <div className="px-6 py-4 border-t">
+          <Button variant="outline" className="w-full" onClick={() => onOpenChange(false)}>Done</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
-            {/* Title */}
-            <div className="space-y-1.5">
-              <Label htmlFor="gl-title">Broadcast Title</Label>
-              <Input
-                id="gl-title"
-                value={glTitle}
-                onChange={(e) => { setGlTitle(e.target.value); setGlPreset(null); }}
-                placeholder="e.g. Sunday Morning Service — Temple TV"
-              />
-            </div>
+// ─── Go Live Dialog ───────────────────────────────────────────────────────────
+function GoLiveDialog({
+  open,
+  onOpenChange,
+  onGoLive,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  onGoLive: (title: string, durationMins: number, notify: boolean) => Promise<void>;
+}) {
+  const [title, setTitle] = useState("");
+  const [durationMins, setDurationMins] = useState(120);
+  const [customDuration, setCustomDuration] = useState("");
+  const [useCustom, setUseCustom] = useState(false);
+  const [notify, setNotify] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
 
-            {/* Duration */}
-            <div className="space-y-2">
-              <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Duration</Label>
-              <div className="flex gap-1.5 flex-wrap">
+  function handlePreset(preset: { label: string; icon: string }) {
+    setTitle(`${preset.icon} ${preset.label}`);
+    setSelectedPreset(preset.label);
+  }
+
+  async function handleSubmit() {
+    const mins = useCustom ? (parseInt(customDuration, 10) || 0) : durationMins;
+    if (!title.trim() || mins <= 0) return;
+    setLoading(true);
+    try {
+      await onGoLive(title.trim(), mins, notify);
+      onOpenChange(false);
+      setTitle("");
+      setSelectedPreset(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Radio className="w-5 h-5 text-red-500" />
+            Go Live
+          </DialogTitle>
+          <DialogDescription>Override the broadcast queue with a manual live event.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 py-2">
+          <div className="space-y-2">
+            <Label>Service Preset</Label>
+            <div className="flex flex-wrap gap-1.5">
+              {SERVICE_PRESETS.map((p) => (
+                <button
+                  key={p.label}
+                  onClick={() => handlePreset(p)}
+                  className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${selectedPreset === p.label ? "bg-primary text-primary-foreground border-primary" : "hover:bg-muted border-border"}`}
+                >
+                  {p.icon} {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="live-title">Broadcast Title</Label>
+            <Input
+              id="live-title"
+              value={title}
+              onChange={(e) => { setTitle(e.target.value); setSelectedPreset(null); }}
+              placeholder="e.g. Sunday Morning Service"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label>Duration</Label>
+            {!useCustom && (
+              <div className="flex flex-wrap gap-1.5">
                 {DURATION_PRESETS.map((p) => (
                   <button
                     key={p.value}
-                    type="button"
-                    onClick={() => { setGlDuration(p.value); setGlUseCustom(false); }}
-                    className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-all ${
-                      !glUseCustom && glDuration === p.value
-                        ? "border-primary bg-primary/10 text-primary"
-                        : "border-border bg-muted/30 hover:bg-muted/60"
-                    }`}
+                    onClick={() => setDurationMins(p.value)}
+                    className={`text-xs px-3 py-1.5 rounded-md border transition-colors ${durationMins === p.value ? "bg-primary text-primary-foreground border-primary" : "hover:bg-muted border-border"}`}
                   >
                     {p.label}
                   </button>
                 ))}
-                <button
-                  type="button"
-                  onClick={() => setGlUseCustom(true)}
-                  className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-all ${
-                    glUseCustom ? "border-primary bg-primary/10 text-primary" : "border-border bg-muted/30 hover:bg-muted/60"
-                  }`}
-                >
-                  Custom
-                </button>
               </div>
-              {glUseCustom && (
-                <div className="flex items-center gap-2">
-                  <Input
-                    type="number"
-                    min={5}
-                    max={480}
-                    placeholder="Minutes"
-                    value={glCustomDuration}
-                    onChange={(e) => setGlCustomDuration(e.target.value)}
-                    className="w-32 h-8 text-sm"
-                    autoFocus
-                  />
-                  <span className="text-sm text-muted-foreground">minutes</span>
-                </div>
-              )}
+            )}
+            <div className="flex items-center gap-2">
+              <Switch checked={useCustom} onCheckedChange={setUseCustom} id="custom-dur" />
+              <Label htmlFor="custom-dur" className="cursor-pointer text-sm font-normal">Custom duration</Label>
             </div>
-
-            {/* End time preview */}
-            <div className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-muted/30 border text-sm">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <Clock className="w-4 h-4" />
-                <span>Starts now · ends ~</span>
-              </div>
-              <span className="font-mono font-semibold text-foreground">{fmtEndPreview(effectiveDuration)}</span>
-            </div>
-
-            {/* Notify toggle */}
-            <div className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-muted/20 border">
-              <div className="flex items-center gap-2.5">
-                {glNotify ? <Bell className="w-4 h-4 text-primary" /> : <BellOff className="w-4 h-4 text-muted-foreground" />}
-                <div>
-                  <p className="text-sm font-medium">Notify viewers</p>
-                  <p className="text-xs text-muted-foreground">
-                    Push notification to {liveStatus?.deviceCount ?? 0} registered device{(liveStatus?.deviceCount ?? 0) !== 1 ? "s" : ""}
-                  </p>
-                </div>
-              </div>
-              <Switch checked={glNotify} onCheckedChange={setGlNotify} />
-            </div>
-
-            {/* Warning */}
-            <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-amber-500/8 border border-amber-500/25 text-xs text-amber-700 dark:text-amber-400">
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              The automated broadcast queue and radio mirror will pause until you end this live session.
-            </div>
-          </div>
-
-          <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => setShowGoLiveDialog(false)} disabled={goingLive}>
-              Cancel
-            </Button>
-            <Button
-              className="bg-red-600 hover:bg-red-700 text-white min-w-[120px]"
-              onClick={handleGoLive}
-              disabled={goingLive || !glTitle.trim()}
-            >
-              {goingLive
-                ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Starting…</>
-                : <><Signal className="w-4 h-4 mr-2" />Go Live Now</>}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* ════════════════ END LIVE CONFIRMATION ════════════════ */}
-      <Dialog open={showEndDialog} onOpenChange={(o) => { if (!endingLive) setShowEndDialog(o); }}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>End Live Broadcast?</DialogTitle>
-            <DialogDescription>
-              {lo?.title && <><strong>"{lo.title}"</strong> will be stopped.<br /></>}
-              The automated broadcast queue will resume immediately for all viewers.
-            </DialogDescription>
-          </DialogHeader>
-          {lo && (
-            <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-muted/30 border text-sm">
-              <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse shrink-0" />
-              <div>
-                <p className="font-medium">{lo.title}</p>
-                <p className="text-xs text-muted-foreground">
-                  Started {fmtTime(lo.startedAt)}
-                  {lo.elapsedSecs != null ? ` · ${fmtHMS(lo.elapsedSecs)} on air` : ""}
-                </p>
-              </div>
-            </div>
-          )}
-          <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => setShowEndDialog(false)} disabled={endingLive}>Keep Broadcasting</Button>
-            <Button variant="destructive" onClick={handleEndLive} disabled={endingLive} className="min-w-[110px]">
-              {endingLive
-                ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Ending…</>
-                : <><XCircle className="w-4 h-4 mr-2" />End Live</>}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* ════════════════ ADD VIDEO DIALOG ════════════════ */}
-      <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
-        <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col">
-          <DialogHeader>
-            <DialogTitle>Add Video to Broadcast Queue</DialogTitle>
-          </DialogHeader>
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <Input className="pl-9" placeholder="Search video library..." value={addSearch} onChange={(e) => setAddSearch(e.target.value)} />
-          </div>
-          <div className="overflow-y-auto flex-1 space-y-2 pr-1">
-            {videoLibrary?.videos?.map((video) => {
-              const alreadyAdded = queue.some((q) => q.youtubeId === video.youtubeId);
-              return (
-                <div key={video.id} className="flex items-center gap-3 rounded-lg border bg-card p-2.5">
-                  {video.thumbnailUrl ? (
-                    <img src={video.thumbnailUrl} alt="" className="w-20 h-12 object-cover rounded shrink-0" />
-                  ) : (
-                    <div className="w-20 h-12 bg-muted rounded flex items-center justify-center shrink-0">
-                      <Play className="w-4 h-4 text-muted-foreground" />
-                    </div>
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">{video.title}</p>
-                    <div className="flex items-center gap-1.5 mt-0.5">
-                      <Badge variant="secondary" className="text-xs h-4">{video.category}</Badge>
-                      {(video as any).videoSource === "local" && (
-                        <Badge variant="outline" className="text-xs h-4 text-blue-500 border-blue-500/30">
-                          <HardDrive className="w-2.5 h-2.5 mr-1" />Local
-                        </Badge>
-                      )}
-                    </div>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant={alreadyAdded ? "secondary" : "default"}
-                    disabled={alreadyAdded || addingId === video.id}
-                    onClick={() => addToQueue({
-                      id: video.id,
-                      youtubeId: video.youtubeId,
-                      title: video.title,
-                      thumbnailUrl: video.thumbnailUrl,
-                      videoSource: (video as any).videoSource,
-                      localVideoUrl: (video as any).localVideoUrl,
-                    })}
-                    className="shrink-0"
-                  >
-                    {addingId === video.id
-                      ? <Loader2 className="w-4 h-4 animate-spin" />
-                      : alreadyAdded
-                      ? <><CheckCircle2 className="w-3.5 h-3.5 mr-1" />In Queue</>
-                      : <><Plus className="w-4 h-4 mr-1" />Add</>}
-                  </Button>
-                </div>
-              );
-            })}
-            {!videoLibrary?.videos?.length && (
-              <p className="text-center text-sm text-muted-foreground py-8">
-                No videos found. Import videos in the Video Library first.
-              </p>
+            {useCustom && (
+              <Input
+                type="number"
+                min={1}
+                max={720}
+                placeholder="Minutes (e.g. 90)"
+                value={customDuration}
+                onChange={(e) => setCustomDuration(e.target.value)}
+              />
             )}
           </div>
-        </DialogContent>
-      </Dialog>
+          <Separator />
+          <div className="flex items-center justify-between">
+            <div>
+              <Label htmlFor="go-live-notify" className="text-sm">Notify viewers</Label>
+              <p className="text-xs text-muted-foreground">Send push notification to mobile &amp; TV users</p>
+            </div>
+            <Switch id="go-live-notify" checked={notify} onCheckedChange={setNotify} />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button
+            onClick={handleSubmit}
+            disabled={loading || !title.trim() || (useCustom ? !customDuration : false)}
+            className="bg-red-600 hover:bg-red-700 text-white"
+          >
+            {loading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Radio className="w-4 h-4 mr-2" />}
+            Go Live
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
-      {/* ── Direct upload to broadcast queue ───────────────────────────────── */}
+// ─── Main Component ───────────────────────────────────────────────────────────
+export default function Broadcast() {
+  // ── core state ─────────────────────────────────────────────────────────────
+  const [queue, setQueue] = useState<BroadcastItem[]>([]);
+  const [current, setCurrent] = useState<CurrentBroadcast | null>(null);
+  const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [sseState, setSseState] = useState<SseState>("connecting");
+  const [livePosition, setLivePosition] = useState(0);
+
+  // ── dialog state ───────────────────────────────────────────────────────────
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  const [showAddDialog, setShowAddDialog] = useState(false);
+  const [showGoLiveDialog, setShowGoLiveDialog] = useState(false);
+  const [showEndDialog, setShowEndDialog] = useState(false);
+  const [clearConfirm, setClearConfirm] = useState(false);
+
+  // ── action state ───────────────────────────────────────────────────────────
+  const [endingLive, setEndingLive] = useState(false);
+  const [removingId, setRemovingId] = useState<string | null>(null);
+
+  const { toast } = useToast();
+  const tickerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
+  const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
+  const sseRef = useRef<EventSource | undefined>(undefined);
+  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const reconnectAttempt = useRef(0);
+
+  // ── data loading ───────────────────────────────────────────────────────────
+  const loadAll = useCallback(async () => {
+    try {
+      const [qRes, cRes, lRes] = await Promise.all([
+        adminFetch("/api/admin/broadcast"),
+        adminFetch("/api/broadcast/current"),
+        adminFetch("/api/admin/live"),
+      ]);
+
+      if (qRes.ok) setQueue(await qRes.json());
+      if (cRes.ok) {
+        const c = await cRes.json();
+        setCurrent(c);
+        setLivePosition(c.positionSecs ?? 0);
+      }
+      if (lRes.ok) setLiveStatus(await lRes.json());
+
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // ── SSE ────────────────────────────────────────────────────────────────────
+  const connectSSE = useCallback(() => {
+    if (sseRef.current) {
+      sseRef.current.close();
+    }
+
+    const url = getAdminEventSourceUrl("/api/admin/live/events");
+    const es = new EventSource(url);
+    sseRef.current = es;
+
+    es.addEventListener("open", () => {
+      setSseState("connected");
+      reconnectAttempt.current = 0;
+    });
+
+    es.addEventListener("broadcast-queue-updated", () => {
+      loadAll();
+    });
+
+    es.addEventListener("broadcast-control-updated", () => {
+      loadAll();
+    });
+
+    es.addEventListener("status", () => {
+      loadAll();
+    });
+
+    es.addEventListener("override-expired", () => {
+      loadAll();
+      toast({ title: "Live broadcast ended", description: "Resuming automated queue." });
+    });
+
+    es.onerror = () => {
+      setSseState("reconnecting");
+      es.close();
+      const backoff = Math.min(1000 * Math.pow(2, reconnectAttempt.current), 30000);
+      reconnectAttempt.current++;
+      reconnectTimer.current = setTimeout(() => {
+        if (document.visibilityState !== "hidden") connectSSE();
+      }, backoff);
+    };
+  }, [loadAll, toast]);
+
+  // ── position ticker ────────────────────────────────────────────────────────
+  useEffect(() => {
+    tickerRef.current = setInterval(() => {
+      setLivePosition((p) => p + 1);
+    }, 1000);
+    return () => clearInterval(tickerRef.current);
+  }, []);
+
+  // ── polling fallback (30s) ─────────────────────────────────────────────────
+  useEffect(() => {
+    pollRef.current = setInterval(loadAll, 30_000);
+    return () => clearInterval(pollRef.current);
+  }, [loadAll]);
+
+  // ── initial load + SSE ─────────────────────────────────────────────────────
+  useEffect(() => {
+    loadAll();
+    connectSSE();
+    return () => {
+      sseRef.current?.close();
+      clearTimeout(reconnectTimer.current);
+    };
+  }, [loadAll, connectSSE]);
+
+  // ── page visibility — reconnect SSE when tab becomes visible ───────────────
+  useEffect(() => {
+    const handler = () => {
+      if (document.visibilityState === "visible" && sseState !== "connected") {
+        reconnectAttempt.current = 0;
+        connectSSE();
+        loadAll();
+      }
+    };
+    document.addEventListener("visibilitychange", handler);
+    return () => document.removeEventListener("visibilitychange", handler);
+  }, [sseState, connectSSE, loadAll]);
+
+  // ── queue operations ───────────────────────────────────────────────────────
+  const handleAddFromLibrary = useCallback(async (video: LibraryVideo) => {
+    const res = await adminFetch("/api/admin/broadcast", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ videoId: video.id }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error ?? `HTTP ${res.status}`);
+    }
+    toast({ title: "Added to queue", description: video.title });
+    await loadAll();
+  }, [toast, loadAll]);
+
+  const handleRemove = useCallback(async (id: string) => {
+    setRemovingId(id);
+    try {
+      const res = await adminFetch(`/api/admin/broadcast/${id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setQueue((q) => q.filter((i) => i.id !== id));
+    } catch (e) {
+      toast({ title: "Remove failed", description: e instanceof Error ? e.message : "Unknown error", variant: "destructive" });
+    } finally {
+      setRemovingId(null);
+    }
+  }, [toast]);
+
+  const handleReorder = useCallback(async (id: string, direction: "up" | "down") => {
+    const idx = queue.findIndex((i) => i.id === id);
+    if (idx === -1) return;
+    if (direction === "up" && idx === 0) return;
+    if (direction === "down" && idx === queue.length - 1) return;
+
+    const newQueue = [...queue];
+    const swap = direction === "up" ? idx - 1 : idx + 1;
+    [newQueue[idx], newQueue[swap]] = [newQueue[swap], newQueue[idx]];
+    setQueue(newQueue);
+
+    try {
+      const res = await adminFetch("/api/admin/broadcast/reorder", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: newQueue.map((i) => i.id) }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (e) {
+      toast({ title: "Reorder failed", variant: "destructive" });
+      await loadAll();
+    }
+  }, [queue, toast, loadAll]);
+
+  const handleDurationEdit = useCallback(async (id: string, durationSecs: number) => {
+    setQueue((q) => q.map((i) => i.id === id ? { ...i, durationSecs } : i));
+    try {
+      const res = await adminFetch(`/api/admin/broadcast/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ durationSecs }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (e) {
+      toast({ title: "Duration update failed", variant: "destructive" });
+      await loadAll();
+    }
+  }, [toast, loadAll]);
+
+  const handleClearQueue = useCallback(async () => {
+    setClearConfirm(false);
+    const ids = [...queue.map((i) => i.id)];
+    for (const id of ids) {
+      await adminFetch(`/api/admin/broadcast/${id}`, { method: "DELETE" }).catch(() => {});
+    }
+    setQueue([]);
+    toast({ title: "Queue cleared" });
+  }, [queue, toast]);
+
+  // ── live controls ──────────────────────────────────────────────────────────
+  const handleGoLive = useCallback(async (title: string, durationMins: number, notify: boolean) => {
+    const res = await adminFetch("/api/admin/live/override/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, durationMins, sendPushNotification: notify }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error ?? `HTTP ${res.status}`);
+    }
+    toast({ title: "Now live!", description: title });
+    await loadAll();
+  }, [toast, loadAll]);
+
+  const handleEndLive = useCallback(async () => {
+    setShowEndDialog(false);
+    setEndingLive(true);
+    try {
+      const res = await adminFetch("/api/admin/live/override/stop", { method: "POST" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      toast({ title: "Live ended", description: "Resuming automated broadcast queue." });
+      await loadAll();
+    } catch (e) {
+      toast({ title: "Failed to end live", description: e instanceof Error ? e.message : "Unknown error", variant: "destructive" });
+    } finally {
+      setEndingLive(false);
+    }
+  }, [toast, loadAll]);
+
+  const handleExtendLive = useCallback(async (minutes: number) => {
+    const res = await adminFetch("/api/admin/live/override/extend", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ durationMins: minutes }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    toast({ title: `Extended by ${minutes} minutes` });
+    await loadAll();
+  }, [toast, loadAll]);
+
+  const handleSendNotification = useCallback(async () => {
+    const override = liveStatus?.liveOverride;
+    if (!override) return;
+    const res = await adminFetch("/api/admin/notifications/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "📺 Live Now", body: override.title }),
+    });
+    if (res.ok) toast({ title: "Notification sent" });
+    else toast({ title: "Notification failed", variant: "destructive" });
+  }, [liveStatus, toast]);
+
+  // ── derived values ─────────────────────────────────────────────────────────
+  const totalQueueSecs = queue.filter((i) => i.isActive).reduce((s, i) => s + i.durationSecs, 0);
+  const isLive = !!liveStatus?.liveOverride;
+
+  // ── wall clock start times for guide ──────────────────────────────────────
+  const wallClockStarts = (() => {
+    const starts: Date[] = [];
+    const now = new Date();
+    let acc = 0;
+    for (const item of queue) {
+      const posInCycle = livePosition % (totalQueueSecs || 1);
+      let elapsed = acc - posInCycle;
+      if (elapsed < 0) elapsed += totalQueueSecs || 0;
+      starts.push(new Date(now.getTime() + elapsed * 1000 - (livePosition % (item.durationSecs || 1)) * 1000));
+      acc += item.durationSecs;
+    }
+    return starts;
+  })();
+
+  // ── SSE indicator ──────────────────────────────────────────────────────────
+  const SseIndicator = () => {
+    switch (sseState) {
+      case "connected":
+        return <div className="flex items-center gap-1.5 text-xs text-emerald-600"><Wifi className="w-3 h-3" /><span>Live</span></div>;
+      case "reconnecting":
+        return <div className="flex items-center gap-1.5 text-xs text-amber-500"><Loader2 className="w-3 h-3 animate-spin" /><span>Reconnecting…</span></div>;
+      default:
+        return <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><WifiOff className="w-3 h-3" /><span>Offline</span></div>;
+    }
+  };
+
+  // ── render ─────────────────────────────────────────────────────────────────
+  return (
+    <div className="flex flex-col h-full">
+
+      {/* ── Header ───────────────────────────────────────────────────────── */}
+      <div className="flex items-center justify-between px-6 pt-6 pb-4 border-b bg-background sticky top-0 z-10">
+        <div className="flex items-center gap-3">
+          <div>
+            <h1 className="text-xl font-semibold flex items-center gap-2">
+              <Tv className="w-5 h-5 text-primary" />
+              Broadcast Control
+            </h1>
+            <div className="flex items-center gap-3 mt-0.5">
+              <SseIndicator />
+              <span className="text-muted-foreground text-xs">·</span>
+              <LiveClock />
+              {liveStatus?.deviceCount != null && (
+                <>
+                  <span className="text-muted-foreground text-xs">·</span>
+                  <span className="text-xs text-muted-foreground flex items-center gap-1">
+                    <Signal className="w-3 h-3" />
+                    {liveStatus.deviceCount} viewer{liveStatus.deviceCount !== 1 ? "s" : ""}
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+          {isLive && (
+            <Badge className="bg-red-500 text-white animate-pulse ml-2">LIVE</Badge>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={loadAll} title="Refresh">
+            <RefreshCw className="w-4 h-4" />
+          </Button>
+          {isLive ? (
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => setShowEndDialog(true)}
+              disabled={endingLive}
+            >
+              {endingLive ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <XCircle className="w-4 h-4 mr-2" />}
+              End Live
+            </Button>
+          ) : (
+            <Button size="sm" onClick={() => setShowGoLiveDialog(true)} className="bg-red-600 hover:bg-red-700 text-white">
+              <Radio className="w-4 h-4 mr-2" />
+              Go Live
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {/* ── Body ─────────────────────────────────────────────────────────── */}
+      {loading ? (
+        <div className="flex-1 grid grid-cols-1 lg:grid-cols-5 gap-6 p-6">
+          <div className="lg:col-span-2 space-y-4">
+            {[1, 2, 3].map((i) => <Skeleton key={i} className="h-32 rounded-xl" />)}
+          </div>
+          <div className="lg:col-span-3">
+            <Skeleton className="h-10 mb-4 rounded-lg" />
+            <div className="space-y-2">
+              {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-16 rounded-lg" />)}
+            </div>
+          </div>
+        </div>
+      ) : error ? (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center space-y-3">
+            <AlertCircle className="w-10 h-10 text-destructive/60 mx-auto" />
+            <p className="font-medium">Failed to load broadcast data</p>
+            <p className="text-sm text-muted-foreground">{error}</p>
+            <Button onClick={loadAll} variant="outline">
+              <RefreshCw className="w-4 h-4 mr-2" />
+              Retry
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex-1 grid grid-cols-1 lg:grid-cols-5 gap-6 p-6 overflow-auto">
+
+          {/* ── Left Panel ───────────────────────────────────────────────── */}
+          <div className="lg:col-span-2 space-y-4">
+            <NowPlayingCard current={current} livePosition={livePosition} />
+
+            <LiveOverridePanel
+              liveStatus={liveStatus}
+              onGoLive={() => setShowGoLiveDialog(true)}
+              onEndLive={() => setShowEndDialog(true)}
+              onExtend={handleExtendLive}
+              onNotify={handleSendNotification}
+            />
+
+            <BroadcastGuide queue={queue} positionSecs={livePosition} />
+          </div>
+
+          {/* ── Right Panel (Queue) ───────────────────────────────────────── */}
+          <div className="lg:col-span-3 flex flex-col gap-3">
+            {/* Queue header */}
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="font-semibold text-sm">Broadcast Queue</h2>
+                <p className="text-xs text-muted-foreground">
+                  {queue.length} item{queue.length !== 1 ? "s" : ""}
+                  {totalQueueSecs > 0 && ` · ${fmtDuration(totalQueueSecs)} cycle`}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                {queue.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 text-destructive hover:text-destructive text-xs"
+                    onClick={() => setClearConfirm(true)}
+                  >
+                    <Trash2 className="w-3.5 h-3.5 mr-1.5" />
+                    Clear All
+                  </Button>
+                )}
+                <Button variant="outline" size="sm" className="h-8" onClick={() => setShowUploadModal(true)}>
+                  <Upload className="w-3.5 h-3.5 mr-1.5" />
+                  Upload
+                </Button>
+                <Button size="sm" className="h-8" onClick={() => setShowAddDialog(true)}>
+                  <Plus className="w-3.5 h-3.5 mr-1.5" />
+                  Add from Library
+                </Button>
+              </div>
+            </div>
+
+            {/* Queue list */}
+            {queue.length === 0 ? (
+              <div className="flex-1 flex flex-col items-center justify-center py-16 text-center border-2 border-dashed rounded-xl">
+                <Radio className="w-10 h-10 text-muted-foreground/30 mb-3" />
+                <p className="font-medium text-sm text-muted-foreground mb-1">Queue is empty</p>
+                <p className="text-xs text-muted-foreground mb-4">Add videos to start the automated broadcast</p>
+                <div className="flex gap-2">
+                  <Button size="sm" onClick={() => setShowAddDialog(true)}>
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add from Library
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setShowUploadModal(true)}>
+                    <Upload className="w-4 h-4 mr-2" />
+                    Upload Video
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                {queue.map((item, idx) => (
+                  <QueueItem
+                    key={item.id}
+                    item={item}
+                    index={idx}
+                    total={queue.length}
+                    isFirst={idx === 0}
+                    isLast={idx === queue.length - 1}
+                    onMoveUp={() => handleReorder(item.id, "up")}
+                    onMoveDown={() => handleReorder(item.id, "down")}
+                    onRemove={() => handleRemove(item.id)}
+                    onDurationEdit={(secs) => handleDurationEdit(item.id, secs)}
+                    wallClockStart={wallClockStarts[idx] ?? new Date()}
+                  />
+                ))}
+
+                {/* Queue footer */}
+                <div className="pt-2 pb-1 px-3 flex items-center justify-between text-xs text-muted-foreground border-t">
+                  <span>{queue.length} item{queue.length !== 1 ? "s" : ""}</span>
+                  <span className="font-mono">{fmtDuration(totalQueueSecs)} total cycle</span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Modals / Dialogs ─────────────────────────────────────────────── */}
       <VideoUploadModal
-        open={showUploadDialog}
-        onOpenChange={setShowUploadDialog}
+        open={showUploadModal}
+        onOpenChange={setShowUploadModal}
         broadcastMode
         storageKey="ttv-broadcast-upload-v1"
         onUploadsComplete={() => {
           loadAll();
-          // Safety-net: re-fetch 2 s later in case the first call
-          // raced against any remaining async work on the server.
           setTimeout(loadAll, 2000);
         }}
       />
+
+      <AddFromLibraryDialog
+        open={showAddDialog}
+        onOpenChange={setShowAddDialog}
+        onAdd={handleAddFromLibrary}
+      />
+
+      <GoLiveDialog
+        open={showGoLiveDialog}
+        onOpenChange={setShowGoLiveDialog}
+        onGoLive={handleGoLive}
+      />
+
+      <AlertDialog open={showEndDialog} onOpenChange={setShowEndDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>End live broadcast?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The manual live override will end and the automated broadcast queue will resume.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={handleEndLive}
+            >
+              End Live
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={clearConfirm} onOpenChange={setClearConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Clear entire queue?</AlertDialogTitle>
+            <AlertDialogDescription>
+              All {queue.length} items will be removed from the broadcast queue. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={handleClearQueue}
+            >
+              Clear Queue
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
