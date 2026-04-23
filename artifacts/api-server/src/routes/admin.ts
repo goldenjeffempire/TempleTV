@@ -1039,15 +1039,20 @@ router.post("/admin/videos/upload/init", async (req, res) => {
     uploadSessions.set(sessionId, session);
     writeSessionToDisk(session);
 
-    // Explicitly set Cache-Control and Content-Type before sending so that
-    // the compression middleware (which buffers responses) and any proxy
-    // layer cannot strip or cache the body.
+    // Return session data in BOTH headers and body.
+    // Headers are never dropped by any proxy layer (unlike response bodies
+    // which can be silently truncated by HTTP/1.1 ↔ HTTP/2 translation).
+    // The client reads the body first and falls back to headers if the body
+    // is empty — making this endpoint resilient to any proxy body-stripping.
     const payload = JSON.stringify({ sessionId, totalChunks: session.totalChunks });
     res
       .status(200)
       .setHeader("Cache-Control", "no-store, no-cache, must-revalidate")
       .setHeader("Content-Type", "application/json; charset=utf-8")
       .setHeader("Content-Length", Buffer.byteLength(payload))
+      .setHeader("X-Upload-Session-Id", sessionId)
+      .setHeader("X-Upload-Total-Chunks", String(session.totalChunks))
+      .setHeader("Access-Control-Expose-Headers", "X-Upload-Session-Id, X-Upload-Total-Chunks")
       .end(payload);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";

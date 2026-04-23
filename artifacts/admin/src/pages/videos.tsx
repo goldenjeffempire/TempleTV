@@ -450,14 +450,16 @@ export default function Videos() {
           ext,
         });
 
-        // Retry the init request up to 3 times — the Replit/Vite dev proxy
-        // occasionally drops the response body (HTTP 200 with empty body) due
-        // to HTTP/1.1 → HTTP/2 protocol translation under load. Retrying with
-        // a short backoff reliably recovers from this transient condition.
-        let initRes: Response | null = null;
-        let initError: Error | null = null;
-        for (let attempt = 0; attempt < 3; attempt++) {
-          if (attempt > 0) await new Promise((r) => setTimeout(r, 600 * attempt));
+        // The server embeds the session ID in both the JSON body AND in
+        // X-Upload-Session-Id / X-Upload-Total-Chunks response headers.
+        // Headers are NEVER dropped by any proxy layer. We read the body
+        // first (fast path) and fall back to headers if the body arrives
+        // empty — making this completely resilient to HTTP/2 proxy body
+        // truncation that occasionally occurs in the Replit dev environment.
+        let initRes: Response;
+        let lastInitError: Error | null = null;
+        for (let attempt = 0; ; attempt++) {
+          if (attempt > 0) await new Promise((r) => setTimeout(r, 500 * attempt));
           try {
             initRes = await fetch("/api/admin/videos/upload/init", {
               method: "POST",
@@ -467,30 +469,35 @@ export default function Videos() {
               },
               body: initBody,
             });
-            // If we got a non-empty body we can proceed regardless of status
-            const clone = initRes.clone();
-            const preview = await clone.text();
-            if (preview.length > 0) break;
-            // Empty body on 200 — retry
-            initError = new Error(
-              `Init response: empty response (HTTP ${initRes.status}). Retrying… (attempt ${attempt + 1}/3)`
-            );
+            break; // got a response — proceed regardless of body content
           } catch (e) {
-            initError = e instanceof Error ? e : new Error(String(e));
+            lastInitError = e instanceof Error ? e : new Error(String(e));
+            if (attempt >= 2) throw new Error(`Upload init network error after 3 attempts: ${lastInitError.message}`);
           }
-          initRes = null;
         }
 
-        if (!initRes) throw initError ?? new Error("Failed to initialize upload after 3 attempts");
-
-        if (!initRes.ok) {
-          const err = await readJsonOrThrow<{ error?: string }>(initRes, "Init failed").catch((e) => {
+        if (!initRes!.ok) {
+          const err = await readJsonOrThrow<{ error?: string }>(initRes!, "Init failed").catch((e) => {
             throw new Error(e instanceof Error ? e.message : String(e));
           });
-          throw new Error(err.error ?? `Failed to initialize upload (HTTP ${initRes.status})`);
+          throw new Error(err.error ?? `Failed to initialize upload (HTTP ${initRes!.status})`);
         }
 
-        const { sessionId: newSid } = await readJsonOrThrow<{ sessionId: string }>(initRes, "Init response");
+        // Read body, then fall back to response headers if body was dropped by proxy.
+        const initText = await initRes!.text();
+        let newSid: string;
+        if (initText) {
+          const parsed = (() => { try { return JSON.parse(initText) as { sessionId?: string }; } catch { return null; } })();
+          newSid = parsed?.sessionId ?? initRes!.headers.get("x-upload-session-id") ?? "";
+        } else {
+          newSid = initRes!.headers.get("x-upload-session-id") ?? "";
+        }
+
+        if (!newSid) {
+          const hdrs = `x-upload-session-id=${initRes!.headers.get("x-upload-session-id")} body=${JSON.stringify(initText.slice(0, 80))}`;
+          throw new Error(`Init response: could not extract sessionId (HTTP ${initRes!.status}). ${hdrs}`);
+        }
+
         sid = newSid;
 
         // Save session for single-file recovery
