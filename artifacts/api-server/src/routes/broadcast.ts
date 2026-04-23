@@ -28,7 +28,7 @@ const CACHE_KEYS = {
 } as const;
 
 const BROADCAST_PAYLOAD_CACHE_KEY = "broadcast:current_payload";
-const BROADCAST_PAYLOAD_TTL_MS = 2_000;
+const BROADCAST_PAYLOAD_TTL_MS = 5_000;
 
 async function getActiveLiveOverride() {
   const overrides = await cache.getOrSet(
@@ -377,12 +377,12 @@ async function getScheduledItems(entry: ScheduleEntry): Promise<BroadcastItem[]>
     return videos.map((video, index) => ({
       id: `schedule-${entry.id}-${video.id}`,
       videoId: video.videoId,
-      youtubeId: video.youtubeId,
+      youtubeId: video.youtubeId ?? "",
       title: video.title,
       thumbnailUrl: video.thumbnailUrl,
       durationSecs: parseDurationSecs(video.duration),
-      localVideoUrl: null,
-      videoSource: "youtube",
+      localVideoUrl: (video as Record<string, unknown>).localVideoUrl as string | null ?? null,
+      videoSource: (video as Record<string, unknown>).videoSource as string ?? "youtube",
       isActive: true,
       sortOrder: index,
       addedAt: video.addedAt,
@@ -475,10 +475,14 @@ router.get("/broadcast/current", async (_req, res) => {
 
 router.get("/broadcast/events", async (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Accel-Buffering", "no");
+  res.setHeader("Access-Control-Allow-Origin", "*");
   res.flushHeaders();
+
+  // Tell clients to retry connection after 5s on disconnect
+  res.write("retry: 5000\n\n");
 
   const client = addSSEClient(res);
 
@@ -490,18 +494,50 @@ router.get("/broadcast/events", async (req, res) => {
   req.on("close", () => removeSSEClient(client));
 });
 
+// Lightweight metadata endpoint for radio clients — returns only the current
+// track title, preacher, thumbnail, and timing info. Cheaper than /broadcast/current
+// because it returns a subset of the payload. Ideal for frequent polling.
+router.get("/broadcast/metadata", async (_req, res) => {
+  try {
+    const payload = await buildBroadcastCurrentPayload();
+    const item = payload.item;
+    res
+      .setHeader("Cache-Control", "public, max-age=4, s-maxage=4")
+      .json({
+        title: payload.liveOverride?.title ?? item?.title ?? null,
+        thumbnailUrl: item?.thumbnailUrl ?? null,
+        videoSource: item?.videoSource ?? null,
+        positionSecs: payload.positionSecs,
+        durationSecs: item?.durationSecs ?? 0,
+        progressPercent: payload.progressPercent,
+        queueLength: payload.queueLength,
+        isLive: !!payload.liveOverride,
+        syncedAt: payload.syncedAt,
+        serverTimeMs: payload.serverTimeMs,
+      });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
 router.get("/admin/broadcast", async (_req, res) => {
-  const items = await db
-    .select()
-    .from(broadcastQueueTable)
-    .orderBy(asc(broadcastQueueTable.sortOrder));
-  res.json(items);
+  try {
+    const items = await db
+      .select()
+      .from(broadcastQueueTable)
+      .orderBy(asc(broadcastQueueTable.sortOrder));
+    res.json(items);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
 });
 
 router.post("/admin/broadcast", async (req, res) => {
   const { videoId, youtubeId, title, thumbnailUrl, durationSecs, localVideoUrl, videoSource } = req.body as {
     videoId?: string;
-    youtubeId: string;
+    youtubeId?: string;
     title: string;
     thumbnailUrl?: string;
     durationSecs?: number;
@@ -509,8 +545,15 @@ router.post("/admin/broadcast", async (req, res) => {
     videoSource?: string;
   };
 
-  if (!youtubeId || !title) {
-    return res.status(400).json({ error: "youtubeId and title are required" });
+  if (!title?.trim()) {
+    return res.status(400).json({ error: "title is required" });
+  }
+  const resolvedSource = videoSource ?? (localVideoUrl ? "local" : "youtube");
+  if (resolvedSource === "youtube" && !youtubeId) {
+    return res.status(400).json({ error: "youtubeId is required for YouTube videos" });
+  }
+  if (resolvedSource === "local" && !localVideoUrl) {
+    return res.status(400).json({ error: "localVideoUrl is required for local videos" });
   }
 
   let resolvedDurationSecs = durationSecs ?? 0;
@@ -537,12 +580,12 @@ router.post("/admin/broadcast", async (req, res) => {
     .values({
       id: randomUUID(),
       videoId: videoId ?? null,
-      youtubeId,
-      title,
+      youtubeId: youtubeId ?? "",
+      title: title.trim(),
       thumbnailUrl: thumbnailUrl ?? "",
       durationSecs: resolvedDurationSecs,
       localVideoUrl: localVideoUrl ?? null,
-      videoSource: videoSource ?? "youtube",
+      videoSource: resolvedSource,
       sortOrder: maxOrder,
     })
     .returning();
@@ -554,59 +597,94 @@ router.post("/admin/broadcast", async (req, res) => {
 });
 
 router.patch("/admin/broadcast/:id", async (req, res) => {
-  const { id } = req.params as { id: string };
-  const { durationSecs, isActive, title } = req.body as {
-    durationSecs?: number;
-    isActive?: boolean;
-    title?: string;
-  };
+  try {
+    const { id } = req.params as { id: string };
+    const { durationSecs, isActive, title } = req.body as {
+      durationSecs?: number;
+      isActive?: boolean;
+      title?: string;
+    };
 
-  const updates: Partial<typeof broadcastQueueTable.$inferInsert> = {};
-  if (durationSecs !== undefined) updates.durationSecs = durationSecs;
-  if (isActive !== undefined) updates.isActive = isActive;
-  if (title !== undefined) updates.title = title;
+    const updates: Partial<typeof broadcastQueueTable.$inferInsert> = {};
+    if (durationSecs !== undefined) {
+      if (typeof durationSecs !== "number" || durationSecs < 0) {
+        return res.status(400).json({ error: "durationSecs must be a non-negative number" });
+      }
+      updates.durationSecs = Math.round(durationSecs);
+    }
+    if (isActive !== undefined) updates.isActive = isActive;
+    if (title !== undefined) {
+      if (!title.trim()) return res.status(400).json({ error: "title cannot be empty" });
+      updates.title = title.trim();
+    }
 
-  const [updated] = await db
-    .update(broadcastQueueTable)
-    .set(updates)
-    .where(eq(broadcastQueueTable.id, id))
-    .returning();
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: "No valid fields to update" });
+    }
 
-  if (!updated) return res.status(404).json({ error: "Item not found" });
-  await invalidateBroadcastCache();
-  broadcastLiveEvent("broadcast-queue-updated", { id, reason: "updated", queuedAt: new Date().toISOString() });
-  emitBroadcastState("queue-updated", { id });
-  res.json(updated);
+    const [updated] = await db
+      .update(broadcastQueueTable)
+      .set(updates)
+      .where(eq(broadcastQueueTable.id, id))
+      .returning();
+
+    if (!updated) return res.status(404).json({ error: "Item not found" });
+    await invalidateBroadcastCache();
+    broadcastLiveEvent("broadcast-queue-updated", { id, reason: "updated", queuedAt: new Date().toISOString() });
+    emitBroadcastState("queue-updated", { id });
+    res.json(updated);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
 });
 
 router.delete("/admin/broadcast/:id", async (req, res) => {
-  const { id } = req.params as { id: string };
-  await db.delete(broadcastQueueTable).where(eq(broadcastQueueTable.id, id));
-  await invalidateBroadcastCache();
-  broadcastLiveEvent("broadcast-queue-updated", { id, reason: "deleted", queuedAt: new Date().toISOString() });
-  emitBroadcastState("queue-deleted", { id });
-  res.json({ ok: true });
+  try {
+    const { id } = req.params as { id: string };
+    const [deleted] = await db
+      .delete(broadcastQueueTable)
+      .where(eq(broadcastQueueTable.id, id))
+      .returning();
+    if (!deleted) return res.status(404).json({ error: "Item not found" });
+    await invalidateBroadcastCache();
+    broadcastLiveEvent("broadcast-queue-updated", { id, reason: "deleted", queuedAt: new Date().toISOString() });
+    emitBroadcastState("queue-deleted", { id });
+    res.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
 });
 
 router.put("/admin/broadcast/reorder", async (req, res) => {
-  const { orderedIds } = req.body as { orderedIds: string[] };
-  if (!Array.isArray(orderedIds)) {
-    return res.status(400).json({ error: "orderedIds must be an array" });
+  try {
+    const { orderedIds } = req.body as { orderedIds: string[] };
+    if (!Array.isArray(orderedIds) || orderedIds.some((id) => typeof id !== "string")) {
+      return res.status(400).json({ error: "orderedIds must be an array of strings" });
+    }
+    if (orderedIds.length === 0) {
+      return res.status(400).json({ error: "orderedIds cannot be empty" });
+    }
+
+    // Use a transaction so all sort orders are updated atomically
+    await db.transaction(async (tx) => {
+      for (let i = 0; i < orderedIds.length; i++) {
+        await tx
+          .update(broadcastQueueTable)
+          .set({ sortOrder: i })
+          .where(eq(broadcastQueueTable.id, orderedIds[i]!));
+      }
+    });
+
+    await invalidateBroadcastCache();
+    broadcastLiveEvent("broadcast-queue-updated", { orderedIds, reason: "reordered", queuedAt: new Date().toISOString() });
+    emitBroadcastState("queue-reordered", { orderedIds });
+    res.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
   }
-
-  await Promise.all(
-    orderedIds.map((id, index) =>
-      db
-        .update(broadcastQueueTable)
-        .set({ sortOrder: index })
-        .where(eq(broadcastQueueTable.id, id))
-    )
-  );
-
-  await invalidateBroadcastCache();
-  broadcastLiveEvent("broadcast-queue-updated", { orderedIds, reason: "reordered", queuedAt: new Date().toISOString() });
-  emitBroadcastState("queue-reordered", { orderedIds });
-  res.json({ ok: true });
 });
 
 export default router;

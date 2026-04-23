@@ -334,6 +334,14 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const playPrevious = useCallback(() => {
     const loop = loopRef.current;
     const shuffle = shuffleRef.current;
+
+    // When looping a single track, skip-back replays it from the start
+    if (loop === "one") {
+      playerSeekRef.current?.(0);
+      playerPlayRef.current?.();
+      return;
+    }
+
     setIsLive(false);
     setCurrentTime(0);
     setDuration(0);

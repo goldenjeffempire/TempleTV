@@ -122,6 +122,9 @@ export type BroadcastRealtimeEvent =
   | "override-expired"
   | "yt-status";
 
+const SSE_MIN_RETRY_MS = 2_000;
+const SSE_MAX_RETRY_MS = 60_000;
+
 export function subscribeBroadcastEvents(
   handlers: Partial<Record<BroadcastRealtimeEvent, (payload: any) => void>>,
 ): { close: () => void } | null {
@@ -129,25 +132,55 @@ export function subscribeBroadcastEvents(
   const EventSourceCtor = (globalThis as any).EventSource;
   if (!apiBase || typeof EventSourceCtor !== "function") return null;
 
-  const source = new EventSourceCtor(`${apiBase}/api/broadcast/events`);
+  let source: any = null;
+  let closed = false;
+  let retryMs = SSE_MIN_RETRY_MS;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const listenerEntries = (Object.entries(handlers) as Array<[BroadcastRealtimeEvent, (payload: any) => void]>)
-    .map(([event, handler]) => {
-      const listener = (message: any) => {
-        try {
-          handler(message?.data ? JSON.parse(message.data) : null);
-        } catch {
-          handler(null);
-        }
-      };
-      source.addEventListener(event, listener);
-      return [event, listener] as const;
+  function connect() {
+    if (closed) return;
+    source = new EventSourceCtor(`${apiBase}/api/broadcast/events`);
+
+    const listenerEntries = (Object.entries(handlers) as Array<[BroadcastRealtimeEvent, (payload: any) => void]>)
+      .map(([event, handler]) => {
+        const listener = (message: any) => {
+          retryMs = SSE_MIN_RETRY_MS; // reset backoff on any successful message
+          try {
+            handler(message?.data ? JSON.parse(message.data) : null);
+          } catch {
+            handler(null);
+          }
+        };
+        source.addEventListener(event, listener);
+        return [event, listener] as const;
+      });
+
+    source.addEventListener("open", () => {
+      retryMs = SSE_MIN_RETRY_MS;
     });
+
+    source.addEventListener("error", () => {
+      if (closed) return;
+      for (const [event, listener] of listenerEntries) source.removeEventListener?.(event, listener);
+      try { source.close(); } catch {}
+      source = null;
+      // Exponential backoff with jitter
+      const jitter = Math.random() * 0.3 * retryMs;
+      retryTimer = setTimeout(() => {
+        if (!closed) connect();
+      }, retryMs + jitter);
+      retryMs = Math.min(retryMs * 2, SSE_MAX_RETRY_MS);
+    });
+  }
+
+  connect();
 
   return {
     close: () => {
-      for (const [event, listener] of listenerEntries) source.removeEventListener?.(event, listener);
-      source.close();
+      closed = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      try { source?.close(); } catch {}
+      source = null;
     },
   };
 }

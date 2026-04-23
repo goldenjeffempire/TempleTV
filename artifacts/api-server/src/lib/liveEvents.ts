@@ -48,8 +48,11 @@ export function removeSSEClient(client: SSEClient): void {
   clients.delete(client);
 }
 
+let eventSequence = 0;
+
 export function broadcastLiveEvent(event: string, data: unknown): void {
-  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  const id = ++eventSequence;
+  const payload = `id: ${id}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   const dead: SSEClient[] = [];
   for (const client of clients) {
     try {
@@ -64,7 +67,8 @@ export function broadcastLiveEvent(event: string, data: unknown): void {
 }
 
 export function writeSingleClient(client: SSEClient, event: string, data: unknown): void {
-  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  const id = ++eventSequence;
+  const payload = `id: ${id}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   try {
     client.res.write(payload);
     flushClient(client);

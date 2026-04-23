@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
   Image,
@@ -19,7 +19,11 @@ import { GlassCard } from "@/components/GlassCard";
 import { ChannelBug } from "@/components/ChannelBug";
 import { usePlayer } from "@/context/PlayerContext";
 import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
-import { checkBroadcastCurrent, type BroadcastCurrentResult } from "@/services/broadcast";
+import {
+  checkBroadcastCurrent,
+  subscribeBroadcastEvents,
+  type BroadcastCurrentResult,
+} from "@/services/broadcast";
 import type { LoopMode, Sermon, SermonCategory } from "@/types";
 import { usePageSeo } from "@/hooks/usePageSeo";
 
@@ -106,37 +110,81 @@ export default function RadioScreen() {
   const webTopPad = Platform.OS === "web" ? 67 : 0;
   const [radioCategory, setRadioCategory] = useState<SermonCategory>("All");
   const [broadcastInfo, setBroadcastInfo] = useState<BroadcastCurrentResult | null>(null);
+  const [broadcastConnected, setBroadcastConnected] = useState<boolean | null>(null);
   const [autoMirror, setAutoMirror] = useState(false);
   const [broadcastPosition, setBroadcastPosition] = useState(0);
   const [sleepTimerSecs, setSleepTimerSecs] = useState(0);
   const [showTimerPicker, setShowTimerPicker] = useState(false);
   const sleepTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const bc = await checkBroadcastCurrent();
-        if (!cancelled) {
-          setBroadcastInfo(bc);
-          if (bc?.positionSecs) setBroadcastPosition(bc.positionSecs);
-        }
-      } catch {}
-    };
-    load();
-    const interval = setInterval(load, 10000);
-    return () => { cancelled = true; clearInterval(interval); };
+  const broadcastInfoRef = useRef<BroadcastCurrentResult | null>(null);
+  const broadcastPositionRef = useRef(0);
+
+  // Keep refs in sync with state so callbacks don't stale-close over them
+  broadcastInfoRef.current = broadcastInfo;
+  broadcastPositionRef.current = broadcastPosition;
+
+  const applyBroadcastResult = useCallback((bc: BroadcastCurrentResult | null) => {
+    setBroadcastInfo(bc);
+    if (bc?.positionSecs != null) setBroadcastPosition(bc.positionSecs);
+    setBroadcastConnected(bc !== null);
   }, []);
 
+  // SSE subscription with polling fallback
   useEffect(() => {
-    if (!broadcastInfo?.positionSecs) return;
+    let cancelled = false;
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+    const fetchCurrent = async () => {
+      try {
+        const bc = await checkBroadcastCurrent();
+        if (!cancelled) applyBroadcastResult(bc);
+      } catch {
+        if (!cancelled) setBroadcastConnected(false);
+      }
+    };
+
+    // Always do an initial fetch for immediate data
+    fetchCurrent();
+
+    // Try SSE for real-time updates
+    const sub = subscribeBroadcastEvents({
+      "broadcast-current-updated": (payload) => {
+        if (cancelled) return;
+        // SSE gives us a full snapshot on update — re-fetch for latest
+        fetchCurrent();
+      },
+      "status": () => {
+        if (!cancelled) setBroadcastConnected(true);
+      },
+    });
+
+    if (sub) {
+      // SSE is available — poll less frequently as a safety net
+      pollTimer = setInterval(fetchCurrent, 60_000);
+    } else {
+      // No SSE (e.g. native without polyfill) — poll at 10s
+      pollTimer = setInterval(fetchCurrent, 10_000);
+    }
+
+    return () => {
+      cancelled = true;
+      sub?.close();
+      if (pollTimer) clearInterval(pollTimer);
+    };
+  }, [applyBroadcastResult]);
+
+  // Tick broadcast position forward every second while a known item is playing
+  useEffect(() => {
+    if (!broadcastInfo?.item) return;
     const ticker = setInterval(() => setBroadcastPosition((p) => p + 1), 1000);
     return () => clearInterval(ticker);
   }, [broadcastInfo?.item?.id]);
 
-  useEffect(() => {
-    if (!autoMirror || !broadcastInfo?.item) return;
-    const item = broadcastInfo.item;
-    const startMs = String(broadcastPosition * 1000);
+  // Auto-mirror: react to both toggle AND broadcast item changes
+  const triggerAutoMirror = useCallback((enabled: boolean, info: BroadcastCurrentResult | null) => {
+    if (!enabled || !info?.item) return;
+    const item = info.item;
+    const startMs = String(broadcastPositionRef.current * 1000);
     if (item.videoSource === "local" && item.localVideoUrl) {
       navigateToPlayer(
         { broadcastMode: "true", localVideoUrl: item.localVideoUrl, title: item.title, thumbnail: item.thumbnailUrl, startPositionMs: startMs, radioOnly: "true" },
@@ -148,11 +196,23 @@ export default function RadioScreen() {
         "Sign up free to follow the live radio broadcast.",
       );
     }
-  }, [autoMirror]);
+  }, []);
 
+  // Trigger auto-mirror when toggled ON
+  useEffect(() => {
+    triggerAutoMirror(autoMirror, broadcastInfoRef.current);
+  }, [autoMirror, triggerAutoMirror]);
+
+  // Trigger auto-mirror when broadcast item changes (and mirror is already on)
+  useEffect(() => {
+    if (autoMirror) triggerAutoMirror(true, broadcastInfo);
+  }, [broadcastInfo?.item?.id, autoMirror, broadcastInfo, triggerAutoMirror]);
+
+  // Sleep timer — use a stable boolean sentinel to avoid firing on every tick
+  const sleepTimerActive = sleepTimerSecs > 0;
   useEffect(() => {
     if (sleepTimerRef.current) clearInterval(sleepTimerRef.current);
-    if (sleepTimerSecs <= 0) return;
+    if (!sleepTimerActive) return;
     sleepTimerRef.current = setInterval(() => {
       setSleepTimerSecs((prev) => {
         if (prev <= 1) {
@@ -171,7 +231,7 @@ export default function RadioScreen() {
     return () => {
       if (sleepTimerRef.current) clearInterval(sleepTimerRef.current);
     };
-  }, [sleepTimerSecs > 0 ? 1 : 0]);
+  }, [sleepTimerActive, stopPlayback]);
 
   const handleSetSleepTimer = (secs: number) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -308,12 +368,24 @@ export default function RadioScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.headerRow}>
-          <View>
+          <View style={{ flex: 1 }}>
             <Text style={[styles.header, { color: c.foreground }]}>Radio</Text>
             <Text style={[styles.desc, { color: c.mutedForeground }]}>
               Audio-only stream — background playback, low data
             </Text>
           </View>
+          {broadcastConnected === false && (
+            <View style={[styles.connBadge, { backgroundColor: c.muted, borderColor: c.border }]}>
+              <Feather name="wifi-off" size={11} color={c.mutedForeground} />
+              <Text style={[styles.connBadgeText, { color: c.mutedForeground }]}>Offline</Text>
+            </View>
+          )}
+          {broadcastConnected === true && (
+            <View style={[styles.connBadge, { backgroundColor: "rgba(34,197,94,0.12)", borderColor: "rgba(34,197,94,0.3)" }]}>
+              <View style={styles.connDot} />
+              <Text style={[styles.connBadgeText, { color: "#22c55e" }]}>Live</Text>
+            </View>
+          )}
         </View>
 
         {(broadcastInfo?.item || broadcastInfo?.liveOverride) && (
@@ -791,4 +863,17 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   listenLiveBtnText: { color: "#FFF", fontSize: 14, fontFamily: "Inter_700Bold" },
+  connBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignSelf: "flex-start",
+    marginTop: 4,
+  },
+  connBadgeText: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
+  connDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "#22c55e" },
 });
