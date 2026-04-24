@@ -11,6 +11,7 @@ import {
   Text,
   View,
 } from "react-native";
+
 import { Feather } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -35,6 +36,14 @@ import { checkBroadcastCurrent, subscribeBroadcastEvents, type BroadcastCurrentR
 import { navigateToSermon, navigateToPlayer as gatedNavigateToPlayer } from "@/utils/navigation";
 import { usePageSeo } from "@/hooks/usePageSeo";
 import type { Sermon } from "@/types";
+
+let HeroVideoComponent: any = null;
+let HeroResizeMode: any = null;
+try {
+  const av = require("expo-av");
+  HeroVideoComponent = av.Video;
+  HeroResizeMode = av.ResizeMode;
+} catch {}
 
 const broadcastProgressStyles = StyleSheet.create({
   section: { gap: 5, marginTop: 2 },
@@ -100,6 +109,8 @@ export default function WatchScreen() {
   const [liveBannerDismissed, setLiveBannerDismissed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [broadcastCurrent, setBroadcastCurrent] = useState<BroadcastCurrentResult | null>(null);
+  const [heroVideoFailed, setHeroVideoFailed] = useState(false);
+  const heroVideoRef = useRef<any>(null);
   const autoStartedRef = useRef(false);
 
   useEffect(() => {
@@ -223,10 +234,12 @@ export default function WatchScreen() {
     });
   }, [navigateToPlayer, liveStatus]);
 
-  const handleBroadcastPress = useCallback(async () => {
-    const latest = await checkBroadcastCurrent().catch(() => null);
-    const currentBroadcast = latest ?? broadcastCurrent;
-    if (latest) setBroadcastCurrent(latest);
+  const handleBroadcastPress = useCallback(() => {
+    const currentBroadcast = broadcastCurrent;
+
+    checkBroadcastCurrent()
+      .then((latest) => { if (latest) setBroadcastCurrent(latest); })
+      .catch(() => {});
 
     if (currentBroadcast?.activeSchedule?.contentType === "live") {
       handleLivePress();
@@ -234,11 +247,13 @@ export default function WatchScreen() {
     }
     const item = currentBroadcast?.item;
     if (!item) return;
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    const networkDriftSecs = currentBroadcast?.serverTimeMs
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    const elapsed = currentBroadcast?.serverTimeMs
       ? Math.max(0, Math.round((Date.now() - currentBroadcast.serverTimeMs) / 1000))
       : 0;
-    const startMs = String(((currentBroadcast?.positionSecs ?? 0) + networkDriftSecs) * 1000);
+    const startMs = String(((currentBroadcast?.positionSecs ?? 0) + elapsed) * 1000);
+
     if (item.videoSource === "local" && item.localVideoUrl) {
       router.push({
         pathname: "/player",
@@ -355,12 +370,36 @@ export default function WatchScreen() {
               style={({ pressed }) => [{ opacity: pressed ? 0.9 : 1, transform: [{ scale: pressed ? 0.98 : 1 }] }]}
             >
               <GlassCard style={styles.liveCard} intensity="high">
-                {showBroadcast && broadcastItem?.thumbnailUrl ? (
+                {showBroadcast && broadcastItem?.localVideoUrl && HeroVideoComponent && !heroVideoFailed ? (
+                  <HeroVideoComponent
+                    ref={heroVideoRef}
+                    source={{ uri: broadcastItem.localVideoUrl }}
+                    style={styles.liveBanner}
+                    resizeMode={HeroResizeMode?.COVER ?? "cover"}
+                    isLooping
+                    isMuted
+                    shouldPlay
+                    useNativeControls={false}
+                    onError={() => setHeroVideoFailed(true)}
+                    progressUpdateIntervalMillis={5000}
+                    videoStyle={{ width: "100%", height: "100%" }}
+                  />
+                ) : showBroadcast && broadcastItem?.thumbnailUrl ? (
                   <Image
                     source={{ uri: broadcastItem.thumbnailUrl }}
                     style={styles.liveBanner}
                     resizeMode="cover"
                   />
+                ) : liveStatus.isLive && liveStatus.videoId && Platform.OS === "web" ? (
+                  <View style={[styles.liveBanner, { overflow: "hidden" }]}>
+                    <iframe
+                      src={`https://www.youtube-nocookie.com/embed/${liveStatus.videoId}?autoplay=1&mute=1&controls=0&modestbranding=1&playsinline=1&loop=1&playlist=${liveStatus.videoId}&rel=0&iv_load_policy=3`}
+                      allow="autoplay; encrypted-media"
+                      frameBorder={0}
+                      style={{ position: "absolute", top: "-10%", left: "-10%", width: "120%", height: "120%", border: 0, pointerEvents: "none" } as any}
+                      title="Temple TV Live Preview"
+                    />
+                  </View>
                 ) : (
                   <Image
                     source={require("@/assets/images/logo.png")}

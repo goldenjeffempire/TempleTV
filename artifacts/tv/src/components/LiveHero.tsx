@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { type LiveStatus, type BroadcastCurrent } from "../lib/api";
 
 interface LiveHeroProps {
@@ -93,9 +93,26 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
   const bgThumb = isLive ? ytThumbUrl : (broadcastThumb || null);
 
   const [mounted, setMounted] = useState(false);
+  const [ambientVideoReady, setAmbientVideoReady] = useState(false);
+  const [ambientVideoFailed, setAmbientVideoFailed] = useState(false);
+  const ambientVideoRef = useRef<HTMLVideoElement>(null);
+  const broadcastVideoUrl = hasBroadcast && !ambientVideoFailed ? (broadcastItem?.localVideoUrl ?? null) : null;
+
   useEffect(() => {
     const id = requestAnimationFrame(() => setMounted(true));
     return () => cancelAnimationFrame(id);
+  }, []);
+
+  useEffect(() => {
+    setAmbientVideoReady(false);
+    setAmbientVideoFailed(false);
+  }, [broadcastVideoUrl]);
+
+  const handleAmbientCanPlay = useCallback(() => {
+    setAmbientVideoReady(true);
+    if (ambientVideoRef.current) {
+      ambientVideoRef.current.play().catch(() => {});
+    }
   }, []);
 
   return (
@@ -131,6 +148,48 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
           }}
           title="Temple TV ambient preview"
         />
+      ) : broadcastVideoUrl ? (
+        <>
+          {bgThumb && !ambientVideoReady && (
+            <img
+              src={bgThumb}
+              alt=""
+              aria-hidden
+              style={{
+                position: "absolute",
+                inset: 0,
+                width: "100%",
+                height: "100%",
+                objectFit: "cover",
+                display: "block",
+                transform: mounted ? "scale(1.04)" : "scale(1.12)",
+                transition: "transform 1200ms cubic-bezier(.2,.6,.2,1)",
+              }}
+            />
+          )}
+          <video
+            ref={ambientVideoRef}
+            src={broadcastVideoUrl}
+            muted
+            autoPlay
+            loop
+            playsInline
+            onCanPlay={handleAmbientCanPlay}
+            onError={() => setAmbientVideoFailed(true)}
+            style={{
+              position: "absolute",
+              top: "50%",
+              left: "50%",
+              width: "120%",
+              height: "120%",
+              transform: "translate(-50%, -50%)",
+              objectFit: "cover",
+              pointerEvents: "none",
+              opacity: ambientVideoReady ? 1 : 0,
+              transition: "opacity 1200ms ease",
+            }}
+          />
+        </>
       ) : bgThumb ? (
         <img
           src={bgThumb}

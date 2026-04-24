@@ -1,0 +1,65 @@
+Perform a complete optimization of the live streaming initialization and playback delivery system to eliminate slow loading delays and create a seamless television-grade viewing experience across the platform.
+
+Issue Summary:
+
+Users and audience members experience slow loading times when clicking the “Watch Temple TV” button to watch the live on-air broadcast. Additionally, the Hero Section should already be actively displaying and playing the live broadcast preview before users click the “Watch Temple TV” button.
+
+Core Requirements:
+
+Live Stream Loading Optimization:
+
+* Eliminate excessive loading delays when users click the “Watch Temple TV” button.
+* Optimize stream startup time so live playback begins almost instantly under normal network conditions.
+* Reduce buffering, initialization lag, handshake delays, and stream acquisition latency.
+* Optimize media delivery pipelines, CDN usage, stream prefetching, and playback initialization workflows.
+* Ensure ultra-fast response times comparable to professional television streaming platforms.
+
+Hero Section Live Playback Enhancement:
+
+* Ensure the live broadcast is already actively playing inside the Hero Cinematic section before the user clicks the “Watch Temple TV” button.
+* The Hero Section should function as a live preview of the current on-air Temple TV broadcast.
+* Maintain smooth, continuous playback in the Hero Section without requiring manual interaction to begin preview playback where supported.
+* Ensure seamless transition from Hero preview playback into full live viewing mode after clicking “Watch Temple TV.”
+
+Playback Transition Requirements:
+
+* When users click “Watch Temple TV,” transition instantly from the Hero preview into the full live viewing experience without restarting the stream unnecessarily.
+* Preserve playback continuity and synchronization during transition.
+* Avoid black screens, reload flashes, or playback interruptions during stream handoff.
+
+Performance Optimization Requirements:
+
+* Implement intelligent stream preloading and buffering optimization.
+* Use adaptive bitrate streaming for different network conditions.
+* Optimize video decoding, player rendering, and playback startup logic.
+* Reduce unnecessary API calls and blocking operations during stream initialization.
+* Ensure smooth playback across:
+
+  * Mobile devices
+  * Tablets
+  * Desktop browsers
+  * Smart TVs
+  * Low-bandwidth environments
+
+Enterprise Broadcast Experience Requirements:
+
+* The platform should feel like a real-world live television network application where content is always actively running and immediately accessible.
+* Ensure the Hero Section creates an immersive “live TV channel” atmosphere similar to professional television station apps.
+* Remove delays that make the experience feel like manually loading standard videos instead of watching a live broadcast channel.
+
+Reliability & Scalability:
+
+* Ensure the optimized streaming architecture remains stable under high concurrent viewership.
+* Implement monitoring and diagnostics for playback startup performance and stream health.
+* Ensure resilience during network instability and temporary connection drops.
+
+Expected Final Outcome:
+
+Deliver a high-performance, television-grade streaming experience where:
+
+* The live Temple TV broadcast is already playing in the Hero Section as a live preview.
+* Users can instantly transition into full live viewing by clicking “Watch Temple TV.”
+* Stream startup times are extremely fast with minimal buffering.
+* The overall experience feels identical to watching a real live television channel through a professional TV network application.
+
+“Temple TV Anywhere You Go”
