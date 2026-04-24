@@ -1174,9 +1174,13 @@ export default function Broadcast() {
         description: `${succeededIds.length} of ${ids.length} removed. ${failures.length} failed (e.g. ${failures[0].reason}).`,
         variant: "destructive",
       });
-      // Reload to reconcile against the server in case our local view drifted.
-      await loadAll();
     }
+    // Always reconcile against the server-of-truth after a bulk operation,
+    // not just on partial failure. Another operator could have added an item
+    // during our delete loop, or SSE could have delivered a new entry; in
+    // either case we want the next render to reflect what the server actually
+    // holds rather than our locally-projected snapshot.
+    await loadAll();
   }, [queue, toast, loadAll]);
 
   // ── live controls ──────────────────────────────────────────────────────────

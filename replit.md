@@ -237,6 +237,22 @@ Verification:
 - Workflow restarted and serving on the configured BASE_PATH.
 - Constraints respected: no new dependencies, no schema changes, no rewrites of any other component.
 
+### Round 4i — broadcast page UX consistency + missed silent catch (April 2026)
+
+The `broadcast.tsx` page is the most critical screen in the admin (it controls what airs live). It already used shadcn `AlertDialog` for the Clear Queue and End Live confirmations, but the per-item Remove action still used the browser-native `window.confirm()` — a UX inconsistency on the highest-stakes page. Round 4f's silent-catch elimination pass also missed one occurrence: the bulk clear loop did `await adminFetch(...).catch(() => {})` per item, which meant if any individual delete failed (404 if another operator already removed it, network failure mid-clear, token rotation), the local UI was emptied anyway and the operator saw "Queue cleared" while items remained in the database.
+
+Changes:
+
+1. **Per-item delete uses shadcn AlertDialog** — added a `removeConfirmId: string | null` state. `handleRemove(id)` now just opens the dialog (sets the state); the actual DELETE is in a new `handleConfirmRemove` that fires from the dialog's destructive button. The dialog interpolates the queue item's title into the description (with a graceful fallback if the item disappeared via SSE between open and confirm) and resets the state on Cancel / Esc / click-outside via the `onOpenChange` handler.
+
+2. **Bulk clear surfaces partial failures** — `handleClearQueue` now tracks `succeededIds` and `failures` arrays. On full success: `setQueue([])` and a normal toast with the count. On partial failure: only the succeeded items are removed from local state, a destructive-variant toast reports `"X of N removed. Y failed (e.g. <first reason>)"`, and `loadAll()` runs to reconcile against the server-of-truth in case local state drifted from the actual queue.
+
+Architect review: **PASS**.
+
+Verification:
+- `tsc --noEmit` clean for `@workspace/admin`.
+- Workflow restarted; broadcast page serves and the four AlertDialogs (Add, Go Live, End Live, Clear Queue, Remove) are now consistent shadcn dialogs end-to-end.
+
 ## External Dependencies
 
 - **Database:** PostgreSQL

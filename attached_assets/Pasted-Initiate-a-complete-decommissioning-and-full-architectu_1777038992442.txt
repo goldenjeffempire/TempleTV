@@ -1,0 +1,88 @@
+Initiate a complete decommissioning and full architectural rebuild of the Admin Panel, replacing the existing system with a newly engineered, enterprise-grade platform built entirely from the ground up.
+
+Objective:
+
+Safely remove the current Admin Panel implementation, including all legacy code, redundant modules, unstable components, and technical debt, and rebuild a modern, scalable, secure, and production-ready administrative system designed for real-world television broadcasting and media operations.
+
+Phase 1: Controlled Decommissioning
+
+* Systematically dismantle the existing Admin Panel without disrupting core platform data integrity.
+* Safely archive or migrate all critical data including:
+
+  * User accounts and roles
+  * Media assets (videos, thumbnails, metadata)
+  * Broadcast schedules and queue data
+  * System logs and analytics
+* Remove all obsolete, duplicated, broken, or unnecessary code, dependencies, and services.
+* Identify and document all existing system failures, architectural weaknesses, and performance bottlenecks prior to rebuild.
+
+Phase 2: Full System Rebuild (From Scratch)
+
+Design and implement a completely new Admin Panel architecture using modern enterprise-grade engineering principles:
+
+Core Architectural Requirements:
+
+* Clean, modular, and scalable system design
+* Fully decoupled frontend and backend architecture
+* High-performance API-driven communication layer
+* Robust database schema optimized for media and broadcast operations
+* Secure, role-based access control (RBAC) system
+* Real-time state synchronization across all modules
+* Fault-tolerant and highly available system design
+
+Core Functional Modules to Rebuild:
+
+* Authentication and user management system
+* Video and media library management
+* Upload and ingestion pipeline
+* Broadcast queue and live scheduling system
+* Live streaming control panel
+* Media processing and indexing engine
+* Analytics and reporting dashboard
+* System configuration and settings management
+* Notifications and operational alerts system
+
+Media & Broadcasting Requirements:
+
+* Fully reliable video upload and processing pipeline
+* Instant media availability after upload completion
+* Seamless integration between video library and broadcast queue
+* Real-time broadcast control and scheduling capabilities
+* Stable live streaming orchestration system
+
+Performance & Scalability Requirements:
+
+* High-speed media processing and retrieval
+* Optimized database queries and indexing strategies
+* Efficient caching and state management systems
+* Scalable infrastructure capable of handling high concurrent usage
+* Optimized for large-scale video broadcasting operations
+
+Security & Reliability Requirements:
+
+* Enterprise-grade authentication and authorization
+* Secure session and token management
+* Audit logging for all administrative actions
+* Protection against unauthorized access and data manipulation
+* Secure file upload validation and media integrity checks
+
+UI/UX Requirements:
+
+* Modern, clean, and professional administrative interface
+* Optimized workflows for broadcast operators and administrators
+* Responsive design across desktop, tablet, and smart TV admin usage
+* Intuitive navigation and fast operational controls
+
+Phase 3: Validation & Production Readiness
+
+* Perform full system testing across all modules
+* Validate data integrity, media workflows, and broadcast functionality
+* Conduct load testing for high-traffic scenarios
+* Ensure zero broken workflows or incomplete integrations
+* Confirm full production readiness for enterprise deployment
+
+Expected Final Outcome:
+
+A completely rebuilt, enterprise-grade Admin Panel that is stable, secure, scalable, and optimized for real-world television broadcasting operations. The final system should function as a professional broadcast control platform with high reliability, clean architecture, and seamless media management workflows.
+
+“Temple TV Anywhere You Go”
