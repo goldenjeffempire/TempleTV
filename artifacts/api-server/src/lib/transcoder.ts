@@ -33,19 +33,14 @@ interface QualityProfile {
   resolution: string;
 }
 
-// 5-level adaptive bitrate ladder — 240p to 1080p
+// 4-level adaptive bitrate ladder — 240p to 720p
+// 1080p was removed because the production container's memory budget on the
+// current Render tier is insufficient for ffmpeg 1080p H.264 encodes — they
+// were OOM-killing the API process and triggering a server-wide crash loop
+// (see Round 4o in replit.md). 720p remains the top variant; bump back to
+// 1080p once the API service has been moved to a tier with more RAM.
 // 2-second HLS segments ensure <3 s startup time
 const QUALITY_PROFILES: QualityProfile[] = [
-  {
-    name: "1080p",
-    height: 1080,
-    videoBitrate: "4000k",
-    maxBitrate: "4500k",
-    bufsize: "9000k",
-    audioBitrate: "128k",
-    bandwidth: 4000000,
-    resolution: "1920x1080",
-  },
   {
     name: "720p",
     height: 720,
