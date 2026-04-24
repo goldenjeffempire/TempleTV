@@ -52,8 +52,18 @@ export function getDisplayName(): string | null {
   return safeGet(STORAGE_KEYS.userDisplayName);
 }
 
+export function getRefreshToken(): string | null {
+  return safeGet(STORAGE_KEYS.refreshToken);
+}
+
+/**
+ * Returns true when the user has any stored credential.
+ * We check the access token first (fast-path); the refresh token acts as a
+ * fallback so that having a valid refresh token — but a momentarily missing
+ * access token — does not incorrectly show the user as logged out.
+ */
 export function isLoggedIn(): boolean {
-  return !!getAccessToken();
+  return !!(getAccessToken() || getRefreshToken());
 }
 
 export function saveAuth(payload: {
@@ -136,7 +146,12 @@ async function performRefresh(): Promise<string | null> {
     });
 
     if (!res.ok) {
-      clearAuth();
+      // Only a genuine 401 means the refresh token was rejected by the server.
+      // 5xx / network errors are transient — leave stored tokens intact so the
+      // next API call can retry; do NOT sign the user out.
+      if (res.status === 401) {
+        clearAuth();
+      }
       return null;
     }
 
@@ -144,6 +159,7 @@ async function performRefresh(): Promise<string | null> {
     saveAuth({ accessToken: data.accessToken, refreshToken: data.refreshToken });
     return data.accessToken;
   } catch {
+    // Network error — transient, leave stored tokens intact.
     return null;
   }
 }
@@ -183,6 +199,14 @@ export async function authFetch(input: RequestInfo | URL, init?: RequestInit): P
 }
 
 // Kick off proactive refresh on module load if already authenticated.
-if (typeof window !== "undefined" && isLoggedIn()) {
-  scheduleProactiveRefresh();
+// If only a refresh token is present (access token missing/expired), force an
+// immediate refresh so the first API call has a valid access token ready.
+if (typeof window !== "undefined") {
+  if (getRefreshToken() && !getAccessToken()) {
+    // No access token in storage — refresh immediately so subsequent API calls
+    // have a valid bearer token without waiting for the first 401.
+    performRefresh().catch(() => {});
+  } else if (isLoggedIn()) {
+    scheduleProactiveRefresh();
+  }
 }

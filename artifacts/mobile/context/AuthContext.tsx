@@ -54,22 +54,41 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           await AsyncStorage.removeItem(STORAGE_KEYS.authToken);
         }
 
-        const [storedToken, storedUser] = await Promise.all([
+        const [storedToken, storedRefresh, storedUser] = await Promise.all([
           secureStorage.getItem(STORAGE_KEYS.authToken),
+          secureStorage.getItem(STORAGE_KEYS.authRefreshToken),
           AsyncStorage.getItem(STORAGE_KEYS.authUser),
         ]);
-        if (storedToken && storedUser) {
-          setToken(storedToken);
-          setUser(JSON.parse(storedUser) as AuthUser);
-          // apiGetMe() will auto-refresh under the hood if the access token is expired.
-          apiGetMe()
-            .then((freshUser) => {
-              setUser(freshUser);
-              AsyncStorage.setItem(STORAGE_KEYS.authUser, JSON.stringify(freshUser)).catch(() => {});
-            })
-            .catch(() => {});
+
+        // Restore if we have any stored credential (access OR refresh token).
+        // A missing user-profile cache is recovered by the background apiGetMe() call.
+        const hasCredential = !!(storedToken || storedRefresh);
+        if (!hasCredential) return;
+
+        // Immediately mark as logged in with cached data so the UI is responsive.
+        if (storedToken) setToken(storedToken);
+        if (storedUser) {
+          try {
+            setUser(JSON.parse(storedUser) as AuthUser);
+          } catch {
+            /* corrupted cache — will be refetched below */
+          }
         }
+
+        // Background: refresh user profile. Auto-refreshes the access token if
+        // expired. Only fires onSessionExpired (→ logout) on a genuine 401, never
+        // on transient network errors (fixed in authApi.ts).
+        apiGetMe()
+          .then((freshUser) => {
+            setUser(freshUser);
+            AsyncStorage.setItem(STORAGE_KEYS.authUser, JSON.stringify(freshUser)).catch(() => {});
+          })
+          .catch(() => {
+            // Swallowed — transient failure keeps the cached session alive.
+            // A genuine 401 from the refresh step fires onSessionExpired separately.
+          });
       } catch {
+        /* ignore restore errors — stay logged out */
       } finally {
         setIsLoading(false);
       }

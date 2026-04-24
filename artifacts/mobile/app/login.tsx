@@ -144,8 +144,8 @@ export default function LoginScreen() {
 
     setLoading(true);
     try {
-      const { token, user } = await apiLogin(trimmedEmail, password);
-      await signIn(token, user);
+      const resp = await apiLogin(trimmedEmail, password);
+      await signIn(resp, resp.user);
       const pending = consumePendingPlayback();
       if (pending) {
         router.replace({ pathname: pending.pathname as any, params: pending.params });

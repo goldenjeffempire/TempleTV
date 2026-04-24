@@ -60,12 +60,17 @@ async function attemptRefresh(): Promise<string | null> {
       body: JSON.stringify({ refreshToken, deviceName: getDeviceName() }),
     });
     if (!res.ok) {
-      // Permanent failure — clear stored credentials and notify the UI.
-      await Promise.all([
-        secureStorage.removeItem(STORAGE_KEYS.authToken),
-        secureStorage.removeItem(STORAGE_KEYS.authRefreshToken),
-      ]);
-      onSessionExpired?.();
+      // Only treat a genuine 401 as a permanently invalid token — that means
+      // the server explicitly rejected the refresh token (expired or revoked).
+      // Any other failure (5xx, network timeout caught below) is transient and
+      // should NOT wipe the stored session; the next request will retry.
+      if (res.status === 401) {
+        await Promise.all([
+          secureStorage.removeItem(STORAGE_KEYS.authToken),
+          secureStorage.removeItem(STORAGE_KEYS.authRefreshToken),
+        ]);
+        onSessionExpired?.();
+      }
       return null;
     }
     const data = (await res.json()) as { accessToken: string; refreshToken: string };
@@ -75,6 +80,7 @@ async function attemptRefresh(): Promise<string | null> {
     ]);
     return data.accessToken;
   } catch {
+    // Network / parse error — transient, leave stored tokens intact.
     return null;
   }
 }
