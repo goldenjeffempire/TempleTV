@@ -347,6 +347,31 @@ The first review caught an auth-bypass class: the two startup probes (`auth-gate
 
 **Coverage claim:** Survey of `await fetch(` across `artifacts/admin/src` now shows only `services/adminApi.ts` itself (already retry-protected) and `components/VideoUploadModal.tsx` (chunk PUTs, intentionally never retried since they are mutating).
 
+### Round 4n — Split-domain production routing fix (uploads silently succeeded against SPA host)
+
+**Symptom:** Operator reported "Success toast but the video isn't appearing in the library." Investigation showed: the production deployment uses two separate custom domains — `admin.templetv.org.ng` for the static SPA and `api.templetv.org.ng` for the API server. The admin SPA was hardcoded to call same-origin `/api/...` paths, which on production resolved to `admin.templetv.org.ng/api/...`. The static-host catch-all rewrite (`/* → /index.html`) returned the SPA's HTML for every API request. The XHR-based chunk uploader only checked `xhr.status >= 200 && < 300` and never validated the response body, so chunks "succeeded" with HTML 200 responses, the upload modal fired its success toast, and nothing was ever written to the API or DB.
+
+**Fix (split into routing + defense-in-depth):**
+
+1. **New `artifacts/admin/src/lib/api-base.ts`** — single source of truth for the API base URL. Honors `VITE_API_BASE_URL` build-time env var; falls back to relative `/api` for same-origin dev. Exports `apiBase()`, `apiUrl(path)`, `rewriteApiPath(legacy)`. The legacy-rewrite helper lets every existing call site that hardcodes `/api/...` continue to work unmodified — they only need their fetch wrapper updated.
+
+2. **All admin fetch wrappers route through the helper:**
+   - `services/adminApi.ts` — `BASE` constant uses `apiBase()`
+   - `components/VideoUploadModal.tsx` — `uploadAdminFetch` wraps URL with `rewriteApiPath()`
+   - `lib/uploadEngine.ts` — chunk URL uses `${apiBase()}/admin/videos/upload/.../chunk`
+   - `pages/videos.tsx`, `pages/broadcast.tsx`, `components/command-palette.tsx` — all three local `adminFetch` helpers wrap URL with `rewriteApiPath()`
+   - `pages/live-monitor.tsx` — local `apiUrl(path)` delegates to `apiBase()`
+   - `lib/admin-access.ts` — `getAdminEventSourceUrl` routes through `rewriteApiPath()`, supports absolute URLs (EventSource has stricter URL handling than fetch)
+   - Stragglers: `components/error-boundary.tsx` (`/api/client-errors`) and `components/admin-key-dialog.tsx` (`/api/admin/stats`) — both updated to use `${apiBase()}/...`
+
+3. **Defense-in-depth in the XHR chunk uploader (`uploadEngine.ts`):** on `xhr.onload` with 2xx, the response is validated as JSON before resolving. Logic: pass if Content-Type contains `application/json` OR body parses as JSON; reject with a clear error message if body starts with `<` (HTML). Stops the silent-success class entirely — even if `VITE_API_BASE_URL` is misconfigured in the future, the upload will fail loudly with `"Chunk N returned HTML instead of JSON — the upload reached the static SPA host, not the API server"` instead of falsely claiming success.
+
+**Operator action required to activate the fix in production:** set `VITE_API_BASE_URL=https://api.templetv.org.ng` as a build-time env var on the admin web artifact's deployment, then re-publish. Without this, the relative `/api` fallback continues, which is what was broken. The build inlines the value at compile time (Vite `import.meta.env.VITE_*`), so the env var must be present during the deployment build, not just at runtime.
+
+**Verification in dev:** With `VITE_API_BASE_URL` unset, `apiBase()` resolves to `/api` and all behavior is byte-identical to the previous code path. Confirmed by hitting `localhost:80/api/admin/videos` (HTTP 200) and `localhost:80/admin/` (HTTP 200) post-restart.
+
+**Architect review:** PASS with one follow-up — `live-monitor.tsx` had its own local `apiUrl` helper that was missed in the first sweep; updated to delegate to `apiBase()`. No false-positives on the JSON-vs-HTML detection in `uploadEngine.ts` (it falls through to `JSON.parse` before declaring HTML based on `<` prefix). EventSource URL absolute/relative handling correctly preserved.
+
 ## External Dependencies
 
 - **Database:** PostgreSQL

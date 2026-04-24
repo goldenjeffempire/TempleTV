@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { fetchWithTransientRetry } from "@/services/adminApi";
+import { apiBase } from "@/lib/api-base";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
@@ -34,7 +35,7 @@ async function verifyAdminToken(token: string): Promise<{ ok: true } | { ok: fal
     // can never be misinterpreted as a successful token verification —
     // closing the auth-bypass gap flagged in code review.
     const res = await fetchWithTransientRetry(() =>
-      fetch("/api/admin/stats", {
+      fetch(`${apiBase()}/admin/stats`, {
         headers: { authorization: `Bearer ${token}` },
       }),
     );

@@ -1,10 +1,11 @@
 import { getAdminToken } from "@/lib/admin-access";
 import { safeJson, describeJsonError } from "@/lib/safe-json";
+import { apiBase } from "@/lib/api-base";
 
-const BASE = (() => {
-  const b = import.meta.env.BASE_URL.replace(/\/$/, "").replace(/\/admin\/?$/, "");
-  return `${b}/api`;
-})();
+// Resolved at module load. The api-base helper honors VITE_API_BASE_URL when
+// the SPA and API live on different origins (split-domain production); falls
+// back to a same-origin relative path otherwise.
+const BASE = apiBase();
 
 export class AdminApiError extends Error {
   // `transient` marks failures that are likely to succeed on a retry — network

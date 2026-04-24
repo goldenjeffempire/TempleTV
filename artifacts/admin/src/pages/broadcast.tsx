@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { safeJson, describeJsonError } from "@/lib/safe-json";
 import { fetchWithTransientRetry } from "@/services/adminApi";
+import { rewriteApiPath } from "@/lib/api-base";
 import { VideoUploadModal } from "@/components/VideoUploadModal";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -137,6 +138,7 @@ async function adminFetch(url: string, opts?: RequestInit): Promise<Response> {
   const token = window.localStorage.getItem("temple-tv-admin-token")?.trim();
   const headers: Record<string, string> = { ...(opts?.headers as Record<string, string>) };
   if (token) headers["Authorization"] = `Bearer ${token}`;
+  url = rewriteApiPath(url);
   // Round 4l: idempotent reads route through the shared retry wrapper so
   // workflow-restart races don't surface as page errors. Mutating requests
   // bypass the retry — silent retry on POST/PUT/PATCH/DELETE could double-

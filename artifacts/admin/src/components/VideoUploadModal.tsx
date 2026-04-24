@@ -79,11 +79,16 @@ import {
   networkTypeLabel,
 } from "@/lib/uploadEngine";
 
+import { rewriteApiPath } from "@/lib/api-base";
+
 function uploadAdminFetch(input: string, init?: RequestInit): Promise<Response> {
   const token = getAdminToken();
   const headers: Record<string, string> = { ...(init?.headers as Record<string, string> | undefined) };
   if (token) headers["authorization"] = `Bearer ${token}`;
-  return fetch(input, { ...init, headers });
+  // Route legacy /api/... paths through the configured API origin so the
+  // upload requests land on the real API server in split-domain production
+  // setups instead of the static SPA host.
+  return fetch(rewriteApiPath(input), { ...init, headers });
 }
 
 const DEFAULT_COMPRESSION_OPTS: CompressionOptions = {

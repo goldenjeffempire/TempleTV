@@ -1,6 +1,7 @@
 import React from "react";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle } from "lucide-react";
+import { apiBase } from "@/lib/api-base";
 
 interface State {
   error: Error | null;
@@ -27,7 +28,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
   componentDidCatch(error: Error, info: React.ErrorInfo) {
     // eslint-disable-next-line no-console
     console.error("[ErrorBoundary] Caught render error:", error, info);
-    void fetch("/api/client-errors", {
+    void fetch(`${apiBase()}/client-errors`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

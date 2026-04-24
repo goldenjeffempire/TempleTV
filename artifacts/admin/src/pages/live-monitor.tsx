@@ -29,6 +29,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
 import { getAdminToken } from "@/lib/admin-access";
 import { fetchWithTransientRetry } from "@/services/adminApi";
+import { apiBase } from "@/lib/api-base";
 
 interface LiveEventRecord {
   ts: number;
@@ -105,9 +106,10 @@ function UptimeClock({ startSecs }: { startSecs: number }) {
   return <span>{formatDuration(elapsed)}</span>;
 }
 
-const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 function apiUrl(path: string) {
-  return `${BASE.replace(/\/admin\/?$/, "")}/api${path}`;
+  // Delegate to the centralized helper so VITE_API_BASE_URL is honored in
+  // split-domain production setups (admin SPA + API on different hostnames).
+  return `${apiBase()}${path}`;
 }
 
 const VIEWER_HISTORY_STORAGE_KEY = "templeTv.admin.viewerHistory.v1";

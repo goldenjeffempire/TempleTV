@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useLocation } from "wouter";
 import { fetchWithTransientRetry } from "@/services/adminApi";
+import { rewriteApiPath } from "@/lib/api-base";
 import {
   CommandDialog,
   CommandEmpty,
@@ -43,7 +44,8 @@ async function adminFetch(url: string, opts?: RequestInit): Promise<Response> {
   // Round 4l: idempotent reads route through the shared retry wrapper.
   const method = (opts?.method ?? "GET").toUpperCase();
   const isIdempotent = method === "GET" || method === "HEAD";
-  const factory = () => fetch(url, { ...opts, headers });
+  const resolvedUrl = rewriteApiPath(url);
+  const factory = () => fetch(resolvedUrl, { ...opts, headers });
   return isIdempotent
     ? fetchWithTransientRetry(factory, opts?.signal ?? undefined)
     : factory();

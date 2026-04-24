@@ -1,4 +1,5 @@
 import { getAdminToken } from "@/lib/admin-access";
+import { apiBase } from "@/lib/api-base";
 import type { CompressionProgress, ProbeResult } from "@/lib/videoCompressor";
 
 // ─── Fixed constants ──────────────────────────────────────────────────────────
@@ -329,6 +330,32 @@ export async function uploadChunk(
     xhr.onload = () =>
       settle(() => {
         if (xhr.status >= 200 && xhr.status < 300) {
+          // Defense-in-depth: a 200 response with an HTML body almost always
+          // means the request landed on the SPA host instead of the API
+          // (e.g. split-domain prod where VITE_API_BASE_URL is unset, or a
+          // proxy fallthrough during an api-server restart). Without this
+          // check, the chunk would silently "succeed" against nothing and the
+          // upload modal would fire its success toast even though no row was
+          // ever written. We require either a JSON content-type or a body
+          // that actually parses as JSON.
+          const ct = (xhr.getResponseHeader("content-type") ?? "").toLowerCase();
+          const looksJson = ct.includes("application/json");
+          const body = xhr.responseText ?? "";
+          let parsedOk = looksJson;
+          if (!parsedOk && body) {
+            try {
+              JSON.parse(body);
+              parsedOk = true;
+            } catch {
+              parsedOk = false;
+            }
+          }
+          if (!parsedOk && body.trim().startsWith("<")) {
+            reject(new Error(
+              `Chunk ${chunkIndex} returned HTML instead of JSON — the upload reached the static SPA host, not the API server. Check VITE_API_BASE_URL on the admin deployment.`,
+            ));
+            return;
+          }
           resolve();
         } else {
           try {
@@ -352,7 +379,7 @@ export async function uploadChunk(
       { once: true },
     );
 
-    xhr.open("POST", `/api/admin/videos/upload/${sessionId}/chunk`);
+    xhr.open("POST", `${apiBase()}/admin/videos/upload/${sessionId}/chunk`);
     const token = getAdminToken();
     if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
     xhr.send(formData);

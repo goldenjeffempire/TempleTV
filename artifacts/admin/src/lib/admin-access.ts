@@ -1,3 +1,5 @@
+import { rewriteApiPath } from "@/lib/api-base";
+
 const STORAGE_KEY = "temple-tv-admin-token";
 
 let installed = false;
@@ -14,11 +16,19 @@ export function setAdminToken(token: string): void {
 }
 
 export function getAdminEventSourceUrl(path: string): string {
+  // Route the SSE path through the configured API origin so EventSource
+  // connects to the real api-server in split-domain production setups
+  // (admin SPA on one host, API on another). Without this, the connection
+  // would attach to the static SPA host and never receive events.
+  const resolved = rewriteApiPath(path);
   const token = getAdminToken();
-  if (!token) return path;
-  const url = new URL(path, window.location.origin);
+  if (!token) return resolved;
+  // EventSource doesn't accept Authorization headers, so the token is passed
+  // as a query parameter. Build a full URL so absolute API origins survive.
+  const isAbsolute = /^https?:\/\//i.test(resolved);
+  const url = new URL(resolved, isAbsolute ? undefined : window.location.origin);
   url.searchParams.set("adminToken", token);
-  return `${url.pathname}${url.search}`;
+  return isAbsolute ? url.toString() : `${url.pathname}${url.search}`;
 }
 
 export function configureAdminAccess(): void {

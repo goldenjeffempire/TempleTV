@@ -11,6 +11,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { VideoUploadModal } from "@/components/VideoUploadModal";
 import { fetchWithTransientRetry } from "@/services/adminApi";
+import { rewriteApiPath } from "@/lib/api-base";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -144,7 +145,8 @@ async function adminFetch(url: string, opts?: RequestInit): Promise<Response> {
   // (POST/PUT/PATCH/DELETE) bypass the retry to avoid double-mutation.
   const method = (opts?.method ?? "GET").toUpperCase();
   const isIdempotent = method === "GET" || method === "HEAD";
-  const factory = () => fetch(url, { ...opts, headers });
+  const resolvedUrl = rewriteApiPath(url);
+  const factory = () => fetch(resolvedUrl, { ...opts, headers });
   return isIdempotent
     ? fetchWithTransientRetry(factory, opts?.signal ?? undefined)
     : factory();
