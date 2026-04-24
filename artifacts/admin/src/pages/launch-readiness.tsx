@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { adminGet } from "@/services/adminApi";
 import {
   AlertTriangle,
   BellRing,
@@ -89,9 +90,8 @@ export default function LaunchReadinessPage() {
   const fetchReadiness = useCallback(async (manual = false) => {
     if (manual) setRefreshing(true);
     try {
-      const res = await fetch("/api/admin/launch/readiness");
-      if (!res.ok) throw new Error("Unable to load launch readiness");
-      setReadiness(await res.json() as LaunchReadiness);
+      const data = await adminGet<LaunchReadiness>("/admin/launch/readiness");
+      setReadiness(data);
     } catch {
       toast({ title: "Launch readiness unavailable", variant: "destructive" });
     } finally {

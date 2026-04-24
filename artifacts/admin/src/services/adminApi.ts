@@ -175,7 +175,7 @@ export interface LiveMonitorData {
 }
 
 export const liveApi = {
-  getOverrides: () => adminGet<LiveOverride[]>("/admin/live/overrides"),
+  getOverrides: () => adminGet<LiveOverride[]>("/admin/live-overrides"),
   startOverride: (data: {
     title: string;
     hlsStreamUrl?: string;
@@ -185,6 +185,8 @@ export const liveApi = {
     notify?: boolean;
   }) => adminPost<{ override: LiveOverride; push: { sent: number } }>("/admin/live/override/start", data),
   stopOverride: () => adminPost<void>("/admin/live/override/stop"),
+  extendOverride: (extraMinutes: number) =>
+    adminPost<{ ok: boolean; override: LiveOverride }>("/admin/live/override/extend", { extraMinutes }),
   getMonitor: (signal?: AbortSignal) => adminGet<LiveMonitorData>("/admin/live/monitor", signal),
   getStatus: (signal?: AbortSignal) => adminGet<{
     isLive: boolean;
@@ -200,8 +202,8 @@ export const opsApi = {
 
 export const transcodingApi = {
   getQueue: (signal?: AbortSignal) => adminGet<TranscodingQueue>("/admin/transcoding/queue", signal),
-  retryJob: (id: string) => adminPost<void>(`/admin/transcoding/jobs/${id}/retry`),
-  cancelJob: (id: string) => adminPost<void>(`/admin/transcoding/jobs/${id}/cancel`),
-  deleteJob: (id: string) => adminDelete<void>(`/admin/transcoding/jobs/${id}`),
-  prioritizeJob: (id: string) => adminPost<void>(`/admin/transcoding/jobs/${id}/prioritize`),
+  retryJob: (id: string) => adminPost<void>(`/admin/transcoding/retry/${id}`),
+  cancelJob: (id: string) => adminDelete<void>(`/admin/transcoding/${id}`),
+  clearHistory: (status: "done" | "failed" | "cancelled" | "all") =>
+    adminDelete<{ cleared: number }>(`/admin/transcoding/clear?status=${status}`),
 };

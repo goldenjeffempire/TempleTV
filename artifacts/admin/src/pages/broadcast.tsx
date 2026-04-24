@@ -1061,7 +1061,7 @@ export default function Broadcast() {
     const res = await adminFetch("/api/admin/live/override/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title, durationMins, sendPushNotification: notify }),
+      body: JSON.stringify({ title, durationMinutes: durationMins, notify }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -1090,7 +1090,7 @@ export default function Broadcast() {
     const res = await adminFetch("/api/admin/live/override/extend", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ durationMins: minutes }),
+      body: JSON.stringify({ extraMinutes: minutes }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     toast({ title: `Extended by ${minutes} minutes` });

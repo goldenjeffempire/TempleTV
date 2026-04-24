@@ -56,6 +56,7 @@ import {
   compressVideo,
   type CompressionOptions,
 } from "@/lib/videoCompressor";
+import { getAdminToken } from "@/lib/admin-access";
 import {
   MIN_CONCURRENCY,
   MAX_CONCURRENT_FILES,
@@ -77,6 +78,13 @@ import {
   emaSpeed,
   networkTypeLabel,
 } from "@/lib/uploadEngine";
+
+function uploadAdminFetch(input: string, init?: RequestInit): Promise<Response> {
+  const token = getAdminToken();
+  const headers: Record<string, string> = { ...(init?.headers as Record<string, string> | undefined) };
+  if (token) headers["authorization"] = `Bearer ${token}`;
+  return fetch(input, { ...init, headers });
+}
 
 const DEFAULT_COMPRESSION_OPTS: CompressionOptions = {
   maxHeight: 1080,
@@ -360,7 +368,7 @@ export function VideoUploadModal({
             if (attempt > 0) await new Promise((r) => setTimeout(r, 500 * attempt));
             let initRes: Response;
             try {
-              initRes = await fetch("/api/admin/videos/upload/init", {
+              initRes = await uploadAdminFetch("/api/admin/videos/upload/init", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: initBody,
@@ -423,7 +431,7 @@ export function VideoUploadModal({
         if (thumbnailFile && !resumeSession) {
           const thumbForm = new FormData();
           thumbForm.append("thumbnail", thumbnailFile);
-          await fetch(`/api/admin/videos/upload/${sid}/thumbnail`, {
+          await uploadAdminFetch(`/api/admin/videos/upload/${sid}/thumbnail`, {
             method: "POST",
             body: thumbForm,
           });
@@ -615,7 +623,7 @@ export function VideoUploadModal({
 
         // Finalize
         updateTask(taskId, { state: "finalizing" });
-        const finalRes = await fetch(
+        const finalRes = await uploadAdminFetch(
           `/api/admin/videos/upload/${sid}/finalize`,
           { method: "POST" },
         );
@@ -738,7 +746,7 @@ export function VideoUploadModal({
       if (!task || task.state !== "paused" || !task.sessionId) return;
       updateTask(id, { state: "initializing", error: null });
       try {
-        const statusRes = await fetch(
+        const statusRes = await uploadAdminFetch(
           `/api/admin/videos/upload/${task.sessionId}/status`,
         );
         if (!statusRes.ok) {
@@ -764,7 +772,7 @@ export function VideoUploadModal({
       if (!task) return;
       task.abortController?.abort();
       if (task.sessionId) {
-        await fetch(`/api/admin/videos/upload/${task.sessionId}`, {
+        await uploadAdminFetch(`/api/admin/videos/upload/${task.sessionId}`, {
           method: "DELETE",
         }).catch(() => {});
       }
@@ -779,7 +787,7 @@ export function VideoUploadModal({
     for (const task of tasksRef.current.values()) {
       task.abortController?.abort();
       if (task.sessionId) {
-        await fetch(`/api/admin/videos/upload/${task.sessionId}`, {
+        await uploadAdminFetch(`/api/admin/videos/upload/${task.sessionId}`, {
           method: "DELETE",
         }).catch(() => {});
       }
@@ -843,7 +851,7 @@ export function VideoUploadModal({
       forceUpdate();
 
       try {
-        const statusRes = await fetch(
+        const statusRes = await uploadAdminFetch(
           `/api/admin/videos/upload/${pendingResume.sessionId}/status`,
         );
         if (!statusRes.ok) {

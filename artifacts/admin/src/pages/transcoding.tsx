@@ -254,18 +254,11 @@ export default function Transcoding() {
     }
   };
 
-  const handleClearHistory = async (status: string) => {
+  const handleClearHistory = async (status: "done" | "failed" | "cancelled" | "all") => {
     setClearing(true);
     try {
-      const token = (await import("@/lib/admin-access")).getAdminToken();
-      const base = import.meta.env.BASE_URL.replace(/\/$/, "").replace(/\/admin\/?$/, "");
-      const res = await fetch(`${base}/api/admin/transcoding/clear?status=${status}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const json = (await res.json()) as { cleared?: number; error?: string };
-      if (!res.ok) throw new Error(json.error ?? "Clear failed");
-      toast({ title: `Cleared ${json.cleared ?? 0} job${json.cleared !== 1 ? "s" : ""}` });
+      const res = await transcodingApi.clearHistory(status);
+      toast({ title: `Cleared ${res.cleared ?? 0} job${res.cleared !== 1 ? "s" : ""}` });
       await loadQueue();
     } catch (err: unknown) {
       toast({ title: (err as Error)?.message ?? "Failed to clear history", variant: "destructive" });
@@ -335,8 +328,8 @@ export default function Transcoding() {
         {[
           { label: "Processing", value: stats?.activeCount ?? 0, icon: Cpu, color: "text-blue-600", bg: "bg-blue-500/10" },
           { label: "Queued", value: stats?.queuedCount ?? 0, icon: Clock, color: "text-amber-600", bg: "bg-amber-500/10" },
-          { label: "Completed", value: (stats as any)?.doneCount ?? 0, icon: CheckCircle2, color: "text-emerald-600", bg: "bg-emerald-500/10" },
-          { label: "Failed", value: (stats as any)?.failedCount ?? 0, icon: AlertCircle, color: "text-red-600", bg: "bg-red-500/10" },
+          { label: "Completed Today", value: stats?.completedToday ?? 0, icon: CheckCircle2, color: "text-emerald-600", bg: "bg-emerald-500/10" },
+          { label: "Failed Today", value: stats?.failedToday ?? 0, icon: AlertCircle, color: "text-red-600", bg: "bg-red-500/10" },
         ].map((card) => (
           <div key={card.label} className="bg-card border rounded-lg p-4">
             <div className="flex items-center gap-3">

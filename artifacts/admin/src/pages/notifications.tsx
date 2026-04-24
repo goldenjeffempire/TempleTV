@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useListNotificationHistory, useSendPushNotification, getListNotificationHistoryQueryKey } from "@workspace/api-client-react";
+import { adminGet, adminPost, adminDelete } from "@/services/adminApi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -22,7 +23,6 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 
-const BASE = import.meta.env.BASE_URL.replace(/\/$/, "").replace(/\/admin\/?$/, "") + "/api";
 
 type NotifType = "live_service" | "new_sermon" | "announcement" | "custom";
 
@@ -79,8 +79,9 @@ export default function Notifications() {
   const fetchScheduled = useCallback(async () => {
     setSchedLoading(true);
     try {
-      const res = await fetch(`${BASE}/admin/notifications/scheduled`);
-      if (res.ok) setScheduled(await res.json());
+      const data = await adminGet<ScheduledNotif[]>("/admin/notifications/scheduled");
+      setScheduled(data);
+    } catch {
     } finally {
       setSchedLoading(false);
     }
@@ -116,19 +117,13 @@ export default function Notifications() {
     e.preventDefault();
     setSchedSending(true);
     try {
-      const res = await fetch(`${BASE}/admin/notifications/schedule`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: schedForm.title,
-          body: schedForm.body,
-          type: schedForm.type,
-          videoId: schedForm.videoId || undefined,
-          scheduledAt: new Date(schedForm.scheduledAt).toISOString(),
-        }),
+      await adminPost("/admin/notifications/schedule", {
+        title: schedForm.title,
+        body: schedForm.body,
+        type: schedForm.type,
+        videoId: schedForm.videoId || undefined,
+        scheduledAt: new Date(schedForm.scheduledAt).toISOString(),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Unknown error");
       toast({ title: "Notification Scheduled", description: `Will send on ${new Date(schedForm.scheduledAt).toLocaleString()}` });
       setSchedForm({ title: "", body: "", type: "announcement", videoId: "", scheduledAt: "" });
       fetchScheduled();
@@ -143,9 +138,7 @@ export default function Notifications() {
     setCancellingId(id);
     setCancelConfirmId(null);
     try {
-      const res = await fetch(`${BASE}/admin/notifications/scheduled/${id}`, { method: "DELETE" });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Unknown error");
+      await adminDelete(`/admin/notifications/scheduled/${id}`);
       toast({ title: "Notification Cancelled" });
       fetchScheduled();
     } catch (err) {
