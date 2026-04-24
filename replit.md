@@ -319,6 +319,13 @@ Verification:
 - Same pattern is intentionally NOT swept into other polling pages this round (live-monitor, broadcast, etc) — done in incremental rounds rather than as a sweeping rewrite.
 - Architect noted a useful follow-up: escalate transient → destructive after N consecutive failures or sustained duration (>30-60s) so a real persistent routing fault can't stay visually soft forever. Deferred to a later round.
 - No workflow restart was performed for this hotfix because Vite HMR picks up the .tsx changes hot — avoiding causing yet another transient-error window in the operator's session.
+
+**Hotfix #3 — same pattern, Operations page:** Operator reported the same destructive red banner ("Operations status unavailable: API /admin/ops/status: server returned HTML instead of JSON") on the Operations page during a restart cycle. Page polls every 10s; api-server was down ~1-2s, banner stayed up until the next poll tick.
+
+- `pages/operations.tsx`: applied the identical pattern from hotfix #2 to the main `Operations()` component's error state. Added `AdminApiError` to the existing `@/services/adminApi` import, changed error state from `string | null` to `{ message: string; transient: boolean } | null`, derived transient from `err instanceof AdminApiError && err.transient === true`, and branched the ErrorAlert render so transient cases get the soft amber variant and real failures keep the destructive treatment.
+- Intentionally NOT touched this round: `ActiveUploadsCard` (already inline muted text, not a destructive banner), `dashboard.tsx` polling errors (already inline muted text inside their panels, not destructive banners), `broadcast.tsx`/`videos.tsx` (use local adminFetch helpers that throw plain Errors, not AdminApiError — adapting them needs a separate detection path and is deferred to a later round).
+- Architect's third pass confirmed: keep the explicit ternary branch (clearer than prop-spread for incident paths), defer extracting a `useTransientError()` hook until N≥3 (premature at 2), and the heuristic stays narrow + safe for ops use.
+- Again no workflow restart — Vite HMR is sufficient. tsc --noEmit passes clean.
 3. Wrapped the four raw-fetch sites in retry: `pages/broadcast.tsx`, `pages/videos.tsx`, `components/command-palette.tsx` (each had an identical local `adminFetch` helper — retry now applied only to GET/HEAD), and `pages/live-monitor.tsx fetchHealth`.
 
 **Auth-probe hardening (security fix flagged by code review):**

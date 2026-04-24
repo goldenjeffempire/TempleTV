@@ -23,7 +23,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Link } from "wouter";
-import { opsApi, uploadsApi, type ActiveUploadSession, type OpsStatus } from "@/services/adminApi";
+import { opsApi, uploadsApi, AdminApiError, type ActiveUploadSession, type OpsStatus } from "@/services/adminApi";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
 import { MetricCard } from "@/components/shared/metric-card";
@@ -326,7 +326,12 @@ export default function Operations() {
   const [status, setStatus] = useState<OpsStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Round 4l hotfix #3: error carries a `transient` flag so the page can
+  // render the soft "Reconnecting…" indicator (instead of a destructive
+  // banner) for the workflow-restart race that fetchWithTransientRetry
+  // already swallows internally most of the time. Same shape used by
+  // transcoding.tsx — see ErrorAlert.transient for the visual treatment.
+  const [error, setError] = useState<{ message: string; transient: boolean } | null>(null);
 
   const loadStatus = useCallback(async (manual = false) => {
     if (manual) setRefreshing(true);
@@ -335,7 +340,9 @@ export default function Operations() {
       setStatus(data);
       setError(null);
     } catch (err: unknown) {
-      setError((err as Error)?.message ?? "Unable to load platform status");
+      const message = (err as Error)?.message ?? "Unable to load platform status";
+      const transient = err instanceof AdminApiError && err.transient === true;
+      setError({ message, transient });
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -385,11 +392,15 @@ export default function Operations() {
       />
 
       {error && (
-        <ErrorAlert
-          title="Operations status unavailable"
-          message={error}
-          onRetry={() => loadStatus(true)}
-        />
+        error.transient ? (
+          <ErrorAlert transient onRetry={() => loadStatus(true)} />
+        ) : (
+          <ErrorAlert
+            title="Operations status unavailable"
+            message={error.message}
+            onRetry={() => loadStatus(true)}
+          />
+        )
       )}
 
       {loading ? (
