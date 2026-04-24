@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useListSchedule, useCreateScheduleEntry, useUpdateScheduleEntry, useDeleteScheduleEntry, getListScheduleQueryKey, useListAdminVideos, useListPlaylists } from "@workspace/api-client-react";
 import { Button } from "@/components/ui/button";
-import { Plus, Loader2, Clock, Trash2, AlertTriangle } from "lucide-react";
+import { Plus, Loader2, Clock, Trash2, AlertTriangle, Radio } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
@@ -49,6 +49,15 @@ export default function Schedule() {
   const updateEntry = useUpdateScheduleEntry();
   const { toast } = useToast();
   const queryClient = useQueryClient();
+
+  // ── Now-playing tracker (UTC because backend stores times in UTC HH:MM) ──
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+  const currentDayUtc = now.getUTCDay();
+  const currentMinUtc = now.getUTCHours() * 60 + now.getUTCMinutes();
 
   const [formData, setFormData] = useState({
     title: "", dayOfWeek: 0, startTime: "09:00", endTime: "10:30", contentType: "live" as "live" | "playlist" | "video", contentId: "", isRecurring: true, isActive: true
@@ -203,7 +212,7 @@ export default function Schedule() {
         <div className="grid gap-6 lg:grid-cols-7">
           {DAYS.map((day, dayIndex) => {
             const dayEntries = schedule?.filter(e => e.dayOfWeek === dayIndex).sort((a, b) => a.startTime.localeCompare(b.startTime)) || [];
-            
+
             const entriesWithOverlap = new Set<string>();
             for (let i = 0; i < dayEntries.length; i++) {
               for (let j = i + 1; j < dayEntries.length; j++) {
@@ -213,54 +222,117 @@ export default function Schedule() {
                 }
               }
             }
-            
+
+            const isToday = dayIndex === currentDayUtc;
+            const nowMin = currentMinUtc;
+
+            // Find which entry (if any) is on-air right now on this day
+            let onAirId: string | null = null;
+            if (isToday) {
+              for (const e of dayEntries) {
+                if (!e.isActive) continue;
+                const start = timeToMinutes(e.startTime);
+                const end = e.endTime ? timeToMinutes(e.endTime) : start + 60;
+                if (nowMin >= start && nowMin < end) { onAirId = e.id; break; }
+              }
+            }
+
+            // Where to insert the "now" marker among sorted day entries
+            let nowMarkerAt = -1;
+            if (isToday) {
+              nowMarkerAt = dayEntries.findIndex(e => timeToMinutes(e.startTime) > nowMin);
+              if (nowMarkerAt === -1) nowMarkerAt = dayEntries.length;
+            }
+
             return (
-              <div key={day} className="flex flex-col gap-3">
-                <div className="font-semibold text-sm pb-2 border-b">{day}</div>
+              <div key={day} className={`flex flex-col gap-3 ${isToday ? "rounded-lg p-2 -m-2 bg-primary/5 ring-1 ring-primary/15" : ""}`}>
+                <div className={`font-semibold text-sm pb-2 border-b flex items-center justify-between ${isToday ? "text-primary" : ""}`}>
+                  <span>{day}</span>
+                  {isToday && (
+                    <span className="text-[10px] font-mono uppercase tracking-wider bg-primary/15 text-primary px-1.5 py-0.5 rounded">
+                      Today · {String(now.getUTCHours()).padStart(2, "0")}:{String(now.getUTCMinutes()).padStart(2, "0")} UTC
+                    </span>
+                  )}
+                </div>
                 {isLoading ? (
                   <Skeleton className="h-24 w-full rounded-lg" />
                 ) : dayEntries.length === 0 ? (
-                  <div className="text-xs text-muted-foreground py-4 text-center border border-dashed rounded-lg bg-muted/10">No events</div>
+                  <>
+                    {isToday && (
+                      <div className="flex items-center gap-2 text-[10px] text-primary font-medium">
+                        <span className="h-px flex-1 bg-primary/50" />
+                        <span>NOW</span>
+                        <span className="h-px flex-1 bg-primary/50" />
+                      </div>
+                    )}
+                    <div className="text-xs text-muted-foreground py-4 text-center border border-dashed rounded-lg bg-muted/10">No events</div>
+                  </>
                 ) : (
-                  dayEntries.map(entry => {
-                    const hasOverlap = entriesWithOverlap.has(entry.id);
-                    return (
-                      <div key={entry.id} className={`p-3 rounded-lg border text-sm relative group transition-colors ${
-                        hasOverlap
-                          ? 'bg-amber-500/5 border-amber-500/40'
-                          : entry.isActive
-                            ? 'bg-card border-border hover:border-primary/50'
-                            : 'bg-muted/50 border-transparent opacity-60'
-                      }`}>
-                        {hasOverlap && (
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <AlertTriangle className="w-3 h-3 text-amber-500 absolute top-2 left-2" />
-                            </TooltipTrigger>
-                            <TooltipContent side="top">
-                              <p className="text-xs">Time overlap with another slot on this day</p>
-                            </TooltipContent>
-                          </Tooltip>
-                        )}
-                        <div className="flex items-start justify-between mb-1">
-                          <div className={`font-medium truncate pr-4 ${hasOverlap ? "pl-4" : ""}`}>{entry.title}</div>
-                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity absolute right-2 top-2 bg-background/80 p-1 rounded-md backdrop-blur-sm">
-                            <Switch checked={entry.isActive} onCheckedChange={c => handleToggle(entry.id, c)} className="scale-75" />
-                            <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive hover:bg-destructive/10" onClick={() => setDeleteId(entry.id)}>
-                              <Trash2 className="w-3 h-3" />
-                            </Button>
+                  <>
+                    {dayEntries.map((entry, idx) => {
+                      const hasOverlap = entriesWithOverlap.has(entry.id);
+                      const isOnAir = entry.id === onAirId;
+                      return (
+                        <div key={entry.id}>
+                          {isToday && nowMarkerAt === idx && (
+                            <div className="flex items-center gap-2 text-[10px] text-primary font-medium mb-2">
+                              <span className="h-px flex-1 bg-primary/50" />
+                              <span>NOW</span>
+                              <span className="h-px flex-1 bg-primary/50" />
+                            </div>
+                          )}
+                          <div className={`p-3 rounded-lg border text-sm relative group transition-colors ${
+                            isOnAir
+                              ? 'bg-red-500/5 border-red-500/50 ring-1 ring-red-500/20'
+                              : hasOverlap
+                                ? 'bg-amber-500/5 border-amber-500/40'
+                                : entry.isActive
+                                  ? 'bg-card border-border hover:border-primary/50'
+                                  : 'bg-muted/50 border-transparent opacity-60'
+                          }`}>
+                            {isOnAir && (
+                              <span className="absolute -top-2 left-2 inline-flex items-center gap-1 bg-red-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider">
+                                <Radio className="w-2.5 h-2.5 animate-pulse" /> On Air Now
+                              </span>
+                            )}
+                            {hasOverlap && (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <AlertTriangle className="w-3 h-3 text-amber-500 absolute top-2 left-2" />
+                                </TooltipTrigger>
+                                <TooltipContent side="top">
+                                  <p className="text-xs">Time overlap with another slot on this day</p>
+                                </TooltipContent>
+                              </Tooltip>
+                            )}
+                            <div className="flex items-start justify-between mb-1">
+                              <div className={`font-medium truncate pr-4 ${hasOverlap ? "pl-4" : ""} ${isOnAir ? "text-red-600 dark:text-red-400" : ""}`}>{entry.title}</div>
+                              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity absolute right-2 top-2 bg-background/80 p-1 rounded-md backdrop-blur-sm">
+                                <Switch checked={entry.isActive} onCheckedChange={c => handleToggle(entry.id, c)} className="scale-75" />
+                                <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive hover:bg-destructive/10" onClick={() => setDeleteId(entry.id)}>
+                                  <Trash2 className="w-3 h-3" />
+                                </Button>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1 text-xs text-muted-foreground mt-2">
+                              <Clock className="w-3 h-3" />
+                              {entry.startTime} {entry.endTime && `– ${entry.endTime}`}
+                            </div>
+                            <div className="mt-2 inline-flex text-[10px] font-medium px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground uppercase tracking-wider">
+                              {entry.contentType}
+                            </div>
                           </div>
                         </div>
-                        <div className="flex items-center gap-1 text-xs text-muted-foreground mt-2">
-                          <Clock className="w-3 h-3" />
-                          {entry.startTime} {entry.endTime && `– ${entry.endTime}`}
-                        </div>
-                        <div className="mt-2 inline-flex text-[10px] font-medium px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground uppercase tracking-wider">
-                          {entry.contentType}
-                        </div>
+                      );
+                    })}
+                    {isToday && nowMarkerAt === dayEntries.length && (
+                      <div className="flex items-center gap-2 text-[10px] text-primary font-medium">
+                        <span className="h-px flex-1 bg-primary/50" />
+                        <span>NOW</span>
+                        <span className="h-px flex-1 bg-primary/50" />
                       </div>
-                    );
-                  })
+                    )}
+                  </>
                 )}
               </div>
             );

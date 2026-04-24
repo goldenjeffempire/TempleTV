@@ -200,10 +200,21 @@ export const opsApi = {
   getStatus: (signal?: AbortSignal) => adminGet<OpsStatus>("/admin/ops/status", signal),
 };
 
+export interface TranscodingJobDetail extends TranscodingJob {
+  outputDir?: string | null;
+  inputPath?: string | null;
+  attempts?: number;
+  updatedAt?: string;
+}
+
 export const transcodingApi = {
   getQueue: (signal?: AbortSignal) => adminGet<TranscodingQueue>("/admin/transcoding/queue", signal),
+  getJob: (jobId: string, signal?: AbortSignal) =>
+    adminGet<TranscodingJobDetail>(`/admin/transcoding/jobs/${jobId}`, signal),
   retryJob: (id: string) => adminPost<void>(`/admin/transcoding/retry/${id}`),
   cancelJob: (id: string) => adminDelete<void>(`/admin/transcoding/${id}`),
+  requeue: (videoId: string, priority?: number) =>
+    adminPost<{ jobId: string }>(`/admin/transcoding/requeue/${videoId}`, priority !== undefined ? { priority } : undefined),
   clearHistory: (status: "done" | "failed" | "cancelled" | "all") =>
     adminDelete<{ cleared: number }>(`/admin/transcoding/clear?status=${status}`),
 };

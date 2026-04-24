@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from "react";
-import { useListNotificationHistory, useSendPushNotification, getListNotificationHistoryQueryKey } from "@workspace/api-client-react";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import { Link } from "wouter";
+import { useListNotificationHistory, useSendPushNotification, getListNotificationHistoryQueryKey, useListAdminVideos } from "@workspace/api-client-react";
 import { adminGet, adminPost, adminDelete } from "@/services/adminApi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -7,11 +8,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Send, Loader2, BellRing, Info, Clock, Trash2, CalendarClock, CheckCircle2, XCircle, AlertCircle } from "lucide-react";
+import { Send, Loader2, BellRing, Info, Clock, Trash2, CalendarClock, CheckCircle2, XCircle, AlertCircle, Film } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -49,9 +51,31 @@ function statusBadge(status: string) {
 
 export default function Notifications() {
   const { data: history, isLoading } = useListNotificationHistory();
+  const { data: videosData } = useListAdminVideos({ limit: 200 });
   const sendNotification = useSendPushNotification();
   const { toast } = useToast();
   const queryClient = useQueryClient();
+
+  const videoTitleById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const v of videosData?.videos ?? []) map.set(v.id, v.title);
+    return map;
+  }, [videosData]);
+
+  const renderVideoLink = (videoId: string | null | undefined) => {
+    if (!videoId) return null;
+    const title = videoTitleById.get(videoId) ?? `Video ${videoId.slice(0, 8)}`;
+    return (
+      <Link
+        href="/videos"
+        className="inline-flex items-center gap-1 text-[10px] bg-primary/10 text-primary border border-primary/20 px-2 py-0.5 rounded-full max-w-[180px] hover:bg-primary/15 transition-colors"
+        title={title}
+      >
+        <Film className="w-2.5 h-2.5 shrink-0" />
+        <span className="truncate">{title}</span>
+      </Link>
+    );
+  };
 
   const [formData, setFormData] = useState({
     title: "",
@@ -382,9 +406,10 @@ export default function Notifications() {
                       {pending.map((n) => (
                         <div key={n.id} className="p-3 border rounded-lg bg-muted/20 flex items-start justify-between gap-2">
                           <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 mb-0.5">
+                            <div className="flex items-center gap-2 mb-0.5 flex-wrap">
                               {statusBadge(n.status)}
                               <span className="text-[10px] text-muted-foreground uppercase tracking-wider">{n.type}</span>
+                              {renderVideoLink(n.videoId)}
                             </div>
                             <h4 className="font-semibold text-sm truncate">{n.title}</h4>
                             <p className="text-xs text-muted-foreground line-clamp-1">{n.body}</p>
@@ -418,9 +443,17 @@ export default function Notifications() {
                   <CardContent>
                     <div className="space-y-3">
                       {past.slice(0, 5).map((n) => (
-                        <div key={n.id} className="p-3 border rounded-lg bg-muted/20">
-                          <div className="flex items-center gap-2 mb-0.5">
+                        <div
+                          key={n.id}
+                          className={`p-3 border rounded-lg ${
+                            n.status === "failed"
+                              ? "bg-red-500/5 border-red-500/30"
+                              : "bg-muted/20"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
                             {statusBadge(n.status)}
+                            {renderVideoLink(n.videoId)}
                           </div>
                           <h4 className="font-semibold text-sm">{n.title}</h4>
                           <p className="text-xs text-muted-foreground line-clamp-1 mb-1">{n.body}</p>
@@ -430,7 +463,25 @@ export default function Notifications() {
                             </p>
                           )}
                           {n.status === "failed" && n.errorMessage && (
-                            <p className="text-[10px] text-destructive">{n.errorMessage}</p>
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <p className="text-[10px] text-destructive font-medium flex items-start gap-1 mt-1 cursor-help">
+                                    <AlertCircle className="w-3 h-3 shrink-0 mt-px" />
+                                    <span className="line-clamp-2">{n.errorMessage}</span>
+                                  </p>
+                                </TooltipTrigger>
+                                <TooltipContent side="bottom" className="max-w-xs">
+                                  <p className="text-xs whitespace-pre-wrap break-words">{n.errorMessage}</p>
+                                </TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          )}
+                          {n.status === "failed" && !n.errorMessage && (
+                            <p className="text-[10px] text-destructive font-medium flex items-center gap-1 mt-1">
+                              <AlertCircle className="w-3 h-3" />
+                              Delivery failed (no error reported)
+                            </p>
                           )}
                         </div>
                       ))}

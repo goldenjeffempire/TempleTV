@@ -545,8 +545,13 @@ export default function VideoLibrary() {
   const handleReencode = useCallback(async (video: VideoRow) => {
     setReencoding(video.id);
     try {
-      const res = await adminFetch(`/api/admin/transcoding/${video.id}/retry`, { method: "POST" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const res = await adminFetch(`/api/admin/transcoding/requeue/${video.id}`, { method: "POST" });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        let msg = `HTTP ${res.status}`;
+        try { const j = JSON.parse(text); if (j.error) msg = j.error; } catch {}
+        throw new Error(msg);
+      }
       toast({ title: "Re-encode queued", description: "HLS transcoding will start shortly." });
       queryClient.invalidateQueries({ queryKey: getListAdminVideosQueryKey() });
       refetch();

@@ -109,6 +109,53 @@ function apiUrl(path: string) {
   return `${BASE.replace(/\/admin\/?$/, "")}/api${path}`;
 }
 
+const VIEWER_HISTORY_STORAGE_KEY = "templeTv.admin.viewerHistory.v1";
+const VIEWER_HISTORY_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
+const VIEWER_HISTORY_MAX_POINTS = 240;
+
+function loadStoredViewerHistory(): ViewerSnapshot[] {
+  try {
+    const raw = localStorage.getItem(VIEWER_HISTORY_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const cutoff = Date.now() - VIEWER_HISTORY_MAX_AGE_MS;
+    return parsed.filter(
+      (p): p is ViewerSnapshot =>
+        typeof p === "object" &&
+        p !== null &&
+        typeof (p as ViewerSnapshot).ts === "number" &&
+        typeof (p as ViewerSnapshot).count === "number" &&
+        (p as ViewerSnapshot).ts >= cutoff,
+    );
+  } catch {
+    return [];
+  }
+}
+
+function persistViewerHistory(snapshots: ViewerSnapshot[]) {
+  try {
+    localStorage.setItem(VIEWER_HISTORY_STORAGE_KEY, JSON.stringify(snapshots));
+  } catch {
+    // ignore quota errors
+  }
+}
+
+function mergeViewerHistory(stored: ViewerSnapshot[], incoming: ViewerSnapshot[]): ViewerSnapshot[] {
+  const cutoff = Date.now() - VIEWER_HISTORY_MAX_AGE_MS;
+  const map = new Map<number, number>();
+  for (const s of stored) {
+    if (s.ts >= cutoff) map.set(s.ts, s.count);
+  }
+  for (const s of incoming) {
+    if (s.ts >= cutoff) map.set(s.ts, s.count);
+  }
+  return Array.from(map.entries())
+    .sort((a, b) => a[0] - b[0])
+    .slice(-VIEWER_HISTORY_MAX_POINTS)
+    .map(([ts, count]) => ({ ts, count }));
+}
+
 interface ChartPoint {
   label: string;
   count: number;
@@ -187,6 +234,7 @@ export default function LiveMonitor() {
   const [refreshing, setRefreshing] = useState(false);
   const [alertVisible, setAlertVisible] = useState(false);
   const prevIsLive = useRef<boolean | null>(null);
+  const storedHistoryRef = useRef<ViewerSnapshot[]>(loadStoredViewerHistory());
 
   const fetchHealth = useCallback(async (silent = false) => {
     if (!silent) setRefreshing(true);
@@ -196,7 +244,10 @@ export default function LiveMonitor() {
       const res = await fetch(apiUrl("/admin/live/health"), { headers });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = (await res.json()) as LiveHealthData;
-      setData(json);
+      const merged = mergeViewerHistory(storedHistoryRef.current, json.viewerHistory ?? []);
+      storedHistoryRef.current = merged;
+      persistViewerHistory(merged);
+      setData({ ...json, viewerHistory: merged });
     } catch {
       if (!silent) {
         toast({ title: "Failed to load live health data", variant: "destructive" });
@@ -362,14 +413,33 @@ export default function LiveMonitor() {
               </CardContent>
             </Card>
 
-            <Card>
+            <Card
+              className={
+                data.current.staleSec > Math.max(120, (data.polling.intervalMs / 1000) * 3)
+                  ? "border-amber-500/40 bg-amber-500/5"
+                  : ""
+              }
+            >
               <CardContent className="p-5">
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Last Check</span>
-                  <Activity className="w-4 h-4 text-muted-foreground" />
+                  <Activity
+                    className={`w-4 h-4 ${
+                      data.current.staleSec > Math.max(120, (data.polling.intervalMs / 1000) * 3)
+                        ? "text-amber-500"
+                        : "text-muted-foreground"
+                    }`}
+                  />
                 </div>
                 <div className="text-2xl font-bold">{data.current.staleSec}s ago</div>
-                <p className="text-xs text-muted-foreground mt-1">via {data.current.detectionMethod ?? "—"}</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  via <code className="font-mono text-[11px]">{data.current.detectionMethod ?? "—"}</code>
+                </p>
+                {data.current.staleSec > Math.max(120, (data.polling.intervalMs / 1000) * 3) && (
+                  <p className="text-[10px] text-amber-600 mt-1 flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3" /> Detection lag — last poll exceeds expected interval
+                  </p>
+                )}
               </CardContent>
             </Card>
 

@@ -4,6 +4,14 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -25,8 +33,9 @@ import {
   Activity,
   Ban,
   ChevronDown,
+  Info,
 } from "lucide-react";
-import { transcodingApi, type TranscodingJob, type TranscodingQueue } from "@/services/adminApi";
+import { transcodingApi, type TranscodingJob, type TranscodingJobDetail, type TranscodingQueue } from "@/services/adminApi";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
 
@@ -92,11 +101,12 @@ interface JobRowProps {
   job: TranscodingJob;
   onRetry: (id: string) => void;
   onCancel: (id: string) => void;
+  onDetails: (id: string) => void;
   retrying: string | null;
   cancelling: string | null;
 }
 
-function JobRow({ job, onRetry, onCancel, retrying, cancelling }: JobRowProps) {
+function JobRow({ job, onRetry, onCancel, onDetails, retrying, cancelling }: JobRowProps) {
   const [expanded, setExpanded] = useState(false);
   return (
     <div className="bg-card border rounded-lg p-4">
@@ -168,6 +178,15 @@ function JobRow({ job, onRetry, onCancel, retrying, cancelling }: JobRowProps) {
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-8 text-muted-foreground"
+            onClick={() => onDetails(job.id)}
+            title="View job details"
+          >
+            <Info className="w-3.5 h-3.5" />
+          </Button>
           {job.status === "failed" && (
             <Button
               size="sm"
@@ -208,7 +227,26 @@ export default function Transcoding() {
   const [retrying, setRetrying] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [detailJob, setDetailJob] = useState<TranscodingJobDetail | null>(null);
   const { toast } = useToast();
+
+  const handleDetails = useCallback(async (jobId: string) => {
+    setDetailOpen(true);
+    setDetailLoading(true);
+    setDetailError(null);
+    setDetailJob(null);
+    try {
+      const job = await transcodingApi.getJob(jobId);
+      setDetailJob(job);
+    } catch (err: unknown) {
+      setDetailError((err as Error)?.message ?? "Failed to load job details");
+    } finally {
+      setDetailLoading(false);
+    }
+  }, []);
 
   const loadQueue = useCallback(async () => {
     try {
@@ -368,7 +406,7 @@ export default function Transcoding() {
               </h2>
               <div className="space-y-2">
                 {activeJobs.map((job) => (
-                  <JobRow key={job.id} job={job} onRetry={handleRetry} onCancel={handleCancel} retrying={retrying} cancelling={cancelling} />
+                  <JobRow key={job.id} job={job} onRetry={handleRetry} onCancel={handleCancel} onDetails={handleDetails} retrying={retrying} cancelling={cancelling} />
                 ))}
               </div>
             </section>
@@ -381,7 +419,7 @@ export default function Transcoding() {
               </h2>
               <div className="space-y-2">
                 {queuedJobs.map((job) => (
-                  <JobRow key={job.id} job={job} onRetry={handleRetry} onCancel={handleCancel} retrying={retrying} cancelling={cancelling} />
+                  <JobRow key={job.id} job={job} onRetry={handleRetry} onCancel={handleCancel} onDetails={handleDetails} retrying={retrying} cancelling={cancelling} />
                 ))}
               </div>
             </section>
@@ -394,7 +432,7 @@ export default function Transcoding() {
               </h2>
               <div className="space-y-2">
                 {completedJobs.map((job) => (
-                  <JobRow key={job.id} job={job} onRetry={handleRetry} onCancel={handleCancel} retrying={retrying} cancelling={cancelling} />
+                  <JobRow key={job.id} job={job} onRetry={handleRetry} onCancel={handleCancel} onDetails={handleDetails} retrying={retrying} cancelling={cancelling} />
                 ))}
               </div>
             </section>
@@ -412,6 +450,134 @@ export default function Transcoding() {
           All variants use H.264 video with AAC audio and 6-second segments for low-latency playback.
         </p>
       </div>
+
+      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Cpu className="w-4 h-4" /> Job Details
+            </DialogTitle>
+            <DialogDescription>
+              Full transcoding job record including timestamps and any error output.
+            </DialogDescription>
+          </DialogHeader>
+
+          {detailLoading && (
+            <div className="py-8 flex items-center justify-center">
+              <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+            </div>
+          )}
+
+          {detailError && !detailLoading && (
+            <div className="py-4 text-sm text-destructive flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+              <span>{detailError}</span>
+            </div>
+          )}
+
+          {detailJob && !detailLoading && (
+            <div className="space-y-4 text-sm">
+              <div className="flex items-start gap-3">
+                {detailJob.videoThumbnail ? (
+                  <img src={detailJob.videoThumbnail} alt="" className="w-20 h-12 object-cover rounded bg-muted shrink-0" />
+                ) : (
+                  <div className="w-20 h-12 bg-muted rounded flex items-center justify-center shrink-0">
+                    <Film className="w-4 h-4 text-muted-foreground" />
+                  </div>
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold truncate">{detailJob.videoTitle ?? "Untitled video"}</div>
+                  <div className="flex items-center gap-2 mt-1">
+                    <StatusBadge status={detailJob.status} />
+                    {detailJob.priority > 0 && (
+                      <Badge variant="outline" className="text-xs gap-1">
+                        <Zap className="w-2.5 h-2.5" /> P{detailJob.priority}
+                      </Badge>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div className="bg-muted/40 rounded p-2">
+                  <div className="text-muted-foreground uppercase tracking-wider mb-0.5">Job ID</div>
+                  <div className="font-mono break-all">{detailJob.id}</div>
+                </div>
+                <div className="bg-muted/40 rounded p-2">
+                  <div className="text-muted-foreground uppercase tracking-wider mb-0.5">Video ID</div>
+                  <div className="font-mono break-all">{detailJob.videoId}</div>
+                </div>
+                <div className="bg-muted/40 rounded p-2">
+                  <div className="text-muted-foreground uppercase tracking-wider mb-0.5">Attempts</div>
+                  <div className="font-semibold">{detailJob.attempts ?? 0}</div>
+                </div>
+                <div className="bg-muted/40 rounded p-2">
+                  <div className="text-muted-foreground uppercase tracking-wider mb-0.5">Progress</div>
+                  <div className="font-semibold">{detailJob.progress}%</div>
+                </div>
+                <div className="bg-muted/40 rounded p-2 col-span-2">
+                  <div className="text-muted-foreground uppercase tracking-wider mb-0.5">Created</div>
+                  <div>{new Date(detailJob.createdAt).toLocaleString()}</div>
+                </div>
+                {detailJob.startedAt && (
+                  <div className="bg-muted/40 rounded p-2 col-span-2">
+                    <div className="text-muted-foreground uppercase tracking-wider mb-0.5">Started</div>
+                    <div>{new Date(detailJob.startedAt).toLocaleString()}</div>
+                  </div>
+                )}
+                {detailJob.completedAt && (
+                  <div className="bg-muted/40 rounded p-2 col-span-2">
+                    <div className="text-muted-foreground uppercase tracking-wider mb-0.5">Completed</div>
+                    <div>
+                      {new Date(detailJob.completedAt).toLocaleString()}
+                      {detailJob.startedAt && (
+                        <span className="text-muted-foreground ml-2">
+                          (took {fmtDuration(detailJob.startedAt, detailJob.completedAt)})
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {detailJob.errorMessage && (
+                <div className="rounded border border-red-500/30 bg-red-500/5 p-3">
+                  <div className="text-xs font-semibold text-red-600 uppercase tracking-wider mb-1 flex items-center gap-1">
+                    <XCircle className="w-3.5 h-3.5" /> Error Output
+                  </div>
+                  <pre className="text-xs whitespace-pre-wrap break-words text-red-700 dark:text-red-400 font-mono max-h-48 overflow-auto">
+{detailJob.errorMessage}
+                  </pre>
+                </div>
+              )}
+            </div>
+          )}
+
+          <DialogFooter className="gap-2">
+            {detailJob?.status === "failed" && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={retrying === detailJob.id}
+                onClick={async () => {
+                  await handleRetry(detailJob.id);
+                  setDetailOpen(false);
+                }}
+              >
+                {retrying === detailJob.id ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />
+                ) : (
+                  <RotateCcw className="w-3.5 h-3.5 mr-1.5" />
+                )}
+                Retry job
+              </Button>
+            )}
+            <Button variant="ghost" size="sm" onClick={() => setDetailOpen(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

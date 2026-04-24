@@ -100,6 +100,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   const isLive = lastStatusPayload?.isLive ?? false;
   const hasLiveOverride = Boolean(lastStatusPayload?.liveOverride);
+  const sourceLabel = hasLiveOverride
+    ? "Override"
+    : lastStatusPayload?.ytLive
+      ? "YouTube"
+      : null;
 
   React.useEffect(() => {
     const sync = () => setHasAdminToken(Boolean(getAdminToken()));
@@ -241,22 +246,47 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <header className="h-14 border-b bg-card flex items-center justify-between px-5 shrink-0">
           <div className="flex items-center gap-3">
             {isLive || hasLiveOverride ? (
-              <div className="flex items-center gap-2 bg-red-500/10 text-red-500 px-3 py-1.5 rounded-full text-xs font-semibold border border-red-500/20">
+              <Link
+                href="/live-control"
+                className="flex items-center gap-2 bg-red-500/10 text-red-500 px-3 py-1.5 rounded-full text-xs font-semibold border border-red-500/20 hover:bg-red-500/15 transition-colors"
+                title="Open Live Control"
+              >
                 <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse" />
-                LIVE
+                ON AIR
+                {sourceLabel && (
+                  <span className="opacity-70 font-normal uppercase tracking-wide text-[10px]">
+                    · {sourceLabel}
+                  </span>
+                )}
                 {hasLiveOverride && lastStatusPayload?.liveOverride?.title && (
-                  <span className="opacity-70 font-normal max-w-[140px] truncate">
+                  <span className="opacity-70 font-normal max-w-[140px] truncate hidden lg:inline">
                     — {lastStatusPayload.liveOverride.title}
                   </span>
                 )}
-              </div>
+              </Link>
             ) : (
-              <div className="flex items-center gap-2 bg-muted text-muted-foreground px-3 py-1.5 rounded-full text-xs font-medium border">
+              <Link
+                href="/live-control"
+                className="flex items-center gap-2 bg-muted text-muted-foreground px-3 py-1.5 rounded-full text-xs font-medium border hover:bg-accent hover:text-foreground transition-colors"
+                title="Open Live Control"
+              >
                 <Radio className="w-3 h-3" />
                 OFF AIR
-              </div>
+              </Link>
             )}
-            {lastStatusPayload && (
+            {(isLive || hasLiveOverride) && lastStatusPayload && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div className="hidden sm:flex items-center gap-1.5 text-xs text-red-500/90 font-medium cursor-default">
+                    <Users className="w-3.5 h-3.5" />
+                    {(lastStatusPayload.deviceCount ?? 0).toLocaleString()}
+                    <span className="opacity-60 font-normal hidden md:inline">watching</span>
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent>Live viewer estimate (connected devices)</TooltipContent>
+              </Tooltip>
+            )}
+            {!(isLive || hasLiveOverride) && lastStatusPayload && (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <div className="hidden md:flex items-center gap-1.5 text-xs text-muted-foreground cursor-default">
