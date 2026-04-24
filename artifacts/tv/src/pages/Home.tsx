@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LiveHero } from "../components/LiveHero";
 import { TempleTvLogo } from "../components/TempleTvLogo";
 import { SermonRow } from "../components/SermonRow";
@@ -39,11 +39,11 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
   // Row 0: Live hero (always present as placeholder — count = 1 even when off-air)
   // Row 1: Continue Watching (only when history exists)
   // Row 2+: Content categories
-  const rows = [
+  const rows = useMemo(() => [
     { key: "__live__", label: "Live", items: 1 },
     ...(hasContinueWatching ? [{ key: "__continue__", label: "Continue Watching", items: continueWatching.length }] : []),
     ...CATEGORIES.map((cat) => ({ key: cat, label: cat, items: (byCategory[cat] ?? []).length })),
-  ].filter((r) => r.items > 0);
+  ].filter((r) => r.items > 0), [hasContinueWatching, continueWatching.length, byCategory]);
 
   const getRowItemCount = useCallback(
     (rowIndex: number) => rows[rowIndex]?.items ?? 0,

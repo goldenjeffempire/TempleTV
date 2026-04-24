@@ -60,12 +60,6 @@ function BroadcastProgress({ broadcastCurrent }: { broadcastCurrent: BroadcastCu
   const positionSecs = Math.round((broadcastCurrent.positionSecs ?? 0) + elapsed);
   const totalDuration = broadcastCurrent.item?.durationSecs ?? 1;
   const progress = Math.min(100, (positionSecs / totalDuration) * 100);
-  const remaining = Math.max(0, totalDuration - positionSecs);
-  const remMins = Math.floor(remaining / 60);
-  const remSecs = remaining % 60;
-  const remStr = remMins > 0
-    ? `${remMins}m ${String(remSecs).padStart(2, "0")}s`
-    : `${remSecs}s`;
 
   return (
     <View style={broadcastProgressStyles.section}>
@@ -73,16 +67,13 @@ function BroadcastProgress({ broadcastCurrent }: { broadcastCurrent: BroadcastCu
         <View style={broadcastProgressStyles.track}>
           <View style={[broadcastProgressStyles.fill, { width: `${progress}%` } as any]} />
         </View>
-        <View style={broadcastProgressStyles.timeBadge}>
-          <Feather name="clock" size={9} color="rgba(255,255,255,0.7)" />
-          <Text style={broadcastProgressStyles.timeText}>{remStr} left</Text>
-        </View>
+        {broadcastCurrent.nextItem && (
+          <View style={broadcastProgressStyles.timeBadge}>
+            <Feather name="skip-forward" size={9} color="rgba(255,255,255,0.6)" />
+            <Text style={broadcastProgressStyles.timeText}>Up Next</Text>
+          </View>
+        )}
       </View>
-      {broadcastCurrent.nextItem && (
-        <Text style={broadcastProgressStyles.nextText} numberOfLines={1}>
-          Up next: {broadcastCurrent.nextItem.title}
-        </Text>
-      )}
     </View>
   );
 }
@@ -395,18 +386,18 @@ export default function WatchScreen() {
                     {liveStatus.isLive && liveStatus.title
                       ? liveStatus.title
                       : showScheduledLive
-                      ? broadcastCurrent?.activeSchedule?.title ?? "Scheduled Live Service"
+                      ? "Live Service Coming Up"
                       : showBroadcast
-                      ? broadcastItem?.title ?? "Temple TV Broadcast"
-                      : "Temple TV Live"}
+                      ? "Temple TV"
+                      : "Temple TV"}
                   </Text>
                   <Text style={styles.liveSubtitle}>
                     {liveStatus.isLive
-                      ? "Now streaming live — tap to watch"
+                      ? "Live worship service — tune in now"
                       : showScheduledLive
                       ? "Scheduled live service — tap to join"
                       : showBroadcast
-                      ? "Continuous broadcast — tap to watch"
+                      ? "24/7 Christian broadcasting — tap to tune in"
                       : "Live worship & preaching 24/7"}
                   </Text>
                   {showBroadcast && broadcastCurrent?.item && (
@@ -450,6 +441,9 @@ export default function WatchScreen() {
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
                 keyExtractor={(x) => x.item.id}
+                initialNumToRender={4}
+                windowSize={5}
+                removeClippedSubviews
                 renderItem={({ item: { item, pct, position } }) => (
                   <SermonCard
                     sermon={item}
@@ -478,6 +472,9 @@ export default function WatchScreen() {
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
                 keyExtractor={(item) => item.id}
+                initialNumToRender={4}
+                windowSize={5}
+                removeClippedSubviews
                 renderItem={({ item }) => (
                   <SermonCard sermon={item} onPress={handleSermonPress} variant="vertical" />
                 )}
@@ -507,6 +504,9 @@ export default function WatchScreen() {
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
                 keyExtractor={(item) => item.id}
+                initialNumToRender={4}
+                windowSize={5}
+                removeClippedSubviews
                 renderItem={({ item }) => (
                   <SermonCard sermon={item} onPress={handleSermonPress} variant="vertical" />
                 )}

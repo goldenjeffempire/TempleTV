@@ -468,31 +468,36 @@ async function sendExpoPushNotifications(
   return { sent, failed };
 }
 
+const ADMIN_STATS_CACHE_KEY = "admin:stats:v1";
+const ADMIN_STATS_TTL_MS = 2 * 60 * 1000; // 2 minutes
+
 router.get("/admin/stats", async (req, res) => {
   try {
-    const [totalVideosResult] = await db.select({ count: count() }).from(videosTable);
-    const [totalPlaylistsResult] = await db.select({ count: count() }).from(playlistsTable);
-    const [activeScheduleResult] = await db
-      .select({ count: count() })
-      .from(scheduleTable)
-      .where(eq(scheduleTable.isActive, true));
-    const [recentImportsResult] = await db
-      .select({ count: count() })
-      .from(videosTable)
-      .where(sql`imported_at > now() - interval '7 days'`);
-    const [todayNotifResult] = await db
-      .select({ count: count() })
-      .from(notificationsTable)
-      .where(sql`sent_at > now() - interval '1 day'`);
-    const [registeredDevicesResult] = await db.select({ count: count() }).from(pushTokensTable);
-    const [registeredUsersResult] = await db.select({ count: count() }).from(usersTable);
+    const cached = await cache.get<object>(ADMIN_STATS_CACHE_KEY);
+    if (cached) {
+      res.json(cached);
+      return;
+    }
 
-    const categoryCounts = await db
-      .select({ category: videosTable.category, count: count() })
-      .from(videosTable)
-      .groupBy(videosTable.category)
-      .orderBy(desc(count()))
-      .limit(1);
+    const [
+      [totalVideosResult],
+      [totalPlaylistsResult],
+      [activeScheduleResult],
+      [recentImportsResult],
+      [todayNotifResult],
+      [registeredDevicesResult],
+      [registeredUsersResult],
+      categoryCounts,
+    ] = await Promise.all([
+      db.select({ count: count() }).from(videosTable),
+      db.select({ count: count() }).from(playlistsTable),
+      db.select({ count: count() }).from(scheduleTable).where(eq(scheduleTable.isActive, true)),
+      db.select({ count: count() }).from(videosTable).where(sql`imported_at > now() - interval '7 days'`),
+      db.select({ count: count() }).from(notificationsTable).where(sql`sent_at > now() - interval '1 day'`),
+      db.select({ count: count() }).from(pushTokensTable),
+      db.select({ count: count() }).from(usersTable),
+      db.select({ category: videosTable.category, count: count() }).from(videosTable).groupBy(videosTable.category).orderBy(desc(count())).limit(1),
+    ]);
 
     let liveStatus = { isLive: false, viewerCount: 0 };
     try {
@@ -512,7 +517,7 @@ router.get("/admin/stats", async (req, res) => {
       liveStatus.isLive = true;
     }
 
-    res.json({
+    const payload = {
       totalVideos: totalVideosResult?.count ?? 0,
       totalPlaylists: totalPlaylistsResult?.count ?? 0,
       activeScheduleEntries: activeScheduleResult?.count ?? 0,
@@ -523,7 +528,10 @@ router.get("/admin/stats", async (req, res) => {
       topCategory: categoryCounts[0]?.category ?? "sermon",
       registeredDevices: registeredDevicesResult?.count ?? 0,
       registeredUsers: Number(registeredUsersResult?.count ?? 0),
-    });
+    };
+
+    await cache.set(ADMIN_STATS_CACHE_KEY, payload, ADMIN_STATS_TTL_MS);
+    res.json(payload);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });

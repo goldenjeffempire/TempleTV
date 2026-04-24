@@ -1,4 +1,4 @@
-import React from "react";
+import React, { memo, useCallback } from "react";
 import { SermonCard } from "./SermonCard";
 import type { Sermon } from "../hooks/useData";
 
@@ -11,7 +11,7 @@ interface SermonRowProps {
   onCardSelect: (sermon: Sermon) => void;
 }
 
-export function SermonRow({
+export const SermonRow = memo(function SermonRow({
   title,
   sermons,
   focusedIndex,
@@ -26,7 +26,6 @@ export function SermonRow({
       className={`tv-row ${rowFocused ? "tv-row-focused" : ""}`}
       style={{ marginBottom: 36 }}
     >
-      {/* Row label — slightly larger, brighter when this row is active */}
       <h2
         style={{
           fontSize: "clamp(18px, 1.6vw, 24px)",
@@ -41,7 +40,6 @@ export function SermonRow({
           gap: 10,
         }}
       >
-        {/* Active row indicator bar */}
         {rowFocused && (
           <span
             aria-hidden
@@ -59,7 +57,6 @@ export function SermonRow({
         {title}
       </h2>
 
-      {/* Horizontally scrollable card strip */}
       <div
         style={{
           display: "flex",
@@ -82,4 +79,4 @@ export function SermonRow({
       </div>
     </div>
   );
-}
+});

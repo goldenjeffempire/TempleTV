@@ -1,0 +1,62 @@
+Perform a comprehensive performance, UX, and system-wide enhancement across the entire platform to ensure it is fully optimized, production-ready, and capable of delivering a real-world professional television streaming experience.
+
+System Performance Optimization:
+
+* Identify and eliminate all sources of latency, slow rendering, and performance bottlenecks across the platform.
+* Optimize frontend rendering, backend processing, API response times, caching layers, and media loading pipelines.
+* Ensure the entire platform responds as quickly and efficiently as possible under real-world usage conditions, including high traffic and concurrent streaming sessions.
+* Improve scalability and stability to support continuous broadcasting without lag, delay, or system degradation.
+
+Hero Cinematic Section Enhancement:
+
+* Fully stabilize and optimize the Hero Cinematic section to function like a professional live television station broadcast interface.
+* Ensure smooth, continuous playback experience that replicates real-world TV viewing behavior.
+* Enhance visual presentation so users feel like they are watching Temple TV directly from a traditional television set.
+* Improve streaming consistency, transitions, and playback reliability for uninterrupted viewing experience.
+* Ensure the Hero section is fully operational, visually immersive, and broadcast-ready for production environments.
+
+Authentication System Upgrade:
+
+* Redesign and modernize the authentication pages with a professional-grade UI/UX experience.
+* Remove email verification requirements while maintaining secure and reliable authentication flows.
+* Implement modern, visually appealing interface designs with:
+
+  * Smooth animations
+  * Interactive elements
+  * Micro-interactions
+  * Transition effects
+  * Clean, structured layouts
+* Ensure the authentication experience feels premium, intuitive, and aligned with modern enterprise-grade digital platforms.
+* Optimize usability, responsiveness, and visual hierarchy across all devices and screen sizes.
+* Ensure the authentication flow is fast, seamless, and fully production-ready.
+
+Hero Section Content Cleanup:
+
+* Remove video titles and metadata overlays displayed beneath or within the Hero Cinematic section.
+
+* Ensure no video titles, filenames, or technical labels are visible to users in the viewing interface.
+
+* Replace structured metadata display such as:
+
+  “26-10-25 Message1”
+  “Continuous broadcast — tap to watch”
+  “16m 49s left”
+  “Up next: 26-10-25 Message1”
+
+  with a clean, broadcast-style presentation that mimics real television viewing without exposing internal content naming.
+
+* Ensure the viewing experience remains immersive, minimalistic, and identical to watching a professional TV channel broadcast.
+
+Platform-Wide Requirements:
+
+* Ensure all features, modules, and systems are fully operational and functional.
+* Validate end-to-end system reliability across streaming, authentication, media management, and UI rendering.
+* Fix all existing bugs, inconsistencies, performance issues, and UX flaws.
+* Ensure full production readiness across all environments and device types.
+* Maintain enterprise-grade standards for scalability, security, performance, and reliability.
+
+Expected Final Outcome:
+
+A fully optimized, modernized, high-performance, and visually immersive streaming platform that operates like a professional television station. The system should deliver ultra-fast responsiveness, seamless broadcasting, premium authentication UX, and a clean TV-style viewing experience suitable for real-world production deployment.
+
+“Temple TV Anywhere You Go”

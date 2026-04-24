@@ -50,17 +50,13 @@ export function BroadcastInfoStrip({ broadcast, playerHeight }: BroadcastInfoStr
           <View style={styles.nowRow}>
             <View style={styles.nowBadge}>
               <View style={styles.nowDot} />
-              <Text style={styles.nowLabel}>NOW PLAYING</Text>
+              <Text style={styles.nowLabel}>NOW ON AIR</Text>
             </View>
-            {remaining > 0 && (
-              <View style={styles.remainingRow}>
-                <Feather name="clock" size={10} color="rgba(255,255,255,0.7)" />
-                <Text style={styles.remainingText}>{fmtRemaining(remaining)} left</Text>
-              </View>
-            )}
+            <View style={styles.nowBadge}>
+              <Feather name="radio" size={10} color="rgba(255,255,255,0.5)" />
+              <Text style={styles.channelLabel}>TEMPLE TV</Text>
+            </View>
           </View>
-
-          <Text style={styles.title} numberOfLines={1}>{item.title}</Text>
 
           <View style={styles.progressTrack}>
             <View style={[styles.progressFill, { width: `${Math.min(100, progressPercent ?? 0)}%` }]} />
@@ -68,8 +64,8 @@ export function BroadcastInfoStrip({ broadcast, playerHeight }: BroadcastInfoStr
 
           {nextItem && (
             <View style={styles.upNextRow}>
-              <Feather name="chevrons-right" size={11} color="rgba(255,255,255,0.6)" />
-              <Text style={styles.upNextText} numberOfLines={1}>Up next: {nextItem.title}</Text>
+              <Feather name="chevrons-right" size={11} color="rgba(255,255,255,0.5)" />
+              <Text style={styles.upNextText}>Up Next</Text>
             </View>
           )}
         </View>
@@ -115,19 +111,11 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     letterSpacing: 1.2,
   },
-  remainingRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 3,
-  },
-  remainingText: {
-    color: "rgba(255,255,255,0.7)",
+  channelLabel: {
+    color: "rgba(255,255,255,0.5)",
     fontSize: 10,
-  },
-  title: {
-    color: "#FFF",
-    fontSize: 13,
     fontWeight: "600",
+    letterSpacing: 1.1,
   },
   progressTrack: {
     height: 2,
