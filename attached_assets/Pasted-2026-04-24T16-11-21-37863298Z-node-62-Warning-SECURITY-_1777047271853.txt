@@ -1,0 +1,50 @@
+2026-04-24T16:11:21.37863298Z (node:62) Warning: SECURITY WARNING: The SSL modes 'prefer', 'require', and 'verify-ca' are treated as aliases for 'verify-full'.
+2026-04-24T16:11:21.378658822Z In the next major version (pg-connection-string v3.0.0 and pg v9.0.0), these modes will adopt standard libpq semantics, which have weaker security guarantees.
+2026-04-24T16:11:21.378717816Z 
+2026-04-24T16:11:21.378725527Z To prepare for this change:
+2026-04-24T16:11:21.378731157Z - If you want the current behavior, explicitly use 'sslmode=verify-full'
+2026-04-24T16:11:21.378735867Z - If you want libpq compatibility now, use 'uselibpqcompat=true&sslmode=require'
+2026-04-24T16:11:21.378740088Z 
+2026-04-24T16:11:21.378782811Z See https://www.postgresql.org/docs/current/libpq-ssl.html for libpq SSL mode definitions.
+2026-04-24T16:11:21.378788361Z (Use `node --trace-warnings ...` to show where the warning was created)
+2026-04-24T16:11:21.672133594Z {"level":30,"time":1777047081379,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","port":8080,"host":"0.0.0.0","msg":"Server listening"}
+2026-04-24T16:11:21.672219161Z {"level":30,"time":1777047081653,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","ffmpeg":"/usr/bin/ffmpeg","ffprobe":"/usr/bin/ffprobe","ffmpegVersion":"ffmpeg version 5.1.8-0+deb12u1 Copyright (c) 2000-2025 the FFmpeg developers","msg":"FFmpeg binaries verified"}
+2026-04-24T16:11:21.672228061Z {"level":30,"time":1777047081653,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","msg":"Notification scheduler started (30s interval)"}
+2026-04-24T16:11:21.672232892Z {"level":30,"time":1777047081655,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","intervalMs":1800000,"msg":"[YouTubeSync] Scheduler started"}
+2026-04-24T16:11:21.672237542Z {"level":30,"time":1777047081655,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","intervalMs":30000,"msg":"Transcoding retry tick started"}
+2026-04-24T16:11:21.703607634Z {"level":30,"time":1777047081703,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","sessionId":"55ca04b2-7904-441d-92b8-48f74549d500","uploadedChunks":41,"totalChunks":128,"msg":"Recovered upload session"}
+2026-04-24T16:11:21.814791626Z {"level":50,"time":1777047081814,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","errText":"{\n  \"error\": {\n    \"code\": 403,\n    \"message\": \"The request cannot be completed because you have exceeded your \\u003ca href=\\\"/youtube/v3/getting-started#quota\\\"\\u003equota\\u003c/a\\u003e.\",\n    \"errors\": [\n      {\n        \"message\": \"The request cannot be completed because you have exceeded your \\u003ca href=\\\"/youtube/v3/getting-started#quota\\\"\\u003equota\\u003c/a\\u003e.\",\n        \"domain\": \"youtube.quota\",\n        \"reason\": \"quotaExceeded\"\n      }\n    ]\n  }\n}\n","msg":"YouTube playlistItems API error"}
+2026-04-24T16:11:22.422537265Z {"level":40,"time":1777047082422,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","jobId":"f8bdd00e-da61-404f-80e8-398f1435c0ca","msg":"Resetting stuck processing job to queued"}
+2026-04-24T16:11:22.707647053Z {"level":30,"time":1777047082707,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","msg":"Resuming transcoding queue after startup"}
+2026-04-24T16:11:22.803686304Z {"level":30,"time":1777047082803,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","jobId":"f8bdd00e-da61-404f-80e8-398f1435c0ca","videoId":"f758080a-e5d5-47b3-9b57-757c1d7c1a06","attempt":1,"max":3,"msg":"Starting transcoding job"}
+2026-04-24T16:11:23.160007189Z {"level":30,"time":1777047083159,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","jobId":"f8bdd00e-da61-404f-80e8-398f1435c0ca","quality":"1080p","msg":"Transcoding quality variant"}
+2026-04-24T16:12:58.31388739Z ==> Running 'pnpm --filter @workspace/api-server run start'
+2026-04-24T16:12:58.588781456Z ! Corepack is about to download https://registry.npmjs.org/pnpm/-/pnpm-10.33.2.tgz
+2026-04-24T16:13:01.232831235Z 
+2026-04-24T16:13:01.232865857Z > @workspace/api-server@0.0.0 start /opt/render/project/src/artifacts/api-server
+2026-04-24T16:13:01.232870768Z > node --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs
+2026-04-24T16:13:01.232873618Z 
+2026-04-24T16:13:04.227270997Z {"level":30,"time":1777047184226,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","msg":"Rate limiter using in-memory store (set REDIS_URL for multi-instance safety)"}
+2026-04-24T16:13:04.229836728Z [Sentry] express is not instrumented. Please make sure to initialize Sentry in a separate file that you `--import` when running node, see: https://docs.sentry.io/platforms/javascript/guides/express/install/esm/.
+2026-04-24T16:13:04.292581923Z (node:62) Warning: SECURITY WARNING: The SSL modes 'prefer', 'require', and 'verify-ca' are treated as aliases for 'verify-full'.
+2026-04-24T16:13:04.292633587Z In the next major version (pg-connection-string v3.0.0 and pg v9.0.0), these modes will adopt standard libpq semantics, which have weaker security guarantees.
+2026-04-24T16:13:04.292639128Z 
+2026-04-24T16:13:04.292644668Z To prepare for this change:
+2026-04-24T16:13:04.292650419Z - If you want the current behavior, explicitly use 'sslmode=verify-full'
+2026-04-24T16:13:04.292654889Z - If you want libpq compatibility now, use 'uselibpqcompat=true&sslmode=require'
+2026-04-24T16:13:04.292659149Z 
+2026-04-24T16:13:04.2926646Z See https://www.postgresql.org/docs/current/libpq-ssl.html for libpq SSL mode definitions.
+2026-04-24T16:13:04.29266918Z (Use `node --trace-warnings ...` to show where the warning was created)
+2026-04-24T16:13:04.507415515Z {"level":30,"time":1777047184293,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","port":8080,"host":"0.0.0.0","msg":"Server listening"}
+2026-04-24T16:13:04.507435636Z {"level":30,"time":1777047184499,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","ffmpeg":"/usr/bin/ffmpeg","ffprobe":"/usr/bin/ffprobe","ffmpegVersion":"ffmpeg version 5.1.8-0+deb12u1 Copyright (c) 2000-2025 the FFmpeg developers","msg":"FFmpeg binaries verified"}
+2026-04-24T16:13:04.507445307Z {"level":30,"time":1777047184499,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","msg":"Notification scheduler started (30s interval)"}
+2026-04-24T16:13:04.507450467Z {"level":30,"time":1777047184500,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","intervalMs":1800000,"msg":"[YouTubeSync] Scheduler started"}
+2026-04-24T16:13:04.507455388Z {"level":30,"time":1777047184501,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","intervalMs":30000,"msg":"Transcoding retry tick started"}
+2026-04-24T16:13:04.510132458Z {"level":30,"time":1777047184509,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","sessionId":"55ca04b2-7904-441d-92b8-48f74549d500","uploadedChunks":41,"totalChunks":128,"msg":"Recovered upload session"}
+2026-04-24T16:13:04.605739366Z {"level":50,"time":1777047184605,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","errText":"{\n  \"error\": {\n    \"code\": 403,\n    \"message\": \"The request cannot be completed because you have exceeded your \\u003ca href=\\\"/youtube/v3/getting-started#quota\\\"\\u003equota\\u003c/a\\u003e.\",\n    \"errors\": [\n      {\n        \"message\": \"The request cannot be completed because you have exceeded your \\u003ca href=\\\"/youtube/v3/getting-started#quota\\\"\\u003equota\\u003c/a\\u003e.\",\n        \"domain\": \"youtube.quota\",\n        \"reason\": \"quotaExceeded\"\n      }\n    ]\n  }\n}\n","msg":"YouTube playlistItems API error"}
+2026-04-24T16:13:05.197973828Z {"level":40,"time":1777047185196,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","jobId":"f8bdd00e-da61-404f-80e8-398f1435c0ca","msg":"Resetting stuck processing job to queued"}
+2026-04-24T16:13:05.494593007Z {"level":30,"time":1777047185494,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","msg":"Resuming transcoding queue after startup"}
+2026-04-24T16:13:05.598978921Z {"level":30,"time":1777047185596,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","jobId":"f8bdd00e-da61-404f-80e8-398f1435c0ca","videoId":"f758080a-e5d5-47b3-9b57-757c1d7c1a06","attempt":1,"max":3,"msg":"Starting transcoding job"}
+2026-04-24T16:13:05.990232896Z {"level":30,"time":1777047185989,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","jobId":"f8bdd00e-da61-404f-80e8-398f1435c0ca","quality":"1080p","msg":"Transcoding quality variant"}
+2026-04-24T16:13:06.68896745Z {"level":30,"time":1777047186686,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","req":{"id":1,"method":"GET","url":"/api/healthz"},"res":{"statusCode":200},"responseTime":89,"msg":"request completed"}
+2026-04-24T16:13:06.698176517Z {"level":30,"time":1777047186697,"pid":62,"hostname":"srv-d7jor777f7vs738vunf0-6b6bbb58b7-f8kr4","req":{"id":2,"method":"GET","url":"/api/healthz"},"res":{"statusCode":200},"responseTime":2,"msg":"request completed"}

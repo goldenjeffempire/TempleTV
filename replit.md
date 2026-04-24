@@ -372,6 +372,23 @@ The first review caught an auth-bypass class: the two startup probes (`auth-gate
 
 **Architect review:** PASS with one follow-up — `live-monitor.tsx` had its own local `apiUrl` helper that was missed in the first sweep; updated to delegate to `apiBase()`. No false-positives on the JSON-vs-HTML detection in `uploadEngine.ts` (it falls through to `JSON.parse` before declaring HTML based on `<` prefix). EventSource URL absolute/relative handling correctly preserved.
 
+### Round 4o — Crash-loop guard for poison-pill transcoding jobs (production OOM took the API down)
+
+**Symptom:** After fixing the split-domain routing (Round 4n), production API server entered a crash loop. Render returned HTTP 502 for every request. Logs showed: server starts, recovers stuck transcoding job `f8bdd00e-da61-404f-80e8-398f1435c0ca` (1080p variant of videoId `f758080a`), starts ffmpeg, ~95s later container dies (Render OOM kill — ffmpeg 1080p exceeded container memory budget), Render restarts container, same cycle repeats indefinitely.
+
+**Root cause:** `resumePendingJobsOnStartup` in `lib/transcoder.ts` was *decrementing* `attempts` on crash recovery to preserve the retry budget across legitimate deploy interruptions. But `attempts` only ever increments via the SQL `claimNextJob` (line 312: `attempts = attempts + 1`), and a job that crashes the container before completing means the worker never finishes — so attempts oscillates 0 → 1 (claim) → 0 (resume decrement) → 1 (claim) → forever. The retry cap (`maxAttempts`, default 3) is never reached. A single oversized/malformed source file thus permanently kills the API server.
+
+**Fix (surgical, no schema change):** added a circuit breaker in `resumePendingJobsOnStartup`:
+- Each crash-recovery appends a sentinel string `[crash-recovery]` to the job's existing `errorMessage` text column (capped at 1KB via left-truncation so the column can't bloat).
+- On each subsequent startup, count the markers in `errorMessage` via regex.
+- If marker count >= `CRASH_LOOP_LIMIT` (= 1, i.e. tolerate one recovery, fail on the second), mark the job `failed` and the video's `transcodingStatus` `failed` instead of re-queueing. Logs an explicit error explaining the guard fired.
+
+**How the bad row gets unstuck after deploy:** existing `f8bdd00e` row has 0 markers in `errorMessage`. First startup after deploy: count=0, append marker, queue, worker claims, OOMs. Second startup: count=1, hits the guard, marked `failed`. Total recovery time: ~2 container cycles (~3-5 minutes). API stays up from cycle 2 onward.
+
+**Architect review:** PASS on all six review questions — marker regex is safe against user input (errorMessage is set by the worker, not video metadata; worst-case false-positive just marks one job failed which is fail-safe); 1KB slice well within the `text` column's effective limits; multiple instances doing recovery converge to same final state; downstream apps (TV/mobile) gracefully fall back to `youtubeId` when `hlsMasterUrl` is null and never hang on a "transcoding..." state.
+
+**Operator action:** redeploy the API server with this fix. After ~2 crash cycles the guard kicks in, the bad job is marked failed, and the API stays up. Long-term: bump the API service's container memory tier on Render so 1080p ffmpeg encodes don't OOM (current tier appears insufficient for 1080p+ source material), or downgrade the encoder ladder to skip 1080p/2160p variants on the smaller tier.
+
 ## External Dependencies
 
 - **Database:** PostgreSQL

@@ -706,6 +706,17 @@ export async function retryTranscodingJob(jobId: string): Promise<void> {
   });
 }
 
+// Sentinel embedded in errorMessage so we can count, without a schema change,
+// how many times a single job has crashed the container during transcoding.
+// Each crash-recovery on startup appends one marker; once the count reaches
+// CRASH_LOOP_LIMIT we mark the job FAILED instead of re-queueing it. This
+// breaks the OOM/poison-pill pattern where a single oversized or malformed
+// source file kills the container on every restart, taking the entire API
+// server down with it. Without this guard, decrementing `attempts` (below)
+// keeps the retry budget at 0–1 forever, so the same job runs every reboot.
+const CRASH_RECOVERY_MARKER = "[crash-recovery]";
+const CRASH_LOOP_LIMIT = 1; // tolerate 1 crash-recovery, fail on the 2nd
+
 export async function resumePendingJobsOnStartup(): Promise<void> {
   const stuck = await db
     .select()
@@ -713,10 +724,43 @@ export async function resumePendingJobsOnStartup(): Promise<void> {
     .where(eq(transcodingJobsTable.status, "processing"));
 
   for (const job of stuck) {
-    logger.warn({ jobId: job.id }, "Resetting stuck processing job to queued");
+    const prevMessage = job.errorMessage ?? "";
+    const crashCount = (prevMessage.match(/\[crash-recovery\]/g) ?? []).length;
+
+    if (crashCount >= CRASH_LOOP_LIMIT) {
+      logger.error(
+        { jobId: job.id, videoId: job.videoId, crashCount },
+        "Crash-loop guard: job found 'processing' on consecutive container restarts — marking failed to keep API alive",
+      );
+      await db
+        .update(transcodingJobsTable)
+        .set({
+          status: "failed",
+          progress: 0,
+          startedAt: null,
+          nextRetryAt: null,
+          errorMessage: `Crash-loop guard: job was found 'processing' on ${crashCount + 1} consecutive container restarts. The encoder likely exceeded container memory or hung indefinitely. Manually retry from the admin UI after investigating the source file or upgrading the container's memory limit.`,
+        })
+        .where(eq(transcodingJobsTable.id, job.id));
+      await db
+        .update(videosTable)
+        .set({ transcodingStatus: "failed" })
+        .where(eq(videosTable.id, job.videoId));
+      continue;
+    }
+
+    logger.warn(
+      { jobId: job.id, crashCount },
+      "Resetting stuck processing job to queued",
+    );
     // Decrement attempts so the crash-recovery replay doesn't burn through
-    // the retry budget (the previous attempt never ran to completion).
+    // the retry budget (the previous attempt never ran to completion). The
+    // crash-loop guard above caps total recoveries so this can't loop forever.
     const restoredAttempts = Math.max(0, job.attempts - 1);
+    // Cap errorMessage growth at 1KB so a perpetually-recovering row can't
+    // bloat the column. Trimming from the LEFT preserves the most recent
+    // markers, which is what the counter cares about.
+    const nextMessage = `${prevMessage}${CRASH_RECOVERY_MARKER}`.slice(-1000);
     await db
       .update(transcodingJobsTable)
       .set({
@@ -725,6 +769,7 @@ export async function resumePendingJobsOnStartup(): Promise<void> {
         startedAt: null,
         attempts: restoredAttempts,
         nextRetryAt: null,
+        errorMessage: nextMessage,
       })
       .where(eq(transcodingJobsTable.id, job.id));
     await db
