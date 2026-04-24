@@ -188,6 +188,15 @@ export default function Playlists() {
         onSuccess: () => {
           queryClient.invalidateQueries({ queryKey: getListPlaylistsQueryKey() });
         },
+        onError: (err: unknown) => {
+          // Refetch to bring the Switch back into sync with the server.
+          queryClient.invalidateQueries({ queryKey: getListPlaylistsQueryKey() });
+          toast({
+            title: `Failed to ${isActive ? "activate" : "deactivate"} playlist`,
+            description: err instanceof Error ? err.message : undefined,
+            variant: "destructive",
+          });
+        },
       }
     );
   };
@@ -412,6 +421,7 @@ function PlaylistDetail({ id }: { id: string }) {
   };
 
   const handleRemove = (videoId: string) => {
+    if (!window.confirm("Remove this video from the playlist? Schedule entries that reference this playlist will skip it.")) return;
     removeVideo.mutate(
       { id, videoId },
       {

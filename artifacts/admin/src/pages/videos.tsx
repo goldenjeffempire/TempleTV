@@ -442,6 +442,17 @@ export default function VideoLibrary() {
     }, 350);
   }, []);
 
+  // Cancel the debounce timer on unmount so we never call setState on a gone tree.
+  useEffect(() => () => clearTimeout(searchTimer.current), []);
+
+  // If filters or a bulk delete shrink the result set below the current page,
+  // snap back to a valid page instead of leaving the operator on a blank "Page 5 of 2".
+  useEffect(() => {
+    if (!isLoading && totalPages > 0 && page > totalPages) {
+      setPage(totalPages);
+    }
+  }, [isLoading, page, totalPages]);
+
   const handleFilterChange = useCallback((type: "category" | "source" | "status", value: string) => {
     if (type === "category") setCategoryFilter(value);
     if (type === "source") setSourceFilter(value);

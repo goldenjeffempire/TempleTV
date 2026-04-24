@@ -629,6 +629,10 @@ function AddFromLibraryDialog({
     searchTimer.current = setTimeout(() => setQuerySearch(value), 350);
   };
 
+  // Clear the debounce timer if the dialog unmounts mid-keystroke so a stale
+  // `setQuerySearch` does not fire after the component is gone.
+  useEffect(() => () => clearTimeout(searchTimer.current), []);
+
   async function handleAdd(video: LibraryVideo) {
     setAddingId(video.id);
     try {
@@ -639,7 +643,16 @@ function AddFromLibraryDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) { setSearch(""); setQuerySearch(""); } onOpenChange(o); }}>
+    <Dialog open={open} onOpenChange={(o) => {
+      if (!o) {
+        // Cancel any pending debounce so reopening the dialog starts clean and
+        // a stale setQuerySearch can't fire after close. (Component stays mounted.)
+        clearTimeout(searchTimer.current);
+        setSearch("");
+        setQuerySearch("");
+      }
+      onOpenChange(o);
+    }}>
       <DialogContent className="sm:max-w-lg max-h-[80vh] flex flex-col gap-0 p-0">
         <DialogHeader className="px-6 pt-6 pb-4 border-b">
           <DialogTitle className="flex items-center gap-2">
@@ -995,6 +1008,7 @@ export default function Broadcast() {
   }, [toast, loadAll]);
 
   const handleRemove = useCallback(async (id: string) => {
+    if (!window.confirm("Remove this item from the broadcast queue? This cannot be undone.")) return;
     setRemovingId(id);
     try {
       const res = await adminFetch(`/api/admin/broadcast/${id}`, { method: "DELETE" });

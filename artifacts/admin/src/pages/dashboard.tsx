@@ -276,7 +276,11 @@ export default function Dashboard() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => stopLiveOverride.mutate()}
+                onClick={() => {
+                  if (window.confirm("Stop the live override? Viewers will return to the automated queue immediately.")) {
+                    stopLiveOverride.mutate();
+                  }
+                }}
                 disabled={stopLiveOverride.isPending}
                 className="gap-2"
               >

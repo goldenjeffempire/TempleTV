@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { adminGet } from "@/services/adminApi";
 import {
   AlertTriangle,
@@ -86,24 +86,43 @@ export default function LaunchReadinessPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const { toast } = useToast();
+  // Guards against overlapping fetches on slow networks and against setState
+  // after the page navigates away mid-flight.
+  const inFlightRef = useRef(false);
+  const isMountedRef = useRef(true);
 
   const fetchReadiness = useCallback(async (manual = false) => {
+    // Block all overlapping fetches — manual included. The Refresh button is
+    // also `disabled={refreshing}`, but a manual click can race with the 15s
+    // poll, and letting them overlap would let the first-completing request
+    // prematurely clear `refreshing` while another is still in flight.
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     if (manual) setRefreshing(true);
     try {
       const data = await adminGet<LaunchReadiness>("/admin/launch/readiness");
+      if (!isMountedRef.current) return;
       setReadiness(data);
     } catch {
+      if (!isMountedRef.current) return;
       toast({ title: "Launch readiness unavailable", variant: "destructive" });
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      inFlightRef.current = false;
+      if (isMountedRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, [toast]);
 
   useEffect(() => {
+    isMountedRef.current = true;
     fetchReadiness();
     const interval = window.setInterval(() => fetchReadiness(), 15000);
-    return () => window.clearInterval(interval);
+    return () => {
+      isMountedRef.current = false;
+      window.clearInterval(interval);
+    };
   }, [fetchReadiness]);
 
   const readinessScore = useMemo(() => {
@@ -154,7 +173,10 @@ export default function LaunchReadinessPage() {
                   </div>
                 </div>
                 <div className="text-xs text-muted-foreground">
-                  Updated {new Date(readiness.generatedAt).toLocaleTimeString()} · {readiness.environment}
+                  Updated {(() => {
+                    const d = new Date(readiness.generatedAt);
+                    return Number.isNaN(d.getTime()) ? "just now" : d.toLocaleTimeString();
+                  })()} · {readiness.environment}
                 </div>
               </div>
               <div className="p-5 space-y-3">
