@@ -216,6 +216,27 @@ Verification:
 - After workflow restart: `/api/admin/broadcast`, `/api/admin/live`, `/api/admin/analytics`, `/api/admin/users`, `/api/admin/ops/status`, `/api/admin/transcoding/queue`, `/api/admin/launch/readiness`, `/api/admin/notifications/scheduled`, and `/api/admin/live/health` all return 200 against the API server.
 - The error path was exercised mentally for each branch: `network throw → AdminApiError(0, "unreachable")`, `!res.ok + JSON body → status text replaced by error.error`, `!res.ok + HTML body → status text + " — server returned HTML"`, `200 + HTML body → AdminApiError(200, describeJsonError(...))`, `200 + empty body → undefined` (legacy contract preserved), `204 → undefined`.
 
+### Round 4h — manual theme override on top of auto theming (April 2026)
+
+The admin layout already had a small badge in the top bar showing the resolved theme ("Light" or "Midnight") with a tooltip explaining that the theme switched automatically at 8pm and 6am local time. The badge was non-clickable — operators in fixed-lighting environments (a control room with always-dim screens, or a service running past midnight where the team prefers to keep light mode) had no way to override.
+
+This round added a 3-mode override (Auto / Light / Dark) on top of the existing auto behavior, without breaking the original "light-first auto theming" design intent.
+
+Changes:
+
+1. **`lib/theme.ts` extended** — `applyAutoTheme()` now reads a stored `ThemeMode` (`"auto" | "light" | "dark"`) from `localStorage["temple-tv-admin-theme-mode"]`. When `"auto"` it falls back to the original time-of-day detection (`isMidnightHour()`), preserving the legacy behavior byte-for-byte. New exports: `getThemeMode()`, `setThemeMode()` (writes localStorage + dispatches a custom event for in-tab listeners + calls `applyAutoTheme()`), `nextThemeMode()` (auto → light → dark → auto cycle), and the `ThemeMode` type. All localStorage access is wrapped in `try/catch` for Safari private mode and sandboxed-iframe cases.
+
+2. **`layout.tsx` upgraded the badge to a button** — the previously non-clickable pill is now a semantic `<button type="button">` with a focus ring, an `aria-label`, a tooltip that updates per-mode, and a label that displays the active mode (`Auto · Midnight`, `Auto · Light`, `Light`, `Dark`). The component listens for the in-tab custom event AND the cross-tab `storage` event so a toggle in one operator window propagates to all others; the storage handler is narrowed to the specific theme key so unrelated localStorage writes (admin token, viewer history) don't trigger a re-render. The `CustomEvent.detail` is validated against the union literal before being trusted.
+
+3. **`App.tsx` untouched** — its 60-second `applyAutoTheme()` interval now correctly honors the stored override (when set to `light`/`dark`, the tick is a no-op for the resolved theme; when `auto`, it still flips at 8pm/6am as before).
+
+Architect review: **PASS** on all six verification points (localStorage resilience, SSR hygiene, auto-tick vs override coexistence, cross-tab `storage` correctness, listener lifecycle cleanup, accessibility). Three optional polish items applied: dropped a redundant `applyAutoTheme()` call, narrowed the storage handler to the specific key, and added payload validation for the custom event.
+
+Verification:
+- `tsc --noEmit` clean for `@workspace/admin`.
+- Workflow restarted and serving on the configured BASE_PATH.
+- Constraints respected: no new dependencies, no schema changes, no rewrites of any other component.
+
 ## External Dependencies
 
 - **Database:** PostgreSQL

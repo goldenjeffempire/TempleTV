@@ -24,7 +24,15 @@ import {
   Loader2,
   ChevronRight,
 } from "lucide-react";
-import { getLocalTimeZone, isMidnightHour } from "@/lib/theme";
+import {
+  applyAutoTheme,
+  getLocalTimeZone,
+  getThemeMode,
+  isMidnightHour,
+  nextThemeMode,
+  setThemeMode,
+  type ThemeMode,
+} from "@/lib/theme";
 import { getAdminToken, setAdminToken } from "@/lib/admin-access";
 import { TempleTvLogo } from "@/components/temple-tv-logo";
 import { AdminKeyDialog } from "@/components/admin-key-dialog";
@@ -97,8 +105,62 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const [keyDialogOpen, setKeyDialogOpen] = React.useState(false);
   const { lastStatusPayload } = useSSE();
   const { open: paletteOpen, setOpen: setPaletteOpen } = useCommandPalette();
-  const isMidnightTheme = isMidnightHour();
+  const [themeMode, setThemeModeState] = React.useState<ThemeMode>(() => getThemeMode());
+  // Re-render whenever the resolved theme changes (auto-tick at midnight, or
+  // operator override). Listen for storage events so a toggle in another tab
+  // is reflected here too.
+  React.useEffect(() => {
+    const customHandler = (e: Event) => {
+      // Validate the payload before trusting it — anything could dispatch a
+      // CustomEvent at this name, and an invalid value would crash the
+      // resolver downstream.
+      if (e instanceof CustomEvent) {
+        const v = e.detail;
+        if (v === "auto" || v === "light" || v === "dark") {
+          setThemeModeState(v);
+          return;
+        }
+      }
+      setThemeModeState(getThemeMode());
+    };
+    const storageHandler = (e: StorageEvent) => {
+      // Only react when our specific key changed; other admin localStorage
+      // writes (admin token, viewer history, etc.) shouldn't trigger a
+      // theme re-render.
+      if (e.key === null || e.key === "temple-tv-admin-theme-mode") {
+        setThemeModeState(getThemeMode());
+      }
+    };
+    window.addEventListener("temple-tv-theme-mode-changed", customHandler);
+    window.addEventListener("storage", storageHandler);
+    return () => {
+      window.removeEventListener("temple-tv-theme-mode-changed", customHandler);
+      window.removeEventListener("storage", storageHandler);
+    };
+  }, []);
+  const isMidnightTheme =
+    themeMode === "dark" || (themeMode === "auto" && isMidnightHour());
   const ThemeIcon = isMidnightTheme ? Moon : Sun;
+  const themeLabel =
+    themeMode === "auto"
+      ? `Auto · ${isMidnightTheme ? "Midnight" : "Light"}`
+      : themeMode === "dark"
+        ? "Dark"
+        : "Light";
+  const themeTooltip =
+    themeMode === "auto"
+      ? "Theme switches automatically based on your local time. Click to override."
+      : themeMode === "dark"
+        ? "Forced dark mode. Click to switch to Auto."
+        : "Forced light mode. Click to switch to Dark.";
+  const cycleTheme = () => {
+    const next = nextThemeMode(themeMode);
+    // setThemeMode already calls applyAutoTheme() and dispatches the
+    // cross-tab event — calling either again here would just be a redundant
+    // DOM write.
+    setThemeMode(next);
+    setThemeModeState(next);
+  };
 
   const isLive = lastStatusPayload?.isLive ?? false;
   const hasLiveOverride = Boolean(lastStatusPayload?.liveOverride);
@@ -303,14 +365,17 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
           <div className="flex items-center gap-2">
             <CommandPaletteTrigger onClick={() => setPaletteOpen(true)} />
-            <div
-              className="hidden md:flex items-center gap-1.5 bg-muted text-muted-foreground px-3 py-1.5 rounded-full text-xs font-medium border"
-              title="Theme switches automatically based on your local time"
+            <button
+              type="button"
+              onClick={cycleTheme}
+              className="hidden md:flex items-center gap-1.5 bg-muted text-muted-foreground hover:text-foreground hover:bg-muted/80 px-3 py-1.5 rounded-full text-xs font-medium border transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
+              title={themeTooltip}
+              aria-label={`Theme: ${themeLabel}. Click to cycle.`}
             >
               <ThemeIcon className="w-3.5 h-3.5" />
-              {isMidnightTheme ? "Midnight" : "Light"}
+              {themeLabel}
               <span className="opacity-60">· {getLocalTimeZone()}</span>
-            </div>
+            </button>
           </div>
         </header>
 
