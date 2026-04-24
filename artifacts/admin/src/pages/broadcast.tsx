@@ -138,14 +138,22 @@ async function adminFetch(url: string, opts?: RequestInit): Promise<Response> {
   return fetch(url, { ...opts, headers });
 }
 
-// Safely parse a Response body as JSON. Returns null when the body is empty
-// or not valid JSON (e.g. when an upstream proxy returns the SPA HTML
-// fallback instead of routing the request to the API server).
-//
-// On failure, also logs a structured diagnostic to the console so that
-// "empty or malformed response" errors in the UI can be traced back to the
-// actual status / content-type / first bytes of the body that caused them.
-async function safeJson<T = unknown>(res: Response): Promise<T | null> {
+// Result of attempting to parse a Response body as JSON. The error variant
+// carries enough diagnostic detail to render an actionable message in the UI
+// — not just "empty or malformed response" — so the operator can see whether
+// the proxy returned HTML, the body was truncated, the auth was rejected,
+// etc.
+type JsonResult<T> =
+  | { ok: true; data: T }
+  | {
+      ok: false;
+      reason: "empty" | "html_fallback" | "non_json";
+      status: number;
+      contentType: string;
+      bodyPreview: string;
+    };
+
+async function safeJson<T = unknown>(res: Response): Promise<JsonResult<T>> {
   const text = await res.text();
   const ctype = res.headers.get("content-type") ?? "(none)";
   if (!text) {
@@ -154,26 +162,53 @@ async function safeJson<T = unknown>(res: Response): Promise<T | null> {
       status: res.status,
       contentType: ctype,
     });
-    return null;
+    return { ok: false, reason: "empty", status: res.status, contentType: ctype, bodyPreview: "" };
   }
   try {
-    return JSON.parse(text) as T;
+    return { ok: true, data: JSON.parse(text) as T };
   } catch (err) {
     const isJsonContentType = /\bapplication\/(?:[\w.+-]*\+)?json\b/i.test(ctype);
+    const bodyPreview = text.slice(0, 200).replace(/\s+/g, " ");
+    const looksLikeHtml = /^\s*<(?:!doctype\s+html|html\b|head\b|body\b)/i.test(text);
     console.error("[broadcast] non-JSON response body", {
       url: res.url,
       status: res.status,
       contentType: ctype,
-      // Only include a body preview when the content-type is NOT JSON, to
-      // avoid logging sensitive JSON payload fragments. Non-JSON bodies are
-      // typically HTML proxy fallbacks where the preview is the actual signal.
-      bodyPreview: isJsonContentType
-        ? "(suppressed: JSON content-type)"
-        : text.slice(0, 200).replace(/\s+/g, " "),
+      bodyPreview: isJsonContentType ? "(suppressed: JSON content-type)" : bodyPreview,
       parseError: err instanceof Error ? err.message : String(err),
     });
-    return null;
+    return {
+      ok: false,
+      reason: looksLikeHtml ? "html_fallback" : "non_json",
+      status: res.status,
+      contentType: ctype,
+      bodyPreview,
+    };
   }
+}
+
+// Build a short, human-readable explanation for the operator banner from a
+// JsonResult error variant. Designed to surface the actionable information
+// (status, content-type, snippet) inline rather than burying it in devtools.
+//
+// The body preview is intentionally only shown when the content-type is NOT
+// JSON. If the server claimed application/json but failed to parse, the
+// preview is most likely a partial payload that may contain user data — we
+// keep it in the console diagnostic but not in the visible banner.
+function describeJsonError(label: string, err: Extract<JsonResult<unknown>, { ok: false }>): string {
+  if (err.reason === "html_fallback") {
+    return `${label}: server returned HTML instead of JSON (likely the admin SPA fell through — check that /api/* is routed to the API server).`;
+  }
+  if (err.reason === "empty") {
+    return `${label}: empty body (HTTP ${err.status}, ${err.contentType}). Try reloading; if it persists, check API server logs.`;
+  }
+  // non_json
+  const isJsonContentType = /\bapplication\/(?:[\w.+-]*\+)?json\b/i.test(err.contentType);
+  const snippet =
+    err.bodyPreview && !isJsonContentType
+      ? ` — body started with: "${err.bodyPreview.slice(0, 80)}…"`
+      : "";
+  return `${label}: malformed JSON (HTTP ${err.status}, ${err.contentType})${snippet}`;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -649,8 +684,12 @@ function AddFromLibraryDialog({
       if (q) params.set("search", q);
       const res = await adminFetch(`/api/admin/videos?${params}`);
       if (res.ok) {
-        const data = await safeJson<{ videos?: unknown[] }>(res);
-        setVideos(Array.isArray(data?.videos) ? (data!.videos as typeof videos) : []);
+        const parsed = await safeJson<{ videos?: unknown[] }>(res);
+        if (parsed.ok && Array.isArray(parsed.data.videos)) {
+          setVideos(parsed.data.videos as typeof videos);
+        } else {
+          setVideos([]);
+        }
       }
     } finally {
       setLoading(false);
@@ -924,6 +963,17 @@ export default function Broadcast() {
 
   // ── data loading ───────────────────────────────────────────────────────────
   const loadAll = useCallback(async () => {
+    // Proactively detect the no-token case so the user gets a single clear
+    // "open the admin key prompt" message instead of three 401-derived errors.
+    const hasToken = !!window.localStorage.getItem("temple-tv-admin-token")?.trim();
+    if (!hasToken) {
+      setError(
+        "Admin access key not set. Click 'Enter admin key' to paste your ADMIN_API_TOKEN.",
+      );
+      setLoading(false);
+      return;
+    }
+
     try {
       const [qRes, cRes, lRes] = await Promise.all([
         adminFetch("/api/admin/broadcast"),
@@ -937,8 +987,12 @@ export default function Broadcast() {
       // queue (admin)
       if (qRes.ok) {
         const q = await safeJson<BroadcastItem[]>(qRes);
-        if (q === null) issues.push("queue: empty or malformed response");
-        setQueue(Array.isArray(q) ? q : []);
+        if (!q.ok) {
+          issues.push(describeJsonError("queue", q));
+          setQueue([]);
+        } else {
+          setQueue(Array.isArray(q.data) ? q.data : []);
+        }
       } else if (qRes.status === 401 || qRes.status === 403) {
         unauthorized = true;
       } else {
@@ -948,11 +1002,11 @@ export default function Broadcast() {
       // current broadcast (public)
       if (cRes.ok) {
         const c = await safeJson<CurrentBroadcast>(cRes);
-        if (c === null) {
-          issues.push("current broadcast: empty or malformed response");
+        if (!c.ok) {
+          issues.push(describeJsonError("current broadcast", c));
         } else {
-          setCurrent(c);
-          setLivePosition(c.positionSecs ?? 0);
+          setCurrent(c.data);
+          setLivePosition(c.data.positionSecs ?? 0);
         }
       } else {
         issues.push(`current broadcast: HTTP ${cRes.status}`);
@@ -961,10 +1015,10 @@ export default function Broadcast() {
       // live status (admin)
       if (lRes.ok) {
         const l = await safeJson<LiveStatus>(lRes);
-        if (l === null) {
-          issues.push("live status: empty or malformed response");
+        if (!l.ok) {
+          issues.push(describeJsonError("live status", l));
         } else {
-          setLiveStatus(l);
+          setLiveStatus(l.data);
         }
       } else if (lRes.status === 401 || lRes.status === 403) {
         unauthorized = true;
@@ -974,7 +1028,7 @@ export default function Broadcast() {
 
       if (unauthorized) {
         setError(
-          "Admin authentication failed (401/403). Open the admin key prompt and paste a valid ADMIN_API_TOKEN.",
+          "Admin authentication failed (401/403). Your admin key is missing or no longer matches the server's ADMIN_API_TOKEN — open the admin key prompt and paste the current value.",
         );
       } else if (issues.length > 0) {
         setError(`Failed to load some broadcast data — ${issues.join("; ")}`);
