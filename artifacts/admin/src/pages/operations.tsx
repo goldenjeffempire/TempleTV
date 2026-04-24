@@ -12,7 +12,9 @@ import {
   Server,
   ShieldCheck,
   Smartphone,
+  Upload,
   Wifi,
+  X,
   XCircle,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -21,7 +23,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Link } from "wouter";
-import { opsApi, type OpsStatus } from "@/services/adminApi";
+import { opsApi, uploadsApi, type ActiveUploadSession, type OpsStatus } from "@/services/adminApi";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
 import { MetricCard } from "@/components/shared/metric-card";
@@ -130,6 +132,140 @@ function relativeTime(ts: number): string {
   if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`;
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
   return `${Math.floor(diff / 3_600_000)}h ago`;
+}
+
+function ActiveUploadsCard() {
+  const [sessions, setSessions] = useState<ActiveUploadSession[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState<Record<string, boolean>>({});
+  // Tick every 5s to refresh server data + every 1s to keep relative times
+  // crisp without re-fetching.
+  const [, setTick] = useState(0);
+
+  const load = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const data = await uploadsApi.listActive(signal);
+      setSessions(data.sessions);
+      setError(null);
+    } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      setError(err instanceof Error ? err.message : "Failed to load uploads");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const ctl = new AbortController();
+    load(ctl.signal);
+    const poll = window.setInterval(() => load(), 5_000);
+    const tick = window.setInterval(() => setTick((t) => t + 1), 1_000);
+    return () => {
+      ctl.abort();
+      window.clearInterval(poll);
+      window.clearInterval(tick);
+    };
+  }, [load]);
+
+  const handleCancel = useCallback(async (sessionId: string) => {
+    if (!window.confirm("Cancel this upload? Any uploaded chunks will be discarded.")) return;
+    setCancelling((c) => ({ ...c, [sessionId]: true }));
+    try {
+      await uploadsApi.cancel(sessionId);
+      setSessions((prev) => prev.filter((s) => s.sessionId !== sessionId));
+    } catch (err: unknown) {
+      // Translate the machine-readable 409 code into a human sentence.
+      const raw = err instanceof Error ? err.message : "Cancel failed";
+      const friendly =
+        raw === "finalize_in_progress"
+          ? "This upload is currently being finalized and cannot be cancelled. It will complete or fail on its own shortly."
+          : raw;
+      window.alert(`Could not cancel upload: ${friendly}`);
+      // Refresh the list so the operator sees the up-to-date state of this row.
+      load();
+    } finally {
+      setCancelling((c) => {
+        const next = { ...c };
+        delete next[sessionId];
+        return next;
+      });
+    }
+  }, []);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Upload className="w-4 h-4 text-primary" />
+          Active Uploads
+          <Badge variant="outline" className="ml-auto text-[10px] tabular-nums">
+            {sessions.length}
+          </Badge>
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {loading && sessions.length === 0 ? (
+          <div className="flex items-center justify-center gap-2 py-6 text-sm text-muted-foreground">
+            <Loader2 className="w-4 h-4 animate-spin" /> Loading…
+          </div>
+        ) : error ? (
+          <div className="text-sm text-red-600 py-2">{error}</div>
+        ) : sessions.length === 0 ? (
+          <div className="text-sm text-muted-foreground py-6 text-center border border-dashed rounded-md bg-muted/10">
+            No active uploads.
+          </div>
+        ) : (
+          <ul className="divide-y -mx-1">
+            {sessions.map((s) => {
+              const stuck = !s.finalizing && s.idleSecs > 60;
+              const lastActivityTs = new Date(s.lastActivity).getTime();
+              return (
+                <li key={s.sessionId} className="py-2.5 px-1 space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <span className="flex-1 truncate text-sm font-medium">
+                      {s.title || s.originalFilename || s.sessionId.slice(0, 8)}
+                    </span>
+                    {s.finalizing ? (
+                      <Badge variant="outline" className="border-blue-500/40 text-blue-700 dark:text-blue-400 text-[10px]">
+                        finalizing
+                      </Badge>
+                    ) : stuck ? (
+                      <Badge variant="outline" className="border-amber-500/40 text-amber-700 dark:text-amber-400 text-[10px]">
+                        stuck
+                      </Badge>
+                    ) : null}
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6"
+                      disabled={s.finalizing || !!cancelling[s.sessionId]}
+                      onClick={() => handleCancel(s.sessionId)}
+                      title={s.finalizing ? "Cannot cancel during finalization" : "Cancel upload"}
+                    >
+                      {cancelling[s.sessionId] ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <X className="w-3.5 h-3.5" />
+                      )}
+                    </Button>
+                  </div>
+                  <Progress value={s.progressPercent} className="h-1.5" />
+                  <div className="flex items-center justify-between text-[11px] text-muted-foreground tabular-nums">
+                    <span>
+                      {formatBytes(s.receivedBytes)} / {formatBytes(s.totalBytes)} ·{" "}
+                      {s.uploadedChunks}/{s.totalChunks} chunks · {s.progressPercent}%
+                    </span>
+                    <span>last activity {relativeTime(lastActivityTs)}</span>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
 }
 
 function ActivityFeedCard() {
@@ -360,7 +496,10 @@ export default function Operations() {
             </Card>
           </div>
 
-          <ActivityFeedCard />
+          <div className="grid gap-4 md:grid-cols-2">
+            <ActivityFeedCard />
+            <ActiveUploadsCard />
+          </div>
 
           {pipeline && (
             <Card>

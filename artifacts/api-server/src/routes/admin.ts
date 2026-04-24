@@ -83,6 +83,7 @@ const thumbnailUpload = multer({
 interface ChunkedSession {
   id: string;
   ext: string;
+  mimeType?: string;
   totalChunks: number;
   uploadedChunks: Set<number>;
   tmpDir: string;
@@ -99,6 +100,28 @@ interface ChunkedSession {
   thumbnailPath?: string;
   createdAt: Date;
   lastActivity: Date;
+  /**
+   * True while /finalize is mid-flight. Guards against concurrent finalize calls
+   * (double-click, proxy retry, network jitter) that would otherwise insert
+   * duplicate DB rows and spawn duplicate transcoding jobs.
+   */
+  finalizing?: boolean;
+}
+
+/**
+ * Tear down a session: clear any pending debounced disk-flush, drop the in-memory
+ * entry, and remove the temp directory. Call this anywhere we delete a session.
+ */
+function destroyUploadSession(sessionId: string, tmpDir?: string): void {
+  const pending = sessionFlushTimers.get(sessionId);
+  if (pending) {
+    clearTimeout(pending);
+    sessionFlushTimers.delete(sessionId);
+  }
+  uploadSessions.delete(sessionId);
+  if (tmpDir) {
+    fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 const uploadSessions = new Map<string, ChunkedSession>();
@@ -229,8 +252,10 @@ setInterval(() => {
   const inactiveCutoff = new Date(Date.now() - 6 * 60 * 60 * 1000);
   for (const [id, session] of uploadSessions.entries()) {
     if (session.lastActivity < inactiveCutoff) {
-      fs.rm(session.tmpDir, { recursive: true, force: true }).catch(() => {});
-      uploadSessions.delete(id);
+      // Skip GC for sessions actively being finalized — assembly may take
+      // seconds-to-minutes for large files and we must not yank the rug out.
+      if (session.finalizing) continue;
+      destroyUploadSession(id, session.tmpDir);
     }
   }
 }, 30 * 60 * 1000);
@@ -1103,7 +1128,7 @@ router.get("/upload-session/:sessionId", (req, res) => {
 
 router.post("/admin/videos/upload/init", async (req, res) => {
   try {
-    const { title, category, preacher, featured, durationSecs, totalChunks, totalBytes, ext, sessionId: clientSessionId, originalFilename } = req.body as {
+    const { title, category, preacher, featured, durationSecs, totalChunks, totalBytes, ext, sessionId: clientSessionId, originalFilename, mimeType: clientMimeType } = req.body as {
       title?: string;
       category?: string;
       preacher?: string;
@@ -1114,6 +1139,7 @@ router.post("/admin/videos/upload/init", async (req, res) => {
       ext?: string;
       sessionId?: string;
       originalFilename?: string;
+      mimeType?: string;
     };
 
     if (!title?.trim()) return void res.status(400).json({ error: "Title is required" });
@@ -1136,9 +1162,18 @@ router.post("/admin/videos/upload/init", async (req, res) => {
     await fs.mkdir(tmpDir, { recursive: true });
 
     const now = new Date();
+    // Capture the original Content-Type from the client (File.type). We only
+    // accept simple `type/subtype` MIME strings to avoid header injection.
+    const sanitizedMimeType =
+      typeof clientMimeType === "string" &&
+      /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i.test(clientMimeType.trim())
+        ? clientMimeType.trim().toLowerCase()
+        : undefined;
+
     const session: ChunkedSession = {
       id: sessionId,
       ext: ext ?? ".mp4",
+      mimeType: sanitizedMimeType,
       totalChunks: parseInt(totalChunks, 10),
       uploadedChunks: new Set(),
       tmpDir,
@@ -1198,8 +1233,15 @@ router.post("/admin/videos/upload/:sessionId/chunk", chunkUpload.single("chunk")
     const chunkPath = path.join(session.tmpDir, `chunk-${String(idx).padStart(6, "0")}`);
     await fs.writeFile(chunkPath, chunk.buffer);
 
+    // Idempotency: only count bytes the first time a chunk arrives. The same
+    // index can be uploaded twice (network retry, mid-flight failover) and we
+    // must not let `receivedBytes` drift past `totalBytes` and corrupt the
+    // progress telemetry shown to operators.
+    const isNewChunk = !session.uploadedChunks.has(idx);
     session.uploadedChunks.add(idx);
-    session.receivedBytes += chunk.buffer.length;
+    if (isNewChunk) {
+      session.receivedBytes += chunk.buffer.length;
+    }
     session.lastActivity = new Date();
 
     // Debounced write — does not block the response
@@ -1272,12 +1314,29 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
     const session = uploadSessions.get(sessionId);
     if (!session) return void res.status(404).json({ error: "Session not found or expired" });
 
+    // Concurrency guard: a second finalize call (double-click, proxy retry,
+    // browser refresh during assembly) would race the first — both pass the
+    // missing-chunk check, both delete tmpDir, both insert DB rows, both
+    // spawn transcoding jobs. Reject the second call with 409.
+    if (session.finalizing) {
+      return void res.status(409).json({
+        error: "finalize_in_progress",
+        message: "Finalization is already in progress for this upload session.",
+      });
+    }
+    session.finalizing = true;
+
     const missingChunks: number[] = [];
     for (let i = 0; i < session.totalChunks; i++) {
       if (!session.uploadedChunks.has(i)) missingChunks.push(i);
     }
 
     if (missingChunks.length > 0) {
+      // Premature finalize (client raced ahead of its own chunk uploads, or a
+      // retry after a partial network failure). Release the concurrency flag
+      // so the next finalize attempt isn't permanently 409'd, leaving the
+      // session uploadable + cancellable + GC-eligible as before.
+      session.finalizing = false;
       return void res.status(400).json({ error: `Missing chunks: ${missingChunks.join(", ")}`, missingChunks });
     }
 
@@ -1338,10 +1397,8 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
     // Magic-byte validation on the assembled video (defends against MIME spoofing).
     const magicCheck = await validateUploadedFileMagicBytes(finalPath, "video");
     if (!magicCheck.valid) {
-      await fs.rm(session.tmpDir, { recursive: true, force: true }).catch(() => {});
-      uploadSessions.delete(sessionId);
-      const pendingFlush = sessionFlushTimers.get(sessionId);
-      if (pendingFlush) { clearTimeout(pendingFlush); sessionFlushTimers.delete(sessionId); }
+      await fs.unlink(finalPath).catch(() => {});
+      destroyUploadSession(sessionId, session.tmpDir);
       return void res.status(415).json({
         error: "Uploaded file does not appear to be a valid video (magic-byte mismatch)",
       });
@@ -1372,7 +1429,13 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
         ".flv": "video/x-flv", ".ogv": "video/ogg", ".ts": "video/mp2t",
         ".3gp": "video/3gpp",
       };
-      const mimeType = extToMime[session.ext.toLowerCase()] ?? "application/octet-stream";
+      // Prefer the original Content-Type captured at /init (browser-supplied
+      // File.type — already format-validated). Fall back to the extension map
+      // for legacy clients that didn't send a mimeType.
+      const mimeType =
+        session.mimeType ??
+        extToMime[session.ext.toLowerCase()] ??
+        "application/octet-stream";
 
       const devDomain = process.env.REPLIT_DEV_DOMAIN;
       const baseUrl = process.env.API_BASE_URL ?? (devDomain ? `https://${devDomain}` : "");
@@ -1407,10 +1470,7 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
         })
         .returning();
 
-      uploadSessions.delete(sessionId);
-      // Cancel any pending debounced session write — the tmpDir is gone
-      const pendingFlush = sessionFlushTimers.get(sessionId);
-      if (pendingFlush) { clearTimeout(pendingFlush); sessionFlushTimers.delete(sessionId); }
+      destroyUploadSession(sessionId);
 
       // Diagnostics: log assembly performance
       logger.info(
@@ -1443,23 +1503,73 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
       // Hash/stat/DB-insert failed after assembly (before DB write). Delete
       // the orphan file, tear down the in-memory session, surface a 500.
       await fs.unlink(finalPath).catch(() => {});
-      uploadSessions.delete(sessionId);
-      const pendingFlush = sessionFlushTimers.get(sessionId);
-      if (pendingFlush) { clearTimeout(pendingFlush); sessionFlushTimers.delete(sessionId); }
+      destroyUploadSession(sessionId);
       throw postAssemblyErr;
     }
   } catch (err) {
+    // Clear the finalizing flag so the operator (or client) can retry instead
+    // of being permanently locked out by a transient failure. We only do this
+    // when the session is still in-memory — successful finalize already removed
+    // it via destroyUploadSession.
+    const { sessionId } = req.params as { sessionId: string };
+    const lingering = uploadSessions.get(sessionId);
+    if (lingering) lingering.finalizing = false;
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });
   }
 });
 
+/**
+ * Operator visibility into in-flight chunked uploads. Returns lightweight
+ * summaries (no chunk-by-chunk detail) so the Operations page can show a
+ * live "Active Uploads" panel and offer cancel-stuck-uploads ergonomics.
+ */
+router.get("/admin/uploads/active", (_req, res) => {
+  const now = Date.now();
+  const sessions = Array.from(uploadSessions.values())
+    .map((s) => {
+      const ageSecs = Math.max(0, Math.floor((now - s.createdAt.getTime()) / 1000));
+      const idleSecs = Math.max(0, Math.floor((now - s.lastActivity.getTime()) / 1000));
+      const progressPercent =
+        s.totalChunks > 0
+          ? Math.min(100, Math.round((s.uploadedChunks.size / s.totalChunks) * 100))
+          : 0;
+      return {
+        sessionId: s.id,
+        title: s.metadata.title,
+        originalFilename: s.metadata.originalFilename || null,
+        category: s.metadata.category,
+        totalBytes: s.totalBytes,
+        receivedBytes: Math.min(s.receivedBytes, s.totalBytes),
+        totalChunks: s.totalChunks,
+        uploadedChunks: s.uploadedChunks.size,
+        progressPercent,
+        ageSecs,
+        idleSecs,
+        finalizing: !!s.finalizing,
+        createdAt: s.createdAt.toISOString(),
+        lastActivity: s.lastActivity.toISOString(),
+      };
+    })
+    .sort((a, b) => b.lastActivity.localeCompare(a.lastActivity));
+
+  res.setHeader("Cache-Control", "no-store").json({ count: sessions.length, sessions });
+});
+
 router.delete("/admin/videos/upload/:sessionId", async (req, res) => {
   const { sessionId } = req.params as { sessionId: string };
   const session = uploadSessions.get(sessionId);
+  // Don't yank an in-flight finalize — assembly is writing to disk and
+  // about to insert the DB row. The cancel will succeed naturally once the
+  // session is deleted by finalize itself.
+  if (session?.finalizing) {
+    return void res.status(409).json({
+      error: "finalize_in_progress",
+      message: "Cannot cancel an upload that is currently being finalized.",
+    });
+  }
   if (session) {
-    await fs.rm(session.tmpDir, { recursive: true, force: true }).catch(() => {});
-    uploadSessions.delete(sessionId);
+    destroyUploadSession(sessionId, session.tmpDir);
   }
   res.json({ ok: true });
 });

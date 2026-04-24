@@ -361,6 +361,10 @@ export function VideoUploadModal({
             totalBytes: String(uploadFile.size),
             ext,
             originalFilename: uploadFile.name,
+            // Original Content-Type from the browser File object. The server
+            // prefers this over the extension-derived MIME so the stored
+            // mime_type is accurate even for transcoded/repackaged containers.
+            mimeType: uploadFile.type || undefined,
           });
 
           let lastInitError: Error | null = null;

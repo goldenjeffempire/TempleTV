@@ -200,6 +200,33 @@ export const opsApi = {
   getStatus: (signal?: AbortSignal) => adminGet<OpsStatus>("/admin/ops/status", signal),
 };
 
+export interface ActiveUploadSession {
+  sessionId: string;
+  title: string;
+  originalFilename: string | null;
+  category: string;
+  totalBytes: number;
+  receivedBytes: number;
+  totalChunks: number;
+  uploadedChunks: number;
+  progressPercent: number;
+  ageSecs: number;
+  idleSecs: number;
+  finalizing: boolean;
+  createdAt: string;
+  lastActivity: string;
+}
+
+export const uploadsApi = {
+  listActive: (signal?: AbortSignal) =>
+    adminGet<{ count: number; sessions: ActiveUploadSession[] }>(
+      "/admin/uploads/active",
+      signal,
+    ),
+  cancel: (sessionId: string) =>
+    adminDelete<{ ok: true }>(`/admin/videos/upload/${sessionId}`),
+};
+
 export interface TranscodingJobDetail extends TranscodingJob {
   outputDir?: string | null;
   inputPath?: string | null;
