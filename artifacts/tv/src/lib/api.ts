@@ -29,19 +29,28 @@ export interface LiveStatus {
 }
 
 export interface BroadcastItem {
-  type: string;
+  id: string;
+  videoId: string;
+  youtubeId?: string;
   title: string;
   thumbnailUrl?: string;
-  youtubeId?: string;
+  durationSecs: number;
+  localVideoUrl?: string | null;
+  videoSource?: string;
   startedAt?: string;
 }
 
 export interface BroadcastCurrent {
-  current: BroadcastItem | null;
+  item: BroadcastItem | null;
+  nextItem: BroadcastItem | null;
+  positionSecs: number;
+  totalSecs: number;
+  progressPercent: number;
+  queueLength: number;
   syncedAt: string;
   serverTimeMs: number;
-  isLive?: boolean;
-  liveVideoId?: string | null;
+  activeSchedule?: { contentType: string } | null;
+  liveOverride?: { title: string } | null;
 }
 
 export interface GuideItem {

@@ -1,27 +1,96 @@
-import { useEffect, useState } from "react";
-import { type LiveStatus } from "../lib/api";
+import { useEffect, useRef, useState } from "react";
+import { type LiveStatus, type BroadcastCurrent } from "../lib/api";
 
 interface LiveHeroProps {
   liveStatus: LiveStatus | null;
+  broadcastCurrent?: BroadcastCurrent | null;
   focused: boolean;
   onSelect: () => void;
+}
+
+function BroadcastProgressBar({
+  progressPercent,
+  positionSecs,
+  totalSecs,
+  serverTimeMs,
+}: {
+  progressPercent: number;
+  positionSecs: number;
+  totalSecs: number;
+  serverTimeMs: number;
+}) {
+  const fetchedAt = useRef(Date.now());
+  const fetchedServerMs = useRef(serverTimeMs);
+  const [liveProgress, setLiveProgress] = useState(progressPercent);
+
+  useEffect(() => {
+    fetchedAt.current = Date.now();
+    fetchedServerMs.current = serverTimeMs;
+    setLiveProgress(progressPercent);
+  }, [progressPercent, serverTimeMs, positionSecs]);
+
+  useEffect(() => {
+    if (totalSecs <= 0) return;
+    const tick = setInterval(() => {
+      const elapsed = (Date.now() - fetchedAt.current) / 1000;
+      const current = positionSecs + elapsed;
+      setLiveProgress(Math.min(100, (current / totalSecs) * 100));
+    }, 2000);
+    return () => clearInterval(tick);
+  }, [positionSecs, totalSecs]);
+
+  const remaining = Math.max(0, totalSecs - positionSecs);
+  const remainMins = Math.floor(remaining / 60);
+  const remainStr = remainMins > 0 ? `${remainMins}m left` : "Ending soon";
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div
+        style={{
+          height: 3,
+          background: "rgba(255,255,255,0.2)",
+          borderRadius: 2,
+          overflow: "hidden",
+          maxWidth: 420,
+        }}
+      >
+        <div
+          style={{
+            height: "100%",
+            width: `${liveProgress}%`,
+            background: "linear-gradient(90deg, #6A0DAD, #a855f7)",
+            borderRadius: 2,
+            transition: "width 2s linear",
+          }}
+        />
+      </div>
+      <span style={{ fontSize: 12, color: "rgba(255,255,255,0.55)", letterSpacing: "0.04em" }}>
+        {remainStr}
+      </span>
+    </div>
+  );
 }
 
 /**
  * Netflix-style full-bleed cinematic hero.
  *
- * - Spans the full viewport width (no side gutters)
- * - Tall (min ~78vh) so it dominates the fold
- * - Layered gradients for legibility against the ambient video preview
- * - Animated entrance for the metadata block
- * - Ambient muted YouTube preview when focused; static thumbnail otherwise
+ * Three states:
+ *  1. YouTube LIVE NOW — red badge, ambient YouTube embed, "Watch Live" CTA
+ *  2. Broadcast ON AIR — purple "ON AIR" badge, thumbnail, progress bar, "Tune In" CTA
+ *  3. Off-air — muted badge, gradient fallback, "Watch Temple TV" CTA
  */
-export function LiveHero({ liveStatus, focused, onSelect }: LiveHeroProps) {
+export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: LiveHeroProps) {
   const isLive = liveStatus?.isLive ?? false;
-  const videoId = liveStatus?.videoId;
-  const thumbUrl = videoId
-    ? `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`
+  const ytVideoId = liveStatus?.videoId;
+  const ytThumbUrl = ytVideoId
+    ? `https://img.youtube.com/vi/${ytVideoId}/maxresdefault.jpg`
     : null;
+
+  const broadcastItem = broadcastCurrent?.item ?? null;
+  const hasBroadcast = !isLive && broadcastItem !== null;
+
+  const broadcastThumb = broadcastItem?.thumbnailUrl ?? null;
+  const bgThumb = isLive ? ytThumbUrl : (broadcastThumb || null);
 
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
@@ -36,8 +105,6 @@ export function LiveHero({ liveStatus, focused, onSelect }: LiveHeroProps) {
       className={`relative overflow-hidden ${focused ? "tv-hero-focused" : ""}`}
       style={{
         width: "100%",
-        // Scales gracefully: short on phones, dominant on TV/desktop.
-        // 70dvh handles mobile browser chrome (URL bar) properly.
         height: "min(82vh, 820px)",
         minHeight: "max(60dvh, 360px)",
         background: "#070707",
@@ -46,10 +113,10 @@ export function LiveHero({ liveStatus, focused, onSelect }: LiveHeroProps) {
       }}
       data-testid="live-hero"
     >
-      {/* Backdrop layer — ambient video when focused, thumbnail otherwise */}
-      {focused && videoId ? (
+      {/* Backdrop layer */}
+      {focused && ytVideoId && isLive ? (
         <iframe
-          src={`https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&mute=1&controls=0&modestbranding=1&playsinline=1&loop=1&playlist=${videoId}&rel=0&iv_load_policy=3&disablekb=1`}
+          src={`https://www.youtube-nocookie.com/embed/${ytVideoId}?autoplay=1&mute=1&controls=0&modestbranding=1&playsinline=1&loop=1&playlist=${ytVideoId}&rel=0&iv_load_policy=3&disablekb=1`}
           allow="autoplay; encrypted-media; picture-in-picture"
           frameBorder={0}
           style={{
@@ -64,9 +131,9 @@ export function LiveHero({ liveStatus, focused, onSelect }: LiveHeroProps) {
           }}
           title="Temple TV ambient preview"
         />
-      ) : thumbUrl ? (
+      ) : bgThumb ? (
         <img
-          src={thumbUrl}
+          src={bgThumb}
           alt=""
           aria-hidden
           style={{
@@ -89,7 +156,7 @@ export function LiveHero({ liveStatus, focused, onSelect }: LiveHeroProps) {
         />
       )}
 
-      {/* Cinematic gradient stack — bottom fade for metadata, left fade for read */}
+      {/* Cinematic gradient stack */}
       <div
         aria-hidden
         style={{
@@ -124,15 +191,13 @@ export function LiveHero({ liveStatus, focused, onSelect }: LiveHeroProps) {
         />
       )}
 
-      {/* Metadata block — bottom-left, Netflix style */}
+      {/* Metadata block — bottom-left */}
       <div
         style={{
           position: "absolute",
           left: 0,
           right: 0,
           bottom: 0,
-          // Horizontal padding scales 16px (phone) → 60px (TV/desktop).
-          // Bottom padding scales 32px → 80px and respects iOS safe-area.
           padding:
             "0 clamp(16px, 4vw, 60px) calc(env(safe-area-inset-bottom, 0px) + clamp(32px, 6vw, 80px))",
           display: "flex",
@@ -146,6 +211,7 @@ export function LiveHero({ liveStatus, focused, onSelect }: LiveHeroProps) {
       >
         {isLive ? (
           <>
+            {/* ── State 1: YouTube Live ── */}
             <div
               className="flex items-center gap-2 rounded-full"
               style={{
@@ -267,8 +333,156 @@ export function LiveHero({ liveStatus, focused, onSelect }: LiveHeroProps) {
               </div>
             </div>
           </>
+        ) : hasBroadcast ? (
+          <>
+            {/* ── State 2: 24/7 Broadcast On Air ── */}
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div
+                className="flex items-center gap-2 rounded-full"
+                style={{
+                  background: "rgba(106,13,173,0.85)",
+                  width: "fit-content",
+                  padding: "6px 16px",
+                  boxShadow: "0 6px 24px rgba(106,13,173,0.45)",
+                  border: "1px solid rgba(168,85,247,0.4)",
+                  backdropFilter: "blur(6px)",
+                }}
+              >
+                <div
+                  className="live-pulse rounded-full"
+                  style={{ width: 8, height: 8, background: "#a855f7" }}
+                />
+                <span
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 800,
+                    color: "#fff",
+                    letterSpacing: "0.14em",
+                  }}
+                >
+                  ON AIR · TEMPLE TV
+                </span>
+              </div>
+              <span
+                style={{
+                  fontSize: 12,
+                  color: "rgba(255,255,255,0.45)",
+                  fontWeight: 600,
+                  letterSpacing: "0.06em",
+                }}
+              >
+                24/7 BROADCAST
+              </span>
+            </div>
+
+            <h1
+              style={{
+                fontSize: "clamp(40px, 5.2vw, 72px)",
+                fontWeight: 900,
+                color: "#fff",
+                lineHeight: 1.05,
+                letterSpacing: "-0.02em",
+                textShadow: "0 4px 32px rgba(0,0,0,0.6)",
+                margin: 0,
+              }}
+            >
+              Temple TV
+            </h1>
+            <p
+              style={{
+                fontSize: "clamp(16px, 1.4vw, 22px)",
+                color: "rgba(255,255,255,0.82)",
+                maxWidth: 720,
+                lineHeight: 1.5,
+                textShadow: "0 2px 16px rgba(0,0,0,0.55)",
+                margin: 0,
+              }}
+            >
+              Spirit-filled teachings and worship — broadcasting live around the clock.
+            </p>
+
+            {broadcastCurrent && (
+              <BroadcastProgressBar
+                progressPercent={broadcastCurrent.progressPercent}
+                positionSecs={broadcastCurrent.positionSecs}
+                totalSecs={broadcastCurrent.totalSecs}
+                serverTimeMs={broadcastCurrent.serverTimeMs}
+              />
+            )}
+
+            <div
+              className="flex items-center"
+              style={{ gap: "clamp(8px, 1.4vw, 12px)", marginTop: 4, flexWrap: "wrap" }}
+            >
+              <div
+                className="flex items-center rounded-xl"
+                style={{
+                  background: focused ? "hsl(270 75% 50%)" : "rgba(106,13,173,0.9)",
+                  color: "#fff",
+                  padding: "clamp(12px, 1.8vw, 16px) clamp(20px, 3.2vw, 32px)",
+                  gap: "clamp(8px, 1.2vw, 12px)",
+                  width: "fit-content",
+                  boxShadow: focused
+                    ? "0 12px 36px rgba(106,13,173,0.55)"
+                    : "0 6px 20px rgba(0,0,0,0.4)",
+                  transform: focused ? "scale(1.04)" : "scale(1)",
+                  transition: "all 0.18s ease",
+                  minHeight: 44,
+                  border: "1px solid rgba(168,85,247,0.35)",
+                }}
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                  style={{ width: "clamp(18px, 2vw, 22px)", height: "auto" }}
+                >
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+                <span
+                  style={{
+                    fontSize: "clamp(15px, 1.8vw, 19px)",
+                    fontWeight: 800,
+                    letterSpacing: "-0.01em",
+                  }}
+                >
+                  Tune In
+                </span>
+              </div>
+              {broadcastCurrent?.nextItem && (
+                <div
+                  className="flex items-center rounded-xl"
+                  style={{
+                    background: "rgba(255,255,255,0.08)",
+                    color: "rgba(255,255,255,0.75)",
+                    padding: "clamp(12px, 1.8vw, 16px) clamp(16px, 2.6vw, 26px)",
+                    gap: "clamp(6px, 1vw, 8px)",
+                    backdropFilter: "blur(6px)",
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    minHeight: 44,
+                  }}
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    style={{ width: "clamp(14px, 1.5vw, 16px)", height: "auto" }}
+                  >
+                    <polygon points="5 4 15 12 5 20 5 4" />
+                    <line x1="19" y1="5" x2="19" y2="19" />
+                  </svg>
+                  <span style={{ fontSize: "clamp(12px, 1.3vw, 15px)", fontWeight: 600 }}>
+                    Up Next
+                  </span>
+                </div>
+              )}
+            </div>
+          </>
         ) : (
           <>
+            {/* ── State 3: Off-air ── */}
             <div
               className="flex items-center gap-2 rounded-full"
               style={{

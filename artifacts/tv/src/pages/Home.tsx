@@ -7,7 +7,8 @@ import { Clock } from "../components/Clock";
 import { useTVNav } from "../hooks/useTVNav";
 import { useSermons, useLiveStatus } from "../hooks/useData";
 import { useWatchHistory } from "../hooks/useWatchHistory";
-import type { VideoItem } from "../lib/api";
+import { fetchBroadcastCurrent } from "../lib/api";
+import type { VideoItem, BroadcastCurrent } from "../lib/api";
 
 const CATEGORIES = [
   "Faith",
@@ -32,6 +33,20 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
   const scrollRef = useRef<HTMLDivElement>(null);
   const [guideButtonFocused, setGuideButtonFocused] = useState(false);
   const [searchButtonFocused, setSearchButtonFocused] = useState(false);
+  const [broadcastCurrent, setBroadcastCurrent] = useState<BroadcastCurrent | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const bc = await fetchBroadcastCurrent();
+        if (!cancelled) setBroadcastCurrent(bc);
+      } catch {}
+    };
+    load();
+    const interval = setInterval(load, 30000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
 
   const hasContinueWatching = continueWatching.length > 0;
 
@@ -58,6 +73,12 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
       if (row.key === "__live__") {
         if (liveStatus?.isLive && liveStatus.videoId) {
           onPlay(liveStatus.videoId, liveStatus.title ?? "Live Stream");
+        } else if (broadcastCurrent?.item) {
+          const item = broadcastCurrent.item;
+          const hlsUrl = item.localVideoUrl ?? undefined;
+          const id = item.youtubeId ?? item.videoId;
+          onPlay(id, "Temple TV");
+          void hlsUrl;
         }
         return;
       }
@@ -188,10 +209,14 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
         <div style={{ marginBottom: 24 }}>
           <LiveHero
             liveStatus={liveStatus}
+            broadcastCurrent={broadcastCurrent}
             focused={focusRow === 0}
             onSelect={() => {
               if (liveStatus?.isLive && liveStatus.videoId) {
                 onPlay(liveStatus.videoId, liveStatus.title ?? "Live");
+              } else if (broadcastCurrent?.item) {
+                const id = broadcastCurrent.item.youtubeId ?? broadcastCurrent.item.videoId;
+                onPlay(id, "Temple TV");
               }
             }}
           />

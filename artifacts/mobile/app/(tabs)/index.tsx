@@ -419,6 +419,7 @@ export default function WatchScreen() {
             <NowPlayingBar
               title={playerIsLive ? "Temple TV Live" : currentSermon?.title ?? ""}
               isLive={playerIsLive}
+              onPress={playerIsLive ? handleLivePress : (currentSermon ? () => navigateToSermon(currentSermon) : undefined)}
             />
           )}
 
