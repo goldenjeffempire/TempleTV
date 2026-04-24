@@ -141,12 +141,16 @@ function delayWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
 // runs `pnpm run build && pnpm run start`, where the esbuild step alone takes
 // ~600ms and the node startup adds another ~200-500ms before the port accepts
 // connections. A single 800ms retry (Round 4k initial) was empirically too
-// short — operators still saw the html_fallback diagnostic mid-restart on
-// pages they navigated to during that window. With these two delays the worst
-// case is ~2.0s of waiting before surfacing the error, which comfortably
-// covers a clean restart but still feels like normal page-load latency.
-// Tuning this requires no schema or dependency changes.
-const RETRY_BACKOFF_MS = [500, 1500] as const;
+// short, and the [500, 1500] schedule (Round 4l initial, ~2.0s wait budget)
+// was right at the edge — an operator still saw the html_fallback diagnostic
+// on the live-monitor page when they happened to load it at the start of a
+// restart cycle. The [500, 1500, 3000] schedule gives ~5.0s wait budget
+// across 4 attempts, which comfortably covers even slow restarts (typical
+// build+start under load can spike to 3-4s) without making the page feel
+// stuck — a successful response on the second or third attempt still lands
+// in <2.5s, indistinguishable from a slow load. Tuning this requires no
+// schema or dependency changes.
+const RETRY_BACKOFF_MS = [500, 1500, 3000] as const;
 
 // HTML-fallback detector for the response-level retry path. Same regex as
 // safe-json.ts uses; duplicated here (3 lines) to avoid an import cycle and
