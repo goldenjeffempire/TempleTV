@@ -141,12 +141,37 @@ async function adminFetch(url: string, opts?: RequestInit): Promise<Response> {
 // Safely parse a Response body as JSON. Returns null when the body is empty
 // or not valid JSON (e.g. when an upstream proxy returns the SPA HTML
 // fallback instead of routing the request to the API server).
+//
+// On failure, also logs a structured diagnostic to the console so that
+// "empty or malformed response" errors in the UI can be traced back to the
+// actual status / content-type / first bytes of the body that caused them.
 async function safeJson<T = unknown>(res: Response): Promise<T | null> {
   const text = await res.text();
-  if (!text) return null;
+  const ctype = res.headers.get("content-type") ?? "(none)";
+  if (!text) {
+    console.error("[broadcast] empty response body", {
+      url: res.url,
+      status: res.status,
+      contentType: ctype,
+    });
+    return null;
+  }
   try {
     return JSON.parse(text) as T;
-  } catch {
+  } catch (err) {
+    const isJsonContentType = /\bapplication\/(?:[\w.+-]*\+)?json\b/i.test(ctype);
+    console.error("[broadcast] non-JSON response body", {
+      url: res.url,
+      status: res.status,
+      contentType: ctype,
+      // Only include a body preview when the content-type is NOT JSON, to
+      // avoid logging sensitive JSON payload fragments. Non-JSON bodies are
+      // typically HTML proxy fallbacks where the preview is the actual signal.
+      bodyPreview: isJsonContentType
+        ? "(suppressed: JSON content-type)"
+        : text.slice(0, 200).replace(/\s+/g, " "),
+      parseError: err instanceof Error ? err.message : String(err),
+    });
     return null;
   }
 }
