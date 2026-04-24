@@ -277,9 +277,14 @@ export default function LiveMonitor() {
     es.addEventListener("heartbeat", () => { setSseConnected(true); });
 
     es.addEventListener("yt-status", (e) => {
-      const payload = JSON.parse((e as MessageEvent).data) as {
-        isLive: boolean; videoId: string | null; title: string | null;
-      };
+      let payload: { isLive: boolean; videoId: string | null; title: string | null };
+      try {
+        payload = JSON.parse((e as MessageEvent).data);
+        if (typeof payload?.isLive !== "boolean") return;
+      } catch {
+        // Malformed event payload — ignore rather than crash the listener.
+        return;
+      }
 
       if (prevIsLive.current !== null && prevIsLive.current !== payload.isLive) {
         if (!payload.isLive) {

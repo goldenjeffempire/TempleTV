@@ -15,12 +15,15 @@ function formatDate(dateStr: string | Date) {
 }
 
 function UserAvatar({ name }: { name: string }) {
-  const initials = name
-    .split(" ")
-    .map((n) => n[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
+  const safeName = (name ?? "").trim();
+  const initials =
+    safeName
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((n) => n[0] ?? "")
+      .join("")
+      .slice(0, 2)
+      .toUpperCase() || "?";
   const colours = [
     "bg-violet-500",
     "bg-sky-500",
@@ -29,7 +32,8 @@ function UserAvatar({ name }: { name: string }) {
     "bg-rose-500",
     "bg-indigo-500",
   ];
-  const colour = colours[name.charCodeAt(0) % colours.length];
+  const code = safeName.length > 0 ? safeName.charCodeAt(0) : 0;
+  const colour = colours[code % colours.length];
   return (
     <div
       className={`w-9 h-9 rounded-full ${colour} flex items-center justify-center text-white text-sm font-semibold shrink-0`}

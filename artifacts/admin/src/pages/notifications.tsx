@@ -139,6 +139,15 @@ export default function Notifications() {
 
   const handleSchedule = async (e: React.FormEvent) => {
     e.preventDefault();
+    const scheduledDate = new Date(schedForm.scheduledAt);
+    if (!schedForm.scheduledAt || Number.isNaN(scheduledDate.getTime())) {
+      toast({ title: "Invalid schedule time", description: "Pick a valid date and time before scheduling.", variant: "destructive" });
+      return;
+    }
+    if (scheduledDate.getTime() <= Date.now()) {
+      toast({ title: "Schedule time is in the past", description: "Pick a future date and time.", variant: "destructive" });
+      return;
+    }
     setSchedSending(true);
     try {
       await adminPost("/admin/notifications/schedule", {
@@ -146,9 +155,9 @@ export default function Notifications() {
         body: schedForm.body,
         type: schedForm.type,
         videoId: schedForm.videoId || undefined,
-        scheduledAt: new Date(schedForm.scheduledAt).toISOString(),
+        scheduledAt: scheduledDate.toISOString(),
       });
-      toast({ title: "Notification Scheduled", description: `Will send on ${new Date(schedForm.scheduledAt).toLocaleString()}` });
+      toast({ title: "Notification Scheduled", description: `Will send on ${scheduledDate.toLocaleString()}` });
       setSchedForm({ title: "", body: "", type: "announcement", videoId: "", scheduledAt: "" });
       fetchScheduled();
     } catch (err) {

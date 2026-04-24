@@ -187,7 +187,7 @@ export default function LiveControl() {
                   <p className="text-sm text-muted-foreground mt-0.5">
                     <span className="font-medium text-foreground">{activeOverride.title}</span>
                     {ticker && <> · {ticker}</>}
-                    {activeOverride.endsAt && (
+                    {activeOverride.endsAt && !Number.isNaN(new Date(activeOverride.endsAt).getTime()) && (
                       <> · ends {new Date(activeOverride.endsAt).toLocaleTimeString()}</>
                     )}
                   </p>
@@ -218,7 +218,7 @@ export default function LiveControl() {
                       : "—"}
                   </div>
                 </div>
-                {activeOverride.endsAt && (
+                {activeOverride.endsAt && !Number.isNaN(new Date(activeOverride.endsAt).getTime()) && (
                   <div className="rounded-lg border bg-background p-3">
                     <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">Auto-ends</div>
                     <div className="text-xs">{new Date(activeOverride.endsAt).toLocaleTimeString()}</div>

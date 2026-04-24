@@ -89,13 +89,19 @@ export default function Analytics() {
                           <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0}/>
                         </linearGradient>
                       </defs>
-                      <XAxis dataKey="date" stroke="#888888" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(val) => new Date(val).toLocaleDateString(undefined, {month: 'short', day: 'numeric'})} />
+                      <XAxis dataKey="date" stroke="#888888" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(val) => {
+                        const d = new Date(val);
+                        return Number.isNaN(d.getTime()) ? String(val ?? "") : d.toLocaleDateString(undefined, {month: 'short', day: 'numeric'});
+                      }} />
                       <YAxis stroke="#888888" fontSize={12} tickLine={false} axisLine={false} allowDecimals={false} />
                       <RechartsTooltip 
                         contentStyle={{ backgroundColor: 'hsl(var(--card))', borderColor: 'hsl(var(--border))', borderRadius: '0.5rem' }}
                         itemStyle={{ color: 'hsl(var(--foreground))' }}
                         labelStyle={{ color: 'hsl(var(--muted-foreground))', marginBottom: '0.25rem' }}
-                        labelFormatter={(val) => new Date(val).toLocaleDateString()}
+                        labelFormatter={(val) => {
+                          const d = new Date(val as string | number);
+                          return Number.isNaN(d.getTime()) ? String(val ?? "") : d.toLocaleDateString();
+                        }}
                         formatter={(val: number) => [val.toLocaleString(), "Views"]}
                       />
                       <Area type="monotone" dataKey="views" stroke="hsl(var(--primary))" strokeWidth={2} fillOpacity={1} fill="url(#colorViews)" />

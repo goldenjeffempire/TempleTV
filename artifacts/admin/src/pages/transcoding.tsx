@@ -81,14 +81,19 @@ function StatusBadge({ status }: { status: JobStatus }) {
 function fmtDuration(start: string | null, end: string | null): string {
   if (!start) return "—";
   const s = new Date(start).getTime();
-  const e = end ? new Date(end).getTime() : Date.now();
-  const sec = Math.round((e - s) / 1000);
+  if (Number.isNaN(s)) return "—";
+  const eRaw = end ? new Date(end).getTime() : Date.now();
+  const e = Number.isNaN(eRaw) ? Date.now() : eRaw;
+  const sec = Math.max(0, Math.round((e - s) / 1000));
   if (sec < 60) return `${sec}s`;
   return `${Math.floor(sec / 60)}m ${sec % 60}s`;
 }
 
 function fmtRelative(date: string): string {
-  const diff = Date.now() - new Date(date).getTime();
+  if (!date) return "—";
+  const t = new Date(date).getTime();
+  if (Number.isNaN(t)) return "—";
+  const diff = Math.max(0, Date.now() - t);
   const mins = Math.floor(diff / 60000);
   if (mins < 1) return "just now";
   if (mins < 60) return `${mins}m ago`;

@@ -39,7 +39,7 @@ function slotsOverlap(a: { startTime: string; endTime?: string | null }, b: { st
 }
 
 export default function Schedule() {
-  const { data: schedule, isLoading } = useListSchedule();
+  const { data: schedule, isLoading, isError, error: scheduleError, refetch: refetchSchedule } = useListSchedule();
   const { data: videos } = useListAdminVideos({ limit: 100 });
   const { data: playlists } = useListPlaylists();
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -274,6 +274,21 @@ export default function Schedule() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {isError && (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 flex items-start gap-3">
+          <AlertTriangle className="w-5 h-5 text-destructive shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium">Failed to load schedule</p>
+            <p className="text-xs text-muted-foreground mt-0.5 break-words">
+              {scheduleError instanceof Error ? scheduleError.message : "The schedule API did not respond. Try again."}
+            </p>
+          </div>
+          <Button size="sm" variant="outline" onClick={() => refetchSchedule()}>
+            Retry
+          </Button>
+        </div>
+      )}
 
       <TooltipProvider>
         <div className="grid gap-6 lg:grid-cols-7">
