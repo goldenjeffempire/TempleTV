@@ -906,27 +906,56 @@ export default function Broadcast() {
         adminFetch("/api/admin/live"),
       ]);
 
-      let parseFailed = false;
+      const issues: string[] = [];
+      let unauthorized = false;
+
+      // queue (admin)
       if (qRes.ok) {
         const q = await safeJson<BroadcastItem[]>(qRes);
-        if (q === null) parseFailed = true;
+        if (q === null) issues.push("queue: empty or malformed response");
         setQueue(Array.isArray(q) ? q : []);
+      } else if (qRes.status === 401 || qRes.status === 403) {
+        unauthorized = true;
+      } else {
+        issues.push(`queue: HTTP ${qRes.status}`);
       }
+
+      // current broadcast (public)
       if (cRes.ok) {
         const c = await safeJson<CurrentBroadcast>(cRes);
-        if (c === null) parseFailed = true;
-        if (c) {
+        if (c === null) {
+          issues.push("current broadcast: empty or malformed response");
+        } else {
           setCurrent(c);
           setLivePosition(c.positionSecs ?? 0);
         }
-      }
-      if (lRes.ok) {
-        const l = await safeJson<LiveStatus>(lRes);
-        if (l === null) parseFailed = true;
-        if (l) setLiveStatus(l);
+      } else {
+        issues.push(`current broadcast: HTTP ${cRes.status}`);
       }
 
-      setError(parseFailed ? "Unexpected non-JSON response (the API server may be unreachable)" : null);
+      // live status (admin)
+      if (lRes.ok) {
+        const l = await safeJson<LiveStatus>(lRes);
+        if (l === null) {
+          issues.push("live status: empty or malformed response");
+        } else {
+          setLiveStatus(l);
+        }
+      } else if (lRes.status === 401 || lRes.status === 403) {
+        unauthorized = true;
+      } else {
+        issues.push(`live status: HTTP ${lRes.status}`);
+      }
+
+      if (unauthorized) {
+        setError(
+          "Admin authentication failed (401/403). Open the admin key prompt and paste a valid ADMIN_API_TOKEN.",
+        );
+      } else if (issues.length > 0) {
+        setError(`Failed to load some broadcast data — ${issues.join("; ")}`);
+      } else {
+        setError(null);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load");
     } finally {
