@@ -190,6 +190,9 @@ export default function PlayerScreen() {
   // navigation is mid-flight. The `gateTriggered` ref guarantees we
   // only fire openAuthGate + router.back once per mount, even if the
   // effect re-runs in StrictMode.
+  // Auth is now non-blocking: guests can watch content after dismissing the
+  // sign-up prompt. We still show the gate for direct deep-link arrivals so
+  // sign-up is encouraged, but we never navigate away from the player.
   const { isLoggedIn, isLoading: authLoading, openAuthGate } = useAuth();
   const routeParams = useLocalSearchParams() as Record<string, string | undefined>;
   const gateTriggered = useRef(false);
@@ -200,13 +203,13 @@ export default function PlayerScreen() {
     Object.entries(routeParams).forEach(([k, v]) => {
       if (typeof v === "string") cleanParams[k] = v;
     });
+    // Show the gate as a suggestion — "Continue watching" in the modal
+    // lets them stay in the player without being forced to sign up.
     openAuthGate({
       pathname: "/player",
       params: cleanParams,
-      reason: "Sign up free to watch this sermon and unlock the full library.",
+      reason: "Sign up free to save your history and never miss a live service.",
     });
-    if (router.canGoBack()) router.back();
-    else router.replace("/");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, isLoggedIn]);
 
@@ -656,6 +659,10 @@ export default function PlayerScreen() {
   const loopColor = loopMode === "none" ? c.mutedForeground : c.primary;
   const showSeekBar = !isLive && !isBroadcastMode && duration > 0;
   const showVolume = !isLive && Platform.OS === "web";
+  const isBroadcastOrLive = isLive || isBroadcastMode;
+
+  // Nudge guests watching broadcast to sign up — shown once, dismissible.
+  const [nudgeDismissed, setNudgeDismissed] = useState(false);
 
   const handleToggleAudioMode = useCallback(() => {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -743,87 +750,157 @@ export default function PlayerScreen() {
         )}
       </View>
 
-      <Animated.View style={{ opacity: fadeAnim, flex: 1 }}>
-        <ScrollView
-          ref={scrollRef}
-          contentContainerStyle={[styles.info, { paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 0) + 40 }]}
-          showsVerticalScrollIndicator={false}
-        >
-          <Animated.View style={[styles.titleSection, { opacity: titleFade }]}>
-            <View style={styles.topMeta}>
-              {!!displayCategory && (
-                <View style={[styles.categoryBadge, { backgroundColor: c.secondary }]}>
-                  <Text style={[styles.categoryText, { color: c.accent }]}>{displayCategory}</Text>
-                </View>
-              )}
-              {isLive && <LiveBadge size="small" />}
-              <View style={{ flex: 1 }} />
-              <Pressable onPress={handleToggleFavorite} hitSlop={12}>
-                <Feather name="heart" size={22} color={favorited ? "#FF0040" : c.mutedForeground} />
-              </Pressable>
+      {/* ── Broadcast / Live: clean immersive footer — no metadata clutter ── */}
+      {isBroadcastOrLive ? (
+        <View style={[styles.broadcastFooter, { paddingBottom: insets.bottom + 12 }]}>
+          {/* Channel identification row */}
+          <View style={styles.broadcastChannelRow}>
+            <View style={styles.onAirIndicator}>
+              <View style={styles.onAirDot} />
+              <Text style={styles.onAirLabel}>{isLive ? "LIVE" : "ON AIR"}</Text>
             </View>
-
-            <Text style={[styles.title, { color: c.foreground }]}>{displayTitle}</Text>
-
-            <View style={styles.metaRow}>
-              <Feather name="user" size={13} color={c.mutedForeground} />
-              <Text style={[styles.meta, { color: c.mutedForeground }]}>{displayPreacher}</Text>
-              {!!displayDuration && (
-                <>
-                  <Text style={{ color: c.border }}> · </Text>
-                  <Feather name="clock" size={13} color={c.mutedForeground} />
-                  <Text style={[styles.meta, { color: c.mutedForeground }]}>{displayDuration}</Text>
-                </>
-              )}
-            </View>
-
-            {activeSermon?.description ? (
-              <Text style={[styles.desc, { color: c.mutedForeground }]}>{activeSermon.description}</Text>
-            ) : null}
-            {(dataSaver || isRadioMode) && (
+            <Text style={[styles.broadcastChannelName, { color: c.foreground }]} numberOfLines={1}>
+              Temple TV · JCTM Broadcasting
+            </Text>
+            <View style={{ flex: 1 }} />
+            {isRadioMode && (
               <View style={[styles.playbackModeBadge, { backgroundColor: c.secondary }]}>
-                <Feather name={isRadioMode ? "radio" : "wifi-off"} size={13} color={c.primary} />
-                <Text style={[styles.playbackModeText, { color: c.primary }]}>
-                  {isRadioMode ? "Audio/radio focus enabled" : "Data saver requests lower quality playback"}
-                </Text>
+                <Feather name="radio" size={13} color={c.primary} />
+                <Text style={[styles.playbackModeText, { color: c.primary }]}>Audio</Text>
               </View>
             )}
-          </Animated.View>
+          </View>
 
-          {showSeekBar && (
-            <GlassCard style={styles.seekCard}>
-              <SeekBar currentTime={currentTime} duration={duration} onSeek={handleSeek} />
-              {showVolume && (
-                <VolumeBar volume={volume} onVolume={handleVolume} />
-              )}
-            </GlassCard>
-          )}
-
-          <View style={styles.actionRow}>
+          {/* Action buttons */}
+          <View style={styles.broadcastActions}>
             <Pressable
-              onPress={openOnYouTube}
-              style={({ pressed }) => [styles.primaryBtn, { backgroundColor: "#FF0000", opacity: pressed ? 0.85 : 1 }]}
+              onPress={handleToggleAudioMode}
+              style={({ pressed }) => [
+                styles.broadcastActionBtn,
+                { backgroundColor: isRadioMode ? c.primary : c.secondary, opacity: pressed ? 0.75 : 1 },
+              ]}
+              hitSlop={8}
             >
-              <Feather name="youtube" size={18} color="#FFF" />
-              <Text style={styles.primaryBtnText}>Watch on YouTube</Text>
+              <Feather name={isRadioMode ? "video" : "headphones"} size={18} color={isRadioMode ? "#FFF" : c.foreground} />
+              <Text style={[styles.broadcastActionLabel, { color: isRadioMode ? "#FFF" : c.mutedForeground }]}>
+                {isRadioMode ? "Video" : "Audio only"}
+              </Text>
             </Pressable>
             <Pressable
-              style={({ pressed }) => [styles.iconBtn, { backgroundColor: c.muted, opacity: pressed ? 0.7 : 1 }]}
               onPress={handleShare}
+              style={({ pressed }) => [styles.broadcastActionBtn, { backgroundColor: c.secondary, opacity: pressed ? 0.75 : 1 }]}
               hitSlop={8}
             >
-              <Feather name="share-2" size={20} color={c.foreground} />
-            </Pressable>
-            <Pressable
-              style={({ pressed }) => [styles.iconBtn, { backgroundColor: c.muted, opacity: pressed ? 0.7 : 1 }]}
-              onPress={openCastHandoff}
-              hitSlop={8}
-            >
-              <Feather name="cast" size={20} color={c.foreground} />
+              <Feather name="share-2" size={18} color={c.foreground} />
+              <Text style={[styles.broadcastActionLabel, { color: c.mutedForeground }]}>Share</Text>
             </Pressable>
           </View>
 
-          {!isLive && !isBroadcastMode && (
+          {/* Non-intrusive sign-up nudge for guests — shown once, dismissible */}
+          {!isLoggedIn && !nudgeDismissed && (
+            <Pressable
+              style={[styles.signupNudge, { backgroundColor: "rgba(106,13,173,0.15)", borderColor: "rgba(106,13,173,0.3)" }]}
+              onPress={() => {
+                openAuthGate({
+                  pathname: "/player",
+                  params: Object.fromEntries(
+                    Object.entries(routeParams).filter((e): e is [string, string] => typeof e[1] === "string"),
+                  ),
+                  reason: "Sign up free to save your watch history and never miss a live service.",
+                });
+              }}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.nudgeTitle, { color: c.foreground }]}>Save your watch history</Text>
+                <Text style={[styles.nudgeSub, { color: c.mutedForeground }]}>Create a free account — takes 30 seconds</Text>
+              </View>
+              <Pressable onPress={(e) => { e.stopPropagation(); setNudgeDismissed(true); }} hitSlop={12}>
+                <Feather name="x" size={18} color={c.mutedForeground} />
+              </Pressable>
+            </Pressable>
+          )}
+        </View>
+      ) : (
+        /* ── VOD: standard scrollable metadata + controls section ── */
+        <Animated.View style={{ opacity: fadeAnim, flex: 1 }}>
+          <ScrollView
+            ref={scrollRef}
+            contentContainerStyle={[styles.info, { paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 0) + 40 }]}
+            showsVerticalScrollIndicator={false}
+          >
+            <Animated.View style={[styles.titleSection, { opacity: titleFade }]}>
+              <View style={styles.topMeta}>
+                {!!displayCategory && (
+                  <View style={[styles.categoryBadge, { backgroundColor: c.secondary }]}>
+                    <Text style={[styles.categoryText, { color: c.accent }]}>{displayCategory}</Text>
+                  </View>
+                )}
+                <View style={{ flex: 1 }} />
+                <Pressable onPress={handleToggleFavorite} hitSlop={12}>
+                  <Feather name="heart" size={22} color={favorited ? "#FF0040" : c.mutedForeground} />
+                </Pressable>
+              </View>
+
+              <Text style={[styles.title, { color: c.foreground }]}>{displayTitle}</Text>
+
+              <View style={styles.metaRow}>
+                <Feather name="user" size={13} color={c.mutedForeground} />
+                <Text style={[styles.meta, { color: c.mutedForeground }]}>{displayPreacher}</Text>
+                {!!displayDuration && (
+                  <>
+                    <Text style={{ color: c.border }}> · </Text>
+                    <Feather name="clock" size={13} color={c.mutedForeground} />
+                    <Text style={[styles.meta, { color: c.mutedForeground }]}>{displayDuration}</Text>
+                  </>
+                )}
+              </View>
+
+              {activeSermon?.description ? (
+                <Text style={[styles.desc, { color: c.mutedForeground }]}>{activeSermon.description}</Text>
+              ) : null}
+              {(dataSaver || isRadioMode) && (
+                <View style={[styles.playbackModeBadge, { backgroundColor: c.secondary }]}>
+                  <Feather name={isRadioMode ? "radio" : "wifi-off"} size={13} color={c.primary} />
+                  <Text style={[styles.playbackModeText, { color: c.primary }]}>
+                    {isRadioMode ? "Audio/radio focus enabled" : "Data saver requests lower quality playback"}
+                  </Text>
+                </View>
+              )}
+            </Animated.View>
+
+            {showSeekBar && (
+              <GlassCard style={styles.seekCard}>
+                <SeekBar currentTime={currentTime} duration={duration} onSeek={handleSeek} />
+                {showVolume && (
+                  <VolumeBar volume={volume} onVolume={handleVolume} />
+                )}
+              </GlassCard>
+            )}
+
+            <View style={styles.actionRow}>
+              <Pressable
+                onPress={openOnYouTube}
+                style={({ pressed }) => [styles.primaryBtn, { backgroundColor: "#FF0000", opacity: pressed ? 0.85 : 1 }]}
+              >
+                <Feather name="youtube" size={18} color="#FFF" />
+                <Text style={styles.primaryBtnText}>Watch on YouTube</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [styles.iconBtn, { backgroundColor: c.muted, opacity: pressed ? 0.7 : 1 }]}
+                onPress={handleShare}
+                hitSlop={8}
+              >
+                <Feather name="share-2" size={20} color={c.foreground} />
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [styles.iconBtn, { backgroundColor: c.muted, opacity: pressed ? 0.7 : 1 }]}
+                onPress={openCastHandoff}
+                hitSlop={8}
+              >
+                <Feather name="cast" size={20} color={c.foreground} />
+              </Pressable>
+            </View>
+
             <GlassCard style={styles.controlsCard}>
               <Pressable
                 onPress={() => { if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); toggleShuffle(); }}
@@ -857,67 +934,50 @@ export default function PlayerScreen() {
                 </Text>
               </Pressable>
             </GlassCard>
-          )}
 
-          {nextSermon && !isLive && !isBroadcastMode && (
-            <GlassCard style={styles.autoPlayBanner}>
-              <View style={styles.autoPlayLeft}>
-                <Feather name="skip-forward" size={16} color={c.primary} />
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.autoPlayLabel, { color: c.mutedForeground }]}>Up Next</Text>
-                  <Text style={[styles.autoPlayTitle, { color: c.foreground }]} numberOfLines={1}>
-                    {nextSermon.title}
-                  </Text>
-                </View>
-              </View>
-              <Pressable onPress={handlePlayNext} style={[styles.autoPlayBtn, { backgroundColor: c.primary }]}>
-                <Text style={styles.autoPlayBtnText}>Play</Text>
-              </Pressable>
-            </GlassCard>
-          )}
-
-          {!nextSermon && !isLive && !isBroadcastMode && loopMode === "none" && (
-            <GlassCard style={styles.autoPlayBanner}>
-              <View style={styles.autoPlayLeft}>
-                <Feather name="check-circle" size={16} color={c.mutedForeground} />
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.autoPlayLabel, { color: c.mutedForeground }]}>Queue</Text>
-                  <Text style={[styles.autoPlayTitle, { color: c.mutedForeground }]}>End of playlist</Text>
-                </View>
-              </View>
-              <Pressable onPress={() => cycleLoopMode()} style={[styles.autoPlayBtn, { backgroundColor: c.secondary }]}>
-                <Text style={[styles.autoPlayBtnText, { color: c.primary }]}>Loop</Text>
-              </Pressable>
-            </GlassCard>
-          )}
-
-          {isBroadcastMode && broadcastInfo?.nextItem && (
-            <View style={styles.relatedSection}>
-              <Text style={[styles.relatedTitle, { color: c.foreground }]}>Up Next on Temple TV</Text>
-              <GlassCard style={styles.broadcastUpNext}>
-                <View style={styles.broadcastUpNextLeft}>
-                  <Feather name="tv" size={16} color={c.primary} />
+            {nextSermon && (
+              <GlassCard style={styles.autoPlayBanner}>
+                <View style={styles.autoPlayLeft}>
+                  <Feather name="skip-forward" size={16} color={c.primary} />
                   <View style={{ flex: 1 }}>
-                    <Text style={[styles.autoPlayLabel, { color: c.mutedForeground }]}>Coming Up</Text>
-                    <Text style={[styles.autoPlayTitle, { color: c.foreground }]} numberOfLines={2}>
-                      {broadcastInfo.nextItem.title}
+                    <Text style={[styles.autoPlayLabel, { color: c.mutedForeground }]}>Up Next</Text>
+                    <Text style={[styles.autoPlayTitle, { color: c.foreground }]} numberOfLines={1}>
+                      {nextSermon.title}
                     </Text>
                   </View>
                 </View>
+                <Pressable onPress={handlePlayNext} style={[styles.autoPlayBtn, { backgroundColor: c.primary }]}>
+                  <Text style={styles.autoPlayBtnText}>Play</Text>
+                </Pressable>
               </GlassCard>
-            </View>
-          )}
+            )}
 
-          {!isBroadcastMode && relatedSermons.length > 0 && (
-            <View style={styles.relatedSection}>
-              <Text style={[styles.relatedTitle, { color: c.foreground }]}>Related Sermons</Text>
-              {relatedSermons.map((sermon) => (
-                <SermonCard key={sermon.id} sermon={sermon} variant="horizontal" onPress={navigateToRelated} />
-              ))}
-            </View>
-          )}
-        </ScrollView>
-      </Animated.View>
+            {!nextSermon && loopMode === "none" && (
+              <GlassCard style={styles.autoPlayBanner}>
+                <View style={styles.autoPlayLeft}>
+                  <Feather name="check-circle" size={16} color={c.mutedForeground} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.autoPlayLabel, { color: c.mutedForeground }]}>Queue</Text>
+                    <Text style={[styles.autoPlayTitle, { color: c.mutedForeground }]}>End of playlist</Text>
+                  </View>
+                </View>
+                <Pressable onPress={() => cycleLoopMode()} style={[styles.autoPlayBtn, { backgroundColor: c.secondary }]}>
+                  <Text style={[styles.autoPlayBtnText, { color: c.primary }]}>Loop</Text>
+                </Pressable>
+              </GlassCard>
+            )}
+
+            {relatedSermons.length > 0 && (
+              <View style={styles.relatedSection}>
+                <Text style={[styles.relatedTitle, { color: c.foreground }]}>Related Sermons</Text>
+                {relatedSermons.map((sermon) => (
+                  <SermonCard key={sermon.id} sermon={sermon} variant="horizontal" onPress={navigateToRelated} />
+                ))}
+              </View>
+            )}
+          </ScrollView>
+        </Animated.View>
+      )}
     </View>
   );
 }
@@ -930,8 +990,78 @@ const styles = StyleSheet.create({
   backBtn: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.4)" },
   audioToggleBtn: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.4)" },
   channelBugWrap: { position: "absolute", bottom: 8, right: 8, pointerEvents: "none" } as const,
-  broadcastUpNext: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 14 },
-  broadcastUpNextLeft: { flexDirection: "row", alignItems: "center", gap: 10, flex: 1 },
+  broadcastFooter: {
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    gap: 16,
+    backgroundColor: "#000",
+  },
+  broadcastChannelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  onAirIndicator: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    backgroundColor: "rgba(255,0,64,0.15)",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  onAirDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: "#FF0040",
+  },
+  onAirLabel: {
+    fontSize: 10,
+    fontFamily: "Inter_700Bold",
+    color: "#FF0040",
+    letterSpacing: 1.2,
+  },
+  broadcastChannelName: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    letterSpacing: 0.1,
+    flexShrink: 1,
+  },
+  broadcastActions: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  broadcastActionBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 22,
+  },
+  broadcastActionLabel: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+  },
+  signupNudge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+  },
+  nudgeTitle: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    marginBottom: 2,
+  },
+  nudgeSub: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+  },
   info: { padding: 16, gap: 16 },
   titleSection: { gap: 8 },
   topMeta: { flexDirection: "row", alignItems: "center", gap: 8 },

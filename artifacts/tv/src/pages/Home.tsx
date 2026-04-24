@@ -22,7 +22,7 @@ const CATEGORIES = [
 interface HomeProps {
   onNavigateGuide: () => void;
   onNavigateSearch: () => void;
-  onPlay: (videoId: string, title: string) => void;
+  onPlay: (videoId: string, title: string, hlsUrl?: string) => void;
   onDetails: (video: VideoItem, related: VideoItem[]) => void;
 }
 
@@ -77,8 +77,7 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
           const item = broadcastCurrent.item;
           const hlsUrl = item.localVideoUrl ?? undefined;
           const id = item.youtubeId ?? item.videoId;
-          onPlay(id, "Temple TV");
-          void hlsUrl;
+          onPlay(id, "Temple TV", hlsUrl);
         }
         return;
       }
@@ -215,8 +214,10 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
               if (liveStatus?.isLive && liveStatus.videoId) {
                 onPlay(liveStatus.videoId, liveStatus.title ?? "Live");
               } else if (broadcastCurrent?.item) {
-                const id = broadcastCurrent.item.youtubeId ?? broadcastCurrent.item.videoId;
-                onPlay(id, "Temple TV");
+                const item = broadcastCurrent.item;
+                const hlsUrl = item.localVideoUrl ?? undefined;
+                const id = item.youtubeId ?? item.videoId;
+                onPlay(id, "Temple TV", hlsUrl);
               }
             }}
           />

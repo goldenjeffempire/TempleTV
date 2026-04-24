@@ -1,0 +1,49 @@
+Refactor and optimize the authentication interaction flow and live viewing experience to ensure a seamless, non-intrusive, television-style streaming environment for all users and audience members.
+
+Authentication Experience Requirements:
+
+* Modify the authentication prompt behavior so that users who choose the “Maybe Later” option are still allowed to continue watching content without restrictions.
+* Ensure that selecting “Maybe Later” does not block access to live streams or video playback.
+* Prevent the authentication popup from repeatedly interrupting the viewing experience while users are actively watching content.
+* If users navigate to another video or attempt to access additional content, the authentication prompt may appear again based on the platform’s engagement strategy, but selecting “Maybe Later” must continue to allow uninterrupted viewing access.
+* Ensure the authentication flow remains smooth, user-friendly, and non-disruptive while still encouraging user sign-in engagement.
+* Optimize authentication modal behavior for mobile, tablet, desktop, and smart TV viewing environments.
+
+Live Stream Performance Optimization:
+
+* Optimize the “Watch Temple TV” live stream loading process so playback starts as quickly as the user’s network and device performance allow.
+* Reduce stream startup delays, buffering time, and playback initialization latency.
+* Implement intelligent stream preloading, adaptive streaming optimization, and fast playback initialization workflows to create a real-world live TV experience.
+
+TV-Style Viewing Interface Cleanup:
+
+When users click “Watch Temple TV,” completely remove all unnecessary metadata, overlays, labels, and content panels that break the immersive television viewing experience.
+
+Remove elements such as:
+
+* “Faith”
+* “26-10-25 Message1”
+* “JCTM”
+* “Watch on YouTube”
+* “Up Next on Temple TV”
+* “Coming Up”
+* “26-10-25 Message1”
+
+Requirements:
+
+* Ensure the live viewing interface is clean, immersive, and visually similar to a real television channel broadcast.
+* Remove all video titles, category labels, branding overlays, recommendations, and metadata panels from the live viewing experience.
+* Eliminate external platform references such as “Watch on YouTube.”
+* Ensure users only see the live Temple TV broadcast experience without distractions or exposed internal media information.
+* Maintain a professional full-screen broadcast presentation optimized for audience immersion.
+
+Expected Final Outcome:
+
+Deliver a seamless enterprise-grade television streaming experience where:
+
+* Users can continue watching content even after selecting “Maybe Later” on authentication prompts.
+* Live streams load extremely fast based on available network conditions.
+* The “Watch Temple TV” experience feels identical to watching a real live television channel with a clean, distraction-free broadcast interface.
+* The viewing environment remains immersive, professional, and optimized for real-world production usage across all supported devices.
+
+“Temple TV Anywhere You Go”

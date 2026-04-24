@@ -69,10 +69,19 @@ export function AuthGateModal() {
     }
   }, [isAuthGateOpen, fade, scale, lift]);
 
-  // The gate is non-dismissible by hardware-back during playback flow:
-  // closing it without auth simply leaves the user where they were.
+  // "Maybe later" — close the gate AND immediately navigate to the pending
+  // content so the user can watch without being forced to sign in first.
+  // The auth prompt may reappear when they start a new piece of content,
+  // but it will never block an active viewing session.
   const handleDismiss = () => {
+    const target = pendingPlayback; // capture before closeAuthGate clears it
     closeAuthGate();
+    if (target) {
+      setTimeout(
+        () => router.push({ pathname: target.pathname as any, params: target.params }),
+        60,
+      );
+    }
   };
 
   const goToSignup = () => {
@@ -177,7 +186,7 @@ export function AuthGateModal() {
 
           <Pressable onPress={handleDismiss} style={styles.dismissBtn} hitSlop={8}>
             <Text style={[styles.dismissText, { color: c.mutedForeground }]}>
-              Maybe later
+              {pendingPlayback ? "Continue watching without signing in" : "Maybe later"}
             </Text>
           </Pressable>
         </Animated.View>
