@@ -15,6 +15,7 @@ import fs from "fs/promises";
 import { createWriteStream, createReadStream, existsSync } from "fs";
 import multer from "multer";
 import { validateUploadedFileMagicBytes } from "../lib/fileValidation";
+import { BROADCAST_QUEUE_LOCK_KEY } from "../lib/broadcastQueueLock";
 import {
   ImportVideoBody,
   UpdateAdminVideoBody,
@@ -125,7 +126,28 @@ async function flushSessionToDisk(session: ChunkedSession): Promise<void> {
       lastActivity: session.lastActivity.toISOString(),
     };
     await fs.writeFile(path.join(session.tmpDir, SESSION_META_FILE), JSON.stringify(meta));
-  } catch {}
+  } catch (err) {
+    logger.warn({ err, sessionId: session.id }, "Failed to persist upload session metadata to disk");
+  }
+}
+
+// Validate user-supplied stream URLs. Empty/null is allowed (means "use YouTube fallback").
+// Reject anything other than http/https to block javascript:, data:, file:, etc.
+function validateStreamUrl(value: unknown): { ok: true; value: string | null } | { ok: false; error: string } {
+  if (value === null || value === undefined || value === "") return { ok: true, value: null };
+  if (typeof value !== "string") return { ok: false, error: "stream URL must be a string" };
+  const trimmed = value.trim();
+  if (trimmed === "") return { ok: true, value: null };
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return { ok: false, error: "stream URL is not a valid URL" };
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return { ok: false, error: "stream URL must use http or https" };
+  }
+  return { ok: true, value: trimmed };
 }
 
 function writeSessionToDisk(session: ChunkedSession): void {
@@ -216,27 +238,36 @@ setInterval(() => {
 async function autoExpireLiveOverrides(): Promise<void> {
   try {
     const now = new Date();
-    const active = await db
-      .select()
-      .from(liveOverridesTable)
-      .where(eq(liveOverridesTable.isActive, true));
-    for (const override of active) {
-      if (override.endsAt && override.endsAt <= now) {
-        await db.update(liveOverridesTable)
-          .set({ isActive: false })
-          .where(eq(liveOverridesTable.id, override.id));
-        await invalidateBroadcastCache();
-        logger.info({ liveOverrideId: override.id, title: override.title }, "Live override auto-expired");
-        broadcastLiveEvent("override-expired", {
-          id: override.id,
-          title: override.title,
-          expiredAt: now.toISOString(),
-        });
-        broadcastLiveEvent("status", await buildLiveStatusPayload());
-        emitBroadcastState("live-override-expired", { id: override.id });
-      }
+    // Atomic: find candidates first (cheap read), then guard each UPDATE with the
+    // is_active=true predicate so concurrent runners can't double-expire and
+    // double-emit SSE events. Only emit when our UPDATE actually changed a row.
+    const expired = await db
+      .update(liveOverridesTable)
+      .set({ isActive: false })
+      .where(
+        and(
+          eq(liveOverridesTable.isActive, true),
+          lte(liveOverridesTable.endsAt, now),
+        ),
+      )
+      .returning();
+
+    if (expired.length === 0) return;
+
+    await invalidateBroadcastCache();
+    for (const override of expired) {
+      logger.info({ liveOverrideId: override.id, title: override.title }, "Live override auto-expired");
+      broadcastLiveEvent("override-expired", {
+        id: override.id,
+        title: override.title,
+        expiredAt: now.toISOString(),
+      });
+      emitBroadcastState("live-override-expired", { id: override.id });
     }
-  } catch {}
+    broadcastLiveEvent("status", await buildLiveStatusPayload());
+  } catch (err) {
+    logger.warn({ err }, "Auto-expire live overrides failed");
+  }
 }
 
 async function buildLiveStatusPayload() {
@@ -296,19 +327,38 @@ function parseDurationSecs(value: string | null | undefined): number {
 }
 
 async function upsertBroadcastQueueVideo(video: typeof videosTable.$inferSelect): Promise<void> {
-  const existing = await db
-    .select()
-    .from(broadcastQueueTable)
-    .orderBy(asc(broadcastQueueTable.sortOrder));
-
   const durationSecs = parseDurationSecs(video.duration);
   const streamUrl = video.hlsMasterUrl || video.localVideoUrl || null;
-  const matching = existing.find((item) => item.videoId === video.id);
 
-  if (matching) {
-    await db
-      .update(broadcastQueueTable)
-      .set({
+  // Acquire the advisory lock first, then run dedup-check + insert/update in a
+  // single transaction. Without this, two concurrent calls for the same videoId
+  // could both miss the existing-row check and insert duplicate rows.
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${BROADCAST_QUEUE_LOCK_KEY})`);
+
+    const [matching] = await tx
+      .select({ id: broadcastQueueTable.id })
+      .from(broadcastQueueTable)
+      .where(eq(broadcastQueueTable.videoId, video.id))
+      .limit(1);
+
+    if (matching) {
+      await tx
+        .update(broadcastQueueTable)
+        .set({
+          youtubeId: video.youtubeId,
+          title: video.title,
+          thumbnailUrl: video.thumbnailUrl,
+          durationSecs,
+          localVideoUrl: streamUrl,
+          videoSource: video.videoSource,
+          isActive: true,
+        })
+        .where(eq(broadcastQueueTable.id, matching.id));
+    } else {
+      await tx.insert(broadcastQueueTable).values({
+        id: randomUUID(),
+        videoId: video.id,
         youtubeId: video.youtubeId,
         title: video.title,
         thumbnailUrl: video.thumbnailUrl,
@@ -316,23 +366,10 @@ async function upsertBroadcastQueueVideo(video: typeof videosTable.$inferSelect)
         localVideoUrl: streamUrl,
         videoSource: video.videoSource,
         isActive: true,
-      })
-      .where(eq(broadcastQueueTable.id, matching.id));
-  } else {
-    const maxOrder = existing.length > 0 ? Math.max(...existing.map((i) => i.sortOrder)) + 1 : 0;
-    await db.insert(broadcastQueueTable).values({
-      id: randomUUID(),
-      videoId: video.id,
-      youtubeId: video.youtubeId,
-      title: video.title,
-      thumbnailUrl: video.thumbnailUrl,
-      durationSecs,
-      localVideoUrl: streamUrl,
-      videoSource: video.videoSource,
-      isActive: true,
-      sortOrder: maxOrder,
-    });
-  }
+        sortOrder: sql`COALESCE((SELECT MAX(${broadcastQueueTable.sortOrder}) + 1 FROM ${broadcastQueueTable}), 0)`,
+      });
+    }
+  });
 
   await invalidateBroadcastCache();
   broadcastLiveEvent("broadcast-queue-updated", {
@@ -2234,16 +2271,37 @@ router.post("/admin/live-overrides", async (req, res) => {
       endsAt?: string | null;
       notify?: boolean;
     };
+    if (title !== undefined && typeof title !== "string") {
+      return void res.status(400).json({ error: "title must be a string" });
+    }
+    if (rtmpIngestKey !== undefined && rtmpIngestKey !== null && typeof rtmpIngestKey !== "string") {
+      return void res.status(400).json({ error: "rtmpIngestKey must be a string" });
+    }
+    if (streamNotes !== undefined && streamNotes !== null && typeof streamNotes !== "string") {
+      return void res.status(400).json({ error: "streamNotes must be a string" });
+    }
+    if (notify !== undefined && typeof notify !== "boolean") {
+      return void res.status(400).json({ error: "notify must be a boolean" });
+    }
+    const urlCheck = validateStreamUrl(hlsStreamUrl);
+    if (!urlCheck.ok) return void res.status(400).json({ error: urlCheck.error });
+    let endsAtDate: Date | null = null;
+    if (endsAt) {
+      endsAtDate = new Date(endsAt);
+      if (Number.isNaN(endsAtDate.getTime())) {
+        return void res.status(400).json({ error: "endsAt must be a valid ISO date" });
+      }
+    }
     await db.update(liveOverridesTable).set({ isActive: false }).where(eq(liveOverridesTable.isActive, true));
     const startedAt = new Date();
     const [override] = await db.insert(liveOverridesTable).values({
       id: randomUUID(),
       title: title?.trim() || "Temple TV Live",
-      hlsStreamUrl: hlsStreamUrl || null,
-      rtmpIngestKey: rtmpIngestKey || null,
-      streamNotes: streamNotes || null,
+      hlsStreamUrl: urlCheck.value,
+      rtmpIngestKey: rtmpIngestKey?.trim() || null,
+      streamNotes: streamNotes?.trim() || null,
       startedAt,
-      endsAt: endsAt ? new Date(endsAt) : null,
+      endsAt: endsAtDate,
       isActive: true,
     }).returning();
 
@@ -2276,11 +2334,37 @@ router.patch("/admin/live-overrides/:id", async (req, res) => {
       isActive?: boolean; title?: string; hlsStreamUrl?: string | null; streamNotes?: string | null; endsAt?: string | null;
     };
     const updates: Record<string, unknown> = {};
-    if (isActive !== undefined) updates.isActive = isActive;
-    if (title !== undefined) updates.title = title;
-    if (hlsStreamUrl !== undefined) updates.hlsStreamUrl = hlsStreamUrl;
-    if (streamNotes !== undefined) updates.streamNotes = streamNotes;
-    if (endsAt !== undefined) updates.endsAt = endsAt ? new Date(endsAt) : null;
+    if (isActive !== undefined) {
+      if (typeof isActive !== "boolean") return void res.status(400).json({ error: "isActive must be a boolean" });
+      updates.isActive = isActive;
+    }
+    if (title !== undefined) {
+      if (typeof title !== "string") return void res.status(400).json({ error: "title must be a string" });
+      updates.title = title.trim();
+    }
+    if (hlsStreamUrl !== undefined) {
+      const urlCheck = validateStreamUrl(hlsStreamUrl);
+      if (!urlCheck.ok) return void res.status(400).json({ error: urlCheck.error });
+      updates.hlsStreamUrl = urlCheck.value;
+    }
+    if (streamNotes !== undefined) {
+      if (streamNotes !== null && typeof streamNotes !== "string") {
+        return void res.status(400).json({ error: "streamNotes must be a string" });
+      }
+      updates.streamNotes = streamNotes ? streamNotes.trim() : null;
+    }
+    if (endsAt !== undefined) {
+      if (endsAt === null) {
+        updates.endsAt = null;
+      } else {
+        const d = new Date(endsAt);
+        if (Number.isNaN(d.getTime())) return void res.status(400).json({ error: "endsAt must be a valid ISO date" });
+        updates.endsAt = d;
+      }
+    }
+    if (Object.keys(updates).length === 0) {
+      return void res.status(400).json({ error: "No valid fields to update" });
+    }
     const [updated] = await db.update(liveOverridesTable).set(updates).where(eq(liveOverridesTable.id, id)).returning();
     if (!updated) return void res.status(404).json({ error: "Override not found" });
     await invalidateBroadcastCache();
@@ -2301,6 +2385,23 @@ router.post("/admin/live/override/start", async (req, res) => {
       rtmpIngestKey?: string | null;
       streamNotes?: string | null;
     };
+    if (title !== undefined && typeof title !== "string") {
+      return void res.status(400).json({ error: "title must be a string" });
+    }
+    if (rtmpIngestKey !== undefined && rtmpIngestKey !== null && typeof rtmpIngestKey !== "string") {
+      return void res.status(400).json({ error: "rtmpIngestKey must be a string" });
+    }
+    if (streamNotes !== undefined && streamNotes !== null && typeof streamNotes !== "string") {
+      return void res.status(400).json({ error: "streamNotes must be a string" });
+    }
+    if (notify !== undefined && typeof notify !== "boolean") {
+      return void res.status(400).json({ error: "notify must be a boolean" });
+    }
+    if (durationMinutes !== undefined && typeof durationMinutes !== "number") {
+      return void res.status(400).json({ error: "durationMinutes must be a number" });
+    }
+    const urlCheck = validateStreamUrl(hlsStreamUrl);
+    if (!urlCheck.ok) return void res.status(400).json({ error: urlCheck.error });
     const safeDuration = Number.isFinite(durationMinutes) ? Math.max(5, Math.min(480, durationMinutes)) : 120;
     const startedAt = new Date();
     const endsAt = new Date(startedAt.getTime() + safeDuration * 60 * 1000);
@@ -2312,9 +2413,9 @@ router.post("/admin/live/override/start", async (req, res) => {
       .values({
         id: randomUUID(),
         title: title?.trim() || "Temple TV Live Service",
-        hlsStreamUrl: hlsStreamUrl || null,
-        rtmpIngestKey: rtmpIngestKey || null,
-        streamNotes: streamNotes || null,
+        hlsStreamUrl: urlCheck.value,
+        rtmpIngestKey: rtmpIngestKey?.trim() || null,
+        streamNotes: streamNotes?.trim() || null,
         startedAt,
         endsAt,
         isActive: true,

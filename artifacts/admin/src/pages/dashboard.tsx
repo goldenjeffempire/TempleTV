@@ -1,4 +1,5 @@
 import {
+  getGetAdminStatsQueryKey,
   getGetLiveStatusQueryKey,
   useGetAdminStats,
   useGetLiveStatus,
@@ -84,6 +85,20 @@ export default function Dashboard() {
 
   useSSEEvent("status", () => {
     queryClient.invalidateQueries({ queryKey: getGetLiveStatusQueryKey() });
+    // Header stat tiles depend on isLiveNow + counters from /admin/stats —
+    // refresh those whenever the live status itself changes so the dashboard
+    // stays in sync without manual refreshes.
+    queryClient.invalidateQueries({ queryKey: getGetAdminStatsQueryKey() });
+  });
+
+  useSSEEvent("broadcast-control-updated", () => {
+    queryClient.invalidateQueries({ queryKey: getGetLiveStatusQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getGetAdminStatsQueryKey() });
+  });
+
+  useSSEEvent("override-expired", () => {
+    queryClient.invalidateQueries({ queryKey: getGetLiveStatusQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getGetAdminStatsQueryKey() });
   });
 
   const manualOverrideActive = Boolean(liveStatus?.liveOverride);

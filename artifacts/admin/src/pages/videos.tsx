@@ -458,8 +458,11 @@ export default function VideoLibrary() {
   }, [queryClient, refetch]);
 
   const handleUploadComplete = useCallback(() => {
+    // The transcoder kicks off asynchronously after upload finalize. The video
+    // row is created immediately, so a single invalidate covers the listing.
+    // Status fields (transcodingStatus, hlsMasterUrl) update on the SSE
+    // `transcoding-job-updated` channel, so we don't need a polling timer.
     invalidateAndRefetch();
-    setTimeout(invalidateAndRefetch, 2000);
   }, [invalidateAndRefetch]);
 
   const handleImported = useCallback(() => {
@@ -495,12 +498,17 @@ export default function VideoLibrary() {
     setBulkDeleting(true);
     let success = 0;
     let fail = 0;
-    for (const id of selected) {
-      try {
-        await deleteVideo({ id });
-        success++;
-      } catch {
-        fail++;
+    // Bounded concurrency: parallelize but cap at 5 to avoid overwhelming the
+    // API (each delete also kicks off cache invalidation + SSE broadcasts on
+    // the server). Sequential N+1 was painfully slow for large selections.
+    const ids = Array.from(selected);
+    const CONCURRENCY = 5;
+    for (let i = 0; i < ids.length; i += CONCURRENCY) {
+      const batch = ids.slice(i, i + CONCURRENCY);
+      const results = await Promise.allSettled(batch.map((id) => deleteVideo({ id })));
+      for (const r of results) {
+        if (r.status === "fulfilled") success++;
+        else fail++;
       }
     }
     setBulkDeleting(false);
@@ -510,6 +518,7 @@ export default function VideoLibrary() {
     toast({
       title: `Deleted ${success} video${success !== 1 ? "s" : ""}`,
       description: fail > 0 ? `${fail} failed` : undefined,
+      variant: fail > 0 ? "destructive" : undefined,
     });
   }, [selected, deleteVideo, queryClient, refetch, toast]);
 

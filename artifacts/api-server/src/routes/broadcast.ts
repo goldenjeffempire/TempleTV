@@ -7,9 +7,10 @@ import {
   scheduleTable,
   videosTable,
 } from "@workspace/db";
-import { eq, asc, and } from "drizzle-orm";
+import { eq, asc, and, sql } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { cache } from "../lib/cache";
+import { BROADCAST_QUEUE_LOCK_KEY } from "../lib/broadcastQueueLock";
 import {
   addSSEClient,
   broadcastLiveEvent,
@@ -600,56 +601,64 @@ router.post("/admin/broadcast", async (req, res) => {
 
   if (resolvedDurationSecs <= 0) resolvedDurationSecs = 1800;
 
-  const existing = await db
-    .select()
-    .from(broadcastQueueTable)
-    .orderBy(asc(broadcastQueueTable.sortOrder));
-
-  // Deduplication: if this videoId is already in the queue, update it in place
-  // rather than inserting a duplicate.
-  const existingMatch = videoId ? existing.find((i) => i.videoId === videoId) : null;
-
+  // Acquire the advisory lock first, then run dedup-check + insert/update in a
+  // single transaction. Lock key matches the one in admin.ts. Without this,
+  // two concurrent POSTs for the same videoId could both miss the existing-row
+  // check and insert duplicate rows.
   let item: (typeof broadcastQueueTable.$inferSelect) | undefined;
+  let wasUpdate = false;
 
-  if (existingMatch) {
-    const [updated] = await db
-      .update(broadcastQueueTable)
-      .set({
-        youtubeId: youtubeId ?? existingMatch.youtubeId,
-        title: title.trim(),
-        thumbnailUrl: thumbnailUrl ?? existingMatch.thumbnailUrl,
-        durationSecs: resolvedDurationSecs,
-        localVideoUrl: localVideoUrl ?? existingMatch.localVideoUrl,
-        videoSource: resolvedSource,
-        isActive: true,
-      })
-      .where(eq(broadcastQueueTable.id, existingMatch.id))
-      .returning();
-    item = updated;
-  } else {
-    const maxOrder = existing.length > 0 ? Math.max(...existing.map((i) => i.sortOrder)) + 1 : 0;
-    const [inserted] = await db
-      .insert(broadcastQueueTable)
-      .values({
-        id: randomUUID(),
-        videoId: videoId ?? null,
-        youtubeId: youtubeId ?? "",
-        title: title.trim(),
-        thumbnailUrl: thumbnailUrl ?? "",
-        durationSecs: resolvedDurationSecs,
-        localVideoUrl: localVideoUrl ?? null,
-        videoSource: resolvedSource,
-        sortOrder: maxOrder,
-      })
-      .returning();
-    item = inserted;
-  }
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${BROADCAST_QUEUE_LOCK_KEY})`);
+
+    const [existingMatch] = videoId
+      ? await tx
+          .select()
+          .from(broadcastQueueTable)
+          .where(eq(broadcastQueueTable.videoId, videoId))
+          .limit(1)
+      : [];
+
+    if (existingMatch) {
+      wasUpdate = true;
+      const [updated] = await tx
+        .update(broadcastQueueTable)
+        .set({
+          youtubeId: youtubeId ?? existingMatch.youtubeId,
+          title: title.trim(),
+          thumbnailUrl: thumbnailUrl ?? existingMatch.thumbnailUrl,
+          durationSecs: resolvedDurationSecs,
+          localVideoUrl: localVideoUrl ?? existingMatch.localVideoUrl,
+          videoSource: resolvedSource,
+          isActive: true,
+        })
+        .where(eq(broadcastQueueTable.id, existingMatch.id))
+        .returning();
+      item = updated;
+    } else {
+      const [inserted] = await tx
+        .insert(broadcastQueueTable)
+        .values({
+          id: randomUUID(),
+          videoId: videoId ?? null,
+          youtubeId: youtubeId ?? "",
+          title: title.trim(),
+          thumbnailUrl: thumbnailUrl ?? "",
+          durationSecs: resolvedDurationSecs,
+          localVideoUrl: localVideoUrl ?? null,
+          videoSource: resolvedSource,
+          sortOrder: sql`COALESCE((SELECT MAX(${broadcastQueueTable.sortOrder}) + 1 FROM ${broadcastQueueTable}), 0)`,
+        })
+        .returning();
+      item = inserted;
+    }
+  });
 
   if (!item) return void res.status(500).json({ error: "Failed to save queue item" });
 
   await invalidateBroadcastCache();
-  broadcastLiveEvent("broadcast-queue-updated", { id: item.id, reason: existingMatch ? "updated" : "added", queuedAt: new Date().toISOString() });
-  emitBroadcastState(existingMatch ? "queue-updated" : "queue-added", { id: item.id });
+  broadcastLiveEvent("broadcast-queue-updated", { id: item.id, reason: wasUpdate ? "updated" : "added", queuedAt: new Date().toISOString() });
+  emitBroadcastState(wasUpdate ? "queue-updated" : "queue-added", { id: item.id });
   res.status(201).json(item);
 });
 

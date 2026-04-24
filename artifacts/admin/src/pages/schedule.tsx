@@ -89,7 +89,11 @@ export default function Schedule() {
     updateEntry.mutate({ id, data: { isActive } }, {
       onSuccess: () => {
         queryClient.invalidateQueries({ queryKey: getListScheduleQueryKey() });
-      }
+      },
+      onError: () => {
+        toast({ title: "Failed to update schedule entry", variant: "destructive" });
+        queryClient.invalidateQueries({ queryKey: getListScheduleQueryKey() });
+      },
     });
   };
 
