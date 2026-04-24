@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { adminGet } from "@/services/adminApi";
+import { adminGet, AdminApiError } from "@/services/adminApi";
+import { ErrorAlert } from "@/components/shared/error-alert";
 import {
   AlertTriangle,
   BellRing,
@@ -85,6 +86,12 @@ export default function LaunchReadinessPage() {
   const [readiness, setReadiness] = useState<LaunchReadiness | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  // Round 4l hotfix #4: same transient-error UX pattern used on transcoding
+  // and operations. The destructive toast that fired on every 15s poll
+  // during a workflow restart was strictly toast spam — a single inline
+  // "Reconnecting…" indicator conveys the same state without escalating
+  // every cycle. Real (non-transient) failures still toast destructively.
+  const [error, setError] = useState<{ message: string; transient: boolean } | null>(null);
   const { toast } = useToast();
   // Guards against overlapping fetches on slow networks and against setState
   // after the page navigates away mid-flight.
@@ -103,13 +110,24 @@ export default function LaunchReadinessPage() {
       const data = await adminGet<LaunchReadiness>("/admin/launch/readiness");
       if (!isMountedRef.current) return;
       setReadiness(data);
+      setError(null);
     } catch (err) {
       if (!isMountedRef.current) return;
-      toast({
-        title: "Launch readiness unavailable",
-        description: err instanceof Error ? err.message : "Could not reach the readiness endpoint.",
-        variant: "destructive",
-      });
+      const message = err instanceof Error ? err.message : "Could not reach the readiness endpoint.";
+      const transient = err instanceof AdminApiError && err.transient === true;
+      setError({ message, transient });
+      // Suppress the destructive toast on transient errors — the inline
+      // amber indicator already conveys "reconnecting" and the 15s poll
+      // would otherwise spam a red toast every cycle during a restart.
+      // Manual refresh always toasts so the operator gets feedback on
+      // their explicit action.
+      if (!transient || manual) {
+        toast({
+          title: "Launch readiness unavailable",
+          description: message,
+          variant: "destructive",
+        });
+      }
     } finally {
       inFlightRef.current = false;
       if (isMountedRef.current) {
@@ -153,6 +171,20 @@ export default function LaunchReadinessPage() {
             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
           </CardContent>
         </Card>
+      ) : !readiness && error ? (
+        // First-load failure: surface the same transient/destructive
+        // ErrorAlert pattern instead of a bare "Launch readiness is
+        // unavailable." card. The retry button gives the operator an
+        // explicit way to refresh outside the 15s poll cycle.
+        error.transient ? (
+          <ErrorAlert transient onRetry={() => fetchReadiness(true)} />
+        ) : (
+          <ErrorAlert
+            title="Launch readiness unavailable"
+            message={error.message}
+            onRetry={() => fetchReadiness(true)}
+          />
+        )
       ) : readiness ? (
         <>
           <Card className="overflow-hidden">
