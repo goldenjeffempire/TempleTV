@@ -152,6 +152,10 @@ interface LocalVideoPlayerProps {
   onPlay?: () => void;
   onPause?: () => void;
   startPositionMs?: number;
+  /** Use COVER resize mode (cinematic crop) instead of CONTAIN. Useful for broadcast/live hero-style presentation. */
+  coverMode?: boolean;
+  /** Override the computed player height. When not provided, the component derives height from screen width at 9:16. */
+  playerHeightOverride?: number;
 }
 
 export function LocalVideoPlayer({
@@ -165,6 +169,8 @@ export function LocalVideoPlayer({
   onPlay,
   onPause,
   startPositionMs = 0,
+  coverMode = false,
+  playerHeightOverride,
 }: LocalVideoPlayerProps) {
   const effectiveUrl = hlsMasterUrl || videoUrl;
   const c = useColors();
@@ -182,7 +188,7 @@ export function LocalVideoPlayer({
   const webVideoRef = useRef<HTMLVideoElement | null>(null);
   const webHlsRef = useRef<any>(null);
 
-  const playerHeight = Math.min(Math.round(width * (9 / 16)), 260);
+  const playerHeight = playerHeightOverride ?? Math.min(Math.round(width * (9 / 16)), 260);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -358,7 +364,7 @@ export function LocalVideoPlayer({
             ref={videoRef}
             source={{ uri: effectiveUrl }}
             style={{ width: "100%", height: playerHeight }}
-            resizeMode={ResizeMode?.CONTAIN ?? "contain"}
+            resizeMode={coverMode ? (ResizeMode?.COVER ?? "cover") : (ResizeMode?.CONTAIN ?? "contain")}
             shouldPlay={autoPlay}
             positionMillis={startPositionMs}
             onPlaybackStatusUpdate={onPlaybackStatusUpdate}

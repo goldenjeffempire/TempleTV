@@ -122,15 +122,15 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
       className={`relative overflow-hidden ${focused ? "tv-hero-focused" : ""}`}
       style={{
         width: "100%",
-        height: "min(82vh, 820px)",
-        minHeight: "max(60dvh, 360px)",
-        background: "#070707",
+        height: "min(94vh, 1080px)",
+        minHeight: "max(72dvh, 480px)",
+        background: "#060606",
         cursor: "pointer",
         outline: "none",
       }}
       data-testid="live-hero"
     >
-      {/* Backdrop layer */}
+      {/* Backdrop layer — video always fills the full container with objectFit cover */}
       {focused && ytVideoId && isLive ? (
         <iframe
           src={`https://www.youtube-nocookie.com/embed/${ytVideoId}?autoplay=1&mute=1&controls=0&modestbranding=1&playsinline=1&loop=1&playlist=${ytVideoId}&rel=0&iv_load_policy=3&disablekb=1`}
@@ -138,11 +138,9 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
           frameBorder={0}
           style={{
             position: "absolute",
-            top: "50%",
-            left: "50%",
-            width: "120%",
-            height: "120%",
-            transform: "translate(-50%, -50%)",
+            inset: 0,
+            width: "100%",
+            height: "100%",
             pointerEvents: "none",
             border: 0,
           }}
@@ -150,7 +148,7 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
         />
       ) : broadcastVideoUrl ? (
         <>
-          {bgThumb && !ambientVideoReady && (
+          {bgThumb && (
             <img
               src={bgThumb}
               alt=""
@@ -162,9 +160,11 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
                 height: "100%",
                 objectFit: "cover",
                 display: "block",
-                transform: mounted ? "scale(1.04)" : "scale(1.12)",
-                transition: "transform 1200ms cubic-bezier(.2,.6,.2,1)",
-              }}
+                transform: mounted ? "scale(1.03)" : "scale(1.10)",
+                transition: "transform 1800ms cubic-bezier(.2,.6,.2,1)",
+                opacity: ambientVideoReady ? 0 : 1,
+                transition2: "opacity 800ms ease",
+              } as any}
             />
           )}
           <video
@@ -178,15 +178,13 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
             onError={() => setAmbientVideoFailed(true)}
             style={{
               position: "absolute",
-              top: "50%",
-              left: "50%",
-              width: "120%",
-              height: "120%",
-              transform: "translate(-50%, -50%)",
+              inset: 0,
+              width: "100%",
+              height: "100%",
               objectFit: "cover",
               pointerEvents: "none",
               opacity: ambientVideoReady ? 1 : 0,
-              transition: "opacity 1200ms ease",
+              transition: "opacity 1400ms ease",
             }}
           />
         </>
@@ -196,42 +194,71 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
           alt=""
           aria-hidden
           style={{
+            position: "absolute",
+            inset: 0,
             width: "100%",
             height: "100%",
             objectFit: "cover",
             display: "block",
-            transform: mounted ? "scale(1.04)" : "scale(1.12)",
-            transition: "transform 1200ms cubic-bezier(.2,.6,.2,1)",
+            transform: mounted ? "scale(1.03)" : "scale(1.10)",
+            transition: "transform 1800ms cubic-bezier(.2,.6,.2,1)",
           }}
         />
       ) : (
+        /* Branded off-air gradient */
         <div
           style={{
-            width: "100%",
-            height: "100%",
+            position: "absolute",
+            inset: 0,
             background:
-              "radial-gradient(circle at 30% 30%, #2a0018 0%, #0a0a0a 60%), linear-gradient(135deg, #1a0010 0%, #2d0020 50%, #0a0a0a 100%)",
+              "radial-gradient(ellipse at 35% 40%, #200028 0%, #0a000f 45%, #060606 100%)",
           }}
         />
       )}
 
-      {/* Cinematic gradient stack */}
+      {/* ── Cinematic gradient stack ─────────────────────────────────────────── */}
+      {/* Top scrim — header + focus-ring legibility */}
       <div
         aria-hidden
         style={{
           position: "absolute",
           inset: 0,
           background:
-            "linear-gradient(180deg, rgba(7,7,7,0.55) 0%, rgba(7,7,7,0) 22%, rgba(7,7,7,0) 50%, rgba(7,7,7,0.85) 88%, #070707 100%)",
+            "linear-gradient(180deg, rgba(6,6,6,0.72) 0%, rgba(6,6,6,0.18) 16%, rgba(6,6,6,0) 32%)",
+          pointerEvents: "none",
         }}
       />
+      {/* Bottom content panel gradient */}
       <div
         aria-hidden
         style={{
           position: "absolute",
           inset: 0,
           background:
-            "linear-gradient(90deg, rgba(7,7,7,0.92) 0%, rgba(7,7,7,0.55) 28%, rgba(7,7,7,0) 60%)",
+            "linear-gradient(180deg, transparent 38%, rgba(6,6,6,0.55) 62%, rgba(6,6,6,0.92) 82%, #060606 100%)",
+          pointerEvents: "none",
+        }}
+      />
+      {/* Left editorial vignette — lets copy float over video */}
+      <div
+        aria-hidden
+        style={{
+          position: "absolute",
+          inset: 0,
+          background:
+            "linear-gradient(90deg, rgba(6,6,6,0.88) 0%, rgba(6,6,6,0.48) 22%, rgba(6,6,6,0.08) 48%, transparent 66%)",
+          pointerEvents: "none",
+        }}
+      />
+      {/* Right edge fade */}
+      <div
+        aria-hidden
+        style={{
+          position: "absolute",
+          inset: 0,
+          background:
+            "linear-gradient(270deg, rgba(6,6,6,0.45) 0%, transparent 28%)",
+          pointerEvents: "none",
         }}
       />
 
@@ -250,6 +277,30 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
         />
       )}
 
+      {/* Channel bug — top-right TV network watermark */}
+      <div
+        aria-hidden
+        style={{
+          position: "absolute",
+          top: "clamp(14px, 2vh, 28px)",
+          right: "clamp(16px, 2.5vw, 40px)",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "flex-end",
+          gap: 4,
+          opacity: mounted ? 0.5 : 0,
+          transition: "opacity 800ms ease 400ms",
+          pointerEvents: "none",
+        }}
+      >
+        <span style={{ fontSize: "clamp(8px, 0.8vw, 11px)", fontWeight: 800, letterSpacing: "0.22em", color: "rgba(255,255,255,0.9)" }}>
+          TEMPLE TV
+        </span>
+        <span style={{ fontSize: "clamp(7px, 0.65vw, 9px)", fontWeight: 600, letterSpacing: "0.14em", color: "rgba(255,255,255,0.55)" }}>
+          JCTM BROADCASTING
+        </span>
+      </div>
+
       {/* Metadata block — bottom-left */}
       <div
         style={{
@@ -258,14 +309,14 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
           right: 0,
           bottom: 0,
           padding:
-            "0 clamp(16px, 4vw, 60px) calc(env(safe-area-inset-bottom, 0px) + clamp(32px, 6vw, 80px))",
+            "0 clamp(20px, 4.5vw, 72px) calc(env(safe-area-inset-bottom, 0px) + clamp(36px, 6.5vw, 96px))",
           display: "flex",
           flexDirection: "column",
-          gap: "clamp(10px, 1.6vw, 18px)",
-          maxWidth: 980,
+          gap: "clamp(12px, 1.8vw, 22px)",
+          maxWidth: 1100,
           opacity: mounted ? 1 : 0,
-          transform: mounted ? "translateY(0)" : "translateY(24px)",
-          transition: "opacity 600ms ease 200ms, transform 600ms cubic-bezier(.2,.6,.2,1) 200ms",
+          transform: mounted ? "translateY(0)" : "translateY(28px)",
+          transition: "opacity 700ms ease 250ms, transform 700ms cubic-bezier(.18,.65,.18,1) 250ms",
         }}
       >
         {isLive ? (

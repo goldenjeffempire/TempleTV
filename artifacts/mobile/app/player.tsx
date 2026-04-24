@@ -225,11 +225,6 @@ export default function PlayerScreen() {
   const isDesktop = screenWidth >= 1280;
   const isTablet = screenWidth >= 768 && screenWidth < 1280;
   const playerColumnWidth = isDesktop ? 1280 : screenWidth;
-  const heightCapRatio = isDesktop ? 0.7 : isTablet ? 0.55 : 0.45;
-  const videoPlayerHeight = Math.min(
-    Math.round(playerColumnWidth * (9 / 16)),
-    Math.round(availableHeight * heightCapRatio),
-  );
   const params = useLocalSearchParams<{
     videoId?: string;
     live?: string;
@@ -287,6 +282,16 @@ export default function PlayerScreen() {
 
   const isLive = live === "true";
   const isBroadcastMode = paramBroadcastMode === "true";
+
+  // Sizing: broadcast/live gets a slightly taller container (11:16 ≈ cinema 4:3)
+  // so the video dominates more of the screen without requiring landscape rotation.
+  const isBroadcastOrLiveForSizing = isLive || isBroadcastMode;
+  const heightCapRatio = isDesktop ? 0.7 : isTablet ? (isBroadcastOrLiveForSizing ? 0.65 : 0.55) : (isBroadcastOrLiveForSizing ? 0.52 : 0.45);
+  const aspectRatioH = isBroadcastOrLiveForSizing ? 11 : 9;
+  const videoPlayerHeight = Math.min(
+    Math.round(playerColumnWidth * (aspectRatioH / 16)),
+    Math.round(availableHeight * heightCapRatio),
+  );
 
   const noPlaybackRef = useRef(false);
   useEffect(() => {
@@ -696,6 +701,8 @@ export default function PlayerScreen() {
             title={displayTitle}
             autoPlay
             startPositionMs={paramStartPositionMs ? parseInt(paramStartPositionMs, 10) : 0}
+            coverMode={isBroadcastOrLive}
+            playerHeightOverride={videoPlayerHeight}
             onEnd={handleVideoEnd}
             onError={recoverBroadcastPlayback}
           />

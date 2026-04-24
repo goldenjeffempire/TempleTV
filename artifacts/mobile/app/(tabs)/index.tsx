@@ -9,8 +9,11 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from "react-native";
+
+import { LinearGradient } from "expo-linear-gradient";
 
 import { Feather } from "@expo/vector-icons";
 import { router } from "expo-router";
@@ -19,7 +22,6 @@ import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
 import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
 import { useNetworkStatus } from "@/hooks/useNetworkStatus";
-import { GlassCard } from "@/components/GlassCard";
 import { LiveBadge } from "@/components/LiveBadge";
 import { SermonCard } from "@/components/SermonCard";
 import { NowPlayingBar } from "@/components/NowPlayingBar";
@@ -208,8 +210,15 @@ export default function WatchScreen() {
     return () => subscription?.close();
   }, [liveBannerDismissed]);
 
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const isTabletLayout = windowWidth >= 768;
   const webTopPad = Platform.OS === "web" ? 67 : 0;
   const topPad = insets.top + webTopPad;
+  // Cinematic hero occupies 62% of viewport on mobile, 52% on tablet.
+  // On web, add the fixed nav-bar height so the hero starts below it.
+  const heroHeight = Math.round(
+    windowHeight * (isTabletLayout ? 0.52 : 0.62) + (Platform.OS === "web" ? webTopPad : 0),
+  );
 
   const navigateToPlayer = useCallback((params: Record<string, string>) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -324,7 +333,7 @@ export default function WatchScreen() {
 
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingTop: topPad, paddingBottom: 150 }}
+        contentContainerStyle={{ paddingBottom: 150 }}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -336,45 +345,31 @@ export default function WatchScreen() {
         }
       >
         <Animated.View style={{ opacity: fadeAnim }}>
-          <View style={styles.header}>
-            <View style={styles.headerLogoWrap}>
-              <Image
-                source={require("@/assets/images/logo.png")}
-                style={styles.headerLogo}
-                resizeMode="contain"
-              />
-              <View style={styles.logoMeta}>
-                <Text style={[styles.subtitle, { color: c.mutedForeground }]}>JCTM Broadcasting</Text>
-                {isFromRss && !feedError && (
-                  <View style={[styles.liveDot, { backgroundColor: "#22c55e" }]} />
-                )}
-                {!!feedError && !loading && (
-                  <View style={[styles.liveDot, { backgroundColor: "#f59e0b" }]} />
-                )}
-              </View>
-            </View>
-            <Pressable
-              style={[styles.notifBtn, { backgroundColor: c.muted }]}
-              onPress={() => router.push("/(tabs)/settings")}
-              hitSlop={12}
-            >
-              <Feather name="settings" size={20} color={c.mutedForeground} />
-            </Pressable>
-          </View>
 
+          {/* ─── Cinematic Hero ───────────────────────────────────────────────── */}
           {loading ? (
-            <SkeletonLiveBanner />
+            <View style={{ paddingTop: topPad }}>
+              <SkeletonLiveBanner />
+            </View>
           ) : (
             <Pressable
               onPress={showBroadcast ? handleBroadcastPress : handleLivePress}
-              style={({ pressed }) => [{ opacity: pressed ? 0.9 : 1, transform: [{ scale: pressed ? 0.98 : 1 }] }]}
+              style={({ pressed }) => [
+                styles.cinemaHero,
+                { height: heroHeight },
+                pressed && { opacity: 0.93 },
+              ]}
+              accessible
+              accessibilityRole="button"
+              accessibilityLabel={liveStatus.isLive ? "Watch live service" : "Watch Temple TV"}
             >
-              <GlassCard style={styles.liveCard} intensity="high">
+              {/* ── Backdrop: video > thumbnail > logo ── */}
+              <View style={StyleSheet.absoluteFill}>
                 {showBroadcast && broadcastItem?.localVideoUrl && HeroVideoComponent && !heroVideoFailed ? (
                   <HeroVideoComponent
                     ref={heroVideoRef}
                     source={{ uri: broadcastItem.localVideoUrl }}
-                    style={styles.liveBanner}
+                    style={StyleSheet.absoluteFill}
                     resizeMode={HeroResizeMode?.COVER ?? "cover"}
                     isLooping
                     isMuted
@@ -385,72 +380,152 @@ export default function WatchScreen() {
                     videoStyle={{ width: "100%", height: "100%" }}
                   />
                 ) : showBroadcast && broadcastItem?.thumbnailUrl ? (
-                  <Image
-                    source={{ uri: broadcastItem.thumbnailUrl }}
-                    style={styles.liveBanner}
-                    resizeMode="cover"
-                  />
+                  <Image source={{ uri: broadcastItem.thumbnailUrl }} style={StyleSheet.absoluteFill} resizeMode="cover" />
                 ) : liveStatus.isLive && liveStatus.videoId && Platform.OS === "web" ? (
-                  <View style={[styles.liveBanner, { overflow: "hidden" }]}>
+                  <View style={[StyleSheet.absoluteFill, { overflow: "hidden" as const }]}>
                     <iframe
                       src={`https://www.youtube-nocookie.com/embed/${liveStatus.videoId}?autoplay=1&mute=1&controls=0&modestbranding=1&playsinline=1&loop=1&playlist=${liveStatus.videoId}&rel=0&iv_load_policy=3`}
                       allow="autoplay; encrypted-media"
                       frameBorder={0}
-                      style={{ position: "absolute", top: "-10%", left: "-10%", width: "120%", height: "120%", border: 0, pointerEvents: "none" } as any}
+                      style={{ position: "absolute", inset: 0, width: "100%", height: "100%", border: 0, pointerEvents: "none" } as any}
                       title="Temple TV Live Preview"
                     />
                   </View>
                 ) : (
+                  /* Off-air: branded gradient backdrop with subtle logo */
+                  <View style={[StyleSheet.absoluteFill, styles.heroBrandedBg]}>
+                    <Image
+                      source={require("@/assets/images/logo.png")}
+                      style={styles.heroLogoWatermark}
+                      resizeMode="contain"
+                    />
+                  </View>
+                )}
+              </View>
+
+              {/* ── Cinematic gradient overlay ── */}
+              <LinearGradient
+                colors={[
+                  "rgba(0,0,0,0.68)",   // top — header legibility
+                  "rgba(0,0,0,0.0)",    // upper-mid — let video breathe
+                  "rgba(0,0,0,0.0)",    // lower-mid — let video breathe
+                  "rgba(0,0,0,0.82)",   // bottom — content panel
+                  "rgba(0,0,0,0.96)",   // very bottom — deep black
+                ]}
+                locations={[0, 0.22, 0.48, 0.78, 1]}
+                style={StyleSheet.absoluteFill}
+                pointerEvents="none"
+              />
+              {/* Side vignette for cinematic feel */}
+              <LinearGradient
+                colors={["rgba(0,0,0,0.42)", "rgba(0,0,0,0)", "rgba(0,0,0,0.3)"]}
+                locations={[0, 0.5, 1]}
+                start={{ x: 0, y: 0.5 }}
+                end={{ x: 1, y: 0.5 }}
+                style={StyleSheet.absoluteFill}
+                pointerEvents="none"
+              />
+
+              {/* ── Floating Header ── */}
+              <View style={[styles.heroHeader, { paddingTop: topPad + 10 }]}>
+                <View style={styles.headerLogoWrap}>
                   <Image
                     source={require("@/assets/images/logo.png")}
-                    style={styles.liveBanner}
+                    style={styles.headerLogo}
                     resizeMode="contain"
                   />
-                )}
-                <View style={styles.liveOverlay}>
-                  {checkingLive ? null : liveStatus.isLive ? (
+                  <View style={styles.logoMeta}>
+                    <Text style={styles.heroSubtitle}>JCTM Broadcasting</Text>
+                    {isFromRss && !feedError && (
+                      <View style={[styles.liveDot, { backgroundColor: "#22c55e" }]} />
+                    )}
+                    {!!feedError && !loading && (
+                      <View style={[styles.liveDot, { backgroundColor: "#f59e0b" }]} />
+                    )}
+                  </View>
+                </View>
+                <Pressable
+                  style={styles.heroSettingsBtn}
+                  onPress={() => router.push("/(tabs)/settings")}
+                  hitSlop={12}
+                >
+                  <Feather name="settings" size={20} color="rgba(255,255,255,0.85)" />
+                </Pressable>
+              </View>
+
+              {/* ── Channel Bug (TV network-style watermark) ── */}
+              {(showBroadcast || liveStatus.isLive) && (
+                <View style={styles.channelBug}>
+                  <Text style={styles.channelBugText}>TEMPLE TV</Text>
+                </View>
+              )}
+
+              {/* ── Bottom content panel ── */}
+              <View style={[styles.heroContent, { paddingBottom: Math.max(insets.bottom + 20, 28) }]}>
+                {/* Status badge */}
+                {!checkingLive && (
+                  liveStatus.isLive ? (
                     <LiveBadge size="large" />
                   ) : showBroadcast ? (
-                    <View style={[styles.offlineTag, { backgroundColor: "rgba(106,13,173,0.85)" }]}>
-                      <Feather name="radio" size={13} color="rgba(255,255,255,0.9)" />
-                      <Text style={styles.offlineTagText}>ON AIR</Text>
+                    <View style={styles.onAirBadge}>
+                      <View style={styles.onAirPulse} />
+                      <Text style={styles.onAirBadgeText}>ON AIR · TEMPLE TV</Text>
                     </View>
                   ) : (
-                    <View style={styles.offlineTag}>
-                      <Feather name="clock" size={13} color="rgba(255,255,255,0.8)" />
-                      <Text style={styles.offlineTagText}>24/7 Stream</Text>
+                    <View style={styles.offlineBadge}>
+                      <Feather name="tv" size={12} color="rgba(255,255,255,0.75)" />
+                      <Text style={styles.offlineBadgeText}>24/7 STREAM</Text>
                     </View>
-                  )}
-                  <Text style={styles.liveTitle} numberOfLines={2}>
-                    {liveStatus.isLive && liveStatus.title
-                      ? liveStatus.title
-                      : showScheduledLive
-                      ? "Live Service Coming Up"
-                      : showBroadcast
-                      ? "Temple TV"
-                      : "Temple TV"}
-                  </Text>
-                  <Text style={styles.liveSubtitle}>
-                    {liveStatus.isLive
-                      ? "Live worship service — tune in now"
-                      : showScheduledLive
-                      ? "Scheduled live service — tap to join"
-                      : showBroadcast
-                      ? "24/7 Christian broadcasting — tap to tune in"
-                      : "Live worship & preaching 24/7"}
-                  </Text>
-                  {showBroadcast && broadcastCurrent?.item && (
-                    <BroadcastProgress broadcastCurrent={broadcastCurrent} />
-                  )}
+                  )
+                )}
+
+                {/* Title */}
+                <Text style={styles.heroTitle} numberOfLines={2}>
+                  {liveStatus.isLive && liveStatus.title
+                    ? liveStatus.title
+                    : showScheduledLive
+                    ? "Live Service Coming Up"
+                    : "Temple TV"}
+                </Text>
+
+                {/* Subtitle */}
+                <Text style={styles.heroSubtitleMeta}>
+                  {liveStatus.isLive
+                    ? "Live worship service — tune in now"
+                    : showScheduledLive
+                    ? "Scheduled live service — tap to join"
+                    : showBroadcast
+                    ? "Spirit-filled broadcasts around the clock"
+                    : "Temple TV Anywhere You Go"}
+                </Text>
+
+                {/* Broadcast progress bar */}
+                {showBroadcast && broadcastCurrent?.item && (
+                  <BroadcastProgress broadcastCurrent={broadcastCurrent} />
+                )}
+
+                {/* CTA row */}
+                <View style={styles.heroCtaRow}>
                   <Pressable
                     onPress={showBroadcast ? handleBroadcastPress : handleLivePress}
-                    style={[styles.watchBtn, { backgroundColor: liveStatus.isLive ? "#FF0040" : c.primary }]}
+                    style={({ pressed }) => [
+                      styles.heroWatchBtn,
+                      { backgroundColor: liveStatus.isLive ? "#FF0040" : "#6A0DAD" },
+                      pressed && { opacity: 0.85 },
+                    ]}
                   >
-                    <Feather name="play" size={15} color="#FFF" />
-                    <Text style={styles.watchBtnText}>Watch Temple TV</Text>
+                    <Feather name="play" size={16} color="#FFF" />
+                    <Text style={styles.heroWatchBtnText}>Watch Temple TV</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => router.push("/library")}
+                    style={({ pressed }) => [styles.heroSecondaryBtn, pressed && { opacity: 0.75 }]}
+                  >
+                    <Feather name="grid" size={15} color="rgba(255,255,255,0.9)" />
+                    <Text style={styles.heroSecondaryBtnText}>Library</Text>
                   </Pressable>
                 </View>
-              </GlassCard>
+              </View>
             </Pressable>
           )}
 
@@ -638,66 +713,167 @@ export default function WatchScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  header: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+
+  // ── Cinematic Hero ───────────────────────────────────────────────────────────
+  cinemaHero: {
+    width: "100%",
+    backgroundColor: "#060606",
+    overflow: "hidden",
+    position: "relative",
   },
-  logo: { fontSize: 28, fontFamily: "Inter_700Bold", letterSpacing: 3 },
-  headerLogoWrap: { flexDirection: "column", justifyContent: "center" },
-  headerLogo: { width: 140, height: 44 },
-  logoMeta: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 2 },
-  subtitle: { fontSize: 12, fontFamily: "Inter_400Regular", letterSpacing: 1 },
-  liveDot: { width: 6, height: 6, borderRadius: 3 },
-  notifBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+  heroBrandedBg: {
+    backgroundColor: "#0e0018",
     alignItems: "center",
     justifyContent: "center",
   },
-  liveCard: { marginHorizontal: 12, marginBottom: 10, minHeight: 360, borderRadius: 18, overflow: "hidden" },
-  liveBanner: { ...StyleSheet.absoluteFillObject, width: "100%", height: "100%" },
-  liveOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.45)",
-    justifyContent: "flex-end",
-    padding: 22,
-    gap: 8,
+  heroLogoWatermark: {
+    width: 220,
+    height: 70,
+    opacity: 0.12,
   },
-  offlineTag: {
+
+  // Floating header over the hero
+  heroHeader: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
     flexDirection: "row",
     alignItems: "center",
-    gap: 5,
-    backgroundColor: "rgba(255,255,255,0.12)",
+    justifyContent: "space-between",
+    paddingHorizontal: 18,
+    paddingBottom: 10,
+    zIndex: 10,
+  },
+  headerLogoWrap: { flexDirection: "column", justifyContent: "center" },
+  headerLogo: { width: 130, height: 40 },
+  logoMeta: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 1 },
+  heroSubtitle: { fontSize: 11, fontFamily: "Inter_400Regular", letterSpacing: 1.2, color: "rgba(255,255,255,0.65)" },
+  liveDot: { width: 6, height: 6, borderRadius: 3 },
+  heroSettingsBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.35)",
+  },
+
+  // TV network-style channel bug (top-right watermark)
+  channelBug: {
+    position: "absolute",
+    top: 0,
+    right: 18,
+    zIndex: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 0,
+  },
+  channelBugText: {
+    fontSize: 9,
+    fontFamily: "Inter_700Bold",
+    letterSpacing: 3,
+    color: "rgba(255,255,255,0.45)",
+  },
+
+  // Bottom content panel
+  heroContent: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    gap: 10,
+  },
+
+  // Badges
+  onAirBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    backgroundColor: "rgba(106,13,173,0.9)",
+    alignSelf: "flex-start",
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: "rgba(168,85,247,0.45)",
+  },
+  onAirPulse: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: "#a855f7",
+  },
+  onAirBadgeText: {
+    color: "#fff",
+    fontSize: 11,
+    fontFamily: "Inter_700Bold",
+    letterSpacing: 1.2,
+  },
+  offlineBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "rgba(255,255,255,0.10)",
     alignSelf: "flex-start",
     paddingHorizontal: 12,
     paddingVertical: 5,
     borderRadius: 20,
   },
-  offlineTagText: { color: "rgba(255,255,255,0.85)", fontSize: 12, fontFamily: "Inter_600SemiBold" },
-  liveTitle: { color: "#FFFFFF", fontSize: 28, fontFamily: "Inter_700Bold", lineHeight: 32, letterSpacing: -0.4, textShadowColor: "rgba(0,0,0,0.5)", textShadowOffset: { width: 0, height: 2 }, textShadowRadius: 8 },
-  liveSubtitle: { color: "rgba(255,255,255,0.85)", fontSize: 14, fontFamily: "Inter_400Regular", lineHeight: 19 },
-  broadcastProgressSection: { gap: 5, marginTop: 2 },
-  broadcastProgressRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-  broadcastProgressTrack: { flex: 1, height: 3, backgroundColor: "rgba(255,255,255,0.2)", borderRadius: 2, overflow: "hidden" },
-  broadcastProgressFill: { height: "100%", backgroundColor: "#6A0DAD", borderRadius: 2 } as const,
-  broadcastTimeBadge: { flexDirection: "row", alignItems: "center", gap: 3 },
-  broadcastTimeText: { color: "rgba(255,255,255,0.7)", fontSize: 10, fontFamily: "Inter_500Medium" },
-  broadcastNext: { color: "rgba(255,255,255,0.62)", fontSize: 12, fontFamily: "Inter_500Medium" },
-  watchBtn: {
+  offlineBadgeText: { color: "rgba(255,255,255,0.8)", fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 0.8 },
+
+  // Title & subtitle
+  heroTitle: {
+    color: "#FFFFFF",
+    fontSize: 34,
+    fontFamily: "Inter_700Bold",
+    lineHeight: 38,
+    letterSpacing: -0.5,
+    textShadowColor: "rgba(0,0,0,0.55)",
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 12,
+  },
+  heroSubtitleMeta: {
+    color: "rgba(255,255,255,0.80)",
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    lineHeight: 20,
+  },
+
+  // CTA buttons row
+  heroCtaRow: {
     flexDirection: "row",
     alignItems: "center",
-    alignSelf: "flex-start",
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 24,
-    gap: 7,
-    marginTop: 6,
+    gap: 10,
+    marginTop: 4,
   },
-  watchBtnText: { color: "#FFFFFF", fontSize: 14, fontFamily: "Inter_700Bold" },
+  heroWatchBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 22,
+    paddingVertical: 13,
+    borderRadius: 26,
+  },
+  heroWatchBtnText: { color: "#FFFFFF", fontSize: 15, fontFamily: "Inter_700Bold" },
+  heroSecondaryBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 18,
+    paddingVertical: 13,
+    borderRadius: 26,
+    backgroundColor: "rgba(255,255,255,0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
+  },
+  heroSecondaryBtnText: { color: "rgba(255,255,255,0.9)", fontSize: 14, fontFamily: "Inter_600SemiBold" },
+
+  // Shared / left-overs
+  subtitle: { fontSize: 12, fontFamily: "Inter_400Regular", letterSpacing: 1 },
+  notifBtn: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center" },
   section: { marginTop: 28, gap: 12 },
   listContainer: { paddingHorizontal: 16, gap: 10 },
 });
