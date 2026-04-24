@@ -118,44 +118,72 @@ async function doAdminRequest<T>(
   throw new AdminApiError(res.status, describeJsonError(`API ${path}`, parsed), { transient });
 }
 
+// Sleep that honors an AbortSignal. Resolves after `ms` if the signal stays
+// quiet; rejects with a fresh AbortError the moment the signal fires (NOT the
+// caller's underlying error — consumers like React Query branch on
+// err.name === "AbortError" to distinguish cancellation from genuine failure).
+function delayWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      reject(new DOMException("The operation was aborted.", "AbortError"));
+    };
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    if (signal) signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+// Backoff schedule (ms) for retrying transient failures on idempotent requests.
+// Sized to span the api-server's full dev-mode restart window: the workflow
+// runs `pnpm run build && pnpm run start`, where the esbuild step alone takes
+// ~600ms and the node startup adds another ~200-500ms before the port accepts
+// connections. A single 800ms retry (Round 4k initial) was empirically too
+// short — operators still saw the html_fallback diagnostic mid-restart on
+// pages they navigated to during that window. With these two delays the worst
+// case is ~2.0s of waiting before surfacing the error, which comfortably
+// covers a clean restart but still feels like normal page-load latency.
+// Tuning this requires no schema or dependency changes.
+const RETRY_BACKOFF_MS = [500, 1500] as const;
+
 async function adminRequest<T>(
   method: string,
   path: string,
   body?: unknown,
   signal?: AbortSignal,
 ): Promise<T> {
-  // Idempotent reads can be safely retried once on transient failure. Mutating
+  // Idempotent reads can be safely retried on transient failure. Mutating
   // methods (POST/PUT/PATCH/DELETE) are NEVER retried because retry-on-failure
   // can produce double-creates, double-deletes, or out-of-order updates if the
   // first request actually reached the server but the response was lost.
   const isIdempotent = method === "GET" || method === "HEAD";
-  try {
-    return await doAdminRequest<T>(method, path, body, signal);
-  } catch (err) {
-    if (!isIdempotent) throw err;
-    if (signal?.aborted) throw err;
-    if (!(err instanceof AdminApiError) || !err.transient) throw err;
-    // Brief delay before retry — enough to let the api-server finish its
-    // restart in the common case, short enough that the operator perceives
-    // it as a small loading delay rather than a hang. If the caller's signal
-    // fires during the wait we reject with an AbortError (NOT the original
-    // transient error) so consumers like React Query that branch on
-    // err.name === "AbortError" treat this as a clean cancellation rather
-    // than surfacing a misleading "API unreachable" toast for what was
-    // actually a user-initiated cancel.
-    await new Promise<void>((resolve, reject) => {
-      const onAbort = () => {
-        window.clearTimeout(timer);
-        reject(new DOMException("The operation was aborted.", "AbortError"));
-      };
-      const timer = window.setTimeout(() => {
-        signal?.removeEventListener("abort", onAbort);
-        resolve();
-      }, 800);
-      if (signal) signal.addEventListener("abort", onAbort, { once: true });
-    });
-    return await doAdminRequest<T>(method, path, body, signal);
+  let lastErr: unknown;
+  // Total attempts = 1 + RETRY_BACKOFF_MS.length. For mutating methods we
+  // collapse the loop to a single attempt by ignoring the backoff schedule.
+  const maxAttempts = isIdempotent ? 1 + RETRY_BACKOFF_MS.length : 1;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      return await doAdminRequest<T>(method, path, body, signal);
+    } catch (err) {
+      lastErr = err;
+      if (!isIdempotent) throw err;
+      if (signal?.aborted) throw err;
+      // Only retry tagged-transient AdminApiErrors. AbortError (DOMException)
+      // and any other surprise error type fail through immediately.
+      if (!(err instanceof AdminApiError) || !err.transient) throw err;
+      const isLastAttempt = attempt >= maxAttempts - 1;
+      if (isLastAttempt) throw err;
+      // Wait before the next attempt; abort during the wait surfaces
+      // immediately as a clean cancellation (not a retried failure).
+      await delayWithAbort(RETRY_BACKOFF_MS[attempt], signal);
+    }
   }
+  // Unreachable: the loop either returns a value or throws. Re-throw the last
+  // captured error to satisfy the type checker without using a non-null
+  // assertion that would mask a real "no attempts ran" bug.
+  throw lastErr ?? new AdminApiError(0, `adminRequest exhausted attempts for ${method} ${path}`);
 }
 
 export const adminGet = <T>(path: string, signal?: AbortSignal) =>

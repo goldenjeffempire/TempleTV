@@ -1,0 +1,52 @@
+Perform a full investigation and remediation of the video ingestion and media synchronization pipeline to resolve the critical issue preventing uploaded videos from appearing in the Video Library and being available for broadcast operations.
+
+Issue Summary:
+
+After uploading a video, the media does not appear in the Video Library within the Admin Panel, and as a result, it cannot be selected, queued, or broadcast on air. This indicates a breakdown in the upload-to-library synchronization flow across the system.
+
+Required Fix Scope:
+
+Conduct an end-to-end audit and correction of the entire video upload lifecycle, including:
+
+* Upload initiation and file handling layer
+* Backend upload processing and validation services
+* Media storage and file persistence system
+* Database record creation and update logic
+* Media indexing and retrieval mechanisms
+* Video Library frontend data fetching and rendering logic
+* Broadcast system media availability integration
+* Cache layers and state synchronization processes
+
+Core Requirements:
+
+* Ensure every successfully uploaded video is:
+
+  * Properly saved to storage
+  * Correctly registered in the database
+  * Accurately indexed for retrieval
+  * Immediately visible in the Video Library
+  * Available for broadcast selection and playback
+* Fix all failures where uploaded videos are:
+
+  * Not being written to the database
+  * Not being indexed or registered in the media library
+  * Not being returned by API endpoints
+  * Being blocked by caching or stale state issues
+  * Failing during asynchronous processing workflows
+* Ensure real-time synchronization between upload completion and Video Library updates without requiring manual refresh or system restart.
+* Validate that the Video Library correctly fetches and displays all active, valid media records from the backend.
+* Ensure broadcast systems properly consume updated media inventory so that newly uploaded videos are immediately available for:
+
+  * Queue for broadcast
+  * Broadcast now
+  * Scheduled broadcast operations
+* Resolve all frontend/backend integration mismatches affecting media visibility.
+* Implement robust logging and diagnostics to trace upload-to-library propagation failures.
+* Optimize data flow to ensure consistency across upload services, database, storage, APIs, and UI rendering layers.
+* Ensure system reliability under high upload volume and concurrent administrative usage.
+
+Expected Final Outcome:
+
+A fully stable and production-ready media pipeline where every uploaded video is instantly and reliably reflected in the Video Library and immediately available for broadcast operations without delays, inconsistencies, or missing records.
+
+“Temple TV Anywhere You Go”
