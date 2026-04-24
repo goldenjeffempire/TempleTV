@@ -7,8 +7,11 @@
  *
  * In a split-domain production setup (e.g. admin.templetv.org.ng for the
  * static SPA + api.templetv.org.ng for the API server), the build must set
- * `VITE_API_BASE_URL` (e.g. `https://api.templetv.org.ng`). The value may
- * include or omit a trailing slash; we normalize.
+ * `VITE_API_BASE_URL` OR `VITE_API_URL` (e.g. `https://api.templetv.org.ng`).
+ * Both names are accepted to tolerate variation in deployment env-var naming
+ * conventions. The value may include or omit a trailing slash; we normalize.
+ * Either name may also include or omit a trailing `/api` path component —
+ * we strip it so callers always see a normalized origin-only base.
  *
  * Without this override the SPA's `/api/...` calls resolve to the static
  * admin host, where the catch-all SPA rewrite returns `index.html` for every
@@ -17,10 +20,15 @@
  * defensive JSON-content validation that rejects that case at the network
  * layer regardless of whether the override is set.
  */
-const RAW_OVERRIDE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim();
+const RAW_OVERRIDE = (
+  (import.meta.env.VITE_API_BASE_URL as string | undefined) ??
+  (import.meta.env.VITE_API_URL as string | undefined)
+)?.trim();
 
 const ABSOLUTE_BASE = RAW_OVERRIDE
-  ? RAW_OVERRIDE.replace(/\/+$/, "")
+  ? RAW_OVERRIDE
+      .replace(/\/+$/, "")        // strip trailing slashes
+      .replace(/\/api$/, "")      // strip trailing /api so callers can supply either form
   : null;
 
 const RELATIVE_BASE = (() => {
