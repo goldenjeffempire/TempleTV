@@ -1,4 +1,5 @@
 import { getAdminToken } from "@/lib/admin-access";
+import { safeJson, describeJsonError } from "@/lib/safe-json";
 
 const BASE = (() => {
   const b = import.meta.env.BASE_URL.replace(/\/$/, "").replace(/\/admin\/?$/, "");
@@ -27,40 +28,62 @@ async function adminRequest<T>(
   };
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    signal,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal,
+    });
+  } catch (networkErr) {
+    // fetch only rejects on network failure, abort, or CORS. Distinguish
+    // them so the operator sees "API server unreachable" rather than the
+    // generic "Failed to fetch" the browser raises.
+    // Honor cancellation regardless of whether the runtime materializes it as
+    // DOMException (browsers) or a plain Error with .name === "AbortError"
+    // (some polyfills / SSR shims) — consumers like React Query rely on this
+    // to distinguish abort from genuine failure.
+    if (
+      (networkErr instanceof DOMException && networkErr.name === "AbortError") ||
+      (networkErr instanceof Error && networkErr.name === "AbortError")
+    ) {
+      throw networkErr;
+    }
+    const detail = networkErr instanceof Error ? networkErr.message : String(networkErr);
+    throw new AdminApiError(
+      0,
+      `API server unreachable at ${BASE}${path} (${detail}). Check that the API workflow is running.`,
+    );
+  }
 
   if (!res.ok) {
-    let message = res.statusText;
-    try {
-      const j = await res.json();
-      if (j.error) message = j.error;
-      else if (j.message) message = j.message;
-    } catch {}
+    // Try to extract a structured error message. We use safeJson here too so
+    // that an HTML 500 page from a proxy doesn't get reported as the literal
+    // status text — operators want to know why the proxy failed, not just
+    // "Internal Server Error".
+    let message = res.statusText || `HTTP ${res.status}`;
+    const parsed = await safeJson<{ error?: string; message?: string }>(res, `admin-api:${path}`);
+    if (parsed.ok) {
+      if (typeof parsed.data?.error === "string" && parsed.data.error) message = parsed.data.error;
+      else if (typeof parsed.data?.message === "string" && parsed.data.message) message = parsed.data.message;
+    } else if (parsed.reason === "html_fallback") {
+      message = `${message} — server returned HTML (proxy may be routing /api to the SPA).`;
+    } else if (parsed.reason !== "empty") {
+      // Non-JSON error body with content. Surface the content-type so the
+      // operator can see the source.
+      message = `${message} (non-JSON ${parsed.contentType})`;
+    }
     throw new AdminApiError(res.status, message);
   }
 
-  const text = await res.text();
-  if (!text) return undefined as T;
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    // Body is not JSON. Most often this means a proxy/edge returned the SPA
-    // fallback HTML (the API server itself only returns JSON). Surface a
-    // human-readable error rather than the raw "Unexpected token '<'".
-    const ctype = res.headers.get("content-type") ?? "";
-    const looksHtml = ctype.includes("html") || text.trimStart().startsWith("<");
-    throw new AdminApiError(
-      res.status,
-      looksHtml
-        ? "Unexpected non-JSON response (the API server may be unreachable)"
-        : "Malformed JSON response from the API",
-    );
-  }
+  // 204 No Content / empty success body. Differentiate from the parse path.
+  if (res.status === 204) return undefined as T;
+
+  const parsed = await safeJson<T>(res, `admin-api:${path}`);
+  if (parsed.ok) return parsed.data;
+  if (parsed.reason === "empty") return undefined as T; // legacy: pre-existing pages treat empty 200 as undefined
+  throw new AdminApiError(res.status, describeJsonError(`API ${path}`, parsed));
 }
 
 export const adminGet = <T>(path: string, signal?: AbortSignal) =>

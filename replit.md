@@ -193,6 +193,29 @@ Verification:
 - After workflow restart, all three previously-silent endpoints (`/admin/live/health`, `/admin/notifications/scheduled`, `/admin/launch/readiness`) return 200 via the API server.
 - New `RefreshCw` import added to `notifications.tsx` to power the Retry button; no new dependencies, no schema changes, no rewrites.
 
+### Round 4g — shared safe-json lib + central adminRequest hardening (April 2026)
+
+The `safeJson` / `describeJsonError` / `JsonResult<T>` trio that Round 4e introduced inside `broadcast.tsx` was lifted into a new shared module at **`artifacts/admin/src/lib/safe-json.ts`** so the central admin API client can reuse the exact same diagnostics. This closes the explicit operator request: *"API stability improvements to eliminate failures such as non-JSON responses and unreachable server issues."*
+
+Three concrete changes:
+
+1. **New `lib/safe-json.ts`** — exports `safeJson<T>(res, consoleLabel?)` returning `JsonResult<T>` (`{ok:true,data}` / `{ok:false, reason: 'empty' | 'html_fallback' | 'non_json', status, contentType, bodyPreview}`), plus `describeJsonError(label, err)` for human-readable banner strings. Body-preview safety preserved: when the server claimed `application/json` but failed to parse, the preview is suppressed in both the visible string and the console diagnostic (it may contain user data).
+
+2. **`services/adminApi.ts` rewrite of `adminRequest`** — every page that calls `adminGet/adminPost/adminPut/adminPatch/adminDelete` now benefits automatically:
+   - **Network-failure path now distinguishes `AbortError` from connection failures.** The previous code surfaced raw "Failed to fetch" from the browser; it now throws `new AdminApiError(0, "API server unreachable at <url> (<detail>). Check that the API workflow is running.")` so operators see the actual cause rather than a generic browser error.
+   - **Error-body parsing uses `safeJson`** instead of a silent `try/catch {}`. An HTML 500 page from a proxy is no longer reported as the literal status text — the message is augmented with "server returned HTML (proxy may be routing /api to the SPA)." or "(non-JSON <content-type>)" so the operator sees the source of the failure.
+   - **Successful-but-malformed JSON** now throws `AdminApiError(status, describeJsonError(...))` instead of silently returning a half-parsed payload. Empty 200s still return `undefined` to preserve existing call-site contracts (e.g., DELETE handlers).
+   - **204 No Content** is short-circuited explicitly so it never hits the parser.
+
+3. **`pages/broadcast.tsx`** — removed the inline 70-line `safeJson`/`describeJsonError`/`JsonResult` block and now imports from `@/lib/safe-json`. Behavior is byte-identical at the call sites.
+
+Constraints honored: no new runtime dependencies, no schema changes, no rewrites of any page, no removal of `AdminApiError` (its `status` and `message` fields remain stable for `instanceof` checks elsewhere). The shared module is pure — no React, no DOM, no globals — so it's trivially importable from any future admin code path.
+
+Verification:
+- `tsc --noEmit` clean for `@workspace/admin`.
+- After workflow restart: `/api/admin/broadcast`, `/api/admin/live`, `/api/admin/analytics`, `/api/admin/users`, `/api/admin/ops/status`, `/api/admin/transcoding/queue`, `/api/admin/launch/readiness`, `/api/admin/notifications/scheduled`, and `/api/admin/live/health` all return 200 against the API server.
+- The error path was exercised mentally for each branch: `network throw → AdminApiError(0, "unreachable")`, `!res.ok + JSON body → status text replaced by error.error`, `!res.ok + HTML body → status text + " — server returned HTML"`, `200 + HTML body → AdminApiError(200, describeJsonError(...))`, `200 + empty body → undefined` (legacy contract preserved), `204 → undefined`.
+
 ## External Dependencies
 
 - **Database:** PostgreSQL

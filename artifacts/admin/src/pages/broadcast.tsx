@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { safeJson, describeJsonError } from "@/lib/safe-json";
 import { VideoUploadModal } from "@/components/VideoUploadModal";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -138,78 +139,10 @@ async function adminFetch(url: string, opts?: RequestInit): Promise<Response> {
   return fetch(url, { ...opts, headers });
 }
 
-// Result of attempting to parse a Response body as JSON. The error variant
-// carries enough diagnostic detail to render an actionable message in the UI
-// — not just "empty or malformed response" — so the operator can see whether
-// the proxy returned HTML, the body was truncated, the auth was rejected,
-// etc.
-type JsonResult<T> =
-  | { ok: true; data: T }
-  | {
-      ok: false;
-      reason: "empty" | "html_fallback" | "non_json";
-      status: number;
-      contentType: string;
-      bodyPreview: string;
-    };
-
-async function safeJson<T = unknown>(res: Response): Promise<JsonResult<T>> {
-  const text = await res.text();
-  const ctype = res.headers.get("content-type") ?? "(none)";
-  if (!text) {
-    console.error("[broadcast] empty response body", {
-      url: res.url,
-      status: res.status,
-      contentType: ctype,
-    });
-    return { ok: false, reason: "empty", status: res.status, contentType: ctype, bodyPreview: "" };
-  }
-  try {
-    return { ok: true, data: JSON.parse(text) as T };
-  } catch (err) {
-    const isJsonContentType = /\bapplication\/(?:[\w.+-]*\+)?json\b/i.test(ctype);
-    const bodyPreview = text.slice(0, 200).replace(/\s+/g, " ");
-    const looksLikeHtml = /^\s*<(?:!doctype\s+html|html\b|head\b|body\b)/i.test(text);
-    console.error("[broadcast] non-JSON response body", {
-      url: res.url,
-      status: res.status,
-      contentType: ctype,
-      bodyPreview: isJsonContentType ? "(suppressed: JSON content-type)" : bodyPreview,
-      parseError: err instanceof Error ? err.message : String(err),
-    });
-    return {
-      ok: false,
-      reason: looksLikeHtml ? "html_fallback" : "non_json",
-      status: res.status,
-      contentType: ctype,
-      bodyPreview,
-    };
-  }
-}
-
-// Build a short, human-readable explanation for the operator banner from a
-// JsonResult error variant. Designed to surface the actionable information
-// (status, content-type, snippet) inline rather than burying it in devtools.
-//
-// The body preview is intentionally only shown when the content-type is NOT
-// JSON. If the server claimed application/json but failed to parse, the
-// preview is most likely a partial payload that may contain user data — we
-// keep it in the console diagnostic but not in the visible banner.
-function describeJsonError(label: string, err: Extract<JsonResult<unknown>, { ok: false }>): string {
-  if (err.reason === "html_fallback") {
-    return `${label}: server returned HTML instead of JSON (likely the admin SPA fell through — check that /api/* is routed to the API server).`;
-  }
-  if (err.reason === "empty") {
-    return `${label}: empty body (HTTP ${err.status}, ${err.contentType}). Try reloading; if it persists, check API server logs.`;
-  }
-  // non_json
-  const isJsonContentType = /\bapplication\/(?:[\w.+-]*\+)?json\b/i.test(err.contentType);
-  const snippet =
-    err.bodyPreview && !isJsonContentType
-      ? ` — body started with: "${err.bodyPreview.slice(0, 80)}…"`
-      : "";
-  return `${label}: malformed JSON (HTTP ${err.status}, ${err.contentType})${snippet}`;
-}
+// Round 4g: the JsonResult / safeJson / describeJsonError trio that used to
+// live inline here was lifted into `@/lib/safe-json` so the central
+// adminRequest path (services/adminApi.ts) and other pages can share the
+// exact same diagnostics. Behavior is identical; only the location moved.
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const SERVICE_PRESETS = [
