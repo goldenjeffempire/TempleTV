@@ -33,7 +33,7 @@ args = "PORT=8080 pnpm --filter @workspace/api-server run dev & PORT=23744 BASE_
 waitForPort = 8080
 
 [agent]
-stack = "PNPM_WORKSPACE"
+stack = "BEST_EFFORT_FALLBACK"
 expertMode = true
 
 [postMerge]
@@ -86,6 +86,4 @@ channel = "stable-25_05"
 [userenv]
 
 [userenv.shared]
-JWT_SECRET = "06dadf631f310f88c1579ddcd3bf9287b5a8972e137cd940b8356597af8c721913737b4f3a663713ac07318944731193"
-ADMIN_API_TOKEN = "518c727d50151bddb3fd0874550e02f39190ea492225daee35955d9eec7073c7"
 NODE_ENV = "development"
