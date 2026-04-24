@@ -117,7 +117,10 @@ export function CommandPalette({
 
   const stopOverride = useCallback(async () => {
     try {
-      const res = await adminFetch("/api/admin/live/override", { method: "DELETE" });
+      // The api-server exposes overrides as POST start/stop/extend actions —
+      // there is no bare DELETE /admin/live/override route. Use the documented
+      // stop endpoint (artifacts/api-server/src/routes/admin.ts ~/admin/live/override/stop).
+      const res = await adminFetch("/api/admin/live/override/stop", { method: "POST" });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
         throw new Error(j.error ?? `HTTP ${res.status}`);
