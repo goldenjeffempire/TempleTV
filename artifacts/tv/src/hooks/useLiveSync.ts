@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 
+export interface BroadcastNextItem {
+  youtubeId?: string;
+  title?: string;
+  localVideoUrl?: string | null;
+  videoSource?: string;
+  thumbnailUrl?: string | null;
+  durationSecs?: number;
+}
+
 export interface BroadcastSyncState {
   isLive: boolean;
   title: string | null;
@@ -9,6 +18,22 @@ export interface BroadcastSyncState {
   syncedAt: string | null;
   serverTimeMs: number | null;
   connected: boolean;
+  /** How far into the current item playback is (seconds). Already corrected for cache age. */
+  positionSecs: number | null;
+  /** Epoch ms when the current item is expected to end. Use for client-side transition timer. */
+  currentItemEndsAtMs: number | null;
+  /** Epoch seconds when the current item started — lets the player self-correct position. */
+  itemStartEpochSecs: number | null;
+  /** 0-based index of the current item in the queue. */
+  index: number | null;
+  /** Total queue duration in seconds. */
+  totalSecs: number | null;
+  /** Total number of items in the queue. */
+  queueLength: number | null;
+  /** Progress through the current item (0–100). */
+  progressPercent: number | null;
+  /** Next item metadata (title, ID). */
+  nextItem: BroadcastNextItem | null;
 }
 
 const INITIAL: BroadcastSyncState = {
@@ -20,6 +45,14 @@ const INITIAL: BroadcastSyncState = {
   syncedAt: null,
   serverTimeMs: null,
   connected: false,
+  positionSecs: null,
+  currentItemEndsAtMs: null,
+  itemStartEpochSecs: null,
+  index: null,
+  totalSecs: null,
+  queueLength: null,
+  progressPercent: null,
+  nextItem: null,
 };
 
 function apiUrl(path: string): string {
@@ -37,16 +70,37 @@ export function useLiveSync(): BroadcastSyncState {
 
     const applyPayload = (current: Record<string, unknown>) => {
       const liveOverride = current.liveOverride as null | { id: string; title: string; hlsStreamUrl?: string | null };
-      const item = current.item as null | { youtubeId?: string; title?: string };
+      const item = current.item as null | {
+        youtubeId?: string;
+        title?: string;
+        localVideoUrl?: string | null;
+        videoSource?: string;
+      };
+      const nextItem = current.nextItem as BroadcastNextItem | null ?? null;
+
       setState({
         isLive: !!liveOverride || !!item,
         title: liveOverride?.title ?? item?.title ?? null,
         videoId: item?.youtubeId ?? null,
-        hlsStreamUrl: liveOverride?.hlsStreamUrl ?? null,
+        hlsStreamUrl:
+          liveOverride?.hlsStreamUrl ??
+          (item?.videoSource === "local" ? (item.localVideoUrl ?? null) : null),
         liveOverride: liveOverride ?? null,
         syncedAt: (current.syncedAt as string) ?? null,
         serverTimeMs: (current.serverTimeMs as number) ?? null,
         connected: true,
+        positionSecs: typeof current.positionSecs === "number" ? current.positionSecs : null,
+        currentItemEndsAtMs: typeof current.currentItemEndsAtMs === "number"
+          ? current.currentItemEndsAtMs
+          : null,
+        itemStartEpochSecs: typeof current.itemStartEpochSecs === "number"
+          ? current.itemStartEpochSecs
+          : null,
+        index: typeof current.index === "number" ? current.index : null,
+        totalSecs: typeof current.totalSecs === "number" ? current.totalSecs : null,
+        queueLength: typeof current.queueLength === "number" ? current.queueLength : null,
+        progressPercent: typeof current.progressPercent === "number" ? current.progressPercent : null,
+        nextItem,
       });
     };
 

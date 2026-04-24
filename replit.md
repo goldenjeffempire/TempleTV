@@ -20,6 +20,10 @@ The platform is built as a monorepo using `pnpm workspaces`, Node.js 24, and Typ
 
 **Core Architectural Decisions:**
 - **Unified Live Broadcast Sync:** A single live input (YouTube Live, HLS URL, or RTMP) feeds all platforms simultaneously via Server-Sent Events (SSE) for real-time state changes (`GET /api/broadcast/events`). An Admin Live Control panel facilitates instant broadcasting.
+  - **Automatic Transition Ticker:** `startBroadcastTransitionTicker()` (started in `index.ts`) runs a 2-second server loop. It compares `Date.now()` against `currentItemEndsAtMs` from the last known payload and — when the boundary passes — invalidates the cache, rebuilds the full payload, and pushes `broadcast-current-updated` to all SSE clients with `reason: "item-transition"`. No admin action required for automatic queue advances.
+  - **Live Position Recalculation:** `buildBroadcastCurrentPayload()` now stores `itemStartEpochSecs` in the cache. Every read from cache recomputes `positionSecs = floor(Date.now()/1000) - itemStartEpochSecs`, keeping seek positions accurate even if a client joins several seconds after the cache was populated.
+  - **Client Precision Timing:** `currentItemEndsAtMs` (epoch ms) and `itemStartEpochSecs` (epoch seconds) are included in every broadcast payload. Mobile `player.tsx` uses `currentItemEndsAtMs` to schedule a precision `setTimeout` that self-tunes to the next item without waiting for the 15-second background poll. TV `useLiveSync` hook now exposes the full payload (positionSecs, currentItemEndsAtMs, itemStartEpochSecs, index, totalSecs, queueLength, progressPercent, nextItem) for position-aware corrections.
+  - **Reduced Mobile Poll Interval:** Broadcast sync polling in `player.tsx` reduced from 60 s to 15 s as a belt-and-suspenders fallback behind the SSE + precision timer path.
 - **Micro-frontend Approach:** Separation of concerns with distinct artifacts for mobile (`artifacts/mobile`), Smart TV (`artifacts/tv`), and admin (`artifacts/admin`).
 - **Data Persistence:** PostgreSQL with Drizzle ORM for database management.
 - **API Framework:** Express 5 for the backend API.

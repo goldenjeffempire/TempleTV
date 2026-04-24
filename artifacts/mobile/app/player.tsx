@@ -502,7 +502,7 @@ export default function PlayerScreen() {
         }
       } catch {}
     };
-    const interval = setInterval(syncBroadcast, 60000);
+    const interval = setInterval(syncBroadcast, 15000);
     return () => {
       cancelled = true;
       clearInterval(interval);
@@ -553,6 +553,24 @@ export default function PlayerScreen() {
 
     return () => subscription?.close();
   }, [isBroadcastMode, paramVideoId, paramLocalVideoUrl, tuneToBroadcastItem]);
+
+  // Client-side precision transition timer: fires exactly when the server says
+  // the current broadcast item ends, triggering a resync without polling wait.
+  useEffect(() => {
+    if (!isBroadcastMode) return;
+    const endsAtMs = broadcastInfo?.currentItemEndsAtMs;
+    if (!endsAtMs) return;
+    const delay = endsAtMs - Date.now();
+    if (delay <= 0) return;
+    // Add a 1-second buffer so the server has time to advance its own state
+    const timer = setTimeout(async () => {
+      try {
+        const bc = await checkBroadcastCurrent();
+        if (isMountedRef.current && bc?.item) tuneToBroadcastItem(bc);
+      } catch {}
+    }, delay + 1000);
+    return () => clearTimeout(timer);
+  }, [isBroadcastMode, broadcastInfo?.currentItemEndsAtMs, tuneToBroadcastItem]);
 
   const recoverBroadcastPlayback = useCallback(async () => {
     if (!isBroadcastMode || broadcastRecovering) return;

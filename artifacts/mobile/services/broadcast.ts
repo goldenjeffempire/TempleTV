@@ -20,6 +20,10 @@ export interface BroadcastCurrentResult {
   progressPercent?: number;
   syncedAt?: string;
   serverTimeMs?: number;
+  /** Epoch ms when the current item ends and the next one begins. */
+  currentItemEndsAtMs?: number;
+  /** Epoch seconds when the current item's playback started. */
+  itemStartEpochSecs?: number;
   failoverReason?: string | null;
   activeSchedule?: {
     id: string;

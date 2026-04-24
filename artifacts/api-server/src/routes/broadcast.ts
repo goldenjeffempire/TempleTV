@@ -33,6 +33,18 @@ type BroadcastCurrentPayload = {
   syncedAt: string;
   serverTimeMs: number;
   failoverReason: string | null;
+  /**
+   * Unix epoch (ms) when the current item is expected to end and the next
+   * one begins. Clients can set a precision timer to `currentItemEndsAtMs`
+   * and self-tune without relying on polling or waiting for the next SSE.
+   */
+  currentItemEndsAtMs?: number;
+  /**
+   * Unix epoch (seconds) when the current item's playback started.
+   * Allows clients to recalculate `positionSecs` from `Date.now()` without
+   * a round-trip: `positionSecs = floor(Date.now()/1000) - itemStartEpochSecs`.
+   */
+  itemStartEpochSecs?: number;
   activeSchedule: {
     id: string;
     title: string;
@@ -111,7 +123,36 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
   if (!skipCache) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cached = await cache.get<any>(BROADCAST_PAYLOAD_CACHE_KEY);
-    if (cached !== null) return { ...cached, syncedAt, serverTimeMs: nowMs };
+    if (cached !== null) {
+      // Recalculate position dynamically so a client joining a few seconds
+      // after the cache was populated still gets the correct seek position.
+      const nowEpochSecs = Math.floor(nowMs / 1000);
+      let livePositionSecs: number = cached.positionSecs ?? 0;
+      let liveProgressPercent: number = cached.progressPercent ?? 0;
+      let liveCurrentItemEndsAtMs: number | undefined = cached.currentItemEndsAtMs;
+
+      if (cached.itemStartEpochSecs != null && cached.item?.durationSecs) {
+        livePositionSecs = Math.max(
+          0,
+          Math.min(nowEpochSecs - cached.itemStartEpochSecs, cached.item.durationSecs),
+        );
+        liveProgressPercent =
+          cached.item.durationSecs > 0
+            ? Math.round((livePositionSecs / cached.item.durationSecs) * 100)
+            : 0;
+        liveCurrentItemEndsAtMs =
+          (cached.itemStartEpochSecs + cached.item.durationSecs) * 1000;
+      }
+
+      return {
+        ...cached,
+        positionSecs: livePositionSecs,
+        progressPercent: liveProgressPercent,
+        currentItemEndsAtMs: liveCurrentItemEndsAtMs,
+        syncedAt,
+        serverTimeMs: nowMs,
+      };
+    }
   }
 
   const [activeLiveOverride, scheduleEntries, queueItems] = await Promise.all([
@@ -249,9 +290,53 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// Transition ticker — detects automatic queue item advances and pushes SSE
+// ---------------------------------------------------------------------------
+
+/** The last payload whose `currentItemEndsAtMs` the ticker is watching. */
+let _lastTrackedPayload: BroadcastCurrentPayload | null = null;
+let _transitionTickHandle: ReturnType<typeof setInterval> | null = null;
+
+
+async function _tickTransitions() {
+  try {
+    if (!_lastTrackedPayload) {
+      _lastTrackedPayload = await buildBroadcastCurrentPayload();
+      return;
+    }
+
+    const endsAtMs = _lastTrackedPayload.currentItemEndsAtMs;
+    // No transition due yet — skip the DB round trip.
+    if (!endsAtMs || Date.now() < endsAtMs) return;
+
+    // The current item's clock has passed — rebuild from source and push.
+    await invalidateBroadcastCache();
+    const fresh = await buildBroadcastCurrentPayload(true);
+    _lastTrackedPayload = fresh;
+    broadcastLiveEvent("broadcast-current-updated", {
+      reason: "item-transition",
+      current: fresh,
+    });
+  } catch {
+    // Never crash the ticker — silently swallow errors
+  }
+}
+
+export function startBroadcastTransitionTicker(): void {
+  if (_transitionTickHandle) return;
+  // Kick off an immediate initial read so the ticker knows what to watch.
+  buildBroadcastCurrentPayload()
+    .then((p) => { _lastTrackedPayload = p; })
+    .catch(() => {});
+  _transitionTickHandle = setInterval(_tickTransitions, 2_000);
+  _transitionTickHandle.unref();
+}
+
 export function emitBroadcastState(reason: string, detail: Record<string, unknown> = {}) {
   buildBroadcastCurrentPayload()
     .then((current) => {
+      _lastTrackedPayload = current; // keep ticker in sync with manual changes
       broadcastLiveEvent("broadcast-current-updated", { reason, current, ...detail });
     })
     .catch(() => {});
@@ -344,6 +429,8 @@ function calculateCurrentFromItems(items: BroadcastItem[]) {
   }
 
   const nextItem = playableItems[(index + 1) % playableItems.length] ?? null;
+  const itemStartEpochSecs = epochSecs - positionSecs;
+  const currentItemEndsAtMs = (itemStartEpochSecs + currentItem.durationSecs) * 1000;
   return {
     item: currentItem,
     nextItem,
@@ -353,6 +440,8 @@ function calculateCurrentFromItems(items: BroadcastItem[]) {
     queueLength: playableItems.length,
     progressPercent: currentItem.durationSecs > 0 ? Math.round((positionSecs / currentItem.durationSecs) * 100) : 0,
     failoverReason: null,
+    itemStartEpochSecs,
+    currentItemEndsAtMs,
   };
 }
 
