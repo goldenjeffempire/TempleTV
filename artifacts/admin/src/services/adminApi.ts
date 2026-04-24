@@ -7,16 +7,31 @@ const BASE = (() => {
 })();
 
 export class AdminApiError extends Error {
+  // `transient` marks failures that are likely to succeed on a retry — network
+  // unreachable, gateway timeouts (502/503/504), and the "/api/* fell through
+  // to the SPA" case where the proxy returned HTML instead of JSON. The most
+  // common real-world cause is the api-server being mid-restart while the
+  // admin SPA tries to fetch (the dev workflow runs `build && start`, leaving
+  // a ~1-2s window when port 8080 is refusing connections). The retry wrapper
+  // below uses this flag to silently recover from those races on idempotent
+  // requests; the operator only sees an error if BOTH attempts fail.
+  public readonly transient: boolean;
   constructor(
     public status: number,
     message: string,
+    options?: { transient?: boolean },
   ) {
     super(message);
     this.name = "AdminApiError";
+    this.transient = options?.transient ?? false;
   }
 }
 
-async function adminRequest<T>(
+// Internal: performs a single HTTP attempt and returns a parsed result or
+// throws an AdminApiError tagged with `transient` when appropriate. Kept
+// separate from the public adminRequest wrapper so the retry logic stays
+// readable.
+async function doAdminRequest<T>(
   method: string,
   path: string,
   body?: unknown,
@@ -54,6 +69,7 @@ async function adminRequest<T>(
     throw new AdminApiError(
       0,
       `API server unreachable at ${BASE}${path} (${detail}). Check that the API workflow is running.`,
+      { transient: true },
     );
   }
 
@@ -63,18 +79,29 @@ async function adminRequest<T>(
     // status text — operators want to know why the proxy failed, not just
     // "Internal Server Error".
     let message = res.statusText || `HTTP ${res.status}`;
+    let isHtmlFallback = false;
     const parsed = await safeJson<{ error?: string; message?: string }>(res, `admin-api:${path}`);
     if (parsed.ok) {
       if (typeof parsed.data?.error === "string" && parsed.data.error) message = parsed.data.error;
       else if (typeof parsed.data?.message === "string" && parsed.data.message) message = parsed.data.message;
     } else if (parsed.reason === "html_fallback") {
       message = `${message} — server returned HTML (proxy may be routing /api to the SPA).`;
+      isHtmlFallback = true;
     } else if (parsed.reason !== "empty") {
       // Non-JSON error body with content. Surface the content-type so the
       // operator can see the source.
       message = `${message} (non-JSON ${parsed.contentType})`;
     }
-    throw new AdminApiError(res.status, message);
+    // Gateway/proxy failures and the SPA-fallback case are likely transient
+    // (api-server restart in progress, brief proxy hiccup). Real 4xx and 5xx
+    // application errors with a structured JSON body are NOT marked transient
+    // because retrying them would just hide a real bug.
+    const transient =
+      isHtmlFallback ||
+      res.status === 502 ||
+      res.status === 503 ||
+      res.status === 504;
+    throw new AdminApiError(res.status, message, { transient });
   }
 
   // 204 No Content / empty success body. Differentiate from the parse path.
@@ -83,7 +110,52 @@ async function adminRequest<T>(
   const parsed = await safeJson<T>(res, `admin-api:${path}`);
   if (parsed.ok) return parsed.data;
   if (parsed.reason === "empty") return undefined as T; // legacy: pre-existing pages treat empty 200 as undefined
-  throw new AdminApiError(res.status, describeJsonError(`API ${path}`, parsed));
+  // A 200 response with an HTML body almost always means the proxy fell
+  // through to the SPA (the api-server was momentarily unreachable, so
+  // either vite or the workspace router served index.html). Mark transient
+  // so the wrapper can retry.
+  const transient = parsed.reason === "html_fallback";
+  throw new AdminApiError(res.status, describeJsonError(`API ${path}`, parsed), { transient });
+}
+
+async function adminRequest<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  signal?: AbortSignal,
+): Promise<T> {
+  // Idempotent reads can be safely retried once on transient failure. Mutating
+  // methods (POST/PUT/PATCH/DELETE) are NEVER retried because retry-on-failure
+  // can produce double-creates, double-deletes, or out-of-order updates if the
+  // first request actually reached the server but the response was lost.
+  const isIdempotent = method === "GET" || method === "HEAD";
+  try {
+    return await doAdminRequest<T>(method, path, body, signal);
+  } catch (err) {
+    if (!isIdempotent) throw err;
+    if (signal?.aborted) throw err;
+    if (!(err instanceof AdminApiError) || !err.transient) throw err;
+    // Brief delay before retry — enough to let the api-server finish its
+    // restart in the common case, short enough that the operator perceives
+    // it as a small loading delay rather than a hang. If the caller's signal
+    // fires during the wait we reject with an AbortError (NOT the original
+    // transient error) so consumers like React Query that branch on
+    // err.name === "AbortError" treat this as a clean cancellation rather
+    // than surfacing a misleading "API unreachable" toast for what was
+    // actually a user-initiated cancel.
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        window.clearTimeout(timer);
+        reject(new DOMException("The operation was aborted.", "AbortError"));
+      };
+      const timer = window.setTimeout(() => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      }, 800);
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
+    });
+    return await doAdminRequest<T>(method, path, body, signal);
+  }
 }
 
 export const adminGet = <T>(path: string, signal?: AbortSignal) =>

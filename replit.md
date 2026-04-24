@@ -278,6 +278,31 @@ Verification:
 - Workflow restarted; server logs show clean startup (FFmpeg verified, schedulers running, first request 304 in 4ms, no runtime errors).
 - Constraints respected: no new dependencies, no schema changes.
 
+### Round 4k — One-shot retry on transient API failures
+
+**Bug reported by operator:** Transcoding page surfaced `Encoding queue unavailable: API /admin/transcoding/queue: server returned HTML instead of JSON`.
+
+**Root cause:** The Round 4g `safe-json` diagnostic was working perfectly — it correctly identified that the response body was HTML rather than JSON. The proximate cause was a workflow-restart race: the api-server's `dev` script runs `pnpm run build && pnpm run start`, leaving a ~1-2 second window when port 8080 refuses connections. During that window, vite's dev proxy (or the workspace path-based router) returns HTML — either an error page or the admin SPA's index.html — for `/api/*` requests. Direct verification (`curl localhost:8080` and `curl localhost:80`) both return 200 JSON; routing is fine.
+
+**Fix in `artifacts/admin/src/services/adminApi.ts`:**
+
+1. Extracted the per-attempt logic into `doAdminRequest`. The public `adminRequest` is now a thin retry wrapper.
+2. Added `transient: boolean` to `AdminApiError`. Set true for:
+   - Network unreachable (status 0 from `fetch` reject — distinct from `AbortError`).
+   - HTTP 502/503/504 gateway/proxy failures.
+   - `safeJson` `html_fallback` reason on either success or error responses.
+   - **NOT** set for genuine 4xx, application 5xx with structured JSON body, or empty 204/200.
+3. The wrapper retries **once**, after an 800 ms delay, only when:
+   - Method is `GET` or `HEAD` (idempotent — POST/PUT/PATCH/DELETE never retry, to avoid double-mutation if the original request reached the server but the response was lost).
+   - `signal` is not already aborted.
+   - Error is `instanceof AdminApiError && err.transient === true`.
+4. The 800 ms delay honors the caller's `AbortSignal`. If the user cancels mid-wait, the Promise rejects with a fresh `AbortError` (not the underlying transient `AdminApiError`) so consumers like React Query that branch on `err.name === "AbortError"` correctly treat it as a clean cancellation, not a retried failure.
+5. Listener cleanup: timer-fires path explicitly removes the abort listener before resolving; abort-fires path uses `{ once: true }` and clears the timer before rejecting.
+
+**Architect review:** First pass **PASS** with one medium correctness flag (the abort-during-backoff was rejecting with the wrong error); fixed and second pass returned a clean **PASS** confirming all four verification points (abort semantics, no regression on happy/4xx/5xx paths, listener cleanup correct in all exit paths, post-wait abort check correctly removed as redundant).
+
+**Why this is the right fix:** Workflow-restart races are a real, recurring class of failure in this dev environment. Surfacing them to the operator as actionable errors (Round 4g's diagnostic) was a strict improvement over generic "fetch failed" messages, but operators shouldn't have to click "Retry now" for a 1-2 second restart blip. The retry is silent, scoped tightly to the transient cases, and never applied to mutating requests.
+
 ## External Dependencies
 
 - **Database:** PostgreSQL
