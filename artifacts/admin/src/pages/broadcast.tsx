@@ -882,6 +882,11 @@ export default function Broadcast() {
   const [showGoLiveDialog, setShowGoLiveDialog] = useState(false);
   const [showEndDialog, setShowEndDialog] = useState(false);
   const [clearConfirm, setClearConfirm] = useState(false);
+  // ID of the queue item the operator is about to remove. When non-null, the
+  // shadcn AlertDialog is shown — replaces the previous browser-native
+  // window.confirm() so the per-item delete confirmation is consistent with
+  // the rest of the broadcast page (Clear Queue, End Live, etc.).
+  const [removeConfirmId, setRemoveConfirmId] = useState<string | null>(null);
 
   // ── action state ───────────────────────────────────────────────────────────
   const [endingLive, setEndingLive] = useState(false);
@@ -1073,8 +1078,16 @@ export default function Broadcast() {
     await loadAll();
   }, [toast, loadAll]);
 
-  const handleRemove = useCallback(async (id: string) => {
-    if (!window.confirm("Remove this item from the broadcast queue? This cannot be undone.")) return;
+  // Opens the confirmation dialog. The actual delete happens in
+  // handleConfirmRemove below once the operator clicks the destructive button.
+  const handleRemove = useCallback((id: string) => {
+    setRemoveConfirmId(id);
+  }, []);
+
+  const handleConfirmRemove = useCallback(async () => {
+    const id = removeConfirmId;
+    if (!id) return;
+    setRemoveConfirmId(null);
     setRemovingId(id);
     try {
       const res = await adminFetch(`/api/admin/broadcast/${id}`, { method: "DELETE" });
@@ -1085,7 +1098,7 @@ export default function Broadcast() {
     } finally {
       setRemovingId(null);
     }
-  }, [toast]);
+  }, [removeConfirmId, toast]);
 
   const handleReorder = useCallback(async (id: string, direction: "up" | "down") => {
     const idx = queue.findIndex((i) => i.id === id);
@@ -1129,12 +1142,42 @@ export default function Broadcast() {
   const handleClearQueue = useCallback(async () => {
     setClearConfirm(false);
     const ids = [...queue.map((i) => i.id)];
+    // Track per-item failures rather than swallowing them silently. A delete
+    // can fail because the item was already removed by another operator (404),
+    // because the API server is unreachable mid-clear, or because the admin
+    // token rotated. Reporting the count gives the operator the chance to
+    // refresh and try again instead of trusting a falsely-empty UI.
+    const succeededIds: string[] = [];
+    const failures: { id: string; reason: string }[] = [];
     for (const id of ids) {
-      await adminFetch(`/api/admin/broadcast/${id}`, { method: "DELETE" }).catch(() => {});
+      try {
+        const res = await adminFetch(`/api/admin/broadcast/${id}`, { method: "DELETE" });
+        if (!res.ok) {
+          failures.push({ id, reason: `HTTP ${res.status}` });
+          continue;
+        }
+        succeededIds.push(id);
+      } catch (e) {
+        failures.push({ id, reason: e instanceof Error ? e.message : "Network error" });
+      }
     }
-    setQueue([]);
-    toast({ title: "Queue cleared" });
-  }, [queue, toast]);
+    if (failures.length === 0) {
+      setQueue([]);
+      toast({ title: "Queue cleared", description: `${succeededIds.length} items removed.` });
+    } else {
+      // Reflect partial success in the UI (only drop the ones that actually
+      // deleted) and surface the failure count + first reason so the operator
+      // knows something needs attention.
+      setQueue((q) => q.filter((i) => !succeededIds.includes(i.id)));
+      toast({
+        title: "Queue partially cleared",
+        description: `${succeededIds.length} of ${ids.length} removed. ${failures.length} failed (e.g. ${failures[0].reason}).`,
+        variant: "destructive",
+      });
+      // Reload to reconcile against the server in case our local view drifted.
+      await loadAll();
+    }
+  }, [queue, toast, loadAll]);
 
   // ── live controls ──────────────────────────────────────────────────────────
   const handleGoLive = useCallback(async (title: string, durationMins: number, notify: boolean) => {
@@ -1436,6 +1479,34 @@ export default function Broadcast() {
               onClick={handleEndLive}
             >
               End Live
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={removeConfirmId !== null}
+        onOpenChange={(open) => { if (!open) setRemoveConfirmId(null); }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove from queue?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {(() => {
+                const item = queue.find((i) => i.id === removeConfirmId);
+                return item
+                  ? `"${item.title}" will be removed from the broadcast queue. This cannot be undone.`
+                  : "This item will be removed from the broadcast queue. This cannot be undone.";
+              })()}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={handleConfirmRemove}
+            >
+              Remove
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
