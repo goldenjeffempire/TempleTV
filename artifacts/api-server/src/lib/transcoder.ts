@@ -1,4 +1,5 @@
 import { promises as fs } from "fs";
+import { Readable } from "stream";
 import path from "path";
 import { fileURLToPath } from "url";
 import { randomUUID } from "crypto";
@@ -361,13 +362,76 @@ async function processNextJob(): Promise<boolean> {
     attempt: attemptNumber,
   });
 
+  // Track any temp file we download so we can clean it up afterwards.
+  let tempDownloadPath: string | null = null;
+
   try {
     const hlsVideoDir = path.join(HLS_DIR, job.videoId);
     await fs.mkdir(hlsVideoDir, { recursive: true });
 
+    // ── Source-file resilience ──────────────────────────────────────────────
+    // The `video_path` column records the local filesystem path at the moment
+    // of upload. When the server migrates environments (e.g. Render → Replit)
+    // that path no longer exists.  Before giving up, check whether the video
+    // row's `localVideoUrl` is an HTTP URL we can fetch, download it to a tmp
+    // file, and use that for encoding instead.
+    let effectivePath = job.videoPath;
+
+    const localAccessible = await fs.access(job.videoPath).then(() => true).catch(() => false);
+    if (!localAccessible) {
+      logger.warn(
+        { jobId: job.id, videoPath: job.videoPath },
+        "Source file not found at recorded path — attempting HTTP fallback",
+      );
+
+      const videoRows = await db
+        .select({ localVideoUrl: videosTable.localVideoUrl })
+        .from(videosTable)
+        .where(eq(videosTable.id, job.videoId))
+        .limit(1);
+
+      const localVideoUrl = videoRows[0]?.localVideoUrl;
+
+      if (!localVideoUrl || !/^https?:\/\//.test(localVideoUrl)) {
+        throw new Error(
+          `Input file inaccessible: ENOENT: no such file or directory, stat '${job.videoPath}' (no HTTP fallback URL available)`,
+        );
+      }
+
+      const tmpDir = path.join(UPLOADS_DIR, "tmp");
+      await fs.mkdir(tmpDir, { recursive: true });
+      tempDownloadPath = path.join(tmpDir, `dl-${job.id}.mp4`);
+
+      logger.info({ jobId: job.id, url: localVideoUrl, dest: tempDownloadPath }, "Downloading source file for transcoding");
+
+      const response = await fetch(localVideoUrl);
+      if (!response.ok || !response.body) {
+        throw new Error(`HTTP fallback download failed: ${response.status} ${response.statusText} — ${localVideoUrl}`);
+      }
+
+      const dest = await fs.open(tempDownloadPath, "w");
+      const writer = dest.createWriteStream();
+      const reader = response.body;
+
+      await new Promise<void>((resolve, reject) => {
+        const readable = (Readable as any).fromWeb
+          ? (Readable as any).fromWeb(reader as any)
+          : (reader as any);
+        readable.pipe(writer);
+        writer.on("finish", resolve);
+        writer.on("error", reject);
+        readable.on("error", reject);
+      });
+
+      await dest.close();
+      effectivePath = tempDownloadPath;
+
+      logger.info({ jobId: job.id, dest: tempDownloadPath }, "Source file downloaded successfully");
+    }
+
     // Strict input validation — fail fast with a clear reason if the source
     // is corrupt, unsupported, or missing a video stream.
-    const probed = await validateAndProbeInput(job.videoPath);
+    const probed = await validateAndProbeInput(effectivePath);
     const sourceHeight = probed.height;
     const sourceDurationSec = probed.durationSec;
 
@@ -389,7 +453,7 @@ async function processNextJob(): Promise<boolean> {
       // the job only fails if ZERO variants are produced.
       try {
         const produced = await transcodeQuality(
-          job.videoPath,
+          effectivePath,
           qualityOutputDir,
           profile,
           sourceHeight,
@@ -575,6 +639,11 @@ async function processNextJob(): Promise<boolean> {
         status: "failed",
         error: msg,
       });
+    }
+  } finally {
+    // Clean up any temporary file we downloaded for HTTP fallback transcoding.
+    if (tempDownloadPath) {
+      fs.rm(tempDownloadPath, { force: true }).catch(() => {});
     }
   }
 

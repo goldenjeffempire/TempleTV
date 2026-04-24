@@ -2682,16 +2682,41 @@ router.post("/admin/transcoding/retry/:jobId", async (req, res) => {
   }
 });
 
+// NOTE: /clear must be declared before /:jobId so the literal path wins over the wildcard.
+router.delete("/admin/transcoding/clear", async (req, res) => {
+  try {
+    const { status } = req.query as { status?: string };
+    const allowed = ["done", "failed", "cancelled"];
+    const statuses: string[] = status === "all" ? allowed : allowed.filter((s) => s === status);
+    if (statuses.length === 0) {
+      return void res.status(400).json({ error: "Invalid status. Use done, failed, cancelled, or all." });
+    }
+    const result = await db
+      .delete(transcodingJobsTable)
+      .where(inArray(transcodingJobsTable.status, statuses as ("done" | "failed" | "cancelled")[]))
+      .returning({ id: transcodingJobsTable.id });
+    res.json({ cleared: result.length, statuses });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
 router.delete("/admin/transcoding/:jobId", async (req, res) => {
   try {
     const { jobId } = req.params as { jobId: string };
     const rows = await db
       .select()
       .from(transcodingJobsTable)
-      .where(and(eq(transcodingJobsTable.id, jobId), eq(transcodingJobsTable.status, "queued")));
+      .where(
+        and(
+          eq(transcodingJobsTable.id, jobId),
+          inArray(transcodingJobsTable.status, ["queued", "failed"]),
+        ),
+      );
 
     if (rows.length === 0) {
-      return void res.status(400).json({ error: "Only queued jobs can be cancelled" });
+      return void res.status(400).json({ error: "Only queued or failed jobs can be cancelled" });
     }
 
     await db
@@ -2728,25 +2753,6 @@ router.post("/admin/transcoding/requeue/:videoId", async (req, res) => {
     const { priority = 0 } = req.body as { priority?: number };
     const jobId = await queueTranscodingJob(videoId, localFilePath, priority);
     res.status(201).json({ jobId });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "Unknown error";
-    res.status(500).json({ error: msg });
-  }
-});
-
-router.delete("/admin/transcoding/clear", async (req, res) => {
-  try {
-    const { status } = req.query as { status?: string };
-    const allowed = ["done", "failed", "cancelled"];
-    const statuses: string[] = status === "all" ? allowed : allowed.filter((s) => s === status);
-    if (statuses.length === 0) {
-      return void res.status(400).json({ error: "Invalid status. Use done, failed, cancelled, or all." });
-    }
-    const result = await db
-      .delete(transcodingJobsTable)
-      .where(inArray(transcodingJobsTable.status, statuses as ("done" | "failed" | "cancelled")[]))
-      .returning({ id: transcodingJobsTable.id });
-    res.json({ cleared: result.length, statuses });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });

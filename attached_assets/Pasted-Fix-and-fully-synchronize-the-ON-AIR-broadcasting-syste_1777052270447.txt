@@ -1,0 +1,13 @@
+Fix and fully synchronize the ON AIR broadcasting system across the entire platform so that all devices display the exact same live broadcast stream in real time. Ensure that whatever content is broadcasting ON AIR is identical across mobile devices, tablets, desktops, web platforms, smart TVs, and connected TV devices without any differences in playback, timing, queue progression, or displayed content.
+
+Eliminate all issues causing stream desynchronization, delayed playback, mismatched videos, cached outdated streams, or inconsistent ON AIR states between devices. Ensure every user watching the ON AIR broadcast receives the same live stream, playback position, transitions, and broadcast timeline simultaneously to replicate a real-world television station broadcasting experience.
+
+Implement centralized real-time broadcast state synchronization and optimize low-latency streaming delivery to maintain playback consistency across all viewing endpoints. Ensure broadcast updates, queue changes, scheduled content transitions, and live stream changes propagate instantly across all devices without requiring manual refreshes.
+
+Ensure the Radio Mode functionality is fully synchronized with the live ON AIR broadcast. When Radio Mode is enabled, automatically convert the active ON AIR live video stream into synchronized audio-only playback while maintaining the exact live broadcast timeline. When Radio Mode is disabled, instantly restore synchronized live video playback from the same broadcast source without playback interruption or desynchronization.
+
+Optimize the entire live streaming infrastructure for fast performance, low latency, adaptive streaming stability, high concurrent viewership, and enterprise-grade reliability. Add robust monitoring, diagnostics, synchronization validation, and failover handling to ensure continuous broadcast consistency under real-world production conditions.
+
+The final implementation must deliver a fully synchronized, television-grade ON AIR streaming experience where every viewer across all devices watches the exact same live Temple TV broadcast in perfect real-time alignment with seamless synchronized radio functionality.
+
+“Temple TV Anywhere You Go”
