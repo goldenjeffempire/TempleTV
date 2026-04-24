@@ -8,7 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Send, Loader2, BellRing, Info, Clock, Trash2, CalendarClock, CheckCircle2, XCircle, AlertCircle, Film } from "lucide-react";
+import { Send, Loader2, BellRing, Info, Clock, Trash2, CalendarClock, CheckCircle2, XCircle, AlertCircle, Film, RefreshCw } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -104,13 +104,18 @@ export default function Notifications() {
   const [sendConfirmOpen, setSendConfirmOpen] = useState(false);
   const [cancelConfirmId, setCancelConfirmId] = useState<string | null>(null);
 
+  const [schedError, setSchedError] = useState<string | null>(null);
   const fetchScheduled = useCallback(async () => {
     setSchedLoading(true);
     try {
       const data = await adminGet<ScheduledNotif[]>("/admin/notifications/scheduled");
       // Defensive: only adopt the response when it really is a list.
       setScheduled(Array.isArray(data) ? data : []);
-    } catch {
+      setSchedError(null);
+    } catch (err) {
+      // Surface the failure: silently swallowing it left the operator with a
+      // stale "no scheduled notifications" view even when the API was down.
+      setSchedError(err instanceof Error ? err.message : "Failed to load scheduled notifications");
     } finally {
       setSchedLoading(false);
     }
@@ -413,6 +418,15 @@ export default function Notifications() {
                 <CardContent>
                   {schedLoading ? (
                     Array(2).fill(0).map((_, i) => <Skeleton key={i} className="h-20 w-full mb-3" />)
+                  ) : schedError ? (
+                    <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-4 text-sm">
+                      <p className="font-medium text-destructive mb-1">Could not load scheduled notifications</p>
+                      <p className="text-xs text-muted-foreground break-all mb-3">{schedError}</p>
+                      <Button size="sm" variant="outline" onClick={fetchScheduled}>
+                        <RefreshCw className="w-3 h-3 mr-2" />
+                        Retry
+                      </Button>
+                    </div>
                   ) : pending.length === 0 ? (
                     <div className="text-center py-8 text-muted-foreground text-sm">No upcoming notifications scheduled.</div>
                   ) : (

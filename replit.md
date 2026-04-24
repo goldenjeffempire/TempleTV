@@ -176,6 +176,23 @@ Verification:
 - All three broadcast endpoints continue to return 200 JSON via curl, the outer proxy (port 80), and the vite proxy (port 23744).
 - The error-state UI still renders the Retry button. The new no-token branch matches the existing admin-key modal flow.
 
+### Round 4f — silent-catch elimination across remaining admin pages (April 2026)
+
+A repo-wide audit of `} catch {` (no error binding) across the 13 admin pages turned up three real defects where the caught error was discarded entirely, leaving the operator with either a generic toast or nothing at all:
+
+1. **`live-monitor.tsx`** (line 263) — caught the `/admin/live/health` failure but dropped the cause; the toast just said "Failed to load live health data" with no description, and the empty-state card said "Check that the API server is running" even when the real cause was a 401, an HTML fallback, or a JSON shape mismatch. Fixed by binding the error, recording the message in a new `fetchError` state, surfacing it in the toast description AND the inline empty-state card, and adding a Retry button that re-runs `fetchHealth`.
+
+2. **`notifications.tsx`** (line 113) — silently swallowed `/admin/notifications/scheduled` failures, leaving the operator looking at "No upcoming notifications scheduled." while the API was actually down or rejecting the token. Fixed by binding the error, storing it in a new `schedError` state, and rendering a destructive-bordered error block (with the underlying message and a Retry button) ahead of the empty-state branch in the Upcoming card.
+
+3. **`launch-readiness.tsx`** (line 106) — toasted "Launch readiness unavailable" with no description; same root cause / same fix pattern (bind error, include `err.message` in the toast description) as the round-4d hardening on dashboard/users/analytics.
+
+Every remaining `} catch {` in the page tree was reviewed and confirmed safe: `live-monitor.tsx:131,139,296` are localStorage parse / JSON.parse fallbacks where ignoring is correct; `schedule.tsx:59` is a timezone-resolution fallback; `videos.tsx:601` is a JSON.parse on an already-failing fetch where the original error is preserved by the surrounding `throw new Error(msg)`.
+
+Verification:
+- `tsc --noEmit` clean for both `@workspace/admin` and `@workspace/api-server`.
+- After workflow restart, all three previously-silent endpoints (`/admin/live/health`, `/admin/notifications/scheduled`, `/admin/launch/readiness`) return 200 via the API server.
+- New `RefreshCw` import added to `notifications.tsx` to power the Retry button; no new dependencies, no schema changes, no rewrites.
+
 ## External Dependencies
 
 - **Database:** PostgreSQL

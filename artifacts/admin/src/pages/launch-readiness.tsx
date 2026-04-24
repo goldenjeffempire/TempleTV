@@ -103,9 +103,13 @@ export default function LaunchReadinessPage() {
       const data = await adminGet<LaunchReadiness>("/admin/launch/readiness");
       if (!isMountedRef.current) return;
       setReadiness(data);
-    } catch {
+    } catch (err) {
       if (!isMountedRef.current) return;
-      toast({ title: "Launch readiness unavailable", variant: "destructive" });
+      toast({
+        title: "Launch readiness unavailable",
+        description: err instanceof Error ? err.message : "Could not reach the readiness endpoint.",
+        variant: "destructive",
+      });
     } finally {
       inFlightRef.current = false;
       if (isMountedRef.current) {

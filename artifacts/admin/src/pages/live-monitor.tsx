@@ -233,6 +233,7 @@ export default function LiveMonitor() {
   const [sseError, setSseError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [alertVisible, setAlertVisible] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const prevIsLive = useRef<boolean | null>(null);
   const storedHistoryRef = useRef<ViewerSnapshot[]>(loadStoredViewerHistory());
 
@@ -260,9 +261,19 @@ export default function LiveMonitor() {
       storedHistoryRef.current = merged;
       persistViewerHistory(merged);
       setData({ ...json, viewerHistory: merged, history: safeHistory });
-    } catch {
+      setFetchError(null);
+    } catch (err) {
+      // Surface the underlying cause to the operator instead of swallowing it
+      // — without this, a 401 (rotated admin key) is indistinguishable from a
+      // network outage from a malformed proxy response.
+      const message = err instanceof Error ? err.message : "Could not reach /admin/live/health.";
+      setFetchError(message);
       if (!silent) {
-        toast({ title: "Failed to load live health data", variant: "destructive" });
+        toast({
+          title: "Failed to load live health data",
+          description: message,
+          variant: "destructive",
+        });
       }
     } finally {
       setLoading(false);
@@ -683,9 +694,20 @@ export default function LiveMonitor() {
         </>
       ) : (
         <Card>
-          <CardContent className="flex items-center gap-3 py-6 text-muted-foreground">
-            <AlertTriangle className="w-5 h-5" />
-            <span>Failed to load monitoring data. Check that the API server is running.</span>
+          <CardContent className="flex items-start gap-3 py-6 text-muted-foreground">
+            <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5 text-destructive" />
+            <div className="flex-1 space-y-2">
+              <p className="font-medium text-foreground">Failed to load monitoring data.</p>
+              {fetchError ? (
+                <p className="text-sm break-all">{fetchError}</p>
+              ) : (
+                <p className="text-sm">Check that the API server is running.</p>
+              )}
+              <Button size="sm" variant="outline" onClick={() => fetchHealth()} disabled={refreshing}>
+                <RefreshCw className={`w-4 h-4 mr-2 ${refreshing ? "animate-spin" : ""}`} />
+                Retry
+              </Button>
+            </div>
           </CardContent>
         </Card>
       )}
