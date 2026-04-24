@@ -3,7 +3,7 @@ import { AlertCircle, Loader2, ShieldCheck } from "lucide-react";
 import { TempleTvLogo } from "@/components/temple-tv-logo";
 import { AdminKeyDialog } from "@/components/admin-key-dialog";
 import { Button } from "@/components/ui/button";
-import { getAdminToken } from "@/lib/admin-access";
+import { adminGet, AdminApiError } from "@/services/adminApi";
 
 type GateState =
   | { kind: "checking" }
@@ -13,21 +13,35 @@ type GateState =
   | { kind: "server-down"; message: string };
 
 async function probeAdminAccess(): Promise<GateState> {
+  // Round 4l: route through adminGet rather than raw fetch. adminGet:
+  //   1. Already retries on transient failures (network / 502/503/504 / HTML
+  //      fallthrough) with the same backoff.
+  //   2. Performs real JSON parsing — so an HTML body mislabelled as
+  //      application/json would still throw AdminApiError instead of
+  //      incorrectly granting access. This closes the auth-bypass gap
+  //      flagged in code review for the previous raw-fetch implementation.
+  //   3. Reads the admin token from localStorage the same way the previous
+  //      implementation did, so behavior is identical for the happy path.
   try {
-    const headers: HeadersInit = {};
-    const token = getAdminToken();
-    if (token) headers["authorization"] = `Bearer ${token}`;
-    const res = await fetch("/api/admin/stats", { headers });
-    if (res.ok) return { kind: "ok" };
-    if (res.status === 401) return { kind: "needs-token" };
-    if (res.status === 503) {
+    await adminGet<unknown>("/admin/stats");
+    return { kind: "ok" };
+  } catch (err) {
+    if (err instanceof AdminApiError) {
+      if (err.status === 401) return { kind: "needs-token" };
+      if (err.status === 503) {
+        return {
+          kind: "server-misconfigured",
+          message: "Admin access is disabled until ADMIN_API_TOKEN is configured on the API server.",
+        };
+      }
+      if (err.status === 0) {
+        return { kind: "server-down", message: "Could not reach the API server." };
+      }
       return {
-        kind: "server-misconfigured",
-        message: "Admin access is disabled until ADMIN_API_TOKEN is configured on the API server.",
+        kind: "server-down",
+        message: `Unexpected response from API (HTTP ${err.status}).`,
       };
     }
-    return { kind: "server-down", message: `Unexpected response from API (HTTP ${res.status}).` };
-  } catch {
     return { kind: "server-down", message: "Could not reach the API server." };
   }
 }

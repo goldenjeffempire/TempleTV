@@ -303,6 +303,27 @@ Verification:
 
 **Why this is the right fix:** Workflow-restart races are a real, recurring class of failure in this dev environment. Surfacing them to the operator as actionable errors (Round 4g's diagnostic) was a strict improvement over generic "fetch failed" messages, but operators shouldn't have to click "Retry now" for a 1-2 second restart blip. The retry is silent, scoped tightly to the transient cases, and never applied to mutating requests.
 
+### Round 4l — Universal transient retry coverage + auth-probe hardening (April 2026)
+
+**Bug reported by operator:** After Round 4k shipped, the operator hit the same `html_fallback` failure on the broadcast page on three parallel calls (queue, current broadcast, live status). Round 4k's retry only covered the central `adminRequest` client; six raw-fetch sites bypassed it entirely.
+
+**Coverage fixes in `artifacts/admin/src`:**
+
+1. New exported helper `fetchWithTransientRetry(factory, signal?)` in `services/adminApi.ts`. Same backoff schedule as `adminRequest` (`[500ms, 1500ms]`). Retries on factory throw (excluding `AbortError`), HTTP 502/503/504, and 200/2xx with HTML body (sniffed via `Response.clone().text().slice(0, 128)` — 128-char window is wide enough to skip BOM, leading whitespace, and HTML comment prefixes before `<!doctype html>`). Skips body-clone when Content-Type is explicitly `application/json` to avoid extra clone+text cost on the SSE 30s refresh cycles.
+2. Bumped the central client's retry backoff from a single 800 ms attempt to a two-step `[500ms, 1500ms]` schedule after the operator hit the original race twice with the shorter delay.
+3. Wrapped the four raw-fetch sites in retry: `pages/broadcast.tsx`, `pages/videos.tsx`, `components/command-palette.tsx` (each had an identical local `adminFetch` helper — retry now applied only to GET/HEAD), and `pages/live-monitor.tsx fetchHealth`.
+
+**Auth-probe hardening (security fix flagged by code review):**
+
+The first review caught an auth-bypass class: the two startup probes (`auth-gate.tsx probeAdminAccess` and `admin-key-dialog.tsx verifyAdminToken`) treated any `res.ok` as success without parsing the body. Combined with `fetchWithTransientRetry`'s JSON-content-type bypass, an HTML response mislabelled as `application/json` could theoretically have let an unauthenticated user past the gate.
+
+- `auth-gate.tsx probeAdminAccess`: replaced raw fetch with `adminGet<unknown>("/admin/stats")`. The central client already does real `safeJson` parsing, so an HTML body throws `AdminApiError` and the probe correctly maps to `server-down` rather than returning `{ kind: "ok" }`. Catch branch maps `AdminApiError.status` to existing `GateState` shapes (401 → `needs-token`, 503 → `server-misconfigured`, 0 → `server-down`).
+- `admin-key-dialog.tsx verifyAdminToken`: cannot use `adminGet` because it must verify a token the operator just typed (not yet stored in localStorage). Kept `fetchWithTransientRetry` for retry behavior, but added an explicit `text() → JSON.parse → typeof === "object"` check inside the `res.ok` branch. Parse failure or non-object shape returns `{ ok: false }` with a clear message rather than passing the verification.
+
+**Architect review:** First pass FAIL (missed the two auth probes); second pass FAIL (caught the auth-bypass class on the JSON content-type bypass); third pass **PASS** confirming the auth probes now require parseable JSON success responses and eliminating the false-positive auth path on proxy/SPA fallback responses.
+
+**Coverage claim:** Survey of `await fetch(` across `artifacts/admin/src` now shows only `services/adminApi.ts` itself (already retry-protected) and `components/VideoUploadModal.tsx` (chunk PUTs, intentionally never retried since they are mutating).
+
 ## External Dependencies
 
 - **Database:** PostgreSQL

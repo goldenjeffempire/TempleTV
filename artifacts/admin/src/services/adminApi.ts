@@ -148,6 +148,102 @@ function delayWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
 // Tuning this requires no schema or dependency changes.
 const RETRY_BACKOFF_MS = [500, 1500] as const;
 
+// HTML-fallback detector for the response-level retry path. Same regex as
+// safe-json.ts uses; duplicated here (3 lines) to avoid an import cycle and
+// to keep the response-classification logic self-contained.
+const FETCH_RETRY_HTML_RE = /^\s*<(?:!doctype\s+html|html\b|head\b|body\b)/i;
+const FETCH_RETRY_JSON_CT = /\bapplication\/(?:[\w.+-]*\+)?json\b/i;
+
+/**
+ * Wrap a fetch-returning factory with the same one-shot-then-backoff retry
+ * policy used by adminRequest. Intended for the small number of pages that
+ * still use raw fetch (broadcast.tsx, videos.tsx, live-monitor.tsx,
+ * command-palette.tsx) and therefore bypass the central client's retry.
+ *
+ * Retries on:
+ *   - factory throwing (network error / fetch reject), excluding AbortError.
+ *   - HTTP 502 / 503 / 504 from the workspace proxy.
+ *   - HTTP 200 with an HTML body — the SPA-fallthrough case that occurs
+ *     during the api-server restart window.
+ *
+ * Does NOT retry:
+ *   - AbortError at any layer (caller cancellation is honored immediately).
+ *   - Real 4xx and 5xx responses with JSON or other non-HTML bodies — those
+ *     are application errors that should surface, not be hidden by a retry.
+ *
+ * The caller MUST treat this as suitable only for idempotent requests
+ * (GET/HEAD). Mutating requests should call fetch directly.
+ *
+ * To detect the HTML body case we have to peek the body, which would consume
+ * the stream. We use Response.clone() so the caller still receives a Response
+ * with an unread body and existing safeJson() consumers keep working.
+ */
+export async function fetchWithTransientRetry(
+  factory: () => Promise<Response>,
+  signal?: AbortSignal,
+): Promise<Response> {
+  let lastErr: unknown;
+  const maxAttempts = 1 + RETRY_BACKOFF_MS.length;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    let res: Response | null = null;
+    try {
+      res = await factory();
+    } catch (err) {
+      lastErr = err;
+      if (signal?.aborted) throw err;
+      if (
+        (err instanceof DOMException && err.name === "AbortError") ||
+        (err instanceof Error && err.name === "AbortError")
+      ) {
+        throw err;
+      }
+      const isLastAttempt = attempt >= maxAttempts - 1;
+      if (isLastAttempt) throw err;
+      await delayWithAbort(RETRY_BACKOFF_MS[attempt], signal);
+      continue;
+    }
+
+    // Gateway / proxy failure → retry.
+    if (res.status === 502 || res.status === 503 || res.status === 504) {
+      const isLastAttempt = attempt >= maxAttempts - 1;
+      if (isLastAttempt) return res;
+      await delayWithAbort(RETRY_BACKOFF_MS[attempt], signal);
+      continue;
+    }
+
+    // SPA-fallthrough detection: 2xx response whose body is HTML. Skip the
+    // body read entirely if the server explicitly claims JSON (the common
+    // case) — saves a clone+text per request in the success path.
+    const ctype = res.headers.get("content-type") ?? "";
+    const explicitlyJson = FETCH_RETRY_JSON_CT.test(ctype);
+    if (res.ok && !explicitlyJson) {
+      let bodySnippet: string | null = null;
+      try {
+        // 128-char window is large enough to skip past leading whitespace, a
+        // BOM, or a leading HTML comment before <!doctype html> while still
+        // being cheap. (Round 4l initial used 32 chars; code review flagged
+        // false-negative risk on uncommon prefixes.)
+        bodySnippet = (await res.clone().text()).slice(0, 128);
+      } catch {
+        // If the body can't be cloned (already consumed by a Response polyfill
+        // edge case), skip the HTML check rather than fail the request.
+        bodySnippet = null;
+      }
+      if (bodySnippet !== null && FETCH_RETRY_HTML_RE.test(bodySnippet)) {
+        const isLastAttempt = attempt >= maxAttempts - 1;
+        if (isLastAttempt) return res;
+        await delayWithAbort(RETRY_BACKOFF_MS[attempt], signal);
+        continue;
+      }
+    }
+
+    return res;
+  }
+  // Loop exits via return on success or throw on terminal failure; this
+  // re-throw is reachable only if maxAttempts is 0, which we don't allow.
+  throw lastErr ?? new Error("fetchWithTransientRetry exhausted attempts");
+}
+
 async function adminRequest<T>(
   method: string,
   path: string,

@@ -10,6 +10,7 @@ import {
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { VideoUploadModal } from "@/components/VideoUploadModal";
+import { fetchWithTransientRetry } from "@/services/adminApi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -138,7 +139,15 @@ async function adminFetch(url: string, opts?: RequestInit): Promise<Response> {
   const token = window.localStorage.getItem("temple-tv-admin-token")?.trim();
   const headers: Record<string, string> = { ...(opts?.headers as Record<string, string>) };
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  return fetch(url, { ...opts, headers });
+  // Round 4l: idempotent reads route through the shared retry wrapper so
+  // workflow-restart races don't surface as page errors. Mutating requests
+  // (POST/PUT/PATCH/DELETE) bypass the retry to avoid double-mutation.
+  const method = (opts?.method ?? "GET").toUpperCase();
+  const isIdempotent = method === "GET" || method === "HEAD";
+  const factory = () => fetch(url, { ...opts, headers });
+  return isIdempotent
+    ? fetchWithTransientRetry(factory, opts?.signal ?? undefined)
+    : factory();
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────

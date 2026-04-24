@@ -9,6 +9,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { fetchWithTransientRetry } from "@/services/adminApi";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
@@ -25,10 +26,40 @@ interface AdminKeyDialogProps {
 
 async function verifyAdminToken(token: string): Promise<{ ok: true } | { ok: false; status: number; message: string }> {
   try {
-    const res = await fetch("/api/admin/stats", {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    if (res.ok) return { ok: true };
+    // Round 4l: this probe must use raw fetch (not adminGet) because adminGet
+    // reads the token from localStorage, but here we're verifying a token the
+    // operator has just typed and which has NOT been stored yet. The retry
+    // wrapper still applies, and we explicitly JSON-parse the body before
+    // accepting `res.ok` so an HTML fallback mislabelled as application/json
+    // can never be misinterpreted as a successful token verification —
+    // closing the auth-bypass gap flagged in code review.
+    const res = await fetchWithTransientRetry(() =>
+      fetch("/api/admin/stats", {
+        headers: { authorization: `Bearer ${token}` },
+      }),
+    );
+    if (res.ok) {
+      // Defense-in-depth JSON validation. The endpoint always returns a JSON
+      // object on success; if the body is HTML or otherwise unparseable we
+      // treat it as a server problem rather than as a passing verification.
+      try {
+        const text = await res.text();
+        const parsed: unknown = JSON.parse(text);
+        if (parsed && typeof parsed === "object") return { ok: true };
+        return {
+          ok: false,
+          status: res.status,
+          message: "Server returned an unexpected response shape; cannot verify admin key.",
+        };
+      } catch {
+        return {
+          ok: false,
+          status: res.status,
+          message:
+            "Server returned a non-JSON response (the API server may be restarting). Try again in a moment.",
+        };
+      }
+    }
     if (res.status === 401) {
       return { ok: false, status: 401, message: "That admin key was rejected by the server." };
     }

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { safeJson, describeJsonError } from "@/lib/safe-json";
+import { fetchWithTransientRetry } from "@/services/adminApi";
 import { VideoUploadModal } from "@/components/VideoUploadModal";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -136,7 +137,18 @@ async function adminFetch(url: string, opts?: RequestInit): Promise<Response> {
   const token = window.localStorage.getItem("temple-tv-admin-token")?.trim();
   const headers: Record<string, string> = { ...(opts?.headers as Record<string, string>) };
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  return fetch(url, { ...opts, headers });
+  // Round 4l: idempotent reads route through the shared retry wrapper so
+  // workflow-restart races don't surface as page errors. Mutating requests
+  // bypass the retry — silent retry on POST/PUT/PATCH/DELETE could double-
+  // mutate if the original request reached the server but the response was
+  // lost. We treat method as upper-case GET/HEAD for the safety check; any
+  // other value (including unset → fetch default GET) is matched explicitly.
+  const method = (opts?.method ?? "GET").toUpperCase();
+  const isIdempotent = method === "GET" || method === "HEAD";
+  const factory = () => fetch(url, { ...opts, headers });
+  return isIdempotent
+    ? fetchWithTransientRetry(factory, opts?.signal ?? undefined)
+    : factory();
 }
 
 // Round 4g: the JsonResult / safeJson / describeJsonError trio that used to

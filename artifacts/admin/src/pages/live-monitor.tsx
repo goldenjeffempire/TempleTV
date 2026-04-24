@@ -28,6 +28,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
 import { getAdminToken } from "@/lib/admin-access";
+import { fetchWithTransientRetry } from "@/services/adminApi";
 
 interface LiveEventRecord {
   ts: number;
@@ -242,7 +243,12 @@ export default function LiveMonitor() {
     try {
       const token = getAdminToken();
       const headers: HeadersInit = token ? { "X-Admin-Token": token } : {};
-      const res = await fetch(apiUrl("/admin/live/health"), { headers });
+      // Round 4l: wrap in the shared retry helper so a workflow-restart race
+      // doesn't surface as "Unexpected non-JSON response from live health
+      // endpoint". This is a pure GET, safe to retry.
+      const res = await fetchWithTransientRetry(() =>
+        fetch(apiUrl("/admin/live/health"), { headers }),
+      );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       // Safe-parse: if a proxy returns the SPA HTML fallback by mistake,
       // surface a clean error instead of a raw "Unexpected token '<'".
