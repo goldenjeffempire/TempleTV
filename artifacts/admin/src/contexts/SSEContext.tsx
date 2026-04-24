@@ -12,10 +12,18 @@ export type SSEConnectionState = "connecting" | "connected" | "reconnecting" | "
 
 type SSEEventHandler = (data: unknown) => void;
 
+export interface SSEActivityEntry {
+  id: string;
+  event: string;
+  ts: number;
+  summary: string;
+}
+
 interface SSEContextValue {
   state: SSEConnectionState;
   subscribe: (event: string, handler: SSEEventHandler) => () => void;
   lastStatusPayload: AdminLiveStatus | null;
+  recentActivity: SSEActivityEntry[];
 }
 
 export interface AdminLiveStatus {
@@ -40,14 +48,58 @@ const SSEContext = createContext<SSEContextValue | null>(null);
 
 const MAX_BACKOFF_MS = 30_000;
 
+const ACTIVITY_BUFFER_SIZE = 25;
+
+function summarizeEvent(event: string, data: unknown): string | null {
+  if (event === "heartbeat") return null;
+  const d = (data && typeof data === "object" ? (data as Record<string, unknown>) : {}) as Record<string, unknown>;
+  switch (event) {
+    case "status": {
+      const isLive = Boolean(d.isLive);
+      const override = d.liveOverride as { title?: string } | null | undefined;
+      const ytTitle = (d.ytTitle as string | null | undefined) ?? undefined;
+      const deviceCount = Number(d.deviceCount ?? 0);
+      if (isLive) {
+        const title = override?.title ?? ytTitle ?? "Live broadcast";
+        return `On air — ${title} · ${deviceCount} viewers`;
+      }
+      return `Off air · ${deviceCount} viewers idle`;
+    }
+    case "broadcast-control-updated":
+      return "Broadcast control updated";
+    case "broadcast-queue-updated":
+      return "Broadcast queue updated";
+    case "override-expired":
+      return "Live override expired";
+    default:
+      return event;
+  }
+}
+
 export function SSEProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<SSEConnectionState>("connecting");
   const [lastStatusPayload, setLastStatusPayload] = useState<AdminLiveStatus | null>(null);
+  const [recentActivity, setRecentActivity] = useState<SSEActivityEntry[]>([]);
 
   const esRef = useRef<EventSource | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const attempt = useRef(0);
   const listenersRef = useRef<Map<string, Set<SSEEventHandler>>>(new Map());
+
+  const pushActivity = useCallback((event: string, data: unknown) => {
+    const summary = summarizeEvent(event, data);
+    if (!summary) return;
+    setRecentActivity((prev) => {
+      const entry: SSEActivityEntry = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        event,
+        ts: Date.now(),
+        summary,
+      };
+      const next = [entry, ...prev];
+      return next.length > ACTIVITY_BUFFER_SIZE ? next.slice(0, ACTIVITY_BUFFER_SIZE) : next;
+    });
+  }, []);
 
   const emit = useCallback((event: string, data: unknown) => {
     const handlers = listenersRef.current.get(event);
@@ -82,6 +134,7 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
         let parsed: unknown = e.data;
         try { parsed = JSON.parse(e.data); } catch {}
         if (evt === "status") setLastStatusPayload(parsed as AdminLiveStatus);
+        pushActivity(evt, parsed);
         emit(evt, parsed);
       });
     });
@@ -127,10 +180,14 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <SSEContext.Provider value={{ state, subscribe, lastStatusPayload }}>
+    <SSEContext.Provider value={{ state, subscribe, lastStatusPayload, recentActivity }}>
       {children}
     </SSEContext.Provider>
   );
+}
+
+export function useRecentSSEEvents(): SSEActivityEntry[] {
+  return useSSE().recentActivity;
 }
 
 export function useSSE() {

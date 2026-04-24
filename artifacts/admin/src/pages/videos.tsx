@@ -3,6 +3,8 @@ import {
   useImportVideo,
   useUpdateAdminVideo,
   useDeleteAdminVideo,
+  useListPlaylists,
+  useAddVideoToPlaylist,
   getListAdminVideosQueryKey,
 } from "@workspace/api-client-react";
 import { useState, useRef, useCallback, useEffect } from "react";
@@ -51,7 +53,7 @@ import {
   Search, RefreshCw, Upload, Youtube, HardDrive, MoreVertical,
   Trash2, Edit2, Radio, Play, ChevronLeft, ChevronRight,
   Clapperboard, Star, StarOff, Zap, AlertCircle, CheckCircle2,
-  Clock, Loader2, Filter, X, Plus, ExternalLink, Video,
+  Clock, Loader2, Filter, X, Plus, ExternalLink, Video, ListVideo,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -396,6 +398,9 @@ export default function VideoLibrary() {
   // ── selection ──────────────────────────────────────────────────────────────
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [bulkPlaylistOpen, setBulkPlaylistOpen] = useState(false);
+  const [bulkPlaylistId, setBulkPlaylistId] = useState<string>("");
+  const [bulkAddingToPlaylist, setBulkAddingToPlaylist] = useState(false);
 
   // ── misc state ─────────────────────────────────────────────────────────────
   const [addingToQueue, setAddingToQueue] = useState<string | null>(null);
@@ -403,6 +408,8 @@ export default function VideoLibrary() {
 
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const { data: playlistsForBulk } = useListPlaylists();
+  const { mutateAsync: addToPlaylist } = useAddVideoToPlaylist();
 
   // ── build query params ────────────────────────────────────────────────────
   const queryParams: Record<string, string | number | undefined> = {
@@ -521,6 +528,35 @@ export default function VideoLibrary() {
       variant: fail > 0 ? "destructive" : undefined,
     });
   }, [selected, deleteVideo, queryClient, refetch, toast]);
+
+  const handleBulkAddToPlaylist = useCallback(async () => {
+    if (!bulkPlaylistId) return;
+    const playlistName = playlistsForBulk?.find((p) => p.id === bulkPlaylistId)?.name ?? "playlist";
+    setBulkAddingToPlaylist(true);
+    let success = 0;
+    let fail = 0;
+    const ids = Array.from(selected);
+    const CONCURRENCY = 4;
+    for (let i = 0; i < ids.length; i += CONCURRENCY) {
+      const batch = ids.slice(i, i + CONCURRENCY);
+      const results = await Promise.allSettled(
+        batch.map((videoId) => addToPlaylist({ id: bulkPlaylistId, data: { videoId } })),
+      );
+      for (const r of results) {
+        if (r.status === "fulfilled") success++;
+        else fail++;
+      }
+    }
+    setBulkAddingToPlaylist(false);
+    setBulkPlaylistOpen(false);
+    setBulkPlaylistId("");
+    setSelected(new Set());
+    toast({
+      title: `Added ${success} video${success !== 1 ? "s" : ""} to ${playlistName}`,
+      description: fail > 0 ? `${fail} failed (likely already on the playlist)` : undefined,
+      variant: fail > 0 && success === 0 ? "destructive" : undefined,
+    });
+  }, [bulkPlaylistId, selected, addToPlaylist, toast, playlistsForBulk]);
 
   const handleAddToQueue = useCallback(async (video: VideoRow) => {
     setAddingToQueue(video.id);
@@ -690,22 +726,79 @@ export default function VideoLibrary() {
 
         <div className="ml-auto flex items-center gap-2">
           {someSelected && (
-            <Button
-              variant="destructive"
-              size="sm"
-              className="h-8"
-              onClick={handleBulkDelete}
-              disabled={bulkDeleting}
-            >
-              {bulkDeleting ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5 mr-1.5" />}
-              Delete {selected.size}
-            </Button>
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8"
+                onClick={() => setBulkPlaylistOpen(true)}
+                disabled={bulkAddingToPlaylist}
+              >
+                <ListVideo className="w-3.5 h-3.5 mr-1.5" />
+                Add to playlist…
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                className="h-8"
+                onClick={handleBulkDelete}
+                disabled={bulkDeleting}
+              >
+                {bulkDeleting ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5 mr-1.5" />}
+                Delete {selected.size}
+              </Button>
+            </>
           )}
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => refetch()}>
             <RefreshCw className="w-4 h-4" />
           </Button>
         </div>
       </div>
+
+      <Dialog open={bulkPlaylistOpen} onOpenChange={(open) => { if (!bulkAddingToPlaylist) setBulkPlaylistOpen(open); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add {selected.size} video{selected.size !== 1 ? "s" : ""} to a playlist</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Label>Choose playlist</Label>
+            {playlistsForBulk && playlistsForBulk.length > 0 ? (
+              <Select value={bulkPlaylistId} onValueChange={setBulkPlaylistId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Pick a playlist…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {playlistsForBulk.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No playlists yet. Create one in the Playlists page first.
+              </p>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Videos already on the chosen playlist will be skipped.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setBulkPlaylistOpen(false)} disabled={bulkAddingToPlaylist}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleBulkAddToPlaylist}
+              disabled={!bulkPlaylistId || bulkAddingToPlaylist}
+            >
+              {bulkAddingToPlaylist
+                ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Adding…</>
+                : <>Add to playlist</>}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* ── Table ────────────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-auto">

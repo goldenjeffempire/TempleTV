@@ -63,8 +63,24 @@ export default function Schedule() {
     title: "", dayOfWeek: 0, startTime: "09:00", endTime: "10:30", contentType: "live" as "live" | "playlist" | "video", contentId: "", isRecurring: true, isActive: true
   });
 
+  // Hard conflict guard: when creating an entry that overlaps existing slots
+  // on the same day, intercept the submit and ask the operator to confirm.
+  const [pendingConflicts, setPendingConflicts] = useState<{ id: string; title: string; startTime: string; endTime: string | null }[] | null>(null);
+
   const resetContentType = (contentType: string) => {
     setFormData({ ...formData, contentType: contentType as "live" | "playlist" | "video", contentId: "" });
+  };
+
+  const submitCreate = () => {
+    createEntry.mutate({ data: formData }, {
+      onSuccess: () => {
+        toast({ title: "Schedule entry created" });
+        setIsCreateOpen(false);
+        setPendingConflicts(null);
+        queryClient.invalidateQueries({ queryKey: getListScheduleQueryKey() });
+      },
+      onError: () => toast({ title: "Failed to create schedule entry", variant: "destructive" })
+    });
   };
 
   const handleCreate = (e: React.FormEvent) => {
@@ -73,14 +89,22 @@ export default function Schedule() {
       toast({ title: `Choose a ${formData.contentType} for this schedule slot`, variant: "destructive" });
       return;
     }
-    createEntry.mutate({ data: formData }, {
-      onSuccess: () => {
-        toast({ title: "Schedule entry created" });
-        setIsCreateOpen(false);
-        queryClient.invalidateQueries({ queryKey: getListScheduleQueryKey() });
-      },
-      onError: () => toast({ title: "Failed to create schedule entry", variant: "destructive" })
-    });
+    // Detect overlaps against existing same-day entries.
+    const conflicts = (schedule ?? [])
+      .filter((e) => e.dayOfWeek === formData.dayOfWeek && e.isActive !== false)
+      .filter((e) =>
+        slotsOverlap(
+          { startTime: formData.startTime, endTime: formData.endTime || null },
+          { startTime: e.startTime, endTime: e.endTime ?? null },
+        ),
+      )
+      .map((e) => ({ id: e.id, title: e.title, startTime: e.startTime, endTime: e.endTime ?? null }));
+
+    if (conflicts.length > 0) {
+      setPendingConflicts(conflicts);
+      return;
+    }
+    submitCreate();
   };
 
   const doDelete = (id: string) => {
@@ -203,6 +227,49 @@ export default function Schedule() {
               onClick={() => deleteId && doDelete(deleteId)}
             >
               Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={pendingConflicts !== null} onOpenChange={(open) => { if (!open) setPendingConflicts(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="w-5 h-5 text-amber-500" />
+              Schedule conflict detected
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3">
+                <p>
+                  Your new <strong>{formData.startTime}{formData.endTime ? `–${formData.endTime}` : ""}</strong> slot on
+                  {" "}<strong>{DAYS[formData.dayOfWeek]}</strong> overlaps {pendingConflicts?.length} existing entr
+                  {pendingConflicts && pendingConflicts.length === 1 ? "y" : "ies"}:
+                </p>
+                <ul className="text-sm space-y-1.5 rounded-md border bg-muted/40 p-3">
+                  {pendingConflicts?.map((c) => (
+                    <li key={c.id} className="flex items-center gap-2">
+                      <Clock className="w-3.5 h-3.5 text-muted-foreground" />
+                      <span className="font-mono text-xs">
+                        {c.startTime}{c.endTime ? `–${c.endTime}` : ""}
+                      </span>
+                      <span className="truncate">{c.title}</span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-xs">
+                  Saving will create a stacked slot. Two simultaneous broadcasts may collide on the schedule grid.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel — fix the time</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-amber-600 text-white hover:bg-amber-600/90"
+              onClick={() => submitCreate()}
+            >
+              Save anyway
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

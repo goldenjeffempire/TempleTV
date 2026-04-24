@@ -28,6 +28,7 @@ import { getLocalTimeZone, isMidnightHour } from "@/lib/theme";
 import { getAdminToken, setAdminToken } from "@/lib/admin-access";
 import { TempleTvLogo } from "@/components/temple-tv-logo";
 import { AdminKeyDialog } from "@/components/admin-key-dialog";
+import { CommandPalette, CommandPaletteTrigger, useCommandPalette } from "@/components/command-palette";
 import { useSSE } from "@/contexts/SSEContext";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -95,6 +96,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const [hasAdminToken, setHasAdminToken] = React.useState(() => Boolean(getAdminToken()));
   const [keyDialogOpen, setKeyDialogOpen] = React.useState(false);
   const { lastStatusPayload } = useSSE();
+  const { open: paletteOpen, setOpen: setPaletteOpen } = useCommandPalette();
   const isMidnightTheme = isMidnightHour();
   const ThemeIcon = isMidnightTheme ? Moon : Sun;
 
@@ -300,6 +302,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </div>
 
           <div className="flex items-center gap-2">
+            <CommandPaletteTrigger onClick={() => setPaletteOpen(true)} />
             <div
               className="hidden md:flex items-center gap-1.5 bg-muted text-muted-foreground px-3 py-1.5 rounded-full text-xs font-medium border"
               title="Theme switches automatically based on your local time"
@@ -317,6 +320,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       </div>
 
       <AdminKeyDialog open={keyDialogOpen} onOpenChange={setKeyDialogOpen} />
+      <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
     </div>
   );
 }

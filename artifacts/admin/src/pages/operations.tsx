@@ -25,6 +25,7 @@ import { opsApi, type OpsStatus } from "@/services/adminApi";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
 import { MetricCard } from "@/components/shared/metric-card";
+import { useRecentSSEEvents, useSSE } from "@/contexts/SSEContext";
 
 type CheckStatus = "ok" | "degraded" | "critical";
 
@@ -102,6 +103,82 @@ function OverallStatusCard({ status }: { status: OpsStatus }) {
               </div>
             ))}
           </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function eventBadge(event: string) {
+  switch (event) {
+    case "status":
+      return <Badge variant="outline" className="border-emerald-500/40 text-emerald-700 dark:text-emerald-400 text-[10px]">status</Badge>;
+    case "broadcast-control-updated":
+      return <Badge variant="outline" className="border-red-500/40 text-red-700 dark:text-red-400 text-[10px]">control</Badge>;
+    case "broadcast-queue-updated":
+      return <Badge variant="outline" className="border-blue-500/40 text-blue-700 dark:text-blue-400 text-[10px]">queue</Badge>;
+    case "override-expired":
+      return <Badge variant="outline" className="border-amber-500/40 text-amber-700 dark:text-amber-400 text-[10px]">override</Badge>;
+    default:
+      return <Badge variant="outline" className="text-[10px]">{event}</Badge>;
+  }
+}
+
+function relativeTime(ts: number): string {
+  const diff = Math.max(0, Date.now() - ts);
+  if (diff < 5_000) return "just now";
+  if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`;
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  return `${Math.floor(diff / 3_600_000)}h ago`;
+}
+
+function ActivityFeedCard() {
+  const events = useRecentSSEEvents();
+  const { state } = useSSE();
+  // Force re-render every 15s so relative times stay fresh.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setTick((t) => t + 1), 15_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Activity className="w-4 h-4 text-primary" />
+          Operational Activity Feed
+          <Badge
+            variant="outline"
+            className={
+              state === "connected"
+                ? "ml-auto border-emerald-500/40 text-emerald-700 dark:text-emerald-400 text-[10px]"
+                : state === "reconnecting" || state === "connecting"
+                  ? "ml-auto border-amber-500/40 text-amber-700 dark:text-amber-400 text-[10px]"
+                  : "ml-auto border-muted text-muted-foreground text-[10px]"
+            }
+          >
+            {state}
+          </Badge>
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {events.length === 0 ? (
+          <div className="text-sm text-muted-foreground py-6 text-center border border-dashed rounded-md bg-muted/10">
+            Listening for live broadcast events…
+          </div>
+        ) : (
+          <ul className="divide-y max-h-72 overflow-y-auto -mx-1">
+            {events.map((entry) => (
+              <li key={entry.id} className="flex items-center gap-3 py-2 px-1">
+                {eventBadge(entry.event)}
+                <span className="flex-1 text-sm truncate">{entry.summary}</span>
+                <span className="text-[11px] text-muted-foreground tabular-nums shrink-0">
+                  {relativeTime(entry.ts)}
+                </span>
+              </li>
+            ))}
+          </ul>
         )}
       </CardContent>
     </Card>
@@ -282,6 +359,8 @@ export default function Operations() {
               </CardContent>
             </Card>
           </div>
+
+          <ActivityFeedCard />
 
           {pipeline && (
             <Card>
