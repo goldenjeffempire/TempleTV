@@ -311,7 +311,8 @@ export default function Transcoding() {
   };
 
   const stats = data?.stats;
-  const jobs = data?.jobs ?? [];
+  // Defensive: only treat the response as a list when it really is one.
+  const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
   const activeJobs = jobs.filter((j) => j.status === "processing");
   const queuedJobs = jobs.filter((j) => j.status === "queued");
   const completedJobs = jobs.filter((j) => j.status === "done" || j.status === "failed" || j.status === "cancelled");

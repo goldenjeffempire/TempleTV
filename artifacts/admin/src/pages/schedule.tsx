@@ -90,7 +90,7 @@ export default function Schedule() {
       return;
     }
     // Detect overlaps against existing same-day entries.
-    const conflicts = (schedule ?? [])
+    const conflicts = (Array.isArray(schedule) ? schedule : [])
       .filter((e) => e.dayOfWeek === formData.dayOfWeek && e.isActive !== false)
       .filter((e) =>
         slotsOverlap(
@@ -190,10 +190,10 @@ export default function Schedule() {
                     </SelectTrigger>
                     <SelectContent>
                       {formData.contentType === "playlist"
-                        ? playlists?.map((playlist) => (
+                        ? (Array.isArray(playlists) ? playlists : []).map((playlist) => (
                             <SelectItem key={playlist.id} value={playlist.id}>{playlist.name}</SelectItem>
                           ))
-                        : videos?.videos?.map((video) => (
+                        : (Array.isArray(videos?.videos) ? videos.videos : []).map((video) => (
                             <SelectItem key={video.id} value={video.id}>{video.title}</SelectItem>
                           ))}
                     </SelectContent>
@@ -293,7 +293,12 @@ export default function Schedule() {
       <TooltipProvider>
         <div className="grid gap-6 lg:grid-cols-7">
           {DAYS.map((day, dayIndex) => {
-            const dayEntries = schedule?.filter(e => e.dayOfWeek === dayIndex).sort((a, b) => a.startTime.localeCompare(b.startTime)) || [];
+            // Defensive: schedule may be undefined while loading or a non-array
+            // if the API contract drifts. Coerce to array so .filter/.sort never crash.
+            const safeSchedule = Array.isArray(schedule) ? schedule : [];
+            const dayEntries = safeSchedule
+              .filter(e => e.dayOfWeek === dayIndex)
+              .sort((a, b) => a.startTime.localeCompare(b.startTime));
 
             const entriesWithOverlap = new Set<string>();
             for (let i = 0; i < dayEntries.length; i++) {
@@ -425,7 +430,7 @@ export default function Schedule() {
       <div className="flex items-center gap-2 text-xs text-muted-foreground border-t pt-4">
         <Clock className="w-3.5 h-3.5" />
         <span>All times are in server timezone (UTC). <Badge variant="outline" className="text-[10px] px-1.5 py-0 ml-1">UTC</Badge></span>
-        {schedule && schedule.some((_, i, arr) => {
+        {Array.isArray(schedule) && schedule.some((_, i, arr) => {
           const entry = arr[i];
           return arr.some((other, j) => j !== i && other.dayOfWeek === entry.dayOfWeek && slotsOverlap(entry, other));
         }) && (

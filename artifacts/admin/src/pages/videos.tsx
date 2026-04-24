@@ -428,7 +428,9 @@ export default function VideoLibrary() {
   const { mutateAsync: updateVideo } = useUpdateAdminVideo();
   const { mutateAsync: deleteVideo } = useDeleteAdminVideo();
 
-  const videos: VideoRow[] = (data?.videos as VideoRow[]) ?? [];
+  // Defensive: ensure we always end up with an array even if the API contract
+  // drifts and `videos` is missing or returned as a non-array shape.
+  const videos: VideoRow[] = Array.isArray(data?.videos) ? (data.videos as VideoRow[]) : [];
   const total = data?.total ?? 0;
   const totalPages = data?.totalPages ?? 1;
 
@@ -542,7 +544,7 @@ export default function VideoLibrary() {
 
   const handleBulkAddToPlaylist = useCallback(async () => {
     if (!bulkPlaylistId) return;
-    const playlistName = playlistsForBulk?.find((p) => p.id === bulkPlaylistId)?.name ?? "playlist";
+    const playlistName = (Array.isArray(playlistsForBulk) ? playlistsForBulk : []).find((p) => p.id === bulkPlaylistId)?.name ?? "playlist";
     setBulkAddingToPlaylist(true);
     let success = 0;
     let fail = 0;
@@ -773,7 +775,7 @@ export default function VideoLibrary() {
           </DialogHeader>
           <div className="space-y-3">
             <Label>Choose playlist</Label>
-            {playlistsForBulk && playlistsForBulk.length > 0 ? (
+            {Array.isArray(playlistsForBulk) && playlistsForBulk.length > 0 ? (
               <Select value={bulkPlaylistId} onValueChange={setBulkPlaylistId}>
                 <SelectTrigger>
                   <SelectValue placeholder="Pick a playlist…" />

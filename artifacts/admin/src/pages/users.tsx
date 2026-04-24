@@ -70,7 +70,7 @@ export default function UsersPage() {
         {data && (
           <div className="flex items-center gap-2 bg-primary/10 text-primary px-4 py-2 rounded-lg border border-primary/20">
             <Users className="w-4 h-4" />
-            <span className="font-semibold">{data.total.toLocaleString()}</span>
+            <span className="font-semibold">{(data.total ?? 0).toLocaleString()}</span>
             <span className="text-sm opacity-80">total</span>
           </div>
         )}
@@ -105,7 +105,7 @@ export default function UsersPage() {
                 </div>
               ))}
             </div>
-          ) : !data || data.users.length === 0 ? (
+          ) : !data || !Array.isArray(data.users) || data.users.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-20 text-muted-foreground gap-3">
               <Users className="w-10 h-10 opacity-40" />
               <p className="text-sm">
@@ -114,7 +114,7 @@ export default function UsersPage() {
             </div>
           ) : (
             <div className="divide-y">
-              {data.users.map((user) => (
+              {data.users!.map((user) => (
                 <div
                   key={user.id}
                   className="flex items-center gap-4 px-6 py-4 hover:bg-muted/40 transition-colors"

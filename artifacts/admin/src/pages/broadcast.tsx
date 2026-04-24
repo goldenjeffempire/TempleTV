@@ -138,6 +138,19 @@ async function adminFetch(url: string, opts?: RequestInit): Promise<Response> {
   return fetch(url, { ...opts, headers });
 }
 
+// Safely parse a Response body as JSON. Returns null when the body is empty
+// or not valid JSON (e.g. when an upstream proxy returns the SPA HTML
+// fallback instead of routing the request to the API server).
+async function safeJson<T = unknown>(res: Response): Promise<T | null> {
+  const text = await res.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 const SERVICE_PRESETS = [
   { label: "Morning Service", icon: "☀️" },
@@ -611,8 +624,8 @@ function AddFromLibraryDialog({
       if (q) params.set("search", q);
       const res = await adminFetch(`/api/admin/videos?${params}`);
       if (res.ok) {
-        const data = await res.json();
-        setVideos(data.videos ?? []);
+        const data = await safeJson<{ videos?: unknown[] }>(res);
+        setVideos(Array.isArray(data?.videos) ? (data!.videos as typeof videos) : []);
       }
     } finally {
       setLoading(false);
@@ -893,15 +906,27 @@ export default function Broadcast() {
         adminFetch("/api/admin/live"),
       ]);
 
-      if (qRes.ok) setQueue(await qRes.json());
-      if (cRes.ok) {
-        const c = await cRes.json();
-        setCurrent(c);
-        setLivePosition(c.positionSecs ?? 0);
+      let parseFailed = false;
+      if (qRes.ok) {
+        const q = await safeJson<BroadcastItem[]>(qRes);
+        if (q === null) parseFailed = true;
+        setQueue(Array.isArray(q) ? q : []);
       }
-      if (lRes.ok) setLiveStatus(await lRes.json());
+      if (cRes.ok) {
+        const c = await safeJson<CurrentBroadcast>(cRes);
+        if (c === null) parseFailed = true;
+        if (c) {
+          setCurrent(c);
+          setLivePosition(c.positionSecs ?? 0);
+        }
+      }
+      if (lRes.ok) {
+        const l = await safeJson<LiveStatus>(lRes);
+        if (l === null) parseFailed = true;
+        if (l) setLiveStatus(l);
+      }
 
-      setError(null);
+      setError(parseFailed ? "Unexpected non-JSON response (the API server may be unreachable)" : null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load");
     } finally {

@@ -131,7 +131,9 @@ function SortableVideoItem({
 }
 
 export default function Playlists() {
-  const { data: playlists, isLoading } = useListPlaylists();
+  const { data: rawPlaylists, isLoading } = useListPlaylists();
+  // Defensive: only treat the response as a list when it really is one.
+  const playlists = Array.isArray(rawPlaylists) ? rawPlaylists : undefined;
   const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -380,11 +382,18 @@ function PlaylistDetail({ id }: { id: string }) {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
 
+  // Defensive: coerce playlist.videos to a real array up-front so every
+  // downstream consumer can rely on .length/.map/.reduce never crashing.
+  const playlistVideos: LocalPlaylistVideo[] = Array.isArray(playlist?.videos)
+    ? (playlist.videos as unknown as LocalPlaylistVideo[])
+    : [];
+  const libraryVideos = Array.isArray(allVideos?.videos) ? allVideos.videos : [];
+
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     if (!over || active.id === over.id || !playlist) return;
 
-    const videos = playlist.videos as unknown as LocalPlaylistVideo[];
+    const videos = playlistVideos;
     const oldIndex = videos.findIndex((v) => v.id === active.id);
     const newIndex = videos.findIndex((v) => v.id === over.id);
     if (oldIndex === -1 || newIndex === -1) return;
@@ -435,15 +444,14 @@ function PlaylistDetail({ id }: { id: string }) {
     );
   };
 
-  const existingVideoIds = new Set((playlist?.videos as unknown as LocalPlaylistVideo[])?.map((v) => v.videoId) ?? []);
-  const filteredLibrary = (allVideos?.videos ?? []).filter(
+  const existingVideoIds = new Set(playlistVideos.map((v) => v.videoId));
+  const filteredLibrary = libraryVideos.filter(
     (v) =>
       !existingVideoIds.has(v.id) &&
       (videoSearch === "" || v.title.toLowerCase().includes(videoSearch.toLowerCase()) || (v.preacher ?? "").toLowerCase().includes(videoSearch.toLowerCase()))
   );
 
-  const totalDurationSecs = (playlist?.videos as unknown as LocalPlaylistVideo[] ?? [])
-    .reduce((acc, v) => acc + parseDurationToSeconds(v.duration), 0);
+  const totalDurationSecs = playlistVideos.reduce((acc, v) => acc + parseDurationToSeconds(v.duration), 0);
 
   if (isLoading)
     return (
@@ -462,7 +470,7 @@ function PlaylistDetail({ id }: { id: string }) {
           <h2 className="text-xl font-bold">{playlist.name}</h2>
           <p className="text-muted-foreground text-sm mt-1">{playlist.description || "No description."}</p>
           <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground flex-wrap">
-            <span>{playlist.videos.length} videos</span>
+            <span>{playlistVideos.length} videos</span>
             <span>·</span>
             <span className="capitalize">Mode: {playlist.loopMode}</span>
             {totalDurationSecs > 0 && (
@@ -499,7 +507,7 @@ function PlaylistDetail({ id }: { id: string }) {
               <div className="max-h-72 overflow-y-auto space-y-1 border rounded-lg p-1">
                 {filteredLibrary.length === 0 ? (
                   <p className="text-sm text-muted-foreground text-center py-8">
-                    {allVideos?.videos.length === 0
+                    {libraryVideos.length === 0
                       ? "No videos in your library yet. Import some first."
                       : "All videos are already in this playlist."}
                   </p>
@@ -526,7 +534,7 @@ function PlaylistDetail({ id }: { id: string }) {
       </div>
 
       <div className="flex-1 overflow-y-auto p-3 space-y-1">
-        {playlist.videos.length === 0 ? (
+        {playlistVideos.length === 0 ? (
           <div className="text-center py-16 text-muted-foreground">
             <ListVideo className="w-10 h-10 mx-auto mb-3 opacity-20" />
             <p className="text-sm">No videos yet. Click "Add Video" to get started.</p>
@@ -534,10 +542,10 @@ function PlaylistDetail({ id }: { id: string }) {
         ) : (
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
             <SortableContext
-              items={(playlist.videos as unknown as LocalPlaylistVideo[]).map((v) => v.id)}
+              items={playlistVideos.map((v) => v.id)}
               strategy={verticalListSortingStrategy}
             >
-              {(playlist.videos as unknown as LocalPlaylistVideo[]).map((video, index) => (
+              {playlistVideos.map((video, index) => (
                 <SortableVideoItem
                   key={video.id}
                   video={video}

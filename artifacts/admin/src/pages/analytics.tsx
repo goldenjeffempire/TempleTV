@@ -74,7 +74,7 @@ export default function Analytics() {
           <CardContent>
             {isLoading ? <Skeleton className="h-[300px] w-full" /> : (
               <div className="h-[300px] w-full mt-4">
-                {(!data?.dailyViews || data.dailyViews.every((d) => d.views === 0)) ? (
+                {(!Array.isArray(data?.dailyViews) || data.dailyViews.every((d) => d.views === 0)) ? (
                   <div className="h-full flex flex-col items-center justify-center text-muted-foreground gap-2">
                     <Eye className="w-10 h-10 opacity-20" />
                     <p className="text-sm">No views recorded in this period yet</p>
@@ -125,7 +125,7 @@ export default function Analytics() {
               </div>
             ) : (
               <div className="space-y-4 mt-4">
-                {data?.categoryBreakdown.map((cat) => (
+                {(Array.isArray(data?.categoryBreakdown) ? data.categoryBreakdown : []).map((cat) => (
                   <div key={cat.category} className="space-y-1">
                     <div className="flex justify-between text-sm">
                       <span className="font-medium capitalize">{cat.category}</span>
@@ -136,7 +136,7 @@ export default function Analytics() {
                     </div>
                   </div>
                 ))}
-                {(!data?.categoryBreakdown || data.categoryBreakdown.length === 0) && (
+                {(!Array.isArray(data?.categoryBreakdown) || data.categoryBreakdown.length === 0) && (
                   <div className="text-center py-8 text-muted-foreground text-sm">No videos imported yet</div>
                 )}
               </div>
@@ -157,7 +157,7 @@ export default function Analytics() {
             </div>
           ) : (
             <div className="divide-y">
-              {data?.topVideos.map((video, index) => (
+              {(Array.isArray(data?.topVideos) ? data.topVideos : []).map((video, index) => (
                 <div key={video.youtubeId} className="py-3 flex items-center gap-4 group">
                   <div className="w-8 text-center font-bold text-muted-foreground group-hover:text-primary">{index + 1}</div>
                   <div className="w-24 h-14 rounded overflow-hidden bg-muted shrink-0">
@@ -172,7 +172,7 @@ export default function Analytics() {
                   </div>
                 </div>
               ))}
-              {(!data?.topVideos || data.topVideos.length === 0) && (
+              {(!Array.isArray(data?.topVideos) || data.topVideos.length === 0) && (
                 <div className="text-center py-8 text-muted-foreground text-sm">No view data available yet</div>
               )}
             </div>

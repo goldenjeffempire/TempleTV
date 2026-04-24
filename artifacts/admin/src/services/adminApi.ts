@@ -46,7 +46,21 @@ async function adminRequest<T>(
 
   const text = await res.text();
   if (!text) return undefined as T;
-  return JSON.parse(text) as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    // Body is not JSON. Most often this means a proxy/edge returned the SPA
+    // fallback HTML (the API server itself only returns JSON). Surface a
+    // human-readable error rather than the raw "Unexpected token '<'".
+    const ctype = res.headers.get("content-type") ?? "";
+    const looksHtml = ctype.includes("html") || text.trimStart().startsWith("<");
+    throw new AdminApiError(
+      res.status,
+      looksHtml
+        ? "Unexpected non-JSON response (the API server may be unreachable)"
+        : "Malformed JSON response from the API",
+    );
+  }
 }
 
 export const adminGet = <T>(path: string, signal?: AbortSignal) =>

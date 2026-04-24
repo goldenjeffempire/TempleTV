@@ -243,11 +243,23 @@ export default function LiveMonitor() {
       const headers: HeadersInit = token ? { "X-Admin-Token": token } : {};
       const res = await fetch(apiUrl("/admin/live/health"), { headers });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = (await res.json()) as LiveHealthData;
-      const merged = mergeViewerHistory(storedHistoryRef.current, json.viewerHistory ?? []);
+      // Safe-parse: if a proxy returns the SPA HTML fallback by mistake,
+      // surface a clean error instead of a raw "Unexpected token '<'".
+      const text = await res.text();
+      let json: LiveHealthData;
+      try {
+        json = JSON.parse(text) as LiveHealthData;
+      } catch {
+        throw new Error("Unexpected non-JSON response from live health endpoint");
+      }
+      // Defensive: coerce list fields to arrays at ingress so downstream
+      // .length/.map/.reduce calls can never crash on contract drift.
+      const safeViewer = Array.isArray(json.viewerHistory) ? json.viewerHistory : [];
+      const safeHistory = Array.isArray(json.history) ? json.history : [];
+      const merged = mergeViewerHistory(storedHistoryRef.current, safeViewer);
       storedHistoryRef.current = merged;
       persistViewerHistory(merged);
-      setData({ ...json, viewerHistory: merged });
+      setData({ ...json, viewerHistory: merged, history: safeHistory });
     } catch {
       if (!silent) {
         toast({ title: "Failed to load live health data", variant: "destructive" });
@@ -303,11 +315,11 @@ export default function LiveMonitor() {
     return () => es.close();
   }, [fetchHealth, toast]);
 
-  const peakViewers = data?.viewerHistory.length
+  const peakViewers = data?.viewerHistory?.length
     ? Math.max(...data.viewerHistory.map((s) => s.count))
     : null;
 
-  const avgViewers = data?.viewerHistory.length
+  const avgViewers = data?.viewerHistory?.length
     ? Math.round(data.viewerHistory.reduce((s, p) => s + p.count, 0) / data.viewerHistory.length)
     : null;
 

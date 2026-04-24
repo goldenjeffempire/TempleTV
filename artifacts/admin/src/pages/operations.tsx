@@ -93,7 +93,7 @@ function OverallStatusCard({ status }: { status: OpsStatus }) {
             Updated {new Date(status.generatedAt).toLocaleTimeString()} · {status.environment}
           </div>
         </div>
-        {status.checks.length > 0 && (
+        {Array.isArray(status.checks) && status.checks.length > 0 && (
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 divide-y sm:divide-y-0 sm:divide-x">
             {status.checks.map((check) => (
               <div key={check.key} className="p-4 flex items-center gap-2.5">
@@ -146,7 +146,8 @@ function ActiveUploadsCard() {
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
       const data = await uploadsApi.listActive(signal);
-      setSessions(data.sessions);
+      // Defensive: only accept the response when it really is a list.
+      setSessions(Array.isArray(data?.sessions) ? data.sessions : []);
       setError(null);
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === "AbortError") return;
@@ -347,13 +348,17 @@ export default function Operations() {
     return () => window.clearInterval(id);
   }, [loadStatus]);
 
-  const totalRequests = useMemo(
-    () => status?.metrics.requests.reduce((t, r) => t + r.total, 0) ?? 0,
+  const requestMetrics = useMemo(
+    () => (Array.isArray(status?.metrics?.requests) ? status.metrics.requests : []),
     [status],
   );
+  const totalRequests = useMemo(
+    () => requestMetrics.reduce((t, r) => t + r.total, 0),
+    [requestMetrics],
+  );
   const totalErrors = useMemo(
-    () => status?.metrics.requests.reduce((t, r) => t + r.errors, 0) ?? 0,
-    [status],
+    () => requestMetrics.reduce((t, r) => t + r.errors, 0),
+    [requestMetrics],
   );
 
   const pipeline = status?.videoPipeline;
@@ -557,7 +562,7 @@ export default function Operations() {
             </Card>
           )}
 
-          {status.metrics.requests.length > 0 && (
+          {requestMetrics.length > 0 && (
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-sm">
@@ -577,7 +582,7 @@ export default function Operations() {
                       </tr>
                     </thead>
                     <tbody className="divide-y">
-                      {status.metrics.requests.map((r, i) => (
+                      {requestMetrics.map((r, i) => (
                         <tr key={i}>
                           <td className="py-2 font-mono text-xs">{r.method}</td>
                           <td className="py-2 text-right tabular-nums">{r.total.toLocaleString()}</td>

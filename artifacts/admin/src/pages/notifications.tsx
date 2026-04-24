@@ -50,7 +50,10 @@ function statusBadge(status: string) {
 }
 
 export default function Notifications() {
-  const { data: history, isLoading } = useListNotificationHistory();
+  const { data: rawHistory, isLoading } = useListNotificationHistory();
+  // Defensive: only treat the response as a list when it really is one. Guards
+  // against stale clients/proxies returning a non-array body.
+  const history = Array.isArray(rawHistory) ? rawHistory : undefined;
   const { data: videosData } = useListAdminVideos({ limit: 200 });
   const sendNotification = useSendPushNotification();
   const { toast } = useToast();
@@ -58,7 +61,8 @@ export default function Notifications() {
 
   const videoTitleById = useMemo(() => {
     const map = new Map<string, string>();
-    for (const v of videosData?.videos ?? []) map.set(v.id, v.title);
+    const safeVideos = Array.isArray(videosData?.videos) ? videosData.videos : [];
+    for (const v of safeVideos) map.set(v.id, v.title);
     return map;
   }, [videosData]);
 
@@ -104,7 +108,8 @@ export default function Notifications() {
     setSchedLoading(true);
     try {
       const data = await adminGet<ScheduledNotif[]>("/admin/notifications/scheduled");
-      setScheduled(data);
+      // Defensive: only adopt the response when it really is a list.
+      setScheduled(Array.isArray(data) ? data : []);
     } catch {
     } finally {
       setSchedLoading(false);

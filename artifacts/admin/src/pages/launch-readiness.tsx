@@ -243,7 +243,7 @@ export default function LaunchReadinessPage() {
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
-            {readiness.categories.map((category) => {
+            {(Array.isArray(readiness.categories) ? readiness.categories : []).map((category) => {
               const Icon = categoryIcons[category.key] ?? Rocket;
               return (
                 <Card key={category.key}>
@@ -254,7 +254,7 @@ export default function LaunchReadinessPage() {
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-3">
-                    {category.checks.map((check) => (
+                    {(Array.isArray(category.checks) ? category.checks : []).map((check) => (
                       <div key={check.key} className="rounded-lg border p-3">
                         <div className="flex items-start justify-between gap-3">
                           <div className="flex items-start gap-3">
