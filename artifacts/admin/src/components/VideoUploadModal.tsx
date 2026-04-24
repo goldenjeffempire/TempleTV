@@ -770,31 +770,77 @@ export function VideoUploadModal({
     [updateTask, runFileUpload],
   );
 
+  // Cleanup helper: runs the server-side DELETE for a cancelled upload
+  // session in the background with a hard timeout, so a hanging network
+  // never blocks the operator's local cancel UI. Returns a Promise that
+  // resolves with the failure (if any) so callers can aggregate or report.
+  const cleanupSession = useCallback(
+    async (sessionId: string): Promise<{ sessionId: string; reason: string } | null> => {
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), 8000);
+      try {
+        const res = await uploadAdminFetch(
+          `/api/admin/videos/upload/${sessionId}`,
+          { method: "DELETE", signal: controller.signal },
+        );
+        if (!res.ok) {
+          return { sessionId, reason: `HTTP ${res.status}` };
+        }
+        return null;
+      } catch (e) {
+        const isAbort =
+          e instanceof DOMException && e.name === "AbortError" ||
+          (e instanceof Error && e.name === "AbortError");
+        return {
+          sessionId,
+          reason: isAbort ? "timed out (8s)" : e instanceof Error ? e.message : "Network error",
+        };
+      } finally {
+        window.clearTimeout(timeoutId);
+      }
+    },
+    [],
+  );
+
   const cancelTask = useCallback(
-    async (id: string) => {
+    (id: string) => {
       const task = tasksRef.current.get(id);
       if (!task) return;
+      // Local teardown is synchronous and immediate — the operator's cancel
+      // intent is honored regardless of network conditions.
       task.abortController?.abort();
-      if (task.sessionId) {
-        await uploadAdminFetch(`/api/admin/videos/upload/${task.sessionId}`, {
-          method: "DELETE",
-        }).catch(() => {});
-      }
+      const sessionId = task.sessionId;
       tasksRef.current.delete(id);
       if (tasksRef.current.size === 0) clearSession();
       forceUpdate();
+      // Server-side session DELETE runs as best-effort background work.
+      // Failures are logged + surfaced via toast so operators with the
+      // Active Uploads view can follow up, but they never block the UI.
+      if (sessionId) {
+        void cleanupSession(sessionId).then((failure) => {
+          if (failure) {
+            console.warn(
+              `[VideoUploadModal] Cancel cleanup failed for session ${failure.sessionId}: ${failure.reason}`,
+            );
+            toast({
+              title: "Upload cancelled (cleanup pending)",
+              description: `${failure.reason}. The session may need manual cleanup via Active Uploads.`,
+              variant: "destructive",
+            });
+          }
+        });
+      }
     },
-    [clearSession, forceUpdate],
+    [clearSession, forceUpdate, toast, cleanupSession],
   );
 
-  const cancelAll = useCallback(async () => {
+  const cancelAll = useCallback(() => {
+    // Snapshot session ids and abort everything synchronously so the modal
+    // closes instantly. Background cleanup happens after teardown.
+    const sessionIds: string[] = [];
     for (const task of tasksRef.current.values()) {
       task.abortController?.abort();
-      if (task.sessionId) {
-        await uploadAdminFetch(`/api/admin/videos/upload/${task.sessionId}`, {
-          method: "DELETE",
-        }).catch(() => {});
-      }
+      if (task.sessionId) sessionIds.push(task.sessionId);
     }
     tasksRef.current.clear();
     clearSession();
@@ -802,7 +848,35 @@ export function VideoUploadModal({
     setThumbnailFile(null);
     onOpenChange(false);
     forceUpdate();
-  }, [clearSession, forceUpdate, onOpenChange]);
+    // Run all cleanup DELETEs in parallel in the background; aggregate any
+    // failures into a single destructive toast at the end so the operator
+    // gets one summary rather than one toast per orphan.
+    if (sessionIds.length === 0) return;
+    void Promise.all(sessionIds.map((id) => cleanupSession(id)))
+      .then((results) => {
+        const cleanupFailures = results.filter(
+          (r): r is { sessionId: string; reason: string } => r !== null,
+        );
+        if (cleanupFailures.length > 0) {
+          console.warn(
+            `[VideoUploadModal] Cancel-all left ${cleanupFailures.length} orphaned upload session(s)`,
+            cleanupFailures,
+          );
+          toast({
+            title: `${cleanupFailures.length} upload session(s) need manual cleanup`,
+            description: `Server cleanup failed for some cancelled uploads (e.g. ${cleanupFailures[0].reason}). Check Active Uploads.`,
+            variant: "destructive",
+          });
+        }
+      })
+      // cleanupSession already wraps everything in try/catch and resolves
+      // with a failure record rather than rejecting, so reaching this catch
+      // would mean something truly unexpected (e.g. a bug above) — log it
+      // for diagnostics rather than letting it become an unhandled rejection.
+      .catch((e) => {
+        console.error("[VideoUploadModal] Cancel-all background cleanup crashed:", e);
+      });
+  }, [clearSession, forceUpdate, onOpenChange, toast, cleanupSession]);
 
   const handleResumeFromStorage = useCallback(
     async (file: File) => {

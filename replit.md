@@ -253,6 +253,31 @@ Verification:
 - `tsc --noEmit` clean for `@workspace/admin`.
 - Workflow restarted; broadcast page serves and the four AlertDialogs (Add, Go Live, End Live, Clear Queue, Remove) are now consistent shadcn dialogs end-to-end.
 
+### Round 4j — silent-catch sweep extended to components/ (April 2026)
+
+Round 4f's silent-catch elimination pass only swept `artifacts/admin/src/pages/`. A grep this round across the full `artifacts/admin/src/` tree found two missed instances in `components/VideoUploadModal.tsx`:
+
+- `cancelTask` line 781: `await uploadAdminFetch(.../upload/${task.sessionId}, { method: "DELETE" }).catch(() => {});`
+- `cancelAll`  line 796: same pattern in the close-all loop.
+
+Both are in the upload cancel path. The local upload aborts via `task.abortController?.abort()` regardless, but the server-side DELETE that cleans up the upload session row + already-uploaded chunks was silently dropped on failure. In production this meant orphaned upload sessions could accumulate server-side (visible in `/api/admin/uploads/active`) with no operator awareness — and could meaningfully fill storage on a busy media operation.
+
+Changes:
+
+- **Extracted `cleanupSession(sessionId)` helper** — wraps the server-side DELETE in an `AbortController` with an 8-second hard timeout. Even a fully hung connection resolves within 8s with a `"timed out (8s)"` failure record. Distinguishes `AbortError` (timeout), `!res.ok` (HTTP error), and thrown network errors.
+- **`cancelTask` is now non-blocking** — local teardown (abort upload, remove from `tasksRef`, clear session, force re-render) happens synchronously and immediately. The server-side cleanup DELETE runs as `void cleanupSession(...).then(...)` background work; on failure it `console.warn`s with the session id and surfaces a destructive `"Upload cancelled (cleanup pending)"` toast so operators can check Active Uploads.
+- **`cancelAll` is now non-blocking** — snapshots all session ids, aborts every upload, closes the modal, all synchronously. Then `void Promise.all(sessionIds.map(cleanupSession)).then(...)` runs every cleanup in parallel in the background and aggregates failures into a single destructive `"N upload session(s) need manual cleanup"` toast.
+- The operator's cancel feels instant regardless of network conditions, and orphaned upload sessions are still surfaced (just asynchronously).
+
+A second `grep` across all of `artifacts/admin/src` for the silent-catch pattern (`.catch(() => {})`, `.catch(() => null)`, etc.) now returns **zero hits**. The admin tree is clean.
+
+Architect review: **PASS**.
+
+Verification:
+- `tsc --noEmit` clean.
+- Workflow restarted; server logs show clean startup (FFmpeg verified, schedulers running, first request 304 in 4ms, no runtime errors).
+- Constraints respected: no new dependencies, no schema changes.
+
 ## External Dependencies
 
 - **Database:** PostgreSQL
