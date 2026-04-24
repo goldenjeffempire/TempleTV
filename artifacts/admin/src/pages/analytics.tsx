@@ -1,34 +1,145 @@
-import { useState } from "react";
-import { useGetAnalytics } from "@workspace/api-client-react";
+import { useEffect, useState } from "react";
+import { useGetAnalytics, getGetAnalyticsQueryKey } from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import { Area, AreaChart, ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis } from "recharts";
-import { Eye, Users, Clock, Video, AlertCircle, RefreshCw } from "lucide-react";
+import { Eye, Users, Clock, Video, AlertCircle, RefreshCw, Download } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+
+function csvEscape(v: unknown) {
+  if (v == null) return "";
+  let s = String(v);
+  // CSV/spreadsheet formula-injection guard: a cell whose first non-whitespace
+  // character is =, +, -, @, TAB, or CR can be interpreted as a formula by
+  // Excel / Google Sheets / Numbers when the file is opened. Prefix with a
+  // single quote so the value is always rendered as text. See OWASP "CSV
+  // Injection" / CWE-1236.
+  if (/^\s*[=+\-@\t\r]/.test(s)) {
+    s = "'" + s;
+  }
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+function downloadBlob(filename: string, content: string, mime = "text/csv;charset=utf-8") {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 0);
+}
+
+function fmtUpdatedAgo(ms: number) {
+  if (!ms) return "never";
+  const sec = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (sec < 5) return "just now";
+  if (sec < 60) return `${sec}s ago`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+  return `${Math.floor(sec / 86400)}d ago`;
+}
 
 export default function Analytics() {
   const [period, setPeriod] = useState<"7d" | "30d" | "90d">("30d");
-  const { data, isLoading, isError, refetch } = useGetAnalytics({ period });
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const { data, isLoading, isError, isFetching, refetch, dataUpdatedAt } = useGetAnalytics(
+    { period },
+    {
+      query: {
+        queryKey: getGetAnalyticsQueryKey({ period }),
+        // 60s when auto-refresh is on; manual otherwise. Background tab pauses
+        // automatically (React Query default behaviour).
+        refetchInterval: autoRefresh ? 60_000 : false,
+      },
+    },
+  );
+  const { toast } = useToast();
+
+  // Re-render once a minute so "Last updated Xm ago" stays current even when
+  // the data itself isn't refetching.
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => tick((t) => t + 1), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const exportTopVideos = () => {
+    const top = Array.isArray(data?.topVideos) ? data!.topVideos : [];
+    if (top.length === 0) {
+      toast({ title: "Nothing to export", description: "No top-video data available yet." });
+      return;
+    }
+    const header = ["rank", "title", "youtube_id", "views"].join(",");
+    const rows = top.map((v, i) =>
+      [String(i + 1), v.title, v.youtubeId, String(v.views)].map(csvEscape).join(","),
+    );
+    const csv = [header, ...rows].join("\r\n");
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    downloadBlob(`temple-tv-top-videos-${period}-${stamp}.csv`, csv);
+    toast({ title: `Exported ${top.length} videos` });
+  };
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Analytics</h1>
           <p className="text-muted-foreground mt-1">Platform metrics and viewer engagement.</p>
         </div>
-        
-        <Select value={period} onValueChange={(v: "7d" | "30d" | "90d") => setPeriod(v)}>
-          <SelectTrigger className="w-[150px]">
-            <SelectValue placeholder="Select Period" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="7d">Last 7 Days</SelectItem>
-            <SelectItem value="30d">Last 30 Days</SelectItem>
-            <SelectItem value="90d">Last 90 Days</SelectItem>
-          </SelectContent>
-        </Select>
+
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span>Updated {fmtUpdatedAgo(dataUpdatedAt)}</span>
+          </div>
+          <div className="flex items-center gap-2 px-3 h-9 rounded-md border bg-card">
+            <Switch
+              id="auto-refresh"
+              checked={autoRefresh}
+              onCheckedChange={setAutoRefresh}
+            />
+            <Label htmlFor="auto-refresh" className="text-xs cursor-pointer">
+              Auto-refresh
+            </Label>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => refetch()}
+            disabled={isFetching}
+          >
+            <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${isFetching ? "animate-spin" : ""}`} />
+            Refresh
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={exportTopVideos}
+            disabled={!data || isLoading}
+          >
+            <Download className="w-3.5 h-3.5 mr-1.5" />
+            Export top videos
+          </Button>
+          <Select value={period} onValueChange={(v: "7d" | "30d" | "90d") => setPeriod(v)}>
+            <SelectTrigger className="w-[150px]">
+              <SelectValue placeholder="Select Period" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="7d">Last 7 Days</SelectItem>
+              <SelectItem value="30d">Last 30 Days</SelectItem>
+              <SelectItem value="90d">Last 90 Days</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       {isError && (

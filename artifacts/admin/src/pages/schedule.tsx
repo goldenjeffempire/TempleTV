@@ -30,6 +30,51 @@ function timeToMinutes(t: string) {
   return (h ?? 0) * 60 + (m ?? 0);
 }
 
+// ── Local-time helpers ──────────────────────────────────────────────────────
+// Schedule times are stored as HH:MM in UTC. The viewer's browser may be in a
+// different timezone, so we render a small inline hint next to each UTC time
+// showing the equivalent local time. We deliberately do NOT shift entries to
+// different day columns: that would change the meaning of "today" and risks
+// confusing operators reading a 7-day grid.
+function utcHmToLocal(hm: string) {
+  const [h, m] = hm.split(":").map(Number);
+  const d = new Date();
+  d.setUTCHours(h ?? 0, m ?? 0, 0, 0);
+  return d;
+}
+
+function fmtLocalTime(d: Date) {
+  return d.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function localTzAbbr() {
+  try {
+    const fmt = new Intl.DateTimeFormat(undefined, { timeZoneName: "short" });
+    const parts = fmt.formatToParts(new Date());
+    return parts.find((p) => p.type === "timeZoneName")?.value ?? "local";
+  } catch {
+    return "local";
+  }
+}
+
+function LocalTimeHint({ startUtc, endUtc }: { startUtc: string; endUtc?: string }) {
+  // If the viewer is already in UTC there's nothing to add.
+  if (new Date().getTimezoneOffset() === 0) return null;
+  const start = fmtLocalTime(utcHmToLocal(startUtc));
+  const end = endUtc ? fmtLocalTime(utcHmToLocal(endUtc)) : null;
+  const tz = localTzAbbr();
+  return (
+    <span className="text-[10px] text-muted-foreground/80">
+      · {start}
+      {end ? `–${end}` : ""} {tz}
+    </span>
+  );
+}
+
 function slotsOverlap(a: { startTime: string; endTime?: string | null }, b: { startTime: string; endTime?: string | null }) {
   const aStart = timeToMinutes(a.startTime);
   const aEnd = a.endTime ? timeToMinutes(a.endTime) : aStart + 60;
@@ -401,9 +446,13 @@ export default function Schedule() {
                                 </Button>
                               </div>
                             </div>
-                            <div className="flex items-center gap-1 text-xs text-muted-foreground mt-2">
-                              <Clock className="w-3 h-3" />
-                              {entry.startTime} {entry.endTime && `– ${entry.endTime}`}
+                            <div className="flex items-center gap-1 text-xs text-muted-foreground mt-2 flex-wrap">
+                              <Clock className="w-3 h-3 shrink-0" />
+                              <span>{entry.startTime}{entry.endTime ? ` – ${entry.endTime}` : ""} UTC</span>
+                              <LocalTimeHint
+                                startUtc={entry.startTime}
+                                endUtc={entry.endTime ?? undefined}
+                              />
                             </div>
                             <div className="mt-2 inline-flex text-[10px] font-medium px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground uppercase tracking-wider">
                               {entry.contentType}
@@ -427,9 +476,17 @@ export default function Schedule() {
         </div>
       </TooltipProvider>
 
-      <div className="flex items-center gap-2 text-xs text-muted-foreground border-t pt-4">
+      <div className="flex items-center gap-2 text-xs text-muted-foreground border-t pt-4 flex-wrap">
         <Clock className="w-3.5 h-3.5" />
-        <span>All times are in server timezone (UTC). <Badge variant="outline" className="text-[10px] px-1.5 py-0 ml-1">UTC</Badge></span>
+        <span>
+          All times are stored in server timezone (UTC){" "}
+          <Badge variant="outline" className="text-[10px] px-1.5 py-0 ml-1">UTC</Badge>
+          {new Date().getTimezoneOffset() !== 0 && (
+            <span className="ml-2 opacity-80">
+              — local equivalent shown next to each slot ({localTzAbbr()})
+            </span>
+          )}
+        </span>
         {Array.isArray(schedule) && schedule.some((_, i, arr) => {
           const entry = arr[i];
           return arr.some((other, j) => j !== i && other.dayOfWeek === entry.dayOfWeek && slotsOverlap(entry, other));
