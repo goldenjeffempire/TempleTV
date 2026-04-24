@@ -35,7 +35,7 @@ import {
   ChevronDown,
   Info,
 } from "lucide-react";
-import { transcodingApi, type TranscodingJob, type TranscodingJobDetail, type TranscodingQueue } from "@/services/adminApi";
+import { AdminApiError, transcodingApi, type TranscodingJob, type TranscodingJobDetail, type TranscodingQueue } from "@/services/adminApi";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
 
@@ -228,7 +228,11 @@ function JobRow({ job, onRetry, onCancel, onDetails, retrying, cancelling }: Job
 export default function Transcoding() {
   const [data, setData] = useState<TranscodingQueue | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Round 4l: track transient flag separately so the page can render a softer
+  // "reconnecting" indicator during the workflow-restart window instead of a
+  // destructive red banner that overstates the severity. The 5s polling tick
+  // will clear the error on the next successful fetch.
+  const [error, setError] = useState<{ message: string; transient: boolean } | null>(null);
   const [retrying, setRetrying] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
@@ -259,7 +263,9 @@ export default function Transcoding() {
       setData(res);
       setError(null);
     } catch (err: unknown) {
-      setError((err as Error)?.message ?? "Failed to load transcoding queue");
+      const message = (err as Error)?.message ?? "Failed to load transcoding queue";
+      const transient = err instanceof AdminApiError && err.transient === true;
+      setError({ message, transient });
     } finally {
       setLoading(false);
     }
@@ -361,9 +367,10 @@ export default function Transcoding() {
 
       {error && (
         <ErrorAlert
-          title="Transcoding queue unavailable"
-          message={error}
+          title={error.transient ? undefined : "Transcoding queue unavailable"}
+          message={error.transient ? undefined : error.message}
           onRetry={loadQueue}
+          transient={error.transient}
         />
       )}
 
