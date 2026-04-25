@@ -424,20 +424,55 @@ export default function WatchScreen() {
                   // queue item starts cleanly; `heroInitialPositionMillis`
                   // seeds the join point; the drift-correction effect calls
                   // setPositionAsync periodically to keep it in sync.
-                  <HeroVideoComponent
-                    key={broadcastItem.id}
-                    ref={heroVideoRef}
-                    source={{ uri: broadcastItem.localVideoUrl }}
-                    style={StyleSheet.absoluteFill}
-                    resizeMode={HeroResizeMode?.COVER ?? "cover"}
-                    isMuted
-                    shouldPlay
-                    useNativeControls={false}
-                    onError={() => setHeroVideoFailed(true)}
-                    progressUpdateIntervalMillis={5000}
-                    positionMillis={heroInitialPositionMillis}
-                    videoStyle={{ width: "100%", height: "100%" }}
-                  />
+                  //
+                  // Two-layer rendering (no cropping policy):
+                  //  • Background: COVER mode + heavy blur (web only) — fills
+                  //    the entire hero so we never see black letterbox bars,
+                  //    but never displays a real frame the user is watching.
+                  //  • Foreground: CONTAIN mode — preserves the full original
+                  //    aspect ratio so no part of the broadcast is ever cut.
+                  //
+                  // On native, expo-av doesn't support CSS-style filters and
+                  // running two video instances of the same source doubles
+                  // bandwidth, so we render only the contain layer over the
+                  // dark `cinemaHero` background — letterboxing is acceptable
+                  // per the cinematic-broadcast spec and matches typical TV
+                  // app behavior on phones.
+                  <>
+                    {Platform.OS === "web" && (
+                      <HeroVideoComponent
+                        key={`bg-${broadcastItem.id}`}
+                        source={{ uri: broadcastItem.localVideoUrl }}
+                        style={StyleSheet.absoluteFill}
+                        resizeMode={HeroResizeMode?.COVER ?? "cover"}
+                        isMuted
+                        shouldPlay
+                        useNativeControls={false}
+                        progressUpdateIntervalMillis={10000}
+                        positionMillis={heroInitialPositionMillis}
+                        videoStyle={{
+                          width: "100%",
+                          height: "100%",
+                          filter: "blur(28px) saturate(1.4) brightness(0.55)",
+                          transform: "scale(1.08)",
+                        } as any}
+                      />
+                    )}
+                    <HeroVideoComponent
+                      key={broadcastItem.id}
+                      ref={heroVideoRef}
+                      source={{ uri: broadcastItem.localVideoUrl }}
+                      style={StyleSheet.absoluteFill}
+                      resizeMode={HeroResizeMode?.CONTAIN ?? "contain"}
+                      isMuted
+                      shouldPlay
+                      useNativeControls={false}
+                      onError={() => setHeroVideoFailed(true)}
+                      progressUpdateIntervalMillis={5000}
+                      positionMillis={heroInitialPositionMillis}
+                      videoStyle={{ width: "100%", height: "100%" }}
+                    />
+                  </>
                 ) : showBroadcast && broadcastItem?.thumbnailUrl ? (
                   <Image source={{ uri: broadcastItem.thumbnailUrl }} style={StyleSheet.absoluteFill} resizeMode="cover" />
                 ) : liveStatus.isLive && liveStatus.videoId && Platform.OS === "web" ? (
