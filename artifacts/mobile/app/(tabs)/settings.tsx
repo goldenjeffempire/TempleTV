@@ -415,27 +415,121 @@ export default function SettingsScreen() {
           />
         </GlassCard>
 
+        <Text style={[styles.sectionLabel, { color: c.mutedForeground }]}>CONTACT & LOCATION</Text>
+        <GlassCard style={styles.group}>
+          <Row
+            icon="map-pin"
+            label="Church Address"
+            description={
+              "Jesus Christ Temple Ministry\n" +
+              "Land of Good News\n" +
+              "Km 1 East West Road,\n" +
+              "Patani Expressway,\n" +
+              "Ebrumede Roundabout, Effurun,\n" +
+              "Delta State, Nigeria\n\n" +
+              "Tap for directions"
+            }
+            onPress={() =>
+              Linking.openURL(
+                "https://www.google.com/maps/search/?api=1&query=" +
+                  encodeURIComponent(
+                    "Jesus Christ Temple Ministry, Km 1 East West Road, Patani Expressway, Ebrumede Roundabout, Effurun, Delta State, Nigeria",
+                  ),
+              )
+            }
+          />
+        </GlassCard>
+
+        <Text style={[styles.sectionLabel, { color: c.mutedForeground }]}>EMAIL US</Text>
+        <GlassCard style={styles.group}>
+          <Row
+            icon="mail"
+            label="General"
+            description="info@jctm.org.ng"
+            onPress={() => Linking.openURL("mailto:info@jctm.org.ng")}
+          />
+          <Divider />
+          <Row
+            icon="mail"
+            label="Ministry"
+            description="jesuschristtempleministry@jctm.org.ng"
+            onPress={() => Linking.openURL("mailto:jesuschristtempleministry@jctm.org.ng")}
+          />
+          <Divider />
+          <Row
+            icon="user-plus"
+            label="New Members"
+            description="joinus@jctm.org.ng"
+            onPress={() => Linking.openURL("mailto:joinus@jctm.org.ng")}
+          />
+          <Divider />
+          <Row
+            icon="life-buoy"
+            label="Support"
+            description="support@jctm.org.ng"
+            onPress={() => Linking.openURL("mailto:support@jctm.org.ng")}
+          />
+          <Divider />
+          <Row
+            icon="user"
+            label="Prophet Amos"
+            description="prophetamos@jctm.org.ng"
+            onPress={() => Linking.openURL("mailto:prophetamos@jctm.org.ng")}
+          />
+        </GlassCard>
+
+        <Text style={[styles.sectionLabel, { color: c.mutedForeground }]}>PHONE & MEDIA</Text>
+        <GlassCard style={styles.group}>
+          <Row
+            icon="phone"
+            label="Enquiries"
+            description="+234 (0) 808 131 3111"
+            onPress={() => Linking.openURL("tel:+2348081313111")}
+          />
+          <Divider />
+          <Row
+            icon="phone"
+            label="Enquiries"
+            description="07082009777"
+            onPress={() => Linking.openURL("tel:+2347082009777")}
+          />
+          <Divider />
+          <Row
+            icon="youtube"
+            label="Temple TV"
+            description="youtube.com/@TEMPLETVJCTM"
+            onPress={() => Linking.openURL("https://youtube.com/@TEMPLETVJCTM")}
+          />
+          <Divider />
+          <Row
+            icon="globe"
+            label="Website"
+            description="www.jctm.org.ng"
+            onPress={() => Linking.openURL("https://www.jctm.org.ng")}
+          />
+          <Divider />
+          <Row
+            icon="calendar"
+            label="Sunday Service"
+            description={"Live-streamed via Temple TV \u00B7 8:00 AM WAT"}
+          />
+          <Divider />
+          <Row
+            icon="video"
+            label="Zoom Meeting ID"
+            description="Tap to join the Zoom meeting"
+            value="4092099631"
+            onPress={() => Linking.openURL("https://zoom.us/j/4092099631")}
+          />
+        </GlassCard>
+
         <Text style={[styles.sectionLabel, { color: c.mutedForeground }]}>ABOUT</Text>
         <GlassCard style={styles.group}>
           <Row icon="info" label="App Name" value="Temple TV" />
           <Divider />
           <Row icon="globe" label="Channel" value="@templetvjctm" />
           <Divider />
-          <Row
-            icon="external-link"
-            label="Visit Our Website"
-            description="jctm.org.ng"
-            onPress={() => Linking.openURL("https://jctm.org.ng")}
-          />
-          <Divider />
           <Row icon="code" label="Version" value="1.0.0 (1)" />
-          <Divider />
-          <Row
-            icon="mail"
-            label="Contact & Support"
-            description="Reach out for help or feedback"
-            onPress={() => Linking.openURL("mailto:support@templetv.jctm")}
-          />
         </GlassCard>
 
         <Text style={[styles.sectionLabel, { color: c.mutedForeground }]}>PLAYBACK CONTROL</Text>
