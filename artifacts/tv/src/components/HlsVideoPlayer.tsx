@@ -31,6 +31,7 @@ import Hls from "hls.js";
 import { keyEventToAction } from "../lib/tvKeys";
 import { isTizen } from "../lib/platform";
 import { registerStreamReconnect } from "../lib/lifecycle";
+import { BroadcastChannelBug } from "./BroadcastChannelBug";
 
 // ── Samsung AVPlay ambient declarations ───────────────────────────────────
 declare global {
@@ -1036,6 +1037,15 @@ export function HlsVideoPlayer({
       */}
       <video ref={videoRefA} style={slotStyle("A")} playsInline preload="auto" />
       <video ref={videoRefB} style={slotStyle("B")} playsInline preload="auto" muted />
+
+      {/* ── Real-broadcaster channel bug ────────────────────────────────────
+          Round 9b: in LIVE mode, render a discreet bottom-right "TEMPLE TV"
+          watermark that fades in 3 seconds after each program change. The
+          `programKey={hlsUrl}` ties the fade-reset to the same URL change
+          that drives the A/B swap, so each new program gets its own grace
+          period before the bug re-appears — exactly how real networks ease
+          their identifier in once the new content has settled on screen. */}
+      {isLive && <BroadcastChannelBug programKey={hlsUrl} />}
 
       {/* ── Cinematic loading veil (cold start only) ────────────────────────
           Shown ONLY before the very first frame ever decodes in this mount's

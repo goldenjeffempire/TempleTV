@@ -874,16 +874,32 @@ export default function PlayerScreen() {
                 <Feather name={isRadioMode ? "video" : "headphones"} size={16} color="#FFF" />
               </Pressable>
             )}
-            {isBroadcastMode && (
-              <View style={styles.channelBugWrap}>
-                <ChannelBug visible animated />
-              </View>
-            )}
+            {/* Round 9b: the channel bug moved out of the top chrome and
+                onto the bottom-right of the player surface as a real-
+                broadcaster watermark — see <ChannelBug mode="watermark" />
+                rendered below. The LIVE badge above is sufficient identity
+                in the chrome itself. */}
           </View>
         </LinearGradient>
 
         {isBroadcastMode && !isRadioMode && (
           <BroadcastInfoStrip broadcast={broadcastInfo} playerHeight={videoPlayerHeight} />
+        )}
+
+        {/* ── Real-broadcaster channel bug (bottom-right watermark) ────────
+            Round 9b: discreet "TEMPLE TV" mark that fades in 3 seconds
+            after each program change. `programKey` is the currently-tuned
+            program (videoId or local URL) so a queue advance resets the
+            grace period and re-eases the bug back in once the new program
+            has settled — exactly how real TV networks introduce their
+            station identifier. */}
+        {isBroadcastMode && !isRadioMode && (
+          <View style={styles.channelBugWatermark} pointerEvents="none">
+            <ChannelBug
+              mode="watermark"
+              programKey={tunedVideoId ?? tunedLocalVideoUrl ?? ""}
+            />
+          </View>
         )}
       </View>
 
@@ -1148,7 +1164,12 @@ const styles = StyleSheet.create({
   topControls: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, gap: 12 },
   backBtn: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.4)" },
   audioToggleBtn: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.4)" },
-  channelBugWrap: { position: "absolute", bottom: 8, right: 8, pointerEvents: "none" } as const,
+  channelBugWatermark: {
+    position: "absolute",
+    right: 14,
+    bottom: 14,
+    zIndex: 5,
+  } as const,
   broadcastFooter: {
     paddingHorizontal: 20,
     paddingTop: 18,

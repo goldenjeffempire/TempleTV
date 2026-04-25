@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { keyEventToAction } from "../lib/tvKeys";
 import { HlsVideoPlayer } from "../components/HlsVideoPlayer";
+import { BroadcastChannelBug } from "../components/BroadcastChannelBug";
 import { useLiveSync } from "../hooks/useLiveSync";
 
 interface PlayerProps {
@@ -481,6 +482,13 @@ function YouTubePlayer({ videoId, title, onBack, isLive = false }: { videoId: st
           </p>
         </div>
       )}
+
+      {/* Round 9b: real-broadcaster channel bug for live YouTube streams.
+          Fades in 3 seconds after each program change (here keyed on the
+          videoId since the YouTubePlayer is mounted per-video). The bug
+          sits below the controls overlay (z-index 5 vs the chrome's 10)
+          so it never intercepts remote-control focus. */}
+      {isLive && <BroadcastChannelBug programKey={videoId} />}
 
       {/* YouTube embed */}
       {!loadError && (

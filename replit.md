@@ -817,3 +817,85 @@ pipeline so the A/B inactive-slot preload (Round 7) still primes the
 next program before the active video ends — the viewer still gets a
 black-frame-free transition (Round 8), they just no longer see a text
 hint that the transition is coming.
+
+---
+
+## Round 9b — Real-Broadcaster Channel Bug (Apr 25, 2026)
+
+Re-introduced station identity *the right way* after Round 9 stripped all
+title metadata from broadcast surfaces. A discreet "TEMPLE TV" watermark
+now sits in the bottom-right corner of every live playback surface and
+fades in **3 seconds after each program change** — the convention used
+by real TV networks (NBC peacock, CBS eye, ESPN logo, CNN bug) where
+the station mark eases in once the new program has settled on screen,
+not the moment the cut happens.
+
+### What was added
+
+1. **`artifacts/tv/src/components/BroadcastChannelBug.tsx`** (new) —
+   TV/web watermark component. Pure-CSS opacity transition, glassy
+   `rgba(0,0,0,0.42)` chip with `backdrop-filter: blur(8px)`, white
+   "TEMPLE TV" wordmark + tiny `#FF0040` live-dot. Resets fade on
+   `programKey` change, fades in over 700ms after a 3000ms grace
+   period. `pointer-events: none` and `z-index: 5` so it never
+   intercepts remote-control focus and always sits below the chrome
+   overlay (`z-index: 10`).
+
+2. **`artifacts/mobile/components/ChannelBug.tsx`** (extended) —
+   Added a new `mode="watermark"` variant that mirrors the TV
+   behaviour (3s delay, 700ms fade, no pulse) for React Native. The
+   legacy `mode="chrome"` (default) keeps the existing pulsing badge
+   untouched so `(tabs)/radio.tsx` continues to render exactly as
+   before. New `programKey` prop is the program identifier the
+   watermark watches.
+
+### Where it's mounted
+
+- **`artifacts/tv/src/components/HlsVideoPlayer.tsx`** — `{isLive && <BroadcastChannelBug programKey={hlsUrl} />}`
+  rendered alongside the A/B `<video>` slots. The HLS URL change is
+  exactly the same signal that drives the A/B preload swap (Round 7),
+  so each new program automatically gets its own grace period before
+  the bug re-fades in.
+
+- **`artifacts/tv/src/pages/Player.tsx`** YouTubePlayer — `{isLive && <BroadcastChannelBug programKey={videoId} />}`
+  for live YouTube broadcasts. Sits above the iframe/loading veil
+  inside the same fixed-position container.
+
+- **`artifacts/mobile/app/player.tsx`** — Removed the legacy top-right
+  chrome `ChannelBug` (the LIVE badge already conveys "this is live"
+  in the chrome) and replaced it with a bottom-right watermark
+  rendered inside the `playerContainer` whenever `isBroadcastMode`
+  is on. `programKey={tunedVideoId ?? tunedLocalVideoUrl ?? ""}` so
+  the SSE/15s-poll/precision-timer that mutates the tuned slots
+  drives the fade reset on each queue advance.
+
+### Visual spec
+
+- Position: bottom-right, `clamp(16px, 2.4vw, 28px)` inset on TV;
+  fixed 14px on mobile.
+- Background: `rgba(0,0,0,0.42)` + 8px blur + 1px `rgba(255,255,255,0.18)` border.
+- Wordmark: white "TEMPLE TV", weight 700, 0.14em letter-spacing,
+  `clamp(10px, 1.05vw, 13px)` on TV / 10px on mobile.
+- Live-dot: `#FF0040` (the same accent the LIVE badge uses), 7-8px
+  with a soft red glow.
+- Final opacity: 0.7 — visible but never competing with the video.
+- Fade-in: 700ms ease-out after a 3000ms delay. Fade-out is
+  effectively instant on program change (key resets `opacity: 0`),
+  matching how real broadcasters drop the bug between program
+  segments.
+
+### What this does NOT change
+
+- The Round 9 "no-titles, no-up-next" directive is fully preserved —
+  the watermark is a *station* identifier, not a *program* one. It
+  shows the channel brand, never the sermon name.
+- The underlying `nextItem` data continues to flow through the SSE /
+  current-tune pipeline so the A/B inactive-slot preload still primes
+  the next program (Round 7) and Round 8's black-frame-free swap
+  still wins.
+
+### Verification
+
+TypeScript clean on `@workspace/mobile` and `@workspace/tv`. All four
+workflow services start cleanly (api:8080, admin:23744, mobile:18115,
+tv:23876).
