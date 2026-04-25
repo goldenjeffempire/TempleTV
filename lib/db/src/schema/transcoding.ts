@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, integer } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, integer, index } from "drizzle-orm/pg-core";
 
 export const transcodingJobsTable = pgTable("transcoding_jobs", {
   id: text("id").primaryKey(),
@@ -14,6 +14,11 @@ export const transcodingJobsTable = pgTable("transcoding_jobs", {
   startedAt: timestamp("started_at", { withTimezone: true }),
   completedAt: timestamp("completed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => [
+  index("idx_transcoding_jobs_status").on(t.status),
+  index("idx_transcoding_jobs_video_id").on(t.videoId),
+  index("idx_transcoding_jobs_next_retry_at").on(t.nextRetryAt),
+  index("idx_transcoding_jobs_status_priority_created").on(t.status, t.priority, t.createdAt),
+]);
 
 export type TranscodingJob = typeof transcodingJobsTable.$inferSelect;

@@ -37,6 +37,8 @@ export const videosTable = pgTable("managed_videos", {
   index("idx_managed_videos_transcoding_status").on(table.transcodingStatus),
   index("idx_managed_videos_title").on(table.title),
   index("idx_managed_videos_preacher").on(table.preacher),
+  index("idx_managed_videos_featured").on(table.featured),
+  index("idx_managed_videos_view_count").on(table.viewCount),
 ]);
 
 export const insertVideoSchema = createInsertSchema(videosTable).omit({ importedAt: true });

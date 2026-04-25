@@ -8,6 +8,7 @@ import { eq, and, desc, asc, or, isNull, lte, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { broadcastLiveEvent } from "./liveEvents";
 import { cache } from "./cache";
+import { invalidatePublicVideoCaches } from "./publicCacheInvalidation";
 import { objectStorageClient } from "./objectStorage";
 import { createReadStream } from "fs";
 import {
@@ -545,6 +546,11 @@ async function processNextJob(): Promise<boolean> {
       .where(eq(broadcastQueueTable.videoId, job.videoId));
 
     await cache.del("broadcast:queue");
+    // The public /api/videos/featured and /api/videos/trending payloads
+    // include `transcodingStatus` and `hlsMasterUrl`. Invalidate them so the
+    // newly playable HLS link is visible on the next request rather than
+    // waiting for the 60s TTL boundary.
+    await invalidatePublicVideoCaches();
 
     logger.info(
       {

@@ -7,6 +7,7 @@ import { broadcastLiveEvent, addSSEClient, removeSSEClient, getSSEClientCount } 
 import { getLiveStatus, getLiveMonitorData } from "./youtube";
 import { emitBroadcastState } from "./broadcast";
 import { cache } from "../lib/cache";
+import { invalidatePublicVideoCaches, invalidatePublicPlaylistCaches } from "../lib/publicCacheInvalidation";
 import { logger } from "../lib/logger";
 import { metricsSnapshot } from "../middlewares/observability";
 import { randomUUID, createHash, webcrypto } from "crypto";
@@ -1155,6 +1156,7 @@ router.post("/admin/videos/upload", upload.fields([{ name: "video", maxCount: 1 
       logger.error({ err: bqErr, videoId: video?.id }, "upsertBroadcastQueueVideo failed after simple upload");
     }
 
+    await invalidatePublicVideoCaches();
     res.status(201).json(video);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -1548,6 +1550,7 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
         );
       }
 
+      await invalidatePublicVideoCaches();
       res.status(201).json({ ...video, _assemblyMs: assemblyMs, broadcastQueued });
 
       // Transcoding is a background job — does not affect queue visibility.
@@ -1686,6 +1689,7 @@ router.post("/admin/videos/import", async (req, res) => {
       .returning();
 
     await upsertBroadcastQueueVideo(video);
+    await invalidatePublicVideoCaches();
     res.status(201).json(video);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -1704,6 +1708,7 @@ router.put("/admin/videos/:id", async (req, res) => {
     const [video] = await db.update(videosTable).set(updates).where(eq(videosTable.id, id)).returning();
     if (!video) return void res.status(404).json({ error: "Video not found" });
     await upsertBroadcastQueueVideo(video);
+    await invalidatePublicVideoCaches();
     res.json(video);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -1748,6 +1753,7 @@ router.delete("/admin/videos/:id", async (req, res) => {
       }
     }
 
+    await invalidatePublicVideoCaches();
     res.json({ success: true, message: "Video deleted" });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -1768,89 +1774,106 @@ router.post("/videos/:youtubeId/view", async (req, res) => {
   }
 });
 
+const PUBLIC_LIST_CACHE_TTL_MS = 60_000;
+const PUBLIC_LIST_CDN_HEADER = "public, max-age=30, stale-while-revalidate=60";
+
+function projectVideoForPublic(v: typeof videosTable.$inferSelect) {
+  return {
+    id: v.id,
+    youtubeId: v.youtubeId,
+    title: v.title,
+    description: v.description,
+    thumbnailUrl: v.thumbnailUrl,
+    duration: v.duration,
+    category: v.category,
+    preacher: v.preacher,
+    publishedAt: v.publishedAt,
+    views: v.viewCount,
+    videoSource: v.videoSource,
+    localVideoUrl: v.localVideoUrl,
+    hlsMasterUrl: v.hlsMasterUrl,
+    transcodingStatus: v.transcodingStatus,
+  };
+}
+
 router.get("/videos/trending", async (req, res) => {
   try {
     const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
     const sinceDays = Math.min(365, Math.max(1, Number(req.query.sinceDays) || 90));
-    const sinceDate = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000);
+    const cacheKey = `public:videos:trending:${limit}:${sinceDays}`;
 
-    const videos = await db
-      .select()
-      .from(videosTable)
-      .where(sql`${videosTable.importedAt} >= ${sinceDate.toISOString()}`)
-      .orderBy(desc(videosTable.viewCount), desc(videosTable.importedAt))
-      .limit(limit);
+    const payload = await cache.getOrSet(
+      cacheKey,
+      async () => {
+        const sinceDate = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000);
+        const videos = await db
+          .select()
+          .from(videosTable)
+          .where(sql`${videosTable.importedAt} >= ${sinceDate.toISOString()}`)
+          .orderBy(desc(videosTable.viewCount), desc(videosTable.importedAt))
+          .limit(limit);
+        return videos.map(projectVideoForPublic);
+      },
+      PUBLIC_LIST_CACHE_TTL_MS,
+    );
 
-    res.json(videos.map((v) => ({
-      id: v.id,
-      youtubeId: v.youtubeId,
-      title: v.title,
-      description: v.description,
-      thumbnailUrl: v.thumbnailUrl,
-      duration: v.duration,
-      category: v.category,
-      preacher: v.preacher,
-      publishedAt: v.publishedAt,
-      views: v.viewCount,
-      videoSource: v.videoSource,
-      localVideoUrl: v.localVideoUrl,
-      hlsMasterUrl: v.hlsMasterUrl,
-      transcodingStatus: v.transcodingStatus,
-    })));
+    res.setHeader("Cache-Control", PUBLIC_LIST_CDN_HEADER);
+    res.json(payload);
   } catch (err) {
     logger.error({ err }, "/videos/trending failed");
     res.status(500).json({ error: "internal_error" });
   }
 });
 
-router.get("/videos/featured", async (req, res) => {
+router.get("/videos/featured", async (_req, res) => {
   try {
-    const videos = await db
-      .select()
-      .from(videosTable)
-      .where(eq(videosTable.featured, true))
-      .orderBy(desc(videosTable.importedAt))
-      .limit(10);
-    res.json(videos.map((v) => ({
-      id: v.id,
-      youtubeId: v.youtubeId,
-      title: v.title,
-      description: v.description,
-      thumbnailUrl: v.thumbnailUrl,
-      duration: v.duration,
-      category: v.category,
-      preacher: v.preacher,
-      publishedAt: v.publishedAt,
-      views: v.viewCount,
-      videoSource: v.videoSource,
-      localVideoUrl: v.localVideoUrl,
-      hlsMasterUrl: v.hlsMasterUrl,
-      transcodingStatus: v.transcodingStatus,
-    })));
+    const payload = await cache.getOrSet(
+      "public:videos:featured",
+      async () => {
+        const videos = await db
+          .select()
+          .from(videosTable)
+          .where(eq(videosTable.featured, true))
+          .orderBy(desc(videosTable.importedAt))
+          .limit(10);
+        return videos.map(projectVideoForPublic);
+      },
+      PUBLIC_LIST_CACHE_TTL_MS,
+    );
+
+    res.setHeader("Cache-Control", PUBLIC_LIST_CDN_HEADER);
+    res.json(payload);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });
   }
 });
 
-router.get("/playlists", async (req, res) => {
+router.get("/playlists", async (_req, res) => {
   try {
-    const rows = await db
-      .select({
-        id: playlistsTable.id,
-        name: playlistsTable.name,
-        description: playlistsTable.description,
-        loopMode: playlistsTable.loopMode,
-        isActive: playlistsTable.isActive,
-        createdAt: playlistsTable.createdAt,
-        updatedAt: playlistsTable.updatedAt,
-        videoCount: sql<number>`CAST(COUNT(${playlistVideosTable.id}) AS INTEGER)`,
-      })
-      .from(playlistsTable)
-      .leftJoin(playlistVideosTable, eq(playlistVideosTable.playlistId, playlistsTable.id))
-      .where(eq(playlistsTable.isActive, true))
-      .groupBy(playlistsTable.id)
-      .orderBy(desc(playlistsTable.createdAt));
+    const rows = await cache.getOrSet(
+      "public:playlists:active",
+      async () =>
+        db
+          .select({
+            id: playlistsTable.id,
+            name: playlistsTable.name,
+            description: playlistsTable.description,
+            loopMode: playlistsTable.loopMode,
+            isActive: playlistsTable.isActive,
+            createdAt: playlistsTable.createdAt,
+            updatedAt: playlistsTable.updatedAt,
+            videoCount: sql<number>`CAST(COUNT(${playlistVideosTable.id}) AS INTEGER)`,
+          })
+          .from(playlistsTable)
+          .leftJoin(playlistVideosTable, eq(playlistVideosTable.playlistId, playlistsTable.id))
+          .where(eq(playlistsTable.isActive, true))
+          .groupBy(playlistsTable.id)
+          .orderBy(desc(playlistsTable.createdAt)),
+      30_000,
+    );
+
+    res.setHeader("Cache-Control", PUBLIC_LIST_CDN_HEADER);
     res.json(rows);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -1928,6 +1951,7 @@ router.post("/admin/playlists", async (req, res) => {
         isActive: isActive ?? true,
       })
       .returning();
+    await invalidatePublicPlaylistCaches();
     res.status(201).json({ ...playlist, videoCount: 0 });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -1959,6 +1983,7 @@ router.put("/admin/playlists/:id", async (req, res) => {
       .select({ count: count() })
       .from(playlistVideosTable)
       .where(eq(playlistVideosTable.playlistId, id));
+    await invalidatePublicPlaylistCaches();
     res.json({ ...playlist, videoCount: countResult?.count ?? 0 });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -1970,6 +1995,7 @@ router.delete("/admin/playlists/:id", async (req, res) => {
   try {
     const { id } = DeletePlaylistParams.parse(req.params);
     await db.delete(playlistsTable).where(eq(playlistsTable.id, id));
+    await invalidatePublicPlaylistCaches();
     res.json({ success: true, message: "Playlist deleted" });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -2008,6 +2034,7 @@ router.post("/admin/playlists/:id/videos", async (req, res) => {
     });
 
     const result = await getPlaylistWithVideos(id);
+    await invalidatePublicPlaylistCaches();
     res.json(result);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -2021,6 +2048,7 @@ router.delete("/admin/playlists/:id/videos/:videoId", async (req, res) => {
     const videoId = req.params.videoId;
     await db.delete(playlistVideosTable).where(sql`playlist_id = ${id} AND (video_id = ${videoId} OR id = ${videoId})`);
     const result = await getPlaylistWithVideos(id);
+    await invalidatePublicPlaylistCaches();
     res.json(result);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -2043,6 +2071,7 @@ router.put("/admin/playlists/:id/reorder", async (req, res) => {
     }
 
     const result = await getPlaylistWithVideos(id);
+    await invalidatePublicPlaylistCaches();
     res.json(result);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
