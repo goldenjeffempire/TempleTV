@@ -587,7 +587,11 @@ function YouTubePlayer({ videoId, title, onBack, isLive = false }: { videoId: st
       )}
 
 
-      {/* Top control overlay: back + title */}
+      {/* Top control overlay: back (+ title for VOD only) ───────────────
+          Round 8: in LIVE mode the broadcast surface exposes NO program
+          title, queue metadata, or content labels — a real TV channel
+          does not caption its own feed. The back button still appears
+          so the viewer can leave the stream. */}
       {!loadError && showControls && (
         <div
           style={{
@@ -621,22 +625,24 @@ function YouTubePlayer({ videoId, title, onBack, isLive = false }: { videoId: st
             >
               ← Back
             </button>
-            <h2
-              style={{
-                fontSize: "clamp(15px, 2.6vw, 28px)",
-                fontWeight: 700,
-                color: "#fff",
-                flex: 1,
-                margin: 0,
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                textShadow: "0 2px 12px rgba(0,0,0,0.6)",
-              }}
-              title={title}
-            >
-              {title}
-            </h2>
+            {!isLive && (
+              <h2
+                style={{
+                  fontSize: "clamp(15px, 2.6vw, 28px)",
+                  fontWeight: 700,
+                  color: "#fff",
+                  flex: 1,
+                  margin: 0,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  textShadow: "0 2px 12px rgba(0,0,0,0.6)",
+                }}
+                title={title}
+              >
+                {title}
+              </h2>
+            )}
           </div>
         </div>
       )}

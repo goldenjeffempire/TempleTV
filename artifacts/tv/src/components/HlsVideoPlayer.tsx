@@ -1289,22 +1289,32 @@ export function HlsVideoPlayer({
               ← Back
             </button>
 
-            <h2
-              style={{
-                flex: 1,
-                fontSize: "clamp(15px, 2.6vw, 28px)",
-                fontWeight: 700,
-                color: "#fff",
-                margin: 0,
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                textShadow: "0 2px 12px rgba(0,0,0,0.6)",
-              }}
-              title={title}
-            >
-              {title}
-            </h2>
+            {/* Round 8: in LIVE mode the broadcast surface deliberately
+                exposes NO program title, queue metadata, or content
+                labels — a real TV channel does not caption its own feed.
+                Only the back button, quality badge, and fullscreen
+                control remain in the top bar. The flex spacer keeps the
+                badge + fullscreen pinned to the right where they were. */}
+            {isLive ? (
+              <div style={{ flex: 1 }} aria-hidden="true" />
+            ) : (
+              <h2
+                style={{
+                  flex: 1,
+                  fontSize: "clamp(15px, 2.6vw, 28px)",
+                  fontWeight: 700,
+                  color: "#fff",
+                  margin: 0,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  textShadow: "0 2px 12px rgba(0,0,0,0.6)",
+                }}
+                title={title}
+              >
+                {title}
+              </h2>
+            )}
 
             {/* Quality level badge */}
             <div

@@ -744,3 +744,76 @@ four workflow servers come up cleanly (api:8080, admin:23744,
 mobile:18115, tv:23876) with no errors. `/api/broadcast/current`
 returns 200.
 
+
+---
+
+## Round 9 — Broadcast-Clean: All Up Next / Title Metadata Removed (Apr 25, 2026)
+
+Per the directive to make the broadcast viewing experience read like a
+real television channel, **every** "Up Next" label, video title, and
+queue/preview metadata element has been removed from the live broadcast
+surfaces across all platforms. The underlying `nextItem` data flow is
+**preserved** — it still feeds the inactive A/B preload slot — it is
+simply no longer surfaced to the viewer.
+
+### Surfaces stripped of titles & queue metadata
+
+1. **Mobile cinematic hero** (`artifacts/mobile/app/(tabs)/index.tsx`):
+   `BroadcastUpNext` component definition + render site removed. The
+   hero now shows only the live preview video, branded subtitle, and
+   the "Watch Temple TV" CTA — no "Up Next: <title>" chip.
+
+2. **Mobile broadcast info strip** (`artifacts/mobile/components/BroadcastInfoStrip.tsx`):
+   Reduced to the bare TV-channel affordances: `NOW ON AIR` dot +
+   `TEMPLE TV` channel badge. The previous "Up Next: <title>" line
+   under the badges is gone. Component left in the tree so the
+   gradient + safe-area math driving player chrome stays stable.
+
+3. **Mobile player chrome** (`artifacts/mobile/app/player.tsx`):
+   In `isBroadcastMode`, `displayTitle` is forced to `"Temple TV Live"`,
+   `displayPreacher` to `"JCTM Broadcast"`, and `displayDuration` /
+   `displayCategory` to empty strings. The native player chrome,
+   share sheet, and on-screen title section all read as the channel
+   identity instead of leaking the currently airing sermon name.
+   The VOD `nextSermon` "Up Next" auto-play banner is also gated
+   with `!isBroadcastMode` defensively.
+
+4. **TV HLS player** (`artifacts/tv/src/components/HlsVideoPlayer.tsx`):
+   In `isLive` mode, the top control bar's `<h2>{title}</h2>` is
+   replaced with a `flex: 1` spacer. Back button, quality badge, and
+   fullscreen control remain pinned in place.
+
+5. **TV YouTube player** (`artifacts/tv/src/pages/Player.tsx`):
+   Same treatment — the title `<h2>` in the top overlay is gated with
+   `!isLive`. VOD playback still shows the title; live broadcast does
+   not.
+
+6. **TV Live Hero** (`artifacts/tv/src/components/LiveHero.tsx`):
+   The dynamic `{liveStatus?.title ?? "Temple TV Live Stream"}` is
+   replaced with a hardcoded `Temple TV Live Stream` heading. The
+   landing page now reads as a channel-identity tease, not as a
+   sermon-specific landing.
+
+### NOT touched (intentionally)
+
+- `artifacts/tv/src/pages/VideoDetails.tsx` — VOD library page, not a
+  broadcast surface. Its "Up Next" related-videos panel is part of the
+  on-demand catalog UX, not live-channel UX.
+- `artifacts/mobile/app/(tabs)/guide.tsx` — schedule/EPG page; users
+  explicitly come here to see what's airing and what's next.
+- `artifacts/mobile/app/(tabs)/radio.tsx` — radio station queue UI;
+  audio-station context, not broadcast-channel context.
+- `artifacts/mobile/app/player.tsx` line 1085 region — the VOD
+  related-sermon auto-play banner is now gated with `!isBroadcastMode`
+  but otherwise preserved for VOD playback.
+
+### Verification
+
+TypeScript clean on `@workspace/mobile` and `@workspace/tv`
+(`tsc --noEmit` produces no output). All four workflow services start
+cleanly (api:8080, admin:23744, mobile:18115, tv:23876).
+`nextItem` continues to flow through the broadcast SSE / current-tune
+pipeline so the A/B inactive-slot preload (Round 7) still primes the
+next program before the active video ends — the viewer still gets a
+black-frame-free transition (Round 8), they just no longer see a text
+hint that the transition is coming.

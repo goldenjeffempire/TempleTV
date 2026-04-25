@@ -47,28 +47,15 @@ try {
   HeroResizeMode = av.ResizeMode;
 } catch {}
 
-// Round 6: removed the cinematic-hero "BroadcastProgress" component and its
-// per-second tick. A real TV channel does not show viewers a playback bar
-// for the current program. The "Up Next" hint (which a real TV channel DOES
-// show as a sneak peek) is preserved as a slim chip rendered inline below.
-const broadcastUpNextStyles = StyleSheet.create({
-  section: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 6 },
-  chevron: { marginRight: 1 },
-  text: { color: "rgba(255,255,255,0.7)", fontSize: 11, fontFamily: "Inter_500Medium", letterSpacing: 0.4 },
-});
-
-function BroadcastUpNext({ broadcastCurrent }: { broadcastCurrent: BroadcastCurrentResult }) {
-  const next = broadcastCurrent.nextItem;
-  if (!next) return null;
-  return (
-    <View style={broadcastUpNextStyles.section}>
-      <Feather name="skip-forward" size={10} color="rgba(255,255,255,0.6)" style={broadcastUpNextStyles.chevron} />
-      <Text style={broadcastUpNextStyles.text} numberOfLines={1}>
-        Up Next: {next.title}
-      </Text>
-    </View>
-  );
-}
+// Round 8: removed the cinematic-hero "Up Next: <title>" chip. Per the
+// broadcast-clean directive, the viewer sees no queue metadata, video
+// titles, or upcoming-content previews on the broadcast surface — the
+// hero behaves like a real TV channel where program identity is conveyed
+// only by the live video itself, not by a textual "what's next" hint.
+// Round 6 had already removed the per-second progress bar for the same
+// reason. The component is intentionally not replaced — the underlying
+// `nextItem` data continues to flow into the player for inactive-slot
+// preload, it just isn't surfaced to the viewer.
 
 export default function WatchScreen() {
   usePageSeo({
@@ -574,12 +561,11 @@ export default function WatchScreen() {
                     : "Temple TV Anywhere You Go"}
                 </Text>
 
-                {/* Round 6: replaced the broadcast progress bar with a slim
-                    "Up Next: <title>" chip. Real TV channels show a sneak peek
-                    of the next program but never a playback-position bar. */}
-                {showBroadcast && broadcastCurrent?.item && (
-                  <BroadcastUpNext broadcastCurrent={broadcastCurrent} />
-                )}
+                {/* Round 8: removed both the broadcast progress bar (Round 6)
+                    and the "Up Next: <title>" chip. Per the broadcast-clean
+                    directive, no queue metadata or upcoming-content text is
+                    surfaced — the hero now reads as a pure TV-channel tease
+                    with the live preview video carrying program identity. */}
 
                 {/* CTA row */}
                 <View style={styles.heroCtaRow}>

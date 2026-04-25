@@ -749,10 +749,19 @@ export default function PlayerScreen() {
   // currently-airing item even after a queue advance. For VOD, fall back
   // to the active sermon / route params as before.
   const displayVideoId = isLive ? undefined : (activeSermon?.youtubeId ?? tunedVideoId ?? paramVideoId);
-  const displayTitle = (isBroadcastMode ? tunedTitle : undefined) ?? activeSermon?.title ?? paramTitle ?? "Temple TV";
-  const displayPreacher = activeSermon?.preacher ?? paramPreacher ?? "JCTM";
-  const displayDuration = activeSermon?.duration ?? paramDuration ?? "";
-  const displayCategory = activeSermon?.category ?? paramCategory ?? "";
+  // Round 8: per the broadcast-clean directive, the live broadcast surface
+  // never exposes a per-program title. In broadcast mode the title is forced
+  // to the channel identity so the player chrome, share sheet, and title
+  // section all read as "Temple TV Live" instead of leaking the currently
+  // airing sermon name. VOD playback keeps its real sermon title.
+  const displayTitle = isBroadcastMode
+    ? "Temple TV Live"
+    : (activeSermon?.title ?? paramTitle ?? "Temple TV");
+  const displayPreacher = isBroadcastMode
+    ? "JCTM Broadcast"
+    : (activeSermon?.preacher ?? paramPreacher ?? "JCTM");
+  const displayDuration = isBroadcastMode ? "" : (activeSermon?.duration ?? paramDuration ?? "");
+  const displayCategory = isBroadcastMode ? "" : (activeSermon?.category ?? paramCategory ?? "");
   const thumbnailUrl = (isBroadcastMode ? tunedThumbnail : undefined) ?? activeSermon?.thumbnailUrl ?? paramThumbnail ?? (displayVideoId ? `https://img.youtube.com/vi/${displayVideoId}/hqdefault.jpg` : undefined);
   const favorited = displayVideoId ? isFavorite(displayVideoId) : false;
   const relatedSermons = allSermons.filter((s) => s.youtubeId !== displayVideoId && (activeSermon ? s.category === activeSermon.category : true)).slice(0, 6);
@@ -1077,7 +1086,10 @@ export default function PlayerScreen() {
               </Pressable>
             </GlassCard>
 
-            {nextSermon && (
+            {/* Round 8: the "Up Next" auto-play banner is a VOD library
+                affordance only. Broadcast playback never surfaces queue
+                metadata, even if a nextSermon happens to be set. */}
+            {!isBroadcastMode && nextSermon && (
               <GlassCard style={styles.autoPlayBanner}>
                 <View style={styles.autoPlayLeft}>
                   <Feather name="skip-forward" size={16} color={c.primary} />

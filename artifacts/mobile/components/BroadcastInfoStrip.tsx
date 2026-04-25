@@ -27,8 +27,11 @@ export function BroadcastInfoStrip({ broadcast, playerHeight }: BroadcastInfoStr
 
   if (!broadcast?.item) return null;
 
-  const { nextItem } = broadcast;
-
+  // Round 8: per the broadcast-clean directive, no video titles, queue
+  // metadata, or "Up Next" sneak peeks are exposed on viewer surfaces.
+  // The strip is reduced to the bare TV-channel affordances: NOW ON AIR
+  // and the channel identity. The component is kept in the tree so the
+  // gradient + safe-area math driving the player chrome stays stable.
   return (
     <Animated.View
       style={[styles.container, { opacity: fadeAnim, transform: [{ translateY: slideAnim }], pointerEvents: "none" }]}
@@ -48,17 +51,6 @@ export function BroadcastInfoStrip({ broadcast, playerHeight }: BroadcastInfoStr
               <Text style={styles.channelLabel}>TEMPLE TV</Text>
             </View>
           </View>
-
-          {/* Round 6: removed progressTrack/Fill — broadcast playback position
-              is not exposed on viewer surfaces. The "Up Next" sneak-peek chip
-              below is a real-TV-channel affordance and stays. */}
-
-          {nextItem && (
-            <View style={styles.upNextRow}>
-              <Feather name="chevrons-right" size={11} color="rgba(255,255,255,0.5)" />
-              <Text style={styles.upNextText} numberOfLines={1}>Up Next: {nextItem.title}</Text>
-            </View>
-          )}
         </View>
       </LinearGradient>
     </Animated.View>

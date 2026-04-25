@@ -322,7 +322,11 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
                 margin: 0,
               }}
             >
-              {liveStatus?.title ?? "Temple TV Live Stream"}
+              {/* Round 8: hardcoded to a generic broadcaster heading.
+                  Per the broadcast-clean directive, the live program's
+                  title is never surfaced — the hero reads as a real TV
+                  channel identity, not as a sermon-specific landing. */}
+              Temple TV Live Stream
             </h1>
             <p
               style={{
