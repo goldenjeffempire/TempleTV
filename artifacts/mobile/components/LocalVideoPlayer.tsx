@@ -365,52 +365,91 @@ export function LocalVideoPlayer({
     video.addEventListener("canplay", onCanPlay);
     video.addEventListener("playing", onPlaying);
 
-    let Hls: any;
-    try { Hls = require("hls.js"); } catch { return; }
-    // require returns the module, which may have a .default for ESM
-    const HlsClass = Hls?.default ?? Hls;
-    if (!HlsClass) return;
+    // ── Plain video detection (MP4, WebM, MOV, etc.) ─────────────────────
+    // hls.js can only parse m3u8 manifests. `Hls.isSupported()` checks for
+    // MSE in the browser, NOT whether the source URL is HLS — so without
+    // this guard we'd hand an .mp4 to `hls.loadSource()`, which fails the
+    // manifest parse and leaves the <video> element frozen at 0:00 with
+    // the loading veil cleared. The broadcast queue serves both raw MP4s
+    // (single-bitrate uploads) and m3u8 HLS variants, so we MUST route by
+    // URL extension before touching hls.js.
+    const isPlainVideo = /\.(mp4|webm|ogg|mov|avi|mkv|m4v)(\?[^#]*)?$/i.test(effectiveUrl);
 
-    if (HlsClass.isSupported && HlsClass.isSupported()) {
-      const hls = new HlsClass({
-        startLevel: -1,
-        maxBufferLength: 30,
-        // Match the TV player: never include credentials on cross-origin
-        // segment fetches so the production CDN's CORS doesn't have to
-        // echo a specific Access-Control-Allow-Origin.
-        xhrSetup: (xhr: XMLHttpRequest) => { xhr.withCredentials = false; },
-      });
-      webHlsRef.current = hls;
-      hls.loadSource(effectiveUrl);
-      hls.attachMedia(video);
-      armWebWatchdog();
-      hls.on("hlsManifestParsed", () => {
-        if (startPositionMs > 0) video.currentTime = startPositionMs / 1000;
-        safePlay();
-      });
-      hls.on("hlsError", (_e: any, data: any) => {
-        if (data?.fatal) {
-          clearWebWatchdog();
-          if (typeof console !== "undefined" && console.warn) {
-            console.warn("[LocalVideoPlayer] fatal hls error:", data.type, data.details);
-          }
-          if (isMountedRef.current) { setLoading(false); onError?.(); }
-        }
-      });
-    } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = effectiveUrl;
-      armWebWatchdog();
+    const seekToStart = () => {
       if (startPositionMs > 0) {
-        video.addEventListener("loadedmetadata", () => {
-          video.currentTime = startPositionMs / 1000;
-        }, { once: true });
+        try { video.currentTime = startPositionMs / 1000; } catch { /* noop */ }
       }
+    };
+
+    if (isPlainVideo) {
+      video.src = effectiveUrl;
+      video.load();
+      armWebWatchdog();
+      const onPlainReady = () => {
+        seekToStart();
+        safePlay();
+        video.removeEventListener("loadedmetadata", onPlainReady);
+      };
+      video.addEventListener("loadedmetadata", onPlainReady, { once: true });
+      // Optimistic play — if the file is cached, this gets us to playback
+      // before the loadedmetadata listener fires. seekToStart inside the
+      // listener will still run once metadata arrives.
       safePlay();
     } else {
-      // Direct MP4 fallback
-      video.src = effectiveUrl;
-      armWebWatchdog();
-      safePlay();
+      let Hls: any;
+      try { Hls = require("hls.js"); } catch { return; }
+      // require returns the module, which may have a .default for ESM
+      const HlsClass = Hls?.default ?? Hls;
+      if (!HlsClass) return;
+
+      if (HlsClass.isSupported && HlsClass.isSupported()) {
+        const hls = new HlsClass({
+          startLevel: -1,
+          maxBufferLength: 30,
+          // Match the TV player: never include credentials on cross-origin
+          // segment fetches so the production CDN's CORS doesn't have to
+          // echo a specific Access-Control-Allow-Origin.
+          xhrSetup: (xhr: XMLHttpRequest) => { xhr.withCredentials = false; },
+        });
+        webHlsRef.current = hls;
+        hls.loadSource(effectiveUrl);
+        hls.attachMedia(video);
+        armWebWatchdog();
+        hls.on("hlsManifestParsed", () => {
+          seekToStart();
+          safePlay();
+        });
+        hls.on("hlsError", (_e: any, data: any) => {
+          if (data?.fatal) {
+            clearWebWatchdog();
+            if (typeof console !== "undefined" && console.warn) {
+              console.warn("[LocalVideoPlayer] fatal hls error:", data.type, data.details);
+            }
+            if (isMountedRef.current) { setLoading(false); onError?.(); }
+          }
+        });
+      } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        video.src = effectiveUrl;
+        armWebWatchdog();
+        const onNativeReady = () => {
+          seekToStart();
+          safePlay();
+          video.removeEventListener("loadedmetadata", onNativeReady);
+        };
+        video.addEventListener("loadedmetadata", onNativeReady, { once: true });
+        safePlay();
+      } else {
+        // Last-ditch fallback for unknown URLs on browsers without MSE.
+        video.src = effectiveUrl;
+        armWebWatchdog();
+        const onFallbackReady = () => {
+          seekToStart();
+          safePlay();
+          video.removeEventListener("loadedmetadata", onFallbackReady);
+        };
+        video.addEventListener("loadedmetadata", onFallbackReady, { once: true });
+        safePlay();
+      }
     }
 
     return () => {
