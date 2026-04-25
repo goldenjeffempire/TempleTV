@@ -73,6 +73,35 @@ server.listen(port, "0.0.0.0", () => {
     "Infrastructure status at startup",
   );
 
+  // ── Production safety gate ─────────────────────────────────────────────────
+  // In production, refuse to keep serving traffic if AWS S3 is not configured.
+  // Without S3, every uploaded video and transcoded HLS segment lands on the
+  // ephemeral container disk and disappears on the next deploy/restart — a
+  // silent data-loss path that should never reach users. Render (and any
+  // sane orchestrator) will surface the crash and roll back to the previous
+  // healthy revision so a stripped env var can't quietly downgrade us.
+  // Dev and CI keep the soft warning behavior so local work isn't gated on
+  // having AWS credentials.
+  if (process.env.NODE_ENV === "production" && !s3Configured) {
+    logger.fatal(
+      {
+        missing: [
+          process.env.AWS_S3_BUCKET ? null : "AWS_S3_BUCKET",
+          process.env.AWS_REGION ? null : "AWS_REGION",
+          process.env.AWS_ACCESS_KEY_ID ? null : "AWS_ACCESS_KEY_ID",
+          process.env.AWS_SECRET_ACCESS_KEY ? null : "AWS_SECRET_ACCESS_KEY",
+        ].filter(Boolean),
+      },
+      "Refusing to start: AWS S3 is required in production but is not configured. " +
+        "Uploads would be written to ephemeral disk and lost on the next deploy. " +
+        "Set AWS_S3_BUCKET, AWS_REGION, AWS_ACCESS_KEY_ID, and AWS_SECRET_ACCESS_KEY " +
+        "in the deployment environment, then redeploy.",
+    );
+    // Give pino a moment to flush to stdout before the orchestrator reaps us.
+    setTimeout(() => process.exit(1), 250);
+    return;
+  }
+
   // Verify ffmpeg + ffprobe are present BEFORE the worker can pick up jobs.
   // We log loudly on failure but don't crash — the rest of the API still
   // serves traffic, and uploads can still be received; only the transcoder
