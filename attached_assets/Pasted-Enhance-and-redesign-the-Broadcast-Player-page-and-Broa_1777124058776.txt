@@ -1,0 +1,143 @@
+Enhance and redesign the Broadcast Player page and Broadcast Queue system to deliver a more professional, television-grade viewing and scheduling experience consistent with real-world broadcast station operations.
+
+---
+
+# 📺 Broadcast Player Page Enhancement
+
+## Objective
+
+Redesign the Broadcast Player page to reflect a professional television broadcasting environment with clean branding, immersive presentation, and balanced visual styling suitable for continuous live viewing.
+
+---
+
+## 🎨 Broadcast Player Theme Redesign
+
+Implement a refined broadcast interface theme with:
+
+* A balanced visual appearance that is:
+
+  * Not overly bright
+  * Not excessively dark
+  * Comfortable for long-duration viewing sessions
+
+* Use a modern soft-dark or neutral-toned background palette optimized for:
+
+  * Live television viewing
+  * Reduced eye strain
+  * Cinematic broadcast presentation
+
+* Ensure the design feels premium, immersive, and enterprise-grade across:
+
+  * Mobile devices
+  * Tablets
+  * Desktop browsers
+  * Smart TVs
+
+---
+
+## 🏢 Branding Integration
+
+Integrate official TempleTV broadcast branding into the Broadcast Player page.
+
+Requirements:
+
+* Display the TempleTV logo professionally within the broadcast interface
+
+* Include visible branding text:
+
+  * “JCTM Broadcasting”
+
+* Ensure branding placement:
+
+  * Does not obstruct video playback
+  * Feels like a real television station watermark or channel identity
+  * Maintains a clean broadcast aesthetic
+
+* Optimize branding visibility for all screen sizes and resolutions.
+
+---
+
+## 📡 Broadcast Experience Requirements
+
+* Maintain the television-style continuous live broadcast experience
+* Keep playback immersive and distraction-free
+* Ensure branding remains subtle yet professionally integrated
+
+---
+
+# 🎬 Broadcast Queue System Enhancement
+
+## Objective
+
+Redesign the broadcast queue behavior so uploaded videos follow a professional television scheduling workflow instead of immediately appearing in active broadcast playback.
+
+---
+
+## 📥 Queue Management Logic
+
+Implement a true broadcast queue system where:
+
+* Newly uploaded videos are automatically added to the broadcast queue
+* Uploaded content must wait for its scheduled playback turn
+* Videos should not interrupt the currently broadcasting content immediately after upload
+
+---
+
+## 🔄 Queue Playback Rules
+
+* Ensure videos play strictly according to queue order
+* Maintain continuous non-stop broadcasting flow
+* Automatically advance to the next queued content only after the current broadcast finishes
+
+---
+
+## 🚫 Prevent Immediate Broadcast Injection
+
+* Do not instantly push newly uploaded videos into active ON AIR playback
+* Prevent uploads from disrupting currently scheduled or active broadcast content
+
+---
+
+## 📺 Television Station Scheduling Behavior
+
+The queue system must behave like a real television station programming schedule:
+
+* Content waits in lineup order
+* Playback transitions occur only when appropriate
+* Broadcasting remains stable and predictable
+
+---
+
+## ⚙️ Queue System Reliability
+
+Ensure the queue system supports:
+
+* Stable scheduling operations
+* Real-time queue synchronization across all devices
+* Queue persistence during refreshes or reconnects
+* Continuous playback even during upload activity
+
+---
+
+## 🌍 Cross-Platform Consistency
+
+Ensure queue behavior remains identical across:
+
+* Web platform
+* Mobile applications
+* Smart TV interfaces
+* Administrative broadcast controls
+
+---
+
+# 🎯 Expected Final Outcome
+
+Deliver a fully enhanced, enterprise-grade broadcasting system where:
+
+* The Broadcast Player page has professional TempleTV branding and a refined balanced theme
+* “JCTM Broadcasting” is properly integrated into the viewing experience
+* Uploaded videos enter a structured queue instead of instantly appearing ON AIR
+* Broadcast scheduling behaves like a real-world television station
+* Continuous playback remains stable and uninterrupted across all distribution platforms
+
+“Temple TV Anywhere You Go”
