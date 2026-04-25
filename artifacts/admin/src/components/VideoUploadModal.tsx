@@ -99,6 +99,42 @@ function uploadAdminFetch(input: string, init?: RequestInit): Promise<Response> 
   return fetch(rewriteApiPath(input), { ...init, headers });
 }
 
+// ── Pre-flight API reachability probe ────────────────────────────────────────
+// A 576 MB upload that fails 90 minutes in with a generic "Failed to fetch"
+// is the worst possible UX. Probing /api/healthz before the upload kicks off
+// catches the entire class of "API is down / DNS broken / wrong VITE_API_URL /
+// production safety gate killed the boot" failures up front and surfaces an
+// actionable message instead of the browser's opaque TypeError.
+//
+// Returns null on success, or a human-readable reason string on failure.
+async function probeApiReachability(): Promise<string | null> {
+  const url = rewriteApiPath("/api/healthz");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5_000);
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      return `API server responded ${res.status} on /api/healthz — the service is reachable but unhealthy. Check the deployment logs.`;
+    }
+    return null;
+  } catch (err) {
+    const e = err as Error & { name?: string };
+    if (e?.name === "AbortError") {
+      return `API server did not respond within 5s at ${url}. Check that the deployment is running and reachable.`;
+    }
+    // "Failed to fetch" / TypeError lands here. The most common production
+    // cause is the API container being down (crash-looping on missing env
+    // vars, deploy in progress, or DNS not yet propagated).
+    return `Cannot reach the API server at ${url} (${e?.message ?? "network error"}). The deployment may be down — check the production service status before retrying this upload.`;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const DEFAULT_COMPRESSION_OPTS: CompressionOptions = {
   maxHeight: 1080,
   targetBitrate: 4_000_000,
@@ -525,6 +561,14 @@ export function VideoUploadModal({
         const ext = uploadFile.name.includes(".")
           ? `.${uploadFile.name.split(".").pop()}`
           : ".mp4";
+
+        // Pre-flight reachability probe — fail fast with an actionable
+        // message instead of letting a multi-GB upload error out 90 minutes
+        // in with the browser's opaque "Failed to fetch" TypeError.
+        const apiReachabilityError = await probeApiReachability();
+        if (apiReachabilityError) {
+          throw new Error(apiReachabilityError);
+        }
 
         updateTask(taskId, {
           durationSecs,
