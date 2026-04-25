@@ -9,6 +9,7 @@ import router from "./routes";
 import legalRouter from "./routes/legal";
 import sitemapRouter from "./routes/sitemap";
 import { logger } from "./lib/logger";
+import { s3FallbackMiddleware } from "./lib/staticWithS3Fallback";
 import { adminAccessControl, rateLimit, requestId, securityHeaders } from "./middlewares/security";
 import { requestMetrics } from "./middlewares/observability";
 
@@ -97,19 +98,45 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 app.use(adminAccessControl);
 
-app.use("/api/uploads", express.static(path.join(__dirname, "..", "uploads")));
+// ── Static media serving with S3 fallback ────────────────────────────────────
+// Render's filesystem is ephemeral — every deploy/restart wipes the local
+// `uploads/` directory.  The transcoder writes HLS variants to local disk and
+// also copies them to S3 (see `uploadHlsToS3` in transcoder.ts).  Without a
+// fallback, every restart breaks all transcoded broadcasts because the DB
+// still points at /api/hls/<id>/master.m3u8 but the local files are gone.
+// `s3FallbackMiddleware` checks local disk first (fast path), then transparently
+// streams from S3 with full HTTP Range support so video seek bars keep working.
+const UPLOADS_DIR = path.join(__dirname, "..", "uploads");
+const HLS_DIR = path.join(UPLOADS_DIR, "hls");
 
-app.use("/api/hls", (req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Cache-Control", "public, max-age=3600");
-  if (req.path.endsWith(".m3u8")) {
-    res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-    res.setHeader("Cache-Control", "public, max-age=30");
-  } else if (req.path.endsWith(".ts")) {
-    res.setHeader("Content-Type", "video/mp2t");
-  }
-  next();
-}, express.static(path.join(__dirname, "..", "uploads", "hls")));
+app.use(
+  "/api/uploads",
+  (_req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    next();
+  },
+  express.static(UPLOADS_DIR, { fallthrough: true, acceptRanges: true }),
+  s3FallbackMiddleware({ s3Prefix: "videos/", localDir: UPLOADS_DIR }),
+);
+
+app.use(
+  "/api/hls",
+  (req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    if (req.path.endsWith(".m3u8")) {
+      res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+      res.setHeader("Cache-Control", "public, max-age=30");
+    } else if (req.path.endsWith(".ts")) {
+      res.setHeader("Content-Type", "video/mp2t");
+      res.setHeader("Cache-Control", "public, max-age=3600, immutable");
+    } else {
+      res.setHeader("Cache-Control", "public, max-age=3600");
+    }
+    next();
+  },
+  express.static(HLS_DIR, { fallthrough: true, acceptRanges: true }),
+  s3FallbackMiddleware({ s3Prefix: "hls/", localDir: HLS_DIR }),
+);
 
 app.use(legalRouter);
 app.use(sitemapRouter);
