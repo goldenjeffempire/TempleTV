@@ -14,3 +14,4 @@ export * from "./user-watch-history";
 export * from "./device-link-codes";
 export * from "./cache";
 export * from "./rate-limit";
+export * from "./prayer-requests";

@@ -4,6 +4,7 @@ import {
   broadcastQueueTable,
   liveOverridesTable,
   playlistVideosTable,
+  prayerRequestsTable,
   scheduleTable,
   videosTable,
 } from "@workspace/db";
@@ -836,6 +837,39 @@ router.put("/admin/broadcast/reorder", async (req, res) => {
     broadcastLiveEvent("broadcast-queue-updated", { orderedIds, reason: "reordered", queuedAt: new Date().toISOString() });
     emitBroadcastState("queue-reordered", { orderedIds });
     res.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+const VALID_REACTION_TYPES = ["amen", "fire", "hallelujah"] as const;
+type ReactionType = typeof VALID_REACTION_TYPES[number];
+
+router.post("/broadcast/reaction", (req, res) => {
+  const { type } = req.body as { type?: string };
+  if (!type || !VALID_REACTION_TYPES.includes(type as ReactionType)) {
+    return void res.status(400).json({ error: "type must be amen, fire, or hallelujah" });
+  }
+  broadcastLiveEvent("live-reaction", { type, ts: Date.now() });
+  res.json({ ok: true });
+});
+
+router.post("/broadcast/prayer", async (req, res) => {
+  try {
+    const { name, message } = req.body as { name?: string; message?: string };
+    if (!message?.trim()) {
+      return void res.status(400).json({ error: "message is required" });
+    }
+    const [inserted] = await db
+      .insert(prayerRequestsTable)
+      .values({
+        id: randomUUID(),
+        name: name?.trim() || null,
+        message: message.trim(),
+      })
+      .returning();
+    res.json({ ok: true, id: inserted.id });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });

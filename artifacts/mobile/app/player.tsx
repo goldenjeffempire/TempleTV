@@ -31,9 +31,11 @@ import { usePlayer, usePlayerProgress } from "@/context/PlayerContext";
 import { useAuth } from "@/context/AuthContext";
 import { SERMONS } from "@/data/sermons";
 import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
-import { checkBroadcastCurrent, subscribeBroadcastEvents, type BroadcastCurrentResult } from "@/services/broadcast";
+import { checkBroadcastCurrent, subscribeBroadcastEvents, type BroadcastCurrentResult, type ReactionType } from "@/services/broadcast";
 import { ChannelBug } from "@/components/ChannelBug";
 import { BroadcastInfoStrip } from "@/components/BroadcastInfoStrip";
+import { LiveReactions } from "@/components/LiveReactions";
+import { PrayerRequestModal } from "@/components/PrayerRequestModal";
 import type { Sermon } from "@/types";
 import { usePageSeo } from "@/hooks/usePageSeo";
 
@@ -546,6 +548,10 @@ export default function PlayerScreen() {
       "broadcast-control-updated": () => handleBroadcastUpdate(),
       "override-expired": () => handleBroadcastUpdate(),
       status: () => handleBroadcastUpdate(),
+      "live-reaction": (data: unknown) => {
+        const evt = data as { type: ReactionType; ts: number };
+        if (evt?.type) setLatestReaction(evt);
+      },
     });
 
     return () => subscription?.close();
@@ -684,6 +690,9 @@ export default function PlayerScreen() {
   // Nudge guests watching broadcast to sign up — shown once, dismissible.
   const [nudgeDismissed, setNudgeDismissed] = useState(false);
 
+  const [latestReaction, setLatestReaction] = useState<{ type: ReactionType; ts: number } | null>(null);
+  const [prayerModalVisible, setPrayerModalVisible] = useState(false);
+
   const handleToggleAudioMode = useCallback(() => {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     toggleRadioMode();
@@ -788,6 +797,12 @@ export default function PlayerScreen() {
       {/* ── Broadcast / Live: clean immersive footer — no metadata clutter ── */}
       {isBroadcastOrLive ? (
         <View style={[styles.broadcastFooter, { paddingBottom: insets.bottom + 12 }]}>
+          {/* Live reactions overlay */}
+          <LiveReactions
+            latestIncoming={latestReaction}
+            containerWidth={width}
+          />
+
           {/* Channel identification row */}
           <View style={styles.broadcastChannelRow}>
             <View style={styles.onAirIndicator}>
@@ -828,6 +843,14 @@ export default function PlayerScreen() {
             >
               <Feather name="share-2" size={18} color={c.foreground} />
               <Text style={[styles.broadcastActionLabel, { color: c.mutedForeground }]}>Share</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setPrayerModalVisible(true)}
+              style={({ pressed }) => [styles.broadcastActionBtn, { backgroundColor: "rgba(106,13,173,0.22)", opacity: pressed ? 0.75 : 1 }]}
+              hitSlop={8}
+            >
+              <Text style={{ fontSize: 18, lineHeight: 22 }}>🙏</Text>
+              <Text style={[styles.broadcastActionLabel, { color: "#c084fc" }]}>Prayer</Text>
             </Pressable>
           </View>
 
@@ -1013,6 +1036,11 @@ export default function PlayerScreen() {
           </ScrollView>
         </Animated.View>
       )}
+
+      <PrayerRequestModal
+        visible={prayerModalVisible}
+        onClose={() => setPrayerModalVisible(false)}
+      />
     </View>
   );
 }

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, scheduledNotificationsTable, pushTokensTable, liveOverridesTable, transcodingJobsTable, broadcastQueueTable, usersTable, userWatchHistoryTable } from "@workspace/db";
+import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, scheduledNotificationsTable, pushTokensTable, liveOverridesTable, transcodingJobsTable, broadcastQueueTable, usersTable, userWatchHistoryTable, prayerRequestsTable } from "@workspace/db";
 import { eq, ilike, or, count, sql, desc, asc, and, lte, gte, inArray } from "drizzle-orm";
 import { queueTranscodingJob, retryTranscodingJob } from "../lib/transcoder";
 import { isFfmpegReady } from "../lib/ffmpeg";
@@ -2835,6 +2835,74 @@ router.post("/admin/transcoding/requeue/:videoId", async (req, res) => {
 
 router.get("/admin/live/health", (_req, res) => {
   res.json(getLiveMonitorData());
+});
+
+router.get("/admin/prayers", async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(String(req.query["page"] ?? "1"), 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(String(req.query["limit"] ?? "50"), 10) || 50));
+    const unreadOnly = req.query["unread"] === "true";
+
+    const where = unreadOnly
+      ? eq(prayerRequestsTable.isRead, false)
+      : undefined;
+
+    const [rows, [{ total }]] = await Promise.all([
+      db
+        .select()
+        .from(prayerRequestsTable)
+        .where(where)
+        .orderBy(desc(prayerRequestsTable.createdAt))
+        .limit(limit)
+        .offset((page - 1) * limit),
+      db
+        .select({ total: count() })
+        .from(prayerRequestsTable)
+        .where(where),
+    ]);
+
+    const [{ unread }] = await db
+      .select({ unread: count() })
+      .from(prayerRequestsTable)
+      .where(eq(prayerRequestsTable.isRead, false));
+
+    res.json({ items: rows, total, page, limit, unread });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.patch("/admin/prayers/:id/read", async (req, res) => {
+  try {
+    const { id } = req.params as { id: string };
+    const { isRead = true } = req.body as { isRead?: boolean };
+    const [updated] = await db
+      .update(prayerRequestsTable)
+      .set({ isRead })
+      .where(eq(prayerRequestsTable.id, id))
+      .returning();
+    if (!updated) return void res.status(404).json({ error: "Prayer request not found" });
+    res.json(updated);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.delete("/admin/prayers/:id", async (req, res) => {
+  try {
+    const { id } = req.params as { id: string };
+    const [deleted] = await db
+      .delete(prayerRequestsTable)
+      .where(eq(prayerRequestsTable.id, id))
+      .returning();
+    if (!deleted) return void res.status(404).json({ error: "Prayer request not found" });
+    res.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
 });
 
 export default router;

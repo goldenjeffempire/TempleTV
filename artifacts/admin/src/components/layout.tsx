@@ -23,6 +23,7 @@ import {
   WifiOff,
   Loader2,
   ChevronRight,
+  HandHeart,
 } from "lucide-react";
 import {
   applyAutoTheme,
@@ -219,6 +220,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         { href: "/analytics", label: "Analytics", icon: BarChart2 },
         { href: "/users", label: "Registered Users", icon: Users },
         { href: "/notifications", label: "Notifications", icon: BellRing },
+        { href: "/prayers", label: "Prayer Requests", icon: HandHeart },
       ],
     },
     {

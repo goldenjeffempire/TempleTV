@@ -124,7 +124,37 @@ export type BroadcastRealtimeEvent =
   | "broadcast-control-updated"
   | "status"
   | "override-expired"
-  | "yt-status";
+  | "yt-status"
+  | "live-reaction";
+
+export type ReactionType = "amen" | "fire" | "hallelujah";
+
+export async function sendReaction(type: ReactionType): Promise<void> {
+  const apiBase = getApiBase();
+  if (!apiBase) return;
+  try {
+    await fetch(`${apiBase}/api/broadcast/reaction`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type }),
+    });
+  } catch {}
+}
+
+export async function submitPrayerRequest(name: string | null, message: string): Promise<boolean> {
+  const apiBase = getApiBase();
+  if (!apiBase) return false;
+  try {
+    const res = await fetch(`${apiBase}/api/broadcast/prayer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name || undefined, message }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
 
 const SSE_MIN_RETRY_MS = 2_000;
 const SSE_MAX_RETRY_MS = 60_000;
