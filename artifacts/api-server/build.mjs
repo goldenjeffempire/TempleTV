@@ -18,6 +18,10 @@ async function buildAll() {
     entryPoints: [
       path.resolve(artifactDir, "src/index.ts"),
       path.resolve(artifactDir, "src/instrument.ts"),
+      // One-shot operational scripts that share the api-server runtime
+      // (S3 client, logger, env validation). Compiled to dist/scripts/*.mjs
+      // and runnable via the `backfill-uploads` package script.
+      path.resolve(artifactDir, "src/scripts/backfill-uploads-to-s3.ts"),
     ],
     platform: "node",
     bundle: true,

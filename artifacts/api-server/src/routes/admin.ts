@@ -27,6 +27,7 @@ import {
   getSignedPutUrl as s3GetSignedPutUrl,
   getSignedGetUrl as s3GetSignedGetUrl,
   replaceObjectMetadata as s3ReplaceObjectMetadata,
+  putObject as s3PutObject,
 } from "../lib/s3Storage";
 import {
   ImportVideoBody,
@@ -1529,6 +1530,44 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
       const baseUrl = process.env.API_BASE_URL ?? (devDomain ? `https://${devDomain}` : "");
       const localVideoUrl = `${baseUrl}/api/uploads/${finalFilename}`;
       const thumbnailUrl = session.thumbnailPath ? `${baseUrl}/api/uploads/${session.thumbnailPath}` : "";
+
+      // ── Mirror to S3 ────────────────────────────────────────────────────
+      // The /api/uploads/* route 302-redirects to S3 when the object exists
+      // there (lib/staticWithS3Fallback.ts redirectFromS3 mode), so the API
+      // process never has to stream the bytes. Mirror the assembled video
+      // and any thumbnail to `videos/<filename>` here so that redirect path
+      // is taken from the very first playback instead of waiting for a
+      // separate backfill. Best-effort: a failure leaves the file on local
+      // disk where express.static still serves it, and the standalone
+      // backfill script (`pnpm --filter @workspace/api-server run backfill-uploads`)
+      // can reconcile later.
+      if (isS3Configured()) {
+        try {
+          await s3PutObject(`videos/${finalFilename}`, createReadStream(finalPath), {
+            contentType: mimeType,
+          });
+          logger.info(
+            { finalFilename, sizeBytes },
+            "Source MP4 mirrored to S3 (videos/) — /api/uploads will 302-redirect",
+          );
+        } catch (s3Err) {
+          logger.warn(
+            { err: s3Err instanceof Error ? s3Err.message : String(s3Err), finalFilename },
+            "S3 mirror failed for assembled MP4 — file still on local disk; backfill-uploads will reconcile",
+          );
+        }
+        if (session.thumbnailPath) {
+          const thumbPath = path.join(__dirname, "..", "uploads", session.thumbnailPath);
+          try {
+            await s3PutObject(`videos/${session.thumbnailPath}`, createReadStream(thumbPath));
+          } catch (s3Err) {
+            logger.warn(
+              { err: s3Err instanceof Error ? s3Err.message : String(s3Err), thumb: session.thumbnailPath },
+              "S3 mirror failed for thumbnail — file still on local disk; backfill-uploads will reconcile",
+            );
+          }
+        }
+      }
 
       const id = randomUUID();
       const [video] = await db

@@ -1,8 +1,14 @@
 services:
+  # Bumped from `starter` (512 MB) to `standard` (2 GB). Range-streaming
+  # large MP4s on the 512 MB instance was OOM-killing this process under
+  # parallel client load (see RELEASE_AUDIT / staticWithS3Fallback notes).
+  # `/api/uploads/*` now also 302-redirects to S3 (lib/staticWithS3Fallback.ts
+  # `redirectFromS3` mode), so the API process should stay well under the
+  # new ceiling — the bigger plan is defence-in-depth for spikes.
   - type: web
     name: temple-tv-api
     runtime: node
-    plan: starter
+    plan: standard
     region: frankfurt
     branch: main
     rootDir: .

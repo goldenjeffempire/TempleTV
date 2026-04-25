@@ -10,6 +10,7 @@ import legalRouter from "./routes/legal";
 import sitemapRouter from "./routes/sitemap";
 import { logger } from "./lib/logger";
 import { s3FallbackMiddleware } from "./lib/staticWithS3Fallback";
+import { uploadRangeGuard } from "./lib/uploadRangeGuard";
 import { adminAccessControl, rateLimit, requestId, securityHeaders } from "./middlewares/security";
 import { requestMetrics } from "./middlewares/observability";
 
@@ -115,13 +116,16 @@ const HLS_DIR = path.join(UPLOADS_DIR, "hls");
 // the container — so for anything that has already mirrored to S3 we issue a
 // 302 to a short-lived presigned URL and let clients fetch directly from S3.
 // The local-disk fast path (express.static) is preserved for the brief window
-// after a fresh upload before it mirrors to the bucket.
+// after a fresh upload before it mirrors to the bucket. The range guard caps
+// per-client concurrency and per-request range size as defence-in-depth for
+// the disk fast-path window and the rare presigner-failure fallback.
 app.use(
   "/api/uploads",
   (_req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     next();
   },
+  uploadRangeGuard(),
   express.static(UPLOADS_DIR, { fallthrough: true, acceptRanges: true }),
   s3FallbackMiddleware({
     s3Prefix: "videos/",
