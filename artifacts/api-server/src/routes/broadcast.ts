@@ -399,6 +399,15 @@ export function startBroadcastTransitionTicker(): void {
   _transitionTickHandle.unref();
 }
 
+/**
+ * Read the most recently rebuilt broadcast payload without touching the DB or
+ * cache. Used by the per-second stream-health emitter so it can read current
+ * on-air metadata in O(1) without I/O on the hot path.
+ */
+export function getLastTrackedBroadcastPayload(): BroadcastCurrentPayload | null {
+  return _lastTrackedPayload;
+}
+
 export function emitBroadcastState(reason: string, detail: Record<string, unknown> = {}) {
   buildBroadcastCurrentPayload()
     .then((current) => {

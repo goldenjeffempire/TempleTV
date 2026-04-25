@@ -52,6 +52,9 @@ const ACTIVITY_BUFFER_SIZE = 25;
 
 function summarizeEvent(event: string, data: unknown): string | null {
   if (event === "heartbeat") return null;
+  // stream-health pings every second — never surface them in the activity feed
+  // or the entire feed becomes a wall of duplicate entries.
+  if (event === "stream-health") return null;
   const d = (data && typeof data === "object" ? (data as Record<string, unknown>) : {}) as Record<string, unknown>;
   switch (event) {
     case "status": {
@@ -128,6 +131,7 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
       "broadcast-control-updated",
       "override-expired",
       "heartbeat",
+      "stream-health",
     ];
 
     knownEvents.forEach((evt) => {

@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
   CheckCircle2,
   Clock,
   ExternalLink,
+  Gauge,
+  Heart,
   Radio,
   RefreshCw,
   Signal,
@@ -14,6 +16,7 @@ import {
   WifiOff,
   Zap,
 } from "lucide-react";
+import { useSSEEvent } from "@/contexts/SSEContext";
 import {
   Area,
   AreaChart,
@@ -42,6 +45,25 @@ interface LiveEventRecord {
 interface ViewerSnapshot {
   ts: number;
   count: number;
+}
+
+interface StreamHealthSnapshot {
+  ts: number;
+  viewerCount: number;
+  isOnAir: boolean;
+  currentTitle: string | null;
+  itemUptimeSecs: number;
+  serverUptimeSecs: number;
+  bitrateKbps: number | null;
+  segmentLatencyMs: number | null;
+  deliveryOk: boolean;
+  lastProbeAgoMs: number;
+  stabilityPercent: number;
+  connectionFailureRate: number;
+  syncOk: boolean;
+  progressPercent: number | null;
+  health: "healthy" | "warning" | "critical";
+  healthReason: string;
 }
 
 interface LiveHealthData {
@@ -228,6 +250,233 @@ function ViewerChart({ data }: { data: ViewerSnapshot[] }) {
   );
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Realtime Stream Health card — driven entirely by the per-second SSE feed
+// from `streamHealth.ts` on the server. No polling. Every metric here is a
+// live measurement, refreshed at 1 Hz, with explicit stale-data handling.
+// ───────────────────────────────────────────────────────────────────────────
+function RealtimeStreamHealth({
+  snapshot,
+  stale,
+  staleMs,
+}: {
+  snapshot: StreamHealthSnapshot | null;
+  stale: boolean;
+  staleMs: number;
+}) {
+  // Sparkline buffer — last 60 latency samples (one per second). Plain array
+  // ref is fine; we re-render via the snapshot prop every tick anyway.
+  const latencyHistoryRef = useRef<number[]>([]);
+  const viewerHistoryRef = useRef<number[]>([]);
+  if (snapshot) {
+    if (typeof snapshot.segmentLatencyMs === "number") {
+      latencyHistoryRef.current = [...latencyHistoryRef.current, snapshot.segmentLatencyMs].slice(-60);
+    }
+    viewerHistoryRef.current = [...viewerHistoryRef.current, snapshot.viewerCount].slice(-60);
+  }
+
+  const healthClass = useMemo(() => {
+    if (!snapshot) return "border-muted bg-card";
+    switch (snapshot.health) {
+      case "critical":
+        return "border-red-500/40 bg-red-500/5";
+      case "warning":
+        return "border-amber-500/40 bg-amber-500/5";
+      default:
+        return "border-emerald-500/30 bg-emerald-500/5";
+    }
+  }, [snapshot]);
+
+  const healthBadge = useMemo(() => {
+    if (!snapshot) return { label: "Connecting…", color: "bg-muted text-muted-foreground" };
+    if (stale) return { label: "Stale feed", color: "bg-amber-500/15 text-amber-600 border-amber-500/30" };
+    switch (snapshot.health) {
+      case "critical":
+        return { label: "Critical", color: "bg-red-500/15 text-red-600 border-red-500/30" };
+      case "warning":
+        return { label: "Warning", color: "bg-amber-500/15 text-amber-600 border-amber-500/30" };
+      default:
+        return { label: "Healthy", color: "bg-emerald-500/15 text-emerald-600 border-emerald-500/30" };
+    }
+  }, [snapshot, stale]);
+
+  return (
+    <Card className={`border ${healthClass} transition-colors`}>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Heart
+              className={`w-4 h-4 ${
+                snapshot?.health === "healthy"
+                  ? "text-emerald-500 animate-pulse"
+                  : snapshot?.health === "warning"
+                  ? "text-amber-500"
+                  : snapshot?.health === "critical"
+                  ? "text-red-500"
+                  : "text-muted-foreground"
+              }`}
+            />
+            <CardTitle className="text-sm font-semibold">Realtime Stream Health</CardTitle>
+            <span className={`text-[10px] uppercase tracking-wide font-medium px-2 py-0.5 rounded-full border ${healthBadge.color}`}>
+              {healthBadge.label}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 text-[11px] text-muted-foreground font-mono">
+            <span className={`inline-block w-1.5 h-1.5 rounded-full ${stale ? "bg-amber-500" : "bg-emerald-500 animate-pulse"}`} />
+            {stale ? `Stale ${Math.floor(staleMs / 1000)}s` : "1 Hz live"}
+          </div>
+        </div>
+        {snapshot?.healthReason && (
+          <p className="text-xs text-muted-foreground mt-1.5 ml-6">{snapshot.healthReason}</p>
+        )}
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <HealthMetric
+            icon={<Users className="w-3.5 h-3.5" />}
+            label="Viewers"
+            value={snapshot ? snapshot.viewerCount.toLocaleString() : "—"}
+            sub="connected now"
+            sparkline={viewerHistoryRef.current}
+            sparkColor="#3b82f6"
+          />
+          <HealthMetric
+            icon={<Gauge className="w-3.5 h-3.5" />}
+            label="Bitrate"
+            value={snapshot?.bitrateKbps ? `${(snapshot.bitrateKbps / 1000).toFixed(2)} Mbps` : "—"}
+            sub={snapshot?.bitrateKbps ? `${snapshot.bitrateKbps} kbps peak` : "n/a for source"}
+          />
+          <HealthMetric
+            icon={<Activity className="w-3.5 h-3.5" />}
+            label="Segment latency"
+            value={snapshot?.segmentLatencyMs !== null && snapshot?.segmentLatencyMs !== undefined ? `${snapshot.segmentLatencyMs} ms` : "—"}
+            sub={
+              snapshot?.segmentLatencyMs !== null && snapshot?.segmentLatencyMs !== undefined
+                ? snapshot.segmentLatencyMs > 1500
+                  ? "above critical"
+                  : snapshot.segmentLatencyMs > 800
+                  ? "above optimal"
+                  : "optimal"
+                : "no probe data"
+            }
+            tone={
+              snapshot?.segmentLatencyMs !== null && snapshot?.segmentLatencyMs !== undefined
+                ? snapshot.segmentLatencyMs > 1500
+                  ? "critical"
+                  : snapshot.segmentLatencyMs > 800
+                  ? "warning"
+                  : "ok"
+                : undefined
+            }
+            sparkline={latencyHistoryRef.current}
+            sparkColor="#a855f7"
+          />
+          <HealthMetric
+            icon={<CheckCircle2 className="w-3.5 h-3.5" />}
+            label="Stability"
+            value={snapshot ? `${snapshot.stabilityPercent.toFixed(1)}%` : "—"}
+            sub={
+              snapshot
+                ? snapshot.connectionFailureRate === 0
+                  ? "0 dropped writes"
+                  : `${(snapshot.connectionFailureRate * 100).toFixed(2)}% drop`
+                : "—"
+            }
+            tone={
+              snapshot
+                ? snapshot.connectionFailureRate > 0.05
+                  ? "warning"
+                  : "ok"
+                : undefined
+            }
+          />
+          <HealthMetric
+            icon={<Clock className="w-3.5 h-3.5" />}
+            label="Item uptime"
+            value={snapshot && snapshot.isOnAir ? formatDuration(snapshot.itemUptimeSecs) : "—"}
+            sub={snapshot?.currentTitle ? truncate(snapshot.currentTitle, 22) : "off air"}
+          />
+          <HealthMetric
+            icon={<Signal className="w-3.5 h-3.5" />}
+            label="Sync state"
+            value={snapshot?.syncOk ? "Anchored" : snapshot ? "Drifting" : "—"}
+            sub={
+              snapshot
+                ? snapshot.progressPercent !== null
+                  ? `${snapshot.progressPercent}% through item`
+                  : "no anchor"
+                : "—"
+            }
+            tone={snapshot ? (snapshot.syncOk ? "ok" : "warning") : undefined}
+          />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function HealthMetric({
+  icon,
+  label,
+  value,
+  sub,
+  tone,
+  sparkline,
+  sparkColor,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  sub?: string;
+  tone?: "ok" | "warning" | "critical";
+  sparkline?: number[];
+  sparkColor?: string;
+}) {
+  const valueColor =
+    tone === "critical"
+      ? "text-red-500"
+      : tone === "warning"
+      ? "text-amber-600"
+      : tone === "ok"
+      ? "text-emerald-600"
+      : "text-foreground";
+  return (
+    <div className="rounded-md bg-background/40 border border-border/40 p-3 min-w-0">
+      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+        {icon}
+        <span className="truncate">{label}</span>
+      </div>
+      <div className={`text-lg font-bold font-mono leading-tight tabular-nums ${valueColor}`}>{value}</div>
+      {sub && <div className="text-[10px] text-muted-foreground mt-0.5 truncate">{sub}</div>}
+      {sparkline && sparkline.length > 1 && (
+        <Sparkline data={sparkline} color={sparkColor ?? "#3b82f6"} />
+      )}
+    </div>
+  );
+}
+
+function Sparkline({ data, color }: { data: number[]; color: string }) {
+  if (data.length < 2) return null;
+  const max = Math.max(...data, 1);
+  const min = Math.min(...data, 0);
+  const range = max - min || 1;
+  const w = 100;
+  const h = 22;
+  const step = w / (data.length - 1);
+  const points = data
+    .map((v, i) => `${(i * step).toFixed(1)},${(h - ((v - min) / range) * h).toFixed(1)}`)
+    .join(" ");
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-5 mt-1.5" preserveAspectRatio="none">
+      <polyline points={points} fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" opacity="0.85" />
+    </svg>
+  );
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
+
 export default function LiveMonitor() {
   const { toast } = useToast();
   const [data, setData] = useState<LiveHealthData | null>(null);
@@ -291,9 +540,33 @@ export default function LiveMonitor() {
 
   useEffect(() => {
     fetchHealth();
-    const interval = setInterval(() => fetchHealth(true), 15000);
+    // Reduced from 15 s to 60 s — the per-second `stream-health` SSE event now
+    // drives the realtime card and the YouTube-status SSE drives liveness
+    // changes, so this poll exists only as a belt-and-suspenders refresh for
+    // the historical viewer-snapshot list and aggregate stats.
+    const interval = setInterval(() => fetchHealth(true), 60_000);
     return () => clearInterval(interval);
   }, [fetchHealth]);
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Realtime stream-health subscription — pushed every 1 s by the API server
+  // ───────────────────────────────────────────────────────────────────────
+  const [streamHealth, setStreamHealth] = useState<StreamHealthSnapshot | null>(null);
+  const [healthLastSeen, setHealthLastSeen] = useState<number>(0);
+  useSSEEvent("stream-health", (data) => {
+    if (!data || typeof data !== "object") return;
+    setStreamHealth(data as StreamHealthSnapshot);
+    setHealthLastSeen(Date.now());
+  });
+  // "Live ticker" — surfaces a stale-data warning if no health frame arrives
+  // for >5 s (would imply the SSE socket dropped or the server timer stalled).
+  const [tickerNow, setTickerNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setTickerNow(Date.now()), 1_000);
+    return () => clearInterval(t);
+  }, []);
+  const healthStaleMs = healthLastSeen ? tickerNow - healthLastSeen : 0;
+  const healthIsStale = healthLastSeen > 0 && healthStaleMs > 5_000;
 
   useEffect(() => {
     const token = getAdminToken();
@@ -378,6 +651,8 @@ export default function LiveMonitor() {
           </div>
         </div>
       )}
+
+      <RealtimeStreamHealth snapshot={streamHealth} stale={healthIsStale} staleMs={healthStaleMs} />
 
       {loading ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">

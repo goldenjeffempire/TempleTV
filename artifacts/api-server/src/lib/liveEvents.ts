@@ -50,20 +50,39 @@ export function removeSSEClient(client: SSEClient): void {
 
 let eventSequence = 0;
 
+// Observer hook so other modules (e.g. streamHealth) can compute connection
+// stability from real write outcomes without re-wrapping the broadcast path.
+type WriteObserver = (ok: number, failed: number) => void;
+const writeObservers = new Set<WriteObserver>();
+
+export function registerSSEWriteObserver(observer: WriteObserver): () => void {
+  writeObservers.add(observer);
+  return () => writeObservers.delete(observer);
+}
+
 export function broadcastLiveEvent(event: string, data: unknown): void {
   const id = ++eventSequence;
   const payload = `id: ${id}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   const dead: SSEClient[] = [];
+  let ok = 0;
   for (const client of clients) {
     try {
       client.res.write(payload);
       flushClient(client);
       client.lastWriteAt = Date.now();
+      ok++;
     } catch {
       dead.push(client);
     }
   }
   for (const c of dead) clients.delete(c);
+  // Fire observers outside the hot loop. Skip self-emitted health pings so
+  // the stability metric doesn't measure itself recursively.
+  if (event !== "stream-health" && (ok > 0 || dead.length > 0)) {
+    for (const obs of writeObservers) {
+      try { obs(ok, dead.length); } catch {}
+    }
+  }
 }
 
 export function writeSingleClient(client: SSEClient, event: string, data: unknown): void {

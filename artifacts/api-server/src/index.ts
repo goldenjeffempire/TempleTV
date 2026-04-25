@@ -6,6 +6,7 @@ import { assertFfmpegAvailable } from "./lib/ffmpeg";
 import { startNotificationScheduler } from "./lib/notification-scheduler";
 import { startSSEHeartbeat, closeAllSSEClients } from "./lib/liveEvents";
 import { startBroadcastTransitionTicker } from "./routes/broadcast";
+import { startStreamHealthEmitter } from "./lib/streamHealth";
 import { startYoutubeCatalogueScheduler } from "./routes/youtube";
 import { cache } from "./lib/cache";
 import { AWS_REGION, AWS_S3_BUCKET, isS3Configured } from "./lib/s3Storage";
@@ -94,6 +95,7 @@ server.listen(port, "0.0.0.0", () => {
   startNotificationScheduler();
   startSSEHeartbeat();
   startBroadcastTransitionTicker();
+  startStreamHealthEmitter();
   startYoutubeCatalogueScheduler();
 
   // Log cache backend once it has had time to connect (2 s warm-up).
