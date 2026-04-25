@@ -19,6 +19,16 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { Trash2, MailOpen, Mail, ChevronLeft, ChevronRight } from "lucide-react";
 
@@ -85,6 +95,7 @@ async function deletePrayer(id: string): Promise<void> {
 export default function PrayersPage() {
   const [page, setPage] = useState(1);
   const [filter, setFilter] = useState<"all" | "unread">("all");
+  const [pendingDelete, setPendingDelete] = useState<PrayerRequest | null>(null);
   const { toast } = useToast();
   const qc = useQueryClient();
 
@@ -106,7 +117,11 @@ export default function PrayersPage() {
 
   const deleteMut = useMutation({
     mutationFn: deletePrayer,
-    onSuccess: invalidate,
+    onSuccess: () => {
+      invalidate();
+      setPendingDelete(null);
+      toast({ title: "Prayer request deleted" });
+    },
     onError: () => toast({ title: "Failed to delete prayer request", variant: "destructive" }),
   });
 
@@ -212,11 +227,7 @@ export default function PrayersPage() {
                         variant="ghost"
                         className="h-8 w-8 text-destructive hover:text-destructive"
                         title="Delete"
-                        onClick={() => {
-                          if (window.confirm("Delete this prayer request?")) {
-                            deleteMut.mutate(pr.id);
-                          }
-                        }}
+                        onClick={() => setPendingDelete(pr)}
                         disabled={deleteMut.isPending}
                       >
                         <Trash2 className="w-4 h-4" />
@@ -255,6 +266,49 @@ export default function PrayersPage() {
           )}
         </>
       )}
+
+      <AlertDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open && !deleteMut.isPending) setPendingDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this prayer request?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently remove the prayer request from{" "}
+              <span className="font-medium text-foreground">
+                {pendingDelete?.name?.trim() || "Anonymous"}
+              </span>
+              . This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {pendingDelete && (
+            <div className="rounded-lg border bg-muted/40 p-4 max-h-48 overflow-y-auto">
+              <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                {pendingDelete.message}
+              </p>
+              <p className="text-xs text-muted-foreground mt-2">
+                Submitted {relativeTime(pendingDelete.createdAt)}
+              </p>
+            </div>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteMut.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                if (pendingDelete) deleteMut.mutate(pendingDelete.id);
+              }}
+              disabled={deleteMut.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleteMut.isPending ? "Deleting…" : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
