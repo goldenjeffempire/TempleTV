@@ -8,6 +8,7 @@ import { startSSEHeartbeat, closeAllSSEClients } from "./lib/liveEvents";
 import { startBroadcastTransitionTicker } from "./routes/broadcast";
 import { startYoutubeCatalogueScheduler } from "./routes/youtube";
 import { cache } from "./lib/cache";
+import { AWS_REGION, AWS_S3_BUCKET, isS3Configured } from "./lib/s3Storage";
 
 const REQUIRED_ENV_VARS = ["DATABASE_URL", "JWT_SECRET"] as const;
 
@@ -41,18 +42,18 @@ server.listen(port, "0.0.0.0", () => {
   // ── Infrastructure diagnostics ──────────────────────────────────────────────
   // Log the status of all three production infrastructure services so that
   // the startup log is the single source of truth for operators.
-  const objectStorageConfigured = Boolean(
-    process.env.DEFAULT_OBJECT_STORAGE_BUCKET_ID?.trim()
-  );
+  const s3Configured = isS3Configured();
   const redisConfigured = Boolean(process.env.REDIS_URL?.trim());
 
   logger.info(
     {
       objectStorage: {
-        configured: objectStorageConfigured,
-        bucketId: objectStorageConfigured
-          ? process.env.DEFAULT_OBJECT_STORAGE_BUCKET_ID
+        provider: "aws-s3",
+        configured: s3Configured,
+        bucket: s3Configured
+          ? AWS_S3_BUCKET
           : "not set — uploads will use local FS only",
+        region: s3Configured ? AWS_REGION : "not set",
         publicPaths: process.env.PUBLIC_OBJECT_SEARCH_PATHS ?? "not set",
         privateDir: process.env.PRIVATE_OBJECT_DIR ?? "not set",
       },
@@ -65,7 +66,7 @@ server.listen(port, "0.0.0.0", () => {
       },
       hlsTranscoder: {
         ffmpegPath: process.env.FFMPEG_PATH ?? "system PATH",
-        cloudUpload: objectStorageConfigured ? "enabled (GCS)" : "disabled (no bucket)",
+        cloudUpload: s3Configured ? "enabled (AWS S3)" : "disabled (no bucket)",
       },
     },
     "Infrastructure status at startup",

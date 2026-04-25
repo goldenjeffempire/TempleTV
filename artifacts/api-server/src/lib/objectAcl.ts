@@ -1,6 +1,18 @@
-import { File } from "@google-cloud/storage";
+/**
+ * Per-object access-control policy stored in S3 user metadata.
+ *
+ * The policy JSON lives under the `aclpolicy` user-metadata key on every
+ * object that has been explicitly secured. S3 normalises user-metadata keys
+ * to lowercase and exposes them as `x-amz-meta-aclpolicy`.
+ *
+ * Note: S3 cannot mutate metadata in place — a self-copy with
+ * `MetadataDirective: REPLACE` is required, which is what
+ * `replaceObjectMetadata` does internally.
+ */
 
-const ACL_POLICY_METADATA_KEY = "custom:aclPolicy";
+import { headObject, replaceObjectMetadata } from "./s3Storage";
+
+const ACL_POLICY_METADATA_KEY = "aclpolicy";
 
 // Can be flexibly defined according to the use case.
 //
@@ -29,7 +41,7 @@ export interface ObjectAclRule {
   permission: ObjectPermission;
 }
 
-// Stored as object custom metadata under "custom:aclPolicy" (JSON string).
+// Stored as object user metadata under `aclpolicy` (JSON string).
 export interface ObjectAclPolicy {
   owner: string;
   visibility: "public" | "private";
@@ -68,42 +80,48 @@ function createObjectAccessGroup(
 }
 
 export async function setObjectAclPolicy(
-  objectFile: File,
+  objectKey: string,
   aclPolicy: ObjectAclPolicy,
 ): Promise<void> {
-  const [exists] = await objectFile.exists();
-  if (!exists) {
-    throw new Error(`Object not found: ${objectFile.name}`);
+  const head = await headObject(objectKey);
+  if (!head) {
+    throw new Error(`Object not found: ${objectKey}`);
   }
 
-  await objectFile.setMetadata({
-    metadata: {
-      [ACL_POLICY_METADATA_KEY]: JSON.stringify(aclPolicy),
-    },
+  const merged: Record<string, string> = {
+    ...head.metadata,
+    [ACL_POLICY_METADATA_KEY]: JSON.stringify(aclPolicy),
+  };
+
+  await replaceObjectMetadata(objectKey, merged, {
+    contentType: head.contentType ?? undefined,
   });
 }
 
 export async function getObjectAclPolicy(
-  objectFile: File,
+  objectKey: string,
 ): Promise<ObjectAclPolicy | null> {
-  const [metadata] = await objectFile.getMetadata();
-  const aclPolicy = metadata?.metadata?.[ACL_POLICY_METADATA_KEY];
-  if (!aclPolicy) {
+  const head = await headObject(objectKey);
+  if (!head) return null;
+  const raw = head.metadata?.[ACL_POLICY_METADATA_KEY];
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as ObjectAclPolicy;
+  } catch {
     return null;
   }
-  return JSON.parse(aclPolicy as string);
 }
 
 export async function canAccessObject({
   userId,
-  objectFile,
+  objectKey,
   requestedPermission,
 }: {
   userId?: string;
-  objectFile: File;
+  objectKey: string;
   requestedPermission: ObjectPermission;
 }): Promise<boolean> {
-  const aclPolicy = await getObjectAclPolicy(objectFile);
+  const aclPolicy = await getObjectAclPolicy(objectKey);
   if (!aclPolicy) {
     return false;
   }

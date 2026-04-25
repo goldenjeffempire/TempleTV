@@ -92,3 +92,5 @@ channel = "stable-25_05"
 
 [userenv.shared]
 NODE_ENV = "development"
+PUBLIC_OBJECT_SEARCH_PATHS = "public/"
+PRIVATE_OBJECT_DIR = ".private/"

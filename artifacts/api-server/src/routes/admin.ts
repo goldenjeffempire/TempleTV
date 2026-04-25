@@ -635,10 +635,17 @@ router.get("/admin/ops/status", async (_req, res) => {
     const dbConnected = Boolean(dbProbe);
     const cacheStatus = cache.status();
 
-    const objectStorageBucketId = process.env.DEFAULT_OBJECT_STORAGE_BUCKET_ID?.trim() ?? "";
+    const s3Bucket = process.env.AWS_S3_BUCKET?.trim() ?? "";
+    const s3Region = process.env.AWS_REGION?.trim() ?? "";
+    const s3CredsPresent = Boolean(
+      process.env.AWS_ACCESS_KEY_ID?.trim() &&
+        process.env.AWS_SECRET_ACCESS_KEY?.trim(),
+    );
     const publicObjectPaths = process.env.PUBLIC_OBJECT_SEARCH_PATHS?.trim() ?? "";
     const privateObjectDir = process.env.PRIVATE_OBJECT_DIR?.trim() ?? "";
-    const objectStorageConfigured = Boolean(objectStorageBucketId && publicObjectPaths && privateObjectDir);
+    const objectStorageConfigured = Boolean(
+      s3Bucket && s3Region && s3CredsPresent && publicObjectPaths && privateObjectDir,
+    );
 
     const checks = [
       { key: "api", label: "API process", status: "ok" },
@@ -672,8 +679,10 @@ router.get("/admin/ops/status", async (_req, res) => {
       cache: cacheStatus,
       infrastructure: {
         objectStorage: {
+          provider: "aws-s3",
           configured: objectStorageConfigured,
-          bucketId: objectStorageBucketId || null,
+          bucket: s3Bucket || null,
+          region: s3Region || null,
           publicSearchPaths: publicObjectPaths || null,
           privateDir: privateObjectDir || null,
         },

@@ -33,7 +33,7 @@ The platform is built as a monorepo using `pnpm workspaces`, Node.js 24, and Typ
 - **Monorepo Management:** `pnpm` for package management and workspace organization.
 - **Cross-Platform Mobile:** Expo (React Native) with `expo-router` for mobile development.
 - **Admin Dashboard:** React/Vite for the administrative interface.
-- **Adaptive Streaming:** HLS transcoding (FFmpeg v6.1.2 on system PATH) with adaptive bitrate (ABR) streaming for uploaded videos. After transcoding, HLS segments are uploaded to Replit Object Storage (GCS bucket `replit-objstore-a5a96610-87db-4d17-9593-7731295c1407`) for CDN-backed durability and cross-instance access. Local FS serves as the primary delivery path; GCS provides the durable backup. The transcoding pipeline (`artifacts/api-server/src/lib/transcoder.ts` + `lib/ffmpeg.ts`) is hardened for enterprise reliability:
+- **Adaptive Streaming:** HLS transcoding (FFmpeg v6.1.2 on system PATH) with adaptive bitrate (ABR) streaming for uploaded videos. After transcoding, HLS segments are uploaded to **AWS S3** (bucket configured via `AWS_S3_BUCKET`, region via `AWS_REGION`) for CDN-backed durability and cross-instance access. Local FS serves as the primary delivery path; S3 provides the durable backup. All S3 calls go through the typed wrapper in `artifacts/api-server/src/lib/s3Storage.ts` (singleton `S3Client` from `@aws-sdk/client-s3`, multipart streaming via `@aws-sdk/lib-storage`, presigned URLs via `@aws-sdk/s3-request-presigner`). The transcoding pipeline (`artifacts/api-server/src/lib/transcoder.ts` + `lib/ffmpeg.ts`) is hardened for enterprise reliability:
     - **Boot-time preflight** (`assertFfmpegAvailable`) resolves and caches the `ffmpeg`/`ffprobe` binary paths once at server startup, honors `FFMPEG_PATH`/`FFPROBE_PATH` env overrides, and fails loud with an actionable error if either binary is missing.
     - **Strict input validation** (`validateAndProbeInput`) probes container + all streams before the encoder is initialized, throwing a `TerminalTranscodeError` for corrupt files / no video stream / invalid dimensions / zero duration / sub-1KB uploads. Terminal errors skip retries — they're permanent failures of the asset, not the system.
     - **Idle + wall-clock watchdogs** (`runFfmpeg`) kill any ffmpeg process that goes silent for 90s or exceeds a per-encode wall-clock cap (clamped between 5 min and 4 h, scaled by source duration). Kills are SIGTERM with a 5s grace before SIGKILL. Eliminates hung-encoder zombies.
@@ -579,7 +579,7 @@ Intentional cross-platform differences (NOT parity gaps):
 
 - **Database:** PostgreSQL
 - **ORM:** Drizzle ORM
-- **Cloud Storage:** Google Cloud Storage (Replit Object Storage)
+- **Cloud Storage:** AWS S3 (`@aws-sdk/client-s3` v3, `@aws-sdk/s3-request-presigner`, `@aws-sdk/lib-storage`)
 - **Push Notifications:** Expo Push API
 - **Live Streaming/Video Platform:** YouTube Live
 - **Payment Gateways (Donations):** Paystack, Flutterwave

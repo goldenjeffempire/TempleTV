@@ -9,7 +9,7 @@ import { logger } from "./logger";
 import { broadcastLiveEvent } from "./liveEvents";
 import { cache } from "./cache";
 import { invalidatePublicVideoCaches } from "./publicCacheInvalidation";
-import { objectStorageClient } from "./objectStorage";
+import { isS3Configured, putObject } from "./s3Storage";
 import { createReadStream } from "fs";
 import {
   runFfmpeg,
@@ -22,7 +22,8 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, "..", "uploads");
 const HLS_DIR = path.join(UPLOADS_DIR, "hls");
-const BUCKET_ID = process.env.DEFAULT_OBJECT_STORAGE_BUCKET_ID ?? "";
+// HLS output is uploaded to S3 when AWS_S3_BUCKET (+ credentials) is set.
+const S3_UPLOAD_ENABLED = isS3Configured();
 
 interface QualityProfile {
   name: string;
@@ -226,12 +227,11 @@ async function generateMasterPlaylist(
   await fs.writeFile(masterPath, lines.join("\n"), "utf-8");
 }
 
-// ── GCS upload (best-effort, non-blocking for serving) ────────────────────────
-async function uploadHlsToGcs(videoId: string, localHlsDir: string): Promise<void> {
-  if (!BUCKET_ID) return;
+// ── S3 upload (best-effort, non-blocking for serving) ────────────────────────
+async function uploadHlsToS3(videoId: string, localHlsDir: string): Promise<void> {
+  if (!S3_UPLOAD_ENABLED) return;
 
   try {
-    const bucket = objectStorageClient.bucket(BUCKET_ID);
     const allFiles = await collectFiles(localHlsDir);
 
     await Promise.all(
@@ -242,16 +242,20 @@ async function uploadHlsToGcs(videoId: string, localHlsDir: string): Promise<voi
           ? "application/vnd.apple.mpegurl"
           : "video/mp2t";
 
-        await bucket.file(objectName).save(createReadStream(localPath), {
-          metadata: { contentType },
-          resumable: false,
+        await putObject(objectName, createReadStream(localPath), {
+          contentType,
+          // HLS playlists rotate frequently; segments are immutable once
+          // produced. Let the client/CDN cache segments aggressively.
+          cacheControl: localPath.endsWith(".m3u8")
+            ? "public, max-age=30"
+            : "public, max-age=3600, immutable",
         });
       })
     );
 
-    logger.info({ videoId, fileCount: allFiles.length }, "HLS output uploaded to GCS");
+    logger.info({ videoId, fileCount: allFiles.length }, "HLS output uploaded to S3");
   } catch (err) {
-    logger.warn({ videoId, err }, "GCS HLS upload failed (local serving still active)");
+    logger.warn({ videoId, err }, "S3 HLS upload failed (local serving still active)");
   }
 }
 
@@ -578,7 +582,7 @@ async function processNextJob(): Promise<boolean> {
     });
 
     // Upload HLS output to GCS for CDN-backed durability (non-blocking)
-    uploadHlsToGcs(job.videoId, hlsVideoDir).catch(() => {});
+    uploadHlsToS3(job.videoId, hlsVideoDir).catch(() => {});
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     // Terminal errors (corrupt input, no video stream, etc.) skip retries —

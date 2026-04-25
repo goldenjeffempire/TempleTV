@@ -5,6 +5,7 @@ import { count, eq, sql } from "drizzle-orm";
 import { cache } from "../lib/cache";
 import { metricsSnapshot, metricsText } from "../middlewares/observability";
 import { isFfmpegReady } from "../lib/ffmpeg";
+import { AWS_REGION, AWS_S3_BUCKET, isS3Configured } from "../lib/s3Storage";
 
 const router: IRouter = Router();
 
@@ -36,10 +37,10 @@ router.get("/ops/status", async (_req, res) => {
   const pendingTranscodeJobs = Number(transcodingResult[0]?.count ?? 0);
 
   // ── Infrastructure readiness ─────────────────────────────────────────────
-  const objectStorageBucketId = process.env.DEFAULT_OBJECT_STORAGE_BUCKET_ID?.trim() ?? "";
+  const s3Ready = isS3Configured();
   const publicObjectPaths = process.env.PUBLIC_OBJECT_SEARCH_PATHS?.trim() ?? "";
   const privateObjectDir = process.env.PRIVATE_OBJECT_DIR?.trim() ?? "";
-  const objectStorageConfigured = Boolean(objectStorageBucketId && publicObjectPaths && privateObjectDir);
+  const objectStorageConfigured = Boolean(s3Ready && publicObjectPaths && privateObjectDir);
 
   const redisConfigured = Boolean(process.env.REDIS_URL?.trim());
   const redisConnected = cache.isRedisActive();
@@ -92,8 +93,10 @@ router.get("/ops/status", async (_req, res) => {
     metrics: metricsSnapshot(),
     infrastructure: {
       objectStorage: {
+        provider: "aws-s3",
         configured: objectStorageConfigured,
-        bucketId: objectStorageBucketId || null,
+        bucket: AWS_S3_BUCKET || null,
+        region: AWS_REGION || null,
         publicSearchPaths: publicObjectPaths || null,
         privateDir: privateObjectDir || null,
       },
