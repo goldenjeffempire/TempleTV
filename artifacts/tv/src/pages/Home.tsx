@@ -82,6 +82,18 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
     [rows],
   );
 
+  // Drift-correct the broadcast position to right-now so the Player joins at
+  // the exact second the hero was already showing — without this, navigating
+  // would always land us a few seconds behind whatever the user just saw.
+  const computeLiveBroadcastPosition = useCallback((): number => {
+    if (!broadcastCurrent?.item) return 0;
+    const drift = (Date.now() - broadcastCurrent.serverTimeMs) / 1000;
+    const target = broadcastCurrent.positionSecs + drift;
+    const dur = broadcastCurrent.item.durationSecs ?? 0;
+    if (dur > 0) return Math.max(0, Math.min(target, dur - 0.5));
+    return Math.max(0, target);
+  }, [broadcastCurrent]);
+
   const onSelect = useCallback(
     (rowIndex: number, itemIndex: number) => {
       const row = rows[rowIndex];
@@ -94,8 +106,9 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
           const item = broadcastCurrent.item;
           const hlsUrl = item.localVideoUrl ?? undefined;
           const id = item.youtubeId ?? item.videoId;
-          // Pass the current broadcast position so the player joins in-sync
-          onPlay(id, "Temple TV", hlsUrl, broadcastCurrent.positionSecs);
+          // Pass the live-corrected broadcast position so the player joins at
+          // the exact moment currently airing rather than the cached position.
+          onPlay(id, "Temple TV", hlsUrl, computeLiveBroadcastPosition());
         }
         return;
       }
@@ -113,7 +126,7 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
         onDetails(sermon, related);
       }
     },
-    [rows, byCategory, liveStatus, onPlay, onDetails, continueWatching],
+    [rows, byCategory, liveStatus, onPlay, onDetails, continueWatching, broadcastCurrent, computeLiveBroadcastPosition],
   );
 
   const onHeaderSelect = useCallback(
@@ -235,8 +248,9 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
                 const item = broadcastCurrent.item;
                 const hlsUrl = item.localVideoUrl ?? undefined;
                 const id = item.youtubeId ?? item.videoId;
-                // Thread the current broadcast position for synchronized join-in
-                onPlay(id, "Temple TV", hlsUrl, broadcastCurrent.positionSecs);
+                // Live-corrected position: hand the player the exact second
+                // the hero is showing right now, not the cached fetch value.
+                onPlay(id, "Temple TV", hlsUrl, computeLiveBroadcastPosition());
               }
             }}
           />

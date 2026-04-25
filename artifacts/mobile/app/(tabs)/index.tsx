@@ -306,6 +306,58 @@ export default function WatchScreen() {
   const showScheduledLive = !liveStatus.isLive && broadcastCurrent?.activeSchedule?.contentType === "live";
   const showBroadcast = !liveStatus.isLive && (broadcastItem !== null || showScheduledLive);
 
+  // Compute the join offset ONCE per broadcast item so re-renders from drift
+  // updates don't re-seek the hero video on every tick. The drift-correction
+  // effect below handles ongoing sync via setPositionAsync().
+  const heroInitialPositionMillis = useMemo(() => {
+    if (!broadcastCurrent?.item) return 0;
+    const drift = broadcastCurrent.serverTimeMs
+      ? (Date.now() - broadcastCurrent.serverTimeMs) / 1000
+      : 0;
+    const targetSecs = (broadcastCurrent.positionSecs ?? 0) + drift;
+    const dur = broadcastCurrent.item.durationSecs ?? 0;
+    const clamped = dur > 0
+      ? Math.max(0, Math.min(targetSecs, dur - 0.5))
+      : Math.max(0, targetSecs);
+    return Math.round(clamped * 1000);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [broadcastItem?.id]);
+
+  // Periodic drift-correction: every 12s, compare playhead against the live
+  // broadcast position and snap forward/back if drift exceeds 4s. Uses a
+  // single tolerance window so we don't fight micro-jitter from the player.
+  useEffect(() => {
+    if (!showBroadcast || !broadcastItem?.localVideoUrl || heroVideoFailed) return;
+    const interval = setInterval(async () => {
+      const ref = heroVideoRef.current;
+      if (!ref || typeof ref.getStatusAsync !== "function") return;
+      try {
+        const status = await ref.getStatusAsync();
+        if (!status?.isLoaded) return;
+        const playheadSecs = (status.positionMillis ?? 0) / 1000;
+        const drift = broadcastCurrent?.serverTimeMs
+          ? (Date.now() - broadcastCurrent.serverTimeMs) / 1000
+          : 0;
+        const targetSecs = (broadcastCurrent?.positionSecs ?? 0) + drift;
+        const dur = broadcastItem.durationSecs ?? 0;
+        const clamped = dur > 0
+          ? Math.max(0, Math.min(targetSecs, dur - 0.5))
+          : Math.max(0, targetSecs);
+        if (Math.abs(clamped - playheadSecs) > 4 && typeof ref.setPositionAsync === "function") {
+          await ref.setPositionAsync(Math.round(clamped * 1000));
+        }
+      } catch {
+        // Best-effort: drift correction failures are non-fatal.
+      }
+    }, 12000);
+    return () => clearInterval(interval);
+  }, [showBroadcast, broadcastItem?.id, broadcastItem?.localVideoUrl, broadcastItem?.durationSecs, broadcastCurrent?.positionSecs, broadcastCurrent?.serverTimeMs, heroVideoFailed]);
+
+  // Reset failure flag when the broadcast pipeline advances to a new item.
+  useEffect(() => {
+    setHeroVideoFailed(false);
+  }, [broadcastItem?.id]);
+
   const recentSermons = useMemo(() => sermons.slice(0, 6), [sermons]);
   const faithSermons = useMemo(() => sermons.filter((s) => s.category === "Faith").slice(0, 3), [sermons]);
   const healingSermons = useMemo(() => sermons.filter((s) => s.category === "Healing").slice(0, 3), [sermons]);
@@ -366,17 +418,24 @@ export default function WatchScreen() {
               {/* ── Backdrop: video > thumbnail > logo ── */}
               <View style={StyleSheet.absoluteFill}>
                 {showBroadcast && broadcastItem?.localVideoUrl && HeroVideoComponent && !heroVideoFailed ? (
+                  // Live broadcast surface — joins the 24/7 ON AIR timeline
+                  // at the exact second currently airing rather than playing
+                  // a looped preview. `key` remounts on item swap so the new
+                  // queue item starts cleanly; `heroInitialPositionMillis`
+                  // seeds the join point; the drift-correction effect calls
+                  // setPositionAsync periodically to keep it in sync.
                   <HeroVideoComponent
+                    key={broadcastItem.id}
                     ref={heroVideoRef}
                     source={{ uri: broadcastItem.localVideoUrl }}
                     style={StyleSheet.absoluteFill}
                     resizeMode={HeroResizeMode?.COVER ?? "cover"}
-                    isLooping
                     isMuted
                     shouldPlay
                     useNativeControls={false}
                     onError={() => setHeroVideoFailed(true)}
                     progressUpdateIntervalMillis={5000}
+                    positionMillis={heroInitialPositionMillis}
                     videoStyle={{ width: "100%", height: "100%" }}
                   />
                 ) : showBroadcast && broadcastItem?.thumbnailUrl ? (

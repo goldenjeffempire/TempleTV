@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useState, useRef } from "react";
 import { type LiveStatus, type BroadcastCurrent } from "../lib/api";
+import { LiveBroadcastVideo } from "./LiveBroadcastVideo";
 
 interface LiveHeroProps {
   liveStatus: LiveStatus | null;
@@ -99,11 +100,13 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
   const bgThumb = isLive ? ytThumbUrl : (broadcastThumb || null);
 
   const [mounted, setMounted] = useState(false);
-  const [ambientVideoReady, setAmbientVideoReady] = useState(false);
-  const [ambientVideoFailed, setAmbientVideoFailed] = useState(false);
-  const ambientVideoRef = useRef<HTMLVideoElement>(null);
-  const ambientBgVideoRef = useRef<HTMLVideoElement>(null);
-  const broadcastVideoUrl = hasBroadcast && !ambientVideoFailed ? (broadcastItem?.localVideoUrl ?? null) : null;
+  // If the embedded live-broadcast surface fails (e.g. CDN unreachable, codec
+  // unsupported), fall back to the blurred poster image so the hero is never
+  // an empty black box. The fallback is reset whenever the item swaps so a
+  // bad URL on item N doesn't prevent item N+1 from loading.
+  const [broadcastVideoFailed, setBroadcastVideoFailed] = useState(false);
+  const broadcastItemId = broadcastItem?.id ?? null;
+  const showLiveBroadcast = hasBroadcast && !broadcastVideoFailed && !!broadcastItem?.localVideoUrl;
 
   useEffect(() => {
     const id = requestAnimationFrame(() => setMounted(true));
@@ -111,19 +114,8 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
   }, []);
 
   useEffect(() => {
-    setAmbientVideoReady(false);
-    setAmbientVideoFailed(false);
-  }, [broadcastVideoUrl]);
-
-  const handleAmbientCanPlay = useCallback(() => {
-    setAmbientVideoReady(true);
-    if (ambientVideoRef.current) {
-      ambientVideoRef.current.play().catch(() => {});
-    }
-    if (ambientBgVideoRef.current) {
-      ambientBgVideoRef.current.play().catch(() => {});
-    }
-  }, []);
+    setBroadcastVideoFailed(false);
+  }, [broadcastItemId]);
 
   return (
     <div
@@ -158,9 +150,10 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
           }}
           title="Temple TV ambient preview"
         />
-      ) : broadcastVideoUrl ? (
+      ) : showLiveBroadcast ? (
         <>
-          {/* Blurred background fill — shows when video not yet ready */}
+          {/* Poster fill — visible only until the live-broadcast layers fade in,
+              so the hero never shows a black box during HLS handshake. */}
           {bgThumb && (
             <img
               src={bgThumb}
@@ -178,48 +171,14 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
               }}
             />
           )}
-          {/* Blurred video background fill — replaces thumbnail once video loads */}
-          <video
-            ref={ambientBgVideoRef}
-            src={broadcastVideoUrl}
-            muted
-            autoPlay
-            loop
-            playsInline
-            style={{
-              position: "absolute",
-              inset: 0,
-              width: "100%",
-              height: "100%",
-              objectFit: "cover",
-              pointerEvents: "none",
-              filter: "blur(28px) saturate(1.4) brightness(0.5)",
-              transform: "scale(1.08)",
-              opacity: ambientVideoReady ? 1 : 0,
-              transition: "opacity 1200ms ease",
-            }}
-          />
-
-          {/* ── LAYER 2 (content): Video at full aspect ratio — never cropped ── */}
-          <video
-            ref={ambientVideoRef}
-            src={broadcastVideoUrl}
-            muted
-            autoPlay
-            loop
-            playsInline
-            onCanPlay={handleAmbientCanPlay}
-            onError={() => setAmbientVideoFailed(true)}
-            style={{
-              position: "absolute",
-              inset: 0,
-              width: "100%",
-              height: "100%",
-              objectFit: "contain",
-              pointerEvents: "none",
-              opacity: ambientVideoReady ? 1 : 0,
-              transition: "opacity 1400ms ease",
-            }}
+          {/* Real ON AIR broadcast surface — joins the 24/7 timeline at the
+              exact second the server says is currently airing, swaps items
+              when the broadcast pipeline advances, and re-syncs on drift. */}
+          <LiveBroadcastVideo
+            item={broadcastItem}
+            positionSecs={broadcastCurrent?.positionSecs ?? 0}
+            serverTimeMs={broadcastCurrent?.serverTimeMs ?? Date.now()}
+            onError={() => setBroadcastVideoFailed(true)}
           />
         </>
       ) : bgThumb ? (
@@ -465,35 +424,6 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
                   Watch Live
                 </span>
               </div>
-              <div
-                className="flex items-center rounded-xl"
-                style={{
-                  background: "rgba(109,109,110,0.7)",
-                  color: "#fff",
-                  padding: "clamp(12px, 1.8vw, 16px) clamp(16px, 2.6vw, 26px)",
-                  gap: "clamp(6px, 1vw, 8px)",
-                  backdropFilter: "blur(6px)",
-                  border: "1px solid rgba(255,255,255,0.12)",
-                  minHeight: 44,
-                }}
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  style={{ width: "clamp(16px, 1.8vw, 18px)", height: "auto" }}
-                >
-                  <circle cx="12" cy="12" r="10" />
-                  <line x1="12" y1="8" x2="12" y2="12" />
-                  <line x1="12" y1="16" x2="12.01" y2="16" />
-                </svg>
-                <span style={{ fontSize: "clamp(13px, 1.5vw, 16px)", fontWeight: 600 }}>
-                  More info
-                </span>
-              </div>
             </div>
           </>
         ) : hasBroadcast ? (
@@ -526,16 +456,6 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
                   ON AIR · TEMPLE TV
                 </span>
               </div>
-              <span
-                style={{
-                  fontSize: 12,
-                  color: "rgba(255,255,255,0.45)",
-                  fontWeight: 600,
-                  letterSpacing: "0.06em",
-                }}
-              >
-                24/7 BROADCAST
-              </span>
             </div>
 
             <h1
@@ -611,36 +531,6 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
                   Tune In
                 </span>
               </div>
-              {broadcastCurrent?.nextItem && (
-                <div
-                  className="flex items-center rounded-xl"
-                  style={{
-                    background: "rgba(255,255,255,0.08)",
-                    color: "rgba(255,255,255,0.75)",
-                    padding: "clamp(12px, 1.8vw, 16px) clamp(16px, 2.6vw, 26px)",
-                    gap: "clamp(6px, 1vw, 8px)",
-                    backdropFilter: "blur(6px)",
-                    border: "1px solid rgba(255,255,255,0.12)",
-                    minHeight: 44,
-                  }}
-                >
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    style={{ width: "clamp(14px, 1.5vw, 16px)", height: "auto" }}
-                  >
-                    <polygon points="5 4 15 12 5 20 5 4" />
-                    <line x1="19" y1="5" x2="19" y2="19" />
-                  </svg>
-                  <span style={{ fontSize: "clamp(12px, 1.3vw, 15px)", fontWeight: 600 }}>
-                    Up Next
-                  </span>
-                </div>
-              )}
             </div>
           </>
         ) : (
