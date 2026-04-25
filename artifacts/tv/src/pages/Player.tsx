@@ -443,41 +443,6 @@ function YouTubePlayer({ videoId, title, onBack }: { videoId: string; title: str
         </div>
       )}
 
-      {/* Play / Pause OSD icon (brief center indicator) */}
-      {!loadError && !isPlaying && isLoaded && !seekOsd && (
-        <div
-          aria-hidden
-          style={{
-            position: "absolute",
-            inset: 0,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            pointerEvents: "none",
-            zIndex: 15,
-          }}
-        >
-          <div
-            style={{
-              width: 80,
-              height: 80,
-              borderRadius: "50%",
-              background: "rgba(0,0,0,0.65)",
-              backdropFilter: "blur(8px)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              border: "2px solid rgba(255,255,255,0.3)",
-            }}
-          >
-            {/* Pause icon — two vertical bars */}
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="white">
-              <rect x="6" y="4" width="4" height="16" rx="1"/>
-              <rect x="14" y="4" width="4" height="16" rx="1"/>
-            </svg>
-          </div>
-        </div>
-      )}
 
       {/* Top control overlay: back + title */}
       {!loadError && showControls && (

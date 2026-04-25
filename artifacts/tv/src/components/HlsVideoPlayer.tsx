@@ -164,6 +164,29 @@ export function HlsVideoPlayer({
     setIsLoaded(false);
     setIsBuffering(true);
 
+    // ── Plain video detection (MP4, WebM, MOV, etc.) ─────────────────────
+    // hls.js cannot parse non-HLS manifests. If the URL points to a plain
+    // video file, play it directly via the native <video> element to avoid
+    // a fatal parse error and blank screen.
+    const isPlainVideo = /\.(mp4|webm|ogg|mov|avi|mkv|m4v)(\?[^#]*)?$/i.test(hlsUrl);
+    if (isPlainVideo) {
+      video.src = hlsUrl;
+      video.load();
+      const seekAndPlay = () => {
+        if (startPositionSecs > 0) video.currentTime = startPositionSecs;
+        video.play().catch(() => {});
+        video.removeEventListener("loadedmetadata", seekAndPlay);
+      };
+      if (startPositionSecs > 0) {
+        video.addEventListener("loadedmetadata", seekAndPlay);
+      } else {
+        video.play().catch(() => {});
+      }
+      setIsLoaded(true);
+      setIsBuffering(false);
+      return;
+    }
+
     if (Hls.isSupported()) {
       // ── hls.js path (Chromium, Firefox, Samsung/LG/Fire TV browsers) ──────
       const hls = new Hls({
@@ -676,40 +699,6 @@ export function HlsVideoPlayer({
         </div>
       )}
 
-      {/* ── Pause icon OSD ───────────────────────────────────────────────── */}
-      {isLoaded && !isPlaying && !isBuffering && !error && !seekOsd && (
-        <div
-          aria-hidden
-          style={{
-            position: "absolute",
-            inset: 0,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            pointerEvents: "none",
-            zIndex: 15,
-          }}
-        >
-          <div
-            style={{
-              width: 80,
-              height: 80,
-              borderRadius: "50%",
-              background: "rgba(0,0,0,0.65)",
-              backdropFilter: "blur(8px)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              border: "2px solid rgba(255,255,255,0.3)",
-            }}
-          >
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="white">
-              <rect x="6" y="4" width="4" height="16" rx="1"/>
-              <rect x="14" y="4" width="4" height="16" rx="1"/>
-            </svg>
-          </div>
-        </div>
-      )}
 
       {/* ── Top control bar (back + title + quality badge) ─────────────────── */}
       {!error && showControls && (

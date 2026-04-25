@@ -74,9 +74,15 @@ function BroadcastProgressBar({
 /**
  * Netflix-style full-bleed cinematic hero.
  *
+ * Rendering strategy — two-layer video system:
+ *  • Bottom (blur layer): thumbnail/video at objectFit "cover" + heavy blur + dark scrim
+ *    → fills the entire frame for cinematic ambiance with no empty edges
+ *  • Top (content layer): the actual video at objectFit "contain" (centered, letterboxed)
+ *    → guarantees 100% of the original frame is always visible, never cropped
+ *
  * Three states:
  *  1. YouTube LIVE NOW — red badge, ambient YouTube embed, "Watch Live" CTA
- *  2. Broadcast ON AIR — purple "ON AIR" badge, thumbnail, progress bar, "Tune In" CTA
+ *  2. Broadcast ON AIR — purple "ON AIR" badge, contain-scaled video, progress bar, "Tune In" CTA
  *  3. Off-air — muted badge, gradient fallback, "Watch Temple TV" CTA
  */
 export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: LiveHeroProps) {
@@ -96,6 +102,7 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
   const [ambientVideoReady, setAmbientVideoReady] = useState(false);
   const [ambientVideoFailed, setAmbientVideoFailed] = useState(false);
   const ambientVideoRef = useRef<HTMLVideoElement>(null);
+  const ambientBgVideoRef = useRef<HTMLVideoElement>(null);
   const broadcastVideoUrl = hasBroadcast && !ambientVideoFailed ? (broadcastItem?.localVideoUrl ?? null) : null;
 
   useEffect(() => {
@@ -112,6 +119,9 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
     setAmbientVideoReady(true);
     if (ambientVideoRef.current) {
       ambientVideoRef.current.play().catch(() => {});
+    }
+    if (ambientBgVideoRef.current) {
+      ambientBgVideoRef.current.play().catch(() => {});
     }
   }, []);
 
@@ -130,7 +140,9 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
       }}
       data-testid="live-hero"
     >
-      {/* Backdrop layer — video always fills the full container with objectFit cover */}
+      {/* ── LAYER 1 (blur fill): Cinematic backdrop — covers the entire frame ── */}
+      {/* This layer always covers 100% of the container so there are no empty edges,
+          even when the actual video has a different aspect ratio. */}
       {focused && ytVideoId && isLive ? (
         <iframe
           src={`https://www.youtube-nocookie.com/embed/${ytVideoId}?autoplay=1&mute=1&controls=0&modestbranding=1&playsinline=1&loop=1&playlist=${ytVideoId}&rel=0&iv_load_policy=3&disablekb=1`}
@@ -148,6 +160,7 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
         />
       ) : broadcastVideoUrl ? (
         <>
+          {/* Blurred background fill — shows when video not yet ready */}
           {bgThumb && (
             <img
               src={bgThumb}
@@ -160,13 +173,34 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
                 height: "100%",
                 objectFit: "cover",
                 display: "block",
-                transform: mounted ? "scale(1.03)" : "scale(1.10)",
-                transition: "transform 1800ms cubic-bezier(.2,.6,.2,1)",
-                opacity: ambientVideoReady ? 0 : 1,
-                transition2: "opacity 800ms ease",
-              } as any}
+                filter: "blur(28px) saturate(1.4) brightness(0.55)",
+                transform: "scale(1.08)",
+              }}
             />
           )}
+          {/* Blurred video background fill — replaces thumbnail once video loads */}
+          <video
+            ref={ambientBgVideoRef}
+            src={broadcastVideoUrl}
+            muted
+            autoPlay
+            loop
+            playsInline
+            style={{
+              position: "absolute",
+              inset: 0,
+              width: "100%",
+              height: "100%",
+              objectFit: "cover",
+              pointerEvents: "none",
+              filter: "blur(28px) saturate(1.4) brightness(0.5)",
+              transform: "scale(1.08)",
+              opacity: ambientVideoReady ? 1 : 0,
+              transition: "opacity 1200ms ease",
+            }}
+          />
+
+          {/* ── LAYER 2 (content): Video at full aspect ratio — never cropped ── */}
           <video
             ref={ambientVideoRef}
             src={broadcastVideoUrl}
@@ -181,7 +215,7 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
               inset: 0,
               width: "100%",
               height: "100%",
-              objectFit: "cover",
+              objectFit: "contain",
               pointerEvents: "none",
               opacity: ambientVideoReady ? 1 : 0,
               transition: "opacity 1400ms ease",
@@ -189,21 +223,40 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
           />
         </>
       ) : bgThumb ? (
-        <img
-          src={bgThumb}
-          alt=""
-          aria-hidden
-          style={{
-            position: "absolute",
-            inset: 0,
-            width: "100%",
-            height: "100%",
-            objectFit: "cover",
-            display: "block",
-            transform: mounted ? "scale(1.03)" : "scale(1.10)",
-            transition: "transform 1800ms cubic-bezier(.2,.6,.2,1)",
-          }}
-        />
+        <>
+          {/* Blurred background fill */}
+          <img
+            src={bgThumb}
+            alt=""
+            aria-hidden
+            style={{
+              position: "absolute",
+              inset: 0,
+              width: "100%",
+              height: "100%",
+              objectFit: "cover",
+              display: "block",
+              filter: "blur(28px) saturate(1.3) brightness(0.5)",
+              transform: "scale(1.08)",
+            }}
+          />
+          {/* Crisp foreground image — full aspect ratio, no cropping */}
+          <img
+            src={bgThumb}
+            alt=""
+            aria-hidden
+            style={{
+              position: "absolute",
+              inset: 0,
+              width: "100%",
+              height: "100%",
+              objectFit: "contain",
+              display: "block",
+              transform: mounted ? "scale(1.0)" : "scale(1.04)",
+              transition: "transform 1800ms cubic-bezier(.2,.6,.2,1)",
+            }}
+          />
+        </>
       ) : (
         /* Branded off-air gradient */
         <div
@@ -646,18 +699,19 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
             <div
               className="flex items-center rounded-xl"
               style={{
-                background: focused ? "hsl(0 78% 50%)" : "rgba(220,38,38,0.85)",
+                background: focused ? "hsl(270 75% 50%)" : "rgba(106,13,173,0.9)",
                 color: "#fff",
                 padding: "clamp(12px, 1.8vw, 16px) clamp(20px, 3.2vw, 32px)",
                 gap: "clamp(6px, 1vw, 10px)",
                 width: "fit-content",
                 marginTop: 8,
                 boxShadow: focused
-                  ? "0 12px 36px rgba(220,38,38,0.5)"
+                  ? "0 12px 36px rgba(106,13,173,0.5)"
                   : "0 6px 20px rgba(0,0,0,0.35)",
                 transform: focused ? "scale(1.04)" : "scale(1)",
                 transition: "all 0.18s ease",
                 minHeight: 44,
+                border: "1px solid rgba(168,85,247,0.35)",
               }}
             >
               <svg
