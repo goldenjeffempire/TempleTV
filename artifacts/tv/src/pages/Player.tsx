@@ -449,6 +449,7 @@ function YouTubePlayer({ videoId, title, onBack, isLive = false }: { videoId: st
         justifyContent: "center",
         width: "100vw",
         height: "100dvh",
+        boxShadow: "inset 0 0 180px 40px rgba(13,17,23,0.55)",
       }}
     >
       {/* Loading veil */}

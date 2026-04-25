@@ -1178,9 +1178,11 @@ const styles = StyleSheet.create({
   } as const,
   broadcastFooter: {
     paddingHorizontal: 20,
-    paddingTop: 18,
+    paddingTop: 20,
     gap: 16,
-    backgroundColor: "#000",
+    backgroundColor: "#0d1117",
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255,255,255,0.05)",
   },
   broadcastChannelRow: {
     flexDirection: "row",

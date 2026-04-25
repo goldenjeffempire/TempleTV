@@ -9,6 +9,7 @@ import { logger } from "./logger";
 import { broadcastLiveEvent } from "./liveEvents";
 import { cache } from "./cache";
 import { invalidatePublicVideoCaches } from "./publicCacheInvalidation";
+import { emitBroadcastState } from "../routes/broadcast";
 import { isS3Configured, putObject } from "./s3Storage";
 import { createReadStream } from "fs";
 import {
@@ -549,7 +550,16 @@ async function processNextJob(): Promise<boolean> {
       })
       .where(eq(broadcastQueueTable.videoId, job.videoId));
 
-    await cache.del("broadcast:queue");
+    // Clear the full broadcast cache surface — not just `broadcast:queue` —
+    // so the next /api/broadcast/current build re-reads the freshly-updated
+    // queue row (with the new HLS URL + probed duration) instead of serving
+    // a stale `broadcast:current_payload` snapshot. Without this, clients
+    // could see an "Now Playing" entry whose `localVideoUrl` is still null
+    // for up to the payload TTL after transcoding completed.
+    await Promise.all([
+      cache.del("broadcast:queue"),
+      cache.del("broadcast:current_payload"),
+    ]);
     // The public /api/videos/featured and /api/videos/trending payloads
     // include `transcodingStatus` and `hlsMasterUrl`. Invalidate them so the
     // newly playable HLS link is visible on the next request rather than
@@ -579,6 +589,16 @@ async function processNextJob(): Promise<boolean> {
       hlsMasterUrl,
       durationSecs: probedDuration > 0 ? probedDuration : undefined,
       queuedAt: new Date().toISOString(),
+    });
+    // Push a fresh "Now Playing" payload to every connected client. If the
+    // just-transcoded video happens to be the on-air item, this guarantees
+    // its `localVideoUrl` flips from null → real HLS URL on TV/mobile/admin
+    // surfaces the moment encoding finishes — no waiting for poll cycles or
+    // a future queue mutation. emitBroadcastState rebuilds the payload from
+    // the now-invalidated cache and re-broadcasts via SSE.
+    emitBroadcastState("queue-item-transcoded", {
+      videoId: job.videoId,
+      hlsMasterUrl,
     });
 
     // Upload HLS output to GCS for CDN-backed durability (non-blocking)
