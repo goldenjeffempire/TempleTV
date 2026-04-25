@@ -51,6 +51,12 @@ async function doAdminRequest<T>(
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
       signal,
+      // Admin endpoints are real-time operational data (status panels, queues,
+      // device counts, telemetry). Bypass the browser HTTP cache entirely so a
+      // stale heuristically-cached response cannot make a recovered subsystem
+      // appear "degraded" or vice-versa. Polling intervals are short (5–15s)
+      // so the bandwidth cost is negligible compared to operator confusion.
+      cache: "no-store",
     });
   } catch (networkErr) {
     // fetch only rejects on network failure, abort, or CORS. Distinguish

@@ -1150,3 +1150,66 @@ duplicate-endpoint inserts via `onConflictDoUpdate`.
 - iOS Safari requires the web app to be installed to the home
   screen before it can receive Web Push (iOS 16.4+). Chrome/Edge/
   Firefox on desktop and Android Chrome work immediately.
+
+---
+
+## Round 11 — Schedule Programming Seed + Admin Stale-Cache Fix
+
+### Part A: Programming Schedule Seed
+Launch readiness card "Programming schedule: 0 active schedule entries are
+configured" was a real gap. Seeded a minimal weekly skeleton of 7 named
+programs (one per day) directly into `schedule_entries`:
+
+| Day | Time | Program |
+|---|---|---|
+| Sun | 09:00–12:00 | Sunday Worship Service |
+| Mon | 18:00–19:00 | Monday Daily Devotional |
+| Tue | 18:00–19:00 | Tuesday Daily Devotional |
+| Wed | 19:00–21:00 | Wednesday Bible Study |
+| Thu | 18:00–19:00 | Thursday Daily Devotional |
+| Fri | 19:00–21:00 | Friday Night Worship |
+| Sat | 18:00–19:00 | Saturday Sermon Spotlight |
+
+All entries use `contentType: "live"`, `isRecurring: true`, `isActive: true`.
+Because `"live"` slots are pure metadata for the TV guide and do **not**
+override the broadcast queue (verified at `routes/broadcast.ts:196`), the
+24/7 broadcast keeps playing exactly as before. The schedule simply gives
+the TV guide and "what's on now" indicators meaningful programming labels.
+Operators customize each entry (rename, change time/day, point at a specific
+playlist or video) via the admin Schedule page.
+
+Readiness check now reports `status:"ready", detail:"7 active schedule
+entries are configured."`
+
+### Part B: Admin Stale-Cache Fix (Operations page)
+User reported "Cloud object storage — Not configured — Degraded" on the
+Operations page even though `/api/admin/ops/status` returned
+`infrastructure.objectStorage.configured: true` and the `object_storage`
+check returned `status: "ok"` (all 4 AWS env vars verified set:
+`AWS_REGION=eu-north-1`, `AWS_S3_BUCKET=temple-tv-media-storage`,
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, plus `PUBLIC_OBJECT_SEARCH_PATHS`,
+`PRIVATE_OBJECT_DIR`).
+
+Root cause: the central admin fetch helper `adminGet` in
+`artifacts/admin/src/services/adminApi.ts` called `fetch()` without `cache:
+"no-store"`, and the API does not send `Cache-Control` headers, so the
+browser's heuristic HTTP cache could serve a stale response on initial page
+load (and even some polls when the response body matched a cached
+representation). Since the Operations page polls every 10s, the staleness
+typically self-corrected, but operators reloading the page would briefly see
+yesterday's "degraded" state — the same root cause behind the previous
+Object Storage launch-readiness false alarm.
+
+Architectural fix: added `cache: "no-store"` to the central admin fetch
+helper. This covers ALL admin API calls (~50 endpoints across operations,
+launch-readiness, transcoding, uploads, telemetry, live monitor, etc.) so
+no individual route has to remember to opt out of caching. Bandwidth cost
+is negligible — admin polling intervals are 5–15 seconds and responses are
+small JSON. Operator confusion cost from stale "degraded" badges is high.
+
+Files changed:
+- `artifacts/admin/src/services/adminApi.ts` — one-line addition of
+  `cache: "no-store"` to the shared `fetch()` call inside `adminApi`,
+  with an explanatory comment.
+
+No server changes required. Vite HMR picks up the change on next page load.
