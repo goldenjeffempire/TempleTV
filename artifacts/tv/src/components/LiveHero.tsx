@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { type LiveStatus, type BroadcastCurrent } from "../lib/api";
 import { LiveBroadcastVideo } from "./LiveBroadcastVideo";
+import { BROADCAST_HERO_TITLE } from "../lib/broadcastIdentity";
 
 interface LiveHeroProps {
   liveStatus: LiveStatus | null;
@@ -325,8 +326,10 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
               {/* Round 8: hardcoded to a generic broadcaster heading.
                   Per the broadcast-clean directive, the live program's
                   title is never surfaced — the hero reads as a real TV
-                  channel identity, not as a sermon-specific landing. */}
-              Temple TV Live Stream
+                  channel identity, not as a sermon-specific landing.
+                  Round 9c: sourced from the shared identity module so
+                  TV + mobile heros stay in lock-step. */}
+              {BROADCAST_HERO_TITLE}
             </h1>
             <p
               style={{

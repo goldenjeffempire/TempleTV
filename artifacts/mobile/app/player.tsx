@@ -32,6 +32,7 @@ import { useAuth } from "@/context/AuthContext";
 import { SERMONS } from "@/data/sermons";
 import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
 import { checkBroadcastCurrent, subscribeBroadcastEvents, type BroadcastCurrentResult, type ReactionType } from "@/services/broadcast";
+import { BROADCAST_TITLE, BROADCAST_PREACHER } from "@/lib/broadcastIdentity";
 import { ChannelBug } from "@/components/ChannelBug";
 import { BroadcastInfoStrip } from "@/components/BroadcastInfoStrip";
 import { LiveReactions } from "@/components/LiveReactions";
@@ -749,19 +750,24 @@ export default function PlayerScreen() {
   // currently-airing item even after a queue advance. For VOD, fall back
   // to the active sermon / route params as before.
   const displayVideoId = isLive ? undefined : (activeSermon?.youtubeId ?? tunedVideoId ?? paramVideoId);
-  // Round 8: per the broadcast-clean directive, the live broadcast surface
-  // never exposes a per-program title. In broadcast mode the title is forced
-  // to the channel identity so the player chrome, share sheet, and title
-  // section all read as "Temple TV Live" instead of leaking the currently
-  // airing sermon name. VOD playback keeps its real sermon title.
-  const displayTitle = isBroadcastMode
-    ? "Temple TV Live"
+  // Round 9c: extended the broadcast-clean override to ALL live surfaces,
+  // not just the broadcast-queue mode. Live YouTube events (`isLive=true`)
+  // and station-driven broadcast queue items (`isBroadcastMode=true`) both
+  // get the channel-identity title, preacher, and blanked duration/
+  // category. Imports `BROADCAST_TITLE` / `BROADCAST_PREACHER` from the
+  // shared identity module so a single edit updates every surface. VOD
+  // playback continues to show its real sermon metadata.
+  // `isBroadcastOrLive` itself is declared a few lines below (line ~776);
+  // we can't reference it here without a forward-init, so the equivalent
+  // expression is inlined. The semantics are identical.
+  const displayTitle = (isLive || isBroadcastMode)
+    ? BROADCAST_TITLE
     : (activeSermon?.title ?? paramTitle ?? "Temple TV");
-  const displayPreacher = isBroadcastMode
-    ? "JCTM Broadcast"
+  const displayPreacher = (isLive || isBroadcastMode)
+    ? BROADCAST_PREACHER
     : (activeSermon?.preacher ?? paramPreacher ?? "JCTM");
-  const displayDuration = isBroadcastMode ? "" : (activeSermon?.duration ?? paramDuration ?? "");
-  const displayCategory = isBroadcastMode ? "" : (activeSermon?.category ?? paramCategory ?? "");
+  const displayDuration = (isLive || isBroadcastMode) ? "" : (activeSermon?.duration ?? paramDuration ?? "");
+  const displayCategory = (isLive || isBroadcastMode) ? "" : (activeSermon?.category ?? paramCategory ?? "");
   const thumbnailUrl = (isBroadcastMode ? tunedThumbnail : undefined) ?? activeSermon?.thumbnailUrl ?? paramThumbnail ?? (displayVideoId ? `https://img.youtube.com/vi/${displayVideoId}/hqdefault.jpg` : undefined);
   const favorited = displayVideoId ? isFavorite(displayVideoId) : false;
   const relatedSermons = allSermons.filter((s) => s.youtubeId !== displayVideoId && (activeSermon ? s.category === activeSermon.category : true)).slice(0, 6);

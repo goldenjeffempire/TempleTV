@@ -35,6 +35,12 @@ import { sendLiveServiceNotification } from "@/services/notifications";
 import { useFeaturedVideos } from "@/hooks/useFeaturedVideos";
 import { useWatchProgress } from "@/hooks/useWatchProgress";
 import { checkBroadcastCurrent, subscribeBroadcastEvents, type BroadcastCurrentResult } from "@/services/broadcast";
+import {
+  BROADCAST_TITLE,
+  BROADCAST_HERO_TITLE,
+  BROADCAST_LIVE_BANNER_TITLE,
+  BROADCAST_PREACHER,
+} from "@/lib/broadcastIdentity";
 import { navigateToSermon, navigateToPlayer as gatedNavigateToPlayer } from "@/utils/navigation";
 import { usePageSeo } from "@/hooks/usePageSeo";
 import type { Sermon } from "@/types";
@@ -203,10 +209,15 @@ export default function WatchScreen() {
   }, [getProgress]);
 
   const handleLivePress = useCallback(() => {
+    // Round 9c: pass the channel identity rather than `liveStatus.title`.
+    // The player chrome already overrides this in broadcast/live mode,
+    // but passing the generic value at the route level means even any
+    // pre-render glance / accessibility readout / share-sheet capture
+    // never sees the per-program title leak.
     navigateToPlayer({
       live: "true",
-      title: liveStatus.title ?? "Temple TV Live",
-      preacher: "Temple TV JCTM",
+      title: BROADCAST_TITLE,
+      preacher: BROADCAST_PREACHER,
       ...(liveStatus.videoId ? { videoId: liveStatus.videoId } : {}),
     });
   }, [navigateToPlayer, liveStatus]);
@@ -340,7 +351,7 @@ export default function WatchScreen() {
 
       <LiveNotificationBanner
         visible={showLiveBanner}
-        title={liveStatus.title ?? "Temple TV is LIVE now"}
+        title={BROADCAST_LIVE_BANNER_TITLE}
         onPress={() => {
           setShowLiveBanner(false);
           handleLivePress();
@@ -541,10 +552,14 @@ export default function WatchScreen() {
                   )
                 )}
 
-                {/* Title */}
+                {/* Title — Round 9c: per the broadcast-clean directive,
+                    the live state must NEVER expose the per-program title.
+                    The hero now reads as the channel identity when live,
+                    matching the TV LiveHero behaviour and the player
+                    chrome overrides. */}
                 <Text style={styles.heroTitle} numberOfLines={2}>
-                  {liveStatus.isLive && liveStatus.title
-                    ? liveStatus.title
+                  {liveStatus.isLive
+                    ? BROADCAST_HERO_TITLE
                     : showScheduledLive
                     ? "Live Service Coming Up"
                     : "Temple TV"}

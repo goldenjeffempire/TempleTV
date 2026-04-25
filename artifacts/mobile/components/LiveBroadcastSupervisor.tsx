@@ -3,6 +3,7 @@ import React, { useEffect, useRef } from "react";
 import { usePlayer } from "@/context/PlayerContext";
 import { subscribeBroadcastEvents } from "@/services/broadcast";
 import { checkLiveStatus } from "@/services/youtube";
+import { BROADCAST_TITLE, BROADCAST_PREACHER } from "@/lib/broadcastIdentity";
 
 /**
  * LiveBroadcastSupervisor — monitors for genuine LIVE events (YouTube live
@@ -48,12 +49,15 @@ export function LiveBroadcastSupervisor() {
           if (onPlayer && isLiveRef.current && !liveVideoChanged) return;
 
           playLive();
+          // Round 9c: pass the channel identity rather than the per-program
+          // title so the route, share-sheet, and any pre-render glance stay
+          // consistent with the broadcast-clean directive.
           router.push({
             pathname: "/player",
             params: {
               live: "true",
-              title: liveStatus.title ?? "Temple TV Live",
-              preacher: "Temple TV JCTM",
+              title: BROADCAST_TITLE,
+              preacher: BROADCAST_PREACHER,
               ...(liveStatus.videoId ? { videoId: liveStatus.videoId } : {}),
             },
           });

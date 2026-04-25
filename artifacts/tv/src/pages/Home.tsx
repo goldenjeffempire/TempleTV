@@ -10,6 +10,7 @@ import { useWatchHistory } from "../hooks/useWatchHistory";
 import { fetchBroadcastCurrent } from "../lib/api";
 import type { VideoItem, BroadcastCurrent } from "../lib/api";
 import { useLiveSync } from "../hooks/useLiveSync";
+import { BROADCAST_TITLE } from "../lib/broadcastIdentity";
 
 const CATEGORIES = [
   "Faith",
@@ -102,7 +103,11 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
       if (row.key === "__live__") {
         if (liveStatus?.isLive && liveStatus.videoId) {
           // YouTube live event — flag as live so the player suppresses controls.
-          onPlay(liveStatus.videoId, liveStatus.title ?? "Live Stream", undefined, undefined, true);
+          // Round 9c: pass the channel identity rather than the per-program
+          // title; the Player.tsx live mode already hides the title chrome,
+          // but propagating the generic value at the route level keeps
+          // history / state / accessibility readouts broadcast-clean.
+          onPlay(liveStatus.videoId, BROADCAST_TITLE, undefined, undefined, true);
         } else if (broadcastCurrent?.item) {
           const item = broadcastCurrent.item;
           const hlsUrl = item.localVideoUrl ?? undefined;
@@ -246,7 +251,10 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
             onSelect={() => {
               if (liveStatus?.isLive && liveStatus.videoId) {
                 // YouTube live event — flag as live (no manual controls).
-                onPlay(liveStatus.videoId, liveStatus.title ?? "Live", undefined, undefined, true);
+                // Round 9c: channel identity instead of per-program title
+                // for broadcast-clean parity with the broadcast-queue path
+                // and the mobile equivalent.
+                onPlay(liveStatus.videoId, BROADCAST_TITLE, undefined, undefined, true);
               } else if (broadcastCurrent?.item) {
                 const item = broadcastCurrent.item;
                 const hlsUrl = item.localVideoUrl ?? undefined;

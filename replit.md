@@ -899,3 +899,84 @@ not the moment the cut happens.
 TypeScript clean on `@workspace/mobile` and `@workspace/tv`. All four
 workflow services start cleanly (api:8080, admin:23744, mobile:18115,
 tv:23876).
+
+---
+
+## Round 9c — Cross-Platform Parity Audit & Shared Identity Module (Apr 25, 2026)
+
+Took a full pass across mobile + TV + admin to find any broadcast-clean
+parity gaps the previous rounds missed, fixed each one, and centralized
+the broadcast channel identity into a single source of truth per
+platform so this category of leak cannot happen again.
+
+### Parity gaps found and fixed
+
+A `rg "liveStatus.title|nextItem.title|Up Next"` sweep across all
+viewer-facing surfaces surfaced **5 leaks** that escaped Rounds 8/9:
+
+| Surface                                    | File                                                | Leak                                                                  | Fix                                                            |
+|--------------------------------------------|-----------------------------------------------------|-----------------------------------------------------------------------|----------------------------------------------------------------|
+| Mobile hero — title                        | `mobile/app/(tabs)/index.tsx:546`                   | `liveStatus.title` shown when live                                    | → `BROADCAST_HERO_TITLE` constant                              |
+| Mobile hero — live notification banner     | `mobile/app/(tabs)/index.tsx:343`                   | `liveStatus.title` in banner copy                                     | → `BROADCAST_LIVE_BANNER_TITLE` constant                       |
+| Mobile hero — `handleLivePress` route param| `mobile/app/(tabs)/index.tsx:208`                   | passed `liveStatus.title` to player route                             | → `BROADCAST_TITLE` / `BROADCAST_PREACHER` constants           |
+| Mobile supervisor                          | `mobile/components/LiveBroadcastSupervisor.tsx:55`  | passed `liveStatus.title` on auto-navigation                          | → `BROADCAST_TITLE` / `BROADCAST_PREACHER` constants           |
+| Mobile player chrome                       | `mobile/app/player.tsx:760`                         | only blanked title in `isBroadcastMode`, not in `isLive`              | extended override to `(isLive \|\| isBroadcastMode)`           |
+| TV Home — YouTube live row select          | `tv/src/pages/Home.tsx:105`                         | `liveStatus.title` passed to `onPlay`                                 | → `BROADCAST_TITLE` constant                                   |
+| TV Home — LiveHero `onSelect` (YouTube)    | `tv/src/pages/Home.tsx:249`                         | `liveStatus.title` passed to `onPlay`                                 | → `BROADCAST_TITLE` constant                                   |
+
+The TV broadcast-queue path (`Home.tsx:113, 258`) was already
+broadcast-clean and required no changes — it always passed a hardcoded
+`"Temple TV"`. The admin console (`admin/src/pages/broadcast.tsx:336`)
+intentionally still shows "Up next" because it's an operator surface,
+not a viewer surface. The mobile player VOD "Up Next" auto-play banner
+remains gated with `!isBroadcastMode` from Round 9.
+
+### Single source of truth — broadcast identity module
+
+Two new modules establish per-platform identity constants:
+
+- **`artifacts/mobile/lib/broadcastIdentity.ts`** — exports
+  `BROADCAST_TITLE`, `BROADCAST_HERO_TITLE`,
+  `BROADCAST_LIVE_BANNER_TITLE`, `BROADCAST_PREACHER`.
+- **`artifacts/tv/src/lib/broadcastIdentity.ts`** — exports
+  `BROADCAST_TITLE`, `BROADCAST_HERO_TITLE`.
+
+Each module's docstring cross-references its sibling on the other
+platform and warns to update both in lock-step. Every site that
+previously had `liveStatus.title ?? "Temple TV Live"` now imports the
+relevant constant — meaning a future identity rebrand happens in two
+files, not two dozen, and TV + mobile cannot drift out of sync without
+an obvious diff in both `lib/broadcastIdentity.ts` modules.
+
+### What this means for cross-platform consistency
+
+- The "broadcast-clean" contract is now enforced at the route-param /
+  navigation level, not just at the chrome-render level. Even if some
+  future component naively reads `paramTitle` and renders it, the
+  value flowing in is already the channel identity, not a leaky
+  per-program title.
+- Mobile `isLive` (live YouTube event) now behaves identically to
+  mobile `isBroadcastMode` (broadcast queue) for title / preacher /
+  duration / category — both render as the channel identity.
+- TV and mobile heros, players, and notification banners all now read
+  from the same shared constants, so the user experience is identical
+  across surfaces.
+
+### Verification
+
+- `rg "liveStatus\??\.title"` across `artifacts/mobile/` and
+  `artifacts/tv/` returns zero hits outside the new identity modules'
+  doc comments.
+- TypeScript clean on `@workspace/mobile` and `@workspace/tv`.
+- All four workflow services start cleanly (api:8080, admin:23744,
+  mobile:18115, tv:23876) and `/api/broadcast/current` responds 200.
+
+### Scope deliberately NOT taken on
+
+The attached prompt's broader asks (separate CI/CD parity blocker
+pipelines, automated cross-platform diff scanners, deployment
+version-gating, monitoring dashboards) are infrastructure that doesn't
+fit a single Replit monorepo and would dwarf the actual broadcast-
+quality work. The pragmatic interpretation taken here was: **find and
+close real parity gaps, then centralize the shared values so the same
+class of gap cannot recur**. That's what was done.
