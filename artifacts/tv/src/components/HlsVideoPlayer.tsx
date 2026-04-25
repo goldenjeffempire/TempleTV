@@ -101,9 +101,27 @@ export function HlsVideoPlayer({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [retries, setRetries] = useState(0);
+  // Mirror `retries` in a ref so HLS event-handler closures (created once
+  // per `initHls` call) always see the live counter — without this they
+  // capture the value at the time the handler was registered, which makes
+  // the `retries < 3` gate read 0 forever and effectively gives unbounded
+  // recoveries per stream.
+  const retriesRef = useRef(0);
+  useEffect(() => { retriesRef.current = retries; }, [retries]);
+  // Autoplay-blocked overlay: shown when video.play() is rejected by the
+  // browser's autoplay policy (typically after navigation transitions even
+  // when there was a recent user gesture). Distinct from `error` because the
+  // video is loaded and ready — the user just needs to confirm playback.
+  const [needsPlayGesture, setNeedsPlayGesture] = useState(false);
 
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const seekOsdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Watchdog: fires if the player makes no observable progress (no
+  // loadeddata, no playing) within LOAD_WATCHDOG_MS of an init/reset.
+  // Without this, CORS rejections, malformed manifests, or stuck connections
+  // would leave the user staring at an infinite loading veil.
+  const loadWatchdog = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const LOAD_WATCHDOG_MS = 15_000;
 
   // ── Controls auto-hide ────────────────────────────────────────────────────
   const resetHideTimer = useCallback(() => {
@@ -149,6 +167,54 @@ export function HlsVideoPlayer({
     };
   }, []);
 
+  // ── Attempt playback and surface autoplay-blocked errors ──────────────────
+  // Browser autoplay policies can reject `play()` even after a user gesture
+  // (e.g., when the navigation transition consumes the gesture). Catching the
+  // rejection lets us show a "Tap to play" overlay instead of failing silently.
+  const attemptPlay = useCallback((video: HTMLVideoElement) => {
+    const result = video.play();
+    if (result && typeof result.then === "function") {
+      result
+        .then(() => setNeedsPlayGesture(false))
+        .catch((err) => {
+          // NotAllowedError = autoplay policy rejection (recoverable via gesture).
+          // Other errors (AbortError, etc.) are usually transient — log only.
+          if (err && err.name === "NotAllowedError") {
+            setNeedsPlayGesture(true);
+          } else if (typeof console !== "undefined" && console.warn) {
+            console.warn("[HlsVideoPlayer] video.play() rejected:", err);
+          }
+        });
+    }
+  }, []);
+
+  // ── Load watchdog ─────────────────────────────────────────────────────────
+  // If the player makes no progress within LOAD_WATCHDOG_MS, surface an
+  // actionable error rather than spinning forever. Cleared by canplay/playing.
+  const armLoadWatchdog = useCallback(() => {
+    if (loadWatchdog.current) clearTimeout(loadWatchdog.current);
+    loadWatchdog.current = setTimeout(() => {
+      // Check the *current* video element's readyState — if it's already
+      // playable, the watchdog is stale (events races) and we suppress.
+      const v = videoRef.current;
+      if (v && v.readyState >= 2) return; // HAVE_CURRENT_DATA or better
+      if (typeof console !== "undefined" && console.warn) {
+        console.warn("[HlsVideoPlayer] Load watchdog fired — no progress within", LOAD_WATCHDOG_MS, "ms");
+      }
+      setError(
+        "We couldn't start the stream. Please check your connection and try again."
+      );
+      setIsBuffering(false);
+    }, LOAD_WATCHDOG_MS);
+  }, []);
+
+  const clearLoadWatchdog = useCallback(() => {
+    if (loadWatchdog.current) {
+      clearTimeout(loadWatchdog.current);
+      loadWatchdog.current = null;
+    }
+  }, []);
+
   // ── HLS initialisation ────────────────────────────────────────────────────
   const initHls = useCallback(() => {
     const video = videoRef.current;
@@ -161,8 +227,10 @@ export function HlsVideoPlayer({
     }
 
     setError(null);
+    setNeedsPlayGesture(false);
     setIsLoaded(false);
     setIsBuffering(true);
+    armLoadWatchdog();
 
     // ── Plain video detection (MP4, WebM, MOV, etc.) ─────────────────────
     // hls.js cannot parse non-HLS manifests. If the URL points to a plain
@@ -172,18 +240,21 @@ export function HlsVideoPlayer({
     if (isPlainVideo) {
       video.src = hlsUrl;
       video.load();
-      const seekAndPlay = () => {
-        if (startPositionSecs > 0) video.currentTime = startPositionSecs;
-        video.play().catch(() => {});
-        video.removeEventListener("loadedmetadata", seekAndPlay);
+      const onReady = () => {
+        if (startPositionSecs > 0) {
+          try { video.currentTime = startPositionSecs; } catch {}
+        }
+        setIsLoaded(true);
+        setIsBuffering(false);
+        clearLoadWatchdog();
+        attemptPlay(video);
+        video.removeEventListener("loadeddata", onReady);
       };
-      if (startPositionSecs > 0) {
-        video.addEventListener("loadedmetadata", seekAndPlay);
-      } else {
-        video.play().catch(() => {});
-      }
-      setIsLoaded(true);
-      setIsBuffering(false);
+      video.addEventListener("loadeddata", onReady);
+      // Optimistically attempt play immediately too — if the file is cached
+      // or loadeddata is delayed, this gets us to playback faster. The
+      // attemptPlay() call surfaces autoplay rejection cleanly.
+      attemptPlay(video);
       return;
     }
 
@@ -212,14 +283,25 @@ export function HlsVideoPlayer({
         levelLoadingRetryDelay: 500,
         fragLoadingMaxRetry: 3,
         fragLoadingRetryDelay: 500,
+        // Explicitly omit credentials on cross-origin XHR — we never need
+        // cookies on segment requests, and including them would force the
+        // server's CORS to echo a specific origin (instead of '*'), which
+        // breaks playback on origins outside the production allow-list.
+        xhrSetup: (xhr) => {
+          xhr.withCredentials = false;
+        },
       });
 
       hlsRef.current = hls;
 
       hls.on(Hls.Events.MANIFEST_PARSED, (_e, data) => {
-        setIsLoaded(true);
-        setIsBuffering(false);
-        video.play().catch(() => {});
+        // IMPORTANT: Don't flip `isLoaded`/`isBuffering` here. MANIFEST_PARSED
+        // only means the manifest XHR succeeded — segments may still stall
+        // before any frame is decoded. If we cleared the loading veil now,
+        // the user would see a frozen first-frame state with no spinner and
+        // no error. The video element's `canplay`/`playing` listeners drive
+        // those flags and the watchdog clear once real media data arrives.
+        attemptPlay(video);
         // Report available quality levels to the OSD.
         setQualityLabel(`Auto (${data.levels.length} levels)`);
       });
@@ -233,14 +315,26 @@ export function HlsVideoPlayer({
       // (handled in the video event listener effect below). No hls.js event needed.
 
       hls.on(Hls.Events.ERROR, (_e, data) => {
+        if (typeof console !== "undefined" && console.warn) {
+          console.warn("[HlsVideoPlayer] hls.js error:", {
+            type: data.type,
+            details: data.details,
+            fatal: data.fatal,
+          });
+        }
         if (data.fatal) {
-          if (data.type === Hls.ErrorTypes.NETWORK_ERROR && retries < 3) {
+          // Read from the ref — the captured `retries` in this closure is
+          // stale because we don't re-register the handler on each retry.
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR && retriesRef.current < 3) {
             hls.startLoad();
             setRetries((r) => r + 1);
-          } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR && retries < 3) {
+            armLoadWatchdog();
+          } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR && retriesRef.current < 3) {
             hls.recoverMediaError();
             setRetries((r) => r + 1);
+            armLoadWatchdog();
           } else {
+            clearLoadWatchdog();
             setError("Stream unavailable. Please check your connection and try again.");
             setIsBuffering(false);
           }
@@ -253,20 +347,26 @@ export function HlsVideoPlayer({
       // ── Native HLS path (Safari, iOS, some Samsung firmware) ─────────────
       video.src = hlsUrl;
       video.load();
-      if (startPositionSecs > 0) {
-        const onLoaded = () => {
-          video.currentTime = startPositionSecs;
-          video.removeEventListener("loadedmetadata", onLoaded);
-        };
-        video.addEventListener("loadedmetadata", onLoaded);
-      }
-      video.play().catch(() => {});
-      setIsLoaded(true);
-      setIsBuffering(false);
+      const onReady = () => {
+        if (startPositionSecs > 0) {
+          try { video.currentTime = startPositionSecs; } catch {}
+        }
+        setIsLoaded(true);
+        setIsBuffering(false);
+        clearLoadWatchdog();
+        attemptPlay(video);
+        video.removeEventListener("loadeddata", onReady);
+      };
+      video.addEventListener("loadeddata", onReady);
+      attemptPlay(video);
     } else if (isTizen && window.webapis?.avplay) {
       // ── Samsung AVPlay path (older Tizen without MSE / hls.js support) ───
       // AVPlay is Samsung's native media engine — supports HLS out-of-the-box.
       // It renders fullscreen natively so the HTML video element is hidden.
+      // IMPORTANT: AVPlay does not surface progress through the HTML video
+      // element's readyState, so the watchdog's readyState guard cannot
+      // suppress false timeouts on this path. We must clear the watchdog
+      // explicitly when AVPlay reports playable readiness.
       const avplay = window.webapis.avplay;
       try {
         avplay.open(hlsUrl);
@@ -276,11 +376,23 @@ export function HlsVideoPlayer({
         avplay.setDisplayRect(0, 0, W, H);
         avplay.setListener({
           onbufferingstart: () => setIsBuffering(true),
-          onbufferingcomplete: () => { setIsBuffering(false); setIsLoaded(true); },
-          oncurrentplaytime: (ms) => setCurrentTime(ms / 1_000),
+          onbufferingcomplete: () => {
+            setIsBuffering(false);
+            setIsLoaded(true);
+            // Buffering complete = AVPlay has decoded enough data to play.
+            // Cancel the load watchdog so it doesn't fire a stale error.
+            clearLoadWatchdog();
+          },
+          oncurrentplaytime: (ms) => {
+            setCurrentTime(ms / 1_000);
+            // Receiving playtime callbacks proves playback is alive — also
+            // an unambiguous signal to clear any pending watchdog.
+            clearLoadWatchdog();
+          },
           onerror: (msg) => {
             setError(`Playback error: ${msg}`);
             setIsBuffering(false);
+            clearLoadWatchdog();
           },
         });
         if (startPositionSecs > 0) avplay.seekTo(Math.floor(startPositionSecs * 1_000));
@@ -288,8 +400,12 @@ export function HlsVideoPlayer({
         avplay.play();
         avplayActiveRef.current = true;
         setIsPlaying(true);
-        setIsLoaded(true);
-        setIsBuffering(false);
+        // NOTE: don't set `isLoaded`/`isBuffering` here. `avplay.play()`
+        // returns synchronously before any frame is decoded. The
+        // `onbufferingcomplete` and `oncurrentplaytime` listeners flip
+        // those flags (and clear the watchdog) once playback is actually
+        // alive — protecting us against AVPlay open() succeeding but the
+        // pipeline silently failing to produce frames.
         // Poll duration (not always available immediately via event).
         if (avplayPollRef.current) clearInterval(avplayPollRef.current);
         avplayPollRef.current = setInterval(() => {
@@ -303,12 +419,25 @@ export function HlsVideoPlayer({
       } catch {
         try { avplay.close(); } catch {}
         avplayActiveRef.current = false;
+        clearLoadWatchdog();
         setError("Playback failed. Please try again.");
       }
     } else {
+      clearLoadWatchdog();
       setError("HLS streaming is not supported by this browser. Please update your browser or TV firmware.");
     }
-  }, [hlsUrl, startPositionSecs, retries]);
+  }, [hlsUrl, startPositionSecs, retries, armLoadWatchdog, attemptPlay, clearLoadWatchdog]);
+
+  // Reset the retry counter whenever the source URL changes so each fresh
+  // stream gets the full 3-retry budget (otherwise switching to a new stream
+  // after a previous one exhausted retries would skip the recovery path).
+  // Reset the ref synchronously too — `setRetries(0)` is async and the
+  // initHls effect can run before the state-mirroring effect updates the
+  // ref, leaving a tiny window where handlers see the previous count.
+  useEffect(() => {
+    retriesRef.current = 0;
+    setRetries(0);
+  }, [hlsUrl]);
 
   useEffect(() => {
     initHls();
@@ -338,6 +467,12 @@ export function HlsVideoPlayer({
       }
       if (hideTimer.current) clearTimeout(hideTimer.current);
       if (seekOsdTimer.current) clearTimeout(seekOsdTimer.current);
+      // Cancel any pending watchdog so it doesn't surface a stale error
+      // after unmount or when navigating to a different stream.
+      if (loadWatchdog.current) {
+        clearTimeout(loadWatchdog.current);
+        loadWatchdog.current = null;
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hlsUrl]);
@@ -347,19 +482,49 @@ export function HlsVideoPlayer({
     const video = videoRef.current;
     if (!video) return;
 
-    const onPlay = () => setIsPlaying(true);
+    const onPlay = () => {
+      setIsPlaying(true);
+      setNeedsPlayGesture(false);
+    };
     const onPause = () => setIsPlaying(false);
     const onWaiting = () => setIsBuffering(true);
-    const onPlaying = () => setIsBuffering(false);
+    const onPlaying = () => {
+      setIsBuffering(false);
+      setIsLoaded(true);
+      setNeedsPlayGesture(false);
+      clearLoadWatchdog();
+    };
+    const onCanPlay = () => {
+      // First time the element has enough data to begin playback. Cancel
+      // the watchdog and clear any spurious loading veil.
+      setIsLoaded(true);
+      clearLoadWatchdog();
+    };
     const onTimeUpdate = () => setCurrentTime(video.currentTime);
     const onDurationChange = () => {
       if (Number.isFinite(video.duration)) setDuration(video.duration);
     };
     const onError = () => {
+      // Surface a useful diagnostic for both HLS and native paths. The
+      // <video>'s MediaError code helps distinguish CORS/network/decode
+      // failures during incident triage.
+      const code = video.error?.code;
+      const msgMap: Record<number, string> = {
+        1: "Playback was interrupted.",
+        2: "Network error while loading the stream.",
+        3: "The video could not be decoded by this device.",
+        4: "This stream's format is not supported on this device.",
+      };
+      const msg = (code && msgMap[code]) || "Playback failed. Please try again.";
+      if (typeof console !== "undefined" && console.warn) {
+        console.warn("[HlsVideoPlayer] video error:", { code, message: video.error?.message });
+      }
+      // For the hls.js path, hls.js's own ERROR handler already manages
+      // recovery and surfacing — don't double-report.
       if (!hlsRef.current) {
-        // Native-HLS path error
-        setError("Playback failed. Check your connection and try again.");
+        setError(msg);
         setIsBuffering(false);
+        clearLoadWatchdog();
       }
     };
 
@@ -367,6 +532,7 @@ export function HlsVideoPlayer({
     video.addEventListener("pause", onPause);
     video.addEventListener("waiting", onWaiting);
     video.addEventListener("playing", onPlaying);
+    video.addEventListener("canplay", onCanPlay);
     video.addEventListener("timeupdate", onTimeUpdate);
     video.addEventListener("durationchange", onDurationChange);
     video.addEventListener("error", onError);
@@ -376,11 +542,12 @@ export function HlsVideoPlayer({
       video.removeEventListener("pause", onPause);
       video.removeEventListener("waiting", onWaiting);
       video.removeEventListener("playing", onPlaying);
+      video.removeEventListener("canplay", onCanPlay);
       video.removeEventListener("timeupdate", onTimeUpdate);
       video.removeEventListener("durationchange", onDurationChange);
       video.removeEventListener("error", onError);
     };
-  }, []);
+  }, [clearLoadWatchdog]);
 
   // ── Keyboard / remote control ─────────────────────────────────────────────
   useEffect(() => {
@@ -397,6 +564,23 @@ export function HlsVideoPlayer({
 
       const video = videoRef.current;
       const avplay = avplayActiveRef.current ? window.webapis?.avplay : undefined;
+
+      // ── Autoplay-blocked overlay: SELECT / play resumes playback ──────────
+      // The video is loaded but the browser blocked auto-start. Any of the
+      // standard "go" actions (SELECT / play / playpause) should consume the
+      // gesture and start playback. BACK exits.
+      if (needsPlayGesture) {
+        if (action === "back" || action === "exit") {
+          e.preventDefault();
+          onBack();
+          return;
+        }
+        if (action === "select" || action === "play" || action === "playpause") {
+          e.preventDefault();
+          if (video) attemptPlay(video);
+          return;
+        }
+      }
 
       switch (action) {
         case "back":
@@ -531,6 +715,18 @@ export function HlsVideoPlayer({
       }}
     >
       {/* ── Video element ─────────────────────────────────────────────────── */}
+      {/*
+        NOTE: We intentionally do NOT set `crossOrigin` on the <video>. With
+        `crossOrigin="anonymous"`, the browser performs CORS validation on the
+        media response and blocks playback if the server doesn't echo a
+        matching `Access-Control-Allow-Origin` for the current page origin.
+        Our broadcast queue stores absolute production URLs whose CORS allow-
+        list is restricted to a fixed set of production origins, which would
+        break playback on Replit dev previews, custom domains, embedded
+        contexts, etc. We never read pixels off the video (no canvas /
+        WebGL), so CORS isn't required — omitting the attribute lets the
+        browser perform a normal media request that always works.
+      */}
       <video
         ref={videoRef}
         style={{
@@ -542,7 +738,6 @@ export function HlsVideoPlayer({
         }}
         playsInline
         preload="auto"
-        crossOrigin="anonymous"
       />
 
       {/* ── Cinematic loading veil ─────────────────────────────────────────── */}
@@ -601,6 +796,68 @@ export function HlsVideoPlayer({
               animation: "tt-spin 0.9s linear infinite",
             }}
           />
+        </div>
+      )}
+
+      {/* ── Autoplay-blocked overlay ──────────────────────────────────────── */}
+      {/*
+        Shown when video.play() is rejected by the browser's autoplay policy
+        (NotAllowedError). The video is fully loaded; the user just needs to
+        confirm playback with a gesture. Distinct from the error state because
+        recovery requires SELECT (not retry).
+      */}
+      {needsPlayGesture && !error && (
+        <div
+          role="dialog"
+          aria-label="Press play to start the stream"
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 24,
+            background: "radial-gradient(circle at 50% 40%, rgba(26,0,16,0.85) 0%, rgba(0,0,0,0.92) 70%)",
+            zIndex: 9,
+            cursor: "pointer",
+          }}
+          onClick={() => {
+            const v = videoRef.current;
+            if (v) attemptPlay(v);
+          }}
+        >
+          <button
+            autoFocus
+            onClick={(e) => {
+              e.stopPropagation();
+              const v = videoRef.current;
+              if (v) attemptPlay(v);
+            }}
+            aria-label="Play"
+            style={{
+              width: 96,
+              height: 96,
+              borderRadius: "50%",
+              background: "hsl(0 78% 50%)",
+              border: "none",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              boxShadow: "0 0 32px rgba(220,38,38,0.4)",
+            }}
+          >
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="#fff" style={{ marginLeft: 4 }}>
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          </button>
+          <p style={{ fontSize: "clamp(16px, 2.4vw, 22px)", fontWeight: 700, color: "#fff", margin: 0, textAlign: "center" }}>
+            Press play to start the stream
+          </p>
+          <p className="tt-hide-on-touch" style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", margin: 0 }}>
+            Press <strong style={{ color: "#fff" }}>ENTER</strong> to play · <strong style={{ color: "#fff" }}>BACK</strong> to return
+          </p>
         </div>
       )}
 

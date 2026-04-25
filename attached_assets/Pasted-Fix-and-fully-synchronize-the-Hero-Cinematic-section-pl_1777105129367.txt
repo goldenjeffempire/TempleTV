@@ -1,0 +1,35 @@
+Fix and fully synchronize the Hero Cinematic section playback behavior so it functions as a true live ON AIR broadcast stream rather than displaying a static preview or disconnected playback state.
+
+Requirements:
+
+* Ensure the Hero Cinematic section continuously plays the active ON AIR broadcast in real time.
+* Remove all preview-style behavior from the Hero section.
+* The Hero video must behave exactly like the live broadcast stream currently airing on Temple TV.
+* Ensure the Hero section is directly synchronized with the active broadcast pipeline so it always reflects the exact live content currently being broadcast ON AIR.
+* Prevent the Hero section from displaying paused frames, preview thumbnails, inactive states, or delayed playback.
+* Ensure the live broadcast in the Hero section automatically updates whenever the ON AIR broadcast changes.
+* Maintain real-time synchronization between:
+
+  * Hero Cinematic section
+  * TV Player page
+  * ON AIR broadcast stream
+  * Radio Mode playback
+* Ensure seamless continuous playback without interruptions, unnecessary reloads, playback resets, or stream desynchronization.
+* Optimize stream startup and playback continuity so the Hero broadcast begins quickly and remains stable.
+* Ensure the Hero section stream remains active even before users click the “Watch Temple TV” button.
+* When users click “Watch Temple TV,” ensure the transition into the full live viewing experience continues from the same active broadcast stream without restarting playback unnecessarily.
+* Optimize playback behavior across:
+
+  * Mobile devices
+  * Tablets
+  * Desktop browsers
+  * Smart TVs
+* Ensure responsive scaling and proper aspect ratio handling without cropping or cutting important video visuals.
+* Remove unnecessary overlays, preview indicators, play badges, or non-broadcast UI elements from the Hero section.
+* Ensure the overall experience feels like a real television channel homepage where the live broadcast is always actively running in the background as part of the viewing experience.
+
+Expected Final Outcome:
+
+Deliver a fully immersive, television-grade Hero Cinematic experience where the live Temple TV ON AIR broadcast continuously plays in real time directly within the Hero section and remains perfectly synchronized with the actual broadcast stream across the entire platform.
+
+“Temple TV Anywhere You Go”

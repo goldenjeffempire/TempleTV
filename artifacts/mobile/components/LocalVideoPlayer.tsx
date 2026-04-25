@@ -187,6 +187,13 @@ export function LocalVideoPlayer({
   // Web-only: HTML5 video element ref + hls.js instance ref
   const webVideoRef = useRef<HTMLVideoElement | null>(null);
   const webHlsRef = useRef<any>(null);
+  // Web-only: watchdog timer that surfaces a stalled-load failure if the
+  // <video> element makes no progress within WEB_LOAD_WATCHDOG_MS. Without
+  // this, CORS-blocked or stalled requests would hang the loading veil
+  // indefinitely. Mirrors the TV HlsVideoPlayer's watchdog behaviour.
+  const webLoadWatchdog = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const WEB_LOAD_WATCHDOG_MS = 15_000;
+  const [webNeedsPlayGesture, setWebNeedsPlayGesture] = useState(false);
 
   const playerHeight = playerHeightOverride ?? Math.min(Math.round(width * (9 / 16)), 260);
 
@@ -308,6 +315,56 @@ export function LocalVideoPlayer({
       webHlsRef.current = null;
     }
 
+    // ── Web playback helpers (watchdog + autoplay-policy handling) ─────────
+    const clearWebWatchdog = () => {
+      if (webLoadWatchdog.current) {
+        clearTimeout(webLoadWatchdog.current);
+        webLoadWatchdog.current = null;
+      }
+    };
+    const armWebWatchdog = () => {
+      clearWebWatchdog();
+      webLoadWatchdog.current = setTimeout(() => {
+        // Suppress stale fires when the element actually has data.
+        if (video.readyState >= 2) return;
+        if (typeof console !== "undefined" && console.warn) {
+          console.warn("[LocalVideoPlayer] web load watchdog fired — stalled");
+        }
+        if (isMountedRef.current) {
+          setLoading(false);
+          onError?.();
+        }
+      }, WEB_LOAD_WATCHDOG_MS);
+    };
+    const safePlay = () => {
+      if (!autoPlay) return;
+      const r = video.play();
+      if (r && typeof r.then === "function") {
+        r.then(() => {
+          if (isMountedRef.current) setWebNeedsPlayGesture(false);
+        }).catch((err: any) => {
+          // NotAllowedError = autoplay policy rejection (recoverable via
+          // a tap on the video). Other errors are usually transient.
+          if (err && err.name === "NotAllowedError" && isMountedRef.current) {
+            setWebNeedsPlayGesture(true);
+            // The video is loaded; clear loading veil so the user sees
+            // the play overlay instead of the spinner.
+            setLoading(false);
+            clearWebWatchdog();
+          } else if (typeof console !== "undefined" && console.warn) {
+            console.warn("[LocalVideoPlayer] web video.play() rejected:", err);
+          }
+        });
+      }
+    };
+    // Cancel watchdog and clear loading state once the element actually
+    // reaches a playable state — the most reliable cross-engine signal
+    // that playback is alive.
+    const onCanPlay = () => { clearWebWatchdog(); if (isMountedRef.current) setLoading(false); };
+    const onPlaying = () => { clearWebWatchdog(); if (isMountedRef.current) { setLoading(false); setWebNeedsPlayGesture(false); } };
+    video.addEventListener("canplay", onCanPlay);
+    video.addEventListener("playing", onPlaying);
+
     let Hls: any;
     try { Hls = require("hls.js"); } catch { return; }
     // require returns the module, which may have a .default for ESM
@@ -315,35 +372,57 @@ export function LocalVideoPlayer({
     if (!HlsClass) return;
 
     if (HlsClass.isSupported && HlsClass.isSupported()) {
-      const hls = new HlsClass({ startLevel: -1, maxBufferLength: 30 });
+      const hls = new HlsClass({
+        startLevel: -1,
+        maxBufferLength: 30,
+        // Match the TV player: never include credentials on cross-origin
+        // segment fetches so the production CDN's CORS doesn't have to
+        // echo a specific Access-Control-Allow-Origin.
+        xhrSetup: (xhr: XMLHttpRequest) => { xhr.withCredentials = false; },
+      });
       webHlsRef.current = hls;
       hls.loadSource(effectiveUrl);
       hls.attachMedia(video);
+      armWebWatchdog();
       hls.on("hlsManifestParsed", () => {
         if (startPositionMs > 0) video.currentTime = startPositionMs / 1000;
-        if (autoPlay) video.play().catch(() => {});
+        safePlay();
+      });
+      hls.on("hlsError", (_e: any, data: any) => {
+        if (data?.fatal) {
+          clearWebWatchdog();
+          if (typeof console !== "undefined" && console.warn) {
+            console.warn("[LocalVideoPlayer] fatal hls error:", data.type, data.details);
+          }
+          if (isMountedRef.current) { setLoading(false); onError?.(); }
+        }
       });
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
       video.src = effectiveUrl;
+      armWebWatchdog();
       if (startPositionMs > 0) {
         video.addEventListener("loadedmetadata", () => {
           video.currentTime = startPositionMs / 1000;
         }, { once: true });
       }
-      if (autoPlay) video.play().catch(() => {});
+      safePlay();
     } else {
       // Direct MP4 fallback
       video.src = effectiveUrl;
-      if (autoPlay) video.play().catch(() => {});
+      armWebWatchdog();
+      safePlay();
     }
 
     return () => {
+      clearWebWatchdog();
+      video.removeEventListener("canplay", onCanPlay);
+      video.removeEventListener("playing", onPlaying);
       if (webHlsRef.current) {
         webHlsRef.current.destroy();
         webHlsRef.current = null;
       }
     };
-  }, [effectiveUrl]);
+  }, [effectiveUrl, autoPlay, startPositionMs, onError]);
 
   if (Platform.OS !== "web") {
     if (isRadioMode) {
@@ -429,7 +508,12 @@ export function LocalVideoPlayer({
           controls: !isRadioMode,
           playsInline: true,
           preload: "auto",
-          crossOrigin: "anonymous",
+          // Intentionally NOT setting `crossOrigin`. Our broadcast queue
+          // contains absolute production URLs whose CORS allow-list only
+          // includes a fixed set of origins; setting `crossOrigin="anonymous"`
+          // would force CORS validation and block playback on Replit dev
+          // previews, custom domains, and embedded contexts. We never read
+          // pixels off the video, so CORS isn't required.
           style: {
             width: "100%",
             height: isRadioMode ? "1px" : "100%",
@@ -467,6 +551,43 @@ export function LocalVideoPlayer({
             {hlsMasterUrl ? "HLS ABR" : "MP4"}
           </Text>
         </View>
+      )}
+
+      {/* Autoplay-policy overlay — surfaced when the browser blocks the
+          initial play() call. Tapping calls play() again from a real user
+          gesture, which always succeeds. Without this overlay the video
+          would appear loaded but stuck on its first frame with no UX. */}
+      {!isRadioMode && webNeedsPlayGesture && (
+        <Pressable
+          onPress={() => {
+            const v = webVideoRef.current;
+            if (!v) return;
+            const r = v.play();
+            if (r && typeof r.then === "function") {
+              r.then(() => setWebNeedsPlayGesture(false)).catch(() => {});
+            } else {
+              setWebNeedsPlayGesture(false);
+            }
+          }}
+          style={{
+            position: "absolute",
+            top: 0, left: 0, right: 0, bottom: 0,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: "rgba(0,0,0,0.55)",
+          }}
+        >
+          <View style={{
+            width: 72, height: 72, borderRadius: 36,
+            backgroundColor: "#DC2626",
+            alignItems: "center", justifyContent: "center",
+          }}>
+            <Feather name="play" size={32} color="#FFF" />
+          </View>
+          <Text style={{ color: "#FFF", marginTop: 12, fontWeight: "600" }}>
+            Tap to start playback
+          </Text>
+        </Pressable>
       )}
     </View>
   );
