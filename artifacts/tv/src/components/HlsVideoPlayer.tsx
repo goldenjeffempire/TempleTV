@@ -578,6 +578,12 @@ export function HlsVideoPlayer({
     setRetries(0);
   }, [hlsUrl]);
 
+  // Tracks a URL staged on the inactive slot during a cold-path channel
+  // change. The pending-promotion effect below watches it and swaps when
+  // the staged slot reports it can play, so the visible slot keeps its
+  // last frame on screen during the manifest fetch instead of going black.
+  const pendingPromotionUrlRef = useRef<string | null>(null);
+
   // ── Active-URL effect: cold load OR swap-to-preloaded ────────────────────
   useEffect(() => {
     if (!hlsUrl) return;
@@ -585,15 +591,84 @@ export function HlsVideoPlayer({
     if (getLoadedUrl(activeSlotRef.current) === hlsUrl) return;
     // Inactive slot has it preloaded — instant swap.
     if (getLoadedUrl(otherSlot(activeSlotRef.current)) === hlsUrl) {
+      pendingPromotionUrlRef.current = null;
       swapToInactive();
       return;
     }
-    // Cold path: load into the active slot. The cinematic veil shows iff
-    // this is the very first start (hasEverShown stays false until a
-    // frame decodes); subsequent cold loads keep the previous frame.
-    loadIntoSlot(activeSlotRef.current, hlsUrl, "active");
+    // Cold path. To avoid blacking out the visible slot while a fresh
+    // manifest loads, route the load through the INACTIVE slot first
+    // (preload mode), then promote it once the new URL has actually
+    // matched into the inactive slot's loadedUrl. The active slot keeps
+    // showing its current frame until the swap occurs.
+    //
+    // First-ever start (no previous frame) is handled by the cinematic
+    // veil — `hasEverShown` is still false, so the active-slot direct
+    // load below shows the veil while the very first frame decodes.
+    if (!hasEverShownRef.current || avplayActiveRef.current) {
+      pendingPromotionUrlRef.current = null;
+      loadIntoSlot(activeSlotRef.current, hlsUrl, "active");
+      return;
+    }
+    // Stage the new URL on the inactive slot. The preload effect that
+    // watches `nextHlsUrl` would normally do this, but a cold-path
+    // change means `nextHlsUrl` either didn't match or wasn't set, so
+    // we drive the staging directly. The pending-promotion effect below
+    // watches for it to become ready and performs the swap.
+    pendingPromotionUrlRef.current = hlsUrl;
+    const inactive = otherSlot(activeSlotRef.current);
+    if (getLoadedUrl(inactive) !== hlsUrl) {
+      loadIntoSlot(inactive, hlsUrl, "preload");
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hlsUrl]);
+
+  // ── Pending-promotion watcher ────────────────────────────────────────────
+  // When a cold-path URL is staged on the inactive slot, this effect
+  // promotes it as soon as the slot's <video> reports it can play. The
+  // active slot keeps displaying the previous frame until the swap so the
+  // viewer never sees a black gap or spinner during channel changes.
+  useEffect(() => {
+    const target = pendingPromotionUrlRef.current;
+    if (!target) return;
+    const inactive = otherSlot(activeSlotRef.current);
+    const v = getVideo(inactive);
+    if (!v) return;
+    // If the inactive slot already has the URL ready, swap immediately.
+    if (getLoadedUrl(inactive) === target && v.readyState >= 2) {
+      pendingPromotionUrlRef.current = null;
+      swapToInactive();
+      return;
+    }
+    let done = false;
+    const tryPromote = () => {
+      if (done) return;
+      if (getLoadedUrl(inactive) !== target) return;
+      if (v.readyState < 2) return;
+      done = true;
+      pendingPromotionUrlRef.current = null;
+      swapToInactive();
+    };
+    v.addEventListener("loadeddata", tryPromote);
+    v.addEventListener("canplay", tryPromote);
+    v.addEventListener("playing", tryPromote);
+    // Safety: if the inactive slot can't get ready within the watchdog
+    // window, fall back to a hard cold-load on the active slot so the
+    // viewer at least sees the new stream (with the veil if needed).
+    const fallback = setTimeout(() => {
+      if (done) return;
+      if (pendingPromotionUrlRef.current !== target) return;
+      done = true;
+      pendingPromotionUrlRef.current = null;
+      loadIntoSlot(activeSlotRef.current, target, "active");
+    }, LOAD_WATCHDOG_MS);
+    return () => {
+      v.removeEventListener("loadeddata", tryPromote);
+      v.removeEventListener("canplay", tryPromote);
+      v.removeEventListener("playing", tryPromote);
+      clearTimeout(fallback);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hlsUrl, activeSlot]);
 
   // ── Inactive-URL effect: silently preload the next queue item ────────────
   useEffect(() => {
@@ -693,6 +768,35 @@ export function HlsVideoPlayer({
         clearLoadWatchdog();
       }
     };
+    // ── Autonomous queue advance on `ended` ─────────────────────────────
+    // The server's transition SSE may arrive a moment after the active
+    // video finishes (broadcast ticker is on a 500ms interval, plus
+    // network RTT). Without this handler the viewer would see a black
+    // frame between the active video reaching its end and the SSE-driven
+    // hlsUrl change firing the swap. If the inactive slot has the next
+    // queue item already primed (the common path — preload runs as soon
+    // as the broadcast payload exposes nextItem), promote it now and let
+    // the SSE-driven hlsUrl change land harmlessly when it arrives.
+    //
+    // We DO NOT seek back / loop the current video — looping the same
+    // sermon for a few hundred milliseconds would be jarring and the
+    // pending swap would interrupt it anyway.
+    const onEnded = () => {
+      if (avplayActiveRef.current) return; // single-engine path, no A/B
+      const inactive = otherSlot(activeSlotRef.current);
+      const inactiveUrl = getLoadedUrl(inactive);
+      const inactiveVideo = getVideo(inactive);
+      if (!inactiveUrl || !inactiveVideo) return;
+      // Don't swap to the same URL we just finished — that would just
+      // restart the current video. Wait for the SSE-driven hlsUrl change.
+      if (inactiveUrl === getLoadedUrl(activeSlotRef.current)) return;
+      // Inactive slot must be at least loadable; preload primes it to
+      // readyState 4 normally, but guard so a half-warm slot doesn't
+      // trade a black frame for a buffering spinner.
+      if (inactiveVideo.readyState < 2) return;
+      pendingPromotionUrlRef.current = null;
+      swapToInactive();
+    };
 
     video.addEventListener("play", onPlay);
     video.addEventListener("pause", onPause);
@@ -702,6 +806,7 @@ export function HlsVideoPlayer({
     video.addEventListener("timeupdate", onTimeUpdate);
     video.addEventListener("durationchange", onDurationChange);
     video.addEventListener("error", onError);
+    video.addEventListener("ended", onEnded);
 
     // Sync state immediately for the new active slot (covers swap case
     // where the slot is already mid-play).
@@ -718,8 +823,9 @@ export function HlsVideoPlayer({
       video.removeEventListener("timeupdate", onTimeUpdate);
       video.removeEventListener("durationchange", onDurationChange);
       video.removeEventListener("error", onError);
+      video.removeEventListener("ended", onEnded);
     };
-  }, [activeSlot, clearLoadWatchdog, markEverShown]);
+  }, [activeSlot, clearLoadWatchdog, markEverShown, swapToInactive]);
 
   // ── Keyboard / remote control ─────────────────────────────────────────────
   useEffect(() => {

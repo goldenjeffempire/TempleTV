@@ -687,3 +687,60 @@ Surfaces that share the new pipeline:
 - Mobile native Player (single-engine expo-av; in-place source swap via tuned* state, no router.replace)
 
 TypeScript clean for both `@workspace/tv` and `@workspace/mobile`. All four workflow servers come up cleanly (api:8080, admin:23744, mobile:18115, tv:23876) with no errors.
+
+
+### Round 8 — Black-frame elimination during broadcast transitions (April 2026)
+
+Round 7 introduced the A/B double-buffered pipeline so the *common* queue
+advance (preload-hit) became a 1-frame cut. This round closes the
+remaining edge cases that could still surface a black frame or spinner
+between videos:
+
+1. **Cold-load via inactive slot (TV + mobile-web).** Previously, when
+   `hlsUrl` advanced to a URL that *wasn't* primed on the inactive slot
+   (channel change, schedule jump, override toggle, queue mutation), the
+   active slot's hls.js was destroyed in-place and `src` reassigned —
+   blacking out the visible `<video>` for the duration of the manifest
+   fetch. Now the cold-path URL is staged on the **inactive** slot in
+   preload mode; a `pendingPromotionUrlRef` + watcher effect listens
+   for `loadeddata`/`canplay`/`playing` and promotes via
+   `swapToInactive` / `swapWebSlots` the moment the slot is ready.
+   The visible slot keeps showing its last frame the entire time. A
+   15s safety fallback hard-loads onto the active slot if the inactive
+   slot can't get ready (matches `LOAD_WATCHDOG_MS`).
+
+2. **Autonomous swap on `ended` (TV).** Added an `ended` listener on
+   the active slot that promotes the inactive slot immediately if it
+   has a different URL primed and is at `readyState ≥ 2`. Eliminates
+   the "video ends → wait for SSE → swap" black gap when the server's
+   transition tick hadn't yet fired. The SSE-driven `hlsUrl` change
+   that arrives moments later lands harmlessly because the URL now
+   matches the active slot. Mobile already had this via `onEnded`
+   piping into `handleVideoEnd` — see point 4.
+
+3. **Faster server transition ticker.** `_tickTransitions` interval
+   reduced from **2,000ms → 500ms** in `artifacts/api-server/src/routes/broadcast.ts`.
+   Clients now auto-swap on `ended` so the SSE isn't strictly required
+   for video continuity, but it remains the source of truth for the
+   now-playing card and up-next list — the faster tick keeps that
+   metadata in lock-step with the actual on-screen video.
+
+4. **Mobile `handleVideoEnd` no-wait path.** Removed the hard-coded
+   800ms `setTimeout` before re-tuning the broadcast on video end.
+   The web A/B player auto-swaps the moment the active video ends, so
+   the wait was creating a visible black gap on platforms where the
+   pipeline is already swapped. Native iOS/Android (single-engine
+   `expo-av`) also benefits — re-tuning immediately makes the source
+   change land sooner.
+
+Files touched:
+- `artifacts/tv/src/components/HlsVideoPlayer.tsx`
+- `artifacts/mobile/components/LocalVideoPlayer.tsx`
+- `artifacts/mobile/app/player.tsx`
+- `artifacts/api-server/src/routes/broadcast.ts`
+
+TypeScript clean for both `@workspace/tv` and `@workspace/mobile`. All
+four workflow servers come up cleanly (api:8080, admin:23744,
+mobile:18115, tv:23876) with no errors. `/api/broadcast/current`
+returns 200.
+

@@ -656,7 +656,13 @@ export default function PlayerScreen() {
 
   const handleVideoEnd = useCallback(async () => {
     if (isBroadcastMode) {
-      await new Promise((resolve) => setTimeout(resolve, 800));
+      // The web player auto-swaps to the preloaded inactive slot the moment
+      // the active video ends, so we don't need to wait for the server SSE
+      // before kicking off the metadata refresh. Asking for the fresh
+      // payload immediately keeps the now-playing card and up-next list in
+      // lock-step with the actual video that just took over the screen.
+      // No artificial delay here — any wait is a visible black gap on
+      // platforms where the A/B swap isn't available (native iOS/Android).
       try {
         const bc = await checkBroadcastCurrent();
         if (!isMountedRef.current) return;

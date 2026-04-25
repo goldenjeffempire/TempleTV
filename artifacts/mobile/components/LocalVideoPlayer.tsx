@@ -527,6 +527,13 @@ export function LocalVideoPlayer({
     return true;
   }, [autoPlay, getWebVideo, quiesceWebSlot]);
 
+  // Tracks a URL staged on the inactive slot during a cold-path channel
+  // change. The pending-promotion effect below watches it and swaps when
+  // the staged slot reports it can play, so the visible slot keeps its
+  // last frame on screen during the manifest fetch instead of going black.
+  const webPendingPromotionUrlRef = useRef<string | null>(null);
+  const [webPendingTick, setWebPendingTick] = useState(0);
+
   // ── Effect: drive the *active* slot to play `effectiveUrl` ────────────
   useEffect(() => {
     if (Platform.OS !== "web") return;
@@ -536,12 +543,80 @@ export function LocalVideoPlayer({
     // Fast path: the inactive slot already has the requested URL primed
     // from a previous preload. Swap to it instantly.
     if (getWebLoadedUrl(other) === effectiveUrl && getWebVideo(other)) {
+      webPendingPromotionUrlRef.current = null;
       swapWebSlots();
       return;
     }
-    // Cold load on the currently active slot.
-    loadIntoWebSlot(cur, effectiveUrl, "active");
+    // Cold path. To avoid blacking out the visible slot while a fresh
+    // manifest loads, route the load through the INACTIVE slot first
+    // (preload mode), then promote it once the slot reports it can play.
+    // The active slot keeps showing its current frame until the swap
+    // occurs — no spinner, no black frame between videos.
+    //
+    // First-ever start (no previous frame) goes straight onto the active
+    // slot so the loading overlay can show normally.
+    const curVideo = getWebVideo(cur);
+    const hasPreviousFrame = !!curVideo && curVideo.readyState >= 2 && !!getWebLoadedUrl(cur);
+    if (!hasPreviousFrame) {
+      webPendingPromotionUrlRef.current = null;
+      loadIntoWebSlot(cur, effectiveUrl, "active");
+      return;
+    }
+    webPendingPromotionUrlRef.current = effectiveUrl;
+    if (getWebLoadedUrl(other) !== effectiveUrl) {
+      loadIntoWebSlot(other, effectiveUrl, "preload");
+    }
+    // Bump tick so the promotion watcher re-runs even if effectiveUrl
+    // is reassigned to the same string mid-load.
+    setWebPendingTick((t) => t + 1);
   }, [effectiveUrl, loadIntoWebSlot, swapWebSlots, getWebLoadedUrl, getWebVideo]);
+
+  // ── Pending-promotion watcher ────────────────────────────────────────
+  // Mirrors the TV player's pending-promotion logic: when a cold-path
+  // URL is staged on the inactive web slot, promote it the moment the
+  // slot's <video> reports it can play. Until then, the active slot
+  // keeps its last frame visible so the viewer never sees a black gap.
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    const target = webPendingPromotionUrlRef.current;
+    if (!target) return;
+    const inactive = otherWebSlot(webActiveSlotRef.current);
+    const v = getWebVideo(inactive);
+    if (!v) return;
+    if (getWebLoadedUrl(inactive) === target && v.readyState >= 2) {
+      webPendingPromotionUrlRef.current = null;
+      swapWebSlots();
+      return;
+    }
+    let done = false;
+    const tryPromote = () => {
+      if (done) return;
+      if (getWebLoadedUrl(inactive) !== target) return;
+      if (v.readyState < 2) return;
+      done = true;
+      webPendingPromotionUrlRef.current = null;
+      swapWebSlots();
+    };
+    v.addEventListener("loadeddata", tryPromote);
+    v.addEventListener("canplay", tryPromote);
+    v.addEventListener("playing", tryPromote);
+    // Safety net: if the inactive slot can't get ready, fall back to a
+    // hard cold-load on the active slot so the viewer at least sees the
+    // new stream eventually.
+    const fallback = setTimeout(() => {
+      if (done) return;
+      if (webPendingPromotionUrlRef.current !== target) return;
+      done = true;
+      webPendingPromotionUrlRef.current = null;
+      loadIntoWebSlot(webActiveSlotRef.current, target, "active");
+    }, WEB_LOAD_WATCHDOG_MS);
+    return () => {
+      v.removeEventListener("loadeddata", tryPromote);
+      v.removeEventListener("canplay", tryPromote);
+      v.removeEventListener("playing", tryPromote);
+      clearTimeout(fallback);
+    };
+  }, [effectiveUrl, webPendingTick, webActiveSlot, getWebVideo, getWebLoadedUrl, swapWebSlots, loadIntoWebSlot]);
 
   // ── Effect: silently preload `effectiveNextUrl` into the inactive slot
   useEffect(() => {

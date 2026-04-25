@@ -330,7 +330,13 @@ export function startBroadcastTransitionTicker(): void {
   buildBroadcastCurrentPayload()
     .then((p) => { _lastTrackedPayload = p; })
     .catch(() => {});
-  _transitionTickHandle = setInterval(_tickTransitions, 2_000);
+  // Tick at 500ms (was 2_000ms). The transition SSE tells clients to
+  // promote the next queue item; clients also auto-swap on the active
+  // video's `ended` event, but the SSE remains the source of truth for
+  // metadata (now-playing card, up-next list). A faster tick keeps the
+  // metadata in lock-step with the actual video transition so viewers
+  // never see a mismatched title or stale "currently playing" badge.
+  _transitionTickHandle = setInterval(_tickTransitions, 500);
   _transitionTickHandle.unref();
 }
 
