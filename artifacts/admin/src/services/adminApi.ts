@@ -475,6 +475,27 @@ export interface ActiveUploadSession {
   lastActivity: string;
 }
 
+export interface S3TelemetrySummary {
+  windowHours: number;
+  since: string;
+  counts: Record<string, number>;
+  attempts: number;
+  successes: number;
+  failures: number;
+  successRatePct: number | null;
+  throughput: {
+    p50Bps: number | null;
+    p95Bps: number | null;
+    avgSizeBytes: number | null;
+    totalBytes: number | null;
+  };
+  topErrors: Array<{
+    errorKind: string | null;
+    errorMessage: string | null;
+    count: number;
+  }>;
+}
+
 export const uploadsApi = {
   listActive: (signal?: AbortSignal) =>
     adminGet<{ count: number; sessions: ActiveUploadSession[] }>(
@@ -483,6 +504,11 @@ export const uploadsApi = {
     ),
   cancel: (sessionId: string) =>
     adminDelete<{ ok: true }>(`/admin/videos/upload/${sessionId}`),
+  s3TelemetrySummary: (hours: number, signal?: AbortSignal) =>
+    adminGet<S3TelemetrySummary>(
+      `/admin/uploads/s3-telemetry/summary?hours=${encodeURIComponent(String(hours))}`,
+      signal,
+    ),
 };
 
 export interface TranscodingJobDetail extends TranscodingJob {

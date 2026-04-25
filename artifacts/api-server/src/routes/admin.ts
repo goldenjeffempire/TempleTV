@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, scheduledNotificationsTable, pushTokensTable, liveOverridesTable, transcodingJobsTable, broadcastQueueTable, usersTable, userWatchHistoryTable, prayerRequestsTable } from "@workspace/db";
+import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, scheduledNotificationsTable, pushTokensTable, liveOverridesTable, transcodingJobsTable, broadcastQueueTable, usersTable, userWatchHistoryTable, prayerRequestsTable, s3UploadTelemetryTable, S3_TELEMETRY_EVENTS, type S3TelemetryEvent } from "@workspace/db";
 import { eq, ilike, or, count, sql, desc, asc, and, lte, gte, inArray } from "drizzle-orm";
 import { queueTranscodingJob, retryTranscodingJob } from "../lib/transcoder";
 import { isFfmpegReady } from "../lib/ffmpeg";
@@ -1627,6 +1627,43 @@ function sanitiseMime(raw: unknown): string | undefined {
   return mime && SAFE_MIME_RE.test(mime) ? mime : undefined;
 }
 
+// ── Telemetry helper ──────────────────────────────────────────────────────────
+// Best-effort: never throw to the calling endpoint. A telemetry insert failure
+// must not break a real upload, so we swallow errors and log them instead.
+async function recordS3Telemetry(row: {
+  event: S3TelemetryEvent;
+  sessionId?: string | null;
+  videoId?: string | null;
+  sizeBytes?: number | null;
+  durationMs?: number | null;
+  errorKind?: string | null;
+  errorMessage?: string | null;
+  userAgent?: string | null;
+}): Promise<void> {
+  try {
+    const throughputBps =
+      row.sizeBytes && row.durationMs && row.durationMs > 0
+        ? Math.round((row.sizeBytes * 1000) / row.durationMs)
+        : null;
+    await db.insert(s3UploadTelemetryTable).values({
+      id: randomUUID(),
+      event: row.event,
+      sessionId: row.sessionId ?? null,
+      videoId: row.videoId ?? null,
+      sizeBytes: row.sizeBytes ?? null,
+      durationMs: row.durationMs ?? null,
+      throughputBps,
+      errorKind: row.errorKind ? row.errorKind.slice(0, 80) : null,
+      // Cap message length to keep the table small even under sustained
+      // failure storms.
+      errorMessage: row.errorMessage ? row.errorMessage.slice(0, 500) : null,
+      userAgent: row.userAgent ? row.userAgent.slice(0, 240) : null,
+    });
+  } catch (err) {
+    logger.warn({ err, event: row.event }, "recordS3Telemetry failed (swallowed)");
+  }
+}
+
 router.post("/admin/videos/upload/s3-init", async (req, res) => {
   try {
     if (!isS3Configured()) {
@@ -1673,6 +1710,13 @@ router.post("/admin/videos/upload/s3-init", async (req, res) => {
       contentType: safeMime,
     });
 
+    void recordS3Telemetry({
+      event: "init",
+      sessionId,
+      sizeBytes: totalBytes,
+      userAgent: req.headers["user-agent"] ?? null,
+    });
+
     res
       .setHeader("Cache-Control", "no-store")
       .json({
@@ -1711,6 +1755,7 @@ router.post("/admin/videos/upload/s3-finalize", async (req, res) => {
       mimeType,
       originalFilename,
       checksumSha256,
+      clientDurationMs,
     } = req.body as {
       sessionId?: string;
       objectKey?: string;
@@ -1723,24 +1768,61 @@ router.post("/admin/videos/upload/s3-finalize", async (req, res) => {
       mimeType?: string;
       originalFilename?: string;
       checksumSha256?: string;
+      clientDurationMs?: number | string;
     };
 
+    const measuredClientMs = (() => {
+      const n = typeof clientDurationMs === "number"
+        ? clientDurationMs
+        : parseInt(String(clientDurationMs ?? "0"), 10);
+      return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+    })();
+
     if (!title?.trim()) {
+      void recordS3Telemetry({
+        event: "server_fail",
+        sessionId,
+        errorKind: "validation",
+        errorMessage: "Title is required",
+        userAgent: req.headers["user-agent"] ?? null,
+      });
       return void res.status(400).json({ error: "Title is required" });
     }
     if (!objectKey || !SAFE_OBJECT_KEY_RE.test(objectKey)) {
+      void recordS3Telemetry({
+        event: "server_fail",
+        sessionId,
+        errorKind: "validation",
+        errorMessage: "Invalid or missing objectKey",
+        userAgent: req.headers["user-agent"] ?? null,
+      });
       return void res.status(400).json({ error: "Invalid or missing objectKey" });
     }
 
     // Verify the object actually landed in S3 before we commit a DB row.
     const head = await s3HeadObject(objectKey);
     if (!head) {
+      void recordS3Telemetry({
+        event: "server_fail",
+        sessionId,
+        errorKind: "head_missing",
+        errorMessage: "Uploaded object not found in S3",
+        durationMs: measuredClientMs,
+        userAgent: req.headers["user-agent"] ?? null,
+      });
       return void res.status(404).json({
         error: "Uploaded object not found in S3 — the PUT may have failed or expired",
       });
     }
     const actualSize = typeof head.contentLength === "number" ? head.contentLength : 0;
     if (actualSize <= 0) {
+      void recordS3Telemetry({
+        event: "server_fail",
+        sessionId,
+        errorKind: "empty_object",
+        errorMessage: "Uploaded object is empty",
+        userAgent: req.headers["user-agent"] ?? null,
+      });
       return void res.status(400).json({ error: "Uploaded object is empty" });
     }
 
@@ -1845,11 +1927,184 @@ router.post("/admin/videos/upload/s3-finalize", async (req, res) => {
       logger.error({ err, videoId: id }, "queueTranscodingJob failed after s3-finalize");
     });
 
+    void recordS3Telemetry({
+      event: "success",
+      sessionId,
+      videoId: id,
+      sizeBytes: actualSize,
+      durationMs: measuredClientMs,
+      userAgent: req.headers["user-agent"] ?? null,
+    });
+
     res.status(201).json({ ...video, broadcastQueued });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     logger.error({ err }, "s3-finalize failed");
+    void recordS3Telemetry({
+      event: "server_fail",
+      sessionId: (req.body as { sessionId?: string } | undefined)?.sessionId ?? null,
+      errorKind: err instanceof Error ? err.name : "Error",
+      errorMessage: msg,
+      userAgent: req.headers["user-agent"] ?? null,
+    });
     res.status(500).json({ error: msg });
+  }
+});
+
+// ── Client-reported telemetry (stalls, network errors, aborts) ──────────────
+// The browser POSTs here when something goes wrong client-side so we can see
+// it on the dashboard. Best-effort: we accept and log even on partial data.
+router.post("/admin/videos/upload/s3-telemetry", async (req, res) => {
+  try {
+    const {
+      sessionId,
+      event,
+      sizeBytes,
+      durationMs,
+      errorKind,
+      errorMessage,
+    } = req.body as {
+      sessionId?: string;
+      event?: string;
+      sizeBytes?: number | string;
+      durationMs?: number | string;
+      errorKind?: string;
+      errorMessage?: string;
+    };
+
+    const allowedClientEvents = new Set<S3TelemetryEvent>([
+      "client_error",
+      "client_stall",
+      "client_abort",
+    ]);
+    if (!event || !allowedClientEvents.has(event as S3TelemetryEvent)) {
+      return void res.status(400).json({
+        error: `event must be one of: ${[...allowedClientEvents].join(", ")}`,
+      });
+    }
+
+    const safeSize = (() => {
+      const n = typeof sizeBytes === "number" ? sizeBytes : parseInt(String(sizeBytes ?? "0"), 10);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    })();
+    const safeDuration = (() => {
+      const n = typeof durationMs === "number" ? durationMs : parseInt(String(durationMs ?? "0"), 10);
+      return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+    })();
+
+    await recordS3Telemetry({
+      event: event as S3TelemetryEvent,
+      sessionId: sessionId ?? null,
+      sizeBytes: safeSize,
+      durationMs: safeDuration,
+      errorKind: errorKind ?? null,
+      errorMessage: errorMessage ?? null,
+      userAgent: req.headers["user-agent"] ?? null,
+    });
+
+    res.status(204).end();
+  } catch (err) {
+    logger.error({ err }, "s3-telemetry endpoint failed");
+    res.status(500).json({ error: "telemetry_failed" });
+  }
+});
+
+// Aggregations for the Operations page. Window in hours (default 24, max 168).
+router.get("/admin/uploads/s3-telemetry/summary", async (req, res) => {
+  try {
+    const hoursRaw = parseInt(String(req.query.hours ?? "24"), 10);
+    const hours = Math.min(Math.max(Number.isFinite(hoursRaw) ? hoursRaw : 24, 1), 168);
+    const since = new Date(Date.now() - hours * 3600 * 1000);
+
+    // Single round-trip aggregation by event type.
+    const counts = await db
+      .select({
+        event: s3UploadTelemetryTable.event,
+        count: count(),
+      })
+      .from(s3UploadTelemetryTable)
+      .where(gte(s3UploadTelemetryTable.createdAt, since))
+      .groupBy(s3UploadTelemetryTable.event);
+
+    const byEvent: Record<string, number> = {};
+    for (const e of S3_TELEMETRY_EVENTS) byEvent[e] = 0;
+    for (const c of counts) byEvent[c.event] = Number(c.count);
+
+    const initCount = byEvent.init ?? 0;
+    const successCount = byEvent.success ?? 0;
+    const failCount =
+      (byEvent.server_fail ?? 0) + (byEvent.client_error ?? 0) + (byEvent.client_stall ?? 0);
+    const totalAttempts = initCount;
+    const successRatePct =
+      totalAttempts > 0 ? Math.round((successCount / totalAttempts) * 1000) / 10 : null;
+
+    // Throughput percentiles using PostgreSQL's percentile_cont over the
+    // success rows (where throughputBps was computed at insert time).
+    const throughputRows = await db.execute(sql`
+      SELECT
+        percentile_cont(0.5)  WITHIN GROUP (ORDER BY throughput_bps) AS p50,
+        percentile_cont(0.95) WITHIN GROUP (ORDER BY throughput_bps) AS p95,
+        AVG(size_bytes)::bigint AS avg_size_bytes,
+        SUM(size_bytes)::bigint AS total_bytes
+      FROM s3_upload_telemetry
+      WHERE event = 'success'
+        AND created_at >= ${since}
+        AND throughput_bps IS NOT NULL
+    `);
+    const tp = (throughputRows.rows[0] ?? {}) as {
+      p50: string | number | null;
+      p95: string | number | null;
+      avg_size_bytes: string | number | null;
+      total_bytes: string | number | null;
+    };
+
+    // Top error messages — group by errorMessage, top 5 by count.
+    const topErrors = await db
+      .select({
+        errorKind: s3UploadTelemetryTable.errorKind,
+        errorMessage: s3UploadTelemetryTable.errorMessage,
+        count: count(),
+      })
+      .from(s3UploadTelemetryTable)
+      .where(
+        and(
+          gte(s3UploadTelemetryTable.createdAt, since),
+          inArray(s3UploadTelemetryTable.event, [
+            "server_fail",
+            "client_error",
+            "client_stall",
+          ]),
+        ),
+      )
+      .groupBy(s3UploadTelemetryTable.errorKind, s3UploadTelemetryTable.errorMessage)
+      .orderBy(desc(count()))
+      .limit(5);
+
+    res
+      .setHeader("Cache-Control", "private, max-age=15")
+      .json({
+        windowHours: hours,
+        since: since.toISOString(),
+        counts: byEvent,
+        attempts: totalAttempts,
+        successes: successCount,
+        failures: failCount,
+        successRatePct,
+        throughput: {
+          p50Bps: tp.p50 != null ? Number(tp.p50) : null,
+          p95Bps: tp.p95 != null ? Number(tp.p95) : null,
+          avgSizeBytes: tp.avg_size_bytes != null ? Number(tp.avg_size_bytes) : null,
+          totalBytes: tp.total_bytes != null ? Number(tp.total_bytes) : null,
+        },
+        topErrors: topErrors.map((e) => ({
+          errorKind: e.errorKind,
+          errorMessage: e.errorMessage,
+          count: Number(e.count),
+        })),
+      });
+  } catch (err) {
+    logger.error({ err }, "s3-telemetry summary failed");
+    res.status(500).json({ error: "summary_failed" });
   }
 });
 

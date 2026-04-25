@@ -150,6 +150,40 @@ API server, freeing server CPU/bandwidth from the upload critical path.
 - **Limits:** S3 single-PUT cap is 5 GB; client cap is 4.5 GB to leave HTTP
   overhead headroom. Object key regex is locked to `^videos/[A-Za-z0-9._-]+$`.
 
+### Telemetry (April 2026)
+
+A dedicated `s3_upload_telemetry` table (`lib/db/src/schema/s3-upload-telemetry.ts`)
+records every direct-S3 upload attempt so operators can verify the feature is
+healthy before flipping it on for everyone.
+
+- **Events tracked:** `init`, `success`, `server_fail`, `client_error`,
+  `client_stall`, `client_abort`. Each row stores sessionId, sizeBytes,
+  durationMs, derived throughputBps, errorKind, errorMessage, userAgent.
+- **Server instrumentation (`artifacts/api-server/src/routes/admin.ts`):**
+  - `s3-init` writes one `init` row per presigned URL minted.
+  - `s3-finalize` writes a `success` row (using the client-reported
+    `clientDurationMs` to compute throughput) or a `server_fail` row on
+    every error path (validation, missing HEAD, empty object, exception).
+  - New `POST /api/admin/videos/upload/s3-telemetry` accepts client-side
+    `client_error` / `client_stall` / `client_abort` reports.
+  - New `GET /api/admin/uploads/s3-telemetry/summary?hours=N` returns
+    aggregations: counts by event, attempts/success/failures, success-rate
+    %, p50/p95 throughput (via PostgreSQL `percentile_cont`), avg + total
+    bytes, and the top 5 errors by count.
+- **Client (`artifacts/admin/src/components/VideoUploadModal.tsx`):**
+  the S3 path measures wall-clock PUT duration, posts it to `s3-finalize`
+  as `clientDurationMs`, and fires best-effort telemetry on stall / abort
+  / network error.
+- **Surfacing (`artifacts/admin/src/pages/operations.tsx`):** new
+  `S3DirectUploadTelemetryCard` card on the Operations page with 1h / 24h /
+  7d window toggles, a metric strip (attempts, success-rate, p50/p95
+  throughput, total bytes), a top-5 errors list, and per-event raw counts.
+  Polls every 15s.
+- **Telemetry helper invariants:** `recordS3Telemetry()` swallows all
+  failures and only logs at `warn` — a telemetry insert failure must
+  never break a real upload. Error messages are capped at 500 chars and
+  user agents at 240 chars to keep table size bounded under failure storms.
+
 ## Admin Panel Defensive Hardening (April 2026)
 
 After repeated user reports of admin pages crashing with `Unexpected token '<'` JSON-parse errors and `X.map is not a function` runtime errors, all 11 admin pages were hardened across three rounds:

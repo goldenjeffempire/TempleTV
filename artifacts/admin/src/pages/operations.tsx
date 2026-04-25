@@ -23,7 +23,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Link } from "wouter";
-import { opsApi, uploadsApi, AdminApiError, type ActiveUploadSession, type OpsStatus } from "@/services/adminApi";
+import {
+  opsApi,
+  uploadsApi,
+  AdminApiError,
+  type ActiveUploadSession,
+  type OpsStatus,
+  type S3TelemetrySummary,
+} from "@/services/adminApi";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
 import { MetricCard } from "@/components/shared/metric-card";
@@ -263,6 +270,196 @@ function ActiveUploadsCard() {
               );
             })}
           </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function formatBitrate(bps: number | null): string {
+  if (!bps || bps <= 0) return "—";
+  const mbps = (bps * 8) / 1_000_000;
+  if (mbps >= 100) return `${mbps.toFixed(0)} Mbps`;
+  if (mbps >= 10) return `${mbps.toFixed(1)} Mbps`;
+  if (mbps >= 1) return `${mbps.toFixed(2)} Mbps`;
+  return `${(mbps * 1000).toFixed(0)} Kbps`;
+}
+
+function S3DirectUploadTelemetryCard() {
+  const [windowHours, setWindowHours] = useState<number>(24);
+  const [data, setData] = useState<S3TelemetrySummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(
+    async (signal?: AbortSignal) => {
+      try {
+        const res = await uploadsApi.s3TelemetrySummary(windowHours, signal);
+        setData(res ?? null);
+        setError(null);
+      } catch (err: unknown) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        setError(err instanceof Error ? err.message : "Failed to load telemetry");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [windowHours],
+  );
+
+  useEffect(() => {
+    setLoading(true);
+    const ctl = new AbortController();
+    load(ctl.signal);
+    const poll = window.setInterval(() => load(), 15_000);
+    return () => {
+      ctl.abort();
+      window.clearInterval(poll);
+    };
+  }, [load]);
+
+  const successColor =
+    data?.successRatePct == null
+      ? "text-muted-foreground"
+      : data.successRatePct >= 95
+        ? "text-emerald-600"
+        : data.successRatePct >= 80
+          ? "text-amber-600"
+          : "text-red-600";
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <Upload className="w-4 h-4 text-primary" />
+            Direct S3 Upload Telemetry
+          </CardTitle>
+          <div className="flex gap-1">
+            {[1, 24, 168].map((h) => (
+              <Button
+                key={h}
+                size="sm"
+                variant={windowHours === h ? "default" : "outline"}
+                className="h-7 px-2 text-xs"
+                onClick={() => setWindowHours(h)}
+                data-testid={`button-s3-tel-${h}h`}
+              >
+                {h === 1 ? "1h" : h === 24 ? "24h" : "7d"}
+              </Button>
+            ))}
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2"
+              onClick={() => load()}
+              disabled={loading}
+              data-testid="button-s3-tel-refresh"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {error && <ErrorAlert message={error} />}
+        {loading && !data ? (
+          <div className="space-y-2">
+            <Skeleton className="h-16" />
+            <Skeleton className="h-16" />
+          </div>
+        ) : !data || data.attempts === 0 ? (
+          <div className="text-sm text-muted-foreground py-4 text-center">
+            No direct-S3 uploads in the last{" "}
+            {windowHours === 1 ? "hour" : windowHours === 24 ? "24 hours" : "7 days"}.
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <div className="text-[11px] text-muted-foreground uppercase tracking-wide">
+                  Attempts
+                </div>
+                <div className="text-2xl font-semibold">{data.attempts}</div>
+                <div className="text-[11px] text-muted-foreground">
+                  {data.successes} ok · {data.failures} failed
+                </div>
+              </div>
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <div className="text-[11px] text-muted-foreground uppercase tracking-wide">
+                  Success rate
+                </div>
+                <div className={`text-2xl font-semibold ${successColor}`}>
+                  {data.successRatePct == null ? "—" : `${data.successRatePct.toFixed(1)}%`}
+                </div>
+                <div className="text-[11px] text-muted-foreground">
+                  finalize / init ratio
+                </div>
+              </div>
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <div className="text-[11px] text-muted-foreground uppercase tracking-wide">
+                  Throughput p50
+                </div>
+                <div className="text-2xl font-semibold">
+                  {formatBitrate(data.throughput.p50Bps)}
+                </div>
+                <div className="text-[11px] text-muted-foreground">
+                  p95 {formatBitrate(data.throughput.p95Bps)}
+                </div>
+              </div>
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <div className="text-[11px] text-muted-foreground uppercase tracking-wide">
+                  Bytes uploaded
+                </div>
+                <div className="text-2xl font-semibold">
+                  {formatBytes(data.throughput.totalBytes ?? 0)}
+                </div>
+                <div className="text-[11px] text-muted-foreground">
+                  avg {formatBytes(data.throughput.avgSizeBytes ?? 0)} / file
+                </div>
+              </div>
+            </div>
+
+            {data.topErrors.length > 0 && (
+              <div>
+                <div className="text-xs font-medium text-muted-foreground mb-2">
+                  Top errors
+                </div>
+                <div className="space-y-1.5">
+                  {data.topErrors.map((e, i) => (
+                    <div
+                      key={i}
+                      className="flex items-start justify-between gap-3 rounded border bg-card p-2 text-xs"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="font-mono text-[11px] text-amber-700 dark:text-amber-400">
+                          {e.errorKind ?? "unknown"}
+                        </div>
+                        <div className="text-muted-foreground truncate" title={e.errorMessage ?? ""}>
+                          {e.errorMessage ?? "—"}
+                        </div>
+                      </div>
+                      <Badge variant="secondary" className="shrink-0">
+                        {e.count}
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+              {Object.entries(data.counts).map(([ev, n]) => (
+                <span
+                  key={ev}
+                  className="rounded bg-muted/50 px-1.5 py-0.5 font-mono"
+                  data-testid={`s3-tel-count-${ev}`}
+                >
+                  {ev}: {n}
+                </span>
+              ))}
+            </div>
+          </div>
         )}
       </CardContent>
     </Card>
@@ -545,6 +742,8 @@ export default function Operations() {
             <ActivityFeedCard />
             <ActiveUploadsCard />
           </div>
+
+          <S3DirectUploadTelemetryCard />
 
           {pipeline && (
             <Card>

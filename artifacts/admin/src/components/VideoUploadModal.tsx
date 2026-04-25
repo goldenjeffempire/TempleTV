@@ -306,6 +306,25 @@ export function VideoUploadModal({
       const { taskId, uploadFile, title, durationSecs, ext } = args;
       const task = tasksRef.current.get(taskId)!;
 
+      // Best-effort telemetry — fire-and-forget, never throws.
+      const reportTelemetry = (
+        event: "client_error" | "client_stall" | "client_abort",
+        details: { sessionId?: string | null; errorKind?: string; errorMessage?: string; durationMs?: number },
+      ) => {
+        void uploadAdminFetch("/api/admin/videos/upload/s3-telemetry", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            event,
+            sessionId: details.sessionId ?? null,
+            sizeBytes: uploadFile.size,
+            durationMs: details.durationMs,
+            errorKind: details.errorKind,
+            errorMessage: details.errorMessage,
+          }),
+        }).catch(() => { /* swallow — telemetry is best-effort */ });
+      };
+
       updateTask(taskId, { state: "initializing", error: null });
 
       // 1. Mint a presigned PUT URL.
@@ -342,6 +361,7 @@ export function VideoUploadModal({
       const stallTimeoutMs =
         tasksRef.current.get(taskId)?.stallTimeoutMs ?? 60_000;
 
+      const putStartedAt = Date.now();
       try {
         await uploadFileToS3(
           initJson.uploadUrl,
@@ -368,12 +388,26 @@ export function VideoUploadModal({
           stallTimeoutMs,
         );
       } catch (err) {
-        if ((err as Error).name === "AbortError") {
+        const elapsed = Date.now() - putStartedAt;
+        const e = err as Error;
+        if (e?.name === "AbortError") {
+          reportTelemetry("client_abort", {
+            sessionId: initJson.sessionId,
+            errorKind: "AbortError",
+            durationMs: elapsed,
+          });
           updateTask(taskId, { state: "paused" });
           return;
         }
+        reportTelemetry(e?.name === "StallError" ? "client_stall" : "client_error", {
+          sessionId: initJson.sessionId,
+          errorKind: e?.name ?? "Error",
+          errorMessage: e?.message ?? String(err),
+          durationMs: elapsed,
+        });
         throw err;
       }
+      const putElapsedMs = Date.now() - putStartedAt;
 
       // 3. Finalize → server HEADs the object, inserts the videos row, and
       //    queues the transcoding job.
@@ -395,6 +429,9 @@ export function VideoUploadModal({
             sizeBytes: uploadFile.size,
             mimeType: uploadFile.type || undefined,
             originalFilename: uploadFile.name,
+            // Wall-clock duration of the PUT itself, used to compute
+            // throughput in the server-side telemetry summary.
+            clientDurationMs: putElapsedMs,
           }),
         },
       );
