@@ -20,7 +20,8 @@ import { Feather } from "@expo/vector-icons";
 import * as WebBrowser from "expo-web-browser";
 import * as Haptics from "expo-haptics";
 import { LinearGradient } from "expo-linear-gradient";
-import { useColors } from "@/hooks/useColors";
+import { useColors as useAutoColors } from "@/hooks/useColors";
+import colors from "@/constants/colors";
 import { useFavorites } from "@/hooks/useFavorites";
 import { useWatchHistory } from "@/hooks/useWatchHistory";
 import { useWatchProgress } from "@/hooks/useWatchProgress";
@@ -41,6 +42,35 @@ import { LiveReactions } from "@/components/LiveReactions";
 import { PrayerRequestModal } from "@/components/PrayerRequestModal";
 import type { Sermon } from "@/types";
 import { usePageSeo } from "@/hooks/usePageSeo";
+
+/**
+ * Player page locks to the LIGHT palette regardless of the time-of-day
+ * "midnight" theme that `useAutoColors` would otherwise apply. The video
+ * player itself stays on a black backdrop (so letterboxed videos look right),
+ * but the surrounding chrome — channel row, action buttons, sermon details,
+ * related sermons — uses an off-white background with high-contrast dark
+ * typography. This dramatically improves readability for daytime viewing on
+ * phones, tablets, and TVs alike.
+ *
+ * The return shape matches `useAutoColors()` so the rest of the file (which
+ * already destructures `c.foreground`, `c.primary`, etc.) is a drop-in
+ * switch with no per-call changes.
+ */
+function useColors(): ReturnType<typeof useAutoColors> {
+  const auto = useAutoColors();
+  return {
+    ...colors.light,
+    radius: colors.radius,
+    themeMode: "light",
+    isMidnightTheme: false,
+    timeZone: auto.timeZone,
+  };
+}
+
+/** Off-white background used by the player chrome and inset spacers. */
+const LIGHT_PAGE_BG = colors.light.background;
+/** Soft divider tint that reads on the off-white background. */
+const LIGHT_DIVIDER = "rgba(10, 0, 20, 0.08)";
 
 function formatTime(seconds: number): string {
   if (!seconds || isNaN(seconds)) return "0:00";
@@ -816,11 +846,11 @@ export default function PlayerScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
-      {Platform.OS !== "web" && <StatusBar barStyle="light-content" backgroundColor="#0d1117" />}
+      {Platform.OS !== "web" && <StatusBar barStyle="dark-content" backgroundColor={LIGHT_PAGE_BG} />}
 
-      {/* Soft-dark safe-area spacer — keeps video below notch / Dynamic Island */}
+      {/* Light safe-area spacer — keeps video below notch / Dynamic Island */}
       {Platform.OS !== "web" && insets.top > 0 && (
-        <View style={{ height: insets.top, backgroundColor: "#0d1117" }} />
+        <View style={{ height: insets.top, backgroundColor: LIGHT_PAGE_BG }} />
       )}
 
       <View
@@ -991,7 +1021,7 @@ export default function PlayerScreen() {
               hitSlop={8}
             >
               <Text style={{ fontSize: 18, lineHeight: 22 }}>🙏</Text>
-              <Text style={[styles.broadcastActionLabel, { color: "#c084fc" }]}>Prayer</Text>
+              <Text style={[styles.broadcastActionLabel, { color: c.primary }]}>Prayer</Text>
             </Pressable>
           </View>
 
@@ -1206,9 +1236,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 20,
     gap: 16,
-    backgroundColor: "#0d1117",
+    backgroundColor: LIGHT_PAGE_BG,
     borderTopWidth: 1,
-    borderTopColor: "rgba(255,255,255,0.05)",
+    borderTopColor: LIGHT_DIVIDER,
+    // Subtle elevation lifts the footer off the black video frame above so
+    // the boundary reads as deliberate (and not a rendering glitch) on light
+    // displays. Web-only — native platforms get this for free from the
+    // status-bar / nav-bar contrast.
+    ...Platform.select({
+      web: { boxShadow: "0 -1px 0 rgba(10, 0, 20, 0.04), 0 8px 24px rgba(10, 0, 20, 0.04)" },
+      default: {},
+    }),
   },
   broadcastChannelRow: {
     flexDirection: "row",

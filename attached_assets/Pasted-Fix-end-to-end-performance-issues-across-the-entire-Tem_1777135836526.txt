@@ -1,0 +1,86 @@
+Fix end-to-end performance issues across the entire TempleTV platform by eliminating all sources of slow loading, stream lag, and playback desynchronization, and enforce strict real-time broadcast synchronization so that all users across every distribution platform experience identical, perfectly aligned ON AIR playback.
+
+⚡ Platform-Wide Performance Optimization
+Identify and remove all bottlenecks causing slow loading across:
+Homepage
+Hero cinematic section
+Broadcast player page
+Video library
+Admin broadcast queue
+TV device playback interfaces
+Optimize:
+API response times (reduce unnecessary payloads and over-fetching)
+Database query efficiency (indexing, caching strategy improvements)
+CDN delivery performance (edge caching for video segments)
+HLS manifest and segment delivery speed
+Initial stream startup time and buffering behavior
+Implement aggressive but safe caching layers for static assets while ensuring real-time broadcast data remains uncached or instantly invalidated.
+🎬 Broadcast Synchronization Enforcement (Critical)
+
+Ensure all broadcasting videos are perfectly synchronized across all devices and platforms.
+
+Core Rules:
+All users must watch the same broadcast timeline at the same time
+No device is allowed to:
+Run ahead of the live stream
+Lag behind the live stream
+Replay or skip independently
+🔄 Unified Broadcast Clock System
+Introduce a single authoritative broadcast timing source that governs:
+Video playback position
+Queue progression
+Stream synchronization state
+All clients must sync to this master broadcast clock on:
+Page load
+Reconnect
+Periodic drift correction
+📺 Playback Consistency Requirements
+Ensure:
+No video plays faster or slower than others
+No device desynchronization occurs under load
+No frame drift between platforms
+Enforce synchronized playback across:
+Web platform
+Mobile applications
+Smart TV apps
+Hero cinematic section
+TV Player page
+🚫 Remove Playback Drift Causes
+
+Eliminate issues that cause mismatch between devices:
+
+Inconsistent buffering strategies
+Independent local playback timers
+Unsynchronized queue advancement logic
+Device-specific stream offset handling
+⚙️ Stream Delivery Optimization
+Preload HLS segments intelligently across CDN edges
+Reduce segment fetch latency
+Ensure smooth adaptive bitrate switching without playback jumps
+Optimize stream startup so all devices begin playback from the same synchronized point
+🌍 Cross-Platform Consistency Guarantee
+
+Ensure identical behavior across all distribution platforms:
+
+Web
+Mobile (Android/iOS)
+Smart TVs
+Embedded players
+Admin monitoring dashboards
+
+All platforms must:
+
+Load at the same speed
+Play the same content
+Stay perfectly synchronized in real time
+🎯 Expected Final Outcome
+
+Deliver a fully optimized, enterprise-grade broadcast system where:
+
+All slow loading issues are eliminated across the platform
+Broadcast playback starts faster and runs smoothly
+All devices are perfectly synchronized to the same live ON AIR stream
+No video is ahead or behind another under any condition
+The entire platform behaves like a real-world television broadcast network with precise, unified timing
+
+“Temple TV Anywhere You Go”
