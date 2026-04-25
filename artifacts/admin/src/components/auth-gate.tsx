@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertCircle, Loader2, ShieldCheck } from "lucide-react";
 import { TempleTvLogo } from "@/components/temple-tv-logo";
 import { AdminKeyDialog } from "@/components/admin-key-dialog";
@@ -10,7 +10,7 @@ type GateState =
   | { kind: "ok" }
   | { kind: "needs-token" }
   | { kind: "server-misconfigured"; message: string }
-  | { kind: "server-down"; message: string };
+  | { kind: "server-down"; message: string; retryAttempt?: number };
 
 async function probeAdminAccess(): Promise<GateState> {
   // Round 4l: route through adminGet rather than raw fetch. adminGet:
@@ -35,24 +35,57 @@ async function probeAdminAccess(): Promise<GateState> {
         };
       }
       if (err.status === 0) {
-        return { kind: "server-down", message: "Could not reach the API server." };
+        // Surface adminGet's detailed network-failure message (it already
+        // includes the URL it tried and the underlying fetch error). That's
+        // far more actionable than the generic "Could not reach" text and
+        // immediately tells the operator whether it's a CORS/DNS/down issue.
+        return { kind: "server-down", message: err.message };
       }
       return {
         kind: "server-down",
-        message: `Unexpected response from API (HTTP ${err.status}).`,
+        message: `Unexpected response from API (HTTP ${err.status}): ${err.message}`,
       };
     }
-    return { kind: "server-down", message: "Could not reach the API server." };
+    return {
+      kind: "server-down",
+      message:
+        err instanceof Error && err.message
+          ? `Could not reach the API server: ${err.message}`
+          : "Could not reach the API server.",
+    };
   }
 }
+
+// Auto-retry schedule when the API is unreachable. Caps at 15s so a long
+// outage doesn't hammer the API once it comes back, but the first few retries
+// happen quickly (3s, 5s, 8s) to ride through the typical Render restart
+// window without operator intervention.
+const SERVER_DOWN_RETRY_MS = [3_000, 5_000, 8_000, 15_000] as const;
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<GateState>({ kind: "checking" });
   const [dialogOpen, setDialogOpen] = useState(false);
+  // Tracks consecutive server-down probes so the auto-retry backoff can
+  // stretch out instead of restarting from 3s on every failure.
+  const retryAttemptRef = useRef(0);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const recheck = useCallback(() => {
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
     setState({ kind: "checking" });
-    void probeAdminAccess().then(setState);
+    void probeAdminAccess().then((next) => {
+      if (next.kind === "server-down") {
+        const attempt = retryAttemptRef.current + 1;
+        retryAttemptRef.current = attempt;
+        setState({ ...next, retryAttempt: attempt });
+      } else {
+        retryAttemptRef.current = 0;
+        setState(next);
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -65,6 +98,31 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       window.removeEventListener("storage", onChange);
     };
   }, [recheck]);
+
+  // Auto-retry while the server is unreachable, with a backoff schedule that
+  // covers the typical 6s Render restart window on the first try and stretches
+  // to 15s for sustained outages. Only runs in `server-down` state — never for
+  // misconfiguration (which won't fix itself without an env var change) or
+  // needs-token (which is gated on user input). The manual "Try again" button
+  // remains available and bypasses the timer.
+  useEffect(() => {
+    if (state.kind !== "server-down") return;
+    const idx = Math.min(
+      (state.retryAttempt ?? 1) - 1,
+      SERVER_DOWN_RETRY_MS.length - 1,
+    );
+    const delay = SERVER_DOWN_RETRY_MS[idx];
+    retryTimerRef.current = setTimeout(() => {
+      retryTimerRef.current = null;
+      recheck();
+    }, delay);
+    return () => {
+      if (retryTimerRef.current) {
+        clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+    };
+  }, [state, recheck]);
 
   useEffect(() => {
     if (state.kind === "needs-token") setDialogOpen(true);
@@ -122,11 +180,23 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
                 <p className="font-medium text-destructive">
                   {state.kind === "server-misconfigured" ? "API not configured" : "API unreachable"}
                 </p>
-                <p className="text-muted-foreground">{state.message}</p>
+                <p className="text-muted-foreground break-words">{state.message}</p>
               </div>
             </div>
+            {state.kind === "server-down" && (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                <span>
+                  Retrying automatically
+                  {state.retryAttempt && state.retryAttempt > 1
+                    ? ` (attempt ${state.retryAttempt})`
+                    : ""}
+                  …
+                </span>
+              </div>
+            )}
             <Button className="w-full" variant="outline" onClick={recheck}>
-              Try again
+              Try again now
             </Button>
           </>
         )}
