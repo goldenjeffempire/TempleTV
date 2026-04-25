@@ -559,8 +559,13 @@ export default function PlayerScreen() {
     lastTuneTimeRef.current = now;
 
     const item = bc.item;
-    const networkDriftSecs = bc.serverTimeMs ? Math.max(0, Math.round((now - bc.serverTimeMs) / 1000)) : 0;
-    const startMs = (bc.positionSecs + networkDriftSecs) * 1000;
+    // Compensate for the time spent in transit (network latency + queueing
+    // between when the server snapped `serverTimeMs` and now). Operate in
+    // milliseconds throughout so we don't lose up to a full second to integer
+    // rounding the way the previous formula did. Clamp to 0 so a client whose
+    // wall clock is *behind* the server's never gets handed a negative drift.
+    const transitMs = bc.serverTimeMs ? Math.max(0, now - bc.serverTimeMs) : 0;
+    const startMs = bc.positionSecs * 1000 + transitMs;
 
     // The next-item URLs flow into the LocalVideoPlayer for inactive-slot
     // preload. We always update them, even if the active item didn't
@@ -697,6 +702,71 @@ export default function PlayerScreen() {
     return () => clearTimeout(timer);
   }, [isBroadcastMode, broadcastInfo?.currentItemEndsAtMs, tuneToBroadcastItem]);
 
+  // ── Continuous broadcast-clock drift correction ────────────────────────
+  // The 15s safety poll above only resyncs when the *active item* changes —
+  // it doesn't notice if the local <video> has fallen behind the server clock
+  // mid-program (which happens whenever a viewer hits a buffer underrun, a
+  // spotty connection, or a backgrounded tab on the web). This effect closes
+  // that gap: every 30 seconds it asks the server where the broadcast clock
+  // genuinely is, compares against the local playhead, and only snaps when
+  // the gap exceeds the audible/visible threshold. The snap is intentionally
+  // hard (instant `seekTo`, not a rate-nudge) so all viewers converge to the
+  // same wall-clock position fast — that's the whole point of "no device is
+  // allowed to run ahead of or lag behind the live stream."
+  //
+  // We bypass `handleSeek` (which we no-op in broadcast mode for the user's
+  // gesture) and call `seekTo` directly because this is a system correction,
+  // not a user action.
+  const HARD_SNAP_DRIFT_MS = 3_000;
+  const DRIFT_TICK_MS = 30_000;
+  useEffect(() => {
+    if (!isBroadcastMode) return;
+    let cancelled = false;
+
+    const correctDrift = async () => {
+      try {
+        const bc = await checkBroadcastCurrent();
+        if (cancelled || !isMountedRef.current || !bc?.item) return;
+
+        // The active item must match — if a transition raced us, let
+        // tuneToBroadcastItem (called via the SSE handler / 15s poll) deal
+        // with it instead of fighting over the playhead.
+        const bcIsLocal = bc.item.videoSource === "local" && !!bc.item.localVideoUrl;
+        const currentId = tunedLocalVideoUrl ? tunedLocalVideoUrl : tunedVideoId;
+        const bcId = bcIsLocal ? bc.item.localVideoUrl : bc.item.youtubeId;
+        if (currentId !== bcId) return;
+
+        // Where the server says we should be RIGHT NOW (account for the few
+        // ms spent in transit). Same compensation formula as the initial
+        // tune-in so the two stay consistent.
+        const transitMs = bc.serverTimeMs ? Math.max(0, Date.now() - bc.serverTimeMs) : 0;
+        const serverTargetSecs = bc.positionSecs + transitMs / 1000;
+
+        // currentTime can be 0 briefly after a tune — don't fight a player
+        // that hasn't reported a real position yet.
+        if (currentTime <= 0) return;
+
+        const driftMs = Math.abs(serverTargetSecs - currentTime) * 1000;
+        if (driftMs >= HARD_SNAP_DRIFT_MS) {
+          // Don't run past the end of the item; the transition timer will
+          // handle item rollover cleanly a moment later.
+          const cap = Math.max(0, (bc.item.durationSecs || serverTargetSecs) - 0.5);
+          seekTo(Math.min(serverTargetSecs, cap));
+        }
+      } catch {}
+    };
+
+    // Stagger the first tick so it doesn't collide with the initial
+    // tuneToBroadcastItem still settling the player.
+    const initial = setTimeout(correctDrift, 10_000);
+    const interval = setInterval(correctDrift, DRIFT_TICK_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(initial);
+      clearInterval(interval);
+    };
+  }, [isBroadcastMode, tunedVideoId, tunedLocalVideoUrl, currentTime, seekTo]);
+
   const recoverBroadcastPlayback = useCallback(async () => {
     if (!isBroadcastMode || broadcastRecovering) return;
     setBroadcastRecovering(true);
@@ -744,7 +814,19 @@ export default function PlayerScreen() {
     togglePlay();
   }, [togglePlay]);
 
-  const handleSeek = useCallback((t: number) => { seekTo(t); }, [seekTo]);
+  // Manual seeking is forbidden while the user is watching the live broadcast
+  // queue. Every viewer must stay on the same wall-clock-aligned timeline; if
+  // someone scrubs forward they'd be ahead of the rest of the audience, and
+  // the next drift-correction tick would yank them right back, producing a
+  // jarring jump. Silently no-op the seek instead — the SeekBar gesture is
+  // also disabled visually below.
+  const handleSeek = useCallback(
+    (t: number) => {
+      if (isBroadcastMode || isLive) return;
+      seekTo(t);
+    },
+    [isBroadcastMode, isLive, seekTo],
+  );
   const handleVolume = useCallback((v: number) => { setVolume(v); }, [setVolume]);
 
   const navigateToRelated = useCallback((sermon: Sermon) => {

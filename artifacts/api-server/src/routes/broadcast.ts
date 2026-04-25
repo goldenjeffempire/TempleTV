@@ -748,7 +748,16 @@ router.get("/broadcast/guide", async (_req, res) => {
 
 router.get("/broadcast/current", async (_req, res) => {
   try {
-    res.json(await buildBroadcastCurrentPayload());
+    // Live broadcast state — must NEVER be cached by the browser, the Render
+    // edge, or any intermediary proxy. Stale state here is what produces the
+    // "I'm 30s behind everyone else" desync that this endpoint exists to
+    // prevent. The payload itself stays small (~1 KB), so re-fetching every
+    // request costs nothing measurable.
+    res
+      .setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+      .setHeader("Pragma", "no-cache")
+      .setHeader("Expires", "0")
+      .json(await buildBroadcastCurrentPayload());
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });
