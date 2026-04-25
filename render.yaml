@@ -20,6 +20,11 @@ services:
         value: production
       - key: PORT
         value: 8080
+      # Process role: "api" runs HTTP only (no ffmpeg, no transcode loop).
+      # The temple-tv-transcoder worker below runs RUN_MODE=worker. This
+      # split prevents ffmpeg memory spikes from killing the API process.
+      - key: RUN_MODE
+        value: api
       - key: ALLOWED_ORIGINS
         value: https://templetv.org.ng,https://www.templetv.org.ng,https://api.templetv.org.ng,https://admin.templetv.org.ng,https://tv.templetv.org.ng
       - key: API_BASE_URL
@@ -47,6 +52,71 @@ services:
       - key: PRIVATE_OBJECT_DIR
         sync: false
       - key: PUBLIC_OBJECT_SEARCH_PATHS
+        sync: false
+      - key: AWS_S3_BUCKET
+        sync: false
+      - key: AWS_REGION
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+
+  # ─── Transcoder worker ─────────────────────────────────────────────────────
+  # Runs the same codebase with RUN_MODE=worker: ffmpeg preflight, the queue
+  # claim loop (FOR UPDATE SKIP LOCKED), and S3 upload of HLS variants.
+  # No HTTP listener, no SSE, no schedulers. Reads source MP4s from S3 into
+  # /tmp scratch space, transcodes, uploads variants back to S3, marks the
+  # queue row complete. The API service (above) serves the HLS files via the
+  # S3 fallback middleware (`lib/staticWithS3Fallback.ts`).
+  #
+  # Memory containment in `lib/transcoder.ts` (FFMPEG_THREADS, x264 lookahead
+  # caps, RSS-based backpressure) still applies inside the worker so a single
+  # large encode cannot OOM-kill the worker mid-job.
+  - type: worker
+    name: temple-tv-transcoder
+    runtime: node
+    plan: starter
+    region: frankfurt
+    branch: main
+    rootDir: .
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @workspace/api-server run build
+    startCommand: pnpm --filter @workspace/api-server run start
+    autoDeploy: true
+    numInstances: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # PORT is required by the index.ts validator only when RUN_MODE=api.
+      # We still set it so any future code that reads PORT does not crash.
+      - key: PORT
+        value: 8080
+      - key: RUN_MODE
+        value: worker
+      # Conservative tuning for the 512MB starter plan. Bump these alongside
+      # any plan upgrade — no code changes required.
+      - key: FFMPEG_THREADS
+        value: 2
+      - key: MAX_NODE_RSS_MB_BEFORE_TRANSCODE
+        value: 380
+      - key: DATABASE_URL
+        sync: false
+      # JWT_SECRET is unused by the worker but the startup validator requires
+      # it. Use the same value as the API service via Render's "sync" env
+      # group — set this manually in the dashboard to match the API.
+      - key: JWT_SECRET
+        sync: false
+      - key: SENTRY_DSN
+        value: https://e1d80a0a1acfca1dc8743cc701de446c@o4511258419462144.ingest.us.sentry.io/4511258444693504
+      - key: SENTRY_RELEASE
+        sync: false
+      - key: AWS_S3_BUCKET
+        sync: false
+      - key: AWS_REGION
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
         sync: false
 
   - type: web

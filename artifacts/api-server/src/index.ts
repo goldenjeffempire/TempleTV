@@ -1,7 +1,11 @@
 import http from "http";
 import app from "./app";
 import { logger } from "./lib/logger";
-import { resumePendingJobsOnStartup, startRetryTick } from "./lib/transcoder";
+import {
+  resumePendingJobsOnStartup,
+  startRetryTick,
+  stopRetryTick,
+} from "./lib/transcoder";
 import { assertFfmpegAvailable } from "./lib/ffmpeg";
 import { startNotificationScheduler } from "./lib/notification-scheduler";
 import { startSSEHeartbeat, closeAllSSEClients } from "./lib/liveEvents";
@@ -21,28 +25,24 @@ for (const key of REQUIRED_ENV_VARS) {
   }
 }
 
-const rawPort = process.env["PORT"];
+const RUN_MODE = (process.env.RUN_MODE ?? "all").toLowerCase();
+const VALID_RUN_MODES = new Set(["api", "worker", "all"]);
 
-if (!rawPort) {
+if (!VALID_RUN_MODES.has(RUN_MODE)) {
   throw new Error(
-    "PORT environment variable is required but was not provided.",
+    `Invalid RUN_MODE "${process.env.RUN_MODE}". Must be one of: api, worker, all (default).`,
   );
 }
 
-const port = Number(rawPort);
+const RUNS_API = RUN_MODE === "all" || RUN_MODE === "api";
+const RUNS_WORKER = RUN_MODE === "all" || RUN_MODE === "worker";
 
-if (Number.isNaN(port) || port <= 0) {
-  throw new Error(`Invalid PORT value: "${rawPort}"`);
-}
+logger.info(
+  { runMode: RUN_MODE, runsApi: RUNS_API, runsWorker: RUNS_WORKER },
+  "Process role resolved",
+);
 
-const server = http.createServer(app);
-
-server.listen(port, "0.0.0.0", () => {
-  logger.info({ port, host: "0.0.0.0" }, "Server listening");
-
-  // ── Infrastructure diagnostics ──────────────────────────────────────────────
-  // Log the status of all three production infrastructure services so that
-  // the startup log is the single source of truth for operators.
+function logInfrastructureStatus() {
   const s3Configured = isS3Configured();
   const redisConfigured = Boolean(process.env.REDIS_URL?.trim());
 
@@ -68,6 +68,7 @@ server.listen(port, "0.0.0.0", () => {
       hlsTranscoder: {
         ffmpegPath: process.env.FFMPEG_PATH ?? "system PATH",
         cloudUpload: s3Configured ? "enabled (AWS S3)" : "disabled (no bucket)",
+        runsInThisProcess: RUNS_WORKER,
       },
     },
     "Infrastructure status at startup",
@@ -77,11 +78,7 @@ server.listen(port, "0.0.0.0", () => {
   // In production, refuse to keep serving traffic if AWS S3 is not configured.
   // Without S3, every uploaded video and transcoded HLS segment lands on the
   // ephemeral container disk and disappears on the next deploy/restart — a
-  // silent data-loss path that should never reach users. Render (and any
-  // sane orchestrator) will surface the crash and roll back to the previous
-  // healthy revision so a stripped env var can't quietly downgrade us.
-  // Dev and CI keep the soft warning behavior so local work isn't gated on
-  // having AWS credentials.
+  // silent data-loss path that should never reach users.
   if (process.env.NODE_ENV === "production" && !s3Configured) {
     logger.fatal(
       {
@@ -97,15 +94,13 @@ server.listen(port, "0.0.0.0", () => {
         "Set AWS_S3_BUCKET, AWS_REGION, AWS_ACCESS_KEY_ID, and AWS_SECRET_ACCESS_KEY " +
         "in the deployment environment, then redeploy.",
     );
-    // Give pino a moment to flush to stdout before the orchestrator reaps us.
     setTimeout(() => process.exit(1), 250);
     return;
   }
+}
 
+function startTranscoderRole() {
   // Verify ffmpeg + ffprobe are present BEFORE the worker can pick up jobs.
-  // We log loudly on failure but don't crash — the rest of the API still
-  // serves traffic, and uploads can still be received; only the transcoder
-  // is gated behind this check.
   assertFfmpegAvailable()
     .then(() => {
       logger.info("FFmpeg preflight passed — transcoding pipeline active");
@@ -120,42 +115,89 @@ server.listen(port, "0.0.0.0", () => {
         "FFmpeg preflight failed — transcoder disabled until binaries are available",
       );
     });
+}
 
+function startApiSchedulers() {
   startNotificationScheduler();
   startSSEHeartbeat();
   startBroadcastTransitionTicker();
   startStreamHealthEmitter();
   startYoutubeCatalogueScheduler();
 
-  // Log cache backend once it has had time to connect (2 s warm-up).
+  // Log cache backend once it has had time to connect (2s warm-up).
   setTimeout(() => {
     const status = cache.status();
     logger.info({ cacheStatus: status }, "Cache backend resolved");
   }, 2_000);
-});
+}
 
-server.on("error", (err) => {
-  logger.error({ err }, "Server error");
-  process.exit(1);
-});
+let server: http.Server | null = null;
+
+if (RUNS_API) {
+  const rawPort = process.env["PORT"];
+  if (!rawPort) {
+    throw new Error(
+      "PORT environment variable is required for api mode but was not provided.",
+    );
+  }
+  const port = Number(rawPort);
+  if (Number.isNaN(port) || port <= 0) {
+    throw new Error(`Invalid PORT value: "${rawPort}"`);
+  }
+
+  server = http.createServer(app);
+  server.listen(port, "0.0.0.0", () => {
+    logger.info({ port, host: "0.0.0.0" }, "Server listening");
+    logInfrastructureStatus();
+    startApiSchedulers();
+    if (RUNS_WORKER) {
+      startTranscoderRole();
+    }
+  });
+
+  server.on("error", (err) => {
+    logger.error({ err }, "Server error");
+    process.exit(1);
+  });
+} else {
+  // Pure worker process: no HTTP listener. The retry interval (and any
+  // in-flight ffmpeg child) keeps the event loop alive. Render `worker`
+  // services do not expose a port and do not require a health endpoint.
+  logger.info("Starting in worker-only mode (no HTTP listener)");
+  logInfrastructureStatus();
+  startTranscoderRole();
+}
 
 let isShuttingDown = false;
 
 function shutdown(signal: string) {
   if (isShuttingDown) return;
   isShuttingDown = true;
-  logger.info({ signal }, "Graceful shutdown initiated");
+  logger.info({ signal, runMode: RUN_MODE }, "Graceful shutdown initiated");
 
-  closeAllSSEClients();
-
-  server.close((err) => {
-    if (err) {
-      logger.error({ err }, "Error closing server");
-      process.exit(1);
+  if (RUNS_WORKER) {
+    try {
+      stopRetryTick();
+    } catch (err) {
+      logger.warn({ err }, "Error stopping retry tick");
     }
-    logger.info("Server closed cleanly");
-    process.exit(0);
-  });
+  }
+
+  if (server) {
+    closeAllSSEClients();
+    server.close((err) => {
+      if (err) {
+        logger.error({ err }, "Error closing server");
+        process.exit(1);
+      }
+      logger.info("Server closed cleanly");
+      process.exit(0);
+    });
+  } else {
+    // Worker-only process — exit immediately after stopping the tick.
+    logger.info("Worker stopped cleanly");
+    setTimeout(() => process.exit(0), 100);
+  }
 
   setTimeout(() => {
     logger.warn("Forced shutdown after timeout");
