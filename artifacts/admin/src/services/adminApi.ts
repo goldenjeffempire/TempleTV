@@ -447,6 +447,16 @@ export interface ProcessStatus {
         }
       | null;
     alive: boolean;
+    lastJob: {
+      id: string;
+      videoId: string;
+      videoTitle: string | null;
+      status: "done" | "failed";
+      completedAt: string | null;
+      endedAgoSec: number | null;
+      durationMs: number | null;
+      errorMessage: string | null;
+    } | null;
   };
   infrastructure: {
     s3: { configured: boolean; bucket: string | null; region: string | null };

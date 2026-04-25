@@ -3409,6 +3409,48 @@ router.get("/admin/process-status", async (_req, res) => {
     const workerAlive = heartbeatAgeSec !== null && heartbeatAgeSec < 90;
     const sameProcess = beat?.pid === process.pid;
 
+    // Most recent finished job (done or failed) — joined to videos for title.
+    // Surfaces "is the worker actually doing work?" beyond just liveness.
+    const lastJobRows = await db
+      .select({
+        id: transcodingJobsTable.id,
+        videoId: transcodingJobsTable.videoId,
+        status: transcodingJobsTable.status,
+        startedAt: transcodingJobsTable.startedAt,
+        completedAt: transcodingJobsTable.completedAt,
+        errorMessage: transcodingJobsTable.errorMessage,
+        videoTitle: videosTable.title,
+      })
+      .from(transcodingJobsTable)
+      .leftJoin(videosTable, eq(transcodingJobsTable.videoId, videosTable.id))
+      .where(inArray(transcodingJobsTable.status, ["done", "failed"]))
+      .orderBy(desc(transcodingJobsTable.completedAt))
+      .limit(1);
+
+    const lastJob = lastJobRows[0]
+      ? (() => {
+          const r = lastJobRows[0];
+          const completedMs = r.completedAt ? r.completedAt.getTime() : null;
+          const startedMs = r.startedAt ? r.startedAt.getTime() : null;
+          return {
+            id: r.id,
+            videoId: r.videoId,
+            videoTitle: r.videoTitle ?? null,
+            status: r.status as "done" | "failed",
+            completedAt: r.completedAt ? r.completedAt.toISOString() : null,
+            endedAgoSec:
+              completedMs !== null
+                ? Math.max(0, Math.round((now - completedMs) / 1000))
+                : null,
+            durationMs:
+              completedMs !== null && startedMs !== null
+                ? Math.max(0, completedMs - startedMs)
+                : null,
+            errorMessage: r.errorMessage,
+          };
+        })()
+      : null;
+
     const s3Configured = isS3Configured();
     res.setHeader("Cache-Control", "no-store").json({
       thisProcess,
@@ -3425,6 +3467,7 @@ router.get("/admin/process-status", async (_req, res) => {
             }
           : null,
         alive: workerAlive,
+        lastJob,
       },
       infrastructure: {
         s3: {

@@ -2,7 +2,14 @@ import { useEffect, useState, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { processApi, type ProcessStatus } from "@/services/adminApi";
-import { Server, Cpu, Activity, AlertTriangle } from "lucide-react";
+import {
+  Server,
+  Cpu,
+  Activity,
+  AlertTriangle,
+  CheckCircle2,
+  XCircle,
+} from "lucide-react";
 
 const POLL_MS = 10_000;
 
@@ -18,6 +25,16 @@ function formatAge(sec: number): string {
   if (sec < 60) return `${sec}s ago`;
   if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
   return `${Math.floor(sec / 3600)}h ago`;
+}
+
+function formatDurationMs(ms: number): string {
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  if (m < 60) return `${m}m ${s}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
 }
 
 export function ProcessStatusPanel() {
@@ -157,6 +174,55 @@ export function ProcessStatusPanel() {
               <AlertTriangle className="h-3.5 w-3.5" />
               No worker heartbeat yet — worker process may be down or has not
               registered.
+            </div>
+          )}
+
+          {/* Last finished job — confirms the worker is *doing* work,
+              not just alive. Pulled from the most recent done/failed row. */}
+          {transcoder.lastJob && (
+            <div className="mt-2 pt-2 border-t border-border/50">
+              <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted-foreground/80 mb-1">
+                {transcoder.lastJob.status === "done" ? (
+                  <CheckCircle2 className="h-3 w-3 text-emerald-400" />
+                ) : (
+                  <XCircle className="h-3 w-3 text-red-400" />
+                )}
+                Last job
+              </div>
+              <div
+                className="truncate text-foreground"
+                title={transcoder.lastJob.videoTitle ?? transcoder.lastJob.videoId}
+              >
+                {transcoder.lastJob.videoTitle ?? `video ${transcoder.lastJob.videoId.slice(0, 8)}…`}
+              </div>
+              <div className="flex items-center justify-between mt-0.5 text-[11px]">
+                <span className="text-muted-foreground/80">
+                  {transcoder.lastJob.endedAgoSec !== null
+                    ? formatAge(transcoder.lastJob.endedAgoSec)
+                    : "—"}
+                  {transcoder.lastJob.durationMs !== null && (
+                    <> · took {formatDurationMs(transcoder.lastJob.durationMs)}</>
+                  )}
+                </span>
+                <span
+                  className={
+                    transcoder.lastJob.status === "done"
+                      ? "text-emerald-300"
+                      : "text-red-300"
+                  }
+                >
+                  {transcoder.lastJob.status}
+                </span>
+              </div>
+              {transcoder.lastJob.status === "failed" &&
+                transcoder.lastJob.errorMessage && (
+                  <div
+                    className="mt-1 text-[11px] text-red-300/80 truncate"
+                    title={transcoder.lastJob.errorMessage}
+                  >
+                    {transcoder.lastJob.errorMessage}
+                  </div>
+                )}
             </div>
           )}
 
