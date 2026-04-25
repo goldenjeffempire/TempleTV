@@ -239,7 +239,7 @@ export function AuthGateModal({ open, onClose, onAuthed, reason }: AuthGateModal
           {phase !== "linked" && (
             <p className="mt-4 text-xl text-white/80 leading-relaxed max-w-3xl">
               On your phone or computer, open{" "}
-              <span className="text-white font-semibold">templetv.app/link</span>{" "}
+              <span className="text-white font-semibold">templetv.org.ng/link</span>{" "}
               and enter the code below.
             </p>
           )}
