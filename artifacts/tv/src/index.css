@@ -99,14 +99,6 @@ html, body, #root {
   transition: opacity 0.2s ease;
 }
 
-/* Continue Watching row fades in to reduce layout-shift jarring */
-.tv-row-continue-watching {
-  animation: cw-fadein 0.35s ease both;
-}
-@keyframes cw-fadein {
-  from { opacity: 0; transform: translateY(-6px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
 .tv-rows-active .tv-row:not(.tv-row-focused) {
   opacity: 0.45;
 }

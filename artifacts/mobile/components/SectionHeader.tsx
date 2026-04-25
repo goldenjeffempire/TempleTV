@@ -1,14 +1,19 @@
 import React from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 import { useColors } from "@/hooks/useColors";
 
 interface SectionHeaderProps {
   title: string;
+  /**
+   * Deprecated. The "See all" CTA has been removed from section headers
+   * across the broadcast-first homepage. The prop is retained so existing
+   * call sites compile without modification, but it is intentionally ignored.
+   */
   onSeeAll?: () => void;
   subtitle?: string;
 }
 
-export function SectionHeader({ title, onSeeAll, subtitle }: SectionHeaderProps) {
+export function SectionHeader({ title, subtitle }: SectionHeaderProps) {
   const c = useColors();
   return (
     <View style={styles.container}>
@@ -16,11 +21,6 @@ export function SectionHeader({ title, onSeeAll, subtitle }: SectionHeaderProps)
         <Text style={[styles.title, { color: c.foreground }]}>{title}</Text>
         {subtitle && <Text style={[styles.subtitle, { color: c.mutedForeground }]}>{subtitle}</Text>}
       </View>
-      {onSeeAll && (
-        <Pressable onPress={onSeeAll} hitSlop={12}>
-          <Text style={[styles.seeAll, { color: c.primary }]}>See all</Text>
-        </Pressable>
-      )}
     </View>
   );
 }
@@ -40,9 +40,5 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: "Inter_400Regular",
     marginTop: 2,
-  },
-  seeAll: {
-    fontSize: 14,
-    fontFamily: "Inter_600SemiBold",
   },
 });

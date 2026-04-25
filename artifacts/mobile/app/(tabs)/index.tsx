@@ -24,7 +24,6 @@ import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
 import { useNetworkStatus } from "@/hooks/useNetworkStatus";
 import { LiveBadge } from "@/components/LiveBadge";
 import { SermonCard } from "@/components/SermonCard";
-import { NowPlayingBar } from "@/components/NowPlayingBar";
 import { SectionHeader } from "@/components/SectionHeader";
 import { SkeletonVerticalCard, SkeletonHorizontalCard, SkeletonLiveBanner } from "@/components/SkeletonCard";
 import { NetworkBanner } from "@/components/NetworkBanner";
@@ -74,7 +73,7 @@ export default function WatchScreen() {
   const insets = useSafeAreaInsets();
   const { currentSermon, isLive: playerIsLive, playSermon, playLive, setQueue } = usePlayer();
   const { sermons, loading, refresh, isFromRss, error: feedError } = useYouTubeChannel();
-  const { continueWatching, getProgress } = useWatchProgress();
+  const { getProgress } = useWatchProgress();
   const { isOnline } = useNetworkStatus();
   const fadeAnim = useRef(new Animated.Value(Platform.OS === "web" ? 1 : 0)).current;
   const [liveStatus, setLiveStatus] = useState<LiveCheckResult>({ isLive: false, videoId: null, title: null });
@@ -603,51 +602,6 @@ export default function WatchScreen() {
                 </View>
               </View>
             </Pressable>
-          )}
-
-          {(currentSermon || playerIsLive) && (
-            <NowPlayingBar
-              title={playerIsLive ? "Temple TV Live" : currentSermon?.title ?? ""}
-              isLive={playerIsLive}
-              onPress={playerIsLive ? handleLivePress : (currentSermon ? () => navigateToSermon(currentSermon) : undefined)}
-            />
-          )}
-
-          {continueWatching.length > 0 && !loading && (
-            <View style={styles.section}>
-              <SectionHeader
-                title="Continue Watching"
-                subtitle={`${continueWatching.length} in progress`}
-                onSeeAll={() => router.push("/library")}
-              />
-              <FlatList
-                horizontal
-                data={continueWatching
-                  .map((cw) => ({
-                    item: sermons.find((s) => s.id === cw.videoKey),
-                    pct: cw.pct,
-                    position: cw.position,
-                  }))
-                  .filter((x): x is { item: Sermon; pct: number; position: number } => !!x.item)}
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
-                keyExtractor={(x) => x.item.id}
-                initialNumToRender={4}
-                windowSize={5}
-                removeClippedSubviews
-                renderItem={({ item: { item, pct, position } }) => (
-                  <SermonCard
-                    sermon={item}
-                    onPress={(s) => {
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                      navigateToSermon(s, { startPositionMs: String(Math.floor(position * 1000)) });
-                    }}
-                    variant="vertical"
-                    progress={pct}
-                  />
-                )}
-              />
-            </View>
           )}
 
           <View style={styles.section}>

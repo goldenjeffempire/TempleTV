@@ -2,11 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LiveHero } from "../components/LiveHero";
 import { TempleTvLogo } from "../components/TempleTvLogo";
 import { SermonRow } from "../components/SermonRow";
-import { ContinueWatchingCard } from "../components/ContinueWatchingCard";
 import { Clock } from "../components/Clock";
 import { useTVNav } from "../hooks/useTVNav";
 import { useSermons, useLiveStatus } from "../hooks/useData";
-import { useWatchHistory } from "../hooks/useWatchHistory";
 import { fetchBroadcastCurrent } from "../lib/api";
 import type { VideoItem, BroadcastCurrent } from "../lib/api";
 import { useLiveSync } from "../hooks/useLiveSync";
@@ -31,7 +29,6 @@ interface HomeProps {
 export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: HomeProps) {
   const { byCategory, sermons, loading } = useSermons();
   const liveStatus = useLiveStatus();
-  const { continueWatching } = useWatchHistory();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [guideButtonFocused, setGuideButtonFocused] = useState(false);
   const [searchButtonFocused, setSearchButtonFocused] = useState(false);
@@ -66,17 +63,14 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
     if (liveSync.syncedAt) loadBroadcastRef.current?.();
   }, [liveSync.syncedAt]);
 
-  const hasContinueWatching = continueWatching.length > 0;
-
   // ── Build a unified rows array for useTVNav ───────────────────────────
   // Row 0: Live hero (always present as placeholder — count = 1 even when off-air)
-  // Row 1: Continue Watching (only when history exists)
-  // Row 2+: Content categories
+  // Row 1+: Content categories. The homepage is broadcast-first; we no
+  // longer surface a "Continue Watching" content-library row here.
   const rows = useMemo(() => [
     { key: "__live__", label: "Live", items: 1 },
-    ...(hasContinueWatching ? [{ key: "__continue__", label: "Continue Watching", items: continueWatching.length }] : []),
     ...CATEGORIES.map((cat) => ({ key: cat, label: cat, items: (byCategory[cat] ?? []).length })),
-  ].filter((r) => r.items > 0), [hasContinueWatching, continueWatching.length, byCategory]);
+  ].filter((r) => r.items > 0), [byCategory]);
 
   const getRowItemCount = useCallback(
     (rowIndex: number) => rows[rowIndex]?.items ?? 0,
@@ -120,12 +114,6 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
         return;
       }
 
-      if (row.key === "__continue__") {
-        const entry = continueWatching[itemIndex];
-        if (entry) onPlay(entry.videoId, entry.title);
-        return;
-      }
-
       const rowSermons = byCategory[row.key] ?? [];
       const sermon = rowSermons[itemIndex];
       if (sermon) {
@@ -133,7 +121,7 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
         onDetails(sermon, related);
       }
     },
-    [rows, byCategory, liveStatus, onPlay, onDetails, continueWatching, broadcastCurrent, computeLiveBroadcastPosition],
+    [rows, byCategory, liveStatus, onPlay, onDetails, broadcastCurrent, computeLiveBroadcastPosition],
   );
 
   const onHeaderSelect = useCallback(
@@ -165,10 +153,8 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
     return () => window.removeEventListener("keydown", handler);
   }, [onNavigateGuide, onNavigateSearch]);
 
-  // Determine Continue Watching row index (dynamic — 1 if it exists)
-  const cwRowIndex = hasContinueWatching ? 1 : -1;
-  // Category row offset — 1 if live-only, 2 if CW also exists
-  const catRowOffset = hasContinueWatching ? 2 : 1;
+  // Category rows start at index 1 (right after the live hero at index 0).
+  const catRowOffset = 1;
 
   return (
     <div style={{ width: "100vw", height: "100vh", position: "relative", overflow: "hidden", background: "#070707" }}>
@@ -283,62 +269,6 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
           </div>
         ) : (
           <div className={focusZone === "grid" ? "tv-rows-active" : ""}>
-
-            {/* ── Continue Watching row ─────────────────────────────────── */}
-            {hasContinueWatching && (
-              <div
-                className={`tv-row tv-row-continue-watching ${focusRow === cwRowIndex ? "tv-row-focused" : ""}`}
-                style={{ marginBottom: 36 }}
-              >
-                <h2 style={{
-                  fontSize: "clamp(18px, 1.6vw, 24px)",
-                  fontWeight: 700,
-                  color: focusRow === cwRowIndex ? "#fff" : "rgba(255,255,255,0.6)",
-                  marginBottom: 18,
-                  paddingLeft: "var(--tv-safe-h, 60px)",
-                  letterSpacing: "0.01em",
-                  transition: "color 0.2s ease",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                }}>
-                  <span style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    width: 28,
-                    height: 28,
-                    borderRadius: "50%",
-                    background: "linear-gradient(135deg, #7c3aed, #a855f7)",
-                    flexShrink: 0,
-                  }}>
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="white">
-                      <path d="M8 5v14l11-7z"/>
-                    </svg>
-                  </span>
-                  Continue Watching
-                </h2>
-                <div style={{
-                  display: "flex",
-                  gap: 18,
-                  paddingLeft: "var(--tv-safe-h, 60px)",
-                  paddingRight: "var(--tv-safe-h, 60px)",
-                  overflowX: "auto",
-                  scrollbarWidth: "none",
-                  msOverflowStyle: "none",
-                }}>
-                  {continueWatching.map((entry, idx) => (
-                    <ContinueWatchingCard
-                      key={entry.videoId}
-                      entry={entry}
-                      focused={focusRow === cwRowIndex && getFocusItem(cwRowIndex) === idx}
-                      onFocus={() => {}}
-                      onClick={() => onPlay(entry.videoId, entry.title)}
-                    />
-                  ))}
-                </div>
-              </div>
-            )}
 
             {/* ── Category rows ─────────────────────────────────────────── */}
             {CATEGORIES.map((cat, catIndex) => {
