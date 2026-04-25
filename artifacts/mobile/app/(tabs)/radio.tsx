@@ -93,7 +93,6 @@ export default function RadioScreen() {
     dataSaver,
     shuffleMode,
     loopMode,
-    togglePlay,
     toggleRadioMode,
     toggleDataSaver,
     toggleShuffle,
@@ -343,22 +342,12 @@ export default function RadioScreen() {
   const nowPlaying = currentSermon ?? filteredQueue[0];
   const thumbUri = nowPlaying?.thumbnailUrl;
 
-  const handlePlayToggle = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    if (!currentSermon && filteredQueue.length > 0) {
-      playSermon(filteredQueue[0]);
-      if (!isRadioMode) toggleRadioMode();
-    } else {
-      togglePlay();
-    }
-  };
-
-  const handleStop = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-    if (sleepTimerRef.current) clearInterval(sleepTimerRef.current);
-    setSleepTimerSecs(0);
-    stopPlayback();
-  };
+  // NOTE: removed `handlePlayToggle` and `handleStop` — the Radio screen no
+  // longer exposes manual play/pause/stop UI per the TV-channel behavior
+  // contract. Audio is started by the "Tune In to Temple TV Channel" CTA
+  // (live broadcast) or by tapping a sermon row (on-demand). The sleep timer
+  // still uses `stopPlayback` directly, and the system Radio Mode toggle
+  // handles audio-only / video-on switching.
 
   const handleWatchVideo = () => {
     if (!nowPlaying) return;
@@ -403,41 +392,19 @@ export default function RadioScreen() {
             <View style={styles.broadcastCardHeader}>
               <ChannelBug visible animated />
               <Text style={[styles.broadcastCardLabel, { color: c.mutedForeground }]}>
-                {broadcastInfo.liveOverride ? "LIVE ON AIR" : "Now Broadcasting"}
+                {broadcastInfo.liveOverride ? "LIVE ON AIR" : "ON AIR NOW"}
               </Text>
               <View style={{ flex: 1 }} />
-              <Text style={[styles.broadcastTime, { color: c.mutedForeground }]}>
-                {broadcastInfo.item && broadcastInfo.item.durationSecs > 0
-                  ? `${fmtSecs(broadcastPosition)} / ${fmtSecs(broadcastInfo.item.durationSecs)}`
-                  : ""}
-              </Text>
+              {/* TV-channel behavior: no time / duration / progress indicators
+                  on the broadcast card. The viewer joins the channel mid-show
+                  exactly like flipping on a television; the position pill, the
+                  elapsed/remaining text, and the progress track were all
+                  removed in this round. The pulsing channel bug + "ON AIR"
+                  label is the only liveness indicator. */}
             </View>
             <Text style={[styles.broadcastCardTitle, { color: c.foreground }]} numberOfLines={2}>
               {broadcastInfo.liveOverride?.title ?? broadcastInfo.item?.title ?? ""}
             </Text>
-            {broadcastInfo.item && broadcastInfo.item.durationSecs > 0 && (
-              <View>
-                <View style={styles.broadcastProgressTrack}>
-                  <View
-                    style={[
-                      styles.broadcastProgressFill,
-                      {
-                        width: `${Math.min(100, (broadcastPosition / broadcastInfo.item.durationSecs) * 100)}%`,
-                        backgroundColor: c.primary,
-                      },
-                    ]}
-                  />
-                </View>
-                <View style={styles.broadcastTimeRow}>
-                  <Text style={[styles.broadcastTimeSm, { color: c.mutedForeground }]}>
-                    {fmtSecs(broadcastPosition)} elapsed
-                  </Text>
-                  <Text style={[styles.broadcastTimeSm, { color: c.mutedForeground }]}>
-                    {fmtSecs(Math.max(0, broadcastInfo.item.durationSecs - broadcastPosition))} remaining
-                  </Text>
-                </View>
-              </View>
-            )}
             <Pressable
               style={({ pressed }) => [styles.listenLiveBtn, { backgroundColor: c.primary, opacity: pressed ? 0.85 : 1 }]}
               onPress={handleListenLive}
@@ -482,51 +449,68 @@ export default function RadioScreen() {
             {nowPlaying?.preacher ?? "Temple TV JCTM"}
           </Text>
 
+          {/* TV-channel behavior: skip-back / skip-forward are queue navigation
+              (they cycle to a different sermon — they do NOT pause/resume the
+              broadcast itself). The center button is no longer a play/pause
+              toggle — it's a non-interactive ON AIR / TUNED-IN indicator. To
+              start audio when nothing is playing, the user taps "Tune In to
+              Temple TV Channel" above (live broadcast) or any sermon row in
+              the queue list (on-demand). To stop, they navigate away from the
+              Radio tab or toggle Radio Mode off in the player settings. */}
           <View style={styles.controls}>
             <Pressable
               onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); playPrevious(); }}
               style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}
               hitSlop={12}
+              accessibilityLabel="Previous sermon"
             >
               <Feather name="skip-back" size={30} color={c.foreground} />
             </Pressable>
 
-            <Pressable
-              onPress={handlePlayToggle}
-              style={({ pressed }) => [
+            <View
+              accessibilityRole="text"
+              accessibilityLabel={isPlaying ? "On air" : "Awaiting selection"}
+              style={[
                 styles.playButton,
-                { backgroundColor: c.primary, opacity: pressed ? 0.85 : 1 },
+                {
+                  backgroundColor: isPlaying ? c.primary : c.muted,
+                  flexDirection: "row",
+                  gap: 8,
+                  paddingHorizontal: 18,
+                  width: undefined,
+                },
               ]}
             >
-              <Feather name={isPlaying ? "pause" : "play"} size={30} color="#FFF" />
-            </Pressable>
+              <View
+                style={{
+                  width: 9,
+                  height: 9,
+                  borderRadius: 5,
+                  backgroundColor: isPlaying ? "#FFF" : c.mutedForeground,
+                  opacity: isPlaying ? 1 : 0.5,
+                }}
+              />
+              <Text
+                style={{
+                  color: isPlaying ? "#FFF" : c.mutedForeground,
+                  fontWeight: "700",
+                  letterSpacing: 1.2,
+                  fontSize: 13,
+                }}
+              >
+                {isPlaying ? "ON AIR" : "TUNE IN"}
+              </Text>
+            </View>
 
             <Pressable
               onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); playNext(); }}
               style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}
               hitSlop={12}
+              accessibilityLabel="Next sermon"
             >
               <Feather name="skip-forward" size={30} color={c.foreground} />
             </Pressable>
           </View>
-
-          {(currentSermon || isPlaying) && (
-            <Pressable
-              onPress={handleStop}
-              accessibilityLabel="Stop radio playback"
-              style={({ pressed }) => [
-                styles.stopBtn,
-                {
-                  borderColor: c.border,
-                  backgroundColor: pressed ? c.primary : "transparent",
-                  opacity: pressed ? 0.85 : 1,
-                },
-              ]}
-            >
-              <Feather name="square" size={14} color={c.foreground} />
-              <Text style={[styles.stopBtnText, { color: c.foreground }]}>Stop</Text>
-            </Pressable>
-          )}
 
           <View style={styles.modeControls}>
             <Pressable

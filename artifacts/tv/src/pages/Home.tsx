@@ -23,7 +23,7 @@ const CATEGORIES = [
 interface HomeProps {
   onNavigateGuide: () => void;
   onNavigateSearch: () => void;
-  onPlay: (videoId: string, title: string, hlsUrl?: string, startPositionSecs?: number) => void;
+  onPlay: (videoId: string, title: string, hlsUrl?: string, startPositionSecs?: number, isLive?: boolean) => void;
   onDetails: (video: VideoItem, related: VideoItem[]) => void;
 }
 
@@ -101,14 +101,16 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
 
       if (row.key === "__live__") {
         if (liveStatus?.isLive && liveStatus.videoId) {
-          onPlay(liveStatus.videoId, liveStatus.title ?? "Live Stream");
+          // YouTube live event — flag as live so the player suppresses controls.
+          onPlay(liveStatus.videoId, liveStatus.title ?? "Live Stream", undefined, undefined, true);
         } else if (broadcastCurrent?.item) {
           const item = broadcastCurrent.item;
           const hlsUrl = item.localVideoUrl ?? undefined;
           const id = item.youtubeId ?? item.videoId;
           // Pass the live-corrected broadcast position so the player joins at
           // the exact moment currently airing rather than the cached position.
-          onPlay(id, "Temple TV", hlsUrl, computeLiveBroadcastPosition());
+          // isLive=true → no scrubber, no SPACE/pause hint, no manual controls.
+          onPlay(id, "Temple TV", hlsUrl, computeLiveBroadcastPosition(), true);
         }
         return;
       }
@@ -243,14 +245,16 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
             focused={focusRow === 0}
             onSelect={() => {
               if (liveStatus?.isLive && liveStatus.videoId) {
-                onPlay(liveStatus.videoId, liveStatus.title ?? "Live");
+                // YouTube live event — flag as live (no manual controls).
+                onPlay(liveStatus.videoId, liveStatus.title ?? "Live", undefined, undefined, true);
               } else if (broadcastCurrent?.item) {
                 const item = broadcastCurrent.item;
                 const hlsUrl = item.localVideoUrl ?? undefined;
                 const id = item.youtubeId ?? item.videoId;
                 // Live-corrected position: hand the player the exact second
                 // the hero is showing right now, not the cached fetch value.
-                onPlay(id, "Temple TV", hlsUrl, computeLiveBroadcastPosition());
+                // isLive=true → TV-channel behavior on the resulting Player.
+                onPlay(id, "Temple TV", hlsUrl, computeLiveBroadcastPosition(), true);
               }
             }}
           />

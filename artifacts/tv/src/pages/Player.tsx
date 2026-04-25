@@ -10,6 +10,13 @@ interface PlayerProps {
   hlsUrl?: string;
   /** Resume the HLS stream at this second offset (synced 24/7 broadcast). */
   startPositionSecs?: number;
+  /**
+   * When true, this is a LIVE broadcast (24/7 stream or YouTube live event).
+   * Suppresses all manual playback controls (play/pause/stop/seek) so the
+   * surface behaves like a real TV channel — see HlsVideoPlayer.isLive for
+   * the full contract. BACK still navigates away.
+   */
+  isLive?: boolean;
 }
 
 const LOAD_TIMEOUT_MS = 8_000;
@@ -38,7 +45,7 @@ function ytCommand(
  * Public router component.
  * Selects the HLS player for uploaded content or the YouTube iframe for YouTube IDs.
  */
-export function Player({ videoId, title, onBack, hlsUrl, startPositionSecs = 0 }: PlayerProps) {
+export function Player({ videoId, title, onBack, hlsUrl, startPositionSecs = 0, isLive = false }: PlayerProps) {
   if (hlsUrl) {
     return (
       <HlsVideoPlayer
@@ -46,14 +53,15 @@ export function Player({ videoId, title, onBack, hlsUrl, startPositionSecs = 0 }
         title={title}
         onBack={onBack}
         startPositionSecs={startPositionSecs}
+        isLive={isLive}
       />
     );
   }
-  return <YouTubePlayer videoId={videoId} title={title} onBack={onBack} />;
+  return <YouTubePlayer videoId={videoId} title={title} onBack={onBack} isLive={isLive} />;
 }
 
 /** Internal YouTube-iframe player (only rendered when no hlsUrl is provided). */
-function YouTubePlayer({ videoId, title, onBack }: { videoId: string; title: string; onBack: () => void }) {
+function YouTubePlayer({ videoId, title, onBack, isLive = false }: { videoId: string; title: string; onBack: () => void; isLive?: boolean }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const [showControls, setShowControls] = useState(true);
@@ -196,6 +204,16 @@ function YouTubePlayer({ videoId, title, onBack }: { videoId: string; title: str
 
         case "playpause":
           e.preventDefault();
+          // Live broadcast: TV-channel behavior — playpause is a no-op so the
+          // viewer cannot pause/resume an authoritative live stream from the
+          // remote. Same rationale as the explicit play/pause/stop guards
+          // below; keeping all four in sync prevents desync between the
+          // dedicated PLAY/PAUSE keys and the toggling PLAYPAUSE key found on
+          // many TV remotes.
+          if (isLive) {
+            resetHideTimer();
+            break;
+          }
           if (isPlaying) {
             ytCommand(iframeRef.current, "pauseVideo");
             setIsPlaying(false);
@@ -208,6 +226,8 @@ function YouTubePlayer({ videoId, title, onBack }: { videoId: string; title: str
 
         case "play":
           e.preventDefault();
+          // In live mode, swallow the gesture — TV-channel behavior.
+          if (isLive) { resetHideTimer(); break; }
           ytCommand(iframeRef.current, "playVideo");
           setIsPlaying(true);
           resetHideTimer();
@@ -216,6 +236,8 @@ function YouTubePlayer({ videoId, title, onBack }: { videoId: string; title: str
         case "pause":
         case "stop":
           e.preventDefault();
+          // In live mode, swallow the gesture — user cannot pause a live stream.
+          if (isLive) { resetHideTimer(); break; }
           ytCommand(iframeRef.current, "pauseVideo");
           setIsPlaying(false);
           resetHideTimer();
@@ -223,6 +245,8 @@ function YouTubePlayer({ videoId, title, onBack }: { videoId: string; title: str
 
         case "fastforward": {
           e.preventDefault();
+          // In live mode, no seeking. The broadcast clock is server-driven.
+          if (isLive) { resetHideTimer(); break; }
           const target = currentSecs.current + SEEK_STEP_SECS;
           ytCommand(iframeRef.current, "seekTo", [target, true]);
           currentSecs.current = target;
@@ -233,6 +257,8 @@ function YouTubePlayer({ videoId, title, onBack }: { videoId: string; title: str
 
         case "rewind": {
           e.preventDefault();
+          // In live mode, no seeking. The broadcast clock is server-driven.
+          if (isLive) { resetHideTimer(); break; }
           const target = Math.max(0, currentSecs.current - SEEK_STEP_SECS);
           ytCommand(iframeRef.current, "seekTo", [target, true]);
           currentSecs.current = target;
@@ -516,12 +542,15 @@ function YouTubePlayer({ videoId, title, onBack }: { videoId: string; title: str
           }}
         >
           <div style={{ display: "flex", gap: 20, alignItems: "center" }}>
-            {[
-              { key: isPlaying ? "⏸ SPACE" : "▶ SPACE", label: isPlaying ? "Pause" : "Play" },
-              { key: "⏮ ←←", label: `−${SEEK_STEP_SECS}s` },
-              { key: "⏭ →→", label: `+${SEEK_STEP_SECS}s` },
-              { key: "ESC / BACK", label: "Exit" },
-            ].map((h) => (
+            {(isLive
+              ? [{ key: "ESC / BACK", label: "Exit" }]
+              : [
+                  { key: isPlaying ? "⏸ SPACE" : "▶ SPACE", label: isPlaying ? "Pause" : "Play" },
+                  { key: "⏮ ←←", label: `−${SEEK_STEP_SECS}s` },
+                  { key: "⏭ →→", label: `+${SEEK_STEP_SECS}s` },
+                  { key: "ESC / BACK", label: "Exit" },
+                ]
+            ).map((h) => (
               <div key={h.key} style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <kbd style={{ background: "rgba(255,255,255,0.10)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: 6, padding: "3px 8px", fontSize: "clamp(11px, 1.2vw, 14px)", color: "rgba(255,255,255,0.65)", fontFamily: "inherit" }}>
                   {h.key}
@@ -529,6 +558,12 @@ function YouTubePlayer({ videoId, title, onBack }: { videoId: string; title: str
                 <span style={{ fontSize: "clamp(12px, 1.2vw, 14px)", color: "rgba(255,255,255,0.35)" }}>{h.label}</span>
               </div>
             ))}
+            {isLive && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto", color: "#fff", fontWeight: 700, letterSpacing: "0.14em", fontSize: "clamp(12px, 1.3vw, 14px)" }}>
+                <span aria-hidden style={{ width: 9, height: 9, borderRadius: "50%", background: "hsl(0 78% 55%)", boxShadow: "0 0 10px hsl(0 78% 55% / 0.7)" }} />
+                ON AIR
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -474,6 +474,31 @@ Verification:
 
 **Action required to apply this fix:** the admin app must be redeployed — the build is what bakes in client-side code that runs in the browser at `admin.templetv.org.ng`.
 
+### Round 5 — Strict TV-channel broadcast behavior on LIVE surfaces (April 2026)
+
+Goal: enforce television-station semantics — viewers cannot pause, scrub, or stop a LIVE broadcast; the channel is always running and the user is either tuned in or not. VOD playback (on-demand sermons) keeps full controls because pausing a recorded sermon is essential UX.
+
+What was already correct (verified, not changed):
+- Server is the single source of truth: `artifacts/api-server/src/routes/broadcast.ts` publishes `BroadcastCurrentPayload` (item, positionSecs, itemStartEpochSecs, serverTimeMs, liveOverride) over `/api/broadcast/events` (SSE) and `/api/broadcast/current` (poll fallback). Cross-device sync, refresh persistence, and per-12s drift correction were already live on mobile (`PlayerContext`) and TV (`LiveBroadcastVideo.tsx`).
+- Auto-play is on everywhere; the only fallback is the unavoidable browser-policy "tap to start" overlay (Chrome/Safari mandate).
+- Cinematic Hero on both platforms already had zero playback controls.
+- Mobile `player.tsx` LIVE footer already omitted play/pause (static ON AIR pill).
+
+Surgical changes applied this round:
+- `artifacts/tv/src/components/HlsVideoPlayer.tsx`: added `isLive?: boolean` prop. When live, the bottom control bar (scrubber, time, hint strip) is gated off and replaced with a pulsing "ON AIR" pill bottom-left; a live-mode keymap guard runs BEFORE the main switch and swallows playpause/play/pause/stop/select/fastforward/rewind (BACK/EXIT/F still work).
+- `artifacts/tv/src/pages/Player.tsx`: forwarded `isLive` to HlsVideoPlayer and YouTubePlayer. YouTube live mode now suppresses playpause/play/pause/stop/fastforward/rewind (the `playpause` case was the architect-flagged miss in the first pass — fixed). Hint strip becomes ON AIR + Exit.
+- `artifacts/tv/src/pages/Home.tsx` + `artifacts/tv/src/App.tsx`: extended `onPlay` callback signature with optional `isLive`; the four LIVE call-sites in Home pass `true`, schedule/VOD entries omit it. The App-level Home wiring callback (line 144) was the architect-flagged miss in the first pass — the 5th argument is now forwarded into `gatedPlay`.
+- `artifacts/tv/src/pages/TVGuide.tsx` + `artifacts/tv/src/App.tsx`: extended TVGuide `onPlay` signature with optional `isLive` and pass `true` for all four `item.isCurrent` launch paths (keyboard select + click, both HLS local and YouTube). App TVGuide wiring forwards the 5th arg. Architect-flagged in second-pass review — current ON AIR program launched from the TV Guide now correctly suppresses pause/seek/stop. Upcoming/non-current entries do not call onPlay (they only toggle reminders), so no change there.
+- `artifacts/mobile/app/(tabs)/radio.tsx`: replaced central play/pause Pressable with non-interactive ON AIR / TUNE IN indicator pill, removed the standalone Stop Pressable, removed the now-unused `handlePlayToggle`/`handleStop` helpers and `togglePlay` destructure. ALSO removed the broadcast time/duration position pill, elapsed/remaining text, and the progress bar from the broadcast glass card (architect-flagged miss in the first pass — TV-channel viewers join mid-show and don't see a progress bar). Audio entry remains via the "Tune In to Temple TV Channel" CTA (live) or by tapping a sermon row (on-demand). The sleep timer still calls `stopPlayback` directly so audio still ends when the timer fires. Skip-back / skip-forward kept (queue navigation, not pause).
+
+Deferred (not done this round, called out for future work):
+- TV "Radio Mode" parity: adding an audio-only listening surface to the TV is genuinely a new feature (route, audio-only renderer, persisted preference) and was scoped out of this controls-suppression round to keep the diff reviewable.
+- Mobile VOD player.tsx still has play/pause for on-demand sermons. The directive's "TV-channel behavior" was interpreted as applying to LIVE surfaces only; on-demand sermon playback genuinely needs pause.
+
+Architectural note (not a deferral): `isRadioMode` is intentionally a per-viewer client-side preference, not a server-broadcast field. The server timeline is synchronized; an individual viewer's choice between audio-only and audio+video is private (a person wearing headphones in church wants radio mode; the same broadcast on a TV in the lobby wants video). Cross-device sync applies to the broadcast timeline, not to per-viewer rendering preferences.
+
+TypeScript clean (`pnpm --filter @workspace/tv exec tsc --noEmit` and `pnpm --filter @workspace/mobile exec tsc --noEmit` both produced no output). Architect re-review confirmed all three first-pass misses fixed.
+
 ### Round 4q — TV pairing modal responsive refactor + SSE backoff parity (April 2026)
 
 Two operator-driven fixes to enforce cross-platform reliability parity:

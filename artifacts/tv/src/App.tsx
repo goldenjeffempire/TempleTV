@@ -43,6 +43,7 @@ export default function App() {
     title: string;
     hlsUrl?: string;
     startPositionSecs?: number;
+    isLive?: boolean;
   } | null>(null);
   const [detailsVideo, setDetailsVideo] = useState<{
     video: VideoItem;
@@ -55,18 +56,19 @@ export default function App() {
     title: string;
     hlsUrl?: string;
     startPositionSecs?: number;
+    isLive?: boolean;
   } | null>(null);
   const [gateOpen, setGateOpen] = useState(false);
 
   useEffect(() => subscribeAuth((next) => setAuthed(next)), []);
 
   const gatedPlay = useCallback(
-    (videoId: string, title: string, hlsUrl?: string, startPositionSecs?: number) => {
+    (videoId: string, title: string, hlsUrl?: string, startPositionSecs?: number, isLive?: boolean) => {
       if (authed) {
-        setPlayer({ videoId, title, hlsUrl, startPositionSecs });
+        setPlayer({ videoId, title, hlsUrl, startPositionSecs, isLive });
         return;
       }
-      setPendingPlay({ videoId, title, hlsUrl, startPositionSecs });
+      setPendingPlay({ videoId, title, hlsUrl, startPositionSecs, isLive });
       setGateOpen(true);
     },
     [authed],
@@ -95,6 +97,7 @@ export default function App() {
         onBack={() => setPlayer(null)}
         hlsUrl={player.hlsUrl}
         startPositionSecs={player.startPositionSecs}
+        isLive={player.isLive ?? false}
       />
     );
   } else if (detailsVideo) {
@@ -120,7 +123,7 @@ export default function App() {
     content = (
       <TVGuide
         onBack={() => setScreen("home")}
-        onPlay={(videoId, title, hlsUrl, startSecs) => gatedPlay(videoId, title, hlsUrl, startSecs)}
+        onPlay={(videoId, title, hlsUrl, startSecs, isLive) => gatedPlay(videoId, title, hlsUrl, startSecs, isLive)}
       />
     );
   } else if (screen === "search") {
@@ -138,7 +141,7 @@ export default function App() {
       <Home
         onNavigateGuide={() => setScreen("guide")}
         onNavigateSearch={() => setScreen("search")}
-        onPlay={(videoId, title, hlsUrl, startPositionSecs) => gatedPlay(videoId, title, hlsUrl, startPositionSecs)}
+        onPlay={(videoId, title, hlsUrl, startPositionSecs, isLive) => gatedPlay(videoId, title, hlsUrl, startPositionSecs, isLive)}
         onDetails={(video, related) => setDetailsVideo({ video, related })}
       />
     );

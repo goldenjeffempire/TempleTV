@@ -52,6 +52,20 @@ interface HlsVideoPlayerProps {
   onBack: () => void;
   /** Resume playback at this position (seconds). Defaults to 0. */
   startPositionSecs?: number;
+  /**
+   * When true, this is a LIVE broadcast surface (server-driven 24/7 stream).
+   * In live mode the player enforces TV-station behavior:
+   *   • No bottom control bar (no progress scrubber, no time display, no
+   *     SPACE/play/pause hint strip)
+   *   • Playpause / play / pause / stop / fastforward / rewind keys are
+   *     ignored — the user CANNOT pause or seek the live broadcast
+   *   • BACK / EXIT still navigate away (lets the user leave the stream)
+   *   • Fullscreen toggle is preserved (it's a viewport control, not a
+   *     playback control)
+   * VOD (isLive=false / undefined) keeps the full control surface so users
+   * can pause, seek, and scrub on-demand sermons.
+   */
+  isLive?: boolean;
 }
 
 const SEEK_STEP = 15;
@@ -82,6 +96,7 @@ export function HlsVideoPlayer({
   title,
   onBack,
   startPositionSecs = 0,
+  isLive = false,
 }: HlsVideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -582,6 +597,37 @@ export function HlsVideoPlayer({
         }
       }
 
+      // ── LIVE-MODE GUARD ───────────────────────────────────────────────────
+      // For a live broadcast surface, all manual playback actions are no-ops:
+      // playpause / play / pause / stop / select / fastforward / rewind. The
+      // user CANNOT pause or seek a live stream — only BACK / EXIT and the
+      // fullscreen toggle ('F' key, handled in `default:` below) work. This
+      // matches a real TV channel where the remote's pause button does not
+      // affect the live signal.
+      if (isLive) {
+        switch (action) {
+          case "back":
+          case "exit":
+            e.preventDefault();
+            onBack();
+            return;
+          case "playpause":
+          case "play":
+          case "pause":
+          case "stop":
+          case "fastforward":
+          case "rewind":
+          case "select":
+            // Swallow the gesture (still reveal the top overlay so the user
+            // can see the title and Back affordance), but do not pause/seek.
+            e.preventDefault();
+            resetHideTimer();
+            return;
+        }
+        // Fall through to default for 'info', 'left', and unmapped keys
+        // (the default case handles fullscreen 'F' and resetHideTimer).
+      }
+
       switch (action) {
         case "back":
         case "exit":
@@ -1052,8 +1098,53 @@ export function HlsVideoPlayer({
         </div>
       )}
 
+      {/* ── ON AIR pill (live-only) ─────────────────────────────────────────
+           In live mode there is no scrubber, time display, or play/pause hint
+           — replacing that bar is a small pulsing "ON AIR" indicator pinned
+           bottom-left so the viewer always knows the signal is live and that
+           the absence of controls is intentional, not a missing UI bug. */}
+      {isLive && !error && (
+        <div
+          aria-label="Live broadcast indicator"
+          style={{
+            position: "absolute",
+            bottom: "calc(env(safe-area-inset-bottom, 0px) + clamp(20px, 3vw, 32px))",
+            left: "var(--tv-safe-h, 60px)",
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "8px 16px",
+            borderRadius: 999,
+            background: "rgba(0,0,0,0.55)",
+            border: "1px solid rgba(255,255,255,0.16)",
+            backdropFilter: "blur(6px)",
+            color: "#fff",
+            fontSize: "clamp(12px, 1.3vw, 14px)",
+            fontWeight: 700,
+            letterSpacing: "0.14em",
+            zIndex: 10,
+            opacity: showControls ? 1 : 0,
+            transition: "opacity 0.3s ease",
+            pointerEvents: "none",
+          }}
+        >
+          <span
+            aria-hidden
+            style={{
+              width: 9,
+              height: 9,
+              borderRadius: "50%",
+              background: "hsl(0 78% 55%)",
+              boxShadow: "0 0 10px hsl(0 78% 55% / 0.7)",
+              animation: "tt-spin 1.6s ease-in-out infinite alternate",
+            }}
+          />
+          ON AIR
+        </div>
+      )}
+
       {/* ── Bottom control bar (progress + hint keys) ─────────────────────── */}
-      {!error && (
+      {!isLive && !error && (
         <div
           className="tt-hide-on-touch"
           style={{

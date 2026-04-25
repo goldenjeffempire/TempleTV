@@ -13,7 +13,7 @@ interface TVGuideProps {
    * @param hlsUrl     HLS master-playlist URL for local/uploaded content
    * @param startSecs  Broadcast sync offset in seconds
    */
-  onPlay: (youtubeId: string, title: string, hlsUrl?: string, startSecs?: number) => void;
+  onPlay: (youtubeId: string, title: string, hlsUrl?: string, startSecs?: number, isLive?: boolean) => void;
 }
 
 function fmtTime(ms: number): string {
@@ -104,10 +104,13 @@ export function TVGuide({ onBack, onPlay }: TVGuideProps) {
       e.preventDefault();
       const item = items[focusedIndex];
       if (item?.isCurrent) {
+        // TV Guide "current program" launches are LIVE channel surfaces —
+        // pass isLive=true so Player suppresses pause/seek/stop controls,
+        // matching the Home hero / live-row contract.
         if (item.videoSource === "local" && item.localVideoUrl) {
-          onPlay("", item.title, item.localVideoUrl, item.positionSecs);
+          onPlay("", item.title, item.localVideoUrl, item.positionSecs, true);
         } else if (item.youtubeId) {
-          onPlay(item.youtubeId, item.title, undefined, item.positionSecs);
+          onPlay(item.youtubeId, item.title, undefined, item.positionSecs, true);
         }
       } else if (item && !item.isCurrent) {
         setSelectedIndex(focusedIndex);
@@ -295,10 +298,12 @@ export function TVGuide({ onBack, onPlay }: TVGuideProps) {
               onClick={() => {
                 setFocusedIndex(idx);
                 if (isCurrentProgram) {
+                  // Mouse/click launch of the current program is also a LIVE
+                  // surface — same isLive=true contract as the keyboard path.
                   if (item.videoSource === "local" && item.localVideoUrl) {
-                    onPlay("", item.title, item.localVideoUrl, item.positionSecs);
+                    onPlay("", item.title, item.localVideoUrl, item.positionSecs, true);
                   } else if (item.youtubeId) {
-                    onPlay(item.youtubeId, item.title, undefined, item.positionSecs);
+                    onPlay(item.youtubeId, item.title, undefined, item.positionSecs, true);
                   }
                 } else if (isUpcoming) {
                   toggleReminder(item.id);
