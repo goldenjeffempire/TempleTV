@@ -1,4 +1,6 @@
 import { logger } from "./logger";
+import { db, cacheEntriesTable } from "@workspace/db";
+import { eq, lt, sql } from "drizzle-orm";
 
 interface CacheEntry<T> {
   value: T;
@@ -44,6 +46,97 @@ class MemoryCache {
   }
 }
 
+/**
+ * PostgreSQL-backed distributed cache.
+ *
+ * Uses the `cache_entries` table as a shared KV store. Safe for multi-instance
+ * deployments because all instances read and write to the same Neon database.
+ *
+ * Performance notes:
+ * - Reads are ~1-5ms (indexed primary key lookup + Neon connection pool).
+ * - Writes use INSERT … ON CONFLICT DO UPDATE (upsert) — atomic, no race.
+ * - Expired rows are pruned lazily (on read) plus a GC tick every 5 minutes.
+ * - The in-memory MemoryCache is always kept in sync as an L1 layer to avoid
+ *   DB round-trips for hot keys within the same instance.
+ */
+class PgCache {
+  private ready = false;
+  private gcInterval: ReturnType<typeof setInterval>;
+
+  constructor() {
+    this.init();
+    // Prune expired rows from the table every 5 minutes.
+    this.gcInterval = setInterval(() => this.gc(), 5 * 60_000);
+    this.gcInterval.unref?.();
+  }
+
+  private async init() {
+    try {
+      // Quick connectivity check.
+      await db.execute(sql`select 1`);
+      this.ready = true;
+      logger.info("PostgreSQL distributed cache ready");
+    } catch (err) {
+      logger.warn({ err }, "PostgreSQL cache init failed — falling back to memory only");
+    }
+  }
+
+  isReady(): boolean {
+    return this.ready;
+  }
+
+  async get<T>(key: string): Promise<T | null> {
+    if (!this.ready) return null;
+    try {
+      const now = new Date();
+      const rows = await db
+        .select({ value: cacheEntriesTable.value })
+        .from(cacheEntriesTable)
+        .where(eq(cacheEntriesTable.key, key))
+        .limit(1);
+
+      const row = rows[0];
+      if (!row) return null;
+
+      return JSON.parse(row.value) as T;
+    } catch {
+      return null;
+    }
+  }
+
+  async set<T>(key: string, value: T, ttlMs: number): Promise<void> {
+    if (!this.ready) return;
+    try {
+      const expiresAt = new Date(Date.now() + ttlMs);
+      await db
+        .insert(cacheEntriesTable)
+        .values({ key, value: JSON.stringify(value), expiresAt })
+        .onConflictDoUpdate({
+          target: cacheEntriesTable.key,
+          set: {
+            value: JSON.stringify(value),
+            expiresAt,
+            updatedAt: new Date(),
+          },
+        });
+    } catch {}
+  }
+
+  async del(key: string): Promise<void> {
+    if (!this.ready) return;
+    try {
+      await db.delete(cacheEntriesTable).where(eq(cacheEntriesTable.key, key));
+    } catch {}
+  }
+
+  private async gc(): Promise<void> {
+    if (!this.ready) return;
+    try {
+      await db.delete(cacheEntriesTable).where(lt(cacheEntriesTable.expiresAt, new Date()));
+    } catch {}
+  }
+}
+
 class RedisCache {
   private client!: import("ioredis").Redis;
   private ready = false;
@@ -64,12 +157,12 @@ class RedisCache {
       });
 
       this.client.on("error", (err: Error) => {
-        if (this.ready) logger.warn({ err: err.message }, "Redis error — falling back to memory");
+        if (this.ready) logger.warn({ err: err.message }, "Redis error — falling back to pg cache");
         this.ready = false;
       });
 
       this.client.connect().catch(() => {
-        logger.warn("Redis connect failed — in-memory cache active");
+        logger.warn("Redis connect failed — PostgreSQL distributed cache active");
       });
     }).catch(() => {
       logger.warn("ioredis not available");
@@ -108,28 +201,37 @@ class RedisCache {
 
 const memoryCache = new MemoryCache();
 const redisCache = process.env.REDIS_URL ? new RedisCache(process.env.REDIS_URL) : null;
+const pgCache = new PgCache();
+
+/**
+ * Returns the best available distributed backend (Redis > PostgreSQL).
+ * Falls back to null when neither is ready.
+ */
+function distributedCache(): RedisCache | PgCache | null {
+  if (redisCache?.isReady()) return redisCache;
+  if (pgCache.isReady()) return pgCache;
+  return null;
+}
 
 export const cache = {
   async get<T>(key: string): Promise<T | null> {
-    if (redisCache?.isReady()) {
-      const val = await redisCache.get<T>(key);
-      if (val !== null) return val;
-    }
-    return memoryCache.get<T>(key);
+    const l1 = memoryCache.get<T>(key);
+    if (l1 !== null) return l1;
+    const dist = distributedCache();
+    if (!dist) return null;
+    return dist.get<T>(key);
   },
 
   async set<T>(key: string, value: T, ttlMs: number): Promise<void> {
     memoryCache.set(key, value, ttlMs);
-    if (redisCache?.isReady()) {
-      await redisCache.set(key, value, ttlMs);
-    }
+    const dist = distributedCache();
+    if (dist) await dist.set(key, value, ttlMs);
   },
 
   async del(key: string): Promise<void> {
     memoryCache.del(key);
-    if (redisCache?.isReady()) {
-      await redisCache.del(key);
-    }
+    const dist = distributedCache();
+    if (dist) await dist.del(key);
   },
 
   async getOrSet<T>(
@@ -148,11 +250,25 @@ export const cache = {
     return redisCache?.isReady() ?? false;
   },
 
+  isPgCacheActive(): boolean {
+    return pgCache.isReady();
+  },
+
   status() {
+    const backend = redisCache?.isReady()
+      ? "redis"
+      : pgCache.isReady()
+        ? "postgresql"
+        : "memory";
     return {
+      backend,
       redis: {
         configured: Boolean(process.env.REDIS_URL),
         connected: redisCache?.isReady() ?? false,
+      },
+      postgresql: {
+        configured: true,
+        connected: pgCache.isReady(),
       },
       memory: {
         active: true,

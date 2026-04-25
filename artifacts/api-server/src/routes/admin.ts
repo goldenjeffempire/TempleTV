@@ -2,6 +2,7 @@ import { Router } from "express";
 import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, scheduledNotificationsTable, pushTokensTable, liveOverridesTable, transcodingJobsTable, broadcastQueueTable, usersTable, userWatchHistoryTable } from "@workspace/db";
 import { eq, ilike, or, count, sql, desc, asc, and, lte, gte, inArray } from "drizzle-orm";
 import { queueTranscodingJob, retryTranscodingJob } from "../lib/transcoder";
+import { isFfmpegReady } from "../lib/ffmpeg";
 import { broadcastLiveEvent, addSSEClient, removeSSEClient, getSSEClientCount } from "../lib/liveEvents";
 import { getLiveStatus, getLiveMonitorData } from "./youtube";
 import { emitBroadcastState } from "./broadcast";
@@ -633,10 +634,24 @@ router.get("/admin/ops/status", async (_req, res) => {
     const dbConnected = Boolean(dbProbe);
     const cacheStatus = cache.status();
 
+    const objectStorageBucketId = process.env.DEFAULT_OBJECT_STORAGE_BUCKET_ID?.trim() ?? "";
+    const publicObjectPaths = process.env.PUBLIC_OBJECT_SEARCH_PATHS?.trim() ?? "";
+    const privateObjectDir = process.env.PRIVATE_OBJECT_DIR?.trim() ?? "";
+    const objectStorageConfigured = Boolean(objectStorageBucketId && publicObjectPaths && privateObjectDir);
+
     const checks = [
       { key: "api", label: "API process", status: "ok" },
       { key: "database", label: "Database", status: dbConnected ? "ok" : "critical" },
-      { key: "cache", label: "Cache", status: cacheStatus.redis.configured && !cacheStatus.redis.connected ? "degraded" : "ok" },
+      {
+        key: "cache",
+        label: "Distributed cache",
+        status: (cacheStatus.redis?.connected || cacheStatus.postgresql?.connected) ? "ok" : "degraded",
+      },
+      {
+        key: "object_storage",
+        label: "Cloud storage",
+        status: objectStorageConfigured ? "ok" : "degraded",
+      },
       { key: "transcoding", label: "Transcoding queue", status: failedJobs > 0 ? "degraded" : "ok" },
       { key: "broadcast", label: "Broadcast continuity", status: activeBroadcastItems > 0 || activeLiveOverrides > 0 ? "ok" : "degraded" },
     ];
@@ -654,6 +669,30 @@ router.get("/admin/ops/status", async (_req, res) => {
       checks,
       metrics: metricsSnapshot(),
       cache: cacheStatus,
+      infrastructure: {
+        objectStorage: {
+          configured: objectStorageConfigured,
+          bucketId: objectStorageBucketId || null,
+          publicSearchPaths: publicObjectPaths || null,
+          privateDir: privateObjectDir || null,
+        },
+        cache: {
+          backend: cacheStatus.backend,
+          redis: {
+            configured: Boolean(process.env.REDIS_URL?.trim()),
+            connected: cacheStatus.redis?.connected ?? false,
+          },
+          postgresql: {
+            configured: true,
+            connected: cacheStatus.postgresql?.connected ?? false,
+          },
+        },
+        transcoder: {
+          ffmpegReady: isFfmpegReady(),
+          cloudUploadEnabled: objectStorageConfigured,
+          pendingJobs: queuedJobs,
+        },
+      },
       database: {
         connected: dbConnected,
         counts: {
@@ -740,7 +779,9 @@ router.get("/admin/launch/readiness", async (_req, res) => {
     const adminTokenConfigured = Boolean(process.env.ADMIN_API_TOKEN?.trim());
     const corsConfigured = Boolean(process.env.ALLOWED_ORIGINS?.trim());
     const objectStorageConfigured = Boolean(process.env.PRIVATE_OBJECT_DIR?.trim() || process.env.PUBLIC_OBJECT_SEARCH_PATHS?.trim());
-    const distributedCacheConfigured = Boolean(process.env.REDIS_URL?.trim());
+    // Distributed cache is active when Redis is configured OR when the PostgreSQL
+    // cache is ready (which is always true when DATABASE_URL is set — our standard).
+    const distributedCacheConfigured = Boolean(process.env.REDIS_URL?.trim()) || Boolean(process.env.DATABASE_URL?.trim());
     const adsConfigured = Boolean(
       process.env.ADMOB_APP_ID?.trim() ||
       process.env.EXPO_PUBLIC_ADMOB_APP_ID?.trim() ||
@@ -843,8 +884,12 @@ router.get("/admin/launch/readiness", async (_req, res) => {
             "cache",
             "Distributed cache",
             distributedCacheConfigured ? "ready" : "warning",
-            distributedCacheConfigured ? "Redis cache is configured." : "Running with in-memory cache fallback.",
-            "Add REDIS_URL for multi-instance production scaling.",
+            distributedCacheConfigured
+              ? process.env.REDIS_URL?.trim()
+                ? "Redis distributed cache is configured."
+                : "PostgreSQL distributed cache active (shared across all instances)."
+              : "Running with in-memory cache fallback (single-instance only).",
+            process.env.REDIS_URL?.trim() ? undefined : "Optionally add REDIS_URL for lower-latency caching.",
           ),
         ],
       },

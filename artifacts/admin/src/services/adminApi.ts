@@ -324,8 +324,28 @@ export interface OpsStatus {
     requests: Array<{ method: string; total: number; errors: number; averageMs: number }>;
   };
   cache: {
+    backend: "redis" | "postgresql" | "memory";
     redis: { configured: boolean; connected: boolean };
+    postgresql: { configured: boolean; connected: boolean };
     memory: { active: boolean };
+  };
+  infrastructure: {
+    objectStorage: {
+      configured: boolean;
+      bucketId: string | null;
+      publicSearchPaths: string | null;
+      privateDir: string | null;
+    };
+    cache: {
+      backend: "redis" | "postgresql" | "memory";
+      redis: { configured: boolean; connected: boolean };
+      postgresql: { configured: boolean; connected: boolean };
+    };
+    transcoder: {
+      ffmpegReady: boolean;
+      cloudUploadEnabled: boolean;
+      pendingJobs: number;
+    };
   };
   database: {
     connected: boolean;

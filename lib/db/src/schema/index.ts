@@ -12,3 +12,5 @@ export * from "./refresh-tokens";
 export * from "./user-favorites";
 export * from "./user-watch-history";
 export * from "./device-link-codes";
+export * from "./cache";
+export * from "./rate-limit";

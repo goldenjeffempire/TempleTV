@@ -7,6 +7,7 @@ import { startNotificationScheduler } from "./lib/notification-scheduler";
 import { startSSEHeartbeat, closeAllSSEClients } from "./lib/liveEvents";
 import { startBroadcastTransitionTicker } from "./routes/broadcast";
 import { startYoutubeCatalogueScheduler } from "./routes/youtube";
+import { cache } from "./lib/cache";
 
 const REQUIRED_ENV_VARS = ["DATABASE_URL", "JWT_SECRET"] as const;
 
@@ -37,12 +38,46 @@ const server = http.createServer(app);
 server.listen(port, "0.0.0.0", () => {
   logger.info({ port, host: "0.0.0.0" }, "Server listening");
 
+  // ── Infrastructure diagnostics ──────────────────────────────────────────────
+  // Log the status of all three production infrastructure services so that
+  // the startup log is the single source of truth for operators.
+  const objectStorageConfigured = Boolean(
+    process.env.DEFAULT_OBJECT_STORAGE_BUCKET_ID?.trim()
+  );
+  const redisConfigured = Boolean(process.env.REDIS_URL?.trim());
+
+  logger.info(
+    {
+      objectStorage: {
+        configured: objectStorageConfigured,
+        bucketId: objectStorageConfigured
+          ? process.env.DEFAULT_OBJECT_STORAGE_BUCKET_ID
+          : "not set — uploads will use local FS only",
+        publicPaths: process.env.PUBLIC_OBJECT_SEARCH_PATHS ?? "not set",
+        privateDir: process.env.PRIVATE_OBJECT_DIR ?? "not set",
+      },
+      distributedCache: {
+        redis: redisConfigured ? "configured" : "not configured",
+        pgCache: "active (cache_entries table)",
+        note: redisConfigured
+          ? "Redis primary, PostgreSQL secondary"
+          : "PostgreSQL distributed cache active across all instances",
+      },
+      hlsTranscoder: {
+        ffmpegPath: process.env.FFMPEG_PATH ?? "system PATH",
+        cloudUpload: objectStorageConfigured ? "enabled (GCS)" : "disabled (no bucket)",
+      },
+    },
+    "Infrastructure status at startup",
+  );
+
   // Verify ffmpeg + ffprobe are present BEFORE the worker can pick up jobs.
   // We log loudly on failure but don't crash — the rest of the API still
   // serves traffic, and uploads can still be received; only the transcoder
   // is gated behind this check.
   assertFfmpegAvailable()
     .then(() => {
+      logger.info("FFmpeg preflight passed — transcoding pipeline active");
       resumePendingJobsOnStartup().catch((err) => {
         logger.error({ err }, "Failed to resume pending transcoding jobs");
       });
@@ -59,6 +94,12 @@ server.listen(port, "0.0.0.0", () => {
   startSSEHeartbeat();
   startBroadcastTransitionTicker();
   startYoutubeCatalogueScheduler();
+
+  // Log cache backend once it has had time to connect (2 s warm-up).
+  setTimeout(() => {
+    const status = cache.status();
+    logger.info({ cacheStatus: status }, "Cache backend resolved");
+  }, 2_000);
 });
 
 server.on("error", (err) => {

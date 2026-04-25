@@ -475,27 +475,56 @@ export default function Operations() {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-sm">
                   <Wifi className="w-4 h-4 text-primary" />
-                  Cache & Streaming
+                  Infrastructure
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
+                {/* Distributed cache */}
                 <div className="flex items-center justify-between rounded-lg border p-3">
                   <div>
-                    <div className="font-medium text-sm">Redis cache</div>
+                    <div className="font-medium text-sm">Distributed cache</div>
                     <div className="text-xs text-muted-foreground">
-                      {status.cache.redis.configured
-                        ? "Configured — distributed caching"
-                        : "Memory cache fallback (no Redis)"}
+                      {status.infrastructure?.cache?.redis?.connected
+                        ? "Redis — low-latency distributed"
+                        : status.infrastructure?.cache?.postgresql?.connected
+                          ? "PostgreSQL — multi-instance safe"
+                          : "Memory fallback (single instance only)"}
                     </div>
                   </div>
                   <StatusBadge
                     status={
-                      status.cache.redis.connected
+                      status.infrastructure?.cache?.redis?.connected || status.infrastructure?.cache?.postgresql?.connected
                         ? "ok"
-                        : status.cache.redis.configured
-                          ? "degraded"
-                          : "ok"
+                        : "degraded"
                     }
+                  />
+                </div>
+                {/* Cloud object storage */}
+                <div className="flex items-center justify-between rounded-lg border p-3">
+                  <div>
+                    <div className="font-medium text-sm">Cloud object storage</div>
+                    <div className="text-xs text-muted-foreground">
+                      {status.infrastructure?.objectStorage?.configured
+                        ? "GCS bucket active — media persisted to cloud"
+                        : "Not configured — media stored locally only"}
+                    </div>
+                  </div>
+                  <StatusBadge
+                    status={status.infrastructure?.objectStorage?.configured ? "ok" : "degraded"}
+                  />
+                </div>
+                {/* HLS transcoder */}
+                <div className="flex items-center justify-between rounded-lg border p-3">
+                  <div>
+                    <div className="font-medium text-sm">HLS transcoder (ffmpeg)</div>
+                    <div className="text-xs text-muted-foreground">
+                      {status.infrastructure?.transcoder?.ffmpegReady
+                        ? `ABR pipeline ready — cloud upload ${status.infrastructure?.transcoder?.cloudUploadEnabled ? "enabled" : "disabled"}`
+                        : "ffmpeg unavailable — transcoding disabled"}
+                    </div>
+                  </div>
+                  <StatusBadge
+                    status={status.infrastructure?.transcoder?.ffmpegReady ? "ok" : "critical"}
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
