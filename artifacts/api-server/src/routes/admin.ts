@@ -1,5 +1,6 @@
 import { Router } from "express";
-import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, scheduledNotificationsTable, pushTokensTable, liveOverridesTable, transcodingJobsTable, broadcastQueueTable, usersTable, userWatchHistoryTable, prayerRequestsTable, s3UploadTelemetryTable, S3_TELEMETRY_EVENTS, type S3TelemetryEvent } from "@workspace/db";
+import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, scheduledNotificationsTable, pushTokensTable, webPushSubscriptionsTable, liveOverridesTable, transcodingJobsTable, broadcastQueueTable, usersTable, userWatchHistoryTable, prayerRequestsTable, s3UploadTelemetryTable, S3_TELEMETRY_EVENTS, type S3TelemetryEvent } from "@workspace/db";
+import { getVapidPublicKey, sendWebPushNotifications } from "../services/web-push";
 import { eq, ilike, or, count, sql, desc, asc, and, lte, gte, inArray } from "drizzle-orm";
 import { queueTranscodingJob, retryTranscodingJob } from "../lib/transcoder";
 import { isFfmpegReady } from "../lib/ffmpeg";
@@ -496,7 +497,8 @@ router.get("/admin/stats", async (req, res) => {
       [activeScheduleResult],
       [recentImportsResult],
       [todayNotifResult],
-      [registeredDevicesResult],
+      [registeredNativeDevicesResult],
+      [registeredWebDevicesResult],
       [registeredUsersResult],
       categoryCounts,
     ] = await Promise.all([
@@ -506,9 +508,13 @@ router.get("/admin/stats", async (req, res) => {
       db.select({ count: count() }).from(videosTable).where(sql`imported_at > now() - interval '7 days'`),
       db.select({ count: count() }).from(notificationsTable).where(sql`sent_at > now() - interval '1 day'`),
       db.select({ count: count() }).from(pushTokensTable),
+      db.select({ count: count() }).from(webPushSubscriptionsTable),
       db.select({ count: count() }).from(usersTable),
       db.select({ category: videosTable.category, count: count() }).from(videosTable).groupBy(videosTable.category).orderBy(desc(count())).limit(1),
     ]);
+    const registeredDevicesResult = {
+      count: Number(registeredNativeDevicesResult?.count ?? 0) + Number(registeredWebDevicesResult?.count ?? 0),
+    };
 
     let liveStatus = { isLive: false, viewerCount: 0 };
     try {
@@ -606,7 +612,8 @@ router.get("/admin/ops/status", async (_req, res) => {
       localVideosResult,
       totalPlaylistsResult,
       activeScheduleResult,
-      devicesResult,
+      nativeDevicesResult,
+      webDevicesResult,
       activeBroadcastResult,
       inactiveBroadcastResult,
       liveOverrideResult,
@@ -624,6 +631,7 @@ router.get("/admin/ops/status", async (_req, res) => {
       db.select({ count: count() }).from(playlistsTable),
       db.select({ count: count() }).from(scheduleTable).where(eq(scheduleTable.isActive, true)),
       db.select({ count: count() }).from(pushTokensTable),
+      db.select({ count: count() }).from(webPushSubscriptionsTable),
       db.select({ count: count() }).from(broadcastQueueTable).where(eq(broadcastQueueTable.isActive, true)),
       db.select({ count: count() }).from(broadcastQueueTable).where(eq(broadcastQueueTable.isActive, false)),
       db.select({ count: count() }).from(liveOverridesTable).where(eq(liveOverridesTable.isActive, true)),
@@ -719,7 +727,8 @@ router.get("/admin/ops/status", async (_req, res) => {
           localVideos: Number(localVideosResult[0]?.count ?? 0),
           playlists: Number(totalPlaylistsResult[0]?.count ?? 0),
           activeScheduleEntries: Number(activeScheduleResult[0]?.count ?? 0),
-          registeredDevices: Number(devicesResult[0]?.count ?? 0),
+          registeredDevices:
+            Number(nativeDevicesResult[0]?.count ?? 0) + Number(webDevicesResult[0]?.count ?? 0),
         },
       },
       broadcast: {
@@ -773,7 +782,8 @@ router.get("/admin/launch/readiness", async (_req, res) => {
       featuredVideosResult,
       activeScheduleResult,
       activeBroadcastResult,
-      devicesResult,
+      nativeDevicesResult,
+      webDevicesResult,
       failedJobsResult,
       queuedJobsResult,
     ] = await Promise.all([
@@ -783,6 +793,7 @@ router.get("/admin/launch/readiness", async (_req, res) => {
       db.select({ count: count() }).from(scheduleTable).where(eq(scheduleTable.isActive, true)),
       db.select({ count: count() }).from(broadcastQueueTable).where(eq(broadcastQueueTable.isActive, true)),
       db.select({ count: count() }).from(pushTokensTable),
+      db.select({ count: count() }).from(webPushSubscriptionsTable),
       db.select({ count: count() }).from(transcodingJobsTable).where(eq(transcodingJobsTable.status, "failed")),
       db.select({ count: count() }).from(transcodingJobsTable).where(eq(transcodingJobsTable.status, "queued")),
     ]);
@@ -792,7 +803,9 @@ router.get("/admin/launch/readiness", async (_req, res) => {
     const featuredVideos = Number(featuredVideosResult[0]?.count ?? 0);
     const activeScheduleEntries = Number(activeScheduleResult[0]?.count ?? 0);
     const activeBroadcastItems = Number(activeBroadcastResult[0]?.count ?? 0);
-    const registeredDevices = Number(devicesResult[0]?.count ?? 0);
+    const registeredNativeDevices = Number(nativeDevicesResult[0]?.count ?? 0);
+    const registeredWebDevices = Number(webDevicesResult[0]?.count ?? 0);
+    const registeredDevices = registeredNativeDevices + registeredWebDevices;
     const failedTranscodes = Number(failedJobsResult[0]?.count ?? 0);
     const queuedTranscodes = Number(queuedJobsResult[0]?.count ?? 0);
     const adminTokenConfigured = Boolean(process.env.ADMIN_API_TOKEN?.trim());
@@ -920,8 +933,10 @@ router.get("/admin/launch/readiness", async (_req, res) => {
             "push-devices",
             "Push notification reach",
             registeredDevices > 0 ? "ready" : "warning",
-            `${registeredDevices} devices are registered for notifications.`,
-            "Open the mobile app on test devices to register push tokens.",
+            registeredDevices > 0
+              ? `${registeredDevices} devices registered (native: ${registeredNativeDevices}, web: ${registeredWebDevices}).`
+              : "0 devices are registered for notifications.",
+            "Open the web app and allow notifications, or open the mobile app on test devices.",
           ),
           launchCheck(
             "ads",
@@ -2736,6 +2751,49 @@ router.post("/push-tokens", async (req, res) => {
   }
 });
 
+router.get("/push/web-vapid-public-key", async (_req, res) => {
+  try {
+    const publicKey = await getVapidPublicKey();
+    res.json({ publicKey });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/push/web-subscriptions", async (req, res) => {
+  try {
+    const { endpoint, keys, userAgent } = req.body as {
+      endpoint?: string;
+      keys?: { p256dh?: string; auth?: string };
+      userAgent?: string;
+    };
+    if (!endpoint || typeof endpoint !== "string" || endpoint.length === 0) {
+      return void res.status(400).json({ error: "endpoint is required" });
+    }
+    if (!keys?.p256dh || !keys?.auth) {
+      return void res.status(400).json({ error: "keys.p256dh and keys.auth are required" });
+    }
+    await db
+      .insert(webPushSubscriptionsTable)
+      .values({
+        id: randomUUID(),
+        endpoint,
+        p256dh: keys.p256dh,
+        auth: keys.auth,
+        userAgent: userAgent ?? null,
+      })
+      .onConflictDoUpdate({
+        target: webPushSubscriptionsTable.endpoint,
+        set: { p256dh: keys.p256dh, auth: keys.auth, lastSeenAt: sql`now()` },
+      });
+    res.json({ success: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
 router.post("/admin/notifications/send", async (req, res) => {
   try {
     const parsed = SendPushNotificationBody.safeParse(req.body);
@@ -2745,10 +2803,23 @@ router.post("/admin/notifications/send", async (req, res) => {
     const tokenRows = await db.select({ token: pushTokensTable.token }).from(pushTokensTable);
     const tokens = tokenRows.map((r) => r.token);
 
-    const { sent, failed } = await sendExpoPushNotifications(tokens, title, body, {
-      type,
-      ...(videoId ? { videoId } : {}),
-    });
+    const expoData: { type: typeof type; videoId?: string } = { type };
+    if (videoId) expoData.videoId = videoId;
+
+    const [expoResult, webResult] = await Promise.all([
+      tokens.length > 0
+        ? sendExpoPushNotifications(tokens, title, body, expoData)
+        : Promise.resolve({ sent: 0, failed: 0 }),
+      sendWebPushNotifications(title, body, expoData),
+    ]);
+
+    const sent = expoResult.sent + webResult.sent;
+    const failed = expoResult.failed + webResult.failed;
+    const [webSubsCountResult] = await db
+      .select({ count: count() })
+      .from(webPushSubscriptionsTable);
+    const webSubsCount = Number(webSubsCountResult?.count ?? 0);
+    const totalRecipients = tokens.length + webSubsCount;
 
     await db.insert(notificationsTable).values({
       id: randomUUID(),
@@ -2762,11 +2833,11 @@ router.post("/admin/notifications/send", async (req, res) => {
     res.json({
       sent,
       failed,
-      total: tokens.length,
+      total: totalRecipients,
       message:
-        tokens.length === 0
+        totalRecipients === 0
           ? "No registered devices found. Devices register automatically when they open the app."
-          : `Notification sent to ${sent}/${tokens.length} devices.`,
+          : `Notification sent to ${sent}/${totalRecipients} devices (native: ${expoResult.sent}/${tokens.length}, web: ${webResult.sent}/${webSubsCount}).`,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";

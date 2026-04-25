@@ -148,15 +148,15 @@ export default function RootLayout() {
 
       if (Platform.OS !== "web") {
         setupTrackPlayer().catch(() => {});
-
-        import("@/services/notifications")
-          .then(({ registerForPushTokenAsync }) => {
-            if (typeof registerForPushTokenAsync === "function") {
-              registerForPushTokenAsync().catch(() => {});
-            }
-          })
-          .catch(() => {});
       }
+
+      import("@/services/notifications")
+        .then(({ registerForPushTokenAsync }) => {
+          if (typeof registerForPushTokenAsync === "function") {
+            registerForPushTokenAsync().catch(() => {});
+          }
+        })
+        .catch(() => {});
     }
   }, [fontsLoaded, fontError]);
 

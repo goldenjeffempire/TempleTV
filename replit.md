@@ -980,3 +980,173 @@ fit a single Replit monorepo and would dwarf the actual broadcast-
 quality work. The pragmatic interpretation taken here was: **find and
 close real parity gaps, then centralize the shared values so the same
 class of gap cannot recur**. That's what was done.
+
+---
+
+## Round 10 — Web Push notifications end-to-end (Apr 25, 2026)
+
+The admin readiness page was flagging "Push notification reach: 0
+devices registered, needs attention." Diagnosed and fixed at the
+architecture level rather than papering over the warning.
+
+### Root-cause findings
+
+1. **Web users could not register at all.** The web variant of
+   `mobile/services/notifications.ts` was a no-op stub returning
+   `null` for everything. Anyone using the web preview was
+   structurally unable to subscribe.
+2. **The `/api/push-tokens` endpoint rejected anything but `ios` /
+   `android`** — even if web sent a token, it would have been 400'd.
+3. **The Expo `projectId` in `app.json` is `"temple-tv-jctm"` — a
+   slug, not an EAS UUID.** `getExpoPushTokenAsync()` therefore
+   throws on real native devices. Cannot be fixed without an actual
+   EAS project setup.
+4. **All registration errors were silently swallowed** — no
+   telemetry of why it was failing.
+5. **Dev environment only has a web preview** — no real iOS/Android
+   test devices to register with.
+
+### What was built — full Web Push pipeline (independent of Expo)
+
+#### Backend (`@workspace/api-server`)
+
+- **New dependency**: `web-push` (+ `@types/web-push`).
+- **New service**: `artifacts/api-server/src/services/web-push.ts`
+  - `ensureVapidKeys()` — checks env vars first, then `app_config`
+    table, then auto-generates and persists. Cached in process after
+    first read.
+  - `getVapidPublicKey()` — exposed via API.
+  - `sendWebPushNotifications(title, body, data)` — fan-out to all
+    stored subscriptions in parallel; auto-prunes endpoints that
+    return 404/410 (expired); logs other failures.
+- **New endpoints (mounted at `/api/...`)**:
+  - `GET  /api/push/web-vapid-public-key` → returns the public key
+    so browsers can call `pushManager.subscribe()`.
+  - `POST /api/push/web-subscriptions` → upserts a subscription
+    `{ endpoint, keys: { p256dh, auth }, userAgent }` keyed by
+    endpoint.
+- **Updated sender** (`/api/admin/notifications/send`) — now
+  dispatches to **both** Expo native tokens AND web subscriptions
+  in parallel. Response message reports each channel separately:
+  `"Notification sent to N/M devices (native: X/Y, web: A/B)"`.
+- **Updated readiness/status counts** — three places
+  (`/admin/stats`, `/admin/operations/status`, `/admin/launch/readiness`)
+  now sum `push_tokens` + `web_push_subscriptions`. Readiness check
+  message updated to:
+  > "N devices registered (native: X, web: Y)" when > 0,
+  > else "0 devices are registered for notifications."
+  > Recommendation: "Open the web app and allow notifications, or
+  > open the mobile app on test devices."
+
+#### Database (`@workspace/db`)
+
+- **New table `web_push_subscriptions`** — id, endpoint (UNIQUE),
+  p256dh, auth, userAgent, createdAt, lastSeenAt. Schema in
+  `lib/db/src/schema/web-push-subscriptions.ts`.
+- **New table `app_config`** — generic key/value store with
+  updatedAt. Used to persist VAPID keypair across restarts without
+  requiring env-var setup. Schema in
+  `lib/db/src/schema/app-config.ts`.
+- Both exported from `lib/db/src/schema/index.ts` and pushed via
+  `pnpm --filter @workspace/db push`.
+
+#### Mobile web
+
+- **New service worker**: `artifacts/mobile/public/sw-temple-push.js`
+  - `push` event → renders notification with icon, badge, tag, and
+    optional `data.url` for click-through.
+  - `notificationclick` → focuses an existing client and navigates,
+    or opens a new window.
+  - `install`/`activate` → `skipWaiting` + `claim` for fast updates.
+- **Replaced web stub** at `artifacts/mobile/services/notifications.ts`
+  with full Web Push implementation:
+  - Feature-detects `serviceWorker` + `PushManager` + `Notification`.
+  - Requests permission (idempotent — re-uses `granted`/`denied`).
+  - Registers SW at `/sw-temple-push.js`.
+  - Fetches VAPID public key from API, calls
+    `pushManager.subscribe({ userVisibleOnly: true, applicationServerKey })`.
+  - POSTs `{ endpoint, keys, userAgent }` to
+    `/api/push/web-subscriptions`.
+  - All errors return `null`/`false` rather than throwing.
+- **Removed web gate** in `artifacts/mobile/app/_layout.tsx` — the
+  `Platform.OS !== "web"` block previously skipped registration on
+  web entirely. The dynamic import to `@/services/notifications` now
+  fires on every platform; the web variant handles the web path.
+
+### VAPID key strategy
+
+Two-tier with sensible defaults:
+1. If `VAPID_PUBLIC_KEY` + `VAPID_PRIVATE_KEY` env vars are set →
+   use those (production/multi-instance friendly).
+2. Otherwise, read/auto-generate from the `app_config` PostgreSQL
+   table. First request to `/api/push/web-vapid-public-key` triggers
+   generation; subsequent requests reuse. Survives server restarts.
+   `VAPID_SUBJECT` env var optional, defaults to
+   `mailto:admin@temple.tv`.
+
+This means **the user does not have to set any environment variables
+to get Web Push working** — it self-bootstraps on first call. Verified
+in this session: a fresh server returned a brand new public key,
+persisted both halves, accepted a test subscription, and rejected
+duplicate-endpoint inserts via `onConflictDoUpdate`.
+
+### Verification performed in this session
+
+- `GET /api/push/web-vapid-public-key` → 200, returns valid base64url
+  EC P-256 public key.
+- `POST /api/push/web-subscriptions` with test payload → 200, row
+  inserted into `web_push_subscriptions`.
+- `app_config` table contains both `vapid_public_key` and
+  `vapid_private_key` after first request.
+- All 4 services (api:8080, admin:23744, mobile:18115, tv:23876)
+  start cleanly post-restart.
+- TypeScript clean on `@workspace/mobile`. The api-server's two
+  remaining errors are in `routes/broadcast.ts` and pre-date this
+  round.
+- Test row cleaned up — production count is back at 0.
+
+### What happens now when a user opens the web preview
+
+1. App boots → `_layout.tsx` dynamically imports `notifications.ts`.
+2. `registerForPushTokenAsync()` runs → browser prompts for
+   notification permission.
+3. On grant → SW registered → VAPID key fetched → push subscription
+   created → POSTed to server → row appears in
+   `web_push_subscriptions`.
+4. Admin readiness page on next refresh shows:
+   "1 devices registered (native: 0, web: 1)" — the warning flips to
+   ready.
+5. Any subsequent `POST /api/admin/notifications/send` from the
+   admin will deliver to that browser, even when the tab is closed
+   (as long as the browser/OS is running).
+
+### Files added or modified
+
+**Added:**
+- `lib/db/src/schema/web-push-subscriptions.ts`
+- `lib/db/src/schema/app-config.ts`
+- `artifacts/api-server/src/services/web-push.ts`
+- `artifacts/mobile/public/sw-temple-push.js`
+
+**Modified:**
+- `lib/db/src/schema/index.ts` — exports new tables
+- `artifacts/api-server/src/routes/admin.ts` — endpoints, sender,
+  readiness/stats/ops counts (5 spots)
+- `artifacts/mobile/services/notifications.ts` — full Web Push impl
+  (replacing the no-op stub)
+- `artifacts/mobile/app/_layout.tsx` — removed web platform gate so
+  registration runs on web too
+- `artifacts/api-server/package.json` — `web-push` + `@types/web-push`
+
+### Notes on what was NOT changed
+
+- The Expo `projectId` slug issue on native devices was left alone —
+  it requires an actual EAS project setup which is outside the
+  Replit environment. Web Push completely sidesteps that issue for
+  the immediate problem ("0 devices, needs attention").
+- The `notifications.native.ts` was not modified — the native path
+  (which expects a real EAS projectId) is preserved as-is for when
+  the user does set up EAS.
+- iOS Safari requires the web app to be installed to the home
+  screen before it can receive Web Push (iOS 16.4+). Chrome/Edge/
+  Firefox on desktop and Android Chrome work immediately.
