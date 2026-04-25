@@ -791,11 +791,11 @@ export default function PlayerScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
-      {Platform.OS !== "web" && <StatusBar barStyle="light-content" backgroundColor="#000" />}
+      {Platform.OS !== "web" && <StatusBar barStyle="light-content" backgroundColor="#0d1117" />}
 
-      {/* Black safe-area spacer — keeps video below notch / Dynamic Island */}
+      {/* Soft-dark safe-area spacer — keeps video below notch / Dynamic Island */}
       {Platform.OS !== "web" && insets.top > 0 && (
-        <View style={{ height: insets.top, backgroundColor: "#000" }} />
+        <View style={{ height: insets.top, backgroundColor: "#0d1117" }} />
       )}
 
       <View
@@ -854,7 +854,8 @@ export default function PlayerScreen() {
           />
         )}
         <LinearGradient
-          colors={["rgba(0,0,0,0.7)", "transparent"]}
+          colors={["rgba(13,17,23,0.78)", "rgba(13,17,23,0.32)", "transparent"]}
+          locations={[0, 0.55, 1]}
           style={[styles.topGradient, { paddingTop: webTopPad + 12, pointerEvents: "box-none" }]}
         >
           <View style={styles.topControls}>
@@ -1203,6 +1204,10 @@ const styles = StyleSheet.create({
     height: 7,
     borderRadius: 3.5,
     backgroundColor: "#FF0040",
+    shadowColor: "#FF0040",
+    shadowOpacity: 0.7,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 0 },
   },
   onAirLabel: {
     fontSize: 10,

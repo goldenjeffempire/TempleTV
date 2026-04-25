@@ -37,7 +37,8 @@ export function BroadcastInfoStrip({ broadcast, playerHeight }: BroadcastInfoStr
       style={[styles.container, { opacity: fadeAnim, transform: [{ translateY: slideAnim }], pointerEvents: "none" }]}
     >
       <LinearGradient
-        colors={["transparent", "rgba(0,0,0,0.95)"]}
+        colors={["transparent", "rgba(13,17,23,0.45)", "rgba(13,17,23,0.88)"]}
+        locations={[0, 0.55, 1]}
         style={[styles.gradient, { height: Math.max(Math.round(playerHeight * 0.55), 120) }]}
       >
         <View style={styles.inner}>
@@ -87,6 +88,10 @@ const styles = StyleSheet.create({
     height: 6,
     borderRadius: 3,
     backgroundColor: "#FF0040",
+    shadowColor: "#FF0040",
+    shadowOpacity: 0.7,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 0 },
   },
   nowLabel: {
     color: "#FF0040",
@@ -95,7 +100,7 @@ const styles = StyleSheet.create({
     letterSpacing: 1.2,
   },
   channelLabel: {
-    color: "rgba(255,255,255,0.5)",
+    color: "rgba(255,255,255,0.65)",
     fontSize: 10,
     fontWeight: "600",
     letterSpacing: 1.1,

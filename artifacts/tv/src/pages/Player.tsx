@@ -580,14 +580,16 @@ function YouTubePlayer({ videoId, title, onBack, isLive = false }: { videoId: st
         >
           <div
             style={{
-              background: "rgba(0,0,0,0.72)",
-              backdropFilter: "blur(8px)",
+              background: "rgba(13,17,23,0.78)",
+              backdropFilter: "blur(10px)",
+              border: "1px solid rgba(255,255,255,0.08)",
               borderRadius: 16,
               padding: "18px 36px",
               fontSize: "clamp(28px, 4vw, 48px)",
               fontWeight: 800,
               color: "#fff",
               letterSpacing: "0.02em",
+              boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
             }}
           >
             {seekOsd}
@@ -608,7 +610,7 @@ function YouTubePlayer({ videoId, title, onBack, isLive = false }: { videoId: st
             top: 0,
             left: 0,
             right: 0,
-            background: "linear-gradient(to bottom, rgba(0,0,0,0.88) 0%, transparent 100%)",
+            background: "linear-gradient(to bottom, rgba(13,17,23,0.82) 0%, rgba(13,17,23,0.42) 55%, transparent 100%)",
             padding: "calc(env(safe-area-inset-top, 0px) + clamp(14px, 3vw, 28px)) var(--tv-safe-h, 60px) clamp(32px, 6vw, 60px)",
             pointerEvents: "none",
             zIndex: 10,
@@ -665,7 +667,7 @@ function YouTubePlayer({ videoId, title, onBack, isLive = false }: { videoId: st
             bottom: 0,
             left: 0,
             right: 0,
-            background: "linear-gradient(to top, rgba(0,0,0,0.75) 0%, transparent 100%)",
+            background: "linear-gradient(to top, rgba(13,17,23,0.78) 0%, rgba(13,17,23,0.38) 55%, transparent 100%)",
             padding: "clamp(32px, 6vw, 60px) var(--tv-safe-h, 60px) calc(env(safe-area-inset-bottom, 0px) + clamp(16px, 2.4vw, 24px))",
             pointerEvents: "none",
             opacity: showControls ? 1 : 0,
