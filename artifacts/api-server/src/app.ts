@@ -109,6 +109,13 @@ app.use(adminAccessControl);
 const UPLOADS_DIR = path.join(__dirname, "..", "uploads");
 const HLS_DIR = path.join(UPLOADS_DIR, "hls");
 
+// /api/uploads serves the original full-size source media (typically large
+// MP4s, 100s of MB each). On Render's small instances, streaming those bytes
+// through the API process under parallel HTTP Range traffic was OOM-killing
+// the container — so for anything that has already mirrored to S3 we issue a
+// 302 to a short-lived presigned URL and let clients fetch directly from S3.
+// The local-disk fast path (express.static) is preserved for the brief window
+// after a fresh upload before it mirrors to the bucket.
 app.use(
   "/api/uploads",
   (_req, res, next) => {
@@ -116,7 +123,11 @@ app.use(
     next();
   },
   express.static(UPLOADS_DIR, { fallthrough: true, acceptRanges: true }),
-  s3FallbackMiddleware({ s3Prefix: "videos/", localDir: UPLOADS_DIR }),
+  s3FallbackMiddleware({
+    s3Prefix: "videos/",
+    localDir: UPLOADS_DIR,
+    redirectFromS3: { signedUrlTtlSec: 3600 },
+  }),
 );
 
 app.use(

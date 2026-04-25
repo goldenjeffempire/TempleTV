@@ -5,6 +5,7 @@ import {
   isS3Configured,
   headObject,
   getObjectStream,
+  getSignedGetUrl,
 } from "./s3Storage";
 import { sendRangedGet } from "./s3Ranged";
 import { logger } from "./logger";
@@ -48,6 +49,22 @@ interface FallbackOptions {
    * caller mounts the middleware standalone without a static layer in front.
    */
   localDir?: string;
+  /**
+   * When set, the middleware short-circuits the S3 streaming path and instead
+   * issues a 302 redirect to a short-lived presigned S3 URL. Use this for
+   * large media (full-length MP4s, source uploads) so the API process never
+   * has to pipe hundreds of megabytes of bytes — an OOM trigger on small
+   * Render instances when many parallel range requests arrive at once.
+   *
+   * The local-disk fast path is preserved (so freshly-uploaded files served
+   * before they mirror to S3 still work), and tiny/hot assets like HLS
+   * segments should keep streaming (set this to undefined for those mounts)
+   * to avoid the per-segment redirect round-trip.
+   */
+  redirectFromS3?: {
+    /** Lifetime of the minted presigned URL, in seconds. */
+    signedUrlTtlSec: number;
+  };
 }
 
 function pickContentType(urlPath: string, fromS3: string | null): string {
@@ -100,7 +117,7 @@ function parseRangeHeader(
 }
 
 export function s3FallbackMiddleware(opts: FallbackOptions): express.RequestHandler {
-  const { s3Prefix, localDir } = opts;
+  const { s3Prefix, localDir, redirectFromS3 } = opts;
 
   return async function s3Fallback(req, res, next) {
     if (req.method !== "GET" && req.method !== "HEAD") {
@@ -152,6 +169,33 @@ export function s3FallbackMiddleware(opts: FallbackOptions): express.RequestHand
     }
     if (!head) {
       return next(); // 404 — neither local nor S3 has it.
+    }
+
+    // ── Redirect mode ────────────────────────────────────────────────────────
+    // For large media (full-length MP4s served via /api/uploads), don't pipe
+    // bytes through the Node process — mint a presigned S3 URL and 302. The
+    // client's video player issues range requests directly against S3, so the
+    // API process no longer holds any video bytes in memory and stops OOMing
+    // under parallel range traffic. The signed URL TTL is short; clients that
+    // hold open sessions will request a fresh redirect when the URL expires.
+    if (redirectFromS3) {
+      try {
+        const signedUrl = await getSignedGetUrl(key, redirectFromS3.signedUrlTtlSec);
+        // Cache the redirect for less than the signed URL lifetime so a stale
+        // cached redirect can never outlive the underlying URL signature.
+        const maxAge = Math.max(60, Math.floor(redirectFromS3.signedUrlTtlSec / 2));
+        res.setHeader("Cache-Control", `private, max-age=${maxAge}`);
+        res.setHeader("X-Storage-Source", "s3-redirect");
+        res.redirect(302, signedUrl);
+        return;
+      } catch (err) {
+        logger.error(
+          { err: err instanceof Error ? err.message : String(err), key },
+          "S3 fallback: presign failed — falling back to streaming",
+        );
+        // Fall through to the streaming path so the request still succeeds
+        // even if the presigner momentarily fails.
+      }
     }
 
     const totalSize = head.contentLength ?? 0;
