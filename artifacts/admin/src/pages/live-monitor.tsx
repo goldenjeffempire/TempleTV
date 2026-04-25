@@ -33,6 +33,7 @@ import { useToast } from "@/hooks/use-toast";
 import { getAdminToken } from "@/lib/admin-access";
 import { fetchWithTransientRetry } from "@/services/adminApi";
 import { apiBase } from "@/lib/api-base";
+import { ProcessStatusPanel } from "@/components/ProcessStatusPanel";
 
 interface LiveEventRecord {
   ts: number;
@@ -693,6 +694,8 @@ export default function LiveMonitor() {
           </div>
         </div>
       )}
+
+      <ProcessStatusPanel />
 
       <RealtimeStreamHealth snapshot={streamHealth} stale={healthIsStale} staleMs={healthStaleMs} />
 

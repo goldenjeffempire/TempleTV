@@ -2,7 +2,7 @@ import { Router } from "express";
 import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, scheduledNotificationsTable, pushTokensTable, webPushSubscriptionsTable, liveOverridesTable, transcodingJobsTable, broadcastQueueTable, usersTable, userWatchHistoryTable, prayerRequestsTable, s3UploadTelemetryTable, S3_TELEMETRY_EVENTS, type S3TelemetryEvent } from "@workspace/db";
 import { getVapidPublicKey, sendWebPushNotifications } from "../services/web-push";
 import { eq, ilike, or, count, sql, desc, asc, and, lte, gte, inArray } from "drizzle-orm";
-import { queueTranscodingJob, retryTranscodingJob } from "../lib/transcoder";
+import { queueTranscodingJob, retryTranscodingJob, TRANSCODER_HEARTBEAT_KEY } from "../lib/transcoder";
 import { isFfmpegReady } from "../lib/ffmpeg";
 import { broadcastLiveEvent, addSSEClient, removeSSEClient, getSSEClientCount } from "../lib/liveEvents";
 import { getLiveStatus, getLiveMonitorData } from "./youtube";
@@ -3353,6 +3353,91 @@ router.post("/admin/live/override/extend", async (req, res) => {
     res.json({ ok: true, override: updated });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+// ── Process status (per-process role + transcoder worker liveness) ──────────
+// Reports the current process's identity (the API process answering this
+// request) and infers the worker's liveness from its heartbeat written to
+// the shared cache by `lib/transcoder.ts#startRetryTick`. Used by the Live
+// Monitor to show both processes side-by-side after the api/worker split.
+router.get("/admin/process-status", async (_req, res) => {
+  try {
+    const runMode = (process.env.RUN_MODE ?? "all").toLowerCase();
+    const memUsage = process.memoryUsage();
+    const thisProcess = {
+      pid: process.pid,
+      runMode,
+      role: runMode === "worker" ? "worker" : "api",
+      uptimeSec: Math.round(process.uptime()),
+      rssMb: Math.round(memUsage.rss / 1024 / 1024),
+      heapUsedMb: Math.round(memUsage.heapUsed / 1024 / 1024),
+      nodeVersion: process.version,
+    };
+
+    // Single grouped count for queue depth — keeps DB load to one query.
+    const groups = await db
+      .select({
+        status: transcodingJobsTable.status,
+        n: count(),
+      })
+      .from(transcodingJobsTable)
+      .groupBy(transcodingJobsTable.status);
+
+    const queue = { queued: 0, processing: 0, failed: 0, done: 0 };
+    for (const g of groups) {
+      const k = g.status as keyof typeof queue;
+      if (k in queue) queue[k] = Number(g.n);
+    }
+
+    // Worker heartbeat (written by the transcoder process to shared cache).
+    // In `RUN_MODE=all` (single-process dev), this process IS the worker so
+    // the heartbeat reflects ourselves; in production-split deployments the
+    // worker is a separate Render service and writes its own heartbeat.
+    const beat = await cache.get<{
+      pid: number;
+      ts: number;
+      runMode: string;
+      nodeVersion: string;
+      rssMb: number;
+    }>(TRANSCODER_HEARTBEAT_KEY);
+
+    const now = Date.now();
+    const heartbeatAgeSec = beat ? Math.round((now - beat.ts) / 1000) : null;
+    // Healthy if a heartbeat arrived in the last 90s (retry tick is 30s).
+    const workerAlive = heartbeatAgeSec !== null && heartbeatAgeSec < 90;
+    const sameProcess = beat?.pid === process.pid;
+
+    const s3Configured = isS3Configured();
+    res.setHeader("Cache-Control", "no-store").json({
+      thisProcess,
+      transcoder: {
+        queue,
+        heartbeat: beat
+          ? {
+              pid: beat.pid,
+              ageSec: heartbeatAgeSec,
+              runMode: beat.runMode,
+              nodeVersion: beat.nodeVersion,
+              rssMb: beat.rssMb,
+              sameProcess,
+            }
+          : null,
+        alive: workerAlive,
+      },
+      infrastructure: {
+        s3: {
+          configured: s3Configured,
+          bucket: s3Configured ? AWS_S3_BUCKET : null,
+          region: s3Configured ? AWS_REGION : null,
+        },
+        cache: cache.status(),
+      },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    logger.error({ err }, "process-status failed");
     res.status(500).json({ error: msg });
   }
 });

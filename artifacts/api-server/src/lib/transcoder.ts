@@ -750,9 +750,44 @@ async function startWorker(): Promise<void> {
 // retries actually fire without requiring a new upload to trigger them.
 let retryTickHandle: NodeJS.Timeout | null = null;
 
+// ── Worker liveness heartbeat ────────────────────────────────────────────────
+// Written to the distributed cache (Postgres-backed) on every retry tick and
+// after every job ticks the worker. The API process reads this to derive
+// "is the transcoder worker alive?" without needing direct IPC. Surfaced by
+// `GET /api/admin/process-status` for the Live Monitor.
+export const TRANSCODER_HEARTBEAT_KEY = "process:transcoder:heartbeat";
+const TRANSCODER_HEARTBEAT_TTL_MS = 120_000; // 2× the retry tick
+
+export interface TranscoderHeartbeat {
+  pid: number;
+  ts: number;          // epoch ms
+  runMode: string;     // "worker" | "all"
+  nodeVersion: string;
+  rssMb: number;
+}
+
+async function writeWorkerHeartbeat(): Promise<void> {
+  try {
+    const beat: TranscoderHeartbeat = {
+      pid: process.pid,
+      ts: Date.now(),
+      runMode: (process.env.RUN_MODE ?? "all").toLowerCase(),
+      nodeVersion: process.version,
+      rssMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+    };
+    await cache.set(TRANSCODER_HEARTBEAT_KEY, beat, TRANSCODER_HEARTBEAT_TTL_MS);
+  } catch (err) {
+    logger.warn({ err }, "Failed to write transcoder heartbeat (non-fatal)");
+  }
+}
+
 export function startRetryTick(intervalMs = 30_000): void {
   if (retryTickHandle) return;
+  // Write an immediate heartbeat on startup so the Live Monitor reflects the
+  // worker's existence even before the first 30 s tick fires.
+  void writeWorkerHeartbeat();
   retryTickHandle = setInterval(() => {
+    void writeWorkerHeartbeat();
     if (isWorkerRunning) return;
     db.select({ id: transcodingJobsTable.id })
       .from(transcodingJobsTable)

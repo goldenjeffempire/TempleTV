@@ -424,6 +424,41 @@ export interface TranscodingQueue {
   };
 }
 
+export interface ProcessStatus {
+  thisProcess: {
+    pid: number;
+    runMode: string;
+    role: "api" | "worker";
+    uptimeSec: number;
+    rssMb: number;
+    heapUsedMb: number;
+    nodeVersion: string;
+  };
+  transcoder: {
+    queue: { queued: number; processing: number; failed: number; done: number };
+    heartbeat:
+      | {
+          pid: number;
+          ageSec: number;
+          runMode: string;
+          nodeVersion: string;
+          rssMb: number;
+          sameProcess: boolean;
+        }
+      | null;
+    alive: boolean;
+  };
+  infrastructure: {
+    s3: { configured: boolean; bucket: string | null; region: string | null };
+    cache: unknown;
+  };
+}
+
+export const processApi = {
+  getStatus: (signal?: AbortSignal) =>
+    adminGet<ProcessStatus>("/admin/process-status", signal),
+};
+
 export interface LiveMonitorData {
   current: {
     isLive: boolean;
