@@ -774,11 +774,71 @@ export default function PlayerScreen() {
       await new Promise((resolve) => setTimeout(resolve, 500));
       const bc = await checkBroadcastCurrent();
       if (!isMountedRef.current) return;
-      if (bc?.item) tuneToBroadcastItem(bc);
+      if (bc?.item) {
+        // Round 9: also refresh the broadcastInfo so the now-playing strip,
+        // up-next preview, and currentItemEndsAtMs precision timer all
+        // reflect the recovered state — without this they stay frozen on
+        // the failed item until the next SSE event lands.
+        setBroadcastInfo(bc);
+        tuneToBroadcastItem(bc);
+      }
     } finally {
       if (isMountedRef.current) setBroadcastRecovering(false);
     }
   }, [isBroadcastMode, broadcastRecovering, tuneToBroadcastItem]);
+
+  // ── Broken-item skip protection ────────────────────────────────────────
+  // If the currently-airing item fails to load 3+ times within a 60-second
+  // window, treat it as broken and locally jump to the up-next item so the
+  // broadcast keeps flowing instead of looping on a 404 / corrupt manifest.
+  // The server's own anchor will catch up on the next /broadcast/current
+  // call, so this is a temporary client-side bypass — not a desync source.
+  const consecutiveErrorsRef = useRef(0);
+  const lastErrorAtRef = useRef(0);
+  const SKIP_AFTER_ERRORS = 3;
+  const ERROR_WINDOW_MS = 60_000;
+
+  const handleBroadcastError = useCallback(async () => {
+    if (!isBroadcastMode) {
+      // Non-broadcast playback: existing recovery (no skip — user picked it).
+      recoverBroadcastPlayback();
+      return;
+    }
+    const now = Date.now();
+    if (now - lastErrorAtRef.current > ERROR_WINDOW_MS) {
+      consecutiveErrorsRef.current = 0;
+    }
+    lastErrorAtRef.current = now;
+    consecutiveErrorsRef.current += 1;
+
+    const nextItem = broadcastInfo?.nextItem;
+    if (consecutiveErrorsRef.current >= SKIP_AFTER_ERRORS && nextItem) {
+      // Build a synthetic payload positioned at the start of nextItem so
+      // tuneToBroadcastItem swaps the slot. The real server timeline takes
+      // over again on the next sync — by then the broken item should have
+      // rolled past on the server side too.
+      consecutiveErrorsRef.current = 0;
+      const synthetic: BroadcastCurrentResult = {
+        ...broadcastInfo!,
+        item: nextItem,
+        nextItem: null,
+        index: (broadcastInfo!.index ?? 0) + 1,
+        positionSecs: 0,
+        progressPercent: 0,
+        serverTimeMs: Date.now(),
+        currentItemEndsAtMs: undefined,
+        itemStartEpochSecs: Math.floor(Date.now() / 1000),
+      };
+      // Bypass the 3s tune debounce — this is a recovery jump, not a poll race.
+      lastTuneTimeRef.current = 0;
+      setBroadcastInfo(synthetic);
+      tuneToBroadcastItem(synthetic);
+      // Realign with the server a few seconds later once the slot is live.
+      setTimeout(() => recoverBroadcastPlayback(), 5_000);
+      return;
+    }
+    recoverBroadcastPlayback();
+  }, [isBroadcastMode, broadcastInfo, recoverBroadcastPlayback, tuneToBroadcastItem]);
 
   const handleVideoEnd = useCallback(async () => {
     if (isBroadcastMode) {
@@ -793,6 +853,11 @@ export default function PlayerScreen() {
         const bc = await checkBroadcastCurrent();
         if (!isMountedRef.current) return;
         if (bc?.item) {
+          // Reset the broken-item counter — a clean transition means the
+          // outgoing item played all the way through, so any prior errors
+          // were transient (network blip, stalled segment) not a dead asset.
+          consecutiveErrorsRef.current = 0;
+          setBroadcastInfo(bc);
           tuneToBroadcastItem(bc);
         }
       } catch {}
@@ -968,7 +1033,7 @@ export default function PlayerScreen() {
             nextVideoUrl={tunedNextLocalVideoUrl}
             nextHlsMasterUrl={tunedNextHlsMasterUrl}
             onEnd={handleVideoEnd}
-            onError={recoverBroadcastPlayback}
+            onError={handleBroadcastError}
           />
         ) : (
           <YoutubePlayer
@@ -986,7 +1051,7 @@ export default function PlayerScreen() {
             // the underlying source is a non-live VOD.
             isBroadcastLive={isBroadcastOrLive}
             onEnd={handleVideoEnd}
-            onError={recoverBroadcastPlayback}
+            onError={handleBroadcastError}
             onToggleAudioMode={handleToggleAudioMode}
           />
         )}

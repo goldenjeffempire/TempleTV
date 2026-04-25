@@ -629,6 +629,35 @@ export function LocalVideoPlayer({
     loadIntoWebSlot(inactive, effectiveNextUrl, "preload");
   }, [effectiveNextUrl, webActiveSlot, loadIntoWebSlot, getWebLoadedUrl]);
 
+  // ── Effect: native (iOS/Android) next-item warm fetch ────────────────
+  // expo-av on native doesn't expose a second-player preload primitive the
+  // way the web A/B slot does, so we approximate "the bytes are already on
+  // the device when the queue advances" by issuing a small Range GET for
+  // the first ~2 MB of the next item. That:
+  //   • warms the CDN edge (signed S3 URL gets cached at the POP)
+  //   • warms the device's HTTP cache for HLS manifests / first segment
+  //   • triggers DNS + TLS handshake so the next stream starts on a hot
+  //     connection instead of negotiating from cold
+  // Best-effort: aborts cleanly on unmount or URL change, swallows errors.
+  // Delayed 2 s so it doesn't compete with the active item's startup
+  // bandwidth on slow connections.
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    if (!effectiveNextUrl) return;
+    const controller = new AbortController();
+    const id = setTimeout(() => {
+      fetch(effectiveNextUrl, {
+        method: "GET",
+        headers: { Range: "bytes=0-2097151" },
+        signal: controller.signal,
+      }).catch(() => {});
+    }, 2000);
+    return () => {
+      clearTimeout(id);
+      controller.abort();
+    };
+  }, [effectiveNextUrl]);
+
   // ── Effect: keep the legacy `webVideoRef` and player-context refs
   // pointed at whichever slot is currently active.
   useEffect(() => {
