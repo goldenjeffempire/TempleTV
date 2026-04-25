@@ -397,52 +397,120 @@ export function VideoUploadModal({
       const stallTimeoutMs =
         tasksRef.current.get(taskId)?.stallTimeoutMs ?? 60_000;
 
+      // Retry loop for transient failures. S3 single-PUT can't truly resume
+      // (no Content-Range support on the presigned URL), so a "retry" means
+      // re-uploading from byte 0 with the same presigned URL — which is fine
+      // because S3 presigned URLs are valid for repeated PUTs until they
+      // expire (typically 6h). We only retry kinds that have a chance of
+      // succeeding on retry: `connection_drop` (NAT timeout / ISP blip) and
+      // `stall` (temporary throughput drop). CORS errors, HTTP 4xx/5xx, and
+      // user aborts are surfaced immediately.
+      const MAX_PUT_ATTEMPTS = 3;
+      const RETRYABLE_KINDS: ReadonlyArray<string> = ["connection_drop", "stall"];
       const putStartedAt = Date.now();
-      try {
-        await uploadFileToS3(
-          initJson.uploadUrl,
-          uploadFile,
-          initJson.contentType,
-          abortCtrl.signal,
-          (delta) => {
-            const t = tasksRef.current.get(taskId);
-            if (!t) return;
-            t.bytesUploaded = Math.min(t.bytesUploaded + delta, uploadFile.size);
-            t.progress = Math.round((t.bytesUploaded / uploadFile.size) * 100);
-            // Single-PUT model: there are no chunks, but populate the chunk
-            // counters so the existing UI progress widget still renders.
-            t.chunksTotal = 1;
-            t.chunksDone = t.bytesUploaded >= uploadFile.size ? 1 : 0;
-            const elapsedSec = (Date.now() - t.startTime) / 1000;
-            const instSpeed = elapsedSec > 0 ? t.bytesUploaded / elapsedSec : 0;
-            t.speedRaw = instSpeed;
-            t.speed = emaSpeed(t.speed, instSpeed);
-            const remaining = uploadFile.size - t.bytesUploaded;
-            t.eta = t.speed > 0 ? Math.round(remaining / t.speed) : 0;
-            forceUpdate();
-          },
-          stallTimeoutMs,
-        );
-      } catch (err) {
-        const elapsed = Date.now() - putStartedAt;
-        const e = err as Error;
-        if (e?.name === "AbortError") {
-          reportTelemetry("client_abort", {
-            sessionId: initJson.sessionId,
-            errorKind: "AbortError",
-            durationMs: elapsed,
-          });
-          updateTask(taskId, { state: "paused" });
-          return;
+      let lastErr: unknown = null;
+      let succeeded = false;
+
+      for (let attempt = 1; attempt <= MAX_PUT_ATTEMPTS; attempt++) {
+        // Reset progress accounting between attempts so the UI doesn't show
+        // ">100%" on retry. The user sees the bar restart, which truthfully
+        // reflects what's happening (S3 single-PUT can't resume mid-stream).
+        const taskBefore = tasksRef.current.get(taskId);
+        if (taskBefore && attempt > 1) {
+          taskBefore.bytesUploaded = 0;
+          taskBefore.progress = 0;
+          taskBefore.chunksDone = 0;
+          taskBefore.startTime = Date.now();
+          taskBefore.speedSamples = [];
+          forceUpdate();
         }
-        reportTelemetry(e?.name === "StallError" ? "client_stall" : "client_error", {
-          sessionId: initJson.sessionId,
-          errorKind: e?.name ?? "Error",
-          errorMessage: e?.message ?? String(err),
-          durationMs: elapsed,
-        });
-        throw err;
+
+        try {
+          await uploadFileToS3(
+            initJson.uploadUrl,
+            uploadFile,
+            initJson.contentType,
+            abortCtrl.signal,
+            (delta) => {
+              const t = tasksRef.current.get(taskId);
+              if (!t) return;
+              t.bytesUploaded = Math.min(t.bytesUploaded + delta, uploadFile.size);
+              t.progress = Math.round((t.bytesUploaded / uploadFile.size) * 100);
+              // Single-PUT model: there are no chunks, but populate the chunk
+              // counters so the existing UI progress widget still renders.
+              t.chunksTotal = 1;
+              t.chunksDone = t.bytesUploaded >= uploadFile.size ? 1 : 0;
+              const elapsedSec = (Date.now() - t.startTime) / 1000;
+              const instSpeed = elapsedSec > 0 ? t.bytesUploaded / elapsedSec : 0;
+              t.speedRaw = instSpeed;
+              t.speed = emaSpeed(t.speed, instSpeed);
+              const remaining = uploadFile.size - t.bytesUploaded;
+              t.eta = t.speed > 0 ? Math.round(remaining / t.speed) : 0;
+              forceUpdate();
+            },
+            stallTimeoutMs,
+          );
+          succeeded = true;
+          break;
+        } catch (err) {
+          lastErr = err;
+          const e = err as Error & {
+            kind?: string;
+            loadedBytes?: number;
+            elapsedMs?: number;
+          };
+
+          // User cancellation — exit cleanly, don't retry.
+          if (e?.name === "AbortError") {
+            reportTelemetry("client_abort", {
+              sessionId: initJson.sessionId,
+              errorKind: "AbortError",
+              durationMs: Date.now() - putStartedAt,
+            });
+            updateTask(taskId, { state: "paused" });
+            return;
+          }
+
+          const isRetryable =
+            e?.kind !== undefined && RETRYABLE_KINDS.includes(e.kind);
+          const attemptsLeft = MAX_PUT_ATTEMPTS - attempt;
+
+          reportTelemetry(e?.name === "StallError" ? "client_stall" : "client_error", {
+            sessionId: initJson.sessionId,
+            errorKind: e?.kind ?? e?.name ?? "Error",
+            errorMessage:
+              `[attempt ${attempt}/${MAX_PUT_ATTEMPTS}] ` +
+              `${e?.message ?? String(err)}` +
+              (e?.loadedBytes !== undefined
+                ? ` (loaded=${e.loadedBytes}, elapsedMs=${e.elapsedMs})`
+                : ""),
+            durationMs: Date.now() - putStartedAt,
+          });
+
+          if (!isRetryable || attemptsLeft <= 0) break;
+
+          // Exponential backoff: 5s, 15s before retries 2 and 3.
+          const backoffMs = attempt === 1 ? 5_000 : 15_000;
+          updateTask(taskId, {
+            state: "uploading",
+            error:
+              `Retrying upload in ${backoffMs / 1000}s ` +
+              `(attempt ${attempt + 1}/${MAX_PUT_ATTEMPTS})…`,
+          });
+          await new Promise((r) => setTimeout(r, backoffMs));
+        }
       }
+
+      if (!succeeded) {
+        // Surface the last error verbatim — its message already contains the
+        // diagnostic kind/bytes/elapsed info from the upload engine.
+        throw lastErr instanceof Error
+          ? lastErr
+          : new Error(String(lastErr));
+      }
+
+      // Clear the transient retry banner now that the PUT actually succeeded.
+      updateTask(taskId, { error: null });
       const putElapsedMs = Date.now() - putStartedAt;
 
       // 3. Finalize → server HEADs the object, inserts the videos row, and

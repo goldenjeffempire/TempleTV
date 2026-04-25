@@ -393,6 +393,28 @@ export async function uploadChunk(
 // that `uploadChunk` uses, so the modal's UI tracking code can stay shared.
 //
 // Returns the response ETag for optional verification at finalize time.
+//
+// On failure, the rejected Error carries diagnostic fields so the caller can
+// decide whether to retry: `loadedBytes` (bytes the browser successfully
+// pushed before the failure), `elapsedMs` (wall time from PUT open to error),
+// and `kind` ("cors_or_dns" | "connection_drop" | "stall" | "http" | "abort").
+// The XHR `onerror` event itself carries no detail by browser design — these
+// fields reconstruct the picture from progress accounting.
+export type S3UploadErrorKind =
+  | "cors_or_dns"
+  | "connection_drop"
+  | "stall"
+  | "http"
+  | "abort";
+
+export interface S3UploadError extends Error {
+  kind: S3UploadErrorKind;
+  loadedBytes: number;
+  totalBytes: number;
+  elapsedMs: number;
+  httpStatus?: number;
+}
+
 export async function uploadFileToS3(
   presignedUrl: string,
   body: Blob,
@@ -401,8 +423,26 @@ export async function uploadFileToS3(
   onProgress?: (bytes: number) => void,
   stallTimeoutMs = 60_000,
 ): Promise<{ etag: string | null }> {
+  const totalBytes = body.size;
   return new Promise<{ etag: string | null }>((resolve, reject) => {
     let settled = false;
+    const startedAt = Date.now();
+
+    const buildError = (
+      message: string,
+      kind: S3UploadErrorKind,
+      extra?: { httpStatus?: number; name?: string },
+    ): S3UploadError => {
+      const err = new Error(message) as S3UploadError;
+      err.kind = kind;
+      err.loadedBytes = lastLoaded;
+      err.totalBytes = totalBytes;
+      err.elapsedMs = Date.now() - startedAt;
+      if (extra?.httpStatus !== undefined) err.httpStatus = extra.httpStatus;
+      if (extra?.name) err.name = extra.name;
+      return err;
+    };
+
     const settle = (fn: () => void) => {
       if (!settled) {
         settled = true;
@@ -419,8 +459,9 @@ export async function uploadFileToS3(
         xhr.abort();
         settle(() =>
           reject(
-            Object.assign(
-              new Error(`S3 upload stalled — no bytes for ${stallTimeoutMs / 1000}s`),
+            buildError(
+              `S3 upload stalled — no bytes for ${stallTimeoutMs / 1000}s after ${formatBytesShort(lastLoaded)} of ${formatBytesShort(totalBytes)}`,
+              "stall",
               { name: "StallError" },
             ),
           ),
@@ -452,15 +493,45 @@ export async function uploadFileToS3(
           // S3 errors are XML — surface a useful prefix for debugging.
           const snippet = (xhr.responseText ?? "").slice(0, 240).trim();
           reject(
-            new Error(
+            buildError(
               `S3 upload failed (HTTP ${xhr.status}): ${snippet || xhr.statusText || "no body"}`,
+              "http",
+              { httpStatus: xhr.status },
             ),
           );
         }
       });
 
     xhr.onerror = () =>
-      settle(() => reject(new Error("Network error uploading to S3 — connection lost")));
+      settle(() => {
+        const elapsedMs = Date.now() - startedAt;
+        // Classify: zero bytes uploaded in under ~3s strongly suggests the
+        // browser was blocked before any bytes flowed — the classic signature
+        // of a missing S3 bucket CORS policy (browser silently drops the
+        // response) or a DNS/TLS handshake failure. Any partial progress
+        // means bytes did flow and the connection later died — typically a
+        // residential NAT timeout, ISP transient blip, or server reset.
+        if (lastLoaded === 0 && elapsedMs < 3_000) {
+          reject(
+            buildError(
+              `S3 PUT rejected before any bytes were sent (${elapsedMs}ms). ` +
+                `This is almost always a missing bucket CORS policy on the S3 ` +
+                `bucket — apply CORS allowing PUT from this admin origin and ` +
+                `expose ETag, then retry.`,
+              "cors_or_dns",
+            ),
+          );
+        } else {
+          reject(
+            buildError(
+              `S3 connection dropped after ${formatBytesShort(lastLoaded)} of ` +
+                `${formatBytesShort(totalBytes)} (${Math.round(elapsedMs / 1000)}s elapsed). ` +
+                `Likely a network blip or NAT timeout — retrying may succeed.`,
+              "connection_drop",
+            ),
+          );
+        }
+      });
     xhr.onabort = () =>
       settle(() => { /* already rejected by stall or external signal */ });
 
@@ -468,7 +539,9 @@ export async function uploadFileToS3(
       "abort",
       () => {
         xhr.abort();
-        settle(() => reject(Object.assign(new Error("Aborted"), { name: "AbortError" })));
+        settle(() =>
+          reject(buildError("Aborted", "abort", { name: "AbortError" })),
+        );
       },
       { once: true },
     );
@@ -479,6 +552,13 @@ export async function uploadFileToS3(
     xhr.setRequestHeader("Content-Type", contentType);
     xhr.send(body);
   });
+}
+
+function formatBytesShort(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)}GB`;
 }
 
 // ─── Formatting helpers ───────────────────────────────────────────────────────
