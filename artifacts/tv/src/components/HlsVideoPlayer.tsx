@@ -993,6 +993,57 @@ export function HlsVideoPlayer({
 
   const progress = duration > 0 ? Math.min(1, currentTime / duration) : 0;
 
+  // ── Playback-quality telemetry ───────────────────────────────────────────
+  // Sample HTMLVideoElement.getVideoPlaybackQuality() every 5 s and POST the
+  // delta to the api-server so the admin Live Monitor can display a real
+  // viewer-side dropped-frame rate alongside server-side bitrate / latency.
+  // Best-effort only — silently no-ops on browsers without the API and on
+  // any network failure (admin telemetry must NEVER affect playback).
+  useEffect(() => {
+    let lastDecoded = 0;
+    let lastDropped = 0;
+    let lastSlot: Slot | null = null;
+    const apiBase = (import.meta as { env?: { VITE_API_URL?: string } }).env?.VITE_API_URL ?? "";
+    const url = `${apiBase}/api/broadcast/playback-telemetry`;
+
+    const tick = () => {
+      const slot = activeSlotRef.current;
+      const v = getVideo(slot);
+      if (!v) return;
+      const q = (v as HTMLVideoElement & {
+        getVideoPlaybackQuality?: () => { totalVideoFrames: number; droppedVideoFrames: number };
+      }).getVideoPlaybackQuality?.();
+      if (!q) return;
+      // Slot swap (crossfade to fresh element) resets the underlying counters
+      // — re-baseline so we don't emit a giant artificial spike.
+      if (slot !== lastSlot) {
+        lastSlot = slot;
+        lastDecoded = q.totalVideoFrames;
+        lastDropped = q.droppedVideoFrames;
+        return;
+      }
+      const decodedDelta = Math.max(0, q.totalVideoFrames - lastDecoded);
+      const droppedDelta = Math.max(0, q.droppedVideoFrames - lastDropped);
+      lastDecoded = q.totalVideoFrames;
+      lastDropped = q.droppedVideoFrames;
+      if (decodedDelta === 0 && droppedDelta === 0) return;
+      try {
+        // keepalive so the report still fires during page-unload races
+        void fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ platform: "tv", decoded: decodedDelta, dropped: droppedDelta }),
+          keepalive: true,
+        }).catch(() => {});
+      } catch {
+        // never let telemetry errors surface to the player
+      }
+    };
+
+    const handle = setInterval(tick, 5_000);
+    return () => clearInterval(handle);
+  }, []);
+
   const slotStyle = (slot: Slot): React.CSSProperties => ({
     position: "absolute",
     inset: 0,

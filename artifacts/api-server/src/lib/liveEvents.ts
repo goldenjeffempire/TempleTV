@@ -17,14 +17,22 @@ export interface LiveStatusSnapshot {
   } | null;
 }
 
+export type SSEPlatform = "tv" | "mobile" | "admin" | "unknown";
+
 interface SSEClient {
   id: string;
   res: Response;
   connectedAt: number;
   lastWriteAt: number;
+  platform: SSEPlatform;
 }
 
 const clients = new Set<SSEClient>();
+
+function normalizePlatform(raw: unknown): SSEPlatform {
+  if (raw === "tv" || raw === "mobile" || raw === "admin") return raw;
+  return "unknown";
+}
 
 function flushClient(client: SSEClient): void {
   try {
@@ -33,12 +41,13 @@ function flushClient(client: SSEClient): void {
   } catch {}
 }
 
-export function addSSEClient(res: Response): SSEClient {
+export function addSSEClient(res: Response, platform: unknown = "unknown"): SSEClient {
   const client: SSEClient = {
     id: randomUUID(),
     res,
     connectedAt: Date.now(),
     lastWriteAt: Date.now(),
+    platform: normalizePlatform(platform),
   };
   clients.add(client);
   return client;
@@ -99,6 +108,12 @@ export function writeSingleClient(client: SSEClient, event: string, data: unknow
 
 export function getSSEClientCount(): number {
   return clients.size;
+}
+
+export function getSSEClientCountsByPlatform(): Record<SSEPlatform, number> {
+  const counts: Record<SSEPlatform, number> = { tv: 0, mobile: 0, admin: 0, unknown: 0 };
+  for (const c of clients) counts[c.platform]++;
+  return counts;
 }
 
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;

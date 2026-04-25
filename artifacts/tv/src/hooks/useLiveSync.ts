@@ -126,7 +126,7 @@ export function useLiveSync(): BroadcastSyncState {
     const connect = () => {
       if (destroyed) return;
       try {
-        const es = new EventSource(apiUrl("/broadcast/events"));
+        const es = new EventSource(apiUrl("/broadcast/events?platform=tv"));
         esRef.current = es;
 
         es.addEventListener("open", () => {

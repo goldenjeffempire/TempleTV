@@ -50,6 +50,11 @@ interface ViewerSnapshot {
 interface StreamHealthSnapshot {
   ts: number;
   viewerCount: number;
+  viewersByPlatform: { tv: number; mobile: number; admin: number; unknown: number };
+  droppedFrameRate: number | null;
+  decodedFramesWindow: number;
+  droppedFramesWindow: number;
+  reportingClients: number;
   isOnAir: boolean;
   currentTitle: string | null;
   itemUptimeSecs: number;
@@ -331,12 +336,24 @@ function RealtimeStreamHealth({
         )}
       </CardHeader>
       <CardContent>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-3">
           <HealthMetric
             icon={<Users className="w-3.5 h-3.5" />}
             label="Viewers"
             value={snapshot ? snapshot.viewerCount.toLocaleString() : "—"}
-            sub="connected now"
+            sub={
+              snapshot
+                ? (() => {
+                    const p = snapshot.viewersByPlatform;
+                    const parts: string[] = [];
+                    if (p.tv) parts.push(`${p.tv} TV`);
+                    if (p.mobile) parts.push(`${p.mobile} mobile`);
+                    if (p.admin) parts.push(`${p.admin} admin`);
+                    if (p.unknown) parts.push(`${p.unknown} other`);
+                    return parts.length > 0 ? parts.join(" · ") : "no clients";
+                  })()
+                : "connected now"
+            }
             sparkline={viewerHistoryRef.current}
             sparkColor="#3b82f6"
           />
@@ -345,6 +362,31 @@ function RealtimeStreamHealth({
             label="Bitrate"
             value={snapshot?.bitrateKbps ? `${(snapshot.bitrateKbps / 1000).toFixed(2)} Mbps` : "—"}
             sub={snapshot?.bitrateKbps ? `${snapshot.bitrateKbps} kbps peak` : "n/a for source"}
+          />
+          <HealthMetric
+            icon={<AlertTriangle className="w-3.5 h-3.5" />}
+            label="Dropped frames"
+            value={
+              snapshot && snapshot.droppedFrameRate !== null
+                ? `${(snapshot.droppedFrameRate * 100).toFixed(2)}%`
+                : "—"
+            }
+            sub={
+              snapshot && snapshot.droppedFrameRate !== null
+                ? `${snapshot.droppedFramesWindow.toLocaleString()} of ${snapshot.decodedFramesWindow.toLocaleString()} (60s)`
+                : snapshot
+                ? "no client telemetry"
+                : "—"
+            }
+            tone={
+              snapshot && snapshot.droppedFrameRate !== null
+                ? snapshot.droppedFrameRate > 0.05
+                  ? "critical"
+                  : snapshot.droppedFrameRate > 0.01
+                  ? "warning"
+                  : "ok"
+                : undefined
+            }
           />
           <HealthMetric
             icon={<Activity className="w-3.5 h-3.5" />}

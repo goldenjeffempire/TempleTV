@@ -1,4 +1,5 @@
-import { Router } from "express";
+import express, { Router } from "express";
+import { recordPlaybackTelemetry } from "../lib/streamHealth";
 import {
   db,
   broadcastQueueTable,
@@ -775,7 +776,7 @@ router.get("/broadcast/events", async (req, res) => {
   res.write("retry: 5000\n\n");
   flushRes();
 
-  const client = addSSEClient(res);
+  const client = addSSEClient(res, req.query.platform);
 
   try {
     const current = await buildBroadcastCurrentPayload();
@@ -786,6 +787,19 @@ router.get("/broadcast/events", async (req, res) => {
   }
 
   req.on("close", () => removeSSEClient(client));
+});
+
+// Tiny endpoint for player clients to report decoded/dropped frame deltas from
+// HTMLVideoElement.getVideoPlaybackQuality(). Players are expected to POST a
+// running delta every ~5 s. This feeds the dropped-frame field on the
+// stream-health SSE channel — the only metric we genuinely cannot measure on
+// the server.
+router.post("/broadcast/playback-telemetry", express.json({ limit: "1kb" }), (req, res) => {
+  const body = (req.body ?? {}) as { platform?: unknown; decoded?: unknown; dropped?: unknown };
+  const decoded = Number(body.decoded);
+  const dropped = Number(body.dropped);
+  recordPlaybackTelemetry(body.platform, decoded, dropped);
+  res.status(204).end();
 });
 
 // Lightweight metadata endpoint for radio clients — returns only the current

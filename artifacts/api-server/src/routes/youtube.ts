@@ -960,7 +960,7 @@ router.get("/youtube/live/events", (req, res) => {
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
 
-  const client = addSSEClient(res);
+  const client = addSSEClient(res, req.query.platform);
 
   res.write(`event: connected\ndata: ${JSON.stringify({
     isLive: cachedLiveStatus.isLive,

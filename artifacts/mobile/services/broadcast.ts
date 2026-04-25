@@ -173,7 +173,7 @@ export function subscribeBroadcastEvents(
 
   function connect() {
     if (closed) return;
-    source = new EventSourceCtor(`${apiBase}/api/broadcast/events`);
+    source = new EventSourceCtor(`${apiBase}/api/broadcast/events?platform=mobile`);
 
     const listenerEntries = (Object.entries(handlers) as Array<[BroadcastRealtimeEvent, (payload: any) => void]>)
       .map(([event, handler]) => {

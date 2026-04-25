@@ -115,7 +115,7 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
       esRef.current = null;
     }
 
-    const url = getAdminEventSourceUrl("/api/admin/live/events");
+    const url = getAdminEventSourceUrl("/api/admin/live/events?platform=admin");
     const es = new EventSource(url);
     esRef.current = es;
 

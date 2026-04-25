@@ -3020,7 +3020,7 @@ router.get("/admin/live/events", async (req, res) => {
 
   res.flushHeaders();
 
-  const client = addSSEClient(res);
+  const client = addSSEClient(res, req.query.platform ?? "admin");
 
   try {
     const payload = await buildLiveStatusPayload();

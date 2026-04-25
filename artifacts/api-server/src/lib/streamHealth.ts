@@ -19,7 +19,9 @@
 import {
   broadcastLiveEvent,
   getSSEClientCount,
+  getSSEClientCountsByPlatform,
   registerSSEWriteObserver,
+  type SSEPlatform,
 } from "./liveEvents";
 import { getLastTrackedBroadcastPayload } from "../routes/broadcast";
 
@@ -53,6 +55,71 @@ function computeStability(): { stabilityPercent: number; failureRate: number } {
   const failureRate = failed / total;
   const stabilityPercent = Math.max(0, Math.min(100, (ok / total) * 100));
   return { stabilityPercent, failureRate };
+}
+
+// ---------------------------------------------------------------------------
+// Client playback telemetry — dropped frame rate (real, not synthesized)
+// ---------------------------------------------------------------------------
+//
+// Each viewer's player periodically POSTs a delta from
+// HTMLVideoElement.getVideoPlaybackQuality() to /api/broadcast/playback-telemetry.
+// We keep the last 60 s of samples per platform and aggregate into a single
+// drop ratio (dropped / decoded). Out-of-the-box truth: when no client reports,
+// the field is null and the UI shows "—" rather than fabricating zeros.
+
+const TELEMETRY_WINDOW_MS = 60_000;
+type FrameSample = { ts: number; platform: SSEPlatform; decoded: number; dropped: number };
+const frameSamples: FrameSample[] = [];
+
+export function recordPlaybackTelemetry(
+  platform: unknown,
+  decoded: number,
+  dropped: number,
+): void {
+  if (!Number.isFinite(decoded) || !Number.isFinite(dropped)) return;
+  if (decoded < 0 || dropped < 0) return;
+  if (decoded === 0 && dropped === 0) return;
+  // Cap obviously-bogus reports so a single misbehaving client can't poison
+  // the rolling aggregate (60 fps × 30 s buffered delta is the realistic max
+  // for the ~5 s reporting cadence we ask players to use).
+  const HARD_CAP = 10_000;
+  const d = Math.min(decoded, HARD_CAP);
+  const x = Math.min(dropped, HARD_CAP);
+  const p: SSEPlatform =
+    platform === "tv" || platform === "mobile" || platform === "admin" ? platform : "unknown";
+  const now = Date.now();
+  frameSamples.push({ ts: now, platform: p, decoded: d, dropped: x });
+  const cutoff = now - TELEMETRY_WINDOW_MS;
+  while (frameSamples.length > 0 && frameSamples[0]!.ts < cutoff) {
+    frameSamples.shift();
+  }
+}
+
+function computeDroppedFrameRate(): {
+  droppedFrameRate: number | null;
+  decodedFramesWindow: number;
+  droppedFramesWindow: number;
+  reportingClients: number;
+} {
+  if (frameSamples.length === 0) {
+    return { droppedFrameRate: null, decodedFramesWindow: 0, droppedFramesWindow: 0, reportingClients: 0 };
+  }
+  let dec = 0;
+  let drop = 0;
+  // Distinct sample sources in the window (rough proxy for active reporters)
+  const uniqueBuckets = new Set<string>();
+  for (const s of frameSamples) {
+    dec += s.decoded;
+    drop += s.dropped;
+    uniqueBuckets.add(`${s.platform}:${Math.floor(s.ts / 5000)}`);
+  }
+  const rate = dec > 0 ? drop / dec : 0;
+  return {
+    droppedFrameRate: Math.round(rate * 10000) / 10000,
+    decodedFramesWindow: dec,
+    droppedFramesWindow: drop,
+    reportingClients: uniqueBuckets.size,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +208,16 @@ export interface StreamHealthSnapshot {
   ts: number;
   /** Connected SSE clients across all surfaces (TV, mobile, admin) */
   viewerCount: number;
+  /** Connected viewer count broken out by client platform */
+  viewersByPlatform: Record<SSEPlatform, number>;
+  /** Fraction of frames the viewer-side decoders dropped (0..1), null if no clients reported */
+  droppedFrameRate: number | null;
+  /** Total frames decoded across all reporting clients in the last 60 s */
+  decodedFramesWindow: number;
+  /** Total frames dropped across all reporting clients in the last 60 s */
+  droppedFramesWindow: number;
+  /** Number of distinct client samples that contributed to the rate (0 = no telemetry) */
+  reportingClients: number;
   /** Whether anything is currently airing */
   isOnAir: boolean;
   /** Title of the currently airing item, if any */
@@ -187,6 +264,18 @@ function classifyHealth(s: Omit<StreamHealthSnapshot, "health" | "healthReason">
   if (s.connectionFailureRate > 0.05) {
     return { health: "warning", healthReason: `${(s.connectionFailureRate * 100).toFixed(1)}% SSE write failures` };
   }
+  if (s.droppedFrameRate !== null && s.droppedFrameRate > 0.05) {
+    return {
+      health: "critical",
+      healthReason: `${(s.droppedFrameRate * 100).toFixed(1)}% dropped frames at viewer decoders`,
+    };
+  }
+  if (s.droppedFrameRate !== null && s.droppedFrameRate > 0.01) {
+    return {
+      health: "warning",
+      healthReason: `${(s.droppedFrameRate * 100).toFixed(1)}% dropped frames at viewer decoders`,
+    };
+  }
   if (s.segmentLatencyMs !== null && s.segmentLatencyMs > 800) {
     return { health: "warning", healthReason: `Segment latency ${s.segmentLatencyMs}ms above optimal` };
   }
@@ -201,10 +290,16 @@ function buildSnapshot(): StreamHealthSnapshot {
 
   const itemUptimeSecs = itemStart ? Math.max(0, Math.floor(Date.now() / 1000 - itemStart)) : 0;
   const { stabilityPercent, failureRate } = computeStability();
+  const frames = computeDroppedFrameRate();
 
   const base = {
     ts: Date.now(),
     viewerCount: getSSEClientCount(),
+    viewersByPlatform: getSSEClientCountsByPlatform(),
+    droppedFrameRate: frames.droppedFrameRate,
+    decodedFramesWindow: frames.decodedFramesWindow,
+    droppedFramesWindow: frames.droppedFramesWindow,
+    reportingClients: frames.reportingClients,
     isOnAir,
     currentTitle: item?.title ?? null,
     itemUptimeSecs,
