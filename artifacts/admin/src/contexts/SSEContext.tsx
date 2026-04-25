@@ -123,6 +123,7 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
 
     const knownEvents = [
       "status",
+      "broadcast-current-updated",
       "broadcast-queue-updated",
       "broadcast-control-updated",
       "override-expired",

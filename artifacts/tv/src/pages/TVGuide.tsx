@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useGuide } from "../hooks/useGuide";
+import { useLiveSync } from "../hooks/useLiveSync";
 import { Clock } from "../components/Clock";
 import { keyEventToAction } from "../lib/tvKeys";
 
@@ -54,11 +55,19 @@ function PlayIcon() {
 
 export function TVGuide({ onBack, onPlay }: TVGuideProps) {
   const { items, liveOverrideTitle, loading, error, toggleReminder, hasReminder, refresh } = useGuide();
+  const liveSync = useLiveSync();
   const [focusedIndex, setFocusedIndex] = useState(0);
   const [actionMode, setActionMode] = useState<"browse" | "action">("browse");
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  // Client-side tick (1s) for the live progress bar of the current item.
+  const [nowSecs, setNowSecs] = useState(() => Math.floor(Date.now() / 1000));
   const containerRef = useRef<HTMLDivElement>(null);
   const cardRefs = useRef<(HTMLDivElement | null)[]>([]);
+
+  useEffect(() => {
+    const tick = setInterval(() => setNowSecs(Math.floor(Date.now() / 1000)), 1_000);
+    return () => clearInterval(tick);
+  }, []);
 
   const totalItems = items.length;
 
@@ -399,29 +408,42 @@ export function TVGuide({ onBack, onPlay }: TVGuideProps) {
                   }}>
                     {item.title}
                   </div>
-                  {isCurrentProgram && (
-                    <div style={{ marginTop: 4 }}>
-                      <div style={{
-                        width: "100%",
-                        maxWidth: 200,
-                        height: 3,
-                        background: "rgba(168,85,247,0.25)",
-                        borderRadius: 2,
-                        overflow: "hidden",
-                      }}>
+                  {isCurrentProgram && (() => {
+                    // Prefer live-computed position from SSE (itemStartEpochSecs)
+                    // over the server-static positionSecs so the bar ticks every second.
+                    const livePositionSecs = liveSync.itemStartEpochSecs
+                      ? Math.max(0, nowSecs - liveSync.itemStartEpochSecs)
+                      : item.positionSecs;
+                    const liveProgress = item.durationSecs > 0
+                      ? Math.min(100, Math.round((livePositionSecs / item.durationSecs) * 100))
+                      : item.progressPercent;
+                    const remainingSecs = Math.max(0, item.durationSecs - livePositionSecs);
+                    return (
+                      <div style={{ marginTop: 4 }}>
                         <div style={{
-                          height: "100%",
-                          width: `${item.progressPercent}%`,
-                          background: "linear-gradient(90deg, #7c3aed, #a855f7)",
+                          width: "100%",
+                          maxWidth: 200,
+                          height: 3,
+                          background: "rgba(168,85,247,0.25)",
                           borderRadius: 2,
-                          transition: "width 1s linear",
-                        }} />
+                          overflow: "hidden",
+                        }}>
+                          <div style={{
+                            height: "100%",
+                            width: `${liveProgress}%`,
+                            background: "linear-gradient(90deg, #7c3aed, #a855f7)",
+                            borderRadius: 2,
+                          }} />
+                        </div>
+                        <div style={{ fontSize: 11, color: "rgba(168,85,247,0.8)", marginTop: 3 }}>
+                          {fmtDuration(livePositionSecs)} / {fmtDuration(item.durationSecs)}
+                          {remainingSecs < 120 && (
+                            <span style={{ marginLeft: 6, color: "#f59e0b" }}>· ending soon</span>
+                          )}
+                        </div>
                       </div>
-                      <div style={{ fontSize: 11, color: "rgba(168,85,247,0.8)", marginTop: 3 }}>
-                        {Math.round(item.progressPercent)}% complete
-                      </div>
-                    </div>
-                  )}
+                    );
+                  })()}
                 </div>
               </div>
 

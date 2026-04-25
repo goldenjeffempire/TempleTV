@@ -1,4 +1,18 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, type HTMLAttributes } from "react";
+import {
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  useSortable,
+  arrayMove,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { safeJson, describeJsonError } from "@/lib/safe-json";
 import { fetchWithTransientRetry } from "@/services/adminApi";
 import { rewriteApiPath } from "@/lib/api-base";
@@ -31,11 +45,13 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { getAdminEventSourceUrl } from "@/lib/admin-access";
+import { useSSEEvent } from "@/contexts/SSEContext";
 import {
   Radio, Trash2, Plus, ChevronUp, ChevronDown, Clock, Play,
   Loader2, Search, HardDrive, Youtube, RefreshCw, Tv, Signal,
   Mic, SkipForward, AlertCircle, Timer, Bell, BellOff, XCircle,
   CheckCircle2, Upload, Wifi, WifiOff, Activity, Zap, Video,
+  GripVertical,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -483,6 +499,7 @@ function QueueItem({
   onRemove,
   onDurationEdit,
   wallClockStart,
+  dragHandleProps,
 }: {
   item: BroadcastItem;
   index: number;
@@ -494,6 +511,7 @@ function QueueItem({
   onRemove: () => void;
   onDurationEdit: (durationSecs: number) => void;
   wallClockStart: Date;
+  dragHandleProps?: HTMLAttributes<HTMLDivElement>;
 }) {
   const [editingDuration, setEditingDuration] = useState(false);
   const [durationInput, setDurationInput] = useState("");
@@ -521,6 +539,14 @@ function QueueItem({
 
   return (
     <div className={`group flex items-center gap-3 px-3 py-2.5 rounded-lg border bg-card transition-colors hover:bg-muted/40 ${!item.isActive ? "opacity-50" : ""}`}>
+      {/* Drag handle */}
+      <div
+        {...dragHandleProps}
+        className="cursor-grab active:cursor-grabbing text-muted-foreground/30 hover:text-muted-foreground/60 transition-colors shrink-0 touch-none"
+        title="Drag to reorder"
+      >
+        <GripVertical className="w-3.5 h-3.5" />
+      </div>
       {/* Position */}
       <span className="text-xs text-muted-foreground w-5 text-center shrink-0 tabular-nums">{index + 1}</span>
 
@@ -603,6 +629,46 @@ function QueueItem({
           <Trash2 className="w-3.5 h-3.5" />
         </Button>
       </div>
+    </div>
+  );
+}
+
+// ─── Sortable Queue Item (DnD wrapper) ────────────────────────────────────────
+function SortableQueueItem(props: {
+  item: BroadcastItem;
+  index: number;
+  total: number;
+  isFirst: boolean;
+  isLast: boolean;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  onRemove: () => void;
+  onDurationEdit: (durationSecs: number) => void;
+  wallClockStart: Date;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: props.item.id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    position: isDragging ? ("relative" as const) : undefined,
+    zIndex: isDragging ? 10 : undefined,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style}>
+      <QueueItem
+        {...props}
+        dragHandleProps={{ ...attributes, ...listeners }}
+      />
     </div>
   );
 }
@@ -913,6 +979,12 @@ export default function Broadcast() {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const reconnectAttempt = useRef(0);
 
+  // ── SSE-driven refresh: auto-reload when broadcast transitions ─────────────
+  const loadAllRef = useRef<(() => void) | null>(null);
+  useSSEEvent("broadcast-current-updated", () => {
+    loadAllRef.current?.();
+  });
+
   // ── data loading ───────────────────────────────────────────────────────────
   const loadAll = useCallback(async () => {
     // Proactively detect the no-token case so the user gets a single clear
@@ -993,6 +1065,11 @@ export default function Broadcast() {
       setLoading(false);
     }
   }, []);
+
+  // Keep ref in sync so the SSE handler (defined before loadAll) can call it
+  useEffect(() => {
+    loadAllRef.current = loadAll;
+  }, [loadAll]);
 
   // ── SSE ────────────────────────────────────────────────────────────────────
   const connectSSE = useCallback(() => {
@@ -1123,6 +1200,37 @@ export default function Broadcast() {
     const newQueue = [...queue];
     const swap = direction === "up" ? idx - 1 : idx + 1;
     [newQueue[idx], newQueue[swap]] = [newQueue[swap], newQueue[idx]];
+    setQueue(newQueue);
+
+    try {
+      const res = await adminFetch("/api/admin/broadcast/reorder", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderedIds: newQueue.map((i) => i.id) }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (e) {
+      toast({ title: "Reorder failed", variant: "destructive" });
+      await loadAll();
+    }
+  }, [queue, toast, loadAll]);
+
+  // ── Drag-and-drop reordering ────────────────────────────────────────────────
+  // Require 8px of pointer movement before activating to avoid accidental
+  // drags when the operator just clicks a button inside the item row.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+  );
+
+  const handleDragEnd = useCallback(async (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+
+    const oldIndex = queue.findIndex((i) => i.id === active.id);
+    const newIndex = queue.findIndex((i) => i.id === over.id);
+    if (oldIndex === -1 || newIndex === -1) return;
+
+    const newQueue = arrayMove(queue, oldIndex, newIndex);
     setQueue(newQueue);
 
     try {
@@ -1430,29 +1538,33 @@ export default function Broadcast() {
                 </div>
               </div>
             ) : (
-              <div className="space-y-1.5">
-                {queue.map((item, idx) => (
-                  <QueueItem
-                    key={item.id}
-                    item={item}
-                    index={idx}
-                    total={queue.length}
-                    isFirst={idx === 0}
-                    isLast={idx === queue.length - 1}
-                    onMoveUp={() => handleReorder(item.id, "up")}
-                    onMoveDown={() => handleReorder(item.id, "down")}
-                    onRemove={() => handleRemove(item.id)}
-                    onDurationEdit={(secs) => handleDurationEdit(item.id, secs)}
-                    wallClockStart={wallClockStarts[idx] ?? new Date()}
-                  />
-                ))}
+              <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+                <SortableContext items={queue.map((i) => i.id)} strategy={verticalListSortingStrategy}>
+                  <div className="space-y-1.5">
+                    {queue.map((item, idx) => (
+                      <SortableQueueItem
+                        key={item.id}
+                        item={item}
+                        index={idx}
+                        total={queue.length}
+                        isFirst={idx === 0}
+                        isLast={idx === queue.length - 1}
+                        onMoveUp={() => handleReorder(item.id, "up")}
+                        onMoveDown={() => handleReorder(item.id, "down")}
+                        onRemove={() => handleRemove(item.id)}
+                        onDurationEdit={(secs) => handleDurationEdit(item.id, secs)}
+                        wallClockStart={wallClockStarts[idx] ?? new Date()}
+                      />
+                    ))}
 
-                {/* Queue footer */}
-                <div className="pt-2 pb-1 px-3 flex items-center justify-between text-xs text-muted-foreground border-t">
-                  <span>{queue.length} item{queue.length !== 1 ? "s" : ""}</span>
-                  <span className="font-mono">{fmtDuration(totalQueueSecs)} total cycle</span>
-                </div>
-              </div>
+                    {/* Queue footer */}
+                    <div className="pt-2 pb-1 px-3 flex items-center justify-between text-xs text-muted-foreground border-t">
+                      <span>{queue.length} item{queue.length !== 1 ? "s" : ""}</span>
+                      <span className="font-mono">{fmtDuration(totalQueueSecs)} total cycle</span>
+                    </div>
+                  </div>
+                </SortableContext>
+              </DndContext>
             )}
           </div>
         </div>

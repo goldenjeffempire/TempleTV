@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchGuide, type GuideItem } from "../lib/api";
+import { useLiveSync } from "./useLiveSync";
 
 const REMINDERS_KEY = "tv_guide_reminders";
 const REFRESH_INTERVAL_MS = 60_000;
@@ -27,6 +28,9 @@ export function useGuide() {
   const [error, setError] = useState<string | null>(null);
   const [reminders, setReminders] = useState<Set<string>>(loadReminders);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Stable ref so the SSE-driven effect can call load() without capturing a
+  // stale closure or adding it to the syncedAt effect's dependency array.
+  const loadRef = useRef<((showLoading?: boolean) => Promise<void>) | null>(null);
 
   const load = useCallback(async (showLoading = false) => {
     if (showLoading) setLoading(true);
@@ -43,6 +47,10 @@ export function useGuide() {
   }, []);
 
   useEffect(() => {
+    loadRef.current = load;
+  }, [load]);
+
+  useEffect(() => {
     load(true);
     const schedule = () => {
       timerRef.current = setTimeout(() => {
@@ -55,6 +63,14 @@ export function useGuide() {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
   }, [load]);
+
+  // When useLiveSync receives a broadcast-current-updated SSE event its
+  // syncedAt changes — immediately refresh the guide so the "NOW" indicator
+  // and progress bar update within seconds of a real item transition.
+  const { syncedAt } = useLiveSync();
+  useEffect(() => {
+    if (syncedAt) loadRef.current?.(false);
+  }, [syncedAt]);
 
   const toggleReminder = useCallback((itemId: string) => {
     setReminders((prev) => {

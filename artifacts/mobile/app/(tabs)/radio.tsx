@@ -198,15 +198,25 @@ export default function RadioScreen() {
     }
   }, []);
 
+  // Stable ref so the item-change effect can read the current value of
+  // autoMirror without making it a dependency (avoids double-navigation
+  // when both "toggle changed" and "item changed" fire on the same render).
+  const autoMirrorRef = useRef(autoMirror);
+  useEffect(() => { autoMirrorRef.current = autoMirror; });
+
   // Trigger auto-mirror when toggled ON
   useEffect(() => {
-    triggerAutoMirror(autoMirror, broadcastInfoRef.current);
+    if (autoMirror) triggerAutoMirror(true, broadcastInfoRef.current);
   }, [autoMirror, triggerAutoMirror]);
 
-  // Trigger auto-mirror when broadcast item changes (and mirror is already on)
+  // Trigger auto-mirror when the broadcast item transitions to a new item.
+  // Reads autoMirror from ref so this effect does NOT re-fire when the
+  // toggle changes — that is handled by the effect above.
   useEffect(() => {
-    if (autoMirror) triggerAutoMirror(true, broadcastInfo);
-  }, [broadcastInfo?.item?.id, autoMirror, broadcastInfo, triggerAutoMirror]);
+    if (broadcastInfo?.item?.id && autoMirrorRef.current) {
+      triggerAutoMirror(true, broadcastInfo);
+    }
+  }, [broadcastInfo?.item?.id, broadcastInfo, triggerAutoMirror]);
 
   // Sleep timer — use a stable boolean sentinel to avoid firing on every tick
   const sleepTimerActive = sleepTimerSecs > 0;
