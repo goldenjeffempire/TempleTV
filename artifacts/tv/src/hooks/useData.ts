@@ -102,8 +102,7 @@ export function useSermons() {
     [sermons],
   );
 
-  const featured = useMemo(() => sermons.slice(0, 5), [sermons]);
-  return { sermons, byCategory, featured, loading, error };
+  return { sermons, byCategory, loading, error };
 }
 
 export function useLiveStatus() {

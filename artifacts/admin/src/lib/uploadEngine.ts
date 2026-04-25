@@ -171,7 +171,6 @@ export interface FileTask {
   title: string;
   category: string;
   preacher: string;
-  featured: boolean;
   sessionId: string | null;
   state: TaskState;
   progress: number;
@@ -210,7 +209,7 @@ export interface StoredSession {
   fileSize: number;
   totalChunks: number;
   chunkSize: number;       // persisted so resume uses the same chunk size
-  form: { title: string; category: string; preacher: string; featured: boolean };
+  form: { title: string; category: string; preacher: string };
 }
 
 // ─── EMA speed helper ────────────────────────────────────────────────────────

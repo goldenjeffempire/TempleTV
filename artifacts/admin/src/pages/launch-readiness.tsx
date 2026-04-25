@@ -49,7 +49,6 @@ interface LaunchReadiness {
     totalVideos: number;
     localVideos: number;
     hlsReadyLocalVideos: number;
-    featuredVideos: number;
     activeScheduleEntries: number;
     activeBroadcastItems: number;
     registeredDevices: number;
@@ -246,7 +245,7 @@ export default function LaunchReadinessPage() {
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold">{readiness.counts.totalVideos}</div>
-                <p className="text-xs text-muted-foreground mt-1">{readiness.counts.featuredVideos} featured</p>
+                <p className="text-xs text-muted-foreground mt-1">{readiness.counts.localVideos} local uploads</p>
               </CardContent>
             </Card>
             <Card>

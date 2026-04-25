@@ -12,17 +12,13 @@ import { cache } from "./cache";
  * up on the next 60s TTL boundary, which is acceptable because the UI
  * only ever requests the defaults.
  */
-export const PUBLIC_VIDEOS_FEATURED_CACHE_KEY = "public:videos:featured";
 export const PUBLIC_VIDEOS_TRENDING_DEFAULT_CACHE_KEY =
   "public:videos:trending:20:90";
 export const PUBLIC_PLAYLISTS_ACTIVE_CACHE_KEY = "public:playlists:active";
 
 /** Invalidate the well-known public video list caches. */
 export async function invalidatePublicVideoCaches(): Promise<void> {
-  await Promise.allSettled([
-    cache.del(PUBLIC_VIDEOS_FEATURED_CACHE_KEY),
-    cache.del(PUBLIC_VIDEOS_TRENDING_DEFAULT_CACHE_KEY),
-  ]);
+  await cache.del(PUBLIC_VIDEOS_TRENDING_DEFAULT_CACHE_KEY).catch(() => {});
 }
 
 /** Invalidate the well-known public playlist list cache. */

@@ -32,7 +32,6 @@ import { LiveNotificationBanner } from "@/components/LiveNotificationBanner";
 import { usePlayer } from "@/context/PlayerContext";
 import { checkLiveStatus, type LiveCheckResult } from "@/services/youtube";
 import { sendLiveServiceNotification } from "@/services/notifications";
-import { useFeaturedVideos } from "@/hooks/useFeaturedVideos";
 import { useWatchProgress } from "@/hooks/useWatchProgress";
 import { checkBroadcastCurrent, subscribeBroadcastEvents, type BroadcastCurrentResult } from "@/services/broadcast";
 import {
@@ -75,7 +74,6 @@ export default function WatchScreen() {
   const insets = useSafeAreaInsets();
   const { currentSermon, isLive: playerIsLive, playSermon, playLive, setQueue } = usePlayer();
   const { sermons, loading, refresh, isFromRss, error: feedError } = useYouTubeChannel();
-  const { featured } = useFeaturedVideos();
   const { continueWatching, getProgress } = useWatchProgress();
   const { isOnline } = useNetworkStatus();
   const fadeAnim = useRef(new Animated.Value(Platform.OS === "web" ? 1 : 0)).current;
@@ -652,33 +650,10 @@ export default function WatchScreen() {
             </View>
           )}
 
-          {featured.length > 0 && (
-            <View style={styles.section}>
-              <SectionHeader
-                title="Featured"
-                subtitle="Handpicked sermons"
-                onSeeAll={() => router.push("/library")}
-              />
-              <FlatList
-                horizontal
-                data={featured}
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
-                keyExtractor={(item) => item.id}
-                initialNumToRender={4}
-                windowSize={5}
-                removeClippedSubviews
-                renderItem={({ item }) => (
-                  <SermonCard sermon={item} onPress={handleSermonPress} variant="vertical" />
-                )}
-              />
-            </View>
-          )}
-
           <View style={styles.section}>
             <SectionHeader
               title="Latest Sermons"
-              subtitle={isFromRss ? "From YouTube" : "Featured"}
+              subtitle={isFromRss ? "From YouTube" : "Recently added"}
               onSeeAll={() => router.push("/library")}
             />
             {loading ? (
