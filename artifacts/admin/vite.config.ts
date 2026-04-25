@@ -50,21 +50,21 @@ export default defineConfig({
     chunkSizeWarningLimit: 1000,
     minify: "esbuild",
     rollupOptions: {
-      output: {
-        manualChunks(id) {
-          if (!id.includes("node_modules")) return undefined;
-          if (id.includes("react-dom") || id.match(/[\\/]node_modules[\\/]react[\\/]/)) {
-            return "react-vendor";
-          }
-          if (id.includes("@radix-ui") || id.includes("lucide-react") || id.includes("class-variance-authority") || id.includes("tailwind-merge")) {
-            return "ui-vendor";
-          }
-          if (id.includes("@tanstack")) return "tanstack";
-          if (id.includes("recharts") || id.includes("d3-")) return "charts-vendor";
-          if (id.includes("zod") || id.includes("date-fns")) return "utils-vendor";
-          return "vendor";
-        },
-      },
+      // No `manualChunks` here on purpose. The previous custom splitter sent
+      // React to `react-vendor` while sending React-consuming packages
+      // (recharts, react-remove-scroll, Radix Slot pattern, etc.) to sibling
+      // `vendor` / `ui-vendor` / `charts-vendor` chunks. Rollup wires those
+      // as cross-chunk imports, but ES module evaluation order is NOT
+      // guaranteed to load `react-vendor` before its sibling consumers when
+      // the consumers' top-level code reaches for `React.Children.toArray`,
+      // `React.cloneElement`, etc. In production this surfaces as a blank
+      // page with `Cannot read/set properties of undefined (reading
+      // 'Children')` thrown from inside `vendor.js`, with React internals
+      // appearing as the trigger in the stack. Letting Rollup do automatic
+      // chunking based on the real import graph eliminates the race entirely
+      // and the chunk-size delta vs. the manual setup is negligible because
+      // the per-route chunks are still produced via React.lazy() in App.tsx.
+      output: {},
     },
   },
   esbuild: {

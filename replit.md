@@ -437,6 +437,25 @@ Verification:
 - `grep -rn 'templetv.app/link'` → 0 hits in `artifacts/`, `lib/`, and root docs.
 - All workflows except the aggregate `Start application` running clean (the aggregate's port-8080 wait window is a pre-existing dev-only race, not a regression from this pass).
 
+### Round 4s — Production admin blank-screen part 2: vendor chunk React.Children race (April 2026)
+
+**Symptom:** After Round 4r shipped (API origin auto-inference) and was redeployed, the admin SPA at `https://admin.templetv.org.ng/` was still blank. Browser DevTools showed an uncaught error inside React internals: `Cannot set/read property 'Children' of undefined` thrown from inside `vendor-BgvKa1iE.js`, with the React internals (minified `ZD`, `Ih`) appearing as the trigger in the stack — i.e., the failure happened during top-level evaluation of a vendor chunk before React was bound.
+
+**Root cause:** `artifacts/admin/vite.config.ts` had a custom `manualChunks` function that sent `react`/`react-dom` to a `react-vendor` chunk while sending React-consuming packages — `recharts`, `react-remove-scroll`, Radix Slot pattern, `@floating-ui` — to sibling `vendor` / `ui-vendor` / `charts-vendor` chunks. Verified by greping the deployed bundles: `Children` references existed in vendor (3), ui-vendor (2), and charts-vendor (4), all reading `React.Children.toArray/only/count` cross-chunk. Forced manual chunk boundaries created problematic cross-chunk initialization for transformed CJS/interop modules that expect the React namespace to be initialized; sibling chunks could begin top-level evaluation before `react-vendor`'s exports were fully bound, surfacing as `undefined.Children` and a completely blank page.
+
+**Fix:** Removed the `manualChunks` function entirely from `artifacts/admin/vite.config.ts` (`rollupOptions.output = {}`). Rollup's automatic chunking algorithm builds the chunk graph from the real import graph, so React-touching code is co-located with React or in chunks that explicitly depend on React's chunk — no cross-chunk race possible.
+
+**Build outcome verified locally:**
+- Single main entry chunk `index-le3Gy-bu.js` — 633.99 kB raw / **185.62 kB gzipped** (contains React + the eagerly-needed app shell).
+- Route pages still split per-route via `React.lazy()` in `App.tsx` (dashboard, videos, broadcast, etc.) — 14 dynamic imports preserved.
+- Heavy libs lazy: `AreaChart` (recharts) 400 kB / 111 kB gz, `mp4box` 182 kB / 45 kB gz, `sortable` 45 kB / 15 kB gz — all loaded on demand.
+- Every chunk that references `React.Children` either IS the entry chunk (which has React) or imports from the entry chunk via the natural dep graph, so React always evaluates first.
+- No build warnings about circular chunks; no CSS regression (`assets/index-*.css` still wired into `index.html`).
+
+**Architect note:** the previous "manualChunks for cache stability" win was negligible (gzipped vendor was ~120 kB; auto-chunked entry is ~186 kB), and the catastrophic blank-page risk was never worth that ~65 kB cache-cohort delta. If we ever want to reintroduce vendor splitting for cache reasons, it must be dependency-aware (verify React-touching modules stay grouped with React) and validated by an end-to-end smoke load before deploy.
+
+**Action required to apply this fix:** redeploy the admin app — same as Round 4r, the build is what bakes the fix into the bundle that runs in the browser at `admin.templetv.org.ng`.
+
 ### Round 4r — Production admin blank-screen fix: split-domain API origin auto-inference (April 2026)
 
 **Symptom:** `https://admin.templetv.org.ng/` rendered as a blank/empty card to users. Direct probing showed the SPA was actually stuck in `state.kind === "checking"` ("Verifying admin access..."), retrying the auth probe forever.
