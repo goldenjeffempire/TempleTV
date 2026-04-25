@@ -362,6 +362,8 @@ export default function PlayerScreen() {
   const titleFade = useRef(new Animated.Value(1)).current;
   const initializedRef = useRef(false);
   const isMountedRef = useRef(true);
+  /** Prevents three competing sync paths from all calling router.replace within the same second */
+  const lastTuneTimeRef = useRef(0);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -511,8 +513,16 @@ export default function PlayerScreen() {
 
   const tuneToBroadcastItem = useCallback((bc: BroadcastCurrentResult) => {
     if (!bc?.item) return;
+
+    // Debounce: three sync mechanisms (SSE, 15s poll, precision timer) can fire
+    // nearly simultaneously at an item boundary. Only act on the first call
+    // within a 3-second window to avoid redundant router.replace flicker.
+    const now = Date.now();
+    if (now - lastTuneTimeRef.current < 3_000) return;
+    lastTuneTimeRef.current = now;
+
     const item = bc.item;
-    const networkDriftSecs = bc.serverTimeMs ? Math.max(0, Math.round((Date.now() - bc.serverTimeMs) / 1000)) : 0;
+    const networkDriftSecs = bc.serverTimeMs ? Math.max(0, Math.round((now - bc.serverTimeMs) / 1000)) : 0;
     const nextParams: Record<string, string> = {
       broadcastMode: "true",
       title: item.title,

@@ -9,6 +9,7 @@ import { useSermons, useLiveStatus } from "../hooks/useData";
 import { useWatchHistory } from "../hooks/useWatchHistory";
 import { fetchBroadcastCurrent } from "../lib/api";
 import type { VideoItem, BroadcastCurrent } from "../lib/api";
+import { useLiveSync } from "../hooks/useLiveSync";
 
 const CATEGORIES = [
   "Faith",
@@ -22,7 +23,7 @@ const CATEGORIES = [
 interface HomeProps {
   onNavigateGuide: () => void;
   onNavigateSearch: () => void;
-  onPlay: (videoId: string, title: string, hlsUrl?: string) => void;
+  onPlay: (videoId: string, title: string, hlsUrl?: string, startPositionSecs?: number) => void;
   onDetails: (video: VideoItem, related: VideoItem[]) => void;
 }
 
@@ -35,6 +36,12 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
   const [searchButtonFocused, setSearchButtonFocused] = useState(false);
   const [broadcastCurrent, setBroadcastCurrent] = useState<BroadcastCurrent | null>(null);
 
+  // Use SSE to get real-time broadcast updates (useLiveSync handles SSE + fallback polling).
+  // When the hook signals a state change (syncedAt changes), re-fetch the full BroadcastCurrent
+  // so LiveHero gets fresh item metadata (thumbnail, nextItem, etc.) immediately.
+  const liveSync = useLiveSync();
+  const loadBroadcastRef = useRef<(() => void) | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
@@ -43,10 +50,20 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
         if (!cancelled) setBroadcastCurrent(bc);
       } catch {}
     };
+    loadBroadcastRef.current = load;
+
+    // Initial load + long-interval fallback for when SSE is unavailable
     load();
-    const interval = setInterval(load, 30000);
-    return () => { cancelled = true; clearInterval(interval); };
+    const interval = setInterval(load, 60_000);
+    return () => { cancelled = true; clearInterval(interval); loadBroadcastRef.current = null; };
   }, []);
+
+  // When useLiveSync receives a broadcast-current-updated SSE event, its syncedAt
+  // changes — trigger an immediate re-fetch of the full BroadcastCurrent payload
+  // so the LiveHero updates within seconds of a queue item transition.
+  useEffect(() => {
+    if (liveSync.syncedAt) loadBroadcastRef.current?.();
+  }, [liveSync.syncedAt]);
 
   const hasContinueWatching = continueWatching.length > 0;
 
@@ -77,7 +94,8 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
           const item = broadcastCurrent.item;
           const hlsUrl = item.localVideoUrl ?? undefined;
           const id = item.youtubeId ?? item.videoId;
-          onPlay(id, "Temple TV", hlsUrl);
+          // Pass the current broadcast position so the player joins in-sync
+          onPlay(id, "Temple TV", hlsUrl, broadcastCurrent.positionSecs);
         }
         return;
       }
@@ -217,7 +235,8 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
                 const item = broadcastCurrent.item;
                 const hlsUrl = item.localVideoUrl ?? undefined;
                 const id = item.youtubeId ?? item.videoId;
-                onPlay(id, "Temple TV", hlsUrl);
+                // Thread the current broadcast position for synchronized join-in
+                onPlay(id, "Temple TV", hlsUrl, broadcastCurrent.positionSecs);
               }
             }}
           />

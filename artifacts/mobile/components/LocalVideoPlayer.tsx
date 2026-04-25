@@ -381,17 +381,17 @@ export function LocalVideoPlayer({
             <View style={[styles.loadingCenter, { backgroundColor: "rgba(0,0,0,0.5)" }]}>
               <ActivityIndicator color={c.primary} size="large" />
               <Text style={[styles.loadingText, { color: "rgba(255,255,255,0.6)" }]}>
-                {dataSaver ? "Loading low-data playback..." : "Loading..."}
+                {dataSaver && !coverMode ? "Loading (data saver)..." : "Loading..."}
               </Text>
             </View>
           </Animated.View>
-          {hlsMasterUrl && !loading && (
+          {hlsMasterUrl && !loading && !coverMode && (
             <View style={[styles.modeBadge, { right: 12, left: undefined }]}>
               <Feather name="layers" size={12} color="#FFF" />
               <Text style={styles.modeBadgeText}>ABR</Text>
             </View>
           )}
-          {dataSaver && (
+          {dataSaver && !coverMode && (
             <View style={styles.modeBadge}>
               <Feather name="wifi-off" size={12} color="#FFF" />
               <Text style={styles.modeBadgeText}>Data saver</Text>
@@ -459,8 +459,8 @@ export function LocalVideoPlayer({
         />
       )}
 
-      {/* HLS / ABR badge — only in video mode */}
-      {!isRadioMode && (
+      {/* HLS / ABR badge — only in video mode and non-broadcast mode */}
+      {!isRadioMode && !coverMode && (
         <View style={[styles.modeBadge, { right: 12, left: undefined }]}>
           <Feather name="layers" size={12} color="#FFF" />
           <Text style={styles.modeBadgeText}>

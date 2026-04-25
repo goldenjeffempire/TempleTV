@@ -138,7 +138,7 @@ export default function App() {
       <Home
         onNavigateGuide={() => setScreen("guide")}
         onNavigateSearch={() => setScreen("search")}
-        onPlay={(videoId, title, hlsUrl) => gatedPlay(videoId, title, hlsUrl)}
+        onPlay={(videoId, title, hlsUrl, startPositionSecs) => gatedPlay(videoId, title, hlsUrl, startPositionSecs)}
         onDetails={(video, related) => setDetailsVideo({ video, related })}
       />
     );
