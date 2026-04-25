@@ -28,6 +28,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { S3CorsTestButton } from "@/components/S3CorsTestButton";
 import { useToast } from "@/hooks/use-toast";
 import {
   HardDrive,
@@ -1510,6 +1511,8 @@ export function VideoUploadModal({
                   onCheckedChange={setS3DirectUpload}
                 />
               </div>
+
+              {s3DirectUpload && <S3CorsTestButton />}
 
               {isCompressionSupported() && (
                 <div className="flex items-center justify-between p-2.5 bg-primary/5 border border-primary/20 rounded-lg">

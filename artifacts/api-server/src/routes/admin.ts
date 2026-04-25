@@ -1750,6 +1750,37 @@ router.post("/admin/videos/upload/s3-init", async (req, res) => {
   }
 });
 
+// ── CORS pre-flight test ────────────────────────────────────────────────────
+// Mints a tiny, short-lived presigned PUT URL pointing at `cors-test/<uuid>.bin`
+// so the admin UI can verify the bucket's CORS policy without needing a real
+// upload to fail first. The frontend PUTs a 1-byte payload and inspects the
+// response: success + readable ETag header == policy is correctly configured.
+// Failure (CORS error / missing ETag) gives a precise remediation message.
+router.post("/admin/videos/upload/s3-cors-test", async (_req, res) => {
+  try {
+    if (!isS3Configured()) {
+      return void res.status(503).json({
+        error: "S3 object storage is not configured on this server.",
+      });
+    }
+    const objectKey = `cors-test/${randomUUID()}.bin`;
+    const presignedUrl = await s3GetSignedPutUrl(objectKey, 300, {
+      contentType: "application/octet-stream",
+    });
+    res.setHeader("Cache-Control", "no-store").json({
+      presignedUrl,
+      objectKey,
+      bucket: AWS_S3_BUCKET,
+      region: AWS_REGION,
+      expiresIn: 300,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    logger.error({ err }, "s3-cors-test presign failed");
+    res.status(500).json({ error: msg });
+  }
+});
+
 router.post("/admin/videos/upload/s3-finalize", async (req, res) => {
   try {
     if (!isS3Configured()) {
