@@ -53,7 +53,6 @@ export function MiniPlayer() {
     if (isLive) {
       navigateToPlayer(
         { live: "true", title: "Temple TV Live", preacher: "Temple TV JCTM" },
-        "Sign up free to watch the live broadcast.",
       );
     } else if (isBroadcastMode) {
       // Round 6 (Pass 3): re-entering /player from MiniPlayer while the
@@ -64,7 +63,6 @@ export function MiniPlayer() {
       // VOD with seek/scrub controls — defeating the channel semantics.
       navigateToPlayer(
         { broadcastMode: "true" },
-        "Sign up free to keep watching Temple TV.",
       );
     } else if (currentSermon) {
       navigateToSermon(currentSermon);

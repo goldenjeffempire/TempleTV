@@ -179,39 +179,12 @@ const volStyles = StyleSheet.create({
 export default function PlayerScreen() {
   const c = useColors();
   const insets = useSafeAreaInsets();
-  // Defensive gate for the /player route itself. Most playback paths go
-  // through navigateToSermon (which gates upstream), but deep links and
-  // shared URLs land here directly. If the user is not authenticated,
-  // bounce back and pop the gate so they can sign in without losing the
-  // intended target.
-  //
-  // We must early-return BEFORE any other player hooks run so the
-  // YouTube iframe / track-player isn't briefly initialised while the
-  // navigation is mid-flight. The `gateTriggered` ref guarantees we
-  // only fire openAuthGate + router.back once per mount, even if the
-  // effect re-runs in StrictMode.
-  // Auth is now non-blocking: guests can watch content after dismissing the
-  // sign-up prompt. We still show the gate for direct deep-link arrivals so
-  // sign-up is encouraged, but we never navigate away from the player.
-  const { isLoggedIn, isLoading: authLoading, openAuthGate } = useAuth();
+  // Guest users land here directly from deep links, home hero taps, or
+  // the radio screen — no auth check is performed before playback starts.
+  // The optional sign-up nudge rendered inside the player (below) is
+  // user-initiated and non-blocking; it never interrupts viewing.
+  const { isLoggedIn, openAuthGate } = useAuth();
   const routeParams = useLocalSearchParams() as Record<string, string | undefined>;
-  const gateTriggered = useRef(false);
-  useEffect(() => {
-    if (authLoading || isLoggedIn || gateTriggered.current) return;
-    gateTriggered.current = true;
-    const cleanParams: Record<string, string> = {};
-    Object.entries(routeParams).forEach(([k, v]) => {
-      if (typeof v === "string") cleanParams[k] = v;
-    });
-    // Show the gate as a suggestion — "Continue watching" in the modal
-    // lets them stay in the player without being forced to sign up.
-    openAuthGate({
-      pathname: "/player",
-      params: cleanParams,
-      reason: "Sign up free to save your history and never miss a live service.",
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading, isLoggedIn]);
 
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const availableHeight = screenHeight - insets.top - insets.bottom;
@@ -296,13 +269,13 @@ export default function PlayerScreen() {
 
   const noPlaybackRef = useRef(false);
   useEffect(() => {
-    if (authLoading || !isLoggedIn || noPlaybackRef.current) return;
+    if (noPlaybackRef.current) return;
     if (isLive || isBroadcastMode) return;
     if (paramVideoId || paramLocalVideoUrl) return;
     noPlaybackRef.current = true;
     if (router.canGoBack()) router.back();
     else router.replace("/");
-  }, [authLoading, isLoggedIn, isLive, isBroadcastMode, paramVideoId, paramLocalVideoUrl]);
+  }, [isLive, isBroadcastMode, paramVideoId, paramLocalVideoUrl]);
 
   // Per-page SEO: emits a Schema.org VideoObject for this sermon (or
   // BroadcastEvent when watching the live stream). This is what makes

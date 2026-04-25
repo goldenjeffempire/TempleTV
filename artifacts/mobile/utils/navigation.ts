@@ -1,12 +1,12 @@
 import { router } from "expo-router";
 import type { Sermon } from "@/types";
-import { gatePlayback } from "@/utils/auth-gate";
 
 /**
- * Navigate to the player route, gated by authentication. If the user
- * is signed in (or auth state is still rehydrating), the navigation
- * fires immediately. Otherwise the AuthGateModal is opened with the
- * exact same target so playback resumes seamlessly after sign-in.
+ * Navigate to the player route for a VOD sermon. All users — authenticated
+ * or guest — navigate immediately; no auth gate is shown before playback.
+ * Auth is retained for optional features (history sync, favourites, alerts)
+ * which are surfaced as non-blocking prompts inside the player after the
+ * video has started.
  */
 export function navigateToSermon(
   sermon: Sermon,
@@ -26,28 +26,16 @@ export function navigateToSermon(
       ? { ...baseParams, localVideoUrl: sermon.localVideoUrl }
       : { ...baseParams, videoId: sermon.youtubeId };
 
-  gatePlayback(
-    {
-      pathname: "/player",
-      params,
-      reason: `Sign up free to watch "${sermon.title}" and unlock the full sermon library.`,
-    },
-    () => router.push({ pathname: "/player", params }),
-  );
+  router.push({ pathname: "/player", params });
 }
 
 /**
- * Navigate to the live broadcast (or any explicit /player params),
- * gated by authentication. Use this for hero CTAs, MiniPlayer taps,
- * and radio plays so non-authed users see the sign-up modal instead
- * of bouncing straight into the player route.
+ * Navigate to the live broadcast or any explicit /player params. All users
+ * — authenticated or guest — navigate immediately. No auth gate is shown
+ * before playback.
  */
 export function navigateToPlayer(
   params: Record<string, string>,
-  reason?: string,
 ) {
-  gatePlayback(
-    { pathname: "/player", params, reason },
-    () => router.push({ pathname: "/player", params }),
-  );
+  router.push({ pathname: "/player", params });
 }

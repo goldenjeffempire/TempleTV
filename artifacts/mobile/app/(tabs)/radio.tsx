@@ -188,12 +188,10 @@ export default function RadioScreen() {
     if (item.videoSource === "local" && item.localVideoUrl) {
       navigateToPlayer(
         { broadcastMode: "true", localVideoUrl: item.localVideoUrl, title: item.title, thumbnail: item.thumbnailUrl, startPositionMs: startMs, radioOnly: "true" },
-        "Sign up free to follow the live radio broadcast.",
       );
     } else if (item.youtubeId) {
       navigateToPlayer(
         { broadcastMode: "true", videoId: item.youtubeId, title: item.title, thumbnail: item.thumbnailUrl, startPositionMs: startMs, radioOnly: "true" },
-        "Sign up free to follow the live radio broadcast.",
       );
     }
   }, []);
@@ -358,10 +356,7 @@ export default function RadioScreen() {
     // channel, "Watch Video" must reopen /player in broadcast mode (not as
     // VOD) — otherwise we'd give them seek/scrub controls on a channel feed.
     if (isBroadcastMode) {
-      navigateToPlayer(
-        { broadcastMode: "true" },
-        "Sign up free to keep watching Temple TV.",
-      );
+      navigateToPlayer({ broadcastMode: "true" });
       return;
     }
     navigateToSermon(nowPlaying);

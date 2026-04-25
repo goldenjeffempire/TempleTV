@@ -203,7 +203,7 @@ export default function WatchScreen() {
 
   const navigateToPlayer = useCallback((params: Record<string, string>) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    gatedNavigateToPlayer(params, "Sign up free to watch this — it only takes a moment.");
+    gatedNavigateToPlayer(params);
   }, []);
 
   const handleSermonPress = useCallback((sermon: Sermon) => {

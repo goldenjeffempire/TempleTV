@@ -4,6 +4,8 @@
 
 Temple TV (JCTM) is an enterprise-grade broadcasting platform offering a comprehensive media experience. It includes a cross-platform mobile app, a Smart TV web app, an admin dashboard, and a Node.js/Express API backend. Key capabilities include Live TV, Video-on-Demand (VOD) sermon library, 24/7 Radio mode, push notifications, offline video downloads, adaptive streaming, subscription management, user authentication, and a unified real-time broadcast synchronization system across all platforms. The platform aims to deliver a seamless and engaging content consumption experience.
 
+**Guest Access Policy (April 2026):** All content viewing — live broadcast, VOD sermons, TV Guide, and broadcast queue — is freely accessible without sign-up or login on every platform. Authentication is retained exclusively for optional enhanced features: watch history sync, favourites, live-service alerts, admin operations, and device-link pairing. Specific changes: (1) TV `App.tsx` `gatedPlay` hard gate removed — playback fires immediately for all users; `AuthGateModal` and pending-play state removed from TV. (2) Mobile `utils/navigation.ts` `navigateToSermon` and `navigateToPlayer` no longer wrap navigation in `gatePlayback` — both navigate directly. (3) Mobile `app/player.tsx` automatic `openAuthGate` on mount removed — guests arrive at the player without an interruption. The voluntary in-player "Save your watch history" nudge (user-initiated, dismissible) is retained as a non-blocking optional prompt. Backend broadcast endpoints were already fully public; no API changes were needed.
+
 ## User Preferences
 
 - The user wants the agent to focus on delivering high-quality, production-ready code.
