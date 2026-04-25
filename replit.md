@@ -437,6 +437,24 @@ Verification:
 - `grep -rn 'templetv.app/link'` → 0 hits in `artifacts/`, `lib/`, and root docs.
 - All workflows except the aggregate `Start application` running clean (the aggregate's port-8080 wait window is a pre-existing dev-only race, not a regression from this pass).
 
+### Round 4r — Production admin blank-screen fix: split-domain API origin auto-inference (April 2026)
+
+**Symptom:** `https://admin.templetv.org.ng/` rendered as a blank/empty card to users. Direct probing showed the SPA was actually stuck in `state.kind === "checking"` ("Verifying admin access..."), retrying the auth probe forever.
+
+**Root cause:** The production admin Vite build did not have `VITE_API_BASE_URL` (or `VITE_API_URL`) set, so `apiBase()` fell back to a same-origin relative `/api` path. On the split-domain deploy `admin.templetv.org.ng` serves a static SPA whose catch-all rewrite (`from = "/*", to = "/index.html"`) returns `index.html` for ALL paths, including `/api/admin/stats`. The AuthGate's `adminGet("/admin/stats")` therefore received HTML on a 200 status, `safeJson()` correctly classified it as `html_fallback` which `doAdminRequest` marks transient, and `adminRequest`'s retry wrapper kept retrying — the bounded retry eventually exhausted but the AuthGate showed only the spinner state during the loop. Curl confirmed: `https://admin.templetv.org.ng/api/admin/stats` → 200 text/html, `https://api.templetv.org.ng/api/admin/stats` → 401 (the correct backend).
+
+**Fix:** `artifacts/admin/src/lib/api-base.ts` now has `inferProductionApiOrigin()`. When neither `VITE_API_BASE_URL` nor `VITE_API_URL` is set AND the browser hostname starts with `admin.`, `ABSOLUTE_BASE` is derived as `${protocol}//api.<rest-of-host>`. This matches the production deploy convention (`admin.templetv.org.ng` SPA + `api.templetv.org.ng` backend) and means a forgotten env var no longer breaks the entire admin console.
+
+**Guarantees preserved:**
+- Explicit `VITE_API_BASE_URL` / `VITE_API_URL` overrides still take precedence (build-time control retained).
+- Dev untouched: localhost / replit-dev / path-routed workspace previews don't match `^admin\.` so they continue using the relative same-origin `/api` proxied to localhost:8080 by Vite.
+- SSR/Node contexts return `null` (`typeof window === "undefined"` guard) so module-load doesn't crash in non-browser environments.
+- Both `apiBase()`/`apiUrl()` and `rewriteApiPath()` consume the same `ABSOLUTE_BASE`, so REST calls AND the SSE EventSource (via `getAdminEventSourceUrl`) get the corrected origin transparently.
+
+**Caveat:** Inference uses default protocol/port from `window.location` and the `admin.→api.` hostname convention only. Custom-port or non-standard split deployments must still set `VITE_API_BASE_URL` explicitly. The retry path is now finite (bounded by `RETRY_BACKOFF_MS.length`) so a wrong-host inference surfaces as a normal error state instead of a perpetual spinner.
+
+**Action required to apply this fix:** the admin app must be redeployed — the build is what bakes in client-side code that runs in the browser at `admin.templetv.org.ng`.
+
 ### Round 4q — TV pairing modal responsive refactor + SSE backoff parity (April 2026)
 
 Two operator-driven fixes to enforce cross-platform reliability parity:
