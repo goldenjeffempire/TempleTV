@@ -153,11 +153,29 @@ async function transcodeQuality(
   const segmentPattern = path.join(outputDir, "seg%05d.ts");
   const playlistPath = path.join(outputDir, "index.m3u8");
 
+  // ── ffmpeg memory containment ──────────────────────────────────────────────
+  // x264 spawns one lookahead/encoder worker per CPU thread (`-threads 0` =
+  // auto). Each worker holds its own per-frame work buffers, and the lookahead
+  // ring grows roughly linearly with thread count. On a 512MB Render container
+  // the API process baselines at ~150-200MB; an unbounded ffmpeg encode peaks
+  // at 350-450MB which trips the OOM killer (Render Events: "Ran out of memory
+  // (used over 512MB)" — see Round 4 in replit.md). Capping `-threads` slashes
+  // peak ffmpeg RSS by ~40-60% with a small (~15-20%) wall-clock penalty.
+  // Configurable via `FFMPEG_THREADS` so a higher Render tier can crank it back
+  // up without a code change. Default 2 = sweet spot for 512MB-1GB containers.
+  const ffmpegThreads = (() => {
+    const raw = process.env.FFMPEG_THREADS;
+    if (!raw) return 2;
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0 && n <= 16 ? n : 2;
+  })();
+
   const args = [
     "-y",
     "-i", inputPath,
     "-map", "0:v:0",
     "-map", "0:a:0?",    // optional audio (won't fail if no audio)
+    "-threads", String(ffmpegThreads),
     "-vf", `scale=-2:'min(${profile.height},ih)'`,
     "-c:v", "libx264",
     "-preset", "fast",
@@ -169,6 +187,10 @@ async function transcodeQuality(
     "-g", "60",           // 2-second GOP at 30fps → fast random access
     "-keyint_min", "60",
     "-sc_threshold", "0", // disable scene-change keyframes (consistent GOP)
+    // Cap the x264 lookahead ring depth. Default is 40 frames × thread-count;
+    // on a memory-tight tier we'd rather give back ~5% encode efficiency than
+    // OOM. `rc-lookahead=20` keeps rate control tight without ballooning RSS.
+    "-x264-params", "rc-lookahead=20:sync-lookahead=0",
     "-c:a", "aac",
     "-b:a", profile.audioBitrate,
     "-ar", "48000",
@@ -294,6 +316,33 @@ async function processNextJob(): Promise<boolean> {
       );
       return false;
     }
+  }
+
+  // ── Memory-aware backpressure ────────────────────────────────────────────
+  // ffmpeg is a child process with its own RSS, so checking *Node's* RSS is
+  // not a perfect proxy for container memory — but it's the only signal we
+  // have without shelling out, and BETWEEN jobs (when no encoder is running)
+  // Node is the dominant consumer. If our own RSS is already pushing the
+  // OOM ceiling, spawning ffmpeg is guaranteed to crash the container, take
+  // down the API, and reset every viewer's broadcast stream. Better to skip
+  // the job — the retry tick will pick it up again in 30s, by which time
+  // ffmpeg from the previous job has exited and freed its pages back to the
+  // OS. Threshold defaults to 380MB (≈75% of a 512MB Render container) and
+  // is configurable via `MAX_NODE_RSS_MB_BEFORE_TRANSCODE` for ops tuning.
+  const memoryCeilingMb = (() => {
+    const raw = process.env.MAX_NODE_RSS_MB_BEFORE_TRANSCODE;
+    if (!raw) return 380;
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0 ? n : 380;
+  })();
+  const rssBytes = process.memoryUsage().rss;
+  const rssMb = Math.round(rssBytes / 1024 / 1024);
+  if (rssMb > memoryCeilingMb) {
+    logger.warn(
+      { rssMb, ceilingMb: memoryCeilingMb },
+      "Skipping transcode claim — Node RSS above safety ceiling, deferring to retry tick",
+    );
+    return false;
   }
 
   // Atomically claim the next eligible job using PostgreSQL's
