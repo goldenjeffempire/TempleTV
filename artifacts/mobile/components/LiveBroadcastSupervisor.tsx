@@ -1,5 +1,6 @@
 import { router, useSegments } from "expo-router";
 import React, { useEffect, useRef } from "react";
+import { AppState, type AppStateStatus } from "react-native";
 import { usePlayer } from "@/context/PlayerContext";
 import { subscribeBroadcastEvents } from "@/services/broadcast";
 import { checkLiveStatus } from "@/services/youtube";
@@ -78,10 +79,22 @@ export function LiveBroadcastSupervisor() {
       status: checkForLive,
     });
 
+    // Foreground recovery: a live stream may have started while the user was
+    // away. Bypass the 10s throttle so the very first foreground check is
+    // immediate — important after long backgrounds where a deploy or live
+    // event was missed.
+    const appStateSub = AppState.addEventListener("change", (next: AppStateStatus) => {
+      if (next === "active") {
+        lastCheckRef.current = 0;
+        checkForLive();
+      }
+    });
+
     return () => {
       cancelled = true;
       clearInterval(interval);
       subscription?.close();
+      appStateSub.remove();
     };
   }, [playLive, segments]);
 

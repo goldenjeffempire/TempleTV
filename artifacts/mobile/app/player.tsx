@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Animated,
+  AppState,
+  type AppStateStatus,
   Linking,
   Platform,
   Pressable,
@@ -622,6 +624,29 @@ export default function PlayerScreen() {
     });
 
     return () => subscription?.close();
+  }, [isBroadcastMode, tunedVideoId, tunedLocalVideoUrl, tuneToBroadcastItem]);
+
+  // Deployment-resilience resync: when the app returns to the foreground, the
+  // SSE socket may have been killed by the OS during background, and a backend
+  // deploy may have rolled while we were away. Pull a fresh /broadcast/current
+  // immediately so the now-playing card and preloaded next item are accurate
+  // before the SSE channel re-establishes. The anchor on the server keeps the
+  // currently-airing program stable across deploys, so this never causes a
+  // visible jump — it only corrects stale UI metadata.
+  useEffect(() => {
+    if (!isBroadcastMode) return;
+    const sub = AppState.addEventListener("change", async (next: AppStateStatus) => {
+      if (next !== "active" || !isMountedRef.current) return;
+      try {
+        const bc = await checkBroadcastCurrent();
+        if (!isMountedRef.current || !bc?.item) return;
+        const bcIsLocal = bc.item.videoSource === "local" && !!bc.item.localVideoUrl;
+        const currentId = tunedLocalVideoUrl ? tunedLocalVideoUrl : tunedVideoId;
+        const nextId = bcIsLocal ? bc.item.localVideoUrl : bc.item.youtubeId;
+        if (currentId !== nextId) tuneToBroadcastItem(bc);
+      } catch {}
+    });
+    return () => sub.remove();
   }, [isBroadcastMode, tunedVideoId, tunedLocalVideoUrl, tuneToBroadcastItem]);
 
   // Client-side precision transition timer: fires exactly when the server says
