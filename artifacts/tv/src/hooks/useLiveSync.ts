@@ -59,11 +59,19 @@ function apiUrl(path: string): string {
   return `${window.location.origin}/api${path}`;
 }
 
+// Reconnection backoff aligned with mobile (`artifacts/mobile/services/broadcast.ts`)
+// so both clients exhibit identical reliability characteristics under sustained
+// API outages. Pattern: exponential 2x with 0–30% jitter, 2s floor, 60s ceiling,
+// reset on the EventSource `open` event AND on any successful message.
+const SSE_MIN_RETRY_MS = 2_000;
+const SSE_MAX_RETRY_MS = 60_000;
+
 export function useLiveSync(): BroadcastSyncState {
   const [state, setState] = useState<BroadcastSyncState>(INITIAL);
   const esRef = useRef<EventSource | null>(null);
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const reconnectDelayRef = useRef(2000);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectDelayRef = useRef(SSE_MIN_RETRY_MS);
 
   useEffect(() => {
     let destroyed = false;
@@ -121,11 +129,15 @@ export function useLiveSync(): BroadcastSyncState {
         const es = new EventSource(apiUrl("/broadcast/events"));
         esRef.current = es;
 
+        es.addEventListener("open", () => {
+          reconnectDelayRef.current = SSE_MIN_RETRY_MS;
+        });
+
         es.addEventListener("broadcast-current-updated", (e: MessageEvent) => {
           if (destroyed) return;
           try {
             const { current } = JSON.parse(e.data) as { current: Record<string, unknown> };
-            reconnectDelayRef.current = 2000;
+            reconnectDelayRef.current = SSE_MIN_RETRY_MS;
             applyPayload(current);
           } catch {}
         });
@@ -133,11 +145,11 @@ export function useLiveSync(): BroadcastSyncState {
         es.addEventListener("error", () => {
           es.close();
           esRef.current = null;
-          if (!destroyed) {
-            const delay = Math.min(reconnectDelayRef.current, 30_000);
-            reconnectDelayRef.current = delay * 1.5;
-            setTimeout(connect, delay);
-          }
+          if (destroyed) return;
+          const base = reconnectDelayRef.current;
+          const jitter = Math.random() * 0.3 * base;
+          reconnectTimerRef.current = setTimeout(connect, base + jitter);
+          reconnectDelayRef.current = Math.min(base * 2, SSE_MAX_RETRY_MS);
         });
       } catch {
         fallbackPoll();
@@ -154,6 +166,7 @@ export function useLiveSync(): BroadcastSyncState {
       destroyed = true;
       esRef.current?.close();
       esRef.current = null;
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       if (pollRef.current) clearTimeout(pollRef.current);
     };
   }, []);

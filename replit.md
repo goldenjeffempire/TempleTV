@@ -437,6 +437,23 @@ Verification:
 - `grep -rn 'templetv.app/link'` → 0 hits in `artifacts/`, `lib/`, and root docs.
 - All workflows except the aggregate `Start application` running clean (the aggregate's port-8080 wait window is a pre-existing dev-only race, not a regression from this pass).
 
+### Round 4q — TV pairing modal responsive refactor + SSE backoff parity (April 2026)
+
+Two operator-driven fixes to enforce cross-platform reliability parity:
+
+1. **TV pairing modal (`artifacts/tv/src/components/AuthGateModal.tsx`) responsive overhaul.** The modal was breaking at narrow viewports (~520px) — the 8-character pairing code rendered as "7UBB - - MU5" (letter-spacing leaking onto the dash separator), the Cancel button got clipped at the right edge, and the "Free account" side panel overlapped the code area. Fixed by: (a) splitting the code into two `<span>` chunks at the midpoint (handles 6/7/8-char codes) with letter-spacing applied per-chunk so the separator span is unaffected; (b) `clamp(2.75rem, 9vw, 6.5rem)` font scaling so the code stays readable from 320px to 1920px; (c) responsive padding `px-5 py-6 sm:px-10 md:px-14`, modal `max-h-[calc(100vh-1.5rem)] overflow-y-auto` so it never escapes the viewport; (d) side panel hidden until `lg:` (1024px) so it can't crowd the code; (e) bottom action row uses `flex-wrap` with order utilities so Cancel sits top-right on small screens, bottom-right on large; (f) backdrop click-to-close, inline "Try again" button in the error block, `aria-live` on the code, `aria-label` on Cancel. Polling, countdown, regenerate, ESC handling, and `aliveRef` cleanup are unchanged. Architect verdict: PASS.
+
+2. **TV SSE reconnection backoff aligned with mobile** (`artifacts/tv/src/hooks/useLiveSync.ts`). The TV `useLiveSync` hook used a weaker reconnection pattern than mobile: linear 1.5x multiplier, 30s ceiling, no jitter, no `open`-event reset. Under sustained API outages this would converge faster than mobile and could cause thundering-herd reconnections. Aligned with `artifacts/mobile/services/broadcast.ts`'s pattern: exponential 2x with 0–30% jitter, 2s floor, 60s ceiling, reset on both the EventSource `open` event AND on any successful `broadcast-current-updated` message. Both clients now share identical reliability semantics so a single api-server restart triggers the same reconnect curve regardless of device.
+
+Verified parity that did NOT need changes (audit findings that were stale):
+- Mobile precision transition timer (`currentItemEndsAtMs`) — already implemented in `artifacts/mobile/app/player.tsx` lines 571-583.
+- Mobile transparent 401 token refresh — already implemented in `artifacts/mobile/services/authApi.ts` lines 108-110, matching TV's `authFetch` behavior.
+
+Intentional cross-platform differences (NOT parity gaps):
+- Mobile fallback poll interval is 60s (battery-aware); TV is 10s (always-on, mains-powered context). Different SLAs by design.
+- Mobile has a `/radio` tab with background audio + sleep timer + auto-mirror; TV has no radio mode (10-foot UI is video-centric — TV viewers do not run the device as a background audio source).
+- Mobile uses Expo Push Notifications; TV web has no notification surface (browsers cannot fire push without service-worker registration which Tizen/WebOS do not consistently support).
+
 ## External Dependencies
 
 - **Database:** PostgreSQL
