@@ -1,0 +1,184 @@
+Fix and stabilize the entire cloud media storage and broadcast delivery infrastructure to restore reliable video uploads, media processing, and uninterrupted ON AIR broadcasting across the full TempleTV ecosystem.
+
+---
+
+# ☁️ Cloud Storage Infrastructure Recovery
+
+## Objective
+
+Resolve all cloud bucket, object storage, and media pipeline failures that are preventing successful video uploads, media persistence, processing, and live broadcast playback.
+
+The entire media infrastructure must be production-ready, fault-tolerant, and fully operational for real-world broadcasting workloads.
+
+---
+
+# 📦 Cloud Bucket & Object Storage Fixes
+
+## Storage Connectivity Validation
+
+Audit and repair the full cloud storage integration layer.
+
+Verify and fix:
+
+* Object storage authentication
+* Bucket access permissions
+* Read/write policies
+* Upload authorization failures
+* Expired credentials
+* Region mismatches
+* Bucket endpoint configuration issues
+* Signed URL generation failures
+
+---
+
+## Upload Pipeline Restoration
+
+Fix all failures preventing videos from uploading successfully.
+
+Ensure:
+
+* Uploaded videos are properly stored in the cloud bucket
+* Upload completion events are triggered correctly
+* Upload sessions do not fail silently
+* Large file uploads remain stable
+* Upload retries function correctly after network interruption
+
+---
+
+## Media Persistence Validation
+
+Ensure uploaded files:
+
+* Persist correctly in cloud storage
+* Remain accessible after upload completion
+* Are indexed correctly in the database
+* Appear immediately in the media library and broadcast queue systems
+
+---
+
+# 🎬 Broadcast Playback Restoration
+
+## ON AIR Playback Recovery
+
+Fix the current issue preventing broadcasts from playing.
+
+Ensure:
+
+* The live broadcast stream loads correctly
+* Video playback starts automatically
+* Broadcast streams resolve correctly from storage/CDN sources
+* Media manifests and stream URLs are valid
+
+---
+
+## Stream Source Validation
+
+Verify and repair:
+
+* HLS manifest generation
+* Segment accessibility
+* Media transcoding outputs
+* CDN delivery paths
+* Playback authorization tokens
+* Stream routing logic
+
+---
+
+## Queue Playback Recovery
+
+Ensure queued broadcast videos:
+
+* Load correctly from cloud storage
+* Transition seamlessly during playback
+* Remain continuously playable without interruption
+
+---
+
+# 🔄 Media Processing Pipeline Repair
+
+## Transcoding System Validation
+
+Fix any failures affecting:
+
+* HLS generation
+* Adaptive bitrate renditions
+* Segment generation
+* Encoding queues
+* Media processing workers
+
+Ensure uploaded videos are properly converted into broadcast-ready formats.
+
+---
+
+# ⚡ Deployment & Infrastructure Stability
+
+Ensure the system remains operational during:
+
+* Deployments
+* Service restarts
+* Background worker reloads
+
+Prevent active broadcast interruptions caused by infrastructure instability.
+
+---
+
+# 📡 Real-Time Broadcast Reliability
+
+Ensure ON AIR broadcasting:
+
+* Never fails due to temporary storage latency
+* Automatically recovers from transient failures
+* Maintains stable playback across all devices
+
+---
+
+# 🌍 Cross-Platform Verification
+
+Ensure uploads and broadcasts function consistently across:
+
+* Web platform
+* Mobile applications
+* Smart TV applications
+* Admin broadcast systems
+
+---
+
+# 🛡️ Enterprise-Grade Reliability Requirements
+
+Implement:
+
+* Retry mechanisms for failed uploads
+* Storage failover handling
+* Broadcast recovery safeguards
+* Media integrity verification
+* Queue persistence protection
+* Upload monitoring diagnostics
+
+---
+
+# 📊 Diagnostics & Monitoring
+
+Add detailed monitoring for:
+
+* Upload failures
+* Bucket connectivity status
+* Storage latency
+* Transcoding failures
+* Broadcast stream health
+* Playback delivery errors
+
+---
+
+# 🎯 Expected Final Outcome
+
+Deliver a fully restored, enterprise-grade cloud media and broadcasting infrastructure where:
+
+* Video uploads function reliably
+* Cloud bucket storage works correctly
+* Uploaded media persists and appears immediately in the platform
+* Broadcast playback resumes normally
+* ON AIR streaming remains stable and uninterrupted
+* Media processing and HLS generation function correctly
+* The entire system is production-ready for real-world television broadcasting operations
+
+“Temple TV Anywhere You Go”

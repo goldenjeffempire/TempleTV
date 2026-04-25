@@ -8,6 +8,8 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { Skeleton } from "@/components/ui/skeleton";
 import { applyAutoTheme } from "@/lib/theme";
 import { SSEProvider } from "@/contexts/SSEContext";
+import { ApiHealthProvider } from "@/contexts/ApiHealthContext";
+import { ApiReconnectionBanner } from "@/components/api-reconnection-banner";
 import { Suspense, lazy, useEffect } from "react";
 
 const Dashboard = lazy(() => import("@/pages/dashboard"));
@@ -81,13 +83,20 @@ function RoutedContent() {
 
 function Router() {
   return (
-    <AuthGate>
-      <SSEProvider>
-        <Layout>
-          <RoutedContent />
-        </Layout>
-      </SSEProvider>
-    </AuthGate>
+    // ApiHealthProvider must wrap AuthGate so the auth probe's failures (which
+    // dispatch the same window events via adminApi) are picked up. The banner
+    // sits inside the provider but outside Layout so it floats above all page
+    // chrome regardless of which route is mounted.
+    <ApiHealthProvider>
+      <ApiReconnectionBanner />
+      <AuthGate>
+        <SSEProvider>
+          <Layout>
+            <RoutedContent />
+          </Layout>
+        </SSEProvider>
+      </AuthGate>
+    </ApiHealthProvider>
   );
 }
 

@@ -1,6 +1,10 @@
 import { getAdminToken } from "@/lib/admin-access";
 import { safeJson, describeJsonError } from "@/lib/safe-json";
 import { apiBase } from "@/lib/api-base";
+import {
+  reportApiDegraded,
+  reportApiHealthy,
+} from "@/contexts/ApiHealthContext";
 
 // Resolved at module load. The api-base helper honors VITE_API_BASE_URL when
 // the SPA and API live on different origins (split-domain production); falls
@@ -73,6 +77,10 @@ async function doAdminRequest<T>(
       throw networkErr;
     }
     const detail = networkErr instanceof Error ? networkErr.message : String(networkErr);
+    // Notify the global health monitor so the reconnection banner can show
+    // and start polling /api/healthz independently. Fire-and-forget — this
+    // can't throw and never blocks the caller.
+    reportApiDegraded(path, detail);
     throw new AdminApiError(
       0,
       `API server unreachable at ${BASE}${path} (${detail}). Check that the API workflow is running.`,
@@ -272,7 +280,12 @@ async function adminRequest<T>(
   const maxAttempts = isIdempotent ? 1 + RETRY_BACKOFF_MS.length : 1;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
-      return await doAdminRequest<T>(method, path, body, signal);
+      const result = await doAdminRequest<T>(method, path, body, signal);
+      // Any successful round-trip means the API is reachable. Notify the
+      // global health monitor so it can clear a degraded banner immediately
+      // instead of waiting for its next scheduled /api/healthz probe.
+      reportApiHealthy();
+      return result;
     } catch (err) {
       lastErr = err;
       if (!isIdempotent) throw err;
