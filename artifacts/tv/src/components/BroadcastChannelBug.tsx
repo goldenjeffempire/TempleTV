@@ -42,14 +42,14 @@ export function BroadcastChannelBug({
         bottom: "calc(env(safe-area-inset-bottom, 0px) + clamp(16px, 2.4vw, 28px))",
         display: "flex",
         alignItems: "center",
-        gap: "clamp(6px, 0.8vw, 10px)",
-        padding: "clamp(6px, 1vw, 10px) clamp(10px, 1.6vw, 14px)",
+        gap: "clamp(8px, 1vw, 12px)",
+        padding: "clamp(7px, 1vw, 11px) clamp(11px, 1.7vw, 15px)",
         background: "rgba(0,0,0,0.42)",
         backdropFilter: "blur(8px)",
         WebkitBackdropFilter: "blur(8px)",
         border: "1px solid rgba(255,255,255,0.18)",
         borderRadius: 8,
-        opacity: visible ? 0.7 : 0,
+        opacity: visible ? 0.78 : 0,
         transition: "opacity 700ms ease-out",
         pointerEvents: "none",
         zIndex: 5,
@@ -66,14 +66,34 @@ export function BroadcastChannelBug({
       />
       <span
         style={{
-          color: "#fff",
-          fontSize: "clamp(10px, 1.05vw, 13px)",
-          fontWeight: 700,
-          letterSpacing: "0.14em",
+          display: "inline-flex",
+          flexDirection: "column",
+          lineHeight: 1.1,
           textShadow: "0 1px 6px rgba(0,0,0,0.6)",
         }}
       >
-        TEMPLE TV
+        <span
+          style={{
+            color: "#fff",
+            fontSize: "clamp(10px, 1.05vw, 13px)",
+            fontWeight: 800,
+            letterSpacing: "0.14em",
+          }}
+        >
+          TEMPLE TV
+        </span>
+        <span
+          style={{
+            color: "rgba(255,255,255,0.78)",
+            fontSize: "clamp(7.5px, 0.78vw, 9.5px)",
+            fontWeight: 600,
+            letterSpacing: "0.22em",
+            marginTop: 2,
+            textTransform: "uppercase",
+          }}
+        >
+          JCTM Broadcasting
+        </span>
       </span>
     </div>
   );

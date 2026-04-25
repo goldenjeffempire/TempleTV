@@ -72,7 +72,17 @@ export function ChannelBug({
   return (
     <Animated.View pointerEvents="none" style={[containerStyle, { opacity: opacityAnim }]}>
       <View style={styles.dot} />
-      <Text style={styles.text}>TEMPLE TV</Text>
+      {mode === "watermark" ? (
+        // Real-broadcaster station identity: primary network mark + the
+        // "JCTM Broadcasting" sub-line so the channel bug reads as a true
+        // TV station identifier rather than a single-word badge.
+        <View style={styles.watermarkTextStack}>
+          <Text style={styles.text}>TEMPLE TV</Text>
+          <Text style={styles.subText}>JCTM Broadcasting</Text>
+        </View>
+      ) : (
+        <Text style={styles.text}>TEMPLE TV</Text>
+      )}
     </Animated.View>
   );
 }
@@ -90,13 +100,16 @@ const styles = StyleSheet.create({
   watermark: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 5,
+    gap: 7,
     backgroundColor: "rgba(0,0,0,0.42)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.18)",
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 7,
+  },
+  watermarkTextStack: {
+    flexDirection: "column",
   },
   dot: {
     width: 6,
@@ -109,5 +122,13 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: "700",
     letterSpacing: 1.5,
+  },
+  subText: {
+    color: "rgba(255,255,255,0.78)",
+    fontSize: 7.5,
+    fontWeight: "600",
+    letterSpacing: 1.6,
+    marginTop: 1,
+    textTransform: "uppercase",
   },
 });

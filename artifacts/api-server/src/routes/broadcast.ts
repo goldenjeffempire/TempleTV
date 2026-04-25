@@ -72,6 +72,47 @@ const CACHE_KEYS = {
 const BROADCAST_PAYLOAD_CACHE_KEY = "broadcast:current_payload";
 const BROADCAST_PAYLOAD_TTL_MS = 5_000;
 
+// ---------------------------------------------------------------------------
+// Broadcast anchor — TV-station scheduling continuity
+// ---------------------------------------------------------------------------
+//
+// Real television stations do NOT re-shuffle their lineup just because a new
+// program was added to tomorrow's queue. Whatever is currently on-air keeps
+// playing to the end, then the lineup advances in order.
+//
+// The naïve `epochSecs % totalSecs` formula does not give us that guarantee:
+// the moment a new item is appended, `totalSecs` changes, the modulus moves,
+// and the live edge can teleport into the middle of a different program. To
+// the viewer this is an interruption — exactly what the user reports.
+//
+// The anchor pins the currently-airing item by its id and the wall-clock
+// epoch when it started. Subsequent rebuilds honor the anchor: as long as
+// the anchored item is still in the queue and its run hasn't fully elapsed,
+// playback continues uninterrupted. Newly-uploaded items wait their turn and
+// air only after the queue advances past them, in queue (sortOrder) order.
+//
+// Persisted in the distributed cache so multiple API instances stay in
+// lockstep about what's "on-air" right now.
+const BROADCAST_ANCHOR_CACHE_KEY = "broadcast:current_anchor";
+const BROADCAST_ANCHOR_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+
+type BroadcastAnchor = {
+  itemId: string;
+  startEpochSecs: number;
+};
+
+async function getBroadcastAnchor(): Promise<BroadcastAnchor | null> {
+  return await cache.get<BroadcastAnchor>(BROADCAST_ANCHOR_CACHE_KEY);
+}
+
+async function setBroadcastAnchor(anchor: BroadcastAnchor | null): Promise<void> {
+  if (anchor === null) {
+    await cache.del(BROADCAST_ANCHOR_CACHE_KEY);
+  } else {
+    await cache.set(BROADCAST_ANCHOR_CACHE_KEY, anchor, BROADCAST_ANCHOR_TTL_MS);
+  }
+}
+
 async function getActiveLiveOverride() {
   const overrides = await cache.getOrSet(
     CACHE_KEYS.liveOverride,
@@ -222,7 +263,9 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
   if (activeSchedule && (activeSchedule.contentType === "playlist" || activeSchedule.contentType === "video")) {
     const scheduledItems = await getScheduledItems(activeSchedule);
     if (scheduledItems.length > 0) {
-      const calculated = calculateCurrentFromItems(scheduledItems);
+      // Scheduled programming (e.g. Sunday Service playlist) is admin-curated
+      // and runs on its own clock — anchor continuity does not apply here.
+      const { result: calculated } = calculateCurrentFromItems(scheduledItems);
       result = {
         ...calculated,
         syncedAt,
@@ -270,7 +313,23 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
     return result;
   }
 
-  const calculated = calculateCurrentFromItems(queueItems);
+  // Anchor-driven queue: preserves the currently-airing item across queue
+  // mutations (uploads, reorders, deletions of OTHER items). New uploads
+  // append to the end and air only when the queue advances to them, exactly
+  // like a real TV station's lineup.
+  const priorAnchor = await getBroadcastAnchor();
+  const { result: calculated, newAnchor } = calculateCurrentFromItems(
+    queueItems,
+    priorAnchor,
+  );
+  if (
+    newAnchor &&
+    (!priorAnchor ||
+      priorAnchor.itemId !== newAnchor.itemId ||
+      priorAnchor.startEpochSecs !== newAnchor.startEpochSecs)
+  ) {
+    await setBroadcastAnchor(newAnchor);
+  }
   result = {
     ...calculated,
     syncedAt,
@@ -400,23 +459,124 @@ function parseDurationSecs(value: string | null | undefined): number {
   return 1800;
 }
 
-function calculateCurrentFromItems(items: BroadcastItem[]) {
+type CalculateCurrentResult = {
+  item: BroadcastItem | null;
+  nextItem: BroadcastItem | null;
+  index: number;
+  positionSecs: number;
+  totalSecs: number;
+  queueLength: number;
+  progressPercent: number;
+  failoverReason: string | null;
+  itemStartEpochSecs?: number;
+  currentItemEndsAtMs?: number;
+};
+
+/**
+ * Compute the live edge of the broadcast queue.
+ *
+ * Two strategies, in order:
+ *  1. **Anchor-driven (preferred when a fresh anchor exists).**
+ *     Honors the currently-airing item: as long as the anchored item is
+ *     still in the queue and its run hasn't fully elapsed, we keep playing
+ *     it from the anchor's `startEpochSecs`. When its run ends we walk
+ *     forward through the queue in `sortOrder` until we land on the item
+ *     that should be on-air right now. This is what makes mid-broadcast
+ *     uploads append-only — they never interrupt the current program.
+ *  2. **Epoch-modulo fallback (cold start, anchor lost, or anchor's item
+ *     was removed from the queue).**
+ *     `epochSecs % totalSecs` finds the live edge as if the entire queue
+ *     had been looping forever. Suitable for the very first calculation
+ *     after a deploy or cache flush, but otherwise undesirable because
+ *     queue mutations shift the result.
+ *
+ * Returns the calculated state and the anchor it should be persisted as
+ * — the caller writes it back to the distributed cache.
+ */
+function calculateCurrentFromItems(
+  items: BroadcastItem[],
+  anchor: BroadcastAnchor | null = null,
+): { result: CalculateCurrentResult; newAnchor: BroadcastAnchor | null } {
   const playableItems = items.filter((item) => item.durationSecs > 0);
   if (playableItems.length === 0) {
     return {
-      item: null,
-      nextItem: null,
-      index: 0,
-      positionSecs: 0,
-      totalSecs: 0,
-      queueLength: 0,
-      progressPercent: 0,
-      failoverReason: "No active broadcast items have a valid duration.",
+      result: {
+        item: null,
+        nextItem: null,
+        index: 0,
+        positionSecs: 0,
+        totalSecs: 0,
+        queueLength: 0,
+        progressPercent: 0,
+        failoverReason: "No active broadcast items have a valid duration.",
+      },
+      newAnchor: null,
     };
   }
 
   const totalSecs = playableItems.reduce((acc, i) => acc + i.durationSecs, 0);
   const epochSecs = Math.floor(Date.now() / 1000);
+
+  // ── 1. Anchor-driven path ────────────────────────────────────────────
+  if (anchor) {
+    const anchorIdx = playableItems.findIndex((it) => it.id === anchor.itemId);
+    if (anchorIdx !== -1) {
+      const anchorEnd =
+        anchor.startEpochSecs + playableItems[anchorIdx]!.durationSecs;
+
+      // If the anchor is way in the past (more than a full lap behind the
+      // current epoch), bail out to modulo — walking forward would loop the
+      // queue many times and is a sign the server was down for an extended
+      // period. Modulo gives the user the right "live now" edge instantly.
+      if (epochSecs < anchorEnd + totalSecs) {
+        let cursorIdx = anchorIdx;
+        let cursorStart = anchor.startEpochSecs;
+
+        // Walk forward through the queue advancing past items whose run has
+        // fully elapsed. Bounded at 2 full laps for safety — we already
+        // bailed to modulo if we were further behind than that.
+        const maxSteps = playableItems.length * 2 + 1;
+        for (let step = 0; step < maxSteps; step++) {
+          const cursorItem = playableItems[cursorIdx]!;
+          const cursorEnd = cursorStart + cursorItem.durationSecs;
+
+          if (epochSecs < cursorEnd) {
+            const positionSecs = Math.max(0, epochSecs - cursorStart);
+            const nextItem =
+              playableItems[(cursorIdx + 1) % playableItems.length] ?? null;
+            return {
+              result: {
+                item: cursorItem,
+                nextItem,
+                index: cursorIdx,
+                positionSecs,
+                totalSecs,
+                queueLength: playableItems.length,
+                progressPercent:
+                  cursorItem.durationSecs > 0
+                    ? Math.round((positionSecs / cursorItem.durationSecs) * 100)
+                    : 0,
+                failoverReason: null,
+                itemStartEpochSecs: cursorStart,
+                currentItemEndsAtMs: cursorEnd * 1000,
+              },
+              newAnchor: { itemId: cursorItem.id, startEpochSecs: cursorStart },
+            };
+          }
+
+          // This item has fully elapsed — advance to the next item in queue
+          // (sortOrder) order. The next item starts exactly when this one ended,
+          // so the broadcast clock stays continuous and frame-accurate.
+          cursorStart = cursorEnd;
+          cursorIdx = (cursorIdx + 1) % playableItems.length;
+        }
+      }
+      // else: anchor too stale → fall through to modulo
+    }
+    // else: anchored item was removed from queue → fall through to modulo
+  }
+
+  // ── 2. Epoch-modulo fallback ─────────────────────────────────────────
   const position = totalSecs > 0 ? epochSecs % totalSecs : 0;
 
   let cumulative = 0;
@@ -439,16 +599,22 @@ function calculateCurrentFromItems(items: BroadcastItem[]) {
   const itemStartEpochSecs = epochSecs - positionSecs;
   const currentItemEndsAtMs = (itemStartEpochSecs + currentItem.durationSecs) * 1000;
   return {
-    item: currentItem,
-    nextItem,
-    index,
-    positionSecs,
-    totalSecs,
-    queueLength: playableItems.length,
-    progressPercent: currentItem.durationSecs > 0 ? Math.round((positionSecs / currentItem.durationSecs) * 100) : 0,
-    failoverReason: null,
-    itemStartEpochSecs,
-    currentItemEndsAtMs,
+    result: {
+      item: currentItem,
+      nextItem,
+      index,
+      positionSecs,
+      totalSecs,
+      queueLength: playableItems.length,
+      progressPercent:
+        currentItem.durationSecs > 0
+          ? Math.round((positionSecs / currentItem.durationSecs) * 100)
+          : 0,
+      failoverReason: null,
+      itemStartEpochSecs,
+      currentItemEndsAtMs,
+    },
+    newAnchor: { itemId: currentItem.id, startEpochSecs: itemStartEpochSecs },
   };
 }
 

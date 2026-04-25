@@ -463,7 +463,7 @@ function YouTubePlayer({ videoId, title, onBack, isLive = false }: { videoId: st
             alignItems: "center",
             justifyContent: "center",
             gap: 18,
-            background: "radial-gradient(circle at 50% 40%, #1a0010 0%, #050505 70%)",
+            background: "radial-gradient(circle at 50% 40%, #1a1f2a 0%, #0a0d12 70%)",
             zIndex: 5,
           }}
         >
