@@ -203,86 +203,135 @@ export function AuthGateModal({ open, onClose, onAuthed, reason }: AuthGateModal
 
   if (!open) return null;
 
-  const formattedCode = code ? `${code.slice(0, 4)}-${code.slice(4, 8)}` : null;
+  // Split the raw code into two visual chunks so each chunk renders as its
+  // own inline-block. This avoids letter-spacing propagating to the
+  // separator (which made earlier renders look like "7UBB - - MU5") and
+  // lets the chunks wrap as a unit when the viewport gets narrow.
+  // Codes can be 6, 7, or 8 characters depending on the API; we always
+  // split at the midpoint for a balanced visual.
+  const codeChunks: string[] | null = code
+    ? (() => {
+        const mid = Math.ceil(code.length / 2);
+        return [code.slice(0, mid), code.slice(mid)];
+      })()
+    : null;
   const minutes = Math.floor(secondsLeft / 60);
   const seconds = secondsLeft % 60;
+  const placeholderChunks =
+    phase === "loading" ? ["····", "····"] : ["----", "----"];
 
   return (
     <div
-      className="fixed inset-0 z-[1000] flex items-center justify-center"
+      className="fixed inset-0 z-[1000] flex items-center justify-center p-3 sm:p-6"
       role="dialog"
       aria-modal="true"
       aria-labelledby="tv-gate-title"
     >
       {/* Dim, blurred backdrop so the underlying app stays visible but soft. */}
-      <div className="absolute inset-0 bg-black/85 backdrop-blur-md" />
+      <div
+        className="absolute inset-0 bg-black/85 backdrop-blur-md"
+        onClick={onClose}
+        aria-hidden="true"
+      />
 
       <div
-        className="relative w-[78vw] max-w-[1100px] rounded-3xl overflow-hidden shadow-[0_30px_120px_rgba(0,0,0,0.7)]"
+        className="relative w-full max-w-[960px] max-h-[calc(100vh-1.5rem)] overflow-y-auto rounded-2xl sm:rounded-3xl shadow-[0_30px_120px_rgba(0,0,0,0.7)]"
         style={{
           background: "linear-gradient(135deg, #1a0233 0%, #3a0571 55%, #6A0DAD 100%)",
         }}
       >
         {/* Subtle top accent so the card reads as elevated. */}
-        <div className="absolute inset-x-0 top-0 h-px bg-white/20" />
+        <div className="absolute inset-x-0 top-0 h-px bg-white/20" aria-hidden="true" />
 
-        <div className="px-16 py-14 text-white">
+        <div className="px-5 py-6 sm:px-10 sm:py-10 md:px-14 md:py-12 text-white">
           <div className="flex items-center gap-3 mb-3 opacity-80">
             <span className="inline-block h-2.5 w-2.5 rounded-full bg-emerald-400 animate-pulse" />
-            <span className="text-sm tracking-[0.3em] uppercase">Temple TV · Sign in</span>
+            <span className="text-xs sm:text-sm tracking-[0.3em] uppercase">Temple TV · Sign in</span>
           </div>
 
-          <h2 id="tv-gate-title" className="text-5xl font-bold leading-tight tracking-tight">
+          <h2
+            id="tv-gate-title"
+            className="text-2xl sm:text-3xl md:text-4xl lg:text-5xl font-bold leading-tight tracking-tight"
+          >
             {phase === "linked" ? "You're signed in" : (reason ?? "Sign in to start watching")}
           </h2>
 
           {phase !== "linked" && (
-            <p className="mt-4 text-xl text-white/80 leading-relaxed max-w-3xl">
+            <p className="mt-3 sm:mt-4 text-sm sm:text-base md:text-lg lg:text-xl text-white/80 leading-relaxed max-w-3xl">
               On your phone or computer, open{" "}
-              <span className="text-white font-semibold">templetv.org.ng/link</span>{" "}
+              <span className="text-white font-semibold whitespace-nowrap">templetv.org.ng/link</span>{" "}
               and enter the code below.
             </p>
           )}
 
-          <div className="mt-12 grid grid-cols-[1fr_auto] gap-12 items-center">
-            <div>
-              <div className="text-sm uppercase tracking-[0.3em] text-white/60 mb-4">
+          <div className="mt-6 sm:mt-10 flex flex-col lg:grid lg:grid-cols-[1fr_auto] gap-6 lg:gap-12 lg:items-center">
+            <div className="min-w-0">
+              <div className="text-xs sm:text-sm uppercase tracking-[0.3em] text-white/60 mb-3 sm:mb-4">
                 {phase === "linked" ? "Linked" : "Your code"}
               </div>
               <div
-                className="font-mono font-bold tabular-nums select-all"
+                className="font-mono font-bold tabular-nums select-all flex flex-wrap items-baseline gap-x-[0.35em] gap-y-2 leading-none"
                 style={{
-                  fontSize: "clamp(5rem, 10vw, 9rem)",
-                  letterSpacing: "0.08em",
-                  lineHeight: 1,
+                  // Scale aggressively with viewport but clamp so it never
+                  // forces horizontal overflow on narrow screens.
+                  fontSize: "clamp(2.75rem, 9vw, 6.5rem)",
                   textShadow: "0 4px 32px rgba(0,0,0,0.5)",
                 }}
+                aria-live="polite"
+                aria-label={
+                  phase === "linked"
+                    ? "Successfully linked"
+                    : code
+                      ? `Your pairing code is ${code.split("").join(" ")}`
+                      : "Generating pairing code"
+                }
               >
-                {phase === "linked"
-                  ? "✓"
-                  : formattedCode ?? (phase === "loading" ? "····" : "----")}
+                {phase === "linked" ? (
+                  <span>✓</span>
+                ) : codeChunks ? (
+                  <>
+                    <span style={{ letterSpacing: "0.08em" }}>{codeChunks[0]}</span>
+                    <span aria-hidden="true" className="opacity-50">–</span>
+                    <span style={{ letterSpacing: "0.08em" }}>{codeChunks[1]}</span>
+                  </>
+                ) : (
+                  <>
+                    <span style={{ letterSpacing: "0.08em" }} className="opacity-40">
+                      {placeholderChunks[0]}
+                    </span>
+                    <span aria-hidden="true" className="opacity-30">–</span>
+                    <span style={{ letterSpacing: "0.08em" }} className="opacity-40">
+                      {placeholderChunks[1]}
+                    </span>
+                  </>
+                )}
               </div>
 
               {phase === "ready" && (
-                <div className="mt-6 text-base text-white/60">
+                <div className="mt-4 sm:mt-6 text-sm sm:text-base text-white/60">
                   Code expires in{" "}
                   <span className="text-white font-semibold tabular-nums">
                     {minutes}:{String(seconds).padStart(2, "0")}
                   </span>
                 </div>
               )}
+              {phase === "loading" && !error && (
+                <div className="mt-4 sm:mt-6 text-sm sm:text-base text-white/60">
+                  Generating a fresh code…
+                </div>
+              )}
               {phase === "linked" && (
-                <div className="mt-6 text-base text-white/80">
+                <div className="mt-4 sm:mt-6 text-sm sm:text-base text-white/80">
                   Starting your sermon now…
                 </div>
               )}
             </div>
 
-            <div className="hidden md:flex flex-col items-center gap-3 bg-white/5 border border-white/10 rounded-2xl p-6 min-w-[260px]">
+            <div className="hidden lg:flex flex-col items-start gap-3 bg-white/5 border border-white/10 rounded-2xl p-5 min-w-[240px]">
               <div className="text-xs uppercase tracking-[0.3em] text-white/60">
                 Free account
               </div>
-              <ul className="text-sm text-white/80 space-y-2 mt-1">
+              <ul className="text-sm text-white/80 space-y-1.5 mt-1 list-none">
                 <li>• Watch full sermons</li>
                 <li>• Sync progress across devices</li>
                 <li>• Live service alerts</li>
@@ -291,19 +340,31 @@ export function AuthGateModal({ open, onClose, onAuthed, reason }: AuthGateModal
           </div>
 
           {error && (
-            <div className="mt-6 text-sm text-red-300 bg-red-950/50 border border-red-500/30 rounded-lg px-4 py-3">
-              {error}
+            <div
+              className="mt-5 sm:mt-6 text-sm text-red-200 bg-red-950/60 border border-red-500/40 rounded-lg px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"
+              role="alert"
+            >
+              <span className="break-words">{error}</span>
+              <button
+                type="button"
+                onClick={() => regenerateCode()}
+                className="self-start sm:self-auto px-4 py-1.5 rounded-full bg-white/10 border border-white/30 text-white text-sm font-semibold transition focus:outline-none focus:ring-4 focus:ring-white/40 focus:bg-white/20 hover:bg-white/15"
+              >
+                Try again
+              </button>
             </div>
           )}
 
-          <div className="mt-12 flex items-center justify-between">
-            <div className="text-xs text-white/50">
+          <div className="mt-8 sm:mt-12 flex flex-wrap items-center justify-between gap-3">
+            <div className="text-xs text-white/50 order-2 sm:order-1">
               Press <span className="text-white/80 font-semibold">Back</span> on your remote to cancel
             </div>
             <button
               ref={cancelRef}
               onClick={onClose}
-              className="px-8 py-3 rounded-full bg-white/10 border border-white/30 text-white text-base font-semibold transition focus:outline-none focus:ring-4 focus:ring-white/40 focus:bg-white/20 hover:bg-white/15"
+              type="button"
+              aria-label="Cancel sign in"
+              className="order-1 sm:order-2 ml-auto sm:ml-0 px-6 sm:px-8 py-2.5 sm:py-3 rounded-full bg-white/10 border border-white/30 text-white text-sm sm:text-base font-semibold transition focus:outline-none focus:ring-4 focus:ring-white/40 focus:bg-white/20 hover:bg-white/15"
             >
               Cancel
             </button>
