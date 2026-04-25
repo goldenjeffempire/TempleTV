@@ -115,6 +115,41 @@ The Video Library now supports full pagination (`page` query param, 50 items/pag
 - `artifacts/tv/src/hooks/useData.ts` — TV polling + category mapping for local uploads
 - `artifacts/tv/src/lib/api.ts` — TV video fetching, passes `apiCategory` from DB
 
+## Direct Browser → S3 Upload (April 2026)
+
+Admin video uploads now bypass the API server's byte-stream by default. The
+browser PUTs the file straight to AWS S3 via a presigned URL minted by the
+API server, freeing server CPU/bandwidth from the upload critical path.
+
+- **Endpoints (`artifacts/api-server/src/routes/admin.ts`):**
+  - `POST /api/admin/videos/upload/s3-init` — validates title + size (≤ 5 GB
+    cap), sanitises ext/MIME, mints a 1-hour presigned PUT URL pointing at
+    `videos/<sessionUuid>.<ext>`, returns `{sessionId, objectKey, uploadUrl,
+    contentType}`.
+  - `POST /api/admin/videos/upload/s3-finalize` — HEADs the S3 object to
+    confirm it landed (and to use S3's authoritative `ContentLength`),
+    stamps ACL metadata via CopyObject, inserts the videos row with
+    `objectPath = <S3 key>` and `localVideoUrl = ${baseUrl}/api/videos/<id>/source`,
+    and queues a transcoding job with `videoPath=""` so the transcoder's
+    HTTP fallback fetches the source via the redirect.
+  - `GET /api/videos/:id/source` — public 302 redirect to a freshly-minted
+    6-hour presigned GET URL. Used as the stable `localVideoUrl` for clients
+    and transcoder.
+- **Client (`artifacts/admin/src/lib/uploadEngine.ts`):** new
+  `uploadFileToS3(presignedUrl, body, contentType, signal, onProgress,
+  stallTimeoutMs)` XHR helper with the same progress + stall-watchdog
+  semantics as `uploadChunk`, and ETag capture on success.
+- **Modal (`artifacts/admin/src/components/VideoUploadModal.tsx`):** new
+  "Upload directly to S3" toggle (default ON, persisted in localStorage).
+  `runFileUpload` branches into `runS3DirectUpload` when the toggle is on,
+  the file is ≤ 4.5 GB, no resume session is in progress, and no custom
+  thumbnail was attached. The chunked upload path remains the fallback for
+  files > 4.5 GB, custom thumbnails (which still need a session-scoped
+  upload), and resume scenarios. The transcoder auto-generates thumbnails
+  for the S3 direct flow.
+- **Limits:** S3 single-PUT cap is 5 GB; client cap is 4.5 GB to leave HTTP
+  overhead headroom. Object key regex is locked to `^videos/[A-Za-z0-9._-]+$`.
+
 ## Admin Panel Defensive Hardening (April 2026)
 
 After repeated user reports of admin pages crashing with `Unexpected token '<'` JSON-parse errors and `X.map is not a function` runtime errors, all 11 admin pages were hardened across three rounds:

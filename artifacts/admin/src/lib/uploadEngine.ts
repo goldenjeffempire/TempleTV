@@ -386,6 +386,102 @@ export async function uploadChunk(
   });
 }
 
+// ─── Direct browser → S3 upload (single PUT) ─────────────────────────────────
+//
+// Used when the API server has been booted with valid AWS credentials. The
+// admin's `s3-init` endpoint hands back a presigned PUT URL; this helper PUTs
+// the file directly to S3 with the same XHR-based progress + stall watchdog
+// that `uploadChunk` uses, so the modal's UI tracking code can stay shared.
+//
+// Returns the response ETag for optional verification at finalize time.
+export async function uploadFileToS3(
+  presignedUrl: string,
+  body: Blob,
+  contentType: string,
+  signal: AbortSignal,
+  onProgress?: (bytes: number) => void,
+  stallTimeoutMs = 60_000,
+): Promise<{ etag: string | null }> {
+  return new Promise<{ etag: string | null }>((resolve, reject) => {
+    let settled = false;
+    const settle = (fn: () => void) => {
+      if (!settled) {
+        settled = true;
+        if (stallTimer) clearTimeout(stallTimer);
+        fn();
+      }
+    };
+
+    let stallTimer: ReturnType<typeof setTimeout> | null = null;
+    const resetStall = () => {
+      if (settled) return;
+      if (stallTimer) clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => {
+        xhr.abort();
+        settle(() =>
+          reject(
+            Object.assign(
+              new Error(`S3 upload stalled — no bytes for ${stallTimeoutMs / 1000}s`),
+              { name: "StallError" },
+            ),
+          ),
+        );
+      }, stallTimeoutMs);
+    };
+    resetStall();
+
+    const xhr = new XMLHttpRequest();
+    let lastLoaded = 0;
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && e.loaded > lastLoaded) {
+        const delta = e.loaded - lastLoaded;
+        lastLoaded = e.loaded;
+        onProgress?.(delta);
+        resetStall();
+      }
+    };
+
+    xhr.onload = () =>
+      settle(() => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          // S3 returns the ETag (quoted MD5 for non-multipart) in a response
+          // header — capture it so finalize can verify integrity if it wants.
+          const etag = xhr.getResponseHeader("ETag");
+          resolve({ etag: etag ? etag.replace(/^"|"$/g, "") : null });
+        } else {
+          // S3 errors are XML — surface a useful prefix for debugging.
+          const snippet = (xhr.responseText ?? "").slice(0, 240).trim();
+          reject(
+            new Error(
+              `S3 upload failed (HTTP ${xhr.status}): ${snippet || xhr.statusText || "no body"}`,
+            ),
+          );
+        }
+      });
+
+    xhr.onerror = () =>
+      settle(() => reject(new Error("Network error uploading to S3 — connection lost")));
+    xhr.onabort = () =>
+      settle(() => { /* already rejected by stall or external signal */ });
+
+    signal.addEventListener(
+      "abort",
+      () => {
+        xhr.abort();
+        settle(() => reject(Object.assign(new Error("Aborted"), { name: "AbortError" })));
+      },
+      { once: true },
+    );
+
+    xhr.open("PUT", presignedUrl);
+    // Content-Type MUST match the value the server signed under or S3
+    // returns 403 SignatureDoesNotMatch.
+    xhr.setRequestHeader("Content-Type", contentType);
+    xhr.send(body);
+  });
+}
+
 // ─── Formatting helpers ───────────────────────────────────────────────────────
 export function formatFileSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;

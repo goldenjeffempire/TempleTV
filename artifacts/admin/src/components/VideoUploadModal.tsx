@@ -71,6 +71,7 @@ import {
   detectVideoDuration,
   readJsonOrThrow,
   uploadChunk,
+  uploadFileToS3,
   formatFileSize,
   formatSpeed,
   formatEta,
@@ -78,6 +79,13 @@ import {
   emaSpeed,
   networkTypeLabel,
 } from "@/lib/uploadEngine";
+
+/**
+ * Files larger than this fall back to the chunked upload path. S3 caps a
+ * single PUT at 5 GB; we leave headroom for HTTP overhead and slop.
+ */
+const S3_DIRECT_MAX_BYTES = 4.5 * 1024 * 1024 * 1024;
+const S3_DIRECT_PREF_KEY = "ttv-s3-direct-upload-v1";
 
 import { rewriteApiPath } from "@/lib/api-base";
 
@@ -127,6 +135,23 @@ export function VideoUploadModal({
   const [isDragging, setIsDragging] = useState(false);
   const [thumbnailFile, setThumbnailFile] = useState<File | null>(null);
   const [compressionEnabled, setCompressionEnabled] = useState(isCompressionSupported());
+  // Direct browser → S3 upload (default ON). When enabled and the file fits
+  // in a single PUT, the byte-stream skips the API server entirely.
+  const [s3DirectUpload, setS3DirectUpload] = useState<boolean>(() => {
+    try {
+      const v = localStorage.getItem(S3_DIRECT_PREF_KEY);
+      return v === null ? true : v === "1";
+    } catch {
+      return true;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(S3_DIRECT_PREF_KEY, s3DirectUpload ? "1" : "0");
+    } catch {
+      /* localStorage unavailable */
+    }
+  }, [s3DirectUpload]);
   const [defaultForm, setDefaultForm] = useState({
     title: "",
     category: "sermon",
@@ -267,6 +292,133 @@ export function VideoUploadModal({
     [forceUpdate],
   );
 
+  // ── Direct browser → S3 upload path ────────────────────────────────────────
+  // Two roundtrips to the API server (init + finalize) plus one PUT to S3.
+  // Bytes never touch the API server, so server CPU/bandwidth is freed up.
+  const runS3DirectUpload = useCallback(
+    async (args: {
+      taskId: string;
+      uploadFile: File;
+      title: string;
+      durationSecs: number;
+      ext: string;             // includes leading "."
+    }) => {
+      const { taskId, uploadFile, title, durationSecs, ext } = args;
+      const task = tasksRef.current.get(taskId)!;
+
+      updateTask(taskId, { state: "initializing", error: null });
+
+      // 1. Mint a presigned PUT URL.
+      const initRes = await uploadAdminFetch(
+        "/api/admin/videos/upload/s3-init",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title,
+            sizeBytes: uploadFile.size,
+            ext: ext.replace(/^\./, ""),
+            mimeType: uploadFile.type || undefined,
+          }),
+        },
+      );
+      const initJson = await readJsonOrThrow<{
+        sessionId: string;
+        objectKey: string;
+        uploadUrl: string;
+        contentType: string;
+      }>(initRes, "S3 init");
+
+      // 2. Stream the file straight to S3, updating progress as bytes flow.
+      const abortCtrl = new AbortController();
+      updateTask(taskId, {
+        state: "uploading",
+        abortController: abortCtrl,
+        sessionId: initJson.sessionId,
+      });
+
+      // Use the task's adaptive stallTimeout so flaky networks don't get
+      // killed prematurely on a slow first chunk.
+      const stallTimeoutMs =
+        tasksRef.current.get(taskId)?.stallTimeoutMs ?? 60_000;
+
+      try {
+        await uploadFileToS3(
+          initJson.uploadUrl,
+          uploadFile,
+          initJson.contentType,
+          abortCtrl.signal,
+          (delta) => {
+            const t = tasksRef.current.get(taskId);
+            if (!t) return;
+            t.bytesUploaded = Math.min(t.bytesUploaded + delta, uploadFile.size);
+            t.progress = Math.round((t.bytesUploaded / uploadFile.size) * 100);
+            // Single-PUT model: there are no chunks, but populate the chunk
+            // counters so the existing UI progress widget still renders.
+            t.chunksTotal = 1;
+            t.chunksDone = t.bytesUploaded >= uploadFile.size ? 1 : 0;
+            const elapsedSec = (Date.now() - t.startTime) / 1000;
+            const instSpeed = elapsedSec > 0 ? t.bytesUploaded / elapsedSec : 0;
+            t.speedRaw = instSpeed;
+            t.speed = emaSpeed(t.speed, instSpeed);
+            const remaining = uploadFile.size - t.bytesUploaded;
+            t.eta = t.speed > 0 ? Math.round(remaining / t.speed) : 0;
+            forceUpdate();
+          },
+          stallTimeoutMs,
+        );
+      } catch (err) {
+        if ((err as Error).name === "AbortError") {
+          updateTask(taskId, { state: "paused" });
+          return;
+        }
+        throw err;
+      }
+
+      // 3. Finalize → server HEADs the object, inserts the videos row, and
+      //    queues the transcoding job.
+      updateTask(taskId, { state: "finalizing", abortController: null });
+
+      const finalizeRes = await uploadAdminFetch(
+        "/api/admin/videos/upload/s3-finalize",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionId: initJson.sessionId,
+            objectKey: initJson.objectKey,
+            title,
+            category: task.category,
+            preacher: task.preacher,
+            featured: task.featured,
+            durationSecs,
+            sizeBytes: uploadFile.size,
+            mimeType: uploadFile.type || undefined,
+            originalFilename: uploadFile.name,
+          }),
+        },
+      );
+      const finalizeJson = await readJsonOrThrow<{
+        id: string;
+        broadcastQueued?: boolean;
+      }>(finalizeRes, "S3 finalize");
+
+      updateTask(taskId, {
+        state: "done",
+        progress: 100,
+        bytesUploaded: uploadFile.size,
+        speed: 0,
+        eta: 0,
+        error: null,
+        chunksDone: 1,
+        chunksTotal: 1,
+      });
+
+      void finalizeJson;
+    },
+    [updateTask, forceUpdate],
+  );
+
   // ── Upload engine for a single file ────────────────────────────────────────
   const runFileUpload = useCallback(
     async (
@@ -347,6 +499,30 @@ export function VideoUploadModal({
           speedSamples: [],
           startTime: Date.now(),
         });
+
+        const currentTaskForRoute = tasksRef.current.get(taskId)!;
+        const titleForRoute =
+          currentTaskForRoute.title || task.file.name.replace(/\.[^/.]+$/, "");
+
+        // ── S3 direct upload branch ──────────────────────────────────────────
+        // Conditions: feature toggle on, not a resume of a prior chunked
+        // session, size fits in a single PUT, and no custom thumbnail (the
+        // S3 direct flow currently relies on auto-generated thumbnails).
+        if (
+          s3DirectUpload &&
+          !resumeSession &&
+          uploadFile.size <= S3_DIRECT_MAX_BYTES &&
+          !thumbnailFile
+        ) {
+          await runS3DirectUpload({
+            taskId,
+            uploadFile,
+            title: titleForRoute,
+            durationSecs,
+            ext,
+          });
+          return;
+        }
 
         let sid = resumeSession?.sid ?? null;
         const alreadyUploaded = resumeSession?.uploadedChunks ?? new Set<number>();
@@ -660,6 +836,7 @@ export function VideoUploadModal({
     [
       thumbnailFile,
       compressionEnabled,
+      s3DirectUpload,
       saveSession,
       clearSession,
       updateTask,
@@ -1168,6 +1345,22 @@ export function VideoUploadModal({
                   ? "Metadata applied to all files (titles default to filename)"
                   : "Video details"}
               </p>
+
+              <div className="flex items-center justify-between p-2.5 bg-primary/5 border border-primary/20 rounded-lg">
+                <div className="flex items-center gap-2">
+                  <Upload className="w-3.5 h-3.5 text-primary shrink-0" />
+                  <div>
+                    <Label className="text-xs font-medium">Upload directly to S3</Label>
+                    <p className="text-[11px] text-muted-foreground">
+                      Skips the server · faster · auto thumbnail · ≤ 4.5 GB
+                    </p>
+                  </div>
+                </div>
+                <Switch
+                  checked={s3DirectUpload}
+                  onCheckedChange={setS3DirectUpload}
+                />
+              </div>
 
               {isCompressionSupported() && (
                 <div className="flex items-center justify-between p-2.5 bg-primary/5 border border-primary/20 rounded-lg">

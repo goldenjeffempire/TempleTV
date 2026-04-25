@@ -19,6 +19,15 @@ import multer from "multer";
 import { validateUploadedFileMagicBytes } from "../lib/fileValidation";
 import { BROADCAST_QUEUE_LOCK_KEY } from "../lib/broadcastQueueLock";
 import {
+  AWS_S3_BUCKET,
+  AWS_REGION,
+  isS3Configured,
+  headObject as s3HeadObject,
+  getSignedPutUrl as s3GetSignedPutUrl,
+  getSignedGetUrl as s3GetSignedGetUrl,
+  replaceObjectMetadata as s3ReplaceObjectMetadata,
+} from "../lib/s3Storage";
+import {
   ImportVideoBody,
   UpdateAdminVideoBody,
   UpdateAdminVideoParams,
@@ -1580,6 +1589,297 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
     const lingering = uploadSessions.get(sessionId);
     if (lingering) lingering.finalizing = false;
     const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+// ── Direct browser → S3 upload (presigned PUT) ──────────────────────────────
+//
+// Bypasses the API server for the byte-stream:
+//   1. Client POSTs metadata to /admin/videos/upload/s3-init → server mints
+//      a 1-hour presigned PUT URL pointing at videos/<uuid>.<ext> in the
+//      configured S3 bucket and returns it.
+//   2. Browser PUTs the file directly to S3 — the API server never sees the
+//      bytes, so server CPU and bandwidth are not in the upload critical path.
+//   3. Client POSTs the same sessionId + objectKey to /s3-finalize → server
+//      verifies the object exists in S3 (HEAD), stamps ACL metadata, inserts
+//      the videos row, queues the transcoding job, and returns the row.
+//
+// Files larger than the 5 GB single-PUT cap should fall back to the chunked
+// /admin/videos/upload/init flow.
+
+const S3_VIDEO_PREFIX = "videos";
+const S3_PUT_TTL_SEC = 3600;          // 1 hour to complete the upload
+const S3_GET_REDIRECT_TTL_SEC = 21600; // 6 hours per playback URL
+const S3_MAX_DIRECT_PUT_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB S3 PUT cap
+
+const SAFE_EXT_RE = /^[a-z0-9]{1,10}$/;
+const SAFE_OBJECT_KEY_RE = /^videos\/[A-Za-z0-9._-]+$/;
+const SAFE_MIME_RE = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i;
+
+function sanitiseExt(raw: unknown, fallback = "mp4"): string {
+  const ext = String(raw ?? "").trim().replace(/^\.+/, "").toLowerCase();
+  return SAFE_EXT_RE.test(ext) ? ext : fallback;
+}
+
+function sanitiseMime(raw: unknown): string | undefined {
+  const mime = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  return mime && SAFE_MIME_RE.test(mime) ? mime : undefined;
+}
+
+router.post("/admin/videos/upload/s3-init", async (req, res) => {
+  try {
+    if (!isS3Configured()) {
+      return void res.status(503).json({
+        error: "S3 object storage is not configured on this server.",
+      });
+    }
+
+    const {
+      title,
+      sizeBytes,
+      ext,
+      mimeType,
+    } = req.body as {
+      title?: string;
+      sizeBytes?: string | number;
+      ext?: string;
+      mimeType?: string;
+    };
+
+    if (!title?.trim()) {
+      return void res.status(400).json({ error: "Title is required" });
+    }
+
+    const totalBytes = typeof sizeBytes === "number"
+      ? sizeBytes
+      : parseInt(String(sizeBytes ?? "0"), 10);
+    if (!Number.isFinite(totalBytes) || totalBytes <= 0) {
+      return void res.status(400).json({ error: "sizeBytes is required" });
+    }
+    if (totalBytes > S3_MAX_DIRECT_PUT_BYTES) {
+      return void res.status(413).json({
+        error: `File too large for single-PUT upload (max ${S3_MAX_DIRECT_PUT_BYTES} bytes). Use the chunked endpoint instead.`,
+      });
+    }
+
+    const safeExt = sanitiseExt(ext, "mp4");
+    const safeMime = sanitiseMime(mimeType) ?? "application/octet-stream";
+
+    const sessionId = randomUUID();
+    const objectKey = `${S3_VIDEO_PREFIX}/${sessionId}.${safeExt}`;
+
+    const uploadUrl = await s3GetSignedPutUrl(objectKey, S3_PUT_TTL_SEC, {
+      contentType: safeMime,
+    });
+
+    res
+      .setHeader("Cache-Control", "no-store")
+      .json({
+        sessionId,
+        objectKey,
+        uploadUrl,
+        contentType: safeMime,
+        expiresIn: S3_PUT_TTL_SEC,
+        bucket: AWS_S3_BUCKET,
+        region: AWS_REGION,
+      });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    logger.error({ err }, "s3-init failed");
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/admin/videos/upload/s3-finalize", async (req, res) => {
+  try {
+    if (!isS3Configured()) {
+      return void res.status(503).json({
+        error: "S3 object storage is not configured on this server.",
+      });
+    }
+
+    const {
+      sessionId,
+      objectKey,
+      title,
+      category,
+      preacher,
+      featured,
+      durationSecs,
+      sizeBytes,
+      mimeType,
+      originalFilename,
+      checksumSha256,
+    } = req.body as {
+      sessionId?: string;
+      objectKey?: string;
+      title?: string;
+      category?: string;
+      preacher?: string;
+      featured?: boolean | string;
+      durationSecs?: number | string;
+      sizeBytes?: number | string;
+      mimeType?: string;
+      originalFilename?: string;
+      checksumSha256?: string;
+    };
+
+    if (!title?.trim()) {
+      return void res.status(400).json({ error: "Title is required" });
+    }
+    if (!objectKey || !SAFE_OBJECT_KEY_RE.test(objectKey)) {
+      return void res.status(400).json({ error: "Invalid or missing objectKey" });
+    }
+
+    // Verify the object actually landed in S3 before we commit a DB row.
+    const head = await s3HeadObject(objectKey);
+    if (!head) {
+      return void res.status(404).json({
+        error: "Uploaded object not found in S3 — the PUT may have failed or expired",
+      });
+    }
+    const actualSize = typeof head.contentLength === "number" ? head.contentLength : 0;
+    if (actualSize <= 0) {
+      return void res.status(400).json({ error: "Uploaded object is empty" });
+    }
+
+    const claimedSize = typeof sizeBytes === "number"
+      ? sizeBytes
+      : parseInt(String(sizeBytes ?? "0"), 10);
+    if (claimedSize > 0 && Math.abs(claimedSize - actualSize) > 1024) {
+      logger.warn(
+        { objectKey, claimedSize, actualSize },
+        "s3-finalize: client size differs from S3 ContentLength — using S3 value",
+      );
+    }
+
+    const safeMime = sanitiseMime(mimeType) ?? head.contentType ?? "application/octet-stream";
+    const safeDuration = typeof durationSecs === "number"
+      ? durationSecs
+      : parseInt(String(durationSecs ?? "0"), 10);
+    const safeFeatured = featured === true || featured === "true";
+
+    // Stamp ACL policy onto the S3 object so future ACL checks pass without
+    // a DB roundtrip. Best-effort — failures are logged but don't block the
+    // commit (the video row itself is the source of truth for ownership).
+    try {
+      await s3ReplaceObjectMetadata(
+        objectKey,
+        {
+          aclpolicy: JSON.stringify({
+            owner: "admin",
+            visibility: "private",
+          }),
+        },
+        { contentType: safeMime },
+      );
+    } catch (aclErr) {
+      logger.warn({ err: aclErr, objectKey }, "ACL stamp failed");
+    }
+
+    const id = randomUUID();
+    const devDomain = process.env.REPLIT_DEV_DOMAIN;
+    const baseUrl = process.env.API_BASE_URL ?? (devDomain ? `https://${devDomain}` : "");
+    const localVideoUrl = `${baseUrl}/api/videos/${id}/source`;
+    // Custom thumbnails are not yet supported in the direct-S3 flow — the
+    // transcoder will auto-generate one. Users needing a custom thumbnail
+    // should use the legacy chunked upload path.
+    const thumbnailUrl = "";
+
+    const [video] = await db
+      .insert(videosTable)
+      .values({
+        id,
+        youtubeId: `local-${id}`,
+        title: title.trim(),
+        description: "",
+        thumbnailUrl,
+        duration: safeDuration > 0 ? String(safeDuration) : "",
+        category: (category ?? "sermon").trim() || "sermon",
+        preacher: (preacher ?? "").trim(),
+        publishedAt: null,
+        featured: safeFeatured,
+        viewCount: 0,
+        videoSource: "local",
+        localVideoUrl,
+        originalFilename: (originalFilename ?? "").trim() || null,
+        mimeType: safeMime,
+        sizeBytes: actualSize,
+        checksumSha256: typeof checksumSha256 === "string" && /^[a-f0-9]{64}$/i.test(checksumSha256)
+          ? checksumSha256.toLowerCase()
+          : null,
+        // Persist the canonical S3 key. Used by the playback redirect, the
+        // transcoder source resolver, and any future bulk-cleanup pass.
+        objectPath: objectKey,
+        uploadedBy: null,
+      })
+      .returning();
+
+    let broadcastQueued = false;
+    try {
+      await upsertBroadcastQueueVideo(video);
+      broadcastQueued = true;
+    } catch (bqErr) {
+      logger.error(
+        { err: bqErr, videoId: id, sessionId },
+        "upsertBroadcastQueueVideo failed after s3-finalize",
+      );
+    }
+
+    await invalidatePublicVideoCaches();
+
+    logger.info(
+      {
+        videoId: id,
+        sessionId,
+        objectKey,
+        sizeBytes: actualSize,
+      },
+      "S3 direct upload finalized",
+    );
+
+    // Empty videoPath signals "use HTTP fallback" inside the transcoder —
+    // it will fetch localVideoUrl, which 302-redirects to a presigned S3 GET.
+    queueTranscodingJob(id, "", 1).catch((err) => {
+      logger.error({ err, videoId: id }, "queueTranscodingJob failed after s3-finalize");
+    });
+
+    res.status(201).json({ ...video, broadcastQueued });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    logger.error({ err }, "s3-finalize failed");
+    res.status(500).json({ error: msg });
+  }
+});
+
+// Stable playback URL for S3-hosted source files. Issues a 302 redirect to a
+// short-lived presigned GET URL so the bytes are served straight from S3
+// (Range requests, parallel connections, etc. are handled by S3) without
+// requiring the client to know how to mint presigned URLs.
+router.get("/videos/:id/source", async (req, res) => {
+  try {
+    const { id } = req.params as { id: string };
+    const rows = await db
+      .select({ objectPath: videosTable.objectPath })
+      .from(videosTable)
+      .where(eq(videosTable.id, id))
+      .limit(1);
+    const objectPath = rows[0]?.objectPath;
+    if (!objectPath) {
+      return void res.status(404).json({ error: "Video source not found" });
+    }
+    if (!isS3Configured()) {
+      return void res.status(503).json({ error: "S3 not configured" });
+    }
+    const url = await s3GetSignedGetUrl(objectPath, S3_GET_REDIRECT_TTL_SEC);
+    // Cache the redirect for less than the URL TTL so clients don't hold a
+    // stale signature past expiry.
+    res.setHeader("Cache-Control", `private, max-age=${Math.floor(S3_GET_REDIRECT_TTL_SEC / 2)}`);
+    res.redirect(302, url);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    logger.error({ err }, "videos/:id/source failed");
     res.status(500).json({ error: msg });
   }
 });
