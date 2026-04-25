@@ -73,6 +73,7 @@ import {
   readJsonOrThrow,
   uploadChunk,
   uploadFileToS3,
+  uploadFileToS3Multipart,
   formatFileSize,
   formatSpeed,
   formatEta,
@@ -87,6 +88,16 @@ import {
  */
 const S3_DIRECT_MAX_BYTES = 4.5 * 1024 * 1024 * 1024;
 const S3_DIRECT_PREF_KEY = "ttv-s3-direct-upload-v1";
+
+/**
+ * Files larger than this use S3 multipart upload (parallel parts) instead of
+ * a single PUT. The threshold is set well above S3's 5 MiB minimum part size
+ * so that even small overhead from multipart init/complete round-trips is
+ * always paid back many times over by the parallel transfer. Below this size
+ * the single-PUT path is faster end-to-end.
+ */
+const S3_MULTIPART_THRESHOLD_BYTES = 50 * 1024 * 1024;
+const S3_MULTIPART_MIN_PART_BYTES_CLIENT = 5 * 1024 * 1024;
 
 import { rewriteApiPath } from "@/lib/api-base";
 
@@ -363,6 +374,197 @@ export function VideoUploadModal({
       };
 
       updateTask(taskId, { state: "initializing", error: null });
+
+      // ─── S3 multipart upload (parallel parts) ───────────────────────────
+      //
+      // For anything bigger than S3_MULTIPART_THRESHOLD_BYTES we use S3's
+      // multipart upload protocol so the transfer can run many simultaneous
+      // PUTs to S3 and saturate a 5G / fibre uplink. Below the threshold a
+      // single PUT is faster end-to-end (no init/complete round-trips).
+      if (uploadFile.size > S3_MULTIPART_THRESHOLD_BYTES) {
+        const adaptive = getAdaptiveNetworkParams();
+        // S3 requires every non-last part to be ≥ 5 MiB. The adaptive picker
+        // can return 1 MiB on slow links, so clamp here.
+        const partSize = Math.max(
+          adaptive.chunkSize,
+          S3_MULTIPART_MIN_PART_BYTES_CLIENT,
+        );
+        const concurrency = Math.max(
+          MIN_CONCURRENCY,
+          Math.min(adaptive.maxConcurrency, 32),
+        );
+
+        const mpInitRes = await uploadAdminFetch(
+          "/api/admin/videos/upload/s3-multipart-init",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title,
+              sizeBytes: uploadFile.size,
+              ext: ext.replace(/^\./, ""),
+              mimeType: uploadFile.type || undefined,
+              partSize,
+            }),
+          },
+        );
+        const mpInit = await readJsonOrThrow<{
+          sessionId: string;
+          uploadId: string;
+          objectKey: string;
+          partSize: number;
+          totalParts: number;
+          contentType: string;
+        }>(mpInitRes, "S3 multipart init");
+
+        const abortCtrl = new AbortController();
+        updateTask(taskId, {
+          state: "uploading",
+          abortController: abortCtrl,
+          sessionId: mpInit.sessionId,
+          chunksTotal: mpInit.totalParts,
+          chunksDone: 0,
+        });
+
+        const stallTimeoutMs =
+          tasksRef.current.get(taskId)?.stallTimeoutMs ?? 60_000;
+        const putStartedAt = Date.now();
+
+        // Best-effort cleanup helper — used on hard failures and user aborts
+        // so we don't leave orphan parts billed to the bucket.
+        const abortMultipart = async () => {
+          try {
+            await uploadAdminFetch(
+              "/api/admin/videos/upload/s3-multipart-abort",
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  uploadId: mpInit.uploadId,
+                  objectKey: mpInit.objectKey,
+                }),
+              },
+            );
+          } catch {
+            /* swallow — bucket lifecycle reaps orphans */
+          }
+        };
+
+        let parts: Array<{ partNumber: number; etag: string }>;
+        try {
+          parts = await uploadFileToS3Multipart({
+            file: uploadFile,
+            partSize: mpInit.partSize,
+            totalParts: mpInit.totalParts,
+            maxConcurrency: concurrency,
+            contentType: mpInit.contentType,
+            stallTimeoutMs,
+            signal: abortCtrl.signal,
+            signPartUrls: async (partNumbers) => {
+              const r = await uploadAdminFetch(
+                "/api/admin/videos/upload/s3-multipart-sign",
+                {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    uploadId: mpInit.uploadId,
+                    objectKey: mpInit.objectKey,
+                    partNumbers,
+                  }),
+                },
+              );
+              const j = await readJsonOrThrow<{
+                urls: Array<{ partNumber: number; url: string }>;
+              }>(r, "S3 multipart sign");
+              return j.urls;
+            },
+            onProgress: ({ delta, partsDone }) => {
+              const t = tasksRef.current.get(taskId);
+              if (!t) return;
+              if (delta > 0) {
+                t.bytesUploaded = Math.min(
+                  t.bytesUploaded + delta,
+                  uploadFile.size,
+                );
+                t.progress = Math.round(
+                  (t.bytesUploaded / uploadFile.size) * 100,
+                );
+                const elapsedSec = (Date.now() - t.startTime) / 1000;
+                const instSpeed = elapsedSec > 0 ? t.bytesUploaded / elapsedSec : 0;
+                t.speedRaw = instSpeed;
+                t.speed = emaSpeed(t.speed, instSpeed);
+                const remaining = uploadFile.size - t.bytesUploaded;
+                t.eta = t.speed > 0 ? Math.round(remaining / t.speed) : 0;
+              }
+              t.chunksDone = partsDone;
+              forceUpdate();
+            },
+          });
+        } catch (err) {
+          const e = err as Error & { name?: string };
+          if (e?.name === "AbortError") {
+            void abortMultipart();
+            reportTelemetry("client_abort", {
+              sessionId: mpInit.sessionId,
+              errorKind: "AbortError",
+              durationMs: Date.now() - putStartedAt,
+            });
+            updateTask(taskId, { state: "paused" });
+            return;
+          }
+          void abortMultipart();
+          reportTelemetry(e?.name === "StallError" ? "client_stall" : "client_error", {
+            sessionId: mpInit.sessionId,
+            errorKind: e?.name ?? "Error",
+            errorMessage: e?.message ?? String(err),
+            durationMs: Date.now() - putStartedAt,
+          });
+          throw err;
+        }
+
+        const putElapsedMs = Date.now() - putStartedAt;
+        updateTask(taskId, { state: "finalizing", abortController: null, error: null });
+
+        const finalizeRes = await uploadAdminFetch(
+          "/api/admin/videos/upload/s3-multipart-complete",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              sessionId: mpInit.sessionId,
+              uploadId: mpInit.uploadId,
+              objectKey: mpInit.objectKey,
+              parts,
+              title,
+              category: task.category,
+              preacher: task.preacher,
+              featured: task.featured,
+              durationSecs,
+              sizeBytes: uploadFile.size,
+              mimeType: uploadFile.type || undefined,
+              originalFilename: uploadFile.name,
+              clientDurationMs: putElapsedMs,
+            }),
+          },
+        );
+        const finalizeJson = await readJsonOrThrow<{
+          id: string;
+          broadcastQueued?: boolean;
+        }>(finalizeRes, "S3 multipart complete");
+
+        updateTask(taskId, {
+          state: "done",
+          progress: 100,
+          bytesUploaded: uploadFile.size,
+          speed: 0,
+          eta: 0,
+          error: null,
+          chunksDone: mpInit.totalParts,
+          chunksTotal: mpInit.totalParts,
+        });
+        void finalizeJson;
+        return;
+      }
 
       // 1. Mint a presigned PUT URL.
       const initRes = await uploadAdminFetch(

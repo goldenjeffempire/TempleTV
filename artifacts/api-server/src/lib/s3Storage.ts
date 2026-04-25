@@ -20,7 +20,10 @@
  */
 
 import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
   CopyObjectCommand,
+  CreateMultipartUploadCommand,
   DeleteObjectCommand,
   DeleteObjectsCommand,
   GetObjectCommand,
@@ -28,6 +31,7 @@ import {
   ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
+  UploadPartCommand,
   type _Object,
 } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
@@ -331,6 +335,115 @@ export async function getSignedGetUrl(
     new GetObjectCommand({ Bucket: AWS_S3_BUCKET, Key: toObjectKey(key) }),
     { expiresIn: ttlSec },
   );
+}
+
+// ── Multipart upload (parallel direct-to-S3 from the browser) ────────────────
+//
+// S3's multipart upload protocol is the only way to make a single browser
+// upload saturate a 5G / fibre link: it lets the client open many parallel
+// HTTPS PUTs to S3, each carrying one "part" of the file, and then commit
+// all of them as a single object. Our admin upload modal uses these helpers
+// (via the `/admin/videos/upload/s3-multipart-*` endpoints) so a 1 GB sermon
+// upload can run 24 simultaneous 32 MB part PUTs instead of one serial PUT.
+//
+// Constraints worth knowing:
+//   - Minimum part size: 5 MiB (except the very last part, which can be
+//     anything from 0 B up). We enforce this in the admin route so callers
+//     get a clean 400 instead of an opaque S3 EntityTooSmall on Complete.
+//   - Maximum part size: 5 GiB.
+//   - Maximum parts per upload: 10,000.
+//   - Combined object size: 5 TiB.
+//
+// Part numbers are 1-based and need not be contiguous, but the Complete call
+// must list them in ascending order. The browser engine handles the ordering.
+//
+// The presigned URL returned by `signUploadPartUrl` is a plain HTTPS PUT —
+// the browser sets the body and Content-Length and S3 verifies the signature.
+// No headers are signed beyond the canonical ones, so the browser doesn't
+// need to set any extra headers for the PUT itself.
+
+/** Minimum allowed part size for a non-last part (S3 hard requirement). */
+export const S3_MULTIPART_MIN_PART_BYTES = 5 * 1024 * 1024;
+/** Maximum number of parts in a single S3 multipart upload (S3 hard cap). */
+export const S3_MULTIPART_MAX_PARTS = 10_000;
+
+export async function createMultipartUpload(
+  key: string,
+  opts: { contentType?: string } = {},
+): Promise<string> {
+  const out = await s3Client().send(
+    new CreateMultipartUploadCommand({
+      Bucket: AWS_S3_BUCKET,
+      Key: toObjectKey(key),
+      ContentType: opts.contentType,
+    }),
+  );
+  if (!out.UploadId) {
+    throw new Error("createMultipartUpload: S3 did not return an UploadId");
+  }
+  return out.UploadId;
+}
+
+export async function signUploadPartUrl(
+  key: string,
+  uploadId: string,
+  partNumber: number,
+  ttlSec: number,
+): Promise<string> {
+  return getSignedUrl(
+    s3Client(),
+    new UploadPartCommand({
+      Bucket: AWS_S3_BUCKET,
+      Key: toObjectKey(key),
+      UploadId: uploadId,
+      PartNumber: partNumber,
+    }),
+    { expiresIn: ttlSec },
+  );
+}
+
+export interface CompletedPart {
+  partNumber: number;
+  etag: string;
+}
+
+export async function completeMultipartUpload(
+  key: string,
+  uploadId: string,
+  parts: CompletedPart[],
+): Promise<void> {
+  // S3 requires parts in ascending PartNumber order at Complete time.
+  const ordered = [...parts].sort((a, b) => a.partNumber - b.partNumber);
+  await s3Client().send(
+    new CompleteMultipartUploadCommand({
+      Bucket: AWS_S3_BUCKET,
+      Key: toObjectKey(key),
+      UploadId: uploadId,
+      MultipartUpload: {
+        Parts: ordered.map((p) => ({ PartNumber: p.partNumber, ETag: p.etag })),
+      },
+    }),
+  );
+}
+
+export async function abortMultipartUpload(
+  key: string,
+  uploadId: string,
+): Promise<void> {
+  try {
+    await s3Client().send(
+      new AbortMultipartUploadCommand({
+        Bucket: AWS_S3_BUCKET,
+        Key: toObjectKey(key),
+        UploadId: uploadId,
+      }),
+    );
+  } catch (err) {
+    // Abort failures are not actionable — the partial upload will be cleaned
+    // up by the bucket's lifecycle rule (which every production bucket
+    // should have configured). Log and swallow.
+    logger.warn({ err, key, uploadId }, "abortMultipartUpload failed");
+  }
 }
 
 // ── URL helpers ──────────────────────────────────────────────────────────────

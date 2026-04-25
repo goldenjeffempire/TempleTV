@@ -554,6 +554,297 @@ export async function uploadFileToS3(
   });
 }
 
+// ─── Direct browser → S3 multipart upload (parallel parts) ───────────────────
+//
+// Why this exists
+// ───────────────
+// `uploadFileToS3` does a SINGLE PUT to S3, which on a 5G or fibre link is
+// throughput-limited by TCP windowing and the server's per-connection cap.
+// In practice a single PUT tops out at ~50–200 Mbps even on a 1 Gbps uplink.
+//
+// S3's multipart upload protocol fixes this: the file is split into N parts,
+// each part is PUT independently (and in parallel), and finally a single
+// `Complete` call assembles them server-side. With 24 parallel parts on a
+// 1 Gbps link you can sustain ~800 Mbps actual throughput — i.e. the wire
+// speed your network can deliver.
+//
+// Wire
+// ────
+//   1. Caller has already POSTed `s3-multipart-init` and now has:
+//        { uploadId, objectKey, partSize, totalParts, contentType }
+//   2. Caller passes a `signPartUrls(partNumbers)` callback that batches a
+//      POST to `s3-multipart-sign` and returns presigned PUT URLs.
+//   3. This function PUTs each part to its presigned URL, captures the ETag
+//      from the response header, tracks progress incrementally, and returns
+//      the array of `{ partNumber, etag }` ready for `s3-multipart-complete`.
+//   4. On error/abort, this function rejects WITHOUT calling abort — the
+//      caller owns lifecycle and decides whether to abort or retry.
+//
+// Memory
+// ──────
+// At any moment we hold up to `maxConcurrency` part-sized Blob slices in
+// memory plus their FileReader buffers (the browser handles the upload
+// streaming itself; we never copy the bytes into a JS-owned ArrayBuffer).
+// For 64 MB × 32 parallel = ~2 GB ceiling on `ultrafast`; the
+// `getAdaptiveNetworkParams` tier picker is responsible for keeping that
+// number sane on low-RAM devices.
+
+export interface S3MultipartProgress {
+  /** Bytes successfully transferred since last call (delta, not cumulative). */
+  delta: number;
+  /** Number of parts fully completed since the upload started. */
+  partsDone: number;
+  /** Total parts in this upload. */
+  partsTotal: number;
+}
+
+export interface S3MultipartPart {
+  partNumber: number;
+  etag: string;
+}
+
+export interface S3MultipartUploadOpts {
+  file: Blob;
+  partSize: number;
+  totalParts: number;
+  maxConcurrency: number;
+  contentType: string;
+  /** Time per-part with no upload-progress bytes before we abort that part. */
+  stallTimeoutMs: number;
+  /**
+   * Returns presigned PUT URLs for the given part numbers. The caller is
+   * expected to batch (we may call this with up to ~500 part numbers per
+   * call). Implementations should retry on transient network errors.
+   */
+  signPartUrls: (partNumbers: number[]) => Promise<Array<{ partNumber: number; url: string }>>;
+  signal: AbortSignal;
+  onProgress?: (p: S3MultipartProgress) => void;
+}
+
+const PART_BATCH_SIZE = 500;             // server caps this at 1000
+const PART_MAX_RETRIES = 4;              // per-part retry budget
+
+async function putOnePart(
+  url: string,
+  partNumber: number,
+  body: Blob,
+  signal: AbortSignal,
+  stallTimeoutMs: number,
+  onDelta: (n: number) => void,
+): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    let settled = false;
+    let lastLoaded = 0;
+    let stallTimer: ReturnType<typeof setTimeout> | null = null;
+    const settle = (fn: () => void) => {
+      if (!settled) {
+        settled = true;
+        if (stallTimer) clearTimeout(stallTimer);
+        fn();
+      }
+    };
+    const resetStall = () => {
+      if (settled) return;
+      if (stallTimer) clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => {
+        xhr.abort();
+        settle(() =>
+          reject(
+            Object.assign(
+              new Error(
+                `Part ${partNumber} stalled — no bytes for ${stallTimeoutMs / 1000}s`,
+              ),
+              { name: "StallError", retryable: true },
+            ),
+          ),
+        );
+      }, stallTimeoutMs);
+    };
+    resetStall();
+
+    const xhr = new XMLHttpRequest();
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && e.loaded > lastLoaded) {
+        const delta = e.loaded - lastLoaded;
+        lastLoaded = e.loaded;
+        onDelta(delta);
+        resetStall();
+      }
+    };
+    xhr.onload = () =>
+      settle(() => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          // S3 returns the per-part ETag in a response header. Without it we
+          // cannot Complete the upload, so treat its absence as a hard error.
+          const etag = xhr.getResponseHeader("ETag");
+          if (!etag) {
+            reject(
+              Object.assign(
+                new Error(
+                  `Part ${partNumber}: S3 did not expose the ETag header. ` +
+                    "Add ETag to the bucket CORS ExposeHeaders list and retry.",
+                ),
+                { retryable: false },
+              ),
+            );
+            return;
+          }
+          resolve(etag.replace(/^"|"$/g, ""));
+        } else {
+          const snippet = (xhr.responseText ?? "").slice(0, 240).trim();
+          // 5xx and 408/429 are worth retrying; 4xx (except those) are not.
+          const retryable =
+            xhr.status >= 500 || xhr.status === 408 || xhr.status === 429;
+          reject(
+            Object.assign(
+              new Error(
+                `Part ${partNumber} failed (HTTP ${xhr.status}): ${snippet || xhr.statusText || "no body"}`,
+              ),
+              { retryable },
+            ),
+          );
+        }
+      });
+    xhr.onerror = () =>
+      settle(() =>
+        reject(
+          Object.assign(
+            new Error(
+              `Part ${partNumber}: network error after ${lastLoaded} bytes — likely a connection drop`,
+            ),
+            { retryable: true },
+          ),
+        ),
+      );
+    xhr.onabort = () =>
+      settle(() => {
+        // External-signal abort
+        if (signal.aborted) {
+          reject(Object.assign(new Error("Aborted"), { name: "AbortError" }));
+        }
+        // Otherwise it was a stall-timer abort which already rejected.
+      });
+
+    signal.addEventListener(
+      "abort",
+      () => {
+        xhr.abort();
+        settle(() =>
+          reject(Object.assign(new Error("Aborted"), { name: "AbortError" })),
+        );
+      },
+      { once: true },
+    );
+
+    xhr.open("PUT", url);
+    // Content-Type does not need to be set on UploadPart — S3 ignores it on
+    // individual parts and uses the value from CreateMultipartUpload.
+    xhr.send(body);
+  });
+}
+
+export async function uploadFileToS3Multipart(
+  opts: S3MultipartUploadOpts,
+): Promise<S3MultipartPart[]> {
+  const {
+    file, partSize, totalParts, maxConcurrency,
+    stallTimeoutMs, signPartUrls, signal, onProgress,
+  } = opts;
+
+  // ── Prefetch presigned URLs in batches of PART_BATCH_SIZE ──────────────
+  const allPartNumbers = Array.from({ length: totalParts }, (_, i) => i + 1);
+  const urlByPart = new Map<number, string>();
+  for (let i = 0; i < allPartNumbers.length; i += PART_BATCH_SIZE) {
+    if (signal.aborted) {
+      throw Object.assign(new Error("Aborted"), { name: "AbortError" });
+    }
+    const batch = allPartNumbers.slice(i, i + PART_BATCH_SIZE);
+    const signed = await signPartUrls(batch);
+    for (const { partNumber, url } of signed) urlByPart.set(partNumber, url);
+  }
+  if (urlByPart.size !== totalParts) {
+    throw new Error(
+      `Multipart sign returned ${urlByPart.size} URLs for ${totalParts} parts — server side issue.`,
+    );
+  }
+
+  // ── Worker pool ────────────────────────────────────────────────────────
+  const completed: S3MultipartPart[] = [];
+  let nextIndex = 0;
+  let partsDone = 0;
+  let firstError: unknown = null;
+
+  const workerCount = Math.min(maxConcurrency, totalParts);
+  const workers: Promise<void>[] = [];
+
+  for (let w = 0; w < workerCount; w++) {
+    workers.push(
+      (async () => {
+        while (true) {
+          if (signal.aborted) {
+            throw Object.assign(new Error("Aborted"), { name: "AbortError" });
+          }
+          if (firstError) return; // another worker crashed — short-circuit
+          const idx = nextIndex++;
+          if (idx >= totalParts) return; // queue drained
+          const partNumber = idx + 1;
+          const start = idx * partSize;
+          const end = Math.min(start + partSize, file.size);
+          const blob = file.slice(start, end);
+          const url = urlByPart.get(partNumber);
+          if (!url) {
+            throw new Error(`Internal: no presigned URL for part ${partNumber}`);
+          }
+
+          let attempt = 0;
+          let lastErr: unknown = null;
+          while (attempt < PART_MAX_RETRIES) {
+            attempt++;
+            try {
+              const etag = await putOnePart(
+                url,
+                partNumber,
+                blob,
+                signal,
+                stallTimeoutMs,
+                (delta) => onProgress?.({ delta, partsDone, partsTotal: totalParts }),
+              );
+              completed.push({ partNumber, etag });
+              partsDone++;
+              onProgress?.({ delta: 0, partsDone, partsTotal: totalParts });
+              break;
+            } catch (err) {
+              lastErr = err;
+              const e = err as Error & { retryable?: boolean; name?: string };
+              if (e.name === "AbortError") throw err;
+              if (e.retryable === false || attempt >= PART_MAX_RETRIES) {
+                throw err;
+              }
+              await new Promise((r) => setTimeout(r, exponentialBackoff(attempt - 1)));
+            }
+          }
+          if (attempt >= PART_MAX_RETRIES && completed.findIndex(p => p.partNumber === partNumber) === -1) {
+            throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+          }
+        }
+      })().catch((err) => {
+        if (!firstError) firstError = err;
+      }),
+    );
+  }
+
+  await Promise.all(workers);
+  if (firstError) {
+    throw firstError instanceof Error ? firstError : new Error(String(firstError));
+  }
+  if (completed.length !== totalParts) {
+    throw new Error(
+      `Multipart upload finished ${completed.length}/${totalParts} parts — internal error.`,
+    );
+  }
+  return completed;
+}
+
 function formatBytesShort(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;

@@ -28,6 +28,12 @@ import {
   getSignedGetUrl as s3GetSignedGetUrl,
   replaceObjectMetadata as s3ReplaceObjectMetadata,
   putObject as s3PutObject,
+  createMultipartUpload as s3CreateMultipartUpload,
+  signUploadPartUrl as s3SignUploadPartUrl,
+  completeMultipartUpload as s3CompleteMultipartUpload,
+  abortMultipartUpload as s3AbortMultipartUpload,
+  S3_MULTIPART_MIN_PART_BYTES,
+  S3_MULTIPART_MAX_PARTS,
 } from "../lib/s3Storage";
 import {
   ImportVideoBody,
@@ -1526,10 +1532,9 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
         extToMime[session.ext.toLowerCase()] ??
         "application/octet-stream";
 
+      const id = randomUUID();
       const devDomain = process.env.REPLIT_DEV_DOMAIN;
       const baseUrl = process.env.API_BASE_URL ?? (devDomain ? `https://${devDomain}` : "");
-      const localVideoUrl = `${baseUrl}/api/uploads/${finalFilename}`;
-      const thumbnailUrl = session.thumbnailPath ? `${baseUrl}/api/uploads/${session.thumbnailPath}` : "";
 
       // ── Mirror to S3 ────────────────────────────────────────────────────
       // The /api/uploads/* route 302-redirects to S3 when the object exists
@@ -1541,14 +1546,17 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
       // disk where express.static still serves it, and the standalone
       // backfill script (`pnpm --filter @workspace/api-server run backfill-uploads`)
       // can reconcile later.
+      let mirroredToS3 = false;
+      const s3VideoKey = `videos/${finalFilename}`;
       if (isS3Configured()) {
         try {
-          await s3PutObject(`videos/${finalFilename}`, createReadStream(finalPath), {
+          await s3PutObject(s3VideoKey, createReadStream(finalPath), {
             contentType: mimeType,
           });
+          mirroredToS3 = true;
           logger.info(
             { finalFilename, sizeBytes },
-            "Source MP4 mirrored to S3 (videos/) — /api/uploads will 302-redirect",
+            "Source MP4 mirrored to S3 (videos/) — /api/videos/:id/source will 302-redirect",
           );
         } catch (s3Err) {
           logger.warn(
@@ -1569,7 +1577,19 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
         }
       }
 
-      const id = randomUUID();
+      // Choose the canonical playback URL. When the mirror succeeded we use
+      // the cleaner `/api/videos/:id/source` redirect endpoint (which 302s to
+      // a fresh presigned S3 URL by reading `objectPath` from the videos
+      // row). When the mirror failed we leave the URL pointing at the
+      // legacy `/api/uploads/*` route — that route also redirects to S3 if
+      // the object becomes available later via backfill, but in the
+      // meantime express.static serves it directly off local disk.
+      const localVideoUrl = mirroredToS3
+        ? `${baseUrl}/api/videos/${id}/source`
+        : `${baseUrl}/api/uploads/${finalFilename}`;
+      const thumbnailUrl = session.thumbnailPath
+        ? `${baseUrl}/api/uploads/${session.thumbnailPath}`
+        : "";
       const [video] = await db
         .insert(videosTable)
         .values({
@@ -1590,9 +1610,11 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
           mimeType,
           sizeBytes,
           checksumSha256,
-          // objectPath stays null until the upload flow migrates to GCS
-          // presigned PUTs (see RELEASE_AUDIT.md § 8.3).
-          objectPath: null,
+          // Persist the canonical S3 key whenever the post-finalize mirror
+          // succeeded, so /api/videos/:id/source can issue a clean 302 to a
+          // fresh presigned GET URL. When the mirror failed we leave it
+          // null and rely on /api/uploads/* (disk fast path + S3 fallback).
+          objectPath: mirroredToS3 ? s3VideoKey : null,
           uploadedBy: null,
         })
         .returning();
@@ -2032,6 +2054,423 @@ router.post("/admin/videos/upload/s3-finalize", async (req, res) => {
       errorMessage: msg,
       userAgent: req.headers["user-agent"] ?? null,
     });
+    res.status(500).json({ error: msg });
+  }
+});
+
+// ── Direct browser → S3 multipart upload (parallel parts) ──────────────────
+//
+// The single-PUT direct-S3 path (`s3-init` → PUT → `s3-finalize`) cannot
+// saturate a 5G / fibre uplink because a single HTTPS stream is throughput-
+// limited by TCP windowing, server CPU, and the round-trip time. S3's
+// multipart upload protocol fixes this by letting the browser open many
+// parallel HTTPS PUTs to S3, each carrying one "part" of the file, and then
+// commit them all as a single object via Complete.
+//
+// Wire format
+// ───────────
+//   1. POST /s3-multipart-init
+//        body: { title, sizeBytes, ext, mimeType, partSize }
+//        response: { sessionId, uploadId, objectKey, partSize, totalParts,
+//                    contentType, expiresIn }
+//
+//   2. POST /s3-multipart-sign         (called as many times as needed)
+//        body: { uploadId, objectKey, partNumbers: number[] }
+//        response: { urls: { partNumber, url }[], expiresIn }
+//      The browser pulls a batch of presigned PUT URLs, then PUTs the part
+//      bytes directly to S3 in parallel. S3 returns the part's ETag in the
+//      response header.
+//
+//   3. POST /s3-multipart-complete
+//        body: same `videos`-row metadata as `s3-finalize` PLUS
+//              { uploadId, parts: [{ partNumber, etag }] }
+//        S3 assembles the final object, then we HEAD-verify, insert the
+//        videos row (with `objectPath` set), and queue transcoding.
+//
+//   4. POST /s3-multipart-abort       (best-effort cleanup on cancel/error)
+//        body: { uploadId, objectKey }
+//        S3 throws away any uploaded parts so the user isn't billed for
+//        orphan storage.
+//
+// Bucket lifecycle
+// ────────────────
+// We rely on the bucket having a lifecycle rule that auto-aborts any
+// multipart upload older than ~7 days, so even if the abort step fails the
+// orphan parts eventually get reclaimed. This is a one-time bucket setting.
+
+const S3_MULTIPART_PUT_TTL_SEC = 6 * 3600; // 6h to upload a single part
+const SAFE_UPLOAD_ID_RE = /^[A-Za-z0-9._\-+/=]{8,512}$/;
+const SAFE_ETAG_RE = /^"?[A-Za-z0-9._\-]+"?$/;
+
+router.post("/admin/videos/upload/s3-multipart-init", async (req, res) => {
+  try {
+    if (!isS3Configured()) {
+      return void res.status(503).json({
+        error: "S3 object storage is not configured on this server.",
+      });
+    }
+    const { title, sizeBytes, ext, mimeType, partSize } = req.body as {
+      title?: string;
+      sizeBytes?: string | number;
+      ext?: string;
+      mimeType?: string;
+      partSize?: string | number;
+    };
+    if (!title?.trim()) {
+      return void res.status(400).json({ error: "Title is required" });
+    }
+    const totalBytes =
+      typeof sizeBytes === "number" ? sizeBytes : parseInt(String(sizeBytes ?? "0"), 10);
+    if (!Number.isFinite(totalBytes) || totalBytes <= 0) {
+      return void res.status(400).json({ error: "sizeBytes is required" });
+    }
+    const requestedPart =
+      typeof partSize === "number" ? partSize : parseInt(String(partSize ?? "0"), 10);
+    // Clamp to S3 hard requirements: ≥5 MiB, and totalParts ≤ 10,000. If the
+    // client picked a part size that would exceed 10,000 parts, we round up
+    // to the smallest size that fits.
+    const minByPartCap = Math.ceil(totalBytes / S3_MULTIPART_MAX_PARTS);
+    const effectivePartSize = Math.max(
+      S3_MULTIPART_MIN_PART_BYTES,
+      requestedPart > 0 ? requestedPart : 16 * 1024 * 1024,
+      minByPartCap,
+    );
+    const totalParts = Math.max(1, Math.ceil(totalBytes / effectivePartSize));
+    if (totalParts > S3_MULTIPART_MAX_PARTS) {
+      return void res.status(413).json({
+        error: `File is too large for S3 multipart upload (max ${S3_MULTIPART_MAX_PARTS} parts).`,
+      });
+    }
+
+    const safeExt = sanitiseExt(ext, "mp4");
+    const safeMime = sanitiseMime(mimeType) ?? "application/octet-stream";
+    const sessionId = randomUUID();
+    const objectKey = `${S3_VIDEO_PREFIX}/${sessionId}.${safeExt}`;
+
+    const uploadId = await s3CreateMultipartUpload(objectKey, {
+      contentType: safeMime,
+    });
+
+    void recordS3Telemetry({
+      event: "init",
+      sessionId,
+      sizeBytes: totalBytes,
+      userAgent: req.headers["user-agent"] ?? null,
+    });
+
+    res.setHeader("Cache-Control", "no-store").json({
+      sessionId,
+      uploadId,
+      objectKey,
+      partSize: effectivePartSize,
+      totalParts,
+      contentType: safeMime,
+      expiresIn: S3_MULTIPART_PUT_TTL_SEC,
+      bucket: AWS_S3_BUCKET,
+      region: AWS_REGION,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    logger.error({ err }, "s3-multipart-init failed");
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/admin/videos/upload/s3-multipart-sign", async (req, res) => {
+  try {
+    if (!isS3Configured()) {
+      return void res.status(503).json({
+        error: "S3 object storage is not configured on this server.",
+      });
+    }
+    const { uploadId, objectKey, partNumbers } = req.body as {
+      uploadId?: string;
+      objectKey?: string;
+      partNumbers?: number[];
+    };
+    if (!uploadId || !SAFE_UPLOAD_ID_RE.test(uploadId)) {
+      return void res.status(400).json({ error: "Invalid or missing uploadId" });
+    }
+    if (!objectKey || !SAFE_OBJECT_KEY_RE.test(objectKey)) {
+      return void res.status(400).json({ error: "Invalid or missing objectKey" });
+    }
+    if (!Array.isArray(partNumbers) || partNumbers.length === 0) {
+      return void res.status(400).json({ error: "partNumbers must be a non-empty array" });
+    }
+    if (partNumbers.length > 1000) {
+      return void res.status(400).json({
+        error: "Too many partNumbers in one request (max 1000) — split into batches.",
+      });
+    }
+    for (const n of partNumbers) {
+      if (!Number.isInteger(n) || n < 1 || n > S3_MULTIPART_MAX_PARTS) {
+        return void res.status(400).json({
+          error: `Invalid partNumber ${n} — must be an integer in [1, ${S3_MULTIPART_MAX_PARTS}].`,
+        });
+      }
+    }
+
+    const urls = await Promise.all(
+      partNumbers.map(async (partNumber) => ({
+        partNumber,
+        url: await s3SignUploadPartUrl(
+          objectKey,
+          uploadId,
+          partNumber,
+          S3_MULTIPART_PUT_TTL_SEC,
+        ),
+      })),
+    );
+
+    res.setHeader("Cache-Control", "no-store").json({
+      urls,
+      expiresIn: S3_MULTIPART_PUT_TTL_SEC,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    logger.error({ err }, "s3-multipart-sign failed");
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/admin/videos/upload/s3-multipart-complete", async (req, res) => {
+  try {
+    if (!isS3Configured()) {
+      return void res.status(503).json({
+        error: "S3 object storage is not configured on this server.",
+      });
+    }
+    const {
+      sessionId,
+      uploadId,
+      objectKey,
+      parts,
+      title,
+      category,
+      preacher,
+      featured,
+      durationSecs,
+      sizeBytes,
+      mimeType,
+      originalFilename,
+      checksumSha256,
+      clientDurationMs,
+    } = req.body as {
+      sessionId?: string;
+      uploadId?: string;
+      objectKey?: string;
+      parts?: { partNumber: number; etag: string }[];
+      title?: string;
+      category?: string;
+      preacher?: string;
+      featured?: boolean | string;
+      durationSecs?: number | string;
+      sizeBytes?: number | string;
+      mimeType?: string;
+      originalFilename?: string;
+      checksumSha256?: string;
+      clientDurationMs?: number | string;
+    };
+
+    if (!title?.trim()) {
+      return void res.status(400).json({ error: "Title is required" });
+    }
+    if (!uploadId || !SAFE_UPLOAD_ID_RE.test(uploadId)) {
+      return void res.status(400).json({ error: "Invalid or missing uploadId" });
+    }
+    if (!objectKey || !SAFE_OBJECT_KEY_RE.test(objectKey)) {
+      return void res.status(400).json({ error: "Invalid or missing objectKey" });
+    }
+    if (!Array.isArray(parts) || parts.length === 0) {
+      return void res.status(400).json({ error: "parts must be a non-empty array" });
+    }
+    if (parts.length > S3_MULTIPART_MAX_PARTS) {
+      return void res.status(400).json({
+        error: `Too many parts (${parts.length}) — S3 caps at ${S3_MULTIPART_MAX_PARTS}.`,
+      });
+    }
+    const cleanedParts = parts.map((p) => {
+      if (
+        !Number.isInteger(p.partNumber) ||
+        p.partNumber < 1 ||
+        p.partNumber > S3_MULTIPART_MAX_PARTS
+      ) {
+        throw new Error(`Invalid partNumber: ${p.partNumber}`);
+      }
+      if (typeof p.etag !== "string" || !SAFE_ETAG_RE.test(p.etag)) {
+        throw new Error(`Invalid etag for part ${p.partNumber}`);
+      }
+      // S3 expects ETags wrapped in double quotes for Complete.
+      const etag = p.etag.startsWith('"') ? p.etag : `"${p.etag}"`;
+      return { partNumber: p.partNumber, etag };
+    });
+
+    // Tell S3 to assemble the parts. After this returns, the object exists.
+    await s3CompleteMultipartUpload(objectKey, uploadId, cleanedParts);
+
+    // Verify it actually landed before we commit a DB row.
+    const head = await s3HeadObject(objectKey);
+    if (!head) {
+      void recordS3Telemetry({
+        event: "server_fail",
+        sessionId,
+        errorKind: "head_missing",
+        errorMessage: "Multipart upload completed but HEAD found nothing",
+        userAgent: req.headers["user-agent"] ?? null,
+      });
+      return void res.status(404).json({
+        error: "Multipart upload completed but object was not found in S3",
+      });
+    }
+    const actualSize = typeof head.contentLength === "number" ? head.contentLength : 0;
+    if (actualSize <= 0) {
+      return void res.status(400).json({ error: "Assembled object is empty" });
+    }
+
+    const claimedSize =
+      typeof sizeBytes === "number" ? sizeBytes : parseInt(String(sizeBytes ?? "0"), 10);
+    if (claimedSize > 0 && Math.abs(claimedSize - actualSize) > 1024) {
+      logger.warn(
+        { objectKey, claimedSize, actualSize },
+        "s3-multipart-complete: client size differs from S3 ContentLength — using S3 value",
+      );
+    }
+
+    const safeMime = sanitiseMime(mimeType) ?? head.contentType ?? "application/octet-stream";
+    const safeDuration =
+      typeof durationSecs === "number" ? durationSecs : parseInt(String(durationSecs ?? "0"), 10);
+    const safeFeatured = featured === true || featured === "true";
+
+    try {
+      await s3ReplaceObjectMetadata(
+        objectKey,
+        {
+          aclpolicy: JSON.stringify({ owner: "admin", visibility: "private" }),
+        },
+        { contentType: safeMime },
+      );
+    } catch (aclErr) {
+      logger.warn({ err: aclErr, objectKey }, "ACL stamp failed");
+    }
+
+    const id = randomUUID();
+    const devDomain = process.env.REPLIT_DEV_DOMAIN;
+    const baseUrl = process.env.API_BASE_URL ?? (devDomain ? `https://${devDomain}` : "");
+    const localVideoUrl = `${baseUrl}/api/videos/${id}/source`;
+
+    const measuredClientMs = (() => {
+      const n =
+        typeof clientDurationMs === "number"
+          ? clientDurationMs
+          : parseInt(String(clientDurationMs ?? "0"), 10);
+      return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+    })();
+
+    const [video] = await db
+      .insert(videosTable)
+      .values({
+        id,
+        youtubeId: `local-${id}`,
+        title: title.trim(),
+        description: "",
+        thumbnailUrl: "",
+        duration: safeDuration > 0 ? String(safeDuration) : "",
+        category: (category ?? "sermon").trim() || "sermon",
+        preacher: (preacher ?? "").trim(),
+        publishedAt: null,
+        featured: safeFeatured,
+        viewCount: 0,
+        videoSource: "local",
+        localVideoUrl,
+        originalFilename: (originalFilename ?? "").trim() || null,
+        mimeType: safeMime,
+        sizeBytes: actualSize,
+        checksumSha256:
+          typeof checksumSha256 === "string" && /^[a-f0-9]{64}$/i.test(checksumSha256)
+            ? checksumSha256.toLowerCase()
+            : null,
+        objectPath: objectKey,
+        uploadedBy: null,
+      })
+      .returning();
+
+    let broadcastQueued = false;
+    try {
+      await upsertBroadcastQueueVideo(video);
+      broadcastQueued = true;
+    } catch (bqErr) {
+      logger.error(
+        { err: bqErr, videoId: id, sessionId },
+        "upsertBroadcastQueueVideo failed after s3-multipart-complete",
+      );
+    }
+
+    await invalidatePublicVideoCaches();
+
+    logger.info(
+      {
+        videoId: id,
+        sessionId,
+        objectKey,
+        sizeBytes: actualSize,
+        partsCount: cleanedParts.length,
+      },
+      "S3 multipart upload finalized",
+    );
+
+    queueTranscodingJob(id, "", 1).catch((err) => {
+      logger.error(
+        { err, videoId: id },
+        "queueTranscodingJob failed after s3-multipart-complete",
+      );
+    });
+
+    void recordS3Telemetry({
+      event: "success",
+      sessionId,
+      videoId: id,
+      sizeBytes: actualSize,
+      durationMs: measuredClientMs,
+      userAgent: req.headers["user-agent"] ?? null,
+    });
+
+    res.status(201).json({ ...video, broadcastQueued });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    logger.error({ err }, "s3-multipart-complete failed");
+    void recordS3Telemetry({
+      event: "server_fail",
+      sessionId: (req.body as { sessionId?: string } | undefined)?.sessionId ?? null,
+      errorKind: err instanceof Error ? err.name : "Error",
+      errorMessage: msg,
+      userAgent: req.headers["user-agent"] ?? null,
+    });
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/admin/videos/upload/s3-multipart-abort", async (req, res) => {
+  try {
+    if (!isS3Configured()) {
+      return void res.status(503).json({
+        error: "S3 object storage is not configured on this server.",
+      });
+    }
+    const { uploadId, objectKey } = req.body as {
+      uploadId?: string;
+      objectKey?: string;
+    };
+    if (!uploadId || !SAFE_UPLOAD_ID_RE.test(uploadId)) {
+      return void res.status(400).json({ error: "Invalid or missing uploadId" });
+    }
+    if (!objectKey || !SAFE_OBJECT_KEY_RE.test(objectKey)) {
+      return void res.status(400).json({ error: "Invalid or missing objectKey" });
+    }
+    await s3AbortMultipartUpload(objectKey, uploadId);
+    res.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    logger.error({ err }, "s3-multipart-abort failed");
     res.status(500).json({ error: msg });
   }
 });
