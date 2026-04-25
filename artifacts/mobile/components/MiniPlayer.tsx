@@ -17,6 +17,7 @@ export function MiniPlayer() {
     currentSermon,
     isPlaying,
     isLive,
+    isBroadcastMode,
     isRadioMode,
     togglePlay,
     playNext,
@@ -25,10 +26,18 @@ export function MiniPlayer() {
 
   if (!currentSermon && !isLive) return null;
 
-  const title = isLive ? "Temple TV Live" : currentSermon?.title ?? "";
-  const subtitle = isLive ? "Watch Now" : isRadioMode ? "Radio Mode" : currentSermon?.preacher ?? "";
+  const title = isLive ? "Temple TV Live" : isBroadcastMode ? "Temple TV" : currentSermon?.title ?? "";
+  const subtitle = isLive
+    ? "Watch Now"
+    : isBroadcastMode
+      ? "ON AIR"
+      : isRadioMode
+        ? "Radio Mode"
+        : currentSermon?.preacher ?? "";
   const progress = duration > 0 ? Math.min(1, currentTime / duration) : 0;
-  const showProgress = !isLive && duration > 0;
+  // Round 6: never show a playback-position bar on live or broadcast surfaces.
+  // Broadcast queue items are a continuous channel feed — same rule as live.
+  const showProgress = !isLive && !isBroadcastMode && duration > 0;
 
   const handleToggle = () => {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -45,6 +54,17 @@ export function MiniPlayer() {
       navigateToPlayer(
         { live: "true", title: "Temple TV Live", preacher: "Temple TV JCTM" },
         "Sign up free to watch the live broadcast.",
+      );
+    } else if (isBroadcastMode) {
+      // Round 6 (Pass 3): re-entering /player from MiniPlayer while the
+      // broadcast channel is still tuned must preserve broadcast intent.
+      // The /player route reads `broadcastMode=true`, fetches the current
+      // server-side broadcast item via SSE, and resyncs to the live
+      // position. Without this branch the same sermon would re-open as a
+      // VOD with seek/scrub controls — defeating the channel semantics.
+      navigateToPlayer(
+        { broadcastMode: "true" },
+        "Sign up free to keep watching Temple TV.",
       );
     } else if (currentSermon) {
       navigateToSermon(currentSermon);
@@ -68,8 +88,10 @@ export function MiniPlayer() {
         style={({ pressed }) => [styles.inner, { opacity: pressed ? 0.85 : 1 }]}
       >
         <View style={styles.info}>
-          {isLive && <LiveBadge size="small" />}
-          {isRadioMode && !isLive && (
+          {/* Round 6: ON AIR badge for both live and broadcast — both
+              are channel feeds, not on-demand playback. */}
+          {(isLive || isBroadcastMode) && <LiveBadge size="small" />}
+          {isRadioMode && !isLive && !isBroadcastMode && (
             <View style={[styles.radioBadge, { backgroundColor: c.primary }]}>
               <Feather name="radio" size={10} color="#FFF" />
             </View>
@@ -87,7 +109,9 @@ export function MiniPlayer() {
           <Pressable onPress={handleToggle} hitSlop={12} style={styles.controlBtn}>
             <Feather name={isPlaying ? "pause" : "play"} size={22} color={c.foreground} />
           </Pressable>
-          {!isLive && (
+          {/* Round 6: skip-forward is hidden in broadcast mode too — a
+              real TV channel viewer can't skip the current program. */}
+          {!isLive && !isBroadcastMode && (
             <Pressable onPress={handleNext} hitSlop={12} style={styles.controlBtn}>
               <Feather name="skip-forward" size={20} color={c.mutedForeground} />
             </Pressable>

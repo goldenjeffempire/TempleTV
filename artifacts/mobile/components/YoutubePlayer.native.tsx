@@ -29,6 +29,10 @@ try {
 interface YoutubePlayerProps {
   videoId?: string;
   isLive?: boolean;
+  // Round 6: see YoutubePlayer.tsx for the full doc — when true, the
+  // YouTube IFrame chrome (control bar, fullscreen, kb shortcuts) is
+  // suppressed so a non-live broadcast queue item still cannot be seeked.
+  isBroadcastLive?: boolean;
   thumbnailUrl?: string;
   channelHandle?: string;
   autoPlay?: boolean;
@@ -176,6 +180,7 @@ export function YoutubePlayer({
   onPlay,
   onPause,
   onToggleAudioMode,
+  isBroadcastLive = false,
 }: YoutubePlayerProps) {
   const c = useColors();
   const { width, height: screenHeight } = useWindowDimensions();
@@ -409,7 +414,12 @@ export function YoutubePlayer({
   if (Platform.OS !== "web" && YoutubeIframe && activeVideoId && !playerError) {
     const ytPlayer = (
       <YoutubeIframe
-        key={activeVideoId}
+        // Round 6: include broadcast-mode in the remount key so that
+        // toggling broadcast for an unchanged videoId reloads the
+        // YouTube WebView with the new initialPlayerParams (controls
+        // hidden, fullscreen prevented). Without this, the iframe
+        // would keep the prior chrome until the videoId itself swaps.
+        key={`${activeVideoId}-${isBroadcastLive ? "b" : "v"}`}
         videoId={activeVideoId}
         height={playerHeight}
         play={playing}
@@ -420,13 +430,21 @@ export function YoutubePlayer({
         initialPlayerParams={{
           modestbranding: true,
           rel: false,
-          preventFullScreen: false,
+          // Round 6: for broadcast queue items, prevent fullscreen
+          // (which exposes the YouTube scrubber UI), hide the control
+          // bar (timeline/time), and lower the suggested quality the
+          // same way radio mode does to save bandwidth.
+          preventFullScreen: isBroadcastLive ? true : false,
+          controls: isBroadcastLive ? false : true,
           cc_load_policy: false,
           iv_load_policy: 3,
           suggestedQuality: dataSaver || isRadioMode ? "small" : "auto",
         }}
         webViewProps={{
-          allowsFullscreenVideo: !isRadioMode,
+          // Round 6: also disable the native fullscreen affordance on
+          // broadcast surfaces so a long-press on the video can't escape
+          // into a YouTube-chrome fullscreen with timeline.
+          allowsFullscreenVideo: !isRadioMode && !isBroadcastLive,
           allowsInlineMediaPlayback: true,
           mediaPlaybackRequiresUserAction: false,
           javaScriptEnabled: true,

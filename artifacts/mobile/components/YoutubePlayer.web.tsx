@@ -77,6 +77,10 @@ function loadYTApi(): Promise<void> {
 interface YoutubePlayerProps {
   videoId?: string;
   isLive?: boolean;
+  // Round 6: see YoutubePlayer.tsx for the full doc — when true, the
+  // YouTube IFrame chrome (control bar, fullscreen, kb shortcuts) is
+  // suppressed so a non-live broadcast queue item still cannot be seeked.
+  isBroadcastLive?: boolean;
   thumbnailUrl?: string;
   channelHandle?: string;
   autoPlay?: boolean;
@@ -221,6 +225,7 @@ export function YoutubePlayer({
   onPlay,
   onPause,
   onToggleAudioMode,
+  isBroadcastLive = false,
 }: YoutubePlayerProps) {
   const c = useColors();
   const {
@@ -392,7 +397,14 @@ export function YoutubePlayer({
           playsinline: 1,
           origin: window.location.origin,
           enablejsapi: 1,
-          fs: 1,
+          // Round 6: when this is a broadcast queue item, hide the
+          // YouTube control bar (timeline/time/scrubber), disable
+          // keyboard seek shortcuts (J/K/L, arrows, 0-9 jumps), and
+          // suppress the fullscreen button (which exposes its own
+          // scrubber). Otherwise keep the standard VOD chrome.
+          controls: isBroadcastLive ? 0 : 1,
+          disablekb: isBroadcastLive ? 1 : 0,
+          fs: isBroadcastLive ? 0 : 1,
           iv_load_policy: 3,
           cc_load_policy: 0,
           start: startPositionSecs && startPositionSecs > 0 ? Math.floor(startPositionSecs) : undefined,
@@ -457,8 +469,11 @@ export function YoutubePlayer({
     } catch (err) {
       scheduleRetry("network");
     }
+  // Round 6: include `isBroadcastLive` in the dep set so toggling
+  // broadcast mode for an unchanged videoId tears down the player and
+  // re-initializes it with new playerVars (controls/disablekb/fs).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoId, isLive, autoPlay, volume, registerPlayerRefs, startTick, stopTick, onEnd, onError, onPlay, onPause, startPositionSecs]);
+  }, [videoId, isLive, isBroadcastLive, autoPlay, volume, registerPlayerRefs, startTick, stopTick, onEnd, onError, onPlay, onPause, startPositionSecs]);
 
   // Exponential-backoff retry. Bounded; falls back to a hard error UI when
   // exhausted so the user always has an actionable surface (Retry / Open on
@@ -516,8 +531,11 @@ export function YoutubePlayer({
     loadYTApi().then(() => {
       if (isMountedRef.current) initPlayer();
     });
+  // Round 6: re-run on broadcast-mode flip (same videoId) so the
+  // YouTube control bar / kb seek / fullscreen button get reapplied
+  // when transitioning between VOD and broadcast queue rendering.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoId, isLive]);
+  }, [videoId, isLive, isBroadcastLive]);
 
   // Network + visibility recovery. When the browser comes back online or
   // the user returns to the tab after a long backgrounding, attempt to

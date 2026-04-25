@@ -9,17 +9,9 @@ interface BroadcastInfoStripProps {
   playerHeight: number;
 }
 
-function fmtRemaining(secs: number): string {
-  if (secs <= 0) return "0:00";
-  const m = Math.floor(secs / 60);
-  const s = secs % 60;
-  if (m >= 60) {
-    const h = Math.floor(m / 60);
-    const rm = m % 60;
-    return `${h}h ${rm}m`;
-  }
-  return `${m}:${String(s).padStart(2, "0")}`;
-}
+// Round 6: removed `fmtRemaining` helper. A TV-channel viewer never sees a
+// remaining-time readout for the current program; it shipped previously as
+// a "X:YY" countdown next to the progress bar but both are gone now.
 
 export function BroadcastInfoStrip({ broadcast, playerHeight }: BroadcastInfoStripProps) {
   const slideAnim = useRef(new Animated.Value(20)).current;
@@ -35,8 +27,7 @@ export function BroadcastInfoStrip({ broadcast, playerHeight }: BroadcastInfoStr
 
   if (!broadcast?.item) return null;
 
-  const { item, nextItem, positionSecs, progressPercent } = broadcast;
-  const remaining = Math.max(0, item.durationSecs - positionSecs);
+  const { nextItem } = broadcast;
 
   return (
     <Animated.View
@@ -58,14 +49,14 @@ export function BroadcastInfoStrip({ broadcast, playerHeight }: BroadcastInfoStr
             </View>
           </View>
 
-          <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: `${Math.min(100, progressPercent ?? 0)}%` }]} />
-          </View>
+          {/* Round 6: removed progressTrack/Fill — broadcast playback position
+              is not exposed on viewer surfaces. The "Up Next" sneak-peek chip
+              below is a real-TV-channel affordance and stays. */}
 
           {nextItem && (
             <View style={styles.upNextRow}>
               <Feather name="chevrons-right" size={11} color="rgba(255,255,255,0.5)" />
-              <Text style={styles.upNextText}>Up Next</Text>
+              <Text style={styles.upNextText} numberOfLines={1}>Up Next: {nextItem.title}</Text>
             </View>
           )}
         </View>

@@ -1,0 +1,76 @@
+Implement a platform-wide access policy update to allow users and audiences to watch TempleTV broadcasts without requiring sign-up or authentication across all distribution platforms.
+
+Objective:
+
+Enable frictionless viewing of live and scheduled broadcast content so that users can immediately access TempleTV streams without account creation, login, or onboarding barriers, while maintaining system stability, security, and broadcast integrity.
+
+Core Access Requirements:
+
+1. Guest Viewing Enablement:
+
+* Allow all users to access and watch live broadcast content without signing up or logging in.
+* Remove mandatory authentication requirements for:
+
+  * Live ON AIR streaming
+  * Hero Cinematic preview playback
+  * TV Player viewing experience
+  * Broadcast queue consumption
+* Ensure immediate access to content upon entering the platform across all devices.
+
+2. Cross-Platform Consistency:
+
+* Apply guest viewing access uniformly across:
+
+  * Mobile applications (Android and iOS)
+  * Web platform (desktop and browser)
+  * Smart TV applications
+  * Tablet and hybrid devices
+* Ensure no platform enforces login requirements while others allow guest access.
+
+3. Broadcast Access Control:
+
+* Ensure all public broadcast streams are accessible in real time without authentication barriers.
+* Maintain consistent LIVE playback availability for all users regardless of login state.
+* Ensure ON AIR content remains fully visible and playable for guest users at all times.
+
+4. Optional Authentication Separation:
+
+* Retain authentication systems strictly for optional or enhanced features only, such as:
+
+  * Personalized user preferences
+  * Watch history synchronization (if applicable)
+  * Notifications and engagement features
+  * Admin or restricted operations
+* Ensure authentication is never required for basic viewing access.
+
+5. Seamless Viewing Experience:
+
+* Ensure users can instantly:
+
+  * Open the app or website
+  * Click “Watch Temple TV”
+  * Begin watching live broadcast immediately
+* Eliminate any forced onboarding screens, registration prompts, or login interruptions before playback.
+
+6. Security & Abuse Prevention:
+
+* Maintain backend safeguards to protect broadcast infrastructure from abuse without restricting legitimate viewing.
+* Implement rate limiting, stream protection, and CDN-level security without requiring user authentication.
+* Ensure stable performance under anonymous or guest traffic loads.
+
+7. Performance & Scalability:
+
+* Optimize infrastructure to support high volumes of anonymous viewers.
+* Ensure guest traffic does not degrade streaming performance or broadcast synchronization.
+* Maintain enterprise-grade scalability for large-scale public access.
+
+Expected Final Outcome:
+
+Deliver a fully open-access, enterprise-grade streaming platform where:
+
+* Users can watch TempleTV broadcasts instantly without signing up
+* All distribution platforms support guest viewing consistently
+* Live ON AIR content remains fully accessible and synchronized for all audiences
+* The platform maintains professional-grade stability, security, and performance under unrestricted public viewing conditions
+
+“Temple TV Anywhere You Go”

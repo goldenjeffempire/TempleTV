@@ -156,6 +156,15 @@ interface LocalVideoPlayerProps {
   coverMode?: boolean;
   /** Override the computed player height. When not provided, the component derives height from screen width at 9:16. */
   playerHeightOverride?: number;
+  /**
+   * Round 6: when true, this player is rendering a "live broadcast" stream
+   * (a station-driven queue item, not an on-demand sermon the user chose).
+   * Native and web chrome — the timeline scrubber, time readout, and
+   * fullscreen seek hotkeys — are suppressed so the broadcast cannot be
+   * scrubbed or rewound. Play/pause is still possible via the in-app
+   * overlay; the directive only forbids time-position UI and seek.
+   */
+  isBroadcastLive?: boolean;
 }
 
 export function LocalVideoPlayer({
@@ -171,6 +180,7 @@ export function LocalVideoPlayer({
   startPositionMs = 0,
   coverMode = false,
   playerHeightOverride,
+  isBroadcastLive = false,
 }: LocalVideoPlayerProps) {
   const effectiveUrl = hlsMasterUrl || videoUrl;
   const c = useColors();
@@ -486,7 +496,10 @@ export function LocalVideoPlayer({
             shouldPlay={autoPlay}
             positionMillis={startPositionMs}
             onPlaybackStatusUpdate={onPlaybackStatusUpdate}
-            useNativeControls
+            // Round 6: native chrome (scrubber + time + seek hotkeys) is
+            // suppressed when this is a broadcast/live surface, so the
+            // viewer cannot rewind or fast-forward the station feed.
+            useNativeControls={!isBroadcastLive}
             isLooping={false}
             progressUpdateIntervalMillis={dataSaver ? 2000 : 500}
           />
@@ -544,7 +557,10 @@ export function LocalVideoPlayer({
               playerSeekRef.current = (t: number) => { el.currentTime = t; };
             }
           },
-          controls: !isRadioMode,
+          // Round 6: hide HTML5 <video> controls (scrubber/time/volume row)
+          // for broadcast/live so viewers cannot scrub the station feed.
+          // VOD playback in radio mode keeps controls hidden the same way.
+          controls: !isRadioMode && !isBroadcastLive,
           playsInline: true,
           preload: "auto",
           // Intentionally NOT setting `crossOrigin`. Our broadcast queue

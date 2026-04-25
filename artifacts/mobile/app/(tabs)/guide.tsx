@@ -128,9 +128,13 @@ function GuideItemCard({
             <Text style={styles.currentTitle} numberOfLines={2}>{item.title}</Text>
             <Text style={styles.currentDuration}>{fmtDuration(item.durationSecs)}</Text>
 
-            <View style={styles.progressTrack}>
-              <View style={[styles.progressFill, { width: `${Math.min(100, item.progressPercent)}%` as any }]} />
-            </View>
+            {/* Round 6: removed the playback progressTrack/Fill bar and the
+                "X left" remaining pill from the NOW ON AIR card. EPG metadata
+                (start–end window above and total program duration just above)
+                is preserved because that is scheduling information that real
+                TV guides legitimately show; the playback-position bar and the
+                remaining-time pill are the broadcast indicators that the
+                directive removes. */}
 
             <View style={styles.currentActions}>
               <Pressable
@@ -140,12 +144,6 @@ function GuideItemCard({
                 <Feather name="play" size={14} color="#FFF" />
                 <Text style={styles.tuneInText}>Tune In</Text>
               </Pressable>
-              <View style={styles.remainingPill}>
-                <Feather name="clock" size={11} color="rgba(255,255,255,0.7)" />
-                <Text style={styles.remainingText}>
-                  {fmtDuration(Math.max(0, item.durationSecs - item.positionSecs))} left
-                </Text>
-              </View>
             </View>
           </View>
         </GlassCard>

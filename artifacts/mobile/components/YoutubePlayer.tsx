@@ -16,6 +16,14 @@ interface YoutubePlayerProps {
   onPlay?: () => void;
   onPause?: () => void;
   onToggleAudioMode?: () => void;
+  /**
+   * Round 6: when true, the YouTube IFrame Player is configured to hide
+   * its native controls (timeline/scrubber/time readout) and disable
+   * keyboard seek shortcuts. Used for broadcast queue items so the viewer
+   * cannot rewind or fast-forward the station feed even though the source
+   * happens to be a normal (non-live) YouTube video.
+   */
+  isBroadcastLive?: boolean;
 }
 
 const ORIGIN =
@@ -26,16 +34,24 @@ const ORIGIN =
 function buildEmbedUrl({
   videoId,
   isLive,
+  isBroadcastLive,
   channelHandle,
   autoPlay,
   startPositionSecs,
-}: Pick<YoutubePlayerProps, "videoId" | "isLive" | "channelHandle" | "autoPlay" | "startPositionSecs">): string {
+}: Pick<YoutubePlayerProps, "videoId" | "isLive" | "isBroadcastLive" | "channelHandle" | "autoPlay" | "startPositionSecs">): string {
+  // Round 6 (Pass 5): in broadcast mode the IFrame chrome (timeline,
+  // scrubber, fullscreen, keyboard seek) is suppressed so the channel
+  // feed cannot be scrubbed or fullscreen-escaped. Mirrors the gating
+  // already applied in YoutubePlayer.web.tsx and .native.tsx.
+  const broadcast = isBroadcastLive === true;
   const params = new URLSearchParams({
     enablejsapi: "1",
     playsinline: "1",
     rel: "0",
     modestbranding: "1",
-    fs: "1",
+    controls: broadcast ? "0" : "1",
+    disablekb: broadcast ? "1" : "0",
+    fs: broadcast ? "0" : "1",
     origin: ORIGIN,
   });
   // When autoplay is initiated by a user gesture (radio play tap, etc.)
@@ -71,6 +87,7 @@ function buildEmbedUrl({
 export function YoutubePlayer({
   videoId,
   isLive,
+  isBroadcastLive,
   channelHandle = "templetvjctm",
   autoPlay,
   startPositionSecs,
@@ -115,11 +132,13 @@ export function YoutubePlayer({
   useEffect(() => { setIframeReady(false); }, [videoId, isLive]);
 
   const src = useMemo(
-    () => buildEmbedUrl({ videoId, isLive, channelHandle, autoPlay, startPositionSecs }),
+    () => buildEmbedUrl({ videoId, isLive, isBroadcastLive, channelHandle, autoPlay, startPositionSecs }),
     // startPositionSecs intentionally excluded so seeking from the
     // parent doesn't force-remount the iframe mid-playback.
+    // Round 6 (Pass 5): isBroadcastLive IS in deps so flipping mode
+    // for an unchanged videoId rebuilds the embed URL with new chrome.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [videoId, isLive, channelHandle, autoPlay],
+    [videoId, isLive, isBroadcastLive, channelHandle, autoPlay],
   );
 
   useEffect(() => {
@@ -233,9 +252,15 @@ export function YoutubePlayer({
         ref: iframeRef,
         src,
         title: "Temple TV video player",
-        allow:
-          "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen",
-        allowFullScreen: true,
+        // Round 6 (Pass 5): broadcast mode strips fullscreen from the
+        // iframe permission policy (the `allow` attribute) AND from
+        // `allowFullScreen` so the user has no escape hatch into the
+        // native YouTube fullscreen player (which carries its own
+        // scrubber and seek controls).
+        allow: isBroadcastLive
+          ? "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+          : "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen",
+        allowFullScreen: !isBroadcastLive,
         referrerPolicy: "strict-origin-when-cross-origin",
         loading: "eager",
         onLoad: handleLoad,

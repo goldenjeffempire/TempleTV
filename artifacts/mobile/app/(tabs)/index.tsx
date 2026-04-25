@@ -47,44 +47,25 @@ try {
   HeroResizeMode = av.ResizeMode;
 } catch {}
 
-const broadcastProgressStyles = StyleSheet.create({
-  section: { gap: 5, marginTop: 2 },
-  row: { flexDirection: "row", alignItems: "center", gap: 8 },
-  track: { flex: 1, height: 3, backgroundColor: "rgba(255,255,255,0.2)", borderRadius: 2, overflow: "hidden" },
-  fill: { height: "100%" as any, backgroundColor: "#6A0DAD", borderRadius: 2 },
-  timeBadge: { flexDirection: "row", alignItems: "center", gap: 3 },
-  timeText: { color: "rgba(255,255,255,0.7)", fontSize: 10, fontFamily: "Inter_500Medium" },
-  nextText: { color: "rgba(255,255,255,0.62)", fontSize: 12, fontFamily: "Inter_500Medium" },
+// Round 6: removed the cinematic-hero "BroadcastProgress" component and its
+// per-second tick. A real TV channel does not show viewers a playback bar
+// for the current program. The "Up Next" hint (which a real TV channel DOES
+// show as a sneak peek) is preserved as a slim chip rendered inline below.
+const broadcastUpNextStyles = StyleSheet.create({
+  section: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 6 },
+  chevron: { marginRight: 1 },
+  text: { color: "rgba(255,255,255,0.7)", fontSize: 11, fontFamily: "Inter_500Medium", letterSpacing: 0.4 },
 });
 
-function BroadcastProgress({ broadcastCurrent }: { broadcastCurrent: BroadcastCurrentResult }) {
-  const [tickMs, setTickMs] = useState(() => Date.now());
-  const fetchTimeRef = useRef(Date.now());
-
-  useEffect(() => { fetchTimeRef.current = Date.now(); }, [broadcastCurrent]);
-  useEffect(() => {
-    const t = setInterval(() => setTickMs(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
-
-  const elapsed = (tickMs - fetchTimeRef.current) / 1000;
-  const positionSecs = Math.round((broadcastCurrent.positionSecs ?? 0) + elapsed);
-  const totalDuration = broadcastCurrent.item?.durationSecs ?? 1;
-  const progress = Math.min(100, (positionSecs / totalDuration) * 100);
-
+function BroadcastUpNext({ broadcastCurrent }: { broadcastCurrent: BroadcastCurrentResult }) {
+  const next = broadcastCurrent.nextItem;
+  if (!next) return null;
   return (
-    <View style={broadcastProgressStyles.section}>
-      <View style={broadcastProgressStyles.row}>
-        <View style={broadcastProgressStyles.track}>
-          <View style={[broadcastProgressStyles.fill, { width: `${progress}%` } as any]} />
-        </View>
-        {broadcastCurrent.nextItem && (
-          <View style={broadcastProgressStyles.timeBadge}>
-            <Feather name="skip-forward" size={9} color="rgba(255,255,255,0.6)" />
-            <Text style={broadcastProgressStyles.timeText}>Up Next</Text>
-          </View>
-        )}
-      </View>
+    <View style={broadcastUpNextStyles.section}>
+      <Feather name="skip-forward" size={10} color="rgba(255,255,255,0.6)" style={broadcastUpNextStyles.chevron} />
+      <Text style={broadcastUpNextStyles.text} numberOfLines={1}>
+        Up Next: {next.title}
+      </Text>
     </View>
   );
 }
@@ -593,9 +574,11 @@ export default function WatchScreen() {
                     : "Temple TV Anywhere You Go"}
                 </Text>
 
-                {/* Broadcast progress bar */}
+                {/* Round 6: replaced the broadcast progress bar with a slim
+                    "Up Next: <title>" chip. Real TV channels show a sneak peek
+                    of the next program but never a playback-position bar. */}
                 {showBroadcast && broadcastCurrent?.item && (
-                  <BroadcastProgress broadcastCurrent={broadcastCurrent} />
+                  <BroadcastUpNext broadcastCurrent={broadcastCurrent} />
                 )}
 
                 {/* CTA row */}

@@ -267,6 +267,7 @@ export default function PlayerScreen() {
     cycleLoopMode,
     togglePlay,
     toggleRadioMode,
+    setIsBroadcastMode: setCtxBroadcastMode,
     volume,
     dataSaver,
     isRadioMode,
@@ -457,6 +458,19 @@ export default function PlayerScreen() {
       thumbnailUrl: activeSermon.thumbnailUrl,
     });
   }, [currentTime]);
+
+  // Round 6 (Pass 3): mirror the route-level `isBroadcastMode` flag
+  // into the PlayerContext so off-screen surfaces (MiniPlayer,
+  // NowPlayingBar, future widgets) can suppress playback-position UI.
+  // We deliberately do NOT clear the flag on unmount — if the user
+  // backgrounds /player while broadcast playback continues via
+  // PersistentAudioPlayer, the MiniPlayer must keep showing channel
+  // semantics (no progress bar, no skip-forward). The flag is cleared
+  // by `playSermon` (VOD pick) and `playLive` (YouTube live) inside
+  // the context itself, which are the only ways out of broadcast.
+  useEffect(() => {
+    if (isBroadcastMode) setCtxBroadcastMode(true);
+  }, [isBroadcastMode, setCtxBroadcastMode]);
 
   useEffect(() => {
     if (!isBroadcastMode) return;
@@ -731,6 +745,10 @@ export default function PlayerScreen() {
             startPositionMs={paramStartPositionMs ? parseInt(paramStartPositionMs, 10) : 0}
             coverMode={isBroadcastOrLive}
             playerHeightOverride={videoPlayerHeight}
+            // Round 6: broadcast queue items must not expose native scrubber
+            // / time / seek hotkeys. The flag is identical to the existing
+            // showSeekBar gate `isLive || isBroadcastMode`.
+            isBroadcastLive={isBroadcastOrLive}
             onEnd={handleVideoEnd}
             onError={recoverBroadcastPlayback}
           />
@@ -744,6 +762,11 @@ export default function PlayerScreen() {
             playerHeight={videoPlayerHeight}
             autoPlay
             startPositionSecs={paramStartPositionMs ? Math.floor(parseInt(paramStartPositionMs, 10) / 1000) : undefined}
+            // Round 6: broadcast YouTube items render with hidden YouTube
+            // chrome (no control bar / fullscreen / keyboard seek) so the
+            // station feed cannot be rewound or fast-forwarded even when
+            // the underlying source is a non-live VOD.
+            isBroadcastLive={isBroadcastOrLive}
             onEnd={handleVideoEnd}
             onError={recoverBroadcastPlayback}
             onToggleAudioMode={handleToggleAudioMode}
@@ -762,7 +785,11 @@ export default function PlayerScreen() {
               <Feather name="chevron-down" size={26} color="#FFF" />
             </Pressable>
             <View style={{ flex: 1 }} />
-            {isLive && <LiveBadge size="medium" />}
+            {/* Round 6: ON AIR badge is shown for both live YouTube and
+                station-driven broadcast queue surfaces. Both are "live to
+                the viewer" — the broadcast queue is a continuous channel
+                feed, not an on-demand pick. */}
+            {isBroadcastOrLive && <LiveBadge size="medium" />}
             {!isLive && !paramLocalVideoUrl && (
               <Pressable
                 onPress={handleToggleAudioMode}

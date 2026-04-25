@@ -12,7 +12,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { LoopMode, Sermon } from "@/types";
 import { SERMONS } from "@/data/sermons";
 import { STORAGE_KEYS } from "@/constants/config";
-import { stopTrackPlayer } from "@/services/nowPlaying";
+import { stopTrackPlayer, setBroadcastCapabilities } from "@/services/nowPlaying";
+import { setBroadcastModeForRemoteHandlers } from "@/services/PlayerService";
 
 interface PlayerContextType {
   currentSermon: Sermon | null;
@@ -20,6 +21,14 @@ interface PlayerContextType {
   isPlaying: boolean;
   isRadioMode: boolean;
   isLive: boolean;
+  /**
+   * Round 6: true while the user is watching the broadcast queue (a
+   * station-driven continuous channel feed), independent of `isLive`
+   * which is reserved for actual YouTube live streams. Surfaces such
+   * as the MiniPlayer use this to suppress the playback progress bar
+   * — broadcast surfaces never show a position indicator.
+   */
+  isBroadcastMode: boolean;
   queue: Sermon[];
   currentIndex: number;
   dataSaver: boolean;
@@ -41,6 +50,12 @@ interface PlayerContextType {
   setVolume: (v: number) => void;
   seekTo: (time: number) => void;
   updatePlayback: (time: number, duration: number) => void;
+  /**
+   * Round 6: imperative setter the player route uses to enter/leave
+   * broadcast mode as the user opens/closes the broadcast viewer.
+   * Mirrors the existing `setQueue`-style imperative API.
+   */
+  setIsBroadcastMode: (b: boolean) => void;
   playerPlayRef: React.MutableRefObject<(() => void) | null>;
   playerPauseRef: React.MutableRefObject<(() => void) | null>;
   playerSeekRef: React.MutableRefObject<((t: number) => void) | null>;
@@ -91,6 +106,18 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isRadioMode, setIsRadioMode] = useState(false);
   const [isLive, setIsLive] = useState(false);
+  // Round 6: see PlayerContextType for rationale. Persisted only in memory;
+  // the player route flips it on mount/unmount of broadcast playback.
+  const [isBroadcastMode, setIsBroadcastMode] = useState(false);
+
+  // Round 6 (Pass 3): keep the system-level media controls (lock screen,
+  // notification shade, Bluetooth/CarPlay) in sync with broadcast mode.
+  // Both calls are no-ops on web and gracefully degrade if RNTP hasn't
+  // finished setup, so this effect is safe to fire on every flip.
+  useEffect(() => {
+    setBroadcastModeForRemoteHandlers(isBroadcastMode);
+    setBroadcastCapabilities(isBroadcastMode).catch(() => {});
+  }, [isBroadcastMode]);
   const [queue, setQueueState] = useState<Sermon[]>(SERMONS);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [dataSaver, setDataSaver] = useState(false);
@@ -124,6 +151,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   shufflePosRef.current = shufflePosition;
   const currentSermonRef = useRef(currentSermon);
   currentSermonRef.current = currentSermon;
+  // Round 6 (Pass 4): keep a ref mirror of broadcast mode so callbacks
+  // captured with empty dep arrays (playNext / playPrevious) can read
+  // the current value without forcing a re-creation of the callback.
+  const isBroadcastModeRef = useRef(isBroadcastMode);
+  isBroadcastModeRef.current = isBroadcastMode;
 
   useEffect(() => {
     let mounted = true;
@@ -207,6 +239,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     setCurrentSermon(sermon);
     setIsPlaying(true);
     setIsLive(false);
+    // Round 6 (Pass 3): an explicit VOD pick exits broadcast mode. The
+    // user has chosen a specific sermon to play, so the channel feed is
+    // no longer what's on the screen — surfaces like MiniPlayer should
+    // re-enable VOD chrome (progress bar, skip-forward).
+    setIsBroadcastMode(false);
     setCurrentTime(0);
     setDuration(0);
 
@@ -223,6 +260,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const playLive = useCallback(() => {
     setIsLive(true);
     setIsPlaying(true);
+    // Round 6 (Pass 3): playing the actual YouTube live feed exits
+    // broadcast-queue mode (the two are mutually exclusive — one is a
+    // YT live stream, the other is a synthesized continuous channel).
+    setIsBroadcastMode(false);
     setCurrentSermon(null);
     setCurrentTime(0);
     setDuration(0);
@@ -268,6 +309,14 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const playNext = useCallback(() => {
+    // Round 6 (Pass 4): broadcast advance is handled exclusively by
+    // /player's `tuneToBroadcastItem` (driven by the SSE schedule).
+    // Calling playNext() while in broadcast mode is therefore either
+    // a stale UI element (already removed in Pass 4) or an external
+    // remote-control event (RNTP RemoteNext, also gated). Treat it as
+    // a no-op so we cannot accidentally jump out of the channel feed.
+    if (isBroadcastModeRef.current) return;
+
     const loop = loopRef.current;
     const shuffle = shuffleRef.current;
 
@@ -332,6 +381,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   }, [playNext]);
 
   const playPrevious = useCallback(() => {
+    // Round 6 (Pass 4): same rationale as playNext — a TV channel has
+    // no concept of "previous program", so this is a no-op in broadcast.
+    if (isBroadcastModeRef.current) return;
+
     const loop = loopRef.current;
     const shuffle = shuffleRef.current;
 
@@ -391,6 +444,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     setIsPlaying(false);
     setCurrentSermon(null);
     setIsLive(false);
+    // Round 6 (Pass 4): a full stop must also exit broadcast mode so
+    // the next surface the user sees (Home, Radio, MiniPlayer) starts
+    // from a clean slate. Without this, the MiniPlayer would still
+    // think it was tuned to a channel even though playback has ended.
+    setIsBroadcastMode(false);
     setCurrentTime(0);
     setDuration(0);
     if (Platform.OS !== "web") {
@@ -466,6 +524,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       isPlaying,
       isRadioMode,
       isLive,
+      isBroadcastMode,
       queue,
       currentIndex,
       dataSaver,
@@ -487,6 +546,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       setVolume,
       seekTo,
       updatePlayback,
+      setIsBroadcastMode,
       playerPlayRef,
       playerPauseRef,
       playerSeekRef,
@@ -498,6 +558,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       isPlaying,
       isRadioMode,
       isLive,
+      isBroadcastMode,
       queue,
       currentIndex,
       dataSaver,

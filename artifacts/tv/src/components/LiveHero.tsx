@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import { type LiveStatus, type BroadcastCurrent } from "../lib/api";
 import { LiveBroadcastVideo } from "./LiveBroadcastVideo";
 
@@ -9,68 +9,17 @@ interface LiveHeroProps {
   onSelect: () => void;
 }
 
-function BroadcastProgressBar({
-  progressPercent,
-  positionSecs,
-  totalSecs,
-  serverTimeMs,
-}: {
-  progressPercent: number;
-  positionSecs: number;
-  totalSecs: number;
-  serverTimeMs: number;
-}) {
-  const fetchedAt = useRef(Date.now());
-  const fetchedServerMs = useRef(serverTimeMs);
-  const [liveProgress, setLiveProgress] = useState(progressPercent);
-
-  useEffect(() => {
-    fetchedAt.current = Date.now();
-    fetchedServerMs.current = serverTimeMs;
-    setLiveProgress(progressPercent);
-  }, [progressPercent, serverTimeMs, positionSecs]);
-
-  useEffect(() => {
-    if (totalSecs <= 0) return;
-    const tick = setInterval(() => {
-      const elapsed = (Date.now() - fetchedAt.current) / 1000;
-      const current = positionSecs + elapsed;
-      setLiveProgress(Math.min(100, (current / totalSecs) * 100));
-    }, 2000);
-    return () => clearInterval(tick);
-  }, [positionSecs, totalSecs]);
-
-  const remaining = Math.max(0, totalSecs - positionSecs);
-  const remainMins = Math.floor(remaining / 60);
-  const remainStr = remainMins > 0 ? `${remainMins}m left` : "Ending soon";
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <div
-        style={{
-          height: 3,
-          background: "rgba(255,255,255,0.2)",
-          borderRadius: 2,
-          overflow: "hidden",
-          maxWidth: 420,
-        }}
-      >
-        <div
-          style={{
-            height: "100%",
-            width: `${liveProgress}%`,
-            background: "linear-gradient(90deg, #6A0DAD, #a855f7)",
-            borderRadius: 2,
-            transition: "width 2s linear",
-          }}
-        />
-      </div>
-      <span style={{ fontSize: 12, color: "rgba(255,255,255,0.55)", letterSpacing: "0.04em" }}>
-        {remainStr}
-      </span>
-    </div>
-  );
-}
+// NOTE: The previous `BroadcastProgressBar` sub-component (a 2-second-tick
+// progress bar + "Xm left" countdown) was removed in the Round 6 broadcast
+// refinement. A real television channel does not show viewers how far through
+// the current program they are or how much time is left — viewers join
+// mid-show and the channel keeps moving. The hero keeps the channel bug,
+// "ON AIR" badge, title, and Tune In CTA; that is the entire liveness
+// surface now. The deleted sub-component used a `useRef` for "fetched-at"
+// time-keeping that has no other consumer here, so only `useRef` was
+// dropped from the React imports. `useEffect` and `useState` are still
+// used by `LiveHero` itself (mounted-flag transitions and the
+// `broadcastVideoFailed` fallback).
 
 /**
  * Netflix-style full-bleed cinematic hero.
@@ -83,7 +32,8 @@ function BroadcastProgressBar({
  *
  * Three states:
  *  1. YouTube LIVE NOW — red badge, ambient YouTube embed, "Watch Live" CTA
- *  2. Broadcast ON AIR — purple "ON AIR" badge, contain-scaled video, progress bar, "Tune In" CTA
+ *  2. Broadcast ON AIR — purple "ON AIR" badge, contain-scaled video, "Tune In" CTA
+ *     (no progress bar — TV-channel behavior)
  *  3. Off-air — muted badge, gradient fallback, "Watch Temple TV" CTA
  */
 export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: LiveHeroProps) {
@@ -484,14 +434,9 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
               Spirit-filled teachings and worship — broadcasting live around the clock.
             </p>
 
-            {broadcastCurrent && (
-              <BroadcastProgressBar
-                progressPercent={broadcastCurrent.progressPercent}
-                positionSecs={broadcastCurrent.positionSecs}
-                totalSecs={broadcastCurrent.totalSecs}
-                serverTimeMs={broadcastCurrent.serverTimeMs}
-              />
-            )}
+            {/* Round 6: removed BroadcastProgressBar — TV-channel viewers do
+                not see playback position or remaining time. The "ON AIR"
+                badge above is the only liveness indicator. */}
 
             <div
               className="flex items-center"

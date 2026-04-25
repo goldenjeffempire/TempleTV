@@ -474,6 +474,63 @@ Verification:
 
 **Action required to apply this fix:** the admin app must be redeployed — the build is what bakes in client-side code that runs in the browser at `admin.templetv.org.ng`.
 
+### Round 6 — Remove all time/duration/progress UI from broadcast surfaces (April 2026)
+
+Goal: complete the TV-channel directive by stripping every "playback position" indicator from viewer-facing broadcast surfaces. Round 5 disabled the controls; Round 6 removes the readouts. A real television channel never tells viewers how far through the current program they are.
+
+What was already correct (verified in audit, not changed):
+- `artifacts/mobile/components/MiniPlayer.tsx`: progress bar already gated `showProgress = !isLive && duration > 0`. ✅
+- `artifacts/mobile/app/player.tsx`: seek bar already gated `showSeekBar = !isLive && !isBroadcastMode && duration > 0`. ✅
+- `artifacts/mobile/components/NowPlayingBar.tsx`: no time UI, just "NOW LIVE" / "NOW PLAYING" + chevron. ✅
+- `artifacts/mobile/components/PersistentAudioPlayer.tsx`: bare wrapper around YoutubePlayer, no UI chrome. ✅
+- `artifacts/tv/src/components/ContinueWatchingCard.tsx`: VOD-only ("X minutes left" on previously-watched sermons that the user CAN resume / seek into). Not a broadcast surface. ✅
+
+Surgical changes applied this round:
+- `artifacts/tv/src/components/LiveHero.tsx`: deleted the entire `BroadcastProgressBar` sub-component (a 2-second-tick `<div>` progress bar + "Xm left" / "Ending soon" caption) and removed its only call-site in the cinematic hero. Hero now shows ON AIR badge + title + Tune In CTA, period.
+- `artifacts/tv/src/pages/TVGuide.tsx`: deleted the per-second live progress bar, the `{fmtDuration(livePositionSecs)} / {fmtDuration(item.durationSecs)}` readout, and the orange `· ending soon` flag from the current-program guide row. EPG metadata (start time, end time, total program duration on the right of the row) is preserved because that is scheduling information, not playback position.
+- `artifacts/mobile/app/(tabs)/guide.tsx`: deleted the `progressTrack` / `progressFill` bar and the "X left" `remainingPill` from the NOW ON AIR card. The same EPG-metadata preservation rule applies (start–end window and program length stay).
+- `artifacts/mobile/app/(tabs)/index.tsx`: replaced the cinematic-hero `BroadcastProgress` component (a per-second-tick progress track + Up Next chip) with a slim `BroadcastUpNext` chip that shows "Up Next: <title>" only. The Up Next preview is preserved because real TV channels do show a sneak peek of the next program — they just don't show a playback bar for the current one.
+- `artifacts/mobile/components/BroadcastInfoStrip.tsx`: removed the `progressTrack` / `progressFill` from the in-player overlay strip and the now-unused `fmtRemaining` helper. The "NOW ON AIR" badge and the "Up Next" pill (now showing the next title) remain.
+
+Architectural rationale (called out for future maintainers):
+- Two distinct categories of "time UI" exist on these surfaces: **EPG/scheduling** (start time, end time, program length — what a TV listings magazine prints) and **playback position** (elapsed/remaining/progress bar — what a video player shows). The directive removes the second category from broadcast surfaces. The first stays because it answers "when does my show air?" — a legitimate channel question, not a playback control.
+- The "Up Next" chip is preserved everywhere because real TV channels routinely do bug-style "Coming up next: …" overlays. Removing it would be a regression vs. real television, not a step toward it.
+- VOD/Continue-Watching cards keep their "X min left" and progress bars because those are on-demand sermons the viewer chose to resume — they are *not* broadcast surfaces.
+
+**Pass 2 — broadcast-mode control suppression on `/player`:** The first architect review of Round 6 caught a real gap: mobile broadcast queue items launched with `broadcastMode="true"` but `live="false"` were still rendering native scrubber/timeline UI on `LocalVideoPlayer` (both `useNativeControls` on native and HTML5 `controls` on web) and exposing the YouTube IFrame control bar / fullscreen / keyboard seek on `YoutubePlayer`. Fixed by:
+
+- Threading a new `isBroadcastLive?: boolean` prop through `LocalVideoPlayer`, `YoutubePlayer.tsx` (shared interface), `YoutubePlayer.web.tsx`, and `YoutubePlayer.native.tsx`. Each platform variant maintains its own `YoutubePlayerProps` interface and was updated independently.
+- `LocalVideoPlayer`: `useNativeControls={!isBroadcastLive}` on native; `controls: !isRadioMode && !isBroadcastLive` on web.
+- `YoutubePlayer.web.tsx`: `playerVars.controls`, `playerVars.disablekb`, `playerVars.fs` now conditionally `0/1` on `isBroadcastLive`. Init effect deps and bootstrap effect deps both updated to include `isBroadcastLive`, so flipping mode for an unchanged `videoId` re-creates the player instance with new chrome (the architect's pass-2 finding).
+- `YoutubePlayer.native.tsx`: `initialPlayerParams.controls`, `initialPlayerParams.preventFullScreen`, and `webViewProps.allowsFullscreenVideo` are all gated on `isBroadcastLive`. The `<YoutubeIframe>` `key` now includes `isBroadcastLive` (`${activeVideoId}-${isBroadcastLive ? "b" : "v"}`) so the WebView remounts on mode flip.
+- `artifacts/mobile/app/player.tsx`: passes `isBroadcastLive={isBroadcastOrLive}` to both player call sites; the `LiveBadge` now renders for both `isLive` and `isBroadcastMode` (both are channel feeds, not on-demand picks).
+
+**MiniPlayer broadcast-mode gating:** The previous gate `!isLive && duration > 0` did not catch broadcast queue items because `PlayerContext.playSermon()` sets `isLive=false`. Added a new `isBroadcastMode: boolean` field + `setIsBroadcastMode(b)` setter to `PlayerContext`, mirrored from the player route on mount/unmount. `MiniPlayer.tsx` now gates `showProgress = !isLive && !isBroadcastMode && duration > 0`, hides `skip-forward`, shows ON AIR badge for broadcast, and uses "Temple TV / ON AIR" for the title/subtitle pair.
+
+**Pass 3 — off-route persistence + system-level controls:** Pass 2 cleared `isBroadcastMode` on `/player` unmount, so backgrounding the player while broadcast continued via `PersistentAudioPlayer` re-enabled VOD chrome on MiniPlayer. Pass 2 also left `MiniPlayer` re-entering as VOD (`navigateToSermon`), and left RNTP lock-screen/notification capabilities (`SeekTo`, `SkipToNext`, `SkipToPrevious`) and remote handlers active for broadcast. Pass 3 fixes:
+
+- `PlayerContext` clears `isBroadcastMode` from inside `playSermon` (VOD pick) and `playLive` (YT live), the only legitimate exits. `/player`'s mirror effect no longer clears on unmount.
+- `MiniPlayer.handlePress` adds an `isBroadcastMode` branch that calls `navigateToPlayer({ broadcastMode: "true" })`, preserving channel intent on re-entry — `/player` then re-tunes to the current SSE broadcast item.
+- `services/nowPlaying.ts` exposes `setBroadcastCapabilities(b)` that swaps RNTP capabilities to Play/Pause/Stop only for broadcast and restores the full set otherwise.
+- `services/PlayerService.ts` adds module-level `broadcastMode` + `setBroadcastModeForRemoteHandlers(b)`. `RemoteSeek`/`RemoteNext`/`RemotePrevious` early-return when `broadcastMode` is true — defense in depth against stale BT/CarPlay UIs that cache a previous capability set.
+- `PlayerContext` `useEffect` on `isBroadcastMode` calls both setters; both are platform-safe (no-op on web) and setup-safe.
+
+**Pass 4 — Radio surface + context transitions + RNTP cold-start race:** Architect Pass 4 found three remaining leaks. Closed all three:
+
+- `app/(tabs)/radio.tsx`: skip-back and skip-forward `Pressable`s are now wrapped in `{!isBroadcastMode && (...)}` — a TV viewer can't skip programs from the radio screen. The "Watch Video" CTA's `handleWatchVideo` checks `isBroadcastMode` first and routes via `navigateToPlayer({ broadcastMode: "true" })` instead of `navigateToSermon` so re-entry can't downgrade to VOD.
+- `PlayerContext.tsx`: `playNext` and `playPrevious` early-return when `isBroadcastModeRef.current` is true (broadcast advance is exclusively driven by `/player`'s `tuneToBroadcastItem` against the SSE schedule, so external calls — stale UI, RNTP RemoteNext/Previous — would jump out of the channel feed). `stopPlayback` clears `isBroadcastMode` so the next surface starts clean. Added `isBroadcastModeRef` mirror so the empty-dep callbacks can read the current value without invalidation.
+- `services/nowPlaying.ts`: split the actual `updateOptions` call into a private `applyBroadcastCapabilities`. `setBroadcastCapabilities` now records `lastBroadcastMode` even before RNTP setup completes; `setupPlayer` replays the queued mode after `isSetup = true`. Closes the cold-start race where `PlayerContext` mounted and called `setBroadcastCapabilities` before `_layout.tsx`'s async `setupTrackPlayer()` had finished — the lock-screen UI would otherwise stay on the default seek/skip set until the next mode flip.
+
+**Pass 5 — shared YoutubePlayer.tsx web fallback:** Architect Pass 5 found one final leak: the shared `artifacts/mobile/components/YoutubePlayer.tsx` (web fallback used on any path that doesn't resolve to `.web.tsx`) still hardcoded `fs: "1"`, `allowFullScreen: true`, and didn't consume `isBroadcastLive` at all. Closed by:
+
+- `buildEmbedUrl` Pick now includes `isBroadcastLive`; embed params switch `controls` (1↔0), `disablekb` (0↔1), `fs` (1↔0) on the broadcast flag.
+- Component destructures `isBroadcastLive` and forwards into `buildEmbedUrl`. The `useMemo` for `src` now includes `isBroadcastLive` in its dep array so flipping mode for an unchanged `videoId` rebuilds the URL with new chrome.
+- The `<iframe>` `allow` attribute strips `"fullscreen"` from the permission policy when `isBroadcastLive` is true, and `allowFullScreen={!isBroadcastLive}` removes the attribute itself — the user has no escape hatch into the native YouTube fullscreen player (which carries its own scrubber/seek controls).
+
+**Architect Pass 6: PASS.** All broadcast surfaces (TV LiveHero, TV TVGuide, mobile guide.tsx, mobile (tabs)/index.tsx, mobile (tabs)/radio.tsx, mobile BroadcastInfoStrip, mobile player.tsx, mobile LocalVideoPlayer, mobile YoutubePlayer .tsx/.web/.native, mobile MiniPlayer, mobile PlayerContext, mobile services/nowPlaying, mobile services/PlayerService) now enforce: no progress UI, no scrub/seek/scrubber, no skip-forward/back, no fullscreen escape hatch, no off-route downgrade to VOD, no lock-screen / Bluetooth / CarPlay seek/skip leak, no cold-start RNTP capability race, no broadcast bypass via context transitions (playNext/playPrevious/stopPlayback all guarded or self-clearing).
+
+TypeScript clean on both packages (`@workspace/tv` and `@workspace/mobile`, both `tsc --noEmit` produced no output) after every pass. All individual workflows running and HMR'd successfully.
+
 ### Round 5 — Strict TV-channel broadcast behavior on LIVE surfaces (April 2026)
 
 Goal: enforce television-station semantics — viewers cannot pause, scrub, or stop a LIVE broadcast; the channel is always running and the user is either tuned in or not. VOD playback (on-demand sermons) keeps full controls because pausing a recorded sermon is essential UX.

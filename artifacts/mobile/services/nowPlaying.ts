@@ -58,9 +58,76 @@ export async function setupTrackPlayer(): Promise<void> {
     });
 
     isSetup = true;
+
+    // Round 6 (Pass 4): if broadcast mode was requested before RNTP
+    // finished setting up (race between PlayerContext mounting and
+    // _layout.tsx's async setupTrackPlayer call), apply the queued
+    // mode now — otherwise the lock-screen/notification UI would keep
+    // its default seek/skip capabilities until the next mode flip.
+    if (lastBroadcastMode !== null) {
+      await applyBroadcastCapabilities(lastBroadcastMode);
+    }
   } catch (err) {
     console.warn("[nowPlaying] setupPlayer failed:", err);
   }
+}
+
+/**
+ * Round 6 (Pass 4): the actual `updateOptions` call. Split out from
+ * `setBroadcastCapabilities` so `setupPlayer` can replay the last
+ * requested mode after setup completes (see lastBroadcastMode below).
+ */
+async function applyBroadcastCapabilities(broadcast: boolean): Promise<void> {
+  if (!TrackPlayer || !Capability) return;
+  try {
+    if (broadcast) {
+      await TrackPlayer.updateOptions({
+        capabilities: [Capability.Play, Capability.Pause, Capability.Stop],
+        compactCapabilities: [Capability.Play, Capability.Pause],
+        notificationCapabilities: [Capability.Play, Capability.Pause, Capability.Stop],
+      });
+    } else {
+      await TrackPlayer.updateOptions({
+        capabilities: [
+          Capability.Play,
+          Capability.Pause,
+          Capability.Stop,
+          Capability.SeekTo,
+          Capability.SkipToNext,
+          Capability.SkipToPrevious,
+        ],
+        compactCapabilities: [Capability.Play, Capability.Pause, Capability.SkipToNext],
+        notificationCapabilities: [
+          Capability.Play,
+          Capability.Pause,
+          Capability.Stop,
+          Capability.SeekTo,
+          Capability.SkipToNext,
+          Capability.SkipToPrevious,
+        ],
+      });
+    }
+  } catch (err) {
+    console.warn("[nowPlaying] applyBroadcastCapabilities failed:", err);
+  }
+}
+
+/**
+ * Round 6 (Pass 3 + 4): swap the system-level media controls (lock screen,
+ * notification shade, Bluetooth headset, Auto/CarPlay) to match channel
+ * semantics. While in broadcast mode we expose only Play/Pause/Stop —
+ * SeekTo and SkipToNext/SkipToPrevious are removed so a user cannot
+ * scrub or skip the current program from outside the app. Pass 4: if
+ * RNTP isn't set up yet (called during the cold-start race), the desired
+ * mode is recorded and replayed once setupPlayer completes.
+ */
+let lastBroadcastMode: boolean | null = null;
+
+export async function setBroadcastCapabilities(broadcast: boolean): Promise<void> {
+  if (Platform.OS === "web") return;
+  lastBroadcastMode = broadcast;
+  if (!isSetup) return;
+  await applyBroadcastCapabilities(broadcast);
 }
 
 export interface NowPlayingTrack {

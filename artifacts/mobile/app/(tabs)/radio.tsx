@@ -90,6 +90,7 @@ export default function RadioScreen() {
     currentSermon,
     isPlaying,
     isRadioMode,
+    isBroadcastMode,
     dataSaver,
     shuffleMode,
     loopMode,
@@ -353,6 +354,16 @@ export default function RadioScreen() {
     if (!nowPlaying) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     if (isRadioMode) toggleRadioMode();
+    // Round 6 (Pass 4): if the user is currently tuned to the broadcast
+    // channel, "Watch Video" must reopen /player in broadcast mode (not as
+    // VOD) — otherwise we'd give them seek/scrub controls on a channel feed.
+    if (isBroadcastMode) {
+      navigateToPlayer(
+        { broadcastMode: "true" },
+        "Sign up free to keep watching Temple TV.",
+      );
+      return;
+    }
     navigateToSermon(nowPlaying);
   };
 
@@ -457,15 +468,21 @@ export default function RadioScreen() {
               Temple TV Channel" above (live broadcast) or any sermon row in
               the queue list (on-demand). To stop, they navigate away from the
               Radio tab or toggle Radio Mode off in the player settings. */}
+          {/* Round 6 (Pass 4): when the channel feed is tuned, hide queue
+              navigation entirely — a real TV viewer can't skip to the
+              previous or next program from the radio surface. The center
+              ON AIR indicator is preserved as a "what's playing" badge. */}
           <View style={styles.controls}>
-            <Pressable
-              onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); playPrevious(); }}
-              style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}
-              hitSlop={12}
-              accessibilityLabel="Previous sermon"
-            >
-              <Feather name="skip-back" size={30} color={c.foreground} />
-            </Pressable>
+            {!isBroadcastMode && (
+              <Pressable
+                onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); playPrevious(); }}
+                style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}
+                hitSlop={12}
+                accessibilityLabel="Previous sermon"
+              >
+                <Feather name="skip-back" size={30} color={c.foreground} />
+              </Pressable>
+            )}
 
             <View
               accessibilityRole="text"
@@ -502,14 +519,16 @@ export default function RadioScreen() {
               </Text>
             </View>
 
-            <Pressable
-              onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); playNext(); }}
-              style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}
-              hitSlop={12}
-              accessibilityLabel="Next sermon"
-            >
-              <Feather name="skip-forward" size={30} color={c.foreground} />
-            </Pressable>
+            {!isBroadcastMode && (
+              <Pressable
+                onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); playNext(); }}
+                style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}
+                hitSlop={12}
+                accessibilityLabel="Next sermon"
+              >
+                <Feather name="skip-forward" size={30} color={c.foreground} />
+              </Pressable>
+            )}
           </View>
 
           <View style={styles.modeControls}>

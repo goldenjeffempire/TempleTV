@@ -413,42 +413,12 @@ export function TVGuide({ onBack, onPlay }: TVGuideProps) {
                   }}>
                     {item.title}
                   </div>
-                  {isCurrentProgram && (() => {
-                    // Prefer live-computed position from SSE (itemStartEpochSecs)
-                    // over the server-static positionSecs so the bar ticks every second.
-                    const livePositionSecs = liveSync.itemStartEpochSecs
-                      ? Math.max(0, nowSecs - liveSync.itemStartEpochSecs)
-                      : item.positionSecs;
-                    const liveProgress = item.durationSecs > 0
-                      ? Math.min(100, Math.round((livePositionSecs / item.durationSecs) * 100))
-                      : item.progressPercent;
-                    const remainingSecs = Math.max(0, item.durationSecs - livePositionSecs);
-                    return (
-                      <div style={{ marginTop: 4 }}>
-                        <div style={{
-                          width: "100%",
-                          maxWidth: 200,
-                          height: 3,
-                          background: "rgba(168,85,247,0.25)",
-                          borderRadius: 2,
-                          overflow: "hidden",
-                        }}>
-                          <div style={{
-                            height: "100%",
-                            width: `${liveProgress}%`,
-                            background: "linear-gradient(90deg, #7c3aed, #a855f7)",
-                            borderRadius: 2,
-                          }} />
-                        </div>
-                        <div style={{ fontSize: 11, color: "rgba(168,85,247,0.8)", marginTop: 3 }}>
-                          {fmtDuration(livePositionSecs)} / {fmtDuration(item.durationSecs)}
-                          {remainingSecs < 120 && (
-                            <span style={{ marginLeft: 6, color: "#f59e0b" }}>· ending soon</span>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })()}
+                  {/* Round 6: removed live progress bar, "elapsed / total"
+                      readout, and "· ending soon" badge from the current
+                      program row. EPG metadata (start time, end time, total
+                      duration of the show) is preserved on the right of the
+                      row because that is scheduling information, not a
+                      broadcast playback position indicator. */}
                 </div>
               </div>
 
