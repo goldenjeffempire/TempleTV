@@ -412,6 +412,31 @@ The first review caught an auth-bypass class: the two startup probes (`auth-gate
 
 **Operator action:** redeploy the API server with this fix. After ~2 crash cycles the guard kicks in, the bad job is marked failed, and the API stays up. Long-term: bump the API service's container memory tier on Render so 1080p ffmpeg encodes don't OOM (current tier appears insufficient for 1080p+ source material), or downgrade the encoder ladder to skip 1080p/2160p variants on the smaller tier.
 
+### Round 4p — Cross-platform broadcast video parity + domain migration + documentation refresh (April 2026)
+
+This pass had three operator directives, all completed in code and reviewed by the architect:
+
+1. **Mobile MP4 broadcast playback was broken.** `LocalVideoPlayer.tsx` always tried to load every URL through `hls.js` regardless of file type, so a `.mp4` broadcast item failed silently with an `hls.js` parser error. Fixed by URL-extension regex (`/\.(mp4|webm|mov|m4v|ogg|ogv)(\?|#|$)/i`) — when matched, the component routes to the native `<video>` element on web and to `expo-av` direct progressive playback on native. The `seekToStart()` helper that honours `startPositionMs` was extended to fire on every code path (HLS, native HLS, direct MP4) so MP4 broadcasts join at the correct live offset just like HLS ones.
+
+2. **Mobile hero was cropping the broadcast frame.** The hero used `objectFit: cover`, which cropped the top and bottom of any broadcast wider than the hero box's aspect ratio. Switched the foreground to `contain` (so the full frame is always visible) and added a web-only blurred `cover` backdrop layer behind it — exact parity with the TV `LiveBroadcastVideo.tsx` cinematic look. Native iOS / Android keeps `contain` over the dark theme background (no blur) since `expo-av` doesn't expose a per-instance backdrop layer.
+
+3. **Cross-platform broadcast parity audit.** Verified mobile↔TV are now byte-equivalent on the four sync axes:
+   - **MP4 detection:** identical URL-extension regex on both platforms (`HlsVideoPlayer.tsx` / `LocalVideoPlayer.tsx`).
+   - **Hero contain + blur:** identical two-layer composition (`LiveBroadcastVideo.tsx` / mobile `app/(tabs)/index.tsx` hero block).
+   - **12-second / 4-second drift correction:** identical thresholds, same clamp `[0, durationSecs - 0.5]`, same stable-ref pattern so the video element never tears down on identity churn.
+   - **Broadcast position handoff:** both platforms compute `startPositionMs = positionSecs * 1000 + networkDriftSecs` from `serverTimeMs` returned by `/api/broadcast/current` and pass it to the player as `startPositionMs` along with `broadcastMode="live"`. The TV path runs through `computeLiveBroadcastPosition()` in `pages/Home.tsx`; the mobile path is inlined in the hero. The api-server is the single source of truth for the live offset.
+
+   Admin out of scope for this audit (CMS only, no broadcast playback).
+
+4. **Domain migration `templetv.app/link → templetv.org.ng/link`.** Repo-wide grep turned up exactly one stale reference in `artifacts/tv/src/components/AuthGateModal.tsx` (the TV pairing screen — the most user-visible occurrence). Updated. The `templetv.app` DNS record should serve a 301 to `templetv.org.ng` for any QR codes / printed material still pointing at the old host.
+
+5. **Documentation refresh.** Updated the root `README.md`, `artifacts/mobile/README.md`, `artifacts/tv/README.md`, and `artifacts/api-server/README.md` to reflect the cross-platform sync architecture above — new sections describe the join-offset computation, the 12s/4s drift correction loop, the two-layer container shape, and the MP4-routing rule. The api-server README's route table now explicitly enumerates the sync fields (`serverTimeMs`, `positionSecs`, `currentItemEndsAtMs`, `itemStartEpochSecs`) that every broadcast client depends on. `RELEASE_AUDIT.md` §12 closes the loop with the operator-facing summary.
+
+Verification:
+- TypeScript clean across `artifacts/mobile`, `artifacts/tv`, `artifacts/api-server`.
+- `grep -rn 'templetv.app/link'` → 0 hits in `artifacts/`, `lib/`, and root docs.
+- All workflows except the aggregate `Start application` running clean (the aggregate's port-8080 wait window is a pre-existing dev-only race, not a regression from this pass).
+
 ## External Dependencies
 
 - **Database:** PostgreSQL

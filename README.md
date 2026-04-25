@@ -120,6 +120,26 @@ A single live source feeds every client simultaneously:
   promotes the next scheduled item or the broadcast queue front item, never
   showing dead-air to viewers.
 
+### 4.1 Sync-aware playback (Hero + Player)
+
+Every broadcast surface (mobile Hero, TV Hero, mobile `/player`, TV `/player`)
+joins the live timeline at the **exact second currently airing** and stays in
+sync via a uniform drift-correction loop:
+
+| Concept | Where | Behaviour |
+|---|---|---|
+| Join offset | `computeLiveBroadcastPosition()` (TV `Home.tsx`); inline `bc.positionSecs * 1000 + networkDriftSecs` on mobile | Computed once per item from `serverTimeMs`, `positionSecs`, and the network round-trip drift, then passed to the player as `startPositionMs` |
+| Drift correction | `LiveBroadcastVideo.tsx` (TV), `app/(tabs)/index.tsx` (mobile hero) | Every **12 s**, if playhead drift &gt; **4 s** vs the expected live offset, snap forward / back via `currentTime =` (TV) or `setPositionAsync` (mobile) |
+| Stable-ref pattern | Both platforms | Sync data and callbacks held in `useRef`s so identity churn doesn't tear down the video element on every payload |
+| Container shape | Both platforms | Two-layer render — blurred `cover` backdrop fills the box, foreground at `contain` so the broadcast frame is **never cropped** |
+| MP4 routing | `LocalVideoPlayer.tsx` (mobile web), `HlsVideoPlayer.tsx` (TV) | URL-extension check (`.mp4|.webm|.mov|...`) routes plain video away from `hls.js`; `seekToStart()` honours `startPositionMs` on every code path (HLS, native HLS, direct MP4) |
+| Pairing URL | `AuthGateModal.tsx` (TV) | Displayed as **`templetv.org.ng/link`** — the mobile `/link` route claims the TV-displayed code |
+
+This means a viewer who lands on the mobile app, taps **Watch Temple TV**, and
+then opens the same channel on a TV will see both screens within a few seconds
+of each other, drifting back into lock-step automatically as the broadcast
+progresses.
+
 ---
 
 ## 5. Tech stack

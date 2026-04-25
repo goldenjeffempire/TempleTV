@@ -47,16 +47,17 @@ never re-runs categorization.
 
 ## 4. In-platform playback
 
-`pages/Player.tsx` renders an embedded `youtube-nocookie.com` iframe with:
+The TV app has **two** playback components, picked per-broadcast type:
 
-- `enablejsapi=1` and `origin=window.location.origin` for postMessage support
-- `referrerPolicy=strict-origin-when-cross-origin`
-- 12 s load watchdog → 2 silent retries → friendly "Playback unavailable"
-  error UI with **Try again** / **Back** buttons
-- Picture-in-Picture allowed where supported
-- Auto-hiding control overlay after 4 s
+| Component | Used for | Mechanism |
+|---|---|---|
+| `pages/Player.tsx` | YouTube videos opened from rows / details | Embedded `youtube-nocookie.com` iframe, 12 s watchdog → 2 silent retries → friendly error UI |
+| `components/HlsVideoPlayer.tsx` | Locally streamed sermons (HLS / MP4) opened from `/player` | `hls.js` v1.6.x for `.m3u8`, native `<video>` for `.mp4 / .webm / .mov / .m4v / .ogg` (URL-extension routing, not Content-Type) |
+| `components/LiveBroadcastVideo.tsx` | The live hero on Home (and the live broadcast in `/player`) | Wraps `HlsVideoPlayer` with sync + drift correction (see §5) |
 
-There is **no** redirect to youtube.com.
+Common to all three: `referrerPolicy=strict-origin-when-cross-origin`,
+PiP allowed where supported, auto-hiding control overlay after 4 s, and **no
+redirect to youtube.com**.
 
 ---
 
@@ -66,6 +67,30 @@ There is **no** redirect to youtube.com.
 the admin starts or ends a live broadcast, the home screen updates within
 milliseconds. If SSE is unavailable (older smart-TV browsers), it falls back
 to a 30 s poll on `/api/youtube/live/status`.
+
+### 5.1 Sync-aware live hero
+
+The live hero (`components/LiveHero.tsx` → `LiveBroadcastVideo.tsx`) joins the
+live timeline at the **exact second currently airing** on every other client:
+
+| Step | Where |
+|---|---|
+| Compute the join offset | `computeLiveBroadcastPosition()` in `pages/Home.tsx` builds `startPositionMs` from `serverTimeMs`, `positionSecs`, and `networkDriftSecs` returned by `/api/broadcast/current` |
+| Pass to player | `<LiveBroadcastVideo broadcastMode="live" startPositionMs={...} />` |
+| Drift correction | Every **12 s**, if `currentTime` drifts &gt; **4 s** vs the expected live offset, snap forward / back via `videoRef.current.currentTime = targetSecs`, clamped to `[0, durationSecs - 0.5]` |
+| Container shape | **Two-layer render** — blurred `cover` backdrop fills the box; foreground at `contain` so the broadcast frame is never cropped |
+| Stability | Sync data + callbacks held in `useRef`s so React re-renders do not tear down the video element |
+
+This is the same pattern used by the mobile hero, giving viewers cross-screen
+lock-step within a few seconds.
+
+### 5.2 TV ↔ mobile pairing
+
+When an unauthenticated viewer hits the TV app, `components/AuthGateModal.tsx`
+renders a **6-character pairing code** and instructs the user to open
+**`templetv.org.ng/link`** on their phone. The mobile `/link` route claims
+the code by signing in (or signing up) on mobile, after which the TV app
+swaps in the user's session via the standard auth flow.
 
 ---
 
@@ -97,7 +122,11 @@ artifacts/tv/
     │   ├── Player.tsx
     │   └── not-found.tsx
     └── components/
-        ├── LiveHero.tsx
+        ├── LiveHero.tsx              ← top-of-Home live banner, focusable
+        ├── LiveBroadcastVideo.tsx    ← sync + drift correction wrapper around HlsVideoPlayer
+        ├── HlsVideoPlayer.tsx        ← hls.js for .m3u8, native <video> for MP4 / WebM / MOV
+        ├── BroadcastInfoStrip.tsx    ← title + countdown above the live hero
+        ├── AuthGateModal.tsx         ← TV pairing code + templetv.org.ng/link prompt
         ├── SermonRow.tsx
         ├── SermonCard.tsx
         ├── Clock.tsx

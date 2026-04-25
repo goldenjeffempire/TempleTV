@@ -514,3 +514,100 @@ All three operator directives are satisfied in code:
 - ✅ Admin and TV both load only the code they need on first paint, with skeleton/splash placeholders during dynamic-chunk fetch.
 
 No remaining code-side work for this pass. The §10.3 operator action list (credential rotation, EAS / App Store / Play Store submission, Render deploy) remains the only gate between today and public launch.
+
+---
+
+## §12 — Cross-platform broadcast video parity + domain migration (Apr 25, 2026)
+
+This pass closed three operator-reported gaps in the broadcast playback path
+and updated every doc that referenced the old `templetv.app/link` pairing host.
+
+### 12.1 Mobile MP4 playback parity
+
+`artifacts/mobile/components/LocalVideoPlayer.tsx` was loading every URL
+through `hls.js` regardless of file type, so a `.mp4` broadcast item failed
+silently with an `hls.js` parser error. Introduced a URL-extension regex
+(`/\.(mp4|webm|mov|m4v|ogg|ogv)(\?|#|$)/i`) — when matched, the component
+routes to the native `<video>` element on web and to `expo-av` direct
+progressive playback on native. The `seekToStart()` helper that honours
+`startPositionMs` now fires on every code path (HLS, native HLS, direct MP4)
+so MP4 broadcasts join at the correct live offset just like HLS ones.
+
+This brings the mobile component to byte-equivalence with the TV
+`HlsVideoPlayer.tsx`, which has used the same routing rule since Round 4j.
+
+### 12.2 Mobile hero "no-crop" parity
+
+The Watch tab's live hero used `objectFit: cover`, which cropped the top and
+bottom of any broadcast wider than the hero box. Switched the foreground to
+`contain` (so the full broadcast frame is always visible) and added a
+**web-only blurred `cover` backdrop layer** behind it — exact parity with
+the TV `LiveBroadcastVideo.tsx` cinematic look. Native iOS / Android keeps
+`contain` over the dark theme background (no blur) since `expo-av` doesn't
+expose a per-instance backdrop layer.
+
+### 12.3 Cross-platform broadcast parity audit (verified)
+
+| Axis | Mobile | TV | Status |
+|---|---|---|---|
+| MP4 detection | URL-extension regex in `LocalVideoPlayer.tsx` | URL-extension regex in `HlsVideoPlayer.tsx` | ✅ identical |
+| Hero contain + blur | Two-layer (contain fg + blurred cover bg on web) | Two-layer (contain fg + blurred cover bg) | ✅ identical |
+| 12 s / 4 s drift correction | `app/(tabs)/index.tsx` hero tick → `setPositionAsync` | `LiveBroadcastVideo.tsx` tick → `videoRef.currentTime =` | ✅ identical thresholds + clamp |
+| Broadcast position handoff | inline `bc.positionSecs * 1000 + networkDriftSecs` → `<LocalVideoPlayer broadcastMode startPositionMs ... />` | `computeLiveBroadcastPosition()` in `pages/Home.tsx` → `<LiveBroadcastVideo ... />` | ✅ same fields, same source of truth |
+| Stable refs across re-renders | useRef snapshot for sync data + callbacks | useRef snapshot for sync data + callbacks | ✅ identical pattern |
+
+Admin out of scope for this audit (CMS only — no broadcast playback surface).
+The api-server's `/api/broadcast/current` payload (with `serverTimeMs`,
+`positionSecs`, `currentItemEndsAtMs`, `itemStartEpochSecs`) is the single
+source of truth that both client paths consume.
+
+### 12.4 Domain migration `templetv.app/link → templetv.org.ng/link`
+
+A repo-wide `grep` for `templetv.app/link` and `templetv.app` in user-visible
+strings found exactly **one** stale reference: the TV pairing modal
+(`artifacts/tv/src/components/AuthGateModal.tsx` line ~242). Updated to
+`templetv.org.ng/link`. Every other prod URL in the codebase already points
+at `templetv.org.ng` — confirmed across all four artifact READMEs, the root
+README, store-listing copy, and the smart-TV submission guides.
+
+> **Operator action (DNS):** to handle QR codes / printed material that still
+> point at the old host, configure the `templetv.app` zone to **301-redirect
+> all paths** to the matching `templetv.org.ng` path. This is a one-time DNS
+> + edge-redirect rule; no code change can substitute for it.
+
+### 12.5 Documentation refresh
+
+Refreshed every README that touches the broadcast video path:
+
+| File | Update |
+|---|---|
+| `README.md` (root) | New §4.1 "Sync-aware playback" table covering join-offset, drift correction, container shape, MP4 routing, and pairing URL across all platforms. |
+| `artifacts/mobile/README.md` | Added `LocalVideoPlayer.tsx` to the source-layout tree and a new §6.1 "Live broadcast playback (HLS / MP4)" describing two-layer rendering, the 12 s drift loop, MP4 routing, and the seek-to-start contract. |
+| `artifacts/tv/README.md` | Promoted §4 to a 3-component playback table (`Player.tsx`, `HlsVideoPlayer.tsx`, `LiveBroadcastVideo.tsx`). New §5.1 "Sync-aware live hero" + §5.2 "TV ↔ mobile pairing" (including the corrected `templetv.org.ng/link` URL). Source-layout tree extended with `LiveBroadcastVideo.tsx`, `HlsVideoPlayer.tsx`, `BroadcastInfoStrip.tsx`, `AuthGateModal.tsx`. |
+| `artifacts/api-server/README.md` | `/api/broadcast/current` row in the route table now enumerates the four sync fields (`serverTimeMs`, `positionSecs`, `currentItemEndsAtMs`, `itemStartEpochSecs`) so any future client can rebuild the live-position math without reading the source. |
+| `replit.md` | New "Round 4p" entry documents the three fixes, the parity audit, the domain migration, and this doc refresh. |
+| `RELEASE_AUDIT.md` (this section) | §12 — operator-facing summary. |
+
+Untouched (verified accurate as of this date and not affected by this pass):
+`artifacts/admin/README.md`, the four `lib/*` READMEs, `STORE_LISTING.md`,
+`artifacts/mobile/store-assets/STORE_LISTING.md`, `screenshots/README.md`,
+the Fire TV / LG webOS / Tizen submission guides.
+
+### 12.6 Verification
+
+- `tsc --noEmit` clean across `artifacts/mobile`, `artifacts/tv`, `artifacts/api-server`.
+- `grep -rn 'templetv.app/link'` over `artifacts/`, `lib/`, root docs → **0 hits**.
+- All workflows running clean; the aggregate `Start application` workflow's port-8080 wait window is a pre-existing dev-only race (api-server runs `build && start`, leaving a ~1-2 s connect window) and is not a regression from this pass.
+- Architect review of the mobile MP4 fix and the cinematic two-layer hero: **PASS** on both. Cross-platform parity audit confirmed by side-by-side code read of `LocalVideoPlayer.tsx`, `HlsVideoPlayer.tsx`, `LiveBroadcastVideo.tsx`, mobile `app/(tabs)/index.tsx`, and TV `pages/Home.tsx`.
+
+### 12.7 Final verdict
+
+The four broadcast surfaces (mobile Hero, TV Hero, mobile `/player`, TV
+`/player`) are now byte-equivalent on join-offset, drift correction,
+no-crop rendering, and MP4 routing. The TV pairing prompt points at the
+correct production host. Every README that describes the broadcast path
+matches the code as of this date.
+
+External operator actions remaining are unchanged from §10.3 (credential
+rotation, EAS / App Store / Play Store submission, Render deploy) plus the
+new DNS-level 301 from `templetv.app` (§12.4).

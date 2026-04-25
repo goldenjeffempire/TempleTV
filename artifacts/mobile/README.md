@@ -28,6 +28,8 @@ Other surfaces:
 - **MiniPlayer** — Persistent floating bar across all tabs.
 - **NetworkBanner** — Themed offline indicator.
 - **LiveBroadcastSupervisor** — Background hook that reacts to broadcast SSE.
+- **LocalVideoPlayer** — In-house HLS / MP4 player used by the live hero and
+  by `/player` for non-YouTube broadcasts (see §6.1).
 
 ---
 
@@ -65,6 +67,8 @@ artifacts/mobile/
 │   ├── YoutubePlayer.native.tsx   ← react-native-youtube-iframe wrapper
 │   ├── YoutubePlayer.web.tsx      ← official IFrame Player API
 │   ├── YoutubePlayer.tsx          ← fallback
+│   ├── LocalVideoPlayer.tsx       ← in-house HLS / MP4 player (hls.js on web, native HLS on iOS)
+│   ├── BroadcastInfoStrip.tsx     ← title + countdown above the live hero
 │   ├── ErrorBoundary.tsx          ← wired to reportClientError
 │   ├── ErrorFallback.tsx
 │   ├── LiveBroadcastSupervisor.tsx
@@ -157,6 +161,25 @@ EXPO_PUBLIC_DOMAIN=localhost:8080              # optional fallback
 | Smart TV (separate artifact) | `artifacts/tv/src/pages/Player.tsx` | `youtube-nocookie.com` embed |
 
 There is **no** redirect to youtube.com on any client.
+
+### 6.1 Live broadcast playback (HLS / MP4)
+
+The live hero on the Watch tab and the full-screen `/player` route both render
+**`LocalVideoPlayer.tsx`** when the broadcast item is locally streamed (HLS
+playlist or direct MP4) rather than YouTube.
+
+| Concern | Implementation |
+|---|---|
+| Web | `hls.js` v1.6.x for `.m3u8` ; native `<video>` for `.mp4 / .webm / .mov / .m4v / .ogg` ; URL-extension regex (not Content-Type) decides the path |
+| Native | iOS uses native HLS via `expo-av`; the same component falls back to direct progressive playback for MP4 |
+| Aspect | **Two-layer render** — a blurred, `cover`-fitted backdrop fills the box; the foreground video is `contain`-fitted so the broadcast frame is never cropped (parity with the TV `LiveBroadcastVideo`) |
+| Sync | The hero passes `broadcastMode="live"` and `startPositionMs` (`positionSecs * 1000 + networkDriftSecs`) computed against `serverTimeMs` from `/api/broadcast/current`, so the player joins at the exact second currently airing on every other client |
+| Drift correction | A 12-second tick in `app/(tabs)/index.tsx` compares the playhead to the expected live offset and `setPositionAsync`s back into lock-step when drift exceeds 4 s, clamped to `[0, durationSecs - 0.5]` |
+| Stability | Sync data and callbacks are held in `useRef`s so React re-renders don't tear down the video element |
+
+The `seekToStart()` helper inside `LocalVideoPlayer.tsx` honours
+`startPositionMs` on **every** code path (HLS, native HLS, direct progressive),
+so MP4 broadcasts join at the correct offset just like HLS ones.
 
 ---
 

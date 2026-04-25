@@ -39,7 +39,7 @@ HTTPS──┤  requestId → securityHeaders → rateLimit → CORS → adminAc
 | `GET /api/youtube/videos` | public | Full uploads playlist (paginated, all 2,114 videos) |
 | `GET /api/youtube/rss` | public | RSS fallback (~15 most recent) |
 | `GET /api/youtube/live/status` | public | Current YouTube live state |
-| `GET /api/broadcast/current` | public | Unified broadcast snapshot |
+| `GET /api/broadcast/current` | public | Unified broadcast snapshot — includes sync fields `serverTimeMs`, `positionSecs`, `currentItemEndsAtMs`, `itemStartEpochSecs` so every client can join the live timeline at the exact same second |
 | `GET /api/broadcast/events` | public | SSE stream of broadcast state changes |
 | `GET /api/live/events` | public | SSE stream of live override events |
 | `POST /api/auth/signup` | public | Create account → access + refresh JWT |
