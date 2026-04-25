@@ -28,6 +28,115 @@ const BROWSER_HEADERS = {
 };
 
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes in ms
+
+// ── YouTube Data API v3 quota gate ───────────────────────────────────────────
+// The free YouTube Data API quota is 10,000 units/day and resets at midnight
+// Pacific Time. Hitting the cap returns HTTP 403 with `reason: "quotaExceeded"`
+// (or `dailyLimitExceeded`). Before this guard, every scheduled tick and every
+// admin request would re-hit the API, get the 403, and emit a `level:50`
+// ERROR log — polluting Sentry / Render error metrics on a *recoverable*
+// condition. This module-level helper:
+//   1. Short-circuits all youtube.googleapis.com calls when the quota gate is
+//      set, returning null (callers already handle null as "no data, fall
+//      back to cache or empty list").
+//   2. Sets the gate (in the distributed cache, so siblings see it too) when
+//      a 403 quota error is observed.
+//   3. Logs the quota-exhaustion event at WARN once per hour at most — never
+//      ERROR — and logs the silent skips at DEBUG.
+const QUOTA_EXHAUSTED_KEY = "youtube:quota:exhaustedUntilMs";
+let _lastQuotaWarnAtMs = 0;
+
+// Compute the next quota reset (~ midnight Pacific = 08:00 UTC during PST,
+// 07:00 UTC during PDT). We use 08:00 UTC as a safe upper bound; if we're
+// already past 08:00 today, we target tomorrow 08:00 UTC.
+function nextQuotaResetMs(now: number = Date.now()): number {
+  const d = new Date(now);
+  const target = new Date(
+    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 8, 0, 0, 0),
+  );
+  if (target.getTime() <= now) target.setUTCDate(target.getUTCDate() + 1);
+  return target.getTime();
+}
+
+function isQuotaErrorBody(body: string): boolean {
+  // We only need a substring check — Google's error JSON consistently
+  // includes the literal "quotaExceeded" or "dailyLimitExceeded" reason.
+  return (
+    body.includes("quotaExceeded") ||
+    body.includes("dailyLimitExceeded") ||
+    body.includes("rateLimitExceeded")
+  );
+}
+
+async function isQuotaGateActive(): Promise<boolean> {
+  const until = await cache.get<number>(QUOTA_EXHAUSTED_KEY);
+  return typeof until === "number" && until > Date.now();
+}
+
+async function setQuotaGate(): Promise<number> {
+  const until = nextQuotaResetMs();
+  const ttlMs = Math.max(60_000, until - Date.now());
+  await cache.set(QUOTA_EXHAUSTED_KEY, until, ttlMs);
+  return until;
+}
+
+/**
+ * Wrapper around `fetch()` for youtube.googleapis.com endpoints that:
+ *   - Skips the call if the quota gate is set (returns null with debug log).
+ *   - Detects quota-exhaustion 403s, sets the gate, and warns at most once/hr.
+ *   - Returns parsed JSON on 2xx, or null on any non-OK response (caller is
+ *     expected to treat null as "no data this attempt").
+ */
+async function youtubeApiFetch<T>(
+  url: string,
+  context: string,
+): Promise<T | null> {
+  if (await isQuotaGateActive()) {
+    logger.debug({ context }, "YouTube call skipped — quota gate active");
+    return null;
+  }
+  let res: Response;
+  try {
+    res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+  } catch (err) {
+    logger.warn({ err, context }, "YouTube fetch failed (network/timeout)");
+    return null;
+  }
+  if (res.ok) {
+    try {
+      return (await res.json()) as T;
+    } catch (err) {
+      logger.warn({ err, context }, "YouTube response was not valid JSON");
+      return null;
+    }
+  }
+  // Non-OK: read body, check for quota
+  const body = await res.text().catch(() => "");
+  if (res.status === 403 && isQuotaErrorBody(body)) {
+    const until = await setQuotaGate();
+    const now = Date.now();
+    if (now - _lastQuotaWarnAtMs > 60 * 60 * 1000) {
+      _lastQuotaWarnAtMs = now;
+      logger.warn(
+        {
+          context,
+          quotaResetAt: new Date(until).toISOString(),
+          backoffMs: until - now,
+        },
+        "YouTube Data API quota exhausted — backing off until next reset",
+      );
+    } else {
+      logger.debug({ context }, "YouTube quota error (suppressed)");
+    }
+    return null;
+  }
+  // Genuine unexpected error — keep at error level (snippet only, not full body)
+  logger.error(
+    { context, status: res.status, errSnippet: body.slice(0, 300) },
+    "YouTube API error (non-quota)",
+  );
+  return null;
+}
 const YOUTUBE_VIDEOS_CACHE_KEY = "youtube:videos";
 const YOUTUBE_RSS_CACHE_KEY = "youtube:rss";
 const LIVE_POLL_NORMAL_MS = 60 * 1000;
@@ -370,17 +479,7 @@ async function fetchAllVideosFromApi(): Promise<VideoItem[] | null> {
       });
       if (pageToken) params.set("pageToken", pageToken);
 
-      const res = await fetch(
-        `https://www.googleapis.com/youtube/v3/playlistItems?${params.toString()}`,
-        { signal: AbortSignal.timeout(10000) }
-      );
-      if (!res.ok) {
-        const errText = await res.text();
-        logger.error({ errText }, "YouTube playlistItems API error");
-        return null;
-      }
-
-      const data = (await res.json()) as {
+      const data = await youtubeApiFetch<{
         nextPageToken?: string;
         items?: Array<{
           snippet: {
@@ -396,7 +495,11 @@ async function fetchAllVideosFromApi(): Promise<VideoItem[] | null> {
             };
           };
         }>;
-      };
+      }>(
+        `https://www.googleapis.com/youtube/v3/playlistItems?${params.toString()}`,
+        "playlistItems",
+      );
+      if (!data) return null;
 
       const items = data.items ?? [];
       const videoIds = items
@@ -410,19 +513,20 @@ async function fetchAllVideosFromApi(): Promise<VideoItem[] | null> {
           id: videoIds.join(","),
           part: "contentDetails,statistics",
         });
-        const detailRes = await fetch(
+        const detailData = await youtubeApiFetch<{
+          items?: Array<{
+            id: string;
+            contentDetails: { duration: string };
+            statistics: { viewCount?: string };
+          }>;
+        }>(
           `https://www.googleapis.com/youtube/v3/videos?${detailParams.toString()}`,
-          { signal: AbortSignal.timeout(10000) }
+          "videos.details",
         );
-        if (detailRes.ok) {
-          const detailData = (await detailRes.json()) as {
-            items?: Array<{
-              id: string;
-              contentDetails: { duration: string };
-              statistics: { viewCount?: string };
-            }>;
-          };
-          for (const d of detailData.items ?? []) {
+        // Missing details are non-fatal — the catalogue will simply omit
+        // duration/viewCount for this batch and try again on the next sync.
+        if (detailData?.items) {
+          for (const d of detailData.items) {
             detailsMap[d.id] = {
               duration: d.contentDetails?.duration ?? "",
               viewCount: d.statistics?.viewCount ?? "0",
