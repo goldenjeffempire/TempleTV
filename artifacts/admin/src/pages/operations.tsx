@@ -696,14 +696,14 @@ export default function Operations() {
                     }
                   />
                 </div>
-                {/* Cloud object storage */}
+                {/* AWS Cloud storage */}
                 <div className="flex items-center justify-between rounded-lg border p-3">
                   <div>
-                    <div className="font-medium text-sm">Cloud object storage</div>
+                    <div className="font-medium text-sm">AWS Cloud storage</div>
                     <div className="text-xs text-muted-foreground">
                       {status.infrastructure?.objectStorage?.configured
-                        ? "GCS bucket active — media persisted to cloud"
-                        : "Not configured — media stored locally only"}
+                        ? `AWS S3 bucket active${status.infrastructure?.objectStorage?.bucket ? ` — ${status.infrastructure.objectStorage.bucket}` : ""}${status.infrastructure?.objectStorage?.region ? ` (${status.infrastructure.objectStorage.region})` : ""}`
+                        : "AWS S3 not configured — check credentials and bucket settings"}
                     </div>
                   </div>
                   <StatusBadge

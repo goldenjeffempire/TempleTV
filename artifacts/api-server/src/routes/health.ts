@@ -65,7 +65,7 @@ router.get("/ops/status", async (_req, res) => {
     },
     {
       key: "object_storage",
-      label: "Cloud object storage",
+      label: "AWS Cloud storage",
       status: objectStorageConfigured ? ("ok" as const) : ("degraded" as const),
     },
     {
