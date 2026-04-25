@@ -395,6 +395,49 @@ export default function PlayerScreen() {
     return resolveSermon(paramVideoId) ?? makeParamSermon();
   });
 
+  // ── Broadcast in-place tuning state ────────────────────────────────────
+  // When in broadcast mode, the SSE stream (and the 15s poll, and the
+  // precision end-of-item timer) push us into the next queue item every
+  // few minutes. Previously each transition called `router.replace(...)`,
+  // which remounts the entire <PlayerScreen>, forcibly tearing down the
+  // <video> element and showing a blank/loading state for several seconds
+  // — the exact opposite of TV-channel behavior.
+  //
+  // Instead, we initialize these values from the route params on mount,
+  // but on every subsequent broadcast advance we MUTATE THESE STATE
+  // SLOTS IN PLACE. The <LocalVideoPlayer> sees new prop values for
+  // `videoUrl` / `hlsMasterUrl` / `startPositionMs` and uses its own A/B
+  // double-buffer to swap to the preloaded slot — no remount, no veil,
+  // no spinner, no black frame. We also feed `nextVideoUrl` /
+  // `nextHlsMasterUrl` from the broadcast payload's `nextItem` so the
+  // inactive slot can preload the upcoming item ahead of the cut.
+  const [tunedLocalVideoUrl, setTunedLocalVideoUrl] = useState<string | undefined>(paramLocalVideoUrl);
+  const [tunedHlsMasterUrl, setTunedHlsMasterUrl] = useState<string | undefined>(paramHlsMasterUrl);
+  const [tunedTitle, setTunedTitle] = useState<string | undefined>(paramTitle);
+  const [tunedThumbnail, setTunedThumbnail] = useState<string | undefined>(paramThumbnail);
+  const [tunedVideoId, setTunedVideoId] = useState<string | undefined>(paramVideoId);
+  const [tunedStartPositionMs, setTunedStartPositionMs] = useState<number>(
+    paramStartPositionMs ? parseInt(paramStartPositionMs, 10) : 0,
+  );
+  const [tunedNextLocalVideoUrl, setTunedNextLocalVideoUrl] = useState<string | undefined>(undefined);
+  const [tunedNextHlsMasterUrl, setTunedNextHlsMasterUrl] = useState<string | undefined>(undefined);
+
+  // If the route params themselves change (e.g., user picks a different
+  // sermon from related list while staying mounted on /player), re-sync
+  // the tuned state. We deliberately key only on the param values, not
+  // on the tuned state, so server-driven updates we wrote into the
+  // tuned state don't get clobbered by a stale effect re-run.
+  useEffect(() => {
+    setTunedLocalVideoUrl(paramLocalVideoUrl);
+    setTunedHlsMasterUrl(paramHlsMasterUrl);
+    setTunedTitle(paramTitle);
+    setTunedThumbnail(paramThumbnail);
+    setTunedVideoId(paramVideoId);
+    setTunedStartPositionMs(paramStartPositionMs ? parseInt(paramStartPositionMs, 10) : 0);
+    setTunedNextLocalVideoUrl(undefined);
+    setTunedNextHlsMasterUrl(undefined);
+  }, [paramLocalVideoUrl, paramHlsMasterUrl, paramTitle, paramThumbnail, paramVideoId, paramStartPositionMs]);
+
   useEffect(() => {
     Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: Platform.OS !== "web" }).start();
   }, []);
@@ -464,6 +507,53 @@ export default function PlayerScreen() {
     };
   }, [isBroadcastMode]);
 
+  // ── In-place broadcast tune ───────────────────────────────────────────
+  // Updates the tuned* state slots so the underlying <LocalVideoPlayer>
+  // (or <YoutubePlayer>) sees a new `videoUrl` / `hlsMasterUrl` /
+  // `startPositionMs` without remounting. The mobile <LocalVideoPlayer>'s
+  // own A/B double-buffer (web path) handles the swap as either an
+  // instant cut to the preloaded slot or a fresh load — but in both cases
+  // the React subtree stays mounted, so there's no full-screen blank
+  // / loading spinner like there was when this used router.replace.
+  const tuneToBroadcastItem = useCallback((bc: BroadcastCurrentResult) => {
+    if (!bc?.item) return;
+
+    // Debounce: three sync mechanisms (SSE, 15s poll, precision timer) can
+    // fire nearly simultaneously at an item boundary. Only act on the
+    // first call within a 3-second window to avoid redundant slot swaps.
+    const now = Date.now();
+    if (now - lastTuneTimeRef.current < 3_000) return;
+    lastTuneTimeRef.current = now;
+
+    const item = bc.item;
+    const networkDriftSecs = bc.serverTimeMs ? Math.max(0, Math.round((now - bc.serverTimeMs) / 1000)) : 0;
+    const startMs = (bc.positionSecs + networkDriftSecs) * 1000;
+
+    // The next-item URLs flow into the LocalVideoPlayer for inactive-slot
+    // preload. We always update them, even if the active item didn't
+    // change, so the preload stays warm as the queue mutates.
+    const next = bc.nextItem;
+    const nextLocal = next?.videoSource === "local" && next.localVideoUrl ? next.localVideoUrl : undefined;
+    const nextHls = (next as any)?.hlsMasterUrl as string | undefined;
+    setTunedNextLocalVideoUrl(nextLocal);
+    setTunedNextHlsMasterUrl(nextHls);
+
+    if (item.videoSource === "local" && item.localVideoUrl) {
+      setTunedLocalVideoUrl(item.localVideoUrl);
+      setTunedHlsMasterUrl((item as any).hlsMasterUrl ?? undefined);
+      setTunedVideoId(undefined);
+    } else {
+      setTunedLocalVideoUrl(undefined);
+      setTunedHlsMasterUrl(undefined);
+      setTunedVideoId(item.youtubeId);
+    }
+    setTunedTitle(item.title);
+    setTunedThumbnail(item.thumbnailUrl ?? undefined);
+    setTunedStartPositionMs(startMs);
+  }, []);
+
+  // 15-second safety poll: catches missed SSE events. Now updates state
+  // in place via tuneToBroadcastItem instead of doing a route replace.
   useEffect(() => {
     if (!isBroadcastMode) return;
     let cancelled = false;
@@ -472,24 +562,18 @@ export default function PlayerScreen() {
         const bc = await checkBroadcastCurrent();
         if (cancelled || !bc?.item) return;
         const bcIsLocal = bc.item.videoSource === "local" && !!bc.item.localVideoUrl;
-        const currentIsLocal = !!paramLocalVideoUrl;
-        const currentId = currentIsLocal ? paramLocalVideoUrl : paramVideoId;
+        const currentIsLocal = !!tunedLocalVideoUrl;
+        const currentId = currentIsLocal ? tunedLocalVideoUrl : tunedVideoId;
         const bcId = bcIsLocal ? bc.item.localVideoUrl : bc.item.youtubeId;
-        if (currentId !== bcId) {
-          const item = bc.item;
-          const nextParams: Record<string, string> = {
-            broadcastMode: "true",
-            title: item.title,
-            thumbnail: item.thumbnailUrl ?? "",
-            startPositionMs: String(bc.positionSecs * 1000),
-          };
-          if (bcIsLocal) {
-            nextParams.localVideoUrl = item.localVideoUrl!;
-            if ((item as any).hlsMasterUrl) nextParams.hlsMasterUrl = (item as any).hlsMasterUrl;
-          } else {
-            nextParams.videoId = item.youtubeId;
-          }
-          router.replace({ pathname: "/player", params: nextParams });
+        if (currentId !== bcId) tuneToBroadcastItem(bc);
+        else {
+          // Same active item — refresh the next-item preload hint in case
+          // the queue changed beneath us (admin reordered, override expired).
+          const next = bc.nextItem;
+          const nextLocal = next?.videoSource === "local" && next.localVideoUrl ? next.localVideoUrl : undefined;
+          const nextHls = (next as any)?.hlsMasterUrl as string | undefined;
+          setTunedNextLocalVideoUrl(nextLocal);
+          setTunedNextHlsMasterUrl(nextHls);
         }
       } catch {}
     };
@@ -498,34 +582,7 @@ export default function PlayerScreen() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [isBroadcastMode, paramVideoId, paramLocalVideoUrl]);
-
-  const tuneToBroadcastItem = useCallback((bc: BroadcastCurrentResult) => {
-    if (!bc?.item) return;
-
-    // Debounce: three sync mechanisms (SSE, 15s poll, precision timer) can fire
-    // nearly simultaneously at an item boundary. Only act on the first call
-    // within a 3-second window to avoid redundant router.replace flicker.
-    const now = Date.now();
-    if (now - lastTuneTimeRef.current < 3_000) return;
-    lastTuneTimeRef.current = now;
-
-    const item = bc.item;
-    const networkDriftSecs = bc.serverTimeMs ? Math.max(0, Math.round((now - bc.serverTimeMs) / 1000)) : 0;
-    const nextParams: Record<string, string> = {
-      broadcastMode: "true",
-      title: item.title,
-      thumbnail: item.thumbnailUrl ?? "",
-      startPositionMs: String((bc.positionSecs + networkDriftSecs) * 1000),
-    };
-    if (item.videoSource === "local" && item.localVideoUrl) {
-      nextParams.localVideoUrl = item.localVideoUrl;
-      if ((item as any).hlsMasterUrl) nextParams.hlsMasterUrl = (item as any).hlsMasterUrl;
-    } else {
-      nextParams.videoId = item.youtubeId;
-    }
-    router.replace({ pathname: "/player", params: nextParams });
-  }, []);
+  }, [isBroadcastMode, tunedVideoId, tunedLocalVideoUrl, tuneToBroadcastItem]);
 
   useEffect(() => {
     if (!isBroadcastMode) return;
@@ -535,9 +592,18 @@ export default function PlayerScreen() {
       setBroadcastInfo(bc);
       if (bc.item) {
         const bcIsLocal = bc.item.videoSource === "local" && !!bc.item.localVideoUrl;
-        const currentId = paramLocalVideoUrl ? paramLocalVideoUrl : paramVideoId;
+        const currentId = tunedLocalVideoUrl ? tunedLocalVideoUrl : tunedVideoId;
         const nextId = bcIsLocal ? bc.item.localVideoUrl : bc.item.youtubeId;
         if (currentId !== nextId) tuneToBroadcastItem(bc);
+        else {
+          // Same active item, but the SSE payload may carry a fresh
+          // nextItem we should keep preloading. Mirror the 15s-poll logic.
+          const next = bc.nextItem;
+          const nextLocal = next?.videoSource === "local" && next.localVideoUrl ? next.localVideoUrl : undefined;
+          const nextHls = (next as any)?.hlsMasterUrl as string | undefined;
+          setTunedNextLocalVideoUrl(nextLocal);
+          setTunedNextHlsMasterUrl(nextHls);
+        }
       }
     };
 
@@ -555,7 +621,7 @@ export default function PlayerScreen() {
     });
 
     return () => subscription?.close();
-  }, [isBroadcastMode, paramVideoId, paramLocalVideoUrl, tuneToBroadcastItem]);
+  }, [isBroadcastMode, tunedVideoId, tunedLocalVideoUrl, tuneToBroadcastItem]);
 
   // Client-side precision transition timer: fires exactly when the server says
   // the current broadcast item ends, triggering a resync without polling wait.
@@ -672,12 +738,16 @@ export default function PlayerScreen() {
     toggleFavorite(sermon);
   };
 
-  const displayVideoId = isLive ? undefined : (activeSermon?.youtubeId ?? paramVideoId);
-  const displayTitle = activeSermon?.title ?? paramTitle ?? "Temple TV";
+  // For broadcast mode, prefer the tuned* state (mutated in place by the
+  // SSE / 15s poll / precision timer) so off-screen metadata reflects the
+  // currently-airing item even after a queue advance. For VOD, fall back
+  // to the active sermon / route params as before.
+  const displayVideoId = isLive ? undefined : (activeSermon?.youtubeId ?? tunedVideoId ?? paramVideoId);
+  const displayTitle = (isBroadcastMode ? tunedTitle : undefined) ?? activeSermon?.title ?? paramTitle ?? "Temple TV";
   const displayPreacher = activeSermon?.preacher ?? paramPreacher ?? "JCTM";
   const displayDuration = activeSermon?.duration ?? paramDuration ?? "";
   const displayCategory = activeSermon?.category ?? paramCategory ?? "";
-  const thumbnailUrl = activeSermon?.thumbnailUrl ?? paramThumbnail ?? (displayVideoId ? `https://img.youtube.com/vi/${displayVideoId}/hqdefault.jpg` : undefined);
+  const thumbnailUrl = (isBroadcastMode ? tunedThumbnail : undefined) ?? activeSermon?.thumbnailUrl ?? paramThumbnail ?? (displayVideoId ? `https://img.youtube.com/vi/${displayVideoId}/hqdefault.jpg` : undefined);
   const favorited = displayVideoId ? isFavorite(displayVideoId) : false;
   const relatedSermons = allSermons.filter((s) => s.youtubeId !== displayVideoId && (activeSermon ? s.category === activeSermon.category : true)).slice(0, 6);
   const webTopPad = Platform.OS === "web" ? 67 : 0;
@@ -717,20 +787,28 @@ export default function PlayerScreen() {
           },
         ]}
       >
-        {paramLocalVideoUrl ? (
+        {tunedLocalVideoUrl ? (
           <LocalVideoPlayer
-            videoUrl={paramLocalVideoUrl}
-            hlsMasterUrl={paramHlsMasterUrl}
-            thumbnailUrl={paramThumbnail}
+            videoUrl={tunedLocalVideoUrl}
+            hlsMasterUrl={tunedHlsMasterUrl}
+            thumbnailUrl={tunedThumbnail}
             title={displayTitle}
             autoPlay
-            startPositionMs={paramStartPositionMs ? parseInt(paramStartPositionMs, 10) : 0}
+            startPositionMs={tunedStartPositionMs}
             coverMode={isBroadcastOrLive}
             playerHeightOverride={videoPlayerHeight}
             // Round 6: broadcast queue items must not expose native scrubber
             // / time / seek hotkeys. The flag is identical to the existing
             // showSeekBar gate `isLive || isBroadcastMode`.
             isBroadcastLive={isBroadcastOrLive}
+            // Round 7 (broadcast continuity): feed the upcoming queue
+            // item into the inactive A/B slot so transitions are
+            // instant cuts, not reloads. These are populated by the
+            // SSE / 15s poll / precision timer effects above when in
+            // broadcast mode; outside of broadcast mode they're undefined
+            // and the player just behaves as a single-slot VOD surface.
+            nextVideoUrl={tunedNextLocalVideoUrl}
+            nextHlsMasterUrl={tunedNextHlsMasterUrl}
             onEnd={handleVideoEnd}
             onError={recoverBroadcastPlayback}
           />
@@ -743,7 +821,7 @@ export default function PlayerScreen() {
             preacher={displayPreacher}
             playerHeight={videoPlayerHeight}
             autoPlay
-            startPositionSecs={paramStartPositionMs ? Math.floor(parseInt(paramStartPositionMs, 10) / 1000) : undefined}
+            startPositionSecs={Math.floor(tunedStartPositionMs / 1000) || undefined}
             // Round 6: broadcast YouTube items render with hidden YouTube
             // chrome (no control bar / fullscreen / keyboard seek) so the
             // station feed cannot be rewound or fast-forwarded even when
@@ -800,7 +878,7 @@ export default function PlayerScreen() {
           {/* Live reactions overlay */}
           <LiveReactions
             latestIncoming={latestReaction}
-            containerWidth={width}
+            containerWidth={screenWidth}
           />
 
           {/* Channel identification row */}

@@ -123,11 +123,14 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
           )}
           {/* Real ON AIR broadcast surface — joins the 24/7 timeline at the
               exact second the server says is currently airing, swaps items
-              when the broadcast pipeline advances, and re-syncs on drift. */}
+              when the broadcast pipeline advances (via A/B preloaded slots
+              for an instant cut, no spinner, no black frame), and re-syncs
+              on drift. */}
           <LiveBroadcastVideo
             item={broadcastItem}
             positionSecs={broadcastCurrent?.positionSecs ?? 0}
             serverTimeMs={broadcastCurrent?.serverTimeMs ?? Date.now()}
+            nextItem={broadcastCurrent?.nextItem ?? null}
             onError={() => setBroadcastVideoFailed(true)}
           />
         </>

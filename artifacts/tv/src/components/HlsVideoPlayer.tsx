@@ -11,6 +11,19 @@
  *  • Auto-hide controls after 5 s
  *  • Buffering spinner + cinematic loading veil
  *  • Error recovery with 3-attempt exponential back-off
+ *  • A/B double-buffered playback for seamless queue transitions
+ *
+ * A/B double-buffering
+ * ────────────────────
+ * Two <video> elements + two hls.js instances are mounted at all times.
+ * One is the "active" slot (visible, audible, currently playing); the
+ * other is the "inactive" slot (hidden, muted, paused on first frame of
+ * the upcoming queue item). When `nextHlsUrl` changes, the inactive slot
+ * silently preloads it. When `hlsUrl` then advances to that URL, we swap
+ * which slot is active rather than tearing down and reloading — no
+ * spinner, no black frame, no "Loading stream…" veil, no manifest fetch
+ * delay. Cold loads (first start, or a queue advance whose URL was never
+ * preloaded) still go through the normal init path with the veil.
  */
 
 import { useEffect, useRef, useState, useCallback } from "react";
@@ -53,6 +66,13 @@ interface HlsVideoPlayerProps {
   /** Resume playback at this position (seconds). Defaults to 0. */
   startPositionSecs?: number;
   /**
+   * URL of the *next* item the player should expect after `hlsUrl`. When
+   * set, the inactive A/B slot quietly preloads this URL so a subsequent
+   * change of `hlsUrl` to this same value is a 1-frame cut, not a fresh
+   * load. Safe to leave undefined for ordinary VOD playback.
+   */
+  nextHlsUrl?: string | null;
+  /**
    * When true, this is a LIVE broadcast surface (server-driven 24/7 stream).
    * In live mode the player enforces TV-station behavior:
    *   • No bottom control bar (no progress scrubber, no time display, no
@@ -67,6 +87,8 @@ interface HlsVideoPlayerProps {
    */
   isLive?: boolean;
 }
+
+type Slot = "A" | "B";
 
 const SEEK_STEP = 15;
 const CONTROLS_HIDE_DELAY = 5_000;
@@ -91,24 +113,74 @@ function formatTime(secs: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+function isPlainVideoUrl(url: string): boolean {
+  return /\.(mp4|webm|ogg|mov|avi|mkv|m4v)(\?[^#]*)?$/i.test(url);
+}
+
 export function HlsVideoPlayer({
   hlsUrl,
   title,
   onBack,
   startPositionSecs = 0,
+  nextHlsUrl = null,
   isLive = false,
 }: HlsVideoPlayerProps) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const hlsRef = useRef<Hls | null>(null);
+  // ── A/B slot DOM refs ────────────────────────────────────────────────────
+  // Both <video> elements stay mounted. One is active (visible, audible);
+  // the other preloads `nextHlsUrl` on the inactive slot.
+  const videoRefA = useRef<HTMLVideoElement | null>(null);
+  const videoRefB = useRef<HTMLVideoElement | null>(null);
+  // Per-slot hls.js engine (or null when slot is empty / using native /
+  // plain MP4). Kept independent so each slot can own and tear down its
+  // own engine without affecting the other.
+  const hlsARef = useRef<Hls | null>(null);
+  const hlsBRef = useRef<Hls | null>(null);
+  // Per-slot loaded URL — null = empty. The hlsUrl-change effect uses
+  // these to decide between an instant swap and a fresh load.
+  const loadedUrlA = useRef<string | null>(null);
+  const loadedUrlB = useRef<string | null>(null);
+
   const containerRef = useRef<HTMLDivElement>(null);
-  // Samsung AVPlay: tracks whether we're using the native avplay engine
+  // Samsung AVPlay (single-engine fallback path; no double-buffering)
   const avplayActiveRef = useRef(false);
   const avplayPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const [activeSlot, setActiveSlot] = useState<Slot>("A");
+  // Mirror in a ref so synchronous code paths (init, swap, watchdog) don't
+  // race the React render cycle.
+  const activeSlotRef = useRef<Slot>("A");
+  useEffect(() => { activeSlotRef.current = activeSlot; }, [activeSlot]);
+
+  // Convenience accessors. NEVER cache the result — refs change as React
+  // mounts / remounts elements and slot-swap reassigns instances.
+  const getVideo = (slot: Slot): HTMLVideoElement | null =>
+    slot === "A" ? videoRefA.current : videoRefB.current;
+  const getHls = (slot: Slot): Hls | null =>
+    slot === "A" ? hlsARef.current : hlsBRef.current;
+  const setHls = (slot: Slot, h: Hls | null) => {
+    if (slot === "A") hlsARef.current = h; else hlsBRef.current = h;
+  };
+  const setLoadedUrl = (slot: Slot, u: string | null) => {
+    if (slot === "A") loadedUrlA.current = u; else loadedUrlB.current = u;
+  };
+  const getLoadedUrl = (slot: Slot): string | null =>
+    slot === "A" ? loadedUrlA.current : loadedUrlB.current;
+  const otherSlot = (slot: Slot): Slot => (slot === "A" ? "B" : "A");
 
   const [showControls, setShowControls] = useState(true);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isBuffering, setIsBuffering] = useState(true);
-  const [isLoaded, setIsLoaded] = useState(false);
+  // True once the active slot has produced any frame at any point in this
+  // mount's lifetime. Once true, the cinematic loading veil never shows
+  // again — queue advances must feel like a TV channel cut, not a reload.
+  const [hasEverShown, setHasEverShown] = useState(false);
+  const hasEverShownRef = useRef(false);
+  const markEverShown = useCallback(() => {
+    if (hasEverShownRef.current) return;
+    hasEverShownRef.current = true;
+    setHasEverShown(true);
+  }, []);
+
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [seekOsd, setSeekOsd] = useState<string | null>(null);
@@ -117,9 +189,9 @@ export function HlsVideoPlayer({
   const [error, setError] = useState<string | null>(null);
   const [retries, setRetries] = useState(0);
   // Mirror `retries` in a ref so HLS event-handler closures (created once
-  // per `initHls` call) always see the live counter — without this they
-  // capture the value at the time the handler was registered, which makes
-  // the `retries < 3` gate read 0 forever and effectively gives unbounded
+  // per init call) always see the live counter — without this they capture
+  // the value at the time the handler was registered, which makes the
+  // `retries < 3` gate read 0 forever and effectively gives unbounded
   // recoveries per stream.
   const retriesRef = useRef(0);
   useEffect(() => { retriesRef.current = retries; }, [retries]);
@@ -209,10 +281,8 @@ export function HlsVideoPlayer({
   const armLoadWatchdog = useCallback(() => {
     if (loadWatchdog.current) clearTimeout(loadWatchdog.current);
     loadWatchdog.current = setTimeout(() => {
-      // Check the *current* video element's readyState — if it's already
-      // playable, the watchdog is stale (events races) and we suppress.
-      const v = videoRef.current;
-      if (v && v.readyState >= 2) return; // HAVE_CURRENT_DATA or better
+      const v = getVideo(activeSlotRef.current);
+      if (v && v.readyState >= 2) return; // already playable, suppress
       if (typeof console !== "undefined" && console.warn) {
         console.warn("[HlsVideoPlayer] Load watchdog fired — no progress within", LOAD_WATCHDOG_MS, "ms");
       }
@@ -230,162 +300,171 @@ export function HlsVideoPlayer({
     }
   }, []);
 
-  // ── HLS initialisation ────────────────────────────────────────────────────
-  const initHls = useCallback(() => {
-    const video = videoRef.current;
+  // ── Slot loader ──────────────────────────────────────────────────────────
+  // Loads `url` into the given slot's <video> element. Set `mode` to
+  //   • "active" — autoplay, unmuted, seek to startPositionSecs, watchdog
+  //     armed and `isBuffering` flag controlled. Used for cold start and
+  //     fallback when preload missed.
+  //   • "preload" — autoplay then immediately pause at frame 0, kept
+  //     muted. No state mutation, no watchdog. Used to warm the inactive
+  //     slot for the next queue item.
+  const loadIntoSlot = useCallback((slot: Slot, url: string, mode: "active" | "preload") => {
+    const video = getVideo(slot);
     if (!video) return;
 
-    // Tear down previous instance
-    if (hlsRef.current) {
-      hlsRef.current.destroy();
-      hlsRef.current = null;
+    // Tear down any previous engine in this slot before reusing it.
+    const prevHls = getHls(slot);
+    if (prevHls) {
+      try { prevHls.destroy(); } catch { /* noop */ }
+      setHls(slot, null);
+    }
+    setLoadedUrl(slot, url);
+
+    if (mode === "active") {
+      setError(null);
+      setNeedsPlayGesture(false);
+      // Don't reset `hasEverShown` — the loading veil only shows on
+      // absolute first start. Subsequent fresh loads keep the previous
+      // frame on screen until the new one decodes (the inactive-slot
+      // approach guarantees no black frame for preload-hit transitions).
+      armLoadWatchdog();
     }
 
-    setError(null);
-    setNeedsPlayGesture(false);
-    setIsLoaded(false);
-    setIsBuffering(true);
-    armLoadWatchdog();
+    const armNativeOrPlain = () => {
+      video.src = url;
+      video.muted = mode === "preload";
+      const onLoaded = () => {
+        if (mode === "active") {
+          if (startPositionSecs > 0) {
+            try { video.currentTime = startPositionSecs; } catch { /* noop */ }
+          }
+          clearLoadWatchdog();
+          attemptPlay(video);
+        } else {
+          // Preload: seek to 0, decode one frame, then pause.
+          try { video.currentTime = 0; } catch { /* noop */ }
+          // Calling play() then pause() in sequence forces decoders on
+          // most browsers/Smart TVs to actually buffer the first GOP,
+          // so a subsequent unmute + play resumes instantly.
+          const r = video.play();
+          if (r && typeof r.then === "function") {
+            r.then(() => video.pause()).catch(() => { /* preload race — ignore */ });
+          }
+        }
+        video.removeEventListener("loadeddata", onLoaded);
+      };
+      video.addEventListener("loadeddata", onLoaded);
+      if (mode === "active") {
+        // Optimistically attempt play immediately too — if the file is
+        // cached or loadeddata is delayed, this gets us to playback faster.
+        attemptPlay(video);
+      } else {
+        // Trigger the load() so loadeddata fires.
+        try { video.load(); } catch { /* noop */ }
+      }
+    };
 
     // ── Plain video detection (MP4, WebM, MOV, etc.) ─────────────────────
-    // hls.js cannot parse non-HLS manifests. If the URL points to a plain
-    // video file, play it directly via the native <video> element to avoid
-    // a fatal parse error and blank screen.
-    const isPlainVideo = /\.(mp4|webm|ogg|mov|avi|mkv|m4v)(\?[^#]*)?$/i.test(hlsUrl);
-    if (isPlainVideo) {
-      video.src = hlsUrl;
-      video.load();
-      const onReady = () => {
-        if (startPositionSecs > 0) {
-          try { video.currentTime = startPositionSecs; } catch {}
-        }
-        setIsLoaded(true);
-        setIsBuffering(false);
-        clearLoadWatchdog();
-        attemptPlay(video);
-        video.removeEventListener("loadeddata", onReady);
-      };
-      video.addEventListener("loadeddata", onReady);
-      // Optimistically attempt play immediately too — if the file is cached
-      // or loadeddata is delayed, this gets us to playback faster. The
-      // attemptPlay() call surfaces autoplay rejection cleanly.
-      attemptPlay(video);
+    if (isPlainVideoUrl(url)) {
+      armNativeOrPlain();
       return;
     }
 
     if (Hls.isSupported()) {
-      // ── hls.js path (Chromium, Firefox, Samsung/LG/Fire TV browsers) ──────
+      // ── hls.js path (Chromium, Firefox, Samsung/LG/Fire TV browsers) ─
       const hls = new Hls({
-        // Start with the lowest quality to minimise startup time.
-        startLevel: -1,           // -1 = let ABR pick
+        startLevel: -1,
         autoStartLoad: true,
-        lowLatencyMode: false,    // VOD mode
-        // Let hls.js handle the initial seek internally — it ensures the seek
-        // lands after segments are buffered, preventing hangs on Smart TV decoders.
-        // -1 means "default" (beginning for VOD, live edge for live).
-        startPosition: startPositionSecs > 0 ? startPositionSecs : -1,
-        // Conservative buffer targets for TV RAM constraints.
+        lowLatencyMode: false,
+        // Only seek into the future for the active slot. Preload starts at 0
+        // and is repositioned on swap by the active-load logic.
+        startPosition: mode === "active" && startPositionSecs > 0 ? startPositionSecs : -1,
         maxBufferLength: 60,
         maxMaxBufferLength: 120,
-        maxBufferSize: 60 * 1_000 * 1_000,  // 60 MB
-        // Faster ABR level switching for better quality ramp-up.
+        maxBufferSize: 60 * 1_000 * 1_000,
         abrEwmaFastLive: 3,
         abrEwmaSlowLive: 9,
-        // Retry config: 3 auto-retries with exponential back-off.
         manifestLoadingMaxRetry: 3,
         manifestLoadingRetryDelay: 1_000,
         levelLoadingMaxRetry: 3,
         levelLoadingRetryDelay: 500,
         fragLoadingMaxRetry: 3,
         fragLoadingRetryDelay: 500,
-        // Explicitly omit credentials on cross-origin XHR — we never need
-        // cookies on segment requests, and including them would force the
-        // server's CORS to echo a specific origin (instead of '*'), which
-        // breaks playback on origins outside the production allow-list.
-        xhrSetup: (xhr) => {
-          xhr.withCredentials = false;
-        },
+        xhrSetup: (xhr) => { xhr.withCredentials = false; },
       });
-
-      hlsRef.current = hls;
+      setHls(slot, hls);
+      video.muted = mode === "preload";
 
       hls.on(Hls.Events.MANIFEST_PARSED, (_e, data) => {
-        // IMPORTANT: Don't flip `isLoaded`/`isBuffering` here. MANIFEST_PARSED
-        // only means the manifest XHR succeeded — segments may still stall
-        // before any frame is decoded. If we cleared the loading veil now,
-        // the user would see a frozen first-frame state with no spinner and
-        // no error. The video element's `canplay`/`playing` listeners drive
-        // those flags and the watchdog clear once real media data arrives.
-        attemptPlay(video);
-        // Report available quality levels to the OSD.
-        setQualityLabel(`Auto (${data.levels.length} levels)`);
+        if (mode === "active") {
+          attemptPlay(video);
+          setQualityLabel(`Auto (${data.levels.length} levels)`);
+        } else {
+          // Preload: prime the decoder by decoding the first GOP, then
+          // pause silently. When the swap happens, the slot is already
+          // warm and a play() resumes from frame 0 instantly.
+          const r = video.play();
+          if (r && typeof r.then === "function") {
+            r.then(() => video.pause()).catch(() => { /* preload race */ });
+          }
+        }
       });
 
       hls.on(Hls.Events.LEVEL_SWITCHED, (_e, data) => {
+        // Only update the OSD for the *active* slot's quality changes;
+        // background preload level switches would otherwise jitter the badge.
+        if (slot !== activeSlotRef.current) return;
         const level = hls.levels[data.level];
         setQualityLabel(level ? levelLabel(level.height) : "Auto");
       });
 
-      // Buffering state is driven by the video element's waiting/playing events
-      // (handled in the video event listener effect below). No hls.js event needed.
-
       hls.on(Hls.Events.ERROR, (_e, data) => {
         if (typeof console !== "undefined" && console.warn) {
           console.warn("[HlsVideoPlayer] hls.js error:", {
+            slot,
+            mode,
             type: data.type,
             details: data.details,
             fatal: data.fatal,
           });
         }
-        if (data.fatal) {
-          // Read from the ref — the captured `retries` in this closure is
-          // stale because we don't re-register the handler on each retry.
-          if (data.type === Hls.ErrorTypes.NETWORK_ERROR && retriesRef.current < 3) {
-            hls.startLoad();
-            setRetries((r) => r + 1);
-            armLoadWatchdog();
-          } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR && retriesRef.current < 3) {
-            hls.recoverMediaError();
-            setRetries((r) => r + 1);
-            armLoadWatchdog();
-          } else {
-            clearLoadWatchdog();
-            setError("Stream unavailable. Please check your connection and try again.");
-            setIsBuffering(false);
-          }
+        if (!data.fatal) return;
+        // Preload errors must NEVER surface to the user — they just leave
+        // the slot empty, and the next swap will fall back to a cold load.
+        if (mode === "preload") {
+          try { hls.destroy(); } catch { /* noop */ }
+          setHls(slot, null);
+          setLoadedUrl(slot, null);
+          return;
+        }
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR && retriesRef.current < 3) {
+          hls.startLoad();
+          setRetries((r) => r + 1);
+          armLoadWatchdog();
+        } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR && retriesRef.current < 3) {
+          hls.recoverMediaError();
+          setRetries((r) => r + 1);
+          armLoadWatchdog();
+        } else {
+          clearLoadWatchdog();
+          setError("Stream unavailable. Please check your connection and try again.");
+          setIsBuffering(false);
         }
       });
 
-      hls.loadSource(hlsUrl);
+      hls.loadSource(url);
       hls.attachMedia(video);
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      // ── Native HLS path (Safari, iOS, some Samsung firmware) ─────────────
-      video.src = hlsUrl;
-      video.load();
-      const onReady = () => {
-        if (startPositionSecs > 0) {
-          try { video.currentTime = startPositionSecs; } catch {}
-        }
-        setIsLoaded(true);
-        setIsBuffering(false);
-        clearLoadWatchdog();
-        attemptPlay(video);
-        video.removeEventListener("loadeddata", onReady);
-      };
-      video.addEventListener("loadeddata", onReady);
-      attemptPlay(video);
-    } else if (isTizen && window.webapis?.avplay) {
-      // ── Samsung AVPlay path (older Tizen without MSE / hls.js support) ───
-      // AVPlay is Samsung's native media engine — supports HLS out-of-the-box.
-      // It renders fullscreen natively so the HTML video element is hidden.
-      // IMPORTANT: AVPlay does not surface progress through the HTML video
-      // element's readyState, so the watchdog's readyState guard cannot
-      // suppress false timeouts on this path. We must clear the watchdog
-      // explicitly when AVPlay reports playable readiness.
+      // Native HLS path (Safari, iOS, some Samsung firmware)
+      armNativeOrPlain();
+    } else if (mode === "active" && isTizen && window.webapis?.avplay) {
+      // ── Samsung AVPlay path (older Tizen without MSE / hls.js support)
+      // AVPlay is single-engine, so this path skips A/B buffering. Queue
+      // transitions on AVPlay devices fall back to the legacy reload
+      // behavior — acceptable because AVPlay devices are a small minority.
       const avplay = window.webapis.avplay;
       try {
-        avplay.open(hlsUrl);
-        // Fill the full HD raster — AVPlay clips to this rect inside the page.
+        avplay.open(url);
         const W = window.screen?.width ?? 1920;
         const H = window.screen?.height ?? 1080;
         avplay.setDisplayRect(0, 0, W, H);
@@ -393,15 +472,12 @@ export function HlsVideoPlayer({
           onbufferingstart: () => setIsBuffering(true),
           onbufferingcomplete: () => {
             setIsBuffering(false);
-            setIsLoaded(true);
-            // Buffering complete = AVPlay has decoded enough data to play.
-            // Cancel the load watchdog so it doesn't fire a stale error.
+            markEverShown();
             clearLoadWatchdog();
           },
           oncurrentplaytime: (ms) => {
             setCurrentTime(ms / 1_000);
-            // Receiving playtime callbacks proves playback is alive — also
-            // an unambiguous signal to clear any pending watchdog.
+            markEverShown();
             clearLoadWatchdog();
           },
           onerror: (msg) => {
@@ -415,86 +491,161 @@ export function HlsVideoPlayer({
         avplay.play();
         avplayActiveRef.current = true;
         setIsPlaying(true);
-        // NOTE: don't set `isLoaded`/`isBuffering` here. `avplay.play()`
-        // returns synchronously before any frame is decoded. The
-        // `onbufferingcomplete` and `oncurrentplaytime` listeners flip
-        // those flags (and clear the watchdog) once playback is actually
-        // alive — protecting us against AVPlay open() succeeding but the
-        // pipeline silently failing to produce frames.
-        // Poll duration (not always available immediately via event).
         if (avplayPollRef.current) clearInterval(avplayPollRef.current);
         avplayPollRef.current = setInterval(() => {
           try {
             const dur = avplay.getDuration?.() ?? 0;
             if (dur > 0) setDuration(dur / 1_000);
-          } catch {}
+          } catch { /* noop */ }
         }, 2_000);
-        // Hide the HTML video element — AVPlay renders separately.
-        if (videoRef.current) videoRef.current.style.display = "none";
+        if (video) video.style.display = "none";
       } catch {
-        try { avplay.close(); } catch {}
+        try { avplay.close(); } catch { /* noop */ }
         avplayActiveRef.current = false;
         clearLoadWatchdog();
         setError("Playback failed. Please try again.");
       }
-    } else {
+    } else if (mode === "active") {
       clearLoadWatchdog();
       setError("HLS streaming is not supported by this browser. Please update your browser or TV firmware.");
     }
-  }, [hlsUrl, startPositionSecs, retries, armLoadWatchdog, attemptPlay, clearLoadWatchdog]);
+  }, [startPositionSecs, armLoadWatchdog, attemptPlay, clearLoadWatchdog, markEverShown]);
+
+  // ── Slot swap ────────────────────────────────────────────────────────────
+  // Promotes the inactive slot to active. Used when `hlsUrl` advances to a
+  // URL that the inactive slot has already preloaded — no engine teardown,
+  // no network fetch, no veil. Old active slot becomes inactive and is
+  // immediately freed so it can be reused for the next preload.
+  const swapToInactive = useCallback(() => {
+    const oldSlot = activeSlotRef.current;
+    const newSlot = otherSlot(oldSlot);
+    const newVideo = getVideo(newSlot);
+    if (!newVideo) return;
+
+    // Resume playback on the newly-active slot.
+    newVideo.muted = false;
+    if (startPositionSecs > 0) {
+      try { newVideo.currentTime = startPositionSecs; } catch { /* noop */ }
+    } else {
+      // Preloaded slot was paused at frame 0 — make sure we restart from
+      // the top rather than wherever a stray play() ticked it to.
+      try { newVideo.currentTime = 0; } catch { /* noop */ }
+    }
+    attemptPlay(newVideo);
+
+    // Tear down the OUTGOING slot's engine. Its <video> element stays
+    // mounted (just hidden, ready to host the next preload).
+    const oldVideo = getVideo(oldSlot);
+    if (oldVideo) {
+      try { oldVideo.pause(); } catch { /* noop */ }
+      oldVideo.muted = true;
+    }
+    const oldHls = getHls(oldSlot);
+    if (oldHls) {
+      try { oldHls.destroy(); } catch { /* noop */ }
+      setHls(oldSlot, null);
+    }
+    if (oldVideo) {
+      try { oldVideo.removeAttribute("src"); oldVideo.load(); } catch { /* noop */ }
+    }
+    setLoadedUrl(oldSlot, null);
+
+    // Flip activeSlot. This re-runs the listener-attachment effect (deps
+    // include activeSlot) which re-binds video event handlers to the new
+    // active element so currentTime/duration/etc reflect the right source.
+    activeSlotRef.current = newSlot;
+    setActiveSlot(newSlot);
+    // Always reset retry budget — the new stream is a fresh attempt.
+    retriesRef.current = 0;
+    setRetries(0);
+    // Visible state housekeeping for the new active slot.
+    setError(null);
+    setNeedsPlayGesture(false);
+    setIsPlaying(true);
+    setIsBuffering(false);
+    markEverShown();
+    clearLoadWatchdog();
+    // Reset the per-stream metadata; the new active video's events will
+    // refill these immediately via the listener effect.
+    setCurrentTime(0);
+    setDuration(Number.isFinite(newVideo.duration) ? newVideo.duration : 0);
+  }, [attemptPlay, clearLoadWatchdog, markEverShown, startPositionSecs]);
 
   // Reset the retry counter whenever the source URL changes so each fresh
-  // stream gets the full 3-retry budget (otherwise switching to a new stream
-  // after a previous one exhausted retries would skip the recovery path).
-  // Reset the ref synchronously too — `setRetries(0)` is async and the
-  // initHls effect can run before the state-mirroring effect updates the
-  // ref, leaving a tiny window where handlers see the previous count.
+  // stream gets the full 3-retry budget.
   useEffect(() => {
     retriesRef.current = 0;
     setRetries(0);
   }, [hlsUrl]);
 
+  // ── Active-URL effect: cold load OR swap-to-preloaded ────────────────────
   useEffect(() => {
-    initHls();
-    // ── Lifecycle reconnect on TV resume (suspend → resume) ───────────────
+    if (!hlsUrl) return;
+    // Already playing this URL on the active slot — nothing to do.
+    if (getLoadedUrl(activeSlotRef.current) === hlsUrl) return;
+    // Inactive slot has it preloaded — instant swap.
+    if (getLoadedUrl(otherSlot(activeSlotRef.current)) === hlsUrl) {
+      swapToInactive();
+      return;
+    }
+    // Cold path: load into the active slot. The cinematic veil shows iff
+    // this is the very first start (hasEverShown stays false until a
+    // frame decodes); subsequent cold loads keep the previous frame.
+    loadIntoSlot(activeSlotRef.current, hlsUrl, "active");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hlsUrl]);
+
+  // ── Inactive-URL effect: silently preload the next queue item ────────────
+  useEffect(() => {
+    if (!nextHlsUrl) return;
+    if (avplayActiveRef.current) return; // AVPlay path doesn't double-buffer
+    const inactive = otherSlot(activeSlotRef.current);
+    // Already preloaded on the inactive slot — nothing to do.
+    if (getLoadedUrl(inactive) === nextHlsUrl) return;
+    // Don't preload what's already playing on the active slot.
+    if (getLoadedUrl(activeSlotRef.current) === nextHlsUrl) return;
+    loadIntoSlot(inactive, nextHlsUrl, "preload");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nextHlsUrl, activeSlot]);
+
+  // ── Lifecycle reconnect on TV resume (suspend → resume) ──────────────────
+  useEffect(() => {
     const offReconnect = registerStreamReconnect(() => {
-      // Only reconnect if not already destroyed.
       if (avplayActiveRef.current) {
-        // AVPlay: just resume
-        try { window.webapis?.avplay?.play(); setIsPlaying(true); } catch {}
+        try { window.webapis?.avplay?.play(); setIsPlaying(true); } catch { /* noop */ }
       } else {
-        initHls();
+        // Reload the active slot from scratch.
+        if (hlsUrl) loadIntoSlot(activeSlotRef.current, hlsUrl, "active");
       }
     });
     return () => {
       offReconnect();
-      // ── AVPlay teardown ─────────────────────────────────────────────────
+      // Full teardown on unmount.
       if (avplayActiveRef.current) {
-        try { window.webapis?.avplay?.stop(); } catch {}
-        try { window.webapis?.avplay?.close(); } catch {}
+        try { window.webapis?.avplay?.stop(); } catch { /* noop */ }
+        try { window.webapis?.avplay?.close(); } catch { /* noop */ }
         avplayActiveRef.current = false;
       }
       if (avplayPollRef.current) { clearInterval(avplayPollRef.current); avplayPollRef.current = null; }
-      // ── hls.js teardown ─────────────────────────────────────────────────
-      if (hlsRef.current) {
-        hlsRef.current.destroy();
-        hlsRef.current = null;
-      }
+      try { hlsARef.current?.destroy(); } catch { /* noop */ }
+      try { hlsBRef.current?.destroy(); } catch { /* noop */ }
+      hlsARef.current = null;
+      hlsBRef.current = null;
       if (hideTimer.current) clearTimeout(hideTimer.current);
       if (seekOsdTimer.current) clearTimeout(seekOsdTimer.current);
-      // Cancel any pending watchdog so it doesn't surface a stale error
-      // after unmount or when navigating to a different stream.
       if (loadWatchdog.current) {
         clearTimeout(loadWatchdog.current);
         loadWatchdog.current = null;
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hlsUrl]);
+  }, []);
 
-  // ── Video element event listeners ────────────────────────────────────────
+  // ── Active video element listeners ───────────────────────────────────────
+  // Re-binds whenever the active slot changes so currentTime/duration/etc.
+  // always reflect the slot the user is actually watching.
   useEffect(() => {
-    const video = videoRef.current;
+    const video = getVideo(activeSlot);
     if (!video) return;
 
     const onPlay = () => {
@@ -502,17 +653,20 @@ export function HlsVideoPlayer({
       setNeedsPlayGesture(false);
     };
     const onPause = () => setIsPlaying(false);
-    const onWaiting = () => setIsBuffering(true);
+    const onWaiting = () => {
+      // Only show the mid-playback buffering spinner if the slot has
+      // already decoded at least one frame — otherwise the cinematic veil
+      // is the right visual.
+      if (hasEverShownRef.current) setIsBuffering(true);
+    };
     const onPlaying = () => {
       setIsBuffering(false);
-      setIsLoaded(true);
+      markEverShown();
       setNeedsPlayGesture(false);
       clearLoadWatchdog();
     };
     const onCanPlay = () => {
-      // First time the element has enough data to begin playback. Cancel
-      // the watchdog and clear any spurious loading veil.
-      setIsLoaded(true);
+      markEverShown();
       clearLoadWatchdog();
     };
     const onTimeUpdate = () => setCurrentTime(video.currentTime);
@@ -520,9 +674,6 @@ export function HlsVideoPlayer({
       if (Number.isFinite(video.duration)) setDuration(video.duration);
     };
     const onError = () => {
-      // Surface a useful diagnostic for both HLS and native paths. The
-      // <video>'s MediaError code helps distinguish CORS/network/decode
-      // failures during incident triage.
       const code = video.error?.code;
       const msgMap: Record<number, string> = {
         1: "Playback was interrupted.",
@@ -534,9 +685,9 @@ export function HlsVideoPlayer({
       if (typeof console !== "undefined" && console.warn) {
         console.warn("[HlsVideoPlayer] video error:", { code, message: video.error?.message });
       }
-      // For the hls.js path, hls.js's own ERROR handler already manages
-      // recovery and surfacing — don't double-report.
-      if (!hlsRef.current) {
+      // Only surface plain-element errors when the active slot has no
+      // hls.js engine — otherwise hls.js's own ERROR handler manages it.
+      if (!getHls(activeSlot)) {
         setError(msg);
         setIsBuffering(false);
         clearLoadWatchdog();
@@ -552,6 +703,12 @@ export function HlsVideoPlayer({
     video.addEventListener("durationchange", onDurationChange);
     video.addEventListener("error", onError);
 
+    // Sync state immediately for the new active slot (covers swap case
+    // where the slot is already mid-play).
+    setIsPlaying(!video.paused);
+    if (Number.isFinite(video.duration)) setDuration(video.duration);
+    setCurrentTime(video.currentTime);
+
     return () => {
       video.removeEventListener("play", onPlay);
       video.removeEventListener("pause", onPause);
@@ -562,7 +719,7 @@ export function HlsVideoPlayer({
       video.removeEventListener("durationchange", onDurationChange);
       video.removeEventListener("error", onError);
     };
-  }, [clearLoadWatchdog]);
+  }, [activeSlot, clearLoadWatchdog, markEverShown]);
 
   // ── Keyboard / remote control ─────────────────────────────────────────────
   useEffect(() => {
@@ -572,18 +729,15 @@ export function HlsVideoPlayer({
       const action = keyEventToAction(e);
 
       if (error) {
-        if (action === "select") { e.preventDefault(); setRetries(0); initHls(); }
+        if (action === "select") { e.preventDefault(); setRetries(0); if (hlsUrl) loadIntoSlot(activeSlotRef.current, hlsUrl, "active"); }
         else if (action === "back" || action === "exit") { e.preventDefault(); onBack(); }
         return;
       }
 
-      const video = videoRef.current;
+      const video = getVideo(activeSlotRef.current);
       const avplay = avplayActiveRef.current ? window.webapis?.avplay : undefined;
 
-      // ── Autoplay-blocked overlay: SELECT / play resumes playback ──────────
-      // The video is loaded but the browser blocked auto-start. Any of the
-      // standard "go" actions (SELECT / play / playpause) should consume the
-      // gesture and start playback. BACK exits.
+      // ── Autoplay-blocked overlay: SELECT / play resumes playback ──────
       if (needsPlayGesture) {
         if (action === "back" || action === "exit") {
           e.preventDefault();
@@ -597,13 +751,7 @@ export function HlsVideoPlayer({
         }
       }
 
-      // ── LIVE-MODE GUARD ───────────────────────────────────────────────────
-      // For a live broadcast surface, all manual playback actions are no-ops:
-      // playpause / play / pause / stop / select / fastforward / rewind. The
-      // user CANNOT pause or seek a live stream — only BACK / EXIT and the
-      // fullscreen toggle ('F' key, handled in `default:` below) work. This
-      // matches a real TV channel where the remote's pause button does not
-      // affect the live signal.
+      // ── LIVE-MODE GUARD ───────────────────────────────────────────────
       if (isLive) {
         switch (action) {
           case "back":
@@ -618,14 +766,10 @@ export function HlsVideoPlayer({
           case "fastforward":
           case "rewind":
           case "select":
-            // Swallow the gesture (still reveal the top overlay so the user
-            // can see the title and Back affordance), but do not pause/seek.
             e.preventDefault();
             resetHideTimer();
             return;
         }
-        // Fall through to default for 'info', 'left', and unmapped keys
-        // (the default case handles fullscreen 'F' and resetHideTimer).
       }
 
       switch (action) {
@@ -638,8 +782,8 @@ export function HlsVideoPlayer({
         case "playpause":
           e.preventDefault();
           if (avplay) {
-            if (isPlaying) { try { avplay.pause(); setIsPlaying(false); } catch {} }
-            else { try { avplay.play(); setIsPlaying(true); } catch {} }
+            if (isPlaying) { try { avplay.pause(); setIsPlaying(false); } catch { /* noop */ } }
+            else { try { avplay.play(); setIsPlaying(true); } catch { /* noop */ } }
           } else if (video) {
             if (video.paused) video.play().catch(() => {});
             else video.pause();
@@ -649,7 +793,7 @@ export function HlsVideoPlayer({
 
         case "play":
           e.preventDefault();
-          if (avplay) { try { avplay.play(); setIsPlaying(true); } catch {} }
+          if (avplay) { try { avplay.play(); setIsPlaying(true); } catch { /* noop */ } }
           else if (video) video.play().catch(() => {});
           resetHideTimer();
           break;
@@ -657,7 +801,7 @@ export function HlsVideoPlayer({
         case "pause":
         case "stop":
           e.preventDefault();
-          if (avplay) { try { avplay.pause(); setIsPlaying(false); } catch {} }
+          if (avplay) { try { avplay.pause(); setIsPlaying(false); } catch { /* noop */ } }
           else if (video) video.pause();
           resetHideTimer();
           break;
@@ -666,7 +810,7 @@ export function HlsVideoPlayer({
           e.preventDefault();
           if (avplay) {
             const pos = (avplay.getCurrentTime?.() ?? currentTime * 1_000) + SEEK_STEP * 1_000;
-            try { avplay.seekTo(Math.floor(pos)); } catch {}
+            try { avplay.seekTo(Math.floor(pos)); } catch { /* noop */ }
           } else if (video) {
             video.currentTime = Math.min(video.duration || Infinity, video.currentTime + SEEK_STEP);
           }
@@ -679,7 +823,7 @@ export function HlsVideoPlayer({
           e.preventDefault();
           if (avplay) {
             const pos = Math.max(0, (avplay.getCurrentTime?.() ?? currentTime * 1_000) - SEEK_STEP * 1_000);
-            try { avplay.seekTo(Math.floor(pos)); } catch {}
+            try { avplay.seekTo(Math.floor(pos)); } catch { /* noop */ }
           } else if (video) {
             video.currentTime = Math.max(0, video.currentTime - SEEK_STEP);
           }
@@ -694,12 +838,11 @@ export function HlsVideoPlayer({
           resetHideTimer();
           break;
 
-        // Pressing Enter in error-free state toggles play/pause.
         case "select":
           e.preventDefault();
           if (avplay) {
-            if (isPlaying) { try { avplay.pause(); setIsPlaying(false); } catch {} }
-            else { try { avplay.play(); setIsPlaying(true); } catch {} }
+            if (isPlaying) { try { avplay.pause(); setIsPlaying(false); } catch { /* noop */ } }
+            else { try { avplay.play(); setIsPlaying(true); } catch { /* noop */ } }
           } else if (video) {
             if (video.paused) video.play().catch(() => {});
             else video.pause();
@@ -707,7 +850,6 @@ export function HlsVideoPlayer({
           resetHideTimer();
           break;
 
-        // Left arrow: reveal controls if hidden.
         case "left":
           if (!showControls) {
             e.preventDefault();
@@ -715,7 +857,6 @@ export function HlsVideoPlayer({
           }
           break;
 
-        // F key / fullscreen key.
         default:
           if (e.key === "f" || e.key === "F") {
             e.preventDefault();
@@ -732,11 +873,11 @@ export function HlsVideoPlayer({
       if (hideTimer.current) clearTimeout(hideTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onBack, showControls, error, isPlaying, toggleFullscreen, initHls]);
+  }, [onBack, showControls, error, isPlaying, toggleFullscreen, hlsUrl, isLive, needsPlayGesture, currentTime, attemptPlay]);
 
   // Progress bar click handler
   const handleProgressClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const video = videoRef.current;
+    const video = getVideo(activeSlotRef.current);
     if (!video || !duration) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
@@ -744,6 +885,21 @@ export function HlsVideoPlayer({
   }, [duration]);
 
   const progress = duration > 0 ? Math.min(1, currentTime / duration) : 0;
+
+  const slotStyle = (slot: Slot): React.CSSProperties => ({
+    position: "absolute",
+    inset: 0,
+    width: "100%",
+    height: "100%",
+    objectFit: "contain",
+    display: "block",
+    background: "#000",
+    // Active slot: visible. Inactive: invisible (still loaded, decoding).
+    // Once a frame has ever shown, swaps are 1-frame cuts — no transition.
+    opacity: slot === activeSlot ? 1 : 0,
+    pointerEvents: slot === activeSlot ? "auto" : "none",
+    zIndex: slot === activeSlot ? 1 : 0,
+  });
 
   return (
     <div
@@ -760,34 +916,26 @@ export function HlsVideoPlayer({
         justifyContent: "center",
       }}
     >
-      {/* ── Video element ─────────────────────────────────────────────────── */}
-      {/*
-        NOTE: We intentionally do NOT set `crossOrigin` on the <video>. With
-        `crossOrigin="anonymous"`, the browser performs CORS validation on the
-        media response and blocks playback if the server doesn't echo a
-        matching `Access-Control-Allow-Origin` for the current page origin.
-        Our broadcast queue stores absolute production URLs whose CORS allow-
-        list is restricted to a fixed set of production origins, which would
-        break playback on Replit dev previews, custom domains, embedded
-        contexts, etc. We never read pixels off the video (no canvas /
-        WebGL), so CORS isn't required — omitting the attribute lets the
-        browser perform a normal media request that always works.
+      {/* ── A/B Video elements ─────────────────────────────────────────────
+        NOTE: We intentionally do NOT set `crossOrigin` on either <video>.
+        With `crossOrigin="anonymous"`, the browser performs CORS validation
+        on the media response and blocks playback if the server doesn't echo
+        a matching `Access-Control-Allow-Origin` for the current page origin.
+        Our broadcast queue stores absolute production URLs whose CORS
+        allow-list is restricted to a fixed set of production origins, which
+        would break playback on Replit dev previews, custom domains,
+        embedded contexts, etc. We never read pixels off the video (no
+        canvas / WebGL), so CORS isn't required — omitting the attribute
+        lets the browser perform a normal media request that always works.
       */}
-      <video
-        ref={videoRef}
-        style={{
-          width: "100%",
-          height: "100%",
-          objectFit: "contain",
-          display: "block",
-          background: "#000",
-        }}
-        playsInline
-        preload="auto"
-      />
+      <video ref={videoRefA} style={slotStyle("A")} playsInline preload="auto" />
+      <video ref={videoRefB} style={slotStyle("B")} playsInline preload="auto" muted />
 
-      {/* ── Cinematic loading veil ─────────────────────────────────────────── */}
-      {!isLoaded && !error && (
+      {/* ── Cinematic loading veil (cold start only) ────────────────────────
+          Shown ONLY before the very first frame ever decodes in this mount's
+          lifetime. Queue advances re-use the previous frame as background
+          while the new slot warms up — never showing a spinner / black box. */}
+      {!hasEverShown && !error && (
         <div
           aria-hidden
           style={{
@@ -818,8 +966,11 @@ export function HlsVideoPlayer({
         </div>
       )}
 
-      {/* ── Buffering spinner (mid-playback) ─────────────────────────────── */}
-      {isLoaded && isBuffering && !error && (
+      {/* ── Buffering spinner (mid-playback only) ───────────────────────────
+          Suppressed during the initial cold start (the cinematic veil
+          covers that) and during seamless A/B swaps (hasEverShown is true
+          and isBuffering is reset by swap). */}
+      {hasEverShown && isBuffering && !error && (
         <div
           aria-hidden
           style={{
@@ -846,12 +997,6 @@ export function HlsVideoPlayer({
       )}
 
       {/* ── Autoplay-blocked overlay ──────────────────────────────────────── */}
-      {/*
-        Shown when video.play() is rejected by the browser's autoplay policy
-        (NotAllowedError). The video is fully loaded; the user just needs to
-        confirm playback with a gesture. Distinct from the error state because
-        recovery requires SELECT (not retry).
-      */}
       {needsPlayGesture && !error && (
         <div
           role="dialog"
@@ -869,7 +1014,7 @@ export function HlsVideoPlayer({
             cursor: "pointer",
           }}
           onClick={() => {
-            const v = videoRef.current;
+            const v = getVideo(activeSlotRef.current);
             if (v) attemptPlay(v);
           }}
         >
@@ -877,7 +1022,7 @@ export function HlsVideoPlayer({
             autoFocus
             onClick={(e) => {
               e.stopPropagation();
-              const v = videoRef.current;
+              const v = getVideo(activeSlotRef.current);
               if (v) attemptPlay(v);
             }}
             aria-label="Play"
@@ -934,7 +1079,7 @@ export function HlsVideoPlayer({
           <div style={{ display: "flex", gap: 14, flexWrap: "wrap", justifyContent: "center" }}>
             <button
               autoFocus
-              onClick={() => { setRetries(0); initHls(); }}
+              onClick={() => { setRetries(0); if (hlsUrl) loadIntoSlot(activeSlotRef.current, hlsUrl, "active"); }}
               style={{
                 background: "hsl(0 78% 50%)",
                 color: "#fff",
@@ -1098,11 +1243,7 @@ export function HlsVideoPlayer({
         </div>
       )}
 
-      {/* ── ON AIR pill (live-only) ─────────────────────────────────────────
-           In live mode there is no scrubber, time display, or play/pause hint
-           — replacing that bar is a small pulsing "ON AIR" indicator pinned
-           bottom-left so the viewer always knows the signal is live and that
-           the absence of controls is intentional, not a missing UI bug. */}
+      {/* ── ON AIR pill (live-only) ───────────────────────────────────────── */}
       {isLive && !error && (
         <div
           aria-label="Live broadcast indicator"
@@ -1160,7 +1301,6 @@ export function HlsVideoPlayer({
             zIndex: 10,
           }}
         >
-          {/* Progress / seek bar */}
           {duration > 0 && (
             <div
               onClick={handleProgressClick}
@@ -1188,7 +1328,6 @@ export function HlsVideoPlayer({
                   transition: "width 0.5s linear",
                 }}
               />
-              {/* Scrubber thumb */}
               <div
                 style={{
                   position: "absolute",
@@ -1205,7 +1344,6 @@ export function HlsVideoPlayer({
             </div>
           )}
 
-          {/* Time display */}
           {duration > 0 && (
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
               <span style={{ fontSize: "clamp(12px, 1.3vw, 15px)", color: "rgba(255,255,255,0.7)", fontWeight: 500 }}>
@@ -1217,7 +1355,6 @@ export function HlsVideoPlayer({
             </div>
           )}
 
-          {/* Hint strip */}
           <div style={{ display: "flex", gap: 20, alignItems: "center" }}>
             {[
               { key: isPlaying ? "⏸ SPACE" : "▶ SPACE", label: isPlaying ? "Pause" : "Play" },

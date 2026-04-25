@@ -594,3 +594,27 @@ Intentional cross-platform differences (NOT parity gaps):
 - **Mobile Framework:** Expo (React Native)
 - **Backend Framework:** Express
 - **Video Processing:** FFmpeg (for HLS transcoding)
+### Round 7 — Seamless broadcast queue transitions across all surfaces (April 2026)
+
+The broadcast queue rolling from one item to the next was triggering a full
+player teardown on every platform: blank screens, spinners, black frames,
+and (on mobile) a `router.replace` that re-mounted the entire `/player`
+route. The directive was to make queue advances behave like a real TV
+channel — preload + instant cut, persistent video pipeline, identical
+behavior on mobile/web, TV, Hero, and Player.
+
+Fixes (additive — no behavior change for VOD playback):
+
+1. **TV `HlsVideoPlayer` (`artifacts/tv/src/components/HlsVideoPlayer.tsx`)** rewritten as A/B double-buffered: two `<video>` elements + two `hls.js` instances, `videoRefA/B`, `hlsARef/BRef`, `loadedUrlA/B`, `activeSlot` + `activeSlotRef`. New `nextHlsUrl` prop primes the inactive slot via `loadIntoSlot(slot, url, "preload")`. On `hlsUrl` change the player either swaps to the slot that already has the URL (`swapToInactive()` — 1-frame cut) or cold-loads the active slot. AVPlay (Tizen) fallback preserved as single-engine. Cinematic veil suppressed after first frame via `hasEverShown` flag so the second item never re-shows the loading curtain.
+2. **TV `LiveBroadcastVideo` (`artifacts/tv/src/components/LiveBroadcastVideo.tsx`)** uses 4-element A/B with a foreground+background pair per slot for the cinematic crop. `LiveHero.tsx` now passes `broadcastCurrent.nextItem` so the hero strip on the home page transitions identically.
+3. **TV `Player.tsx`** added a `LiveBroadcastHlsPlayer` wrapper that subscribes to `useLiveSync` when `isLive=true`, holds local `hlsUrl/title/startPositionSecs` state, and forwards `sync.nextItem.localVideoUrl` as `nextHlsUrl` so the full-screen player behaves the same as the hero.
+4. **Mobile `app/player.tsx`** the killer bug: `tuneToBroadcastItem` was calling `router.replace` on every queue advance, tearing down the entire screen. Replaced with in-place state mutation (`tunedLocalVideoUrl/tunedHlsMasterUrl/tunedTitle/tunedThumbnail/tunedVideoId/tunedStartPositionMs/tunedNextLocalVideoUrl/tunedNextHlsMasterUrl`). The 15s sync poll, SSE handler, and precision transition timer all update tuned state instead of navigating. The SSE handler was also updated so that when the active item is unchanged but the queue's `nextItem` is fresh, we still mirror it into the preload slot.
+5. **Mobile `LocalVideoPlayer` (`artifacts/mobile/components/LocalVideoPlayer.tsx`)** web path rewritten as A/B double-buffered to match TV: two `<video>` + two `hls.js` instances, per-slot loaded-URL refs, `loadIntoWebSlot(slot, url, "active"|"preload")`, `swapWebSlots()`, and a render that absolutely-positions both elements at full size with the inactive slot at `opacity:0`. New `nextVideoUrl/nextHlsMasterUrl` props receive the upcoming queue item from `player.tsx`. Only the active slot drives external `onPlay/onPause/onEnded` callbacks so the inactive slot's preload-completion events don't cascade into the broadcast handler. Watchdog, autoplay-blocked overlay, radio-mode hidden video, MP4-vs-HLS routing, and the `crossOrigin` policy are all preserved. Native expo-av path remains single-engine — the dominant native UX bug was `router.replace`, which is now gone, so the React subtree stays mounted and source changes flow through one Video component without a remount.
+
+Surfaces that share the new pipeline:
+- TV Hero (LiveHero → LiveBroadcastVideo, 4-element A/B with cinematic background)
+- TV Player full-screen (LiveBroadcastHlsPlayer wrapper → HlsVideoPlayer A/B)
+- Mobile web Player (LocalVideoPlayer A/B web)
+- Mobile native Player (single-engine expo-av; in-place source swap via tuned* state, no router.replace)
+
+TypeScript clean for both `@workspace/tv` and `@workspace/mobile`. All four workflow servers come up cleanly (api:8080, admin:23744, mobile:18115, tv:23876) with no errors.

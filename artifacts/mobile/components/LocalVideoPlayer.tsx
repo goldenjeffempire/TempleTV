@@ -165,6 +165,15 @@ interface LocalVideoPlayerProps {
    * overlay; the directive only forbids time-position UI and seek.
    */
   isBroadcastLive?: boolean;
+  /**
+   * Round 7 (broadcast continuity): URL of the *next* item the broadcast
+   * queue will air after `videoUrl`. When provided, the web player loads
+   * it silently into the inactive A/B slot so the eventual cut feels like
+   * a real TV channel transition — no spinner, no black frame, no
+   * manifest fetch delay. Safe to omit for non-broadcast playback.
+   */
+  nextVideoUrl?: string;
+  nextHlsMasterUrl?: string;
 }
 
 export function LocalVideoPlayer({
@@ -181,8 +190,13 @@ export function LocalVideoPlayer({
   coverMode = false,
   playerHeightOverride,
   isBroadcastLive = false,
+  nextVideoUrl,
+  nextHlsMasterUrl,
 }: LocalVideoPlayerProps) {
   const effectiveUrl = hlsMasterUrl || videoUrl;
+  // Computed next-item URL for the inactive A/B slot. Mirrors
+  // `effectiveUrl` selection: prefer HLS, fall back to plain MP4.
+  const effectiveNextUrl = nextHlsMasterUrl || nextVideoUrl || null;
   const c = useColors();
   const { width } = useWindowDimensions();
   const { updatePlayback, playerPlayRef, playerPauseRef, playerSeekRef, isPlaying, dataSaver, isRadioMode, toggleRadioMode } = usePlayer();
@@ -194,9 +208,25 @@ export function LocalVideoPlayer({
   const transitionOpacity = useRef(new Animated.Value(1)).current;
   const rntp = Platform.OS !== "web" && isTrackPlayerSetup();
 
-  // Web-only: HTML5 video element ref + hls.js instance ref
+  // ── Web A/B double-buffered playback ───────────────────────────────────
+  // Two <video> elements stay mounted at all times so a queue advance can
+  // be a 1-frame cut to a slot that already has the upcoming item primed,
+  // rather than a teardown-and-reload of the only video element. The
+  // active slot is visible / audible; the inactive slot is hidden /
+  // muted but holding a decoded first frame of `effectiveNextUrl`.
+  const webVideoRefA = useRef<HTMLVideoElement | null>(null);
+  const webVideoRefB = useRef<HTMLVideoElement | null>(null);
+  const webHlsRefA = useRef<any>(null);
+  const webHlsRefB = useRef<any>(null);
+  const webLoadedUrlA = useRef<string | null>(null);
+  const webLoadedUrlB = useRef<string | null>(null);
+  const [webActiveSlot, setWebActiveSlot] = useState<"A" | "B">("A");
+  const webActiveSlotRef = useRef<"A" | "B">("A");
+  useEffect(() => { webActiveSlotRef.current = webActiveSlot; }, [webActiveSlot]);
+  // Compatibility shim: external callers (player context play/pause/seek
+  // refs) need a stable handle to "the currently visible video element".
+  // We keep this in sync with the active slot below.
   const webVideoRef = useRef<HTMLVideoElement | null>(null);
-  const webHlsRef = useRef<any>(null);
   // Web-only: watchdog timer that surfaces a stalled-load failure if the
   // <video> element makes no progress within WEB_LOAD_WATCHDOG_MS. Without
   // this, CORS-blocked or stalled requests would hang the loading veil
@@ -204,6 +234,20 @@ export function LocalVideoPlayer({
   const webLoadWatchdog = useRef<ReturnType<typeof setTimeout> | null>(null);
   const WEB_LOAD_WATCHDOG_MS = 15_000;
   const [webNeedsPlayGesture, setWebNeedsPlayGesture] = useState(false);
+
+  const getWebVideo = useCallback((slot: "A" | "B"): HTMLVideoElement | null =>
+    slot === "A" ? webVideoRefA.current : webVideoRefB.current, []);
+  const getWebHls = useCallback((slot: "A" | "B"): any =>
+    slot === "A" ? webHlsRefA.current : webHlsRefB.current, []);
+  const setWebHls = useCallback((slot: "A" | "B", h: any) => {
+    if (slot === "A") webHlsRefA.current = h; else webHlsRefB.current = h;
+  }, []);
+  const getWebLoadedUrl = useCallback((slot: "A" | "B"): string | null =>
+    slot === "A" ? webLoadedUrlA.current : webLoadedUrlB.current, []);
+  const setWebLoadedUrl = useCallback((slot: "A" | "B", u: string | null) => {
+    if (slot === "A") webLoadedUrlA.current = u; else webLoadedUrlB.current = u;
+  }, []);
+  const otherWebSlot = (slot: "A" | "B"): "A" | "B" => slot === "A" ? "B" : "A";
 
   const playerHeight = playerHeightOverride ?? Math.min(Math.round(width * (9 / 16)), 260);
 
@@ -313,52 +357,63 @@ export function LocalVideoPlayer({
     [loading, onEnd, onError, onPlay, onPause, startPositionMs, transitionOpacity, updatePlayback]
   );
 
-  // Web HLS player init
-  useEffect(() => {
+  // ── Web A/B watchdog & helpers ───────────────────────────────────────
+  const clearWebWatchdog = useCallback(() => {
+    if (webLoadWatchdog.current) {
+      clearTimeout(webLoadWatchdog.current);
+      webLoadWatchdog.current = null;
+    }
+  }, []);
+
+  // Load `url` into the given slot. `mode === "active"` means this slot is
+  // (or will become) the visible/audible one — autoplay + watchdog +
+  // seekToStart are applied. `mode === "preload"` silently primes the
+  // hidden slot with the next item: muted, paused, holding metadata so the
+  // eventual swap is a 1-frame cut, not a buffering pause.
+  const loadIntoWebSlot = useCallback((slot: "A" | "B", url: string, mode: "active" | "preload") => {
     if (Platform.OS !== "web") return;
-    const video = webVideoRef.current;
+    const video = getWebVideo(slot);
     if (!video) return;
 
-    // Clean up any previous hls instance
-    if (webHlsRef.current) {
-      webHlsRef.current.destroy();
-      webHlsRef.current = null;
+    // If this slot already holds the requested URL, nothing to do — most
+    // commonly hit when the swap path runs and the inactive slot already
+    // has the upcoming item primed.
+    if (getWebLoadedUrl(slot) === url) {
+      if (mode === "active") {
+        // Re-activating an already-loaded slot: just play.
+        try { if (autoPlay) void video.play(); } catch { /* noop */ }
+      }
+      return;
     }
 
-    // ── Web playback helpers (watchdog + autoplay-policy handling) ─────────
-    const clearWebWatchdog = () => {
-      if (webLoadWatchdog.current) {
-        clearTimeout(webLoadWatchdog.current);
-        webLoadWatchdog.current = null;
-      }
-    };
-    const armWebWatchdog = () => {
+    // Tear down any prior hls instance bound to this slot before rebinding.
+    const prev = getWebHls(slot);
+    if (prev) { try { prev.destroy(); } catch { /* noop */ } setWebHls(slot, null); }
+
+    setWebLoadedUrl(slot, url);
+    video.muted = mode === "preload";
+
+    const armWatchdog = () => {
+      if (mode !== "active") return;
       clearWebWatchdog();
       webLoadWatchdog.current = setTimeout(() => {
-        // Suppress stale fires when the element actually has data.
         if (video.readyState >= 2) return;
         if (typeof console !== "undefined" && console.warn) {
-          console.warn("[LocalVideoPlayer] web load watchdog fired — stalled");
+          console.warn("[LocalVideoPlayer] web load watchdog fired — stalled", url);
         }
-        if (isMountedRef.current) {
-          setLoading(false);
-          onError?.();
-        }
+        if (isMountedRef.current) { setLoading(false); onError?.(); }
       }, WEB_LOAD_WATCHDOG_MS);
     };
+
     const safePlay = () => {
-      if (!autoPlay) return;
+      if (mode !== "active" || !autoPlay) return;
       const r = video.play();
       if (r && typeof r.then === "function") {
         r.then(() => {
           if (isMountedRef.current) setWebNeedsPlayGesture(false);
         }).catch((err: any) => {
-          // NotAllowedError = autoplay policy rejection (recoverable via
-          // a tap on the video). Other errors are usually transient.
           if (err && err.name === "NotAllowedError" && isMountedRef.current) {
             setWebNeedsPlayGesture(true);
-            // The video is loaded; clear loading veil so the user sees
-            // the play overlay instead of the spinner.
             setLoading(false);
             clearWebWatchdog();
           } else if (typeof console !== "undefined" && console.warn) {
@@ -367,111 +422,157 @@ export function LocalVideoPlayer({
         });
       }
     };
-    // Cancel watchdog and clear loading state once the element actually
-    // reaches a playable state — the most reliable cross-engine signal
-    // that playback is alive.
-    const onCanPlay = () => { clearWebWatchdog(); if (isMountedRef.current) setLoading(false); };
-    const onPlaying = () => { clearWebWatchdog(); if (isMountedRef.current) { setLoading(false); setWebNeedsPlayGesture(false); } };
-    video.addEventListener("canplay", onCanPlay);
-    video.addEventListener("playing", onPlaying);
-
-    // ── Plain video detection (MP4, WebM, MOV, etc.) ─────────────────────
-    // hls.js can only parse m3u8 manifests. `Hls.isSupported()` checks for
-    // MSE in the browser, NOT whether the source URL is HLS — so without
-    // this guard we'd hand an .mp4 to `hls.loadSource()`, which fails the
-    // manifest parse and leaves the <video> element frozen at 0:00 with
-    // the loading veil cleared. The broadcast queue serves both raw MP4s
-    // (single-bitrate uploads) and m3u8 HLS variants, so we MUST route by
-    // URL extension before touching hls.js.
-    const isPlainVideo = /\.(mp4|webm|ogg|mov|avi|mkv|m4v)(\?[^#]*)?$/i.test(effectiveUrl);
 
     const seekToStart = () => {
-      if (startPositionMs > 0) {
+      if (mode === "active" && startPositionMs > 0) {
         try { video.currentTime = startPositionMs / 1000; } catch { /* noop */ }
       }
     };
 
+    const isPlainVideo = /\.(mp4|webm|ogg|mov|avi|mkv|m4v)(\?[^#]*)?$/i.test(url);
+
     if (isPlainVideo) {
-      video.src = effectiveUrl;
-      video.load();
-      armWebWatchdog();
-      const onPlainReady = () => {
+      video.src = url;
+      try { video.load(); } catch { /* noop */ }
+      armWatchdog();
+      const onReady = () => {
         seekToStart();
         safePlay();
-        video.removeEventListener("loadedmetadata", onPlainReady);
+        video.removeEventListener("loadedmetadata", onReady);
       };
-      video.addEventListener("loadedmetadata", onPlainReady, { once: true });
-      // Optimistic play — if the file is cached, this gets us to playback
-      // before the loadedmetadata listener fires. seekToStart inside the
-      // listener will still run once metadata arrives.
-      safePlay();
-    } else {
-      let Hls: any;
-      try { Hls = require("hls.js"); } catch { return; }
-      // require returns the module, which may have a .default for ESM
-      const HlsClass = Hls?.default ?? Hls;
-      if (!HlsClass) return;
-
-      if (HlsClass.isSupported && HlsClass.isSupported()) {
-        const hls = new HlsClass({
-          startLevel: -1,
-          maxBufferLength: 30,
-          // Match the TV player: never include credentials on cross-origin
-          // segment fetches so the production CDN's CORS doesn't have to
-          // echo a specific Access-Control-Allow-Origin.
-          xhrSetup: (xhr: XMLHttpRequest) => { xhr.withCredentials = false; },
-        });
-        webHlsRef.current = hls;
-        hls.loadSource(effectiveUrl);
-        hls.attachMedia(video);
-        armWebWatchdog();
-        hls.on("hlsManifestParsed", () => {
-          seekToStart();
-          safePlay();
-        });
-        hls.on("hlsError", (_e: any, data: any) => {
-          if (data?.fatal) {
-            clearWebWatchdog();
-            if (typeof console !== "undefined" && console.warn) {
-              console.warn("[LocalVideoPlayer] fatal hls error:", data.type, data.details);
-            }
-            if (isMountedRef.current) { setLoading(false); onError?.(); }
-          }
-        });
-      } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-        video.src = effectiveUrl;
-        armWebWatchdog();
-        const onNativeReady = () => {
-          seekToStart();
-          safePlay();
-          video.removeEventListener("loadedmetadata", onNativeReady);
-        };
-        video.addEventListener("loadedmetadata", onNativeReady, { once: true });
-        safePlay();
-      } else {
-        // Last-ditch fallback for unknown URLs on browsers without MSE.
-        video.src = effectiveUrl;
-        armWebWatchdog();
-        const onFallbackReady = () => {
-          seekToStart();
-          safePlay();
-          video.removeEventListener("loadedmetadata", onFallbackReady);
-        };
-        video.addEventListener("loadedmetadata", onFallbackReady, { once: true });
-        safePlay();
-      }
+      video.addEventListener("loadedmetadata", onReady, { once: true });
+      if (mode === "active") safePlay();
+      return;
     }
 
-    return () => {
-      clearWebWatchdog();
-      video.removeEventListener("canplay", onCanPlay);
-      video.removeEventListener("playing", onPlaying);
-      if (webHlsRef.current) {
-        webHlsRef.current.destroy();
-        webHlsRef.current = null;
-      }
-    };
-  }, [effectiveUrl, autoPlay, startPositionMs, onError]);
+    // HLS path
+    let Hls: any;
+    try { Hls = require("hls.js"); } catch { return; }
+    const HlsClass = Hls?.default ?? Hls;
+    if (!HlsClass) return;
+
+    if (HlsClass.isSupported && HlsClass.isSupported()) {
+      const hls = new HlsClass({
+        startLevel: -1,
+        maxBufferLength: 30,
+        xhrSetup: (xhr: XMLHttpRequest) => { xhr.withCredentials = false; },
+      });
+      setWebHls(slot, hls);
+      hls.loadSource(url);
+      hls.attachMedia(video);
+      armWatchdog();
+      hls.on("hlsManifestParsed", () => {
+        seekToStart();
+        safePlay();
+      });
+      hls.on("hlsError", (_e: any, data: any) => {
+        if (data?.fatal && webActiveSlotRef.current === slot) {
+          clearWebWatchdog();
+          if (typeof console !== "undefined" && console.warn) {
+            console.warn("[LocalVideoPlayer] fatal hls error on slot", slot, ":", data.type, data.details);
+          }
+          if (isMountedRef.current) { setLoading(false); onError?.(); }
+        }
+      });
+    } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      video.src = url;
+      armWatchdog();
+      const onReady = () => {
+        seekToStart();
+        safePlay();
+        video.removeEventListener("loadedmetadata", onReady);
+      };
+      video.addEventListener("loadedmetadata", onReady, { once: true });
+      if (mode === "active") safePlay();
+    } else {
+      video.src = url;
+      armWatchdog();
+      const onReady = () => {
+        seekToStart();
+        safePlay();
+        video.removeEventListener("loadedmetadata", onReady);
+      };
+      video.addEventListener("loadedmetadata", onReady, { once: true });
+      if (mode === "active") safePlay();
+    }
+  }, [autoPlay, startPositionMs, onError, getWebVideo, getWebHls, setWebHls, getWebLoadedUrl, setWebLoadedUrl, clearWebWatchdog]);
+
+  // Pause and silence the slot we are leaving so it stops competing for
+  // the audio device and the decoder.
+  const quiesceWebSlot = useCallback((slot: "A" | "B") => {
+    const v = getWebVideo(slot);
+    if (!v) return;
+    try { v.pause(); } catch { /* noop */ }
+    v.muted = true;
+  }, [getWebVideo]);
+
+  // Promote the other slot to active: unmute, ensure context refs point
+  // at it, and play. Assumes the slot has already been loaded via
+  // loadIntoWebSlot(other, _, "preload"). If the other slot's URL doesn't
+  // match the requested target, the caller should fall back to a cold
+  // load on the active slot instead of swapping.
+  const swapWebSlots = useCallback(() => {
+    const cur = webActiveSlotRef.current;
+    const other = otherWebSlot(cur);
+    const otherVideo = getWebVideo(other);
+    if (!otherVideo) return false;
+    quiesceWebSlot(cur);
+    otherVideo.muted = false;
+    webActiveSlotRef.current = other;
+    setWebActiveSlot(other);
+    if (autoPlay) {
+      const r = otherVideo.play();
+      if (r && typeof r.then === "function") r.catch(() => { /* handled by listener effect */ });
+    }
+    return true;
+  }, [autoPlay, getWebVideo, quiesceWebSlot]);
+
+  // ── Effect: drive the *active* slot to play `effectiveUrl` ────────────
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    if (!effectiveUrl) return;
+    const cur = webActiveSlotRef.current;
+    const other = otherWebSlot(cur);
+    // Fast path: the inactive slot already has the requested URL primed
+    // from a previous preload. Swap to it instantly.
+    if (getWebLoadedUrl(other) === effectiveUrl && getWebVideo(other)) {
+      swapWebSlots();
+      return;
+    }
+    // Cold load on the currently active slot.
+    loadIntoWebSlot(cur, effectiveUrl, "active");
+  }, [effectiveUrl, loadIntoWebSlot, swapWebSlots, getWebLoadedUrl, getWebVideo]);
+
+  // ── Effect: silently preload `effectiveNextUrl` into the inactive slot
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    if (!effectiveNextUrl) return;
+    const inactive = otherWebSlot(webActiveSlotRef.current);
+    // Don't trample the active slot if (somehow) the next URL equals the
+    // currently playing URL.
+    if (getWebLoadedUrl(webActiveSlotRef.current) === effectiveNextUrl) return;
+    loadIntoWebSlot(inactive, effectiveNextUrl, "preload");
+  }, [effectiveNextUrl, webActiveSlot, loadIntoWebSlot, getWebLoadedUrl]);
+
+  // ── Effect: keep the legacy `webVideoRef` and player-context refs
+  // pointed at whichever slot is currently active.
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    const v = getWebVideo(webActiveSlot);
+    webVideoRef.current = v;
+    if (v) {
+      playerPlayRef.current = () => v.play().catch(() => {});
+      playerPauseRef.current = () => { v.pause(); };
+      playerSeekRef.current = (t: number) => { try { v.currentTime = t; } catch { /* noop */ } };
+    }
+  }, [webActiveSlot, getWebVideo, playerPlayRef, playerPauseRef, playerSeekRef]);
+
+  // ── Effect: cleanup hls instances on unmount ─────────────────────────
+  useEffect(() => () => {
+    clearWebWatchdog();
+    if (webHlsRefA.current) { try { webHlsRefA.current.destroy(); } catch {} webHlsRefA.current = null; }
+    if (webHlsRefB.current) { try { webHlsRefB.current.destroy(); } catch {} webHlsRefB.current = null; }
+  }, [clearWebWatchdog]);
 
   if (Platform.OS !== "web") {
     if (isRadioMode) {
@@ -533,58 +634,73 @@ export function LocalVideoPlayer({
     }
   }
 
-  // Web HLS player using hls.js
-  // In radio mode: keep the <video> element alive (hls.js / audio continues)
-  // but hide it behind the audio card overlay — zero buffering on mode switch.
+  // Web HLS player using hls.js — A/B double-buffered.
+  // Both <video> elements stay mounted at all times. The "active" slot is
+  // visible/audible and drives the player-context callbacks; the inactive
+  // slot is hidden, muted, and silently primed with the upcoming queue
+  // item via the preload effect above. On `effectiveUrl` change we either
+  // (a) swap to the inactive slot if it already has the requested URL —
+  // a 1-frame cut, no manifest fetch, no spinner — or (b) cold-load the
+  // active slot. In radio mode the active slot is hidden behind the audio
+  // card overlay; we keep both elements alive so the audio source survives.
+  const renderSlotVideo = (slot: "A" | "B") => {
+    const isActive = webActiveSlot === slot;
+    return React.createElement("video", {
+      key: `slot-${slot}`,
+      ref: (el: HTMLVideoElement | null) => {
+        if (slot === "A") (webVideoRefA as any).current = el;
+        else (webVideoRefB as any).current = el;
+        // The active-slot tracking effect above keeps webVideoRef and the
+        // player-context refs (play/pause/seek) pointed at the visible
+        // element, so we don't wire them inline here.
+      },
+      controls: isActive && !isRadioMode && !isBroadcastLive,
+      playsInline: true,
+      preload: "auto",
+      // Intentionally NOT setting `crossOrigin` — see prior comment.
+      style: {
+        position: "absolute",
+        inset: 0,
+        width: "100%",
+        height: "100%",
+        objectFit: "contain",
+        background: "#000",
+        display: "block",
+        // Hide the inactive slot. We keep it laid out (not display:none) so
+        // its decoder pipeline stays warm and the swap is a real 1-frame
+        // cut rather than a re-mount.
+        opacity: isActive ? 1 : 0,
+        pointerEvents: isActive ? "auto" : "none",
+        zIndex: isActive ? 2 : 1,
+      },
+      // Only the active slot drives external callbacks. The inactive slot
+      // firing onEnded/onPlay would cascade into the broadcast handler and
+      // tear down the very transition we're trying to make seamless.
+      onPlay: isActive ? () => onPlay?.() : undefined,
+      onPause: isActive ? () => onPause?.() : undefined,
+      onEnded: isActive ? () => onEnd?.() : undefined,
+      onError: isActive ? () => onError?.() : undefined,
+      onTimeUpdate: isActive
+        ? (e: any) => {
+            const v = e.target as HTMLVideoElement;
+            if (v.duration) updatePlayback(v.currentTime, v.duration);
+          }
+        : undefined,
+    });
+  };
+
   return (
     <View style={[styles.container, !isRadioMode && { height: playerHeight }]}>
-      {/* Video element — always mounted, hidden in radio mode so audio plays on */}
+      {/* A/B video stack — always mounted, hidden offscreen in radio mode */}
       <View
         style={
           isRadioMode
             ? { position: "absolute", width: 1, height: 1, opacity: 0, overflow: "hidden" }
-            : { flex: 1 }
+            : { flex: 1, position: "relative" }
         }
       >
-        {React.createElement("video", {
-          ref: (el: HTMLVideoElement | null) => {
-            (webVideoRef as any).current = el;
-            // Wire context refs to the HTML5 video element so the play/pause/seek
-            // controls in the player screen and radio tab work on web.
-            if (el) {
-              playerPlayRef.current = () => el.play().catch(() => {});
-              playerPauseRef.current = () => { el.pause(); };
-              playerSeekRef.current = (t: number) => { el.currentTime = t; };
-            }
-          },
-          // Round 6: hide HTML5 <video> controls (scrubber/time/volume row)
-          // for broadcast/live so viewers cannot scrub the station feed.
-          // VOD playback in radio mode keeps controls hidden the same way.
-          controls: !isRadioMode && !isBroadcastLive,
-          playsInline: true,
-          preload: "auto",
-          // Intentionally NOT setting `crossOrigin`. Our broadcast queue
-          // contains absolute production URLs whose CORS allow-list only
-          // includes a fixed set of origins; setting `crossOrigin="anonymous"`
-          // would force CORS validation and block playback on Replit dev
-          // previews, custom domains, and embedded contexts. We never read
-          // pixels off the video, so CORS isn't required.
-          style: {
-            width: "100%",
-            height: isRadioMode ? "1px" : "100%",
-            objectFit: "contain",
-            background: "#000",
-            display: "block",
-          },
-          onPlay: () => onPlay?.(),
-          onPause: () => onPause?.(),
-          onEnded: () => onEnd?.(),
-          onError: () => onError?.(),
-          onTimeUpdate: (e: any) => {
-            const v = e.target as HTMLVideoElement;
-            if (v.duration) updatePlayback(v.currentTime, v.duration);
-          },
-        })}
+        {renderSlotVideo("A")}
+        {renderSlotVideo("B")}
       </View>
 
       {/* Radio mode audio card overlay */}

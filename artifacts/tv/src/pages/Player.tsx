@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { keyEventToAction } from "../lib/tvKeys";
 import { HlsVideoPlayer } from "../components/HlsVideoPlayer";
+import { useLiveSync } from "../hooks/useLiveSync";
 
 interface PlayerProps {
   videoId: string;
@@ -44,9 +45,28 @@ function ytCommand(
 /**
  * Public router component.
  * Selects the HLS player for uploaded content or the YouTube iframe for YouTube IDs.
+ *
+ * For LIVE broadcasts (isLive=true) routed through the HLS path, we wrap
+ * `HlsVideoPlayer` in `LiveBroadcastHlsPlayer` so the player can self-advance
+ * to the next queue item *in place* — without unmounting / remounting and
+ * without the parent having to reissue new props. The wrapper subscribes to
+ * the broadcast sync stream, swaps `hlsUrl` (and feeds `nextHlsUrl`) on
+ * queue advances, and the underlying A/B double-buffer in `HlsVideoPlayer`
+ * makes the cut feel like a real TV channel — no spinner, no black frame,
+ * no "Loading stream…" veil between items.
  */
 export function Player({ videoId, title, onBack, hlsUrl, startPositionSecs = 0, isLive = false }: PlayerProps) {
   if (hlsUrl) {
+    if (isLive) {
+      return (
+        <LiveBroadcastHlsPlayer
+          initialHlsUrl={hlsUrl}
+          initialTitle={title}
+          initialStartPositionSecs={startPositionSecs}
+          onBack={onBack}
+        />
+      );
+    }
     return (
       <HlsVideoPlayer
         hlsUrl={hlsUrl}
@@ -58,6 +78,103 @@ export function Player({ videoId, title, onBack, hlsUrl, startPositionSecs = 0, 
     );
   }
   return <YouTubePlayer videoId={videoId} title={title} onBack={onBack} isLive={isLive} />;
+}
+
+/**
+ * Live broadcast wrapper around `HlsVideoPlayer`.
+ *
+ * Lifecycle
+ * ─────────
+ *  1. Mounts with the parent-supplied `initialHlsUrl` / `initialTitle` /
+ *     `initialStartPositionSecs` — the same values Home computed from the
+ *     last `broadcast/current` payload it had at the time the user pressed
+ *     SELECT.
+ *  2. Subscribes to `useLiveSync` (the SSE-driven broadcast sync stream).
+ *  3. When the live payload's `hlsStreamUrl` changes (queue advances /
+ *     overrides go live / overrides expire), the wrapper updates its local
+ *     `hlsUrl` state. Because the underlying `HlsVideoPlayer` keeps both
+ *     A/B slots mounted and preloads `nextHlsUrl` ahead of time, this swap
+ *     is handled by the player as an instant slot-swap rather than a
+ *     teardown-and-reload.
+ *  4. The wrapper also feeds the upcoming queue item's URL as `nextHlsUrl`
+ *     so the inactive slot warms it up well before the cut.
+ *
+ * Why this lives here, not in `Home`
+ * ─────────────────────────────────
+ * `Home` renders the channel-grid UI; mutating its `playerHlsUrl` /
+ * `playerStartSecs` state on every queue advance would re-key the
+ * `<Player>` (since both flow through `App`'s router state) and ruin the
+ * persistent-pipeline guarantee. Keeping the live-driven URL/title state
+ * inside the player tree means React reconciles `<HlsVideoPlayer>` with
+ * new props instead of unmounting it.
+ */
+function LiveBroadcastHlsPlayer({
+  initialHlsUrl,
+  initialTitle,
+  initialStartPositionSecs,
+  onBack,
+}: {
+  initialHlsUrl: string;
+  initialTitle: string;
+  initialStartPositionSecs: number;
+  onBack: () => void;
+}) {
+  const sync = useLiveSync();
+
+  // Local in-place state — mutated by sync events, not by parent re-renders.
+  const [hlsUrl, setHlsUrl] = useState(initialHlsUrl);
+  const [title, setTitle] = useState(initialTitle);
+  // The start position is only honored on the FIRST cold load. Subsequent
+  // queue advances either swap to a preloaded slot (which always starts at
+  // the very beginning of the new item — that *is* the live edge for a
+  // freshly-cut item) or cold-load the new URL fresh (also from the top).
+  // We deliberately don't try to seek into the new item: the broadcast
+  // server emits the new payload at the exact moment the item starts, so
+  // 0 IS the live position. Any "drift" is corrected the next time the
+  // server emits an update.
+  const [startPositionSecs, setStartPositionSecs] = useState(initialStartPositionSecs);
+  const startConsumedRef = useRef(false);
+
+  // Track the live broadcast item swap so we mutate state once per actual
+  // change. We key off the URL because the SSE payload doesn't always
+  // carry an item id.
+  useEffect(() => {
+    if (!sync.hlsStreamUrl) return;
+    if (sync.hlsStreamUrl === hlsUrl) {
+      // Same URL — only refresh the title (e.g., override label changed).
+      const newTitle = sync.title ?? title;
+      if (newTitle && newTitle !== title) setTitle(newTitle);
+      return;
+    }
+    // New live URL — push it down to the player. After the very first
+    // cold load consumed `initialStartPositionSecs`, subsequent cuts
+    // start at 0 (= the start of the freshly-aired item).
+    setHlsUrl(sync.hlsStreamUrl);
+    if (sync.title) setTitle(sync.title);
+    if (startConsumedRef.current) setStartPositionSecs(0);
+    startConsumedRef.current = true;
+  }, [sync.hlsStreamUrl, sync.title, hlsUrl, title]);
+
+  // Compute the next item's HLS URL for preload. Skip if it's the same as
+  // the currently-playing URL (rare, but possible during override flips).
+  const nextHlsUrl = (() => {
+    const next = sync.nextItem;
+    if (!next) return null;
+    const url = next.localVideoUrl ?? null;
+    if (!url || url === hlsUrl) return null;
+    return url;
+  })();
+
+  return (
+    <HlsVideoPlayer
+      hlsUrl={hlsUrl}
+      title={title}
+      onBack={onBack}
+      startPositionSecs={startPositionSecs}
+      nextHlsUrl={nextHlsUrl}
+      isLive
+    />
+  );
 }
 
 /** Internal YouTube-iframe player (only rendered when no hlsUrl is provided). */

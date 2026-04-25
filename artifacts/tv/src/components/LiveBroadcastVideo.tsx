@@ -2,65 +2,98 @@ import { useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
 import type { BroadcastItem } from "../lib/api";
 
+/**
+ * Structural shape of "the next thing to play" — accepts both the rich
+ * `BroadcastItem` from REST and the slimmer `BroadcastNextItem` from the
+ * SSE sync hook. Only `localVideoUrl` and `durationSecs` are read here.
+ */
+interface NextItemShape {
+  localVideoUrl?: string | null;
+  durationSecs?: number;
+}
+
 interface LiveBroadcastVideoProps {
   item: BroadcastItem | null;
   /** Position into the current item (seconds) at the time the payload was fetched. */
   positionSecs: number;
   /** Server time (epoch ms) when the payload was generated — used for drift correction. */
   serverTimeMs: number;
+  /** Next queued item — preloaded silently into the inactive slot for instant cut-over. */
+  nextItem?: NextItemShape | null;
   onError?: () => void;
 }
 
+type Slot = "A" | "B";
+
 /**
- * Hero-embedded live broadcast surface.
+ * Hero-embedded live broadcast surface with A/B double-buffered playback.
  *
  * This is NOT a preview, NOT a thumbnail loop, and NOT a fresh-start playthrough
  * of the current item. It joins the 24/7 ON AIR broadcast at the exact second
  * the server says is currently airing, and stays in sync with that timeline.
  *
- * Synchronization model
- * ─────────────────────
- *  • Initial seek: positionSecs + (now - serverTimeMs)/1000 — the wall-clock
- *    offset between when the server measured `positionSecs` and right now.
- *  • Drift correction: every 12s we compare the element's currentTime against
- *    the freshly recomputed live offset; if they diverge by more than 4s we
- *    seek to catch up. Small drift is left alone to avoid audible jumps.
- *  • Item swap: when the broadcast pipeline advances to a new item (item.id
- *    changes), we tear down the engine and re-init from the new item's start.
- *  • No loop: looping would re-show the same item forever and immediately
- *    desync from the queue. The server-driven SSE pipeline is what swaps to
- *    the next item — this component just rides along.
+ * Seamless transitions
+ * ────────────────────
+ * Two foreground + two background <video> elements are mounted at all times.
+ * One slot is "active" (visible, playing, audio-able) and the other is
+ * "inactive" (hidden, muted, paused on first frame of the upcoming item).
+ * When the broadcast pipeline advances:
+ *   • If the inactive slot has already preloaded the new item's URL → we simply
+ *     swap which slot is visible. No teardown, no manifest fetch, no spinner,
+ *     no black frame.
+ *   • If preload missed (rare — the URL changed without warning) → we load
+ *     the new URL into the inactive slot and swap once it's ready, leaving
+ *     the previous slot showing until the new one decodes its first frame.
  *
- * Rendering
- * ─────────
- *  Two stacked layers — a blurred background fill (objectFit: cover) so the
- *  hero never shows letterbox bars, and a foreground video at objectFit:
- *  contain so the actual frame is never cropped. Both layers run from the
- *  same source/engine for perfect frame alignment.
+ * Synchronization
+ * ───────────────
+ *  • Initial seek: positionSecs + (now - serverTimeMs)/1000.
+ *  • Drift correction: every 12s we compare the active element's currentTime
+ *    against the freshly recomputed live offset; if they diverge by more than
+ *    4s we seek to catch up.
+ *  • No loop: looping would re-show the same item forever and immediately
+ *    desync from the queue.
  *
  * Audio
  * ─────
- *  Always muted: this is an ambient hero, not the dedicated player. Browsers
- *  block autoplay with audio anyway. The "Watch Temple TV" CTA navigates to
- *  the full Player which unmutes and gives the user controls.
+ *  Always muted: this is an ambient hero, not the dedicated player.
  */
 export function LiveBroadcastVideo({
   item,
   positionSecs,
   serverTimeMs,
+  nextItem,
   onError,
 }: LiveBroadcastVideoProps) {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const bgVideoRef = useRef<HTMLVideoElement | null>(null);
-  const hlsFgRef = useRef<Hls | null>(null);
-  const hlsBgRef = useRef<Hls | null>(null);
-  const [ready, setReady] = useState(false);
+  // Foreground (objectFit: contain) and background (objectFit: cover, blurred)
+  // for each slot. Both slots in a pair share the same source/engine so the
+  // blur never shows a different frame than the foreground.
+  const fgRefA = useRef<HTMLVideoElement | null>(null);
+  const fgRefB = useRef<HTMLVideoElement | null>(null);
+  const bgRefA = useRef<HTMLVideoElement | null>(null);
+  const bgRefB = useRef<HTMLVideoElement | null>(null);
 
-  // Snapshot the latest sync data and callbacks in refs so the drift-check
-  // interval and late-firing event handlers always see fresh values without
-  // retriggering the heavy init effect on every poll. Critically, `onError`
-  // is held in a ref so an inline `() => ...` from the parent doesn't churn
-  // the engine on every parent re-render.
+  // hls.js instances per slot per layer (4 total). Tracked separately so we
+  // can destroy a slot's instances cleanly when reusing it for a new URL.
+  const hlsFgARef = useRef<Hls | null>(null);
+  const hlsFgBRef = useRef<Hls | null>(null);
+  const hlsBgARef = useRef<Hls | null>(null);
+  const hlsBgBRef = useRef<Hls | null>(null);
+
+  // Which URL each slot has loaded (null = empty). Used to decide whether a
+  // queue advance can be served by an instant swap or requires a fresh load.
+  const loadedUrlA = useRef<string | null>(null);
+  const loadedUrlB = useRef<string | null>(null);
+  // Per-slot "ready" flag — true once that slot's foreground element has
+  // produced a frame and is safe to reveal without showing a black box.
+  const readyA = useRef(false);
+  const readyB = useRef(false);
+
+  const [activeSlot, setActiveSlot] = useState<Slot>("A");
+  // True only on the very first cold start before any slot has produced a
+  // frame. Used to decide whether to render *anything* visible at all.
+  const [hasEverShown, setHasEverShown] = useState(false);
+
   const positionSecsRef = useRef(positionSecs);
   const serverTimeMsRef = useRef(serverTimeMs);
   const onErrorRef = useRef(onError);
@@ -68,58 +101,73 @@ export function LiveBroadcastVideo({
   useEffect(() => { serverTimeMsRef.current = serverTimeMs; }, [serverTimeMs]);
   useEffect(() => { onErrorRef.current = onError; }, [onError]);
 
-  // The video URL we should play. This intentionally does not depend on
-  // positionSecs/serverTimeMs — we don't want to tear down the engine just
-  // because the server published a new position payload.
   const url = item?.localVideoUrl ?? null;
   const itemId = item?.id ?? null;
   const durationSecs = item?.durationSecs ?? 0;
+  const nextUrl = nextItem?.localVideoUrl ?? null;
+  const nextDurationSecs = nextItem?.durationSecs ?? 0;
 
-  // Compute the live offset for the *current item* — clamped to the item's
-  // duration to avoid seeking past the end of a video while the server is
-  // still in the middle of swapping to the next one.
-  const computeLiveOffset = (): number => {
+  const computeLiveOffset = (durSecs: number): number => {
     const drift = (Date.now() - serverTimeMsRef.current) / 1000;
     const target = positionSecsRef.current + drift;
-    if (durationSecs > 0) {
-      return Math.max(0, Math.min(target, durationSecs - 0.5));
-    }
+    if (durSecs > 0) return Math.max(0, Math.min(target, durSecs - 0.5));
     return Math.max(0, target);
   };
 
-  // ── Engine init: re-runs only when the item swaps or the URL changes ──
-  useEffect(() => {
-    setReady(false);
-    const fg = videoRef.current;
-    const bg = bgVideoRef.current;
-    if (!fg || !bg || !url) return;
+  // ── Per-slot loader: attaches hls.js (or native HLS / MP4) to a slot's
+  //    foreground + background elements. Returns a teardown function.
+  //    If `seekTarget` is provided, foreground starts there; otherwise 0.
+  //    `onReady` fires when the foreground decodes its first frame.
+  const loadSlot = (
+    slot: Slot,
+    targetUrl: string,
+    seekTarget: number | null,
+    onReady: () => void,
+  ): (() => void) => {
+    const fg = slot === "A" ? fgRefA.current : fgRefB.current;
+    const bg = slot === "A" ? bgRefA.current : bgRefB.current;
+    if (!fg || !bg) return () => {};
 
-    // Tear down any previous HLS instance before mounting a new one.
-    const teardown = () => {
-      try { hlsFgRef.current?.destroy(); } catch { /* noop */ }
-      try { hlsBgRef.current?.destroy(); } catch { /* noop */ }
-      hlsFgRef.current = null;
-      hlsBgRef.current = null;
+    // Destroy any previous engines in this slot.
+    const setHlsRef = (layer: "fg" | "bg", h: Hls | null) => {
+      if (slot === "A") {
+        if (layer === "fg") hlsFgARef.current = h;
+        else hlsBgARef.current = h;
+      } else {
+        if (layer === "fg") hlsFgBRef.current = h;
+        else hlsBgBRef.current = h;
+      }
     };
-    teardown();
+    const getHlsRef = (layer: "fg" | "bg"): Hls | null => {
+      if (slot === "A") return layer === "fg" ? hlsFgARef.current : hlsBgARef.current;
+      return layer === "fg" ? hlsFgBRef.current : hlsBgBRef.current;
+    };
+    try { getHlsRef("fg")?.destroy(); } catch { /* noop */ }
+    try { getHlsRef("bg")?.destroy(); } catch { /* noop */ }
+    setHlsRef("fg", null);
+    setHlsRef("bg", null);
 
-    const isHls = /\.m3u8(\?|$)/i.test(url);
+    if (slot === "A") { loadedUrlA.current = targetUrl; readyA.current = false; }
+    else { loadedUrlB.current = targetUrl; readyB.current = false; }
+
     let cancelled = false;
+    const isHls = /\.m3u8(\?|$)/i.test(targetUrl);
 
-    const seekToLive = (el: HTMLVideoElement) => {
-      const t = computeLiveOffset();
-      try { el.currentTime = t; } catch { /* some streams reject early seeks */ }
+    const seekIfNeeded = (el: HTMLVideoElement) => {
+      if (seekTarget === null) return;
+      try { el.currentTime = seekTarget; } catch { /* noop */ }
     };
 
     const armNativeOrMp4 = (el: HTMLVideoElement, isForeground: boolean) => {
-      // Same source; native HLS in Safari, plain MP4 elsewhere.
-      el.src = url;
+      el.src = targetUrl;
       const onLoaded = () => {
-        seekToLive(el);
-        // Try to play (muted autoplay is allowed). Failures are non-fatal —
-        // any user interaction with the page will unblock it.
-        el.play().catch(() => { /* autoplay-policy: ignored, hero is ambient */ });
-        if (isForeground && !cancelled) setReady(true);
+        seekIfNeeded(el);
+        // Always try to play — muted autoplay is allowed everywhere.
+        el.play().catch(() => { /* ambient — ignore */ });
+        if (isForeground && !cancelled) {
+          if (slot === "A") readyA.current = true; else readyB.current = true;
+          onReady();
+        }
         el.removeEventListener("loadedmetadata", onLoaded);
       };
       el.addEventListener("loadedmetadata", onLoaded);
@@ -130,18 +178,18 @@ export function LiveBroadcastVideo({
         const hls = new Hls({
           enableWorker: true,
           lowLatencyMode: false,
-          // Match HlsVideoPlayer: don't include credentials so the prod CDN's
-          // CORS allow-list isn't required to echo a specific origin.
           xhrSetup: (xhr) => { xhr.withCredentials = false; },
         });
-        if (isForeground) hlsFgRef.current = hls;
-        else hlsBgRef.current = hls;
-        hls.loadSource(url);
+        setHlsRef(isForeground ? "fg" : "bg", hls);
+        hls.loadSource(targetUrl);
         hls.attachMedia(el);
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          seekToLive(el);
-          el.play().catch(() => { /* autoplay-policy */ });
-          if (isForeground && !cancelled) setReady(true);
+          seekIfNeeded(el);
+          el.play().catch(() => { /* ambient */ });
+          if (isForeground && !cancelled) {
+            if (slot === "A") readyA.current = true; else readyB.current = true;
+            onReady();
+          }
         });
         hls.on(Hls.Events.ERROR, (_e, data) => {
           if (data.fatal && isForeground && !cancelled) onErrorRef.current?.();
@@ -163,85 +211,155 @@ export function LiveBroadcastVideo({
 
     return () => {
       cancelled = true;
-      teardown();
-      // Reset src so the next mount cleanly attaches.
-      try { fg.removeAttribute("src"); fg.load(); } catch { /* noop */ }
-      try { bg.removeAttribute("src"); bg.load(); } catch { /* noop */ }
+      try { getHlsRef("fg")?.destroy(); } catch { /* noop */ }
+      try { getHlsRef("bg")?.destroy(); } catch { /* noop */ }
+      setHlsRef("fg", null);
+      setHlsRef("bg", null);
     };
-    // `onError` is intentionally read via onErrorRef inside the effect so an
-    // inline parent callback doesn't churn the engine on every render.
+  };
+
+  // ── Active slot management: ensure the *current* item is loaded into the
+  //    active slot. If neither slot has it, load the active slot from
+  //    scratch and seek to the live offset.
+  useEffect(() => {
+    if (!url) return;
+    const activeUrl = activeSlot === "A" ? loadedUrlA.current : loadedUrlB.current;
+    const inactiveUrl = activeSlot === "A" ? loadedUrlB.current : loadedUrlA.current;
+
+    // Already playing this URL on the active slot — nothing to do.
+    if (activeUrl === url) return;
+
+    // The inactive slot has it preloaded — instant swap (no teardown).
+    if (inactiveUrl === url) {
+      const newSlot: Slot = activeSlot === "A" ? "B" : "A";
+      const newFg = newSlot === "A" ? fgRefA.current : fgRefB.current;
+      const newBg = newSlot === "A" ? bgRefA.current : bgRefB.current;
+      // Resync to live offset and resume playback (preloaded slot was paused).
+      if (newFg) {
+        try { newFg.currentTime = computeLiveOffset(durationSecs); } catch { /* noop */ }
+        newFg.play().catch(() => {});
+      }
+      if (newBg) {
+        try { newBg.currentTime = computeLiveOffset(durationSecs); } catch { /* noop */ }
+        newBg.play().catch(() => {});
+      }
+      setActiveSlot(newSlot);
+      setHasEverShown(true);
+      return;
+    }
+
+    // Fresh load into the active slot (cold start or preload miss).
+    const teardown = loadSlot(activeSlot, url, computeLiveOffset(durationSecs), () => {
+      setHasEverShown(true);
+    });
+    return teardown;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [url, itemId]);
 
-  // ── Drift correction loop ─────────────────────────────────────────────
-  // Every 12s, if the foreground video has drifted more than 4s from the
-  // expected live offset, jump to catch up. We keep the threshold loose so
-  // micro-stutters from buffering don't cause user-visible re-seeks.
+  // ── Inactive slot preloader: keeps the upcoming item warm so the queue
+  //    advance feels instantaneous. Never seeks past 0 — preloaded media
+  //    is paused at the start, ready to be revealed and resynced on swap.
+  useEffect(() => {
+    if (!nextUrl) return;
+    // Don't preload the next item into the slot the active one already uses.
+    const inactive: Slot = activeSlot === "A" ? "B" : "A";
+    const inactiveLoaded = inactive === "A" ? loadedUrlA.current : loadedUrlB.current;
+    if (inactiveLoaded === nextUrl) return;
+    // Don't waste bandwidth if the next item is the same URL as the active one.
+    const activeLoaded = activeSlot === "A" ? loadedUrlA.current : loadedUrlB.current;
+    if (activeLoaded === nextUrl) return;
+
+    // Preloaded media starts at 0, paused; the swap effect resyncs to the
+    // live offset and starts playback when the queue actually advances.
+    const teardown = loadSlot(inactive, nextUrl, 0, () => {
+      // After preload arms playback, immediately pause so we don't burn data
+      // playing the next item ahead of time. We keep it muted so even if a
+      // browser races and emits audio for a frame, nobody hears it.
+      const el = inactive === "A" ? fgRefA.current : fgRefB.current;
+      const elBg = inactive === "A" ? bgRefA.current : bgRefB.current;
+      if (el) { try { el.pause(); el.currentTime = 0; } catch { /* noop */ } }
+      if (elBg) { try { elBg.pause(); elBg.currentTime = 0; } catch { /* noop */ } }
+    });
+    return teardown;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nextUrl, activeSlot]);
+
+  // ── Drift correction loop: keeps the active slot in lockstep with server
+  //    time. Loose threshold so micro-stutters from buffering don't cause
+  //    user-visible re-seeks.
   useEffect(() => {
     if (!url) return;
     const tick = setInterval(() => {
-      const fg = videoRef.current;
-      const bg = bgVideoRef.current;
+      const fg = activeSlot === "A" ? fgRefA.current : fgRefB.current;
+      const bg = activeSlot === "A" ? bgRefA.current : bgRefB.current;
       if (!fg || fg.readyState < 2) return;
-      const expected = computeLiveOffset();
+      const expected = computeLiveOffset(durationSecs);
       const drift = Math.abs(fg.currentTime - expected);
       if (drift > 4) {
         try { fg.currentTime = expected; } catch { /* noop */ }
         try { if (bg) bg.currentTime = expected; } catch { /* noop */ }
       } else if (bg && Math.abs(bg.currentTime - fg.currentTime) > 0.4) {
-        // Keep the blur layer aligned with the foreground so they don't
-        // show different frames.
         try { bg.currentTime = fg.currentTime; } catch { /* noop */ }
       }
     }, 12_000);
     return () => clearInterval(tick);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url, itemId]);
+  }, [url, itemId, activeSlot, durationSecs]);
+
+  // Unmount: destroy all engines.
+  useEffect(() => {
+    return () => {
+      try { hlsFgARef.current?.destroy(); } catch { /* noop */ }
+      try { hlsFgBRef.current?.destroy(); } catch { /* noop */ }
+      try { hlsBgARef.current?.destroy(); } catch { /* noop */ }
+      try { hlsBgBRef.current?.destroy(); } catch { /* noop */ }
+    };
+  }, []);
 
   if (!url) return null;
 
+  // Reference nextDurationSecs so it's not flagged unused — it's available
+  // for downstream sizing/UI hints if/when we surface upcoming-item metadata.
+  void nextDurationSecs;
+
+  const slotStyle = (slot: Slot, layer: "bg" | "fg"): React.CSSProperties => {
+    const isActive = slot === activeSlot;
+    const base: React.CSSProperties = {
+      position: "absolute",
+      inset: 0,
+      width: "100%",
+      height: "100%",
+      pointerEvents: "none",
+      // The active slot is visible once the surface has ever shown a frame
+      // (covers cold-start fade-in). Inactive slots are always invisible —
+      // they're warming up the next item in the queue.
+      opacity: isActive && hasEverShown ? 1 : 0,
+      // Long fade only for the very first reveal; subsequent swaps are
+      // visually instantaneous (1 frame) so the cut feels like a TV channel.
+      transition: hasEverShown ? "opacity 60ms linear" : (layer === "fg" ? "opacity 1400ms ease" : "opacity 1200ms ease"),
+    };
+    if (layer === "bg") {
+      return {
+        ...base,
+        objectFit: "cover",
+        filter: "blur(28px) saturate(1.4) brightness(0.5)",
+        transform: "scale(1.08)",
+      };
+    }
+    return {
+      ...base,
+      objectFit: "contain",
+    };
+  };
+
   return (
     <>
-      {/* Blurred backdrop layer — fills the whole frame so we never see
-          letterbox bars at the edges. */}
-      <video
-        ref={bgVideoRef}
-        muted
-        autoPlay
-        playsInline
-        // Intentionally omit crossOrigin: prod CDN CORS doesn't whitelist
-        // every origin we render on (Replit dev preview, custom domains,
-        // embeds) and we never need to read pixels from this element.
-        style={{
-          position: "absolute",
-          inset: 0,
-          width: "100%",
-          height: "100%",
-          objectFit: "cover",
-          pointerEvents: "none",
-          filter: "blur(28px) saturate(1.4) brightness(0.5)",
-          transform: "scale(1.08)",
-          opacity: ready ? 1 : 0,
-          transition: "opacity 1200ms ease",
-        }}
-      />
-      {/* Foreground content layer — original aspect ratio, never cropped. */}
-      <video
-        ref={videoRef}
-        muted
-        autoPlay
-        playsInline
-        style={{
-          position: "absolute",
-          inset: 0,
-          width: "100%",
-          height: "100%",
-          objectFit: "contain",
-          pointerEvents: "none",
-          opacity: ready ? 1 : 0,
-          transition: "opacity 1400ms ease",
-        }}
-      />
+      {/* Slot A: bg + fg */}
+      <video ref={bgRefA} muted autoPlay playsInline style={slotStyle("A", "bg")} />
+      <video ref={fgRefA} muted autoPlay playsInline style={slotStyle("A", "fg")} />
+      {/* Slot B: bg + fg */}
+      <video ref={bgRefB} muted autoPlay playsInline style={slotStyle("B", "bg")} />
+      <video ref={fgRefB} muted autoPlay playsInline style={slotStyle("B", "fg")} />
     </>
   );
 }
