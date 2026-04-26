@@ -78,6 +78,37 @@ type ScheduledNotif = {
   videoId: string | null;
 };
 
+// Slim view of /api/broadcast/current — only the fields the Mission Control
+// hero needs to show "what's airing right now" when YouTube is off-air.
+type BroadcastQueueItem = {
+  id: string;
+  title: string;
+  thumbnailUrl?: string | null;
+  durationSecs: number;
+};
+type BroadcastCurrent = {
+  item: BroadcastQueueItem | null;
+  nextItem: BroadcastQueueItem | null;
+  positionSecs: number;
+  totalSecs: number;
+  progressPercent: number;
+  queueLength: number;
+  syncedAt: string;
+  serverTimeMs: number;
+  itemStartEpochSecs?: number;
+  currentItemEndsAtMs?: number;
+};
+
+function formatHMS(totalSecs: number): string {
+  if (!Number.isFinite(totalSecs) || totalSecs < 0) totalSecs = 0;
+  const s = Math.floor(totalSecs);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
+}
+
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 function fmtTime(hhmm: string) {
@@ -121,12 +152,29 @@ export default function Dashboard() {
   const [pendingNotifs, setPendingNotifs] = useState<ScheduledNotif[] | null>(null);
   const [pendingNotifsLoading, setPendingNotifsLoading] = useState(true);
   const [pendingNotifsError, setPendingNotifsError] = useState<string | null>(null);
+  const [broadcast, setBroadcast] = useState<BroadcastCurrent | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
-  // Tick every 30s for "in 5m" relative timers + NOW marker
+  // Tick every 5s — fast enough to advance the on-deck progress bar smoothly
+  // when YouTube is off-air and we're showing the broadcast queue's currently
+  // airing item; still slow enough to keep the dashboard cheap to render.
   useEffect(() => {
-    const t = setInterval(() => setNowMs(Date.now()), 30_000);
+    const t = setInterval(() => setNowMs(Date.now()), 5_000);
     return () => clearInterval(t);
+  }, []);
+
+  const refetchBroadcast = useCallback(async () => {
+    try {
+      // Public endpoint — no admin token required.
+      const r = await fetch("/api/broadcast/current", {
+        headers: { Accept: "application/json" },
+      });
+      if (!r.ok) return;
+      const json = (await r.json()) as BroadcastCurrent;
+      setBroadcast(json);
+    } catch {
+      // Network blip — keep the previous payload, the next tick will retry.
+    }
   }, []);
 
   const refetchTranscoding = useCallback(async () => {
@@ -156,12 +204,14 @@ export default function Dashboard() {
   useEffect(() => {
     refetchTranscoding();
     refetchPendingNotifs();
+    refetchBroadcast();
     const id = setInterval(() => {
       refetchTranscoding();
       refetchPendingNotifs();
+      refetchBroadcast();
     }, 30_000);
     return () => clearInterval(id);
-  }, [refetchTranscoding, refetchPendingNotifs]);
+  }, [refetchTranscoding, refetchPendingNotifs, refetchBroadcast]);
 
   const [goLiveOpen, setGoLiveOpen] = useState(false);
   const [goLiveForm, setGoLiveForm] = useState({ title: "Temple TV Live Service", durationMinutes: 120 });
@@ -195,6 +245,14 @@ export default function Dashboard() {
   useSSEEvent("broadcast-control-updated", () => {
     queryClient.invalidateQueries({ queryKey: getGetLiveStatusQueryKey() });
     queryClient.invalidateQueries({ queryKey: getGetAdminStatsQueryKey() });
+    refetchBroadcast();
+  });
+
+  // The api-server emits "transition" on the broadcast SSE channel whenever
+  // the current queue item changes (item ends + next one starts). Refetch
+  // immediately so the hero never lags behind the actual on-air program.
+  useSSEEvent("transition", () => {
+    refetchBroadcast();
   });
 
   useSSEEvent("override-expired", () => {
@@ -230,6 +288,27 @@ export default function Dashboard() {
   // Headline number for the hero — prefer YouTube's reported viewers when
   // we're live on YouTube, otherwise show our own concurrent SSE count.
   const viewerCount = ytViewerCount ?? concurrentViewers;
+
+  // ── On-deck queue program (shown in the hero when YouTube is off-air) ──
+  // The api-server returns `positionSecs` snapped to `syncedAt`; we extrapolate
+  // from `itemStartEpochSecs` + the local clock so the progress bar advances
+  // every render even between refetches.
+  const onDeckItem = !isLiveNow ? (broadcast?.item ?? null) : null;
+  const onDeckDurationSecs = onDeckItem?.durationSecs ?? 0;
+  const onDeckPositionSecs = useMemo(() => {
+    if (!onDeckItem || !broadcast) return 0;
+    const startSec = broadcast.itemStartEpochSecs;
+    const live =
+      typeof startSec === "number"
+        ? Math.floor(nowMs / 1000) - startSec
+        : broadcast.positionSecs;
+    if (!Number.isFinite(live)) return 0;
+    return Math.max(0, Math.min(onDeckDurationSecs || live, live));
+  }, [onDeckItem, broadcast, nowMs, onDeckDurationSecs]);
+  const onDeckProgress =
+    onDeckDurationSecs > 0
+      ? Math.min(100, Math.max(0, (onDeckPositionSecs / onDeckDurationSecs) * 100))
+      : 0;
 
   const handleGoLive = (e: React.FormEvent) => {
     e.preventDefault();
@@ -394,13 +473,72 @@ export default function Dashboard() {
                   Open live control <ArrowRight className="w-3 h-3" />
                 </Link>
               </>
+            ) : onDeckItem ? (
+              <>
+                <div>
+                  <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1 flex items-center gap-1.5">
+                    <Tv2 className="w-3 h-3" />
+                    On-air from queue
+                  </div>
+                  <div className="font-bold text-base leading-snug line-clamp-2">{onDeckItem.title}</div>
+                </div>
+                <div className="space-y-1.5">
+                  <div
+                    className="h-1.5 bg-muted rounded-full overflow-hidden"
+                    role="progressbar"
+                    aria-valuenow={Math.round(onDeckProgress)}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-label="On-air progress"
+                  >
+                    <div
+                      className="h-full bg-primary transition-[width] duration-500 ease-linear"
+                      style={{ width: `${onDeckProgress}%` }}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-xs text-muted-foreground tabular-nums">
+                    <span>
+                      {formatHMS(onDeckPositionSecs)} / {formatHMS(onDeckDurationSecs)}
+                    </span>
+                    <span>{Math.round(onDeckProgress)}%</span>
+                  </div>
+                </div>
+                {broadcast?.nextItem && (
+                  <div className="text-xs text-muted-foreground line-clamp-1">
+                    Up next:{" "}
+                    <span className="text-foreground/80 font-medium">{broadcast.nextItem.title}</span>
+                  </div>
+                )}
+                {ytLive && (
+                  <p className="text-[11px] text-amber-500/90">
+                    YouTube is live but the bridge has not detected it yet.
+                  </p>
+                )}
+                <div className="flex items-center gap-2">
+                  <Link
+                    href="/broadcast"
+                    className="text-xs text-primary hover:underline inline-flex items-center gap-1"
+                  >
+                    Open queue <ArrowRight className="w-3 h-3" />
+                  </Link>
+                  <span className="text-muted-foreground/40">·</span>
+                  <Link
+                    href="/live-control"
+                    className="text-xs text-primary hover:underline inline-flex items-center gap-1"
+                  >
+                    Live control <ArrowRight className="w-3 h-3" />
+                  </Link>
+                </div>
+              </>
             ) : (
               <>
                 <div className="font-semibold text-sm">No active broadcast</div>
                 <p className="text-xs text-muted-foreground">
                   {ytLive
                     ? "YouTube is live but the bridge has not detected it yet."
-                    : "Standing by for the next scheduled service."}
+                    : broadcast && broadcast.queueLength === 0
+                      ? "The broadcast queue is empty. Standing by for the next scheduled service."
+                      : "Standing by for the next scheduled service."}
                 </p>
                 <div className="flex items-center gap-2">
                   <Link
