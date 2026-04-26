@@ -104,6 +104,84 @@ async function recordQuotaUsage(
   await cache.set(ctxKey, currentCtx, ttlMs);
 }
 
+// ── Auto-throttling thresholds ───────────────────────────────────────────────
+// At THROTTLE_PCT_T1 (default 90%) we pause the SINGLE noisiest context for
+// the rest of the UTC day. At THROTTLE_PCT_T2 (default 95%) we pause the top
+// TWO. The hard quota gate (set by Google's 403 response) is the last line of
+// defence; this throttle exists to prevent ever reaching it. Both thresholds
+// are env-tunable for operators that want to be more or less aggressive.
+const THROTTLE_PCT_T1 = Math.max(
+  10,
+  Math.min(100, Number(process.env.YOUTUBE_QUOTA_THROTTLE_T1_PCT ?? "90")),
+);
+const THROTTLE_PCT_T2 = Math.max(
+  THROTTLE_PCT_T1,
+  Math.min(100, Number(process.env.YOUTUBE_QUOTA_THROTTLE_T2_PCT ?? "95")),
+);
+const THROTTLE_ENABLED = (process.env.YOUTUBE_QUOTA_AUTO_THROTTLE ?? "true") !== "false";
+
+// Track which contexts were throttled in *this process* so we only emit the
+// SSE notification once per context per day (instead of every blocked call).
+const _throttleNotifiedToday = new Map<string, string>(); // context → utcDateLabel
+
+/**
+ * Returns the list of contexts that should currently be paused based on
+ * today's per-context usage and the configured thresholds. The "noisiest"
+ * contexts (highest unit count today) are pinned first.
+ *
+ * Cheap to call — single cache.get for the per-context map.
+ */
+async function getThrottledContextsAsync(): Promise<{
+  contexts: string[];
+  thresholdPct: number;
+  percentUsed: number;
+}> {
+  if (!THROTTLE_ENABLED) {
+    return { contexts: [], thresholdPct: THROTTLE_PCT_T1, percentUsed: 0 };
+  }
+  const used = (await cache.get<number>(quotaBucketKey())) ?? 0;
+  const percentUsed = Math.min(100, Math.round((used / QUOTA_DAILY_LIMIT) * 100));
+  if (percentUsed < THROTTLE_PCT_T1) {
+    return { contexts: [], thresholdPct: THROTTLE_PCT_T1, percentUsed };
+  }
+  const ctx = (await cache.get<Record<string, number>>(quotaContextKey())) ?? {};
+  const ranked = Object.entries(ctx)
+    .map(([context, units]) => ({ context, units }))
+    .sort((a, b) => b.units - a.units);
+  // T2 → throttle top 2; T1 → throttle top 1.
+  const topN = percentUsed >= THROTTLE_PCT_T2 ? 2 : 1;
+  const contexts = ranked.slice(0, topN).map((r) => r.context);
+  return {
+    contexts,
+    thresholdPct: percentUsed >= THROTTLE_PCT_T2 ? THROTTLE_PCT_T2 : THROTTLE_PCT_T1,
+    percentUsed,
+  };
+}
+
+/**
+ * Public read-only accessor for the admin dashboard. Mirrors
+ * `getThrottledContextsAsync` but lives here so admin.ts doesn't depend on
+ * private helpers.
+ */
+export async function getYouTubeThrottleStatus(): Promise<{
+  enabled: boolean;
+  contexts: string[];
+  thresholdPct: number;
+  percentUsed: number;
+  t1Pct: number;
+  t2Pct: number;
+}> {
+  const s = await getThrottledContextsAsync();
+  return {
+    enabled: THROTTLE_ENABLED,
+    contexts: s.contexts,
+    thresholdPct: s.thresholdPct,
+    percentUsed: s.percentUsed,
+    t1Pct: THROTTLE_PCT_T1,
+    t2Pct: THROTTLE_PCT_T2,
+  };
+}
+
 /**
  * Last-N-days quota usage for the admin dashboard chart and per-context
  * breakdown for today. `dailyTotals` is ordered oldest → newest and always
@@ -222,6 +300,42 @@ async function youtubeApiFetch<T>(
 ): Promise<T | null> {
   if (await isQuotaGateActive()) {
     logger.debug({ context }, "YouTube call skipped — quota gate active");
+    return null;
+  }
+
+  // ── Pre-emptive auto-throttle ─────────────────────────────────────────────
+  // If we're past the throttle threshold and this is one of the top callers,
+  // skip the request to preserve quota for the more important / cheaper call
+  // sites. This prevents ever hitting the hard 403 gate. Throttling resets
+  // automatically at the next UTC day boundary because both the daily total
+  // and the per-context map naturally roll to a new bucket.
+  const throttle = await getThrottledContextsAsync();
+  if (throttle.contexts.includes(context)) {
+    const today = utcDateLabel();
+    if (_throttleNotifiedToday.get(context) !== today) {
+      _throttleNotifiedToday.set(context, today);
+      logger.warn(
+        {
+          context,
+          percentUsed: throttle.percentUsed,
+          thresholdPct: throttle.thresholdPct,
+          throttledContexts: throttle.contexts,
+        },
+        "YouTube call auto-throttled — pausing noisiest context for the rest of the day",
+      );
+      try {
+        broadcastLiveEvent("youtube-quota-throttled", {
+          context,
+          percentUsed: throttle.percentUsed,
+          thresholdPct: throttle.thresholdPct,
+          throttledContexts: throttle.contexts,
+        });
+      } catch {
+        // SSE broadcast best-effort.
+      }
+    } else {
+      logger.debug({ context }, "YouTube call skipped — auto-throttle active");
+    }
     return null;
   }
   let res: Response;

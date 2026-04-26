@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   Clock,
   Gauge,
+  PauseCircle,
   RefreshCw,
   TrendingUp,
 } from "lucide-react";
@@ -57,6 +58,7 @@ export default function YouTubeQuotaPage() {
   }, [load]);
 
   useSSEEvent("youtube-quota-exhausted", () => { void load(); });
+  useSSEEvent("youtube-quota-throttled", () => { void load(); });
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
@@ -85,8 +87,68 @@ export default function YouTubeQuotaPage() {
       )}
 
       {status && <StatusCard status={status} />}
+      {status && <ThrottleCard status={status} />}
       {history && <HistoryChart history={history} />}
       {history && <ContextBreakdown history={history} />}
+    </div>
+  );
+}
+
+function ThrottleCard({ status }: { status: YouTubeQuotaStatus }) {
+  const t = status.throttle;
+  if (!t || !t.enabled) return null;
+  const active = t.contexts.length > 0;
+  return (
+    <div
+      className={`rounded-lg border bg-card p-5 ${
+        active ? "ring-2 ring-amber-500/40" : ""
+      }`}
+    >
+      <div className="flex items-start gap-3">
+        <PauseCircle
+          className={`w-5 h-5 mt-0.5 ${
+            active ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"
+          }`}
+        />
+        <div className="flex-1 min-w-0">
+          <h2 className="text-base font-semibold">
+            Auto-throttle{" "}
+            <span className="text-xs font-normal text-muted-foreground">
+              (T1 {t.t1Pct}% → pause #1, T2 {t.t2Pct}% → pause top 2)
+            </span>
+          </h2>
+          {active ? (
+            <>
+              <p className="text-sm text-amber-700 dark:text-amber-400 mt-1">
+                Currently throttling {t.contexts.length} call type
+                {t.contexts.length === 1 ? "" : "s"} at {t.percentUsed}% usage.
+              </p>
+              <ul className="mt-2 space-y-1">
+                {t.contexts.map((c) => (
+                  <li
+                    key={c}
+                    className="text-xs font-mono inline-flex items-center gap-1.5 mr-2 rounded-md bg-amber-500/15 border border-amber-500/30 px-2 py-1"
+                  >
+                    <PauseCircle className="w-3 h-3" /> {c}
+                  </li>
+                ))}
+              </ul>
+              <p className="text-xs text-muted-foreground mt-2">
+                These call sites will resume automatically at the next UTC day
+                boundary. Override via the{" "}
+                <code className="text-[11px]">YOUTUBE_QUOTA_AUTO_THROTTLE</code>{" "}
+                env var.
+              </p>
+            </>
+          ) : (
+            <p className="text-sm text-muted-foreground mt-1">
+              Inactive — usage is below the {t.t1Pct}% throttle threshold.
+              Will engage automatically if the noisiest call site pushes
+              usage over the line.
+            </p>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

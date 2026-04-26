@@ -18,6 +18,7 @@ import {
   getLiveMonitorData,
   getYouTubeQuotaStatus,
   getYouTubeQuotaHistory,
+  getYouTubeThrottleStatus,
 } from "./youtube";
 import { emitBroadcastState } from "./broadcast";
 import { cache } from "../lib/cache";
@@ -632,8 +633,13 @@ router.get("/admin/users", async (req, res) => {
  */
 router.get("/admin/youtube/quota", async (_req, res) => {
   try {
-    const status = await getYouTubeQuotaStatus();
-    res.json(status);
+    const [status, throttle] = await Promise.all([
+      getYouTubeQuotaStatus(),
+      getYouTubeThrottleStatus(),
+    ]);
+    // Bundle throttle state into the status payload so the banner and
+    // headline card can render without a second round-trip.
+    res.json({ ...status, throttle });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });

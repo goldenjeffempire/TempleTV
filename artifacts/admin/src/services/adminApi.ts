@@ -694,6 +694,14 @@ export interface YouTubeQuotaStatus {
   exhaustedUntil: string | null;
   exhausted: boolean;
   nextResetAt: string;
+  throttle?: {
+    enabled: boolean;
+    contexts: string[];
+    thresholdPct: number;
+    percentUsed: number;
+    t1Pct: number;
+    t2Pct: number;
+  };
 }
 
 export interface YouTubeQuotaHistory {

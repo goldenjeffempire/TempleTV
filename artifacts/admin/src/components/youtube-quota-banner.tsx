@@ -50,12 +50,21 @@ export function YouTubeQuotaBanner() {
     return () => clearInterval(t);
   }, [quota?.exhausted]);
 
-  // Real-time push: the moment the API server hits the gate, we get a
-  // broadcast and refresh — no waiting for the 5-minute poll cycle.
+  // Real-time push: the moment the API server hits the gate or auto-throttle
+  // engages we refresh — no waiting for the 5-minute poll cycle.
   useSSEEvent("youtube-quota-exhausted", () => { void load(); });
+  useSSEEvent("youtube-quota-throttled", () => { void load(); });
 
   if (!quota) return null;
-  if (!quota.exhausted && quota.percentUsed < WARN_THRESHOLD_PCT) return null;
+  const throttledContexts = quota.throttle?.contexts ?? [];
+  const isThrottling = throttledContexts.length > 0;
+  if (
+    !quota.exhausted &&
+    !isThrottling &&
+    quota.percentUsed < WARN_THRESHOLD_PCT
+  ) {
+    return null;
+  }
 
   if (quota.exhausted && quota.exhaustedUntil) {
     const resetAt = new Date(quota.exhaustedUntil).getTime();
@@ -116,6 +125,12 @@ export function YouTubeQuotaBanner() {
             })}
             .
           </p>
+          {isThrottling && (
+            <p className="text-xs text-amber-700/80 dark:text-amber-400/80 mt-1">
+              Auto-throttle active — paused until reset:{" "}
+              <span className="font-mono">{throttledContexts.join(", ")}</span>
+            </p>
+          )}
         </div>
       </div>
     </div>
