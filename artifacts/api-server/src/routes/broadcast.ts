@@ -73,6 +73,14 @@ type BroadcastCurrentPayload = {
     startedAt: string;
     endsAt: string | null;
     remainingSecs?: number | null;
+    /** Direct HLS source if the admin chose one. */
+    hlsStreamUrl?: string | null;
+    /**
+     * 11-character YouTube video ID when the admin pasted a YouTube live URL
+     * into Live Control. Players prefer this over `hlsStreamUrl` if both are
+     * set — YouTube live is the simplest path and needs zero extra ingest.
+     */
+    youtubeVideoId?: string | null;
   } | null;
 };
 
@@ -242,6 +250,8 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
         remainingSecs: activeLiveOverride.endsAt
           ? Math.max(0, Math.floor((new Date(activeLiveOverride.endsAt).getTime() - nowMs) / 1000))
           : null,
+        hlsStreamUrl: activeLiveOverride.hlsStreamUrl ?? null,
+        youtubeVideoId: activeLiveOverride.youtubeVideoId ?? null,
       },
     };
     await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);

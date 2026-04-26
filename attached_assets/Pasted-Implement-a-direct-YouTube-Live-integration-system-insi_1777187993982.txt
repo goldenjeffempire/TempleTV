@@ -1,0 +1,25 @@
+Implement a direct YouTube Live integration system inside the admin panel that allows administrators to instantly start live broadcasting using only a YouTube Live video URL without requiring manual stream ingestion setup. The admin should be able to paste a valid YouTube Live link into the broadcast control panel, save or activate it, and have the live stream immediately reflected and playable on the broadcast player page across web, mobile, tablet, and smart TV platforms.
+
+Build a professional live-source switching system where the platform automatically detects and validates YouTube live URLs, extracts the required stream/video metadata, confirms the stream is active, and routes the live broadcast directly into the platform’s broadcast player pipeline in real time.
+
+Ensure the live stream updates instantly on the broadcast player page without requiring page reloads, manual refreshes, or player resets. Implement real-time synchronization between the admin control panel and frontend broadcast surfaces so viewers immediately receive the active live stream when the source changes.
+
+Optimize playback performance for low-latency live streaming and minimize buffering, startup delays, black screens, and playback interruptions. Ensure seamless transition behavior if switching between queued broadcasts, vMix streams, prerecorded media, or YouTube Live fallback streams.
+
+Add intelligent validation and fallback handling so invalid, offline, private, geo-restricted, or unavailable YouTube live URLs do not break the broadcast experience. If a stream fails, automatically trigger fallback media or alternate broadcast sources to maintain continuous TV-channel-style playback.
+
+Implement a professional admin broadcast control interface with:
+
+* YouTube live URL input field
+* live stream preview
+* stream status detection
+* active source indicators
+* instant activate/deactivate controls
+* emergency stream override controls
+* broadcast status monitoring
+
+Ensure the broadcast player properly supports embedded or proxied YouTube live playback while preserving the platform’s own branding, overlays, NOW ON AIR systems, UP NEXT systems, and continuous TV-channel experience.
+
+Maintain secure backend-controlled processing for stream activation and source management while preventing invalid or malicious stream injection attempts.
+
+Deliver a fully stable, real-time, enterprise-grade YouTube Live broadcasting workflow where admins can instantly control live broadcasts from the admin panel using only a YouTube live link and viewers immediately receive the live stream on the broadcast player page without interruption.

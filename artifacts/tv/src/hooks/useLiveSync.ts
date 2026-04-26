@@ -14,7 +14,13 @@ export interface BroadcastSyncState {
   title: string | null;
   videoId: string | null;
   hlsStreamUrl: string | null;
-  liveOverride: { id: string; title: string; hlsStreamUrl?: string | null } | null;
+  liveOverride: {
+    id: string;
+    title: string;
+    hlsStreamUrl?: string | null;
+    /** YouTube live video ID set by the admin via "paste a URL" Live Control. */
+    youtubeVideoId?: string | null;
+  } | null;
   syncedAt: string | null;
   serverTimeMs: number | null;
   connected: boolean;
@@ -77,7 +83,12 @@ export function useLiveSync(): BroadcastSyncState {
     let destroyed = false;
 
     const applyPayload = (current: Record<string, unknown>) => {
-      const liveOverride = current.liveOverride as null | { id: string; title: string; hlsStreamUrl?: string | null };
+      const liveOverride = current.liveOverride as null | {
+        id: string;
+        title: string;
+        hlsStreamUrl?: string | null;
+        youtubeVideoId?: string | null;
+      };
       const item = current.item as null | {
         youtubeId?: string;
         title?: string;
@@ -89,7 +100,10 @@ export function useLiveSync(): BroadcastSyncState {
       setState({
         isLive: !!liveOverride || !!item,
         title: liveOverride?.title ?? item?.title ?? null,
-        videoId: item?.youtubeId ?? null,
+        // The override's pasted YouTube URL takes priority — that's the
+        // admin's explicit "this is what's airing right now" signal. Falls
+        // back to whatever queue item the broadcast scheduler picked.
+        videoId: liveOverride?.youtubeVideoId ?? item?.youtubeId ?? null,
         hlsStreamUrl:
           liveOverride?.hlsStreamUrl ??
           (item?.videoSource === "local" ? (item.localVideoUrl ?? null) : null),

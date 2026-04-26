@@ -7,6 +7,14 @@ export const liveOverridesTable = pgTable("live_overrides", {
   title: text("title").notNull(),
   isActive: boolean("is_active").notNull().default(true),
   hlsStreamUrl: text("hls_stream_url"),
+  /**
+   * 11-character YouTube video ID for a live broadcast. When set, viewers
+   * receive a YouTube embed instead of the HLS stream — admins can paste
+   * a YouTube live URL into Live Control and instantly air it across TV,
+   * mobile, web, and radio surfaces. Resolved from `youtubeUrl` server-side
+   * by `extractYouTubeVideoId()` before persistence.
+   */
+  youtubeVideoId: text("youtube_video_id"),
   rtmpIngestKey: text("rtmp_ingest_key"),
   streamNotes: text("stream_notes"),
   startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),

@@ -326,10 +326,34 @@ export interface LiveOverride {
   title: string;
   isActive: boolean;
   hlsStreamUrl: string | null;
+  /**
+   * 11-character YouTube video ID. When set, viewer surfaces switch to a
+   * YouTube embed instead of HLS — admins enable this by pasting a YouTube
+   * live URL into Live Control.
+   */
+  youtubeVideoId: string | null;
   rtmpIngestKey: string | null;
   streamNotes: string | null;
   startedAt: string;
   endsAt: string | null;
+}
+
+/**
+ * Result of the YouTube URL preview probe. The admin uses this to confirm
+ * the URL resolves to a real, public, currently-live video before going
+ * live across every viewer surface.
+ */
+export interface YouTubePreviewResult {
+  ok: boolean;
+  videoId?: string;
+  exists?: boolean;
+  isLive?: boolean;
+  title?: string | null;
+  thumbnailUrl?: string | null;
+  reason?: string | null;
+  method?: "oembed" | "live-page" | "none";
+  /** Surfaces server-side validation errors (e.g. malformed URL). */
+  error?: string;
 }
 
 export interface OpsStatus {
@@ -503,14 +527,27 @@ export const liveApi = {
   startOverride: (data: {
     title: string;
     hlsStreamUrl?: string;
+    /** Paste a YouTube live URL — server extracts & validates the video ID. */
+    youtubeUrl?: string;
     rtmpIngestKey?: string;
     streamNotes?: string;
     durationMinutes?: number;
     notify?: boolean;
-  }) => adminPost<{ override: LiveOverride; push: { sent: number } }>("/admin/live/override/start", data),
+    /** Emergency: skip the YouTube live-stream probe (URL shape still validated). */
+    skipYoutubeValidation?: boolean;
+  }) => adminPost<{ override: LiveOverride; push: { sent: number }; youtubeProbeWarning?: string | null }>(
+    "/admin/live/override/start",
+    data,
+  ),
   stopOverride: () => adminPost<void>("/admin/live/override/stop"),
   extendOverride: (extraMinutes: number) =>
     adminPost<{ ok: boolean; override: LiveOverride }>("/admin/live/override/extend", { extraMinutes }),
+  /**
+   * Validates a pasted YouTube URL without touching the DB. Returns the
+   * resolved video ID, whether it's currently live, and a thumbnail URL.
+   */
+  previewYoutube: (url: string) =>
+    adminPost<YouTubePreviewResult>("/admin/live/override/preview-youtube", { url }),
   getMonitor: (signal?: AbortSignal) => adminGet<LiveMonitorData>("/admin/live/monitor", signal),
   getStatus: (signal?: AbortSignal) => adminGet<{
     isLive: boolean;

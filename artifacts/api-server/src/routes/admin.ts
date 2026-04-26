@@ -28,6 +28,7 @@ import {
   getYouTubeThrottleStatus,
 } from "./youtube";
 import { emitBroadcastState } from "./broadcast";
+import { extractYouTubeVideoId, validateYouTubeLiveStream } from "../lib/youtubeUrl";
 import { cache } from "../lib/cache";
 import { invalidatePublicVideoCaches, invalidatePublicPlaylistCaches } from "../lib/publicCacheInvalidation";
 import { logger } from "../lib/logger";
@@ -360,6 +361,8 @@ async function buildLiveStatusPayload() {
       remainingSecs: liveOverride.endsAt
         ? Math.max(0, Math.floor((liveOverride.endsAt.getTime() - now) / 1000))
         : null,
+      hlsStreamUrl: liveOverride.hlsStreamUrl ?? null,
+      youtubeVideoId: liveOverride.youtubeVideoId ?? null,
     } : null,
     ts: now,
   };
@@ -3721,11 +3724,33 @@ router.get("/admin/live", async (_req, res) => {
         endsAt: liveOverride.endsAt?.toISOString() ?? null,
         elapsedSecs,
         remainingSecs,
+        hlsStreamUrl: liveOverride.hlsStreamUrl ?? null,
+        youtubeVideoId: liveOverride.youtubeVideoId ?? null,
       } : null,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });
+  }
+});
+
+/**
+ * Preview a YouTube URL before going live. The admin can paste a URL and see
+ * whether it resolves to a real, public, currently-live video without writing
+ * anything to the DB. Returns a structured probe result so the UI can show a
+ * proper status badge ("Live now", "Video offline", "Invalid URL", etc.).
+ */
+router.post("/admin/live/override/preview-youtube", async (req, res) => {
+  try {
+    const { url } = (req.body ?? {}) as { url?: unknown };
+    const extract = extractYouTubeVideoId(url);
+    if (!extract.ok) {
+      return void res.status(400).json({ ok: false, error: extract.error });
+    }
+    const probe = await validateYouTubeLiveStream(extract.videoId);
+    res.json({ ok: true, ...probe });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : "Unknown error" });
   }
 });
 
@@ -3740,9 +3765,10 @@ router.get("/admin/live-overrides", async (_req, res) => {
 
 router.post("/admin/live-overrides", async (req, res) => {
   try {
-    const { title, hlsStreamUrl, rtmpIngestKey, streamNotes, endsAt, notify = true } = req.body as {
+    const { title, hlsStreamUrl, youtubeUrl, rtmpIngestKey, streamNotes, endsAt, notify = true } = req.body as {
       title?: string;
       hlsStreamUrl?: string | null;
+      youtubeUrl?: string | null;
       rtmpIngestKey?: string | null;
       streamNotes?: string | null;
       endsAt?: string | null;
@@ -3762,6 +3788,16 @@ router.post("/admin/live-overrides", async (req, res) => {
     }
     const urlCheck = validateStreamUrl(hlsStreamUrl);
     if (!urlCheck.ok) return void res.status(400).json({ error: urlCheck.error });
+
+    // YouTube URL is optional — admins may provide HLS, YouTube, both, or
+    // neither (in which case clients fall back to channel auto-detect).
+    let youtubeVideoId: string | null = null;
+    if (youtubeUrl !== undefined && youtubeUrl !== null && youtubeUrl !== "") {
+      const yt = extractYouTubeVideoId(youtubeUrl);
+      if (!yt.ok) return void res.status(400).json({ error: `youtubeUrl: ${yt.error}` });
+      youtubeVideoId = yt.videoId;
+    }
+
     let endsAtDate: Date | null = null;
     if (endsAt) {
       endsAtDate = new Date(endsAt);
@@ -3775,6 +3811,7 @@ router.post("/admin/live-overrides", async (req, res) => {
       id: randomUUID(),
       title: title?.trim() || "Temple TV Live",
       hlsStreamUrl: urlCheck.value,
+      youtubeVideoId,
       rtmpIngestKey: rtmpIngestKey?.trim() || null,
       streamNotes: streamNotes?.trim() || null,
       startedAt,
@@ -3807,8 +3844,8 @@ router.post("/admin/live-overrides", async (req, res) => {
 router.patch("/admin/live-overrides/:id", async (req, res) => {
   const { id } = req.params as { id: string };
   try {
-    const { isActive, title, hlsStreamUrl, streamNotes, endsAt } = req.body as {
-      isActive?: boolean; title?: string; hlsStreamUrl?: string | null; streamNotes?: string | null; endsAt?: string | null;
+    const { isActive, title, hlsStreamUrl, youtubeUrl, streamNotes, endsAt } = req.body as {
+      isActive?: boolean; title?: string; hlsStreamUrl?: string | null; youtubeUrl?: string | null; streamNotes?: string | null; endsAt?: string | null;
     };
     const updates: Record<string, unknown> = {};
     if (isActive !== undefined) {
@@ -3823,6 +3860,17 @@ router.patch("/admin/live-overrides/:id", async (req, res) => {
       const urlCheck = validateStreamUrl(hlsStreamUrl);
       if (!urlCheck.ok) return void res.status(400).json({ error: urlCheck.error });
       updates.hlsStreamUrl = urlCheck.value;
+    }
+    // Allow null/empty to clear, otherwise re-extract & re-validate so admins
+    // can swap one YouTube link for another mid-broadcast (e.g. failover).
+    if (youtubeUrl !== undefined) {
+      if (youtubeUrl === null || youtubeUrl === "") {
+        updates.youtubeVideoId = null;
+      } else {
+        const yt = extractYouTubeVideoId(youtubeUrl);
+        if (!yt.ok) return void res.status(400).json({ error: `youtubeUrl: ${yt.error}` });
+        updates.youtubeVideoId = yt.videoId;
+      }
     }
     if (streamNotes !== undefined) {
       if (streamNotes !== null && typeof streamNotes !== "string") {
@@ -3854,13 +3902,16 @@ router.patch("/admin/live-overrides/:id", async (req, res) => {
 
 router.post("/admin/live/override/start", async (req, res) => {
   try {
-    const { title, durationMinutes = 120, notify = true, hlsStreamUrl, rtmpIngestKey, streamNotes } = req.body as {
+    const { title, durationMinutes = 120, notify = true, hlsStreamUrl, youtubeUrl, rtmpIngestKey, streamNotes, skipYoutubeValidation = false } = req.body as {
       title?: string;
       durationMinutes?: number;
       notify?: boolean;
       hlsStreamUrl?: string | null;
+      youtubeUrl?: string | null;
       rtmpIngestKey?: string | null;
       streamNotes?: string | null;
+      /** Emergency override — skip the live-stream probe (still validates URL shape). */
+      skipYoutubeValidation?: boolean;
     };
     if (title !== undefined && typeof title !== "string") {
       return void res.status(400).json({ error: "title must be a string" });
@@ -3879,6 +3930,31 @@ router.post("/admin/live/override/start", async (req, res) => {
     }
     const urlCheck = validateStreamUrl(hlsStreamUrl);
     if (!urlCheck.ok) return void res.status(400).json({ error: urlCheck.error });
+
+    // Resolve & (optionally) probe the YouTube URL up front. Probe failures
+    // are warnings rather than hard errors when `skipYoutubeValidation=true`,
+    // so admins can still go live during a YouTube outage that breaks the
+    // oembed/watch-page detection.
+    let youtubeVideoId: string | null = null;
+    let youtubeProbeWarning: string | null = null;
+    if (youtubeUrl !== undefined && youtubeUrl !== null && youtubeUrl !== "") {
+      const yt = extractYouTubeVideoId(youtubeUrl);
+      if (!yt.ok) return void res.status(400).json({ error: `youtubeUrl: ${yt.error}` });
+      youtubeVideoId = yt.videoId;
+      if (!skipYoutubeValidation) {
+        const probe = await validateYouTubeLiveStream(yt.videoId).catch(() => null);
+        if (probe && !probe.exists) {
+          return void res.status(400).json({
+            error: `YouTube video could not be verified: ${probe.reason ?? "not found"}`,
+            videoId: yt.videoId,
+          });
+        }
+        if (probe && !probe.isLive) {
+          youtubeProbeWarning = probe.reason ?? "Video exists but is not currently live";
+        }
+      }
+    }
+
     const safeDuration = Number.isFinite(durationMinutes) ? Math.max(5, Math.min(480, durationMinutes)) : 120;
     const startedAt = new Date();
     const endsAt = new Date(startedAt.getTime() + safeDuration * 60 * 1000);
@@ -3891,6 +3967,7 @@ router.post("/admin/live/override/start", async (req, res) => {
         id: randomUUID(),
         title: title?.trim() || "Temple TV Live Service",
         hlsStreamUrl: urlCheck.value,
+        youtubeVideoId,
         rtmpIngestKey: rtmpIngestKey?.trim() || null,
         streamNotes: streamNotes?.trim() || null,
         startedAt,
@@ -3922,7 +3999,7 @@ router.post("/admin/live/override/start", async (req, res) => {
     broadcastLiveEvent("broadcast-control-updated", { reason: "live-started", id: override.id, queuedAt: new Date().toISOString() });
     emitBroadcastState("live-started", { id: override.id });
 
-    res.status(201).json({ override, push: pushResult });
+    res.status(201).json({ override, push: pushResult, youtubeProbeWarning });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });

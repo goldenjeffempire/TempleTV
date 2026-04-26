@@ -18,10 +18,14 @@ import {
   Zap,
   Info,
   CheckCircle2,
+  Youtube,
+  AlertTriangle,
+  Loader2,
+  Eye,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useSSE, useSSEEvent } from "@/contexts/SSEContext";
-import { liveApi, type LiveOverride } from "@/services/adminApi";
+import { liveApi, type LiveOverride, type YouTubePreviewResult } from "@/services/adminApi";
 import { PageHeader } from "@/components/shared/page-header";
 import { cn } from "@/lib/utils";
 
@@ -38,6 +42,7 @@ function elapsedStr(startedAt: string | null | undefined): string {
 
 const INITIAL_FORM = {
   title: "Temple TV Live Service",
+  youtubeUrl: "",
   hlsStreamUrl: "",
   rtmpIngestKey: "",
   streamNotes: "",
@@ -69,7 +74,42 @@ export default function LiveControl() {
   const [ticker, setTicker] = useState("");
   const tickRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
+  // YouTube preview state — separated from the form so we can show stale
+  // results while the admin is editing, and clear them only when they
+  // explicitly re-preview or change the URL.
+  const [previewResult, setPreviewResult] = useState<YouTubePreviewResult | null>(null);
+  const [previewedUrl, setPreviewedUrl] = useState<string>("");
+
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["admin-live-status"] });
+
+  const previewYoutube = useMutation({
+    mutationFn: (url: string) => liveApi.previewYoutube(url),
+    onSuccess: (res, url) => {
+      setPreviewResult(res);
+      setPreviewedUrl(url);
+      if (!res.ok || !res.exists) {
+        toast({
+          title: "YouTube URL not valid",
+          description: res.error ?? res.reason ?? "Could not verify the video.",
+          variant: "destructive",
+        });
+      } else if (!res.isLive) {
+        toast({
+          title: "Video found, but not live",
+          description: res.reason ?? "It will still air, but flagged as offline.",
+        });
+      } else {
+        toast({
+          title: "Stream is live",
+          description: res.title ?? "Ready to broadcast.",
+        });
+      }
+    },
+    onError: (err: Error) => {
+      setPreviewResult({ ok: false, error: err.message });
+      toast({ title: "Preview failed", description: err.message, variant: "destructive" });
+    },
+  });
 
   const startLive = useMutation({
     mutationFn: (data: Parameters<typeof liveApi.startOverride>[0]) =>
@@ -116,18 +156,41 @@ export default function LiveControl() {
     return () => clearInterval(tickRef.current);
   }, [activeOverride?.startedAt]);
 
-  const handleGoLive = (e: React.FormEvent) => {
+  const handleGoLive = (e: React.FormEvent, opts?: { skipYoutubeValidation?: boolean }) => {
     e.preventDefault();
     if (!form.title.trim()) return;
     startLive.mutate({
       title: form.title.trim(),
+      youtubeUrl: form.youtubeUrl.trim() || undefined,
       hlsStreamUrl: form.hlsStreamUrl.trim() || undefined,
       rtmpIngestKey: form.rtmpIngestKey.trim() || undefined,
       streamNotes: form.streamNotes.trim() || undefined,
       durationMinutes: form.durationMins ? Math.max(1, parseInt(form.durationMins, 10)) : undefined,
       notify: form.notify,
+      skipYoutubeValidation: opts?.skipYoutubeValidation,
     });
   };
+
+  const handlePreviewYoutube = () => {
+    const url = form.youtubeUrl.trim();
+    if (!url) {
+      toast({ title: "Enter a YouTube URL first", variant: "destructive" });
+      return;
+    }
+    previewYoutube.mutate(url);
+  };
+
+  const previewIsCurrent = previewedUrl === form.youtubeUrl.trim() && form.youtubeUrl.trim() !== "";
+  const previewBadge = (() => {
+    if (!previewIsCurrent || !previewResult) return null;
+    if (!previewResult.ok || !previewResult.exists) {
+      return { tone: "destructive" as const, icon: AlertTriangle, label: previewResult.error ?? "Video not found" };
+    }
+    if (!previewResult.isLive) {
+      return { tone: "warning" as const, icon: AlertTriangle, label: "Video offline — will air anyway" };
+    }
+    return { tone: "success" as const, icon: CheckCircle2, label: "Live now on YouTube" };
+  })();
 
   const handleEndBroadcast = () => {
     if (!activeOverride) return;
@@ -224,6 +287,27 @@ export default function LiveControl() {
                     <div className="text-xs">{new Date(activeOverride.endsAt).toLocaleTimeString()}</div>
                   </div>
                 )}
+                {activeOverride.youtubeVideoId && (
+                  <div className="rounded-lg border bg-background p-3 col-span-2 sm:col-span-1">
+                    <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1 flex items-center gap-1">
+                      <Youtube className="w-3 h-3 text-red-500" /> YouTube
+                    </div>
+                    <a
+                      href={`https://www.youtube.com/watch?v=${activeOverride.youtubeVideoId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs font-mono text-primary hover:underline truncate block"
+                    >
+                      {activeOverride.youtubeVideoId}
+                    </a>
+                  </div>
+                )}
+                {activeOverride.hlsStreamUrl && (
+                  <div className="rounded-lg border bg-background p-3 col-span-2 sm:col-span-1">
+                    <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">HLS</div>
+                    <div className="text-xs font-mono truncate" title={activeOverride.hlsStreamUrl}>{activeOverride.hlsStreamUrl}</div>
+                  </div>
+                )}
               </div>
               <Button
                 variant="destructive"
@@ -267,9 +351,79 @@ export default function LiveControl() {
                 />
               </div>
 
+              {/* YouTube Live URL — primary, fastest path. Paste any
+                  watch?v= / youtu.be / live URL and the server resolves
+                  the video ID, probes liveness, and pushes to every
+                  surface. The preview button lets the admin verify before
+                  hitting Go Live; the badge mirrors the server probe. */}
+              <div className="space-y-1.5">
+                <Label htmlFor="bc-yt" className="flex items-center gap-2">
+                  <Youtube className="w-4 h-4 text-red-500" />
+                  YouTube Live URL
+                  <span className="text-[10px] font-normal text-muted-foreground uppercase tracking-wider">
+                    Recommended
+                  </span>
+                </Label>
+                <div className="flex gap-2">
+                  <Input
+                    id="bc-yt"
+                    type="url"
+                    placeholder="https://www.youtube.com/watch?v=… or https://youtu.be/…"
+                    value={form.youtubeUrl}
+                    onChange={(e) => {
+                      setForm((f) => ({ ...f, youtubeUrl: e.target.value }));
+                    }}
+                    className="font-mono text-sm flex-1"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handlePreviewYoutube}
+                    disabled={previewYoutube.isPending || !form.youtubeUrl.trim()}
+                    className="gap-2 shrink-0"
+                  >
+                    {previewYoutube.isPending ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Eye className="w-4 h-4" />
+                    )}
+                    Preview
+                  </Button>
+                </div>
+                {previewBadge && (
+                  <div className={cn(
+                    "flex items-center gap-2 mt-2 text-xs font-medium px-2.5 py-1.5 rounded-md border",
+                    previewBadge.tone === "success" && "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20",
+                    previewBadge.tone === "warning" && "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20",
+                    previewBadge.tone === "destructive" && "bg-red-500/10 text-red-700 dark:text-red-400 border-red-500/20",
+                  )}>
+                    <previewBadge.icon className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">{previewBadge.label}</span>
+                  </div>
+                )}
+                {previewIsCurrent && previewResult?.ok && previewResult.exists && (
+                  <div className="flex items-center gap-3 mt-2 rounded-md border bg-muted/30 p-2">
+                    {previewResult.thumbnailUrl && (
+                      <img
+                        src={previewResult.thumbnailUrl}
+                        alt={previewResult.title ?? "YouTube preview"}
+                        className="h-12 w-20 object-cover rounded shrink-0"
+                      />
+                    )}
+                    <div className="min-w-0">
+                      <div className="text-xs font-medium truncate">{previewResult.title ?? "(no title)"}</div>
+                      <div className="text-[10px] text-muted-foreground font-mono">id: {previewResult.videoId}</div>
+                    </div>
+                  </div>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  Pasting a YouTube live URL is the fastest way to broadcast — works on Smart TV, mobile, web, and tablet.
+                </p>
+              </div>
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  <Label htmlFor="bc-hls">HLS Stream URL</Label>
+                  <Label htmlFor="bc-hls">HLS Stream URL <span className="text-muted-foreground font-normal">(optional)</span></Label>
                   <Input
                     id="bc-hls"
                     type="url"
@@ -279,11 +433,11 @@ export default function LiveControl() {
                     className="font-mono text-sm"
                   />
                   <p className="text-xs text-muted-foreground">
-                    Mux, Cloudflare Stream, or any HLS source. Leave empty to use YouTube Live detection.
+                    Use Mux / Cloudflare Stream / any HLS source if you're not on YouTube. Players prefer YouTube when both are set.
                   </p>
                 </div>
                 <div className="space-y-1.5">
-                  <Label htmlFor="bc-rtmp">RTMP Ingest Key</Label>
+                  <Label htmlFor="bc-rtmp">RTMP Ingest Key <span className="text-muted-foreground font-normal">(optional)</span></Label>
                   <Input
                     id="bc-rtmp"
                     placeholder="Stream key from encoder"
@@ -329,21 +483,40 @@ export default function LiveControl() {
                 <div className="text-xs text-muted-foreground space-y-1">
                   <p>Broadcast state propagates to every connected client via Server-Sent Events in real time.</p>
                   <p>Mobile, Smart TV, web, and radio mode all switch to this stream within seconds — no refresh needed.</p>
-                  {!form.hlsStreamUrl && (
-                    <p>Without an HLS URL, platforms fall back to YouTube Live detection via the YouTube Data API.</p>
+                  {!form.hlsStreamUrl && !form.youtubeUrl && (
+                    <p>Without a YouTube or HLS URL, platforms fall back to YouTube Live channel auto-detection.</p>
                   )}
                 </div>
               </div>
 
-              <Button
-                type="submit"
-                size="lg"
-                className="bg-red-600 hover:bg-red-500 text-white gap-2 w-full sm:w-auto"
-                disabled={startLive.isPending || !form.title.trim()}
-              >
-                <span className="h-2 w-2 rounded-full bg-white animate-pulse" />
-                {startLive.isPending ? "Starting broadcast…" : "Go Live — Push to All Platforms"}
-              </Button>
+              <div className="flex flex-wrap gap-3">
+                <Button
+                  type="submit"
+                  size="lg"
+                  className="bg-red-600 hover:bg-red-500 text-white gap-2"
+                  disabled={startLive.isPending || !form.title.trim()}
+                >
+                  <span className="h-2 w-2 rounded-full bg-white animate-pulse" />
+                  {startLive.isPending ? "Starting broadcast…" : "Go Live — Push to All Platforms"}
+                </Button>
+
+                {/* Emergency override: skip the YouTube probe so admins can
+                    still go live during a YouTube outage that breaks the
+                    oembed/watch-page detection. URL shape is still validated. */}
+                {form.youtubeUrl.trim() && previewIsCurrent && previewResult?.ok && previewResult.exists && !previewResult.isLive && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="lg"
+                    className="gap-2 border-amber-500/40 text-amber-700 dark:text-amber-400 hover:bg-amber-500/10"
+                    onClick={(e) => handleGoLive(e, { skipYoutubeValidation: true })}
+                    disabled={startLive.isPending}
+                  >
+                    <AlertTriangle className="w-4 h-4" />
+                    Force Go Live (skip YouTube check)
+                  </Button>
+                )}
+              </div>
             </form>
           </CardContent>
         </Card>

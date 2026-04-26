@@ -1233,3 +1233,69 @@ Files changed:
   with an explanatory comment.
 
 No server changes required. Vite HMR picks up the change on next page load.
+
+## Round 12 — Direct YouTube Live URL Broadcasting (Apr 26, 2026)
+
+Added a one-paste path for going live with a YouTube stream. Admins drop
+a YouTube URL (any of `watch?v=`, `youtu.be/`, `/live/`, `/embed/`,
+`/shorts/`, or a bare 11-char video ID) into Live Control, hit Preview to
+verify the stream is live, then Go Live — and TV / mobile / web / tablet
+all switch to that YouTube video within seconds via the existing SSE
+`broadcast-control-updated` event plus the regular live-status polling.
+
+Reuses the existing `live_overrides` table rather than building a parallel
+mechanism — added one nullable `youtube_video_id` column.
+
+### Architecture
+
+- **Schema** (`lib/db/src/schema/live-overrides.ts`): added
+  `youtubeVideoId text("youtube_video_id")`. Drizzle push applied.
+- **URL helper** (`artifacts/api-server/src/lib/youtubeUrl.ts`): pure
+  `extractYouTubeVideoId()` (handles all 6 URL shapes) plus
+  `validateYouTubeLiveStream()` (oembed for existence + watch-page probe
+  for liveness — no YouTube Data API quota consumption).
+- **Admin routes** (`artifacts/api-server/src/routes/admin.ts`):
+  `POST /admin/live-overrides`, `PATCH /admin/live-overrides/:id`, and
+  `POST /admin/live/override/start` accept `youtubeUrl`, extract the ID,
+  optionally probe liveness, and persist `youtubeVideoId`. New
+  `POST /admin/live/override/preview-youtube` returns
+  `{ok, exists, isLive, videoId, title, thumbnailUrl, reason}` for the
+  admin Preview button. `skipYoutubeValidation: true` escape hatch lets
+  admins force go-live during a YouTube oembed outage.
+- **Payload propagation** (`artifacts/api-server/src/routes/broadcast.ts`,
+  `artifacts/api-server/src/routes/youtube.ts`):
+  - `liveOverride` projection on `/api/broadcast/current` includes
+    `hlsStreamUrl` + `youtubeVideoId`.
+  - `/api/youtube/live` and `/api/youtube/live/status` both prefer an
+    active override's `youtubeVideoId` over channel auto-detection (with
+    a 5s in-process cache on the status endpoint to keep DB load
+    predictable under the TV's 30s poll + mobile's 60s poll).
+- **Admin UI** (`artifacts/admin/src/pages/live-control.tsx`): YouTube
+  URL input as the **primary** field (HLS / RTMP demoted to optional),
+  Preview button with success/warning/destructive badge, thumbnail
+  preview card, "Force Go Live (skip YouTube check)" emergency button
+  shown only when a previewed video exists but appears offline. Active
+  override card shows YouTube video ID as a clickable link.
+- **TV** (`artifacts/tv/src/hooks/useLiveSync.ts`): exposes
+  `liveOverride.youtubeVideoId` and prefers it as the active `videoId`.
+  `Home.tsx` did not need changes — the existing
+  `liveStatus.isLive && liveStatus.videoId → onPlay(..., isLive=true)`
+  branch already routes to the YouTube player, and `/youtube/live/status`
+  is now override-aware.
+- **Mobile** (`artifacts/mobile/services/broadcast.ts`): liveOverride
+  type extended with `hlsStreamUrl` + `youtubeVideoId`. The supervisor
+  needs no code change because it already polls `/api/youtube/live`,
+  which now returns the override's video ID.
+
+### Why it's safe
+
+- Pure additive — every field is nullable / optional, no existing
+  callers see new required keys.
+- Override lookup at hot endpoints uses a 5s cache (status endpoint)
+  and short DB lookups (`getActiveOverrideYouTubeVideoId`) sorted by
+  `priority asc, createdAt asc`, matching the existing override
+  resolver's ordering.
+- Validation tolerates YouTube outages: the probe runs with a short
+  timeout and the admin can bypass it with `skipYoutubeValidation`.
+- Players prefer YouTube when both `youtubeVideoId` and `hlsStreamUrl`
+  are set — documented inline in the admin form helper text.

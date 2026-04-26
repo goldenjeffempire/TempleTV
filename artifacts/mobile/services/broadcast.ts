@@ -45,6 +45,16 @@ export interface BroadcastCurrentResult {
     title: string;
     startedAt: string;
     endsAt: string | null;
+    /** Direct HLS source — set when admin pasted an HLS URL into Live Control. */
+    hlsStreamUrl?: string | null;
+    /**
+     * 11-character YouTube video ID — set when admin pasted a YouTube live URL
+     * into Live Control. The mobile supervisor relies on `/api/youtube/live`
+     * (which the API enriches with this field) to actually navigate, but
+     * surfacing it here keeps the type honest for any consumer that reads the
+     * broadcast/current payload directly.
+     */
+    youtubeVideoId?: string | null;
   } | null;
 }
 

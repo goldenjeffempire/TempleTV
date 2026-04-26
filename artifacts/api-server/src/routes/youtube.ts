@@ -1,5 +1,6 @@
 import { Router } from "express";
-import { db, pushTokensTable, notificationsTable } from "@workspace/db";
+import { db, pushTokensTable, notificationsTable, liveOverridesTable } from "@workspace/db";
+import { eq, asc } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import {
   broadcastLiveEvent,
@@ -1107,6 +1108,28 @@ router.get("/youtube/rss", async (req, res) => {
 
 router.get("/youtube/live", async (req, res) => {
   try {
+    // An active live override that pins a specific YouTube video ID always
+    // wins over the channel auto-detector. This is the path the new admin
+    // YouTube-URL feature flows through: when the admin pastes a URL and
+    // hits Go Live, every viewer surface that polls /youtube/live (mobile
+    // supervisor, web home page) immediately sees the override video and
+    // navigates to it — no separate broadcast/current round-trip needed.
+    const overrideVideoId = await getActiveOverrideYouTubeVideoId().catch(() => null);
+    if (overrideVideoId) {
+      cachedLiveStatus = {
+        isLive: true,
+        videoId: overrideVideoId.videoId,
+        title: overrideVideoId.title,
+        checkedAt: Date.now(),
+        detectionMethod: "live-override",
+      };
+      return void res.json({
+        isLive: true,
+        videoId: overrideVideoId.videoId,
+        title: overrideVideoId.title,
+        source: "override",
+      });
+    }
     const result = await checkYouTubeLive();
     cachedLiveStatus = {
       isLive: result.isLive,
@@ -1121,7 +1144,46 @@ router.get("/youtube/live", async (req, res) => {
   }
 });
 
-router.get("/youtube/live/status", (_req, res) => {
+/**
+ * Returns the YouTube video ID + title from the currently-active live override
+ * IFF the admin set one. Used by /youtube/live to give override-driven YouTube
+ * broadcasts priority over the channel auto-detector.
+ */
+async function getActiveOverrideYouTubeVideoId(): Promise<{ videoId: string; title: string } | null> {
+  const overrides = await db
+    .select()
+    .from(liveOverridesTable)
+    .where(eq(liveOverridesTable.isActive, true))
+    .orderBy(asc(liveOverridesTable.startedAt));
+  const now = new Date();
+  const active = overrides.find((o) => !o.endsAt || new Date(o.endsAt) > now);
+  if (!active || !active.youtubeVideoId) return null;
+  return { videoId: active.youtubeVideoId, title: active.title };
+}
+
+router.get("/youtube/live/status", async (_req, res) => {
+  // Same override-takes-priority rule as /youtube/live, but evaluated on
+  // every request (with a 5s in-route cache) so TV/web polls catch
+  // newly-started YouTube overrides without waiting for the next channel
+  // poll cycle. The TV's `useLiveStatus` polls this endpoint every 30s,
+  // so this is the path that drives "admin pastes URL → TV switches".
+  try {
+    const override = await getActiveOverrideYouTubeVideoIdCached();
+    if (override) {
+      return void res.json({
+        isLive: true,
+        videoId: override.videoId,
+        title: override.title,
+        checkedAt: Date.now(),
+        staleSec: 0,
+        detectionMethod: "live-override",
+        source: "override",
+      });
+    }
+  } catch {
+    // Fall through to cached status — never block the polling endpoint
+    // on a DB hiccup.
+  }
   res.json({
     isLive: cachedLiveStatus.isLive,
     videoId: cachedLiveStatus.videoId,
@@ -1131,6 +1193,21 @@ router.get("/youtube/live/status", (_req, res) => {
     detectionMethod: cachedLiveStatus.detectionMethod,
   });
 });
+
+// 5-second in-process cache for the override probe. Polling clients
+// (TV every 30s, mobile every 60s) plus shared-state coordination across
+// Express workers means this endpoint can fire 1-2 times/sec in aggregate
+// — caching keeps the load on `live_overrides` predictable.
+let cachedOverrideProbe: { value: { videoId: string; title: string } | null; expiresAt: number } | null = null;
+async function getActiveOverrideYouTubeVideoIdCached(): Promise<{ videoId: string; title: string } | null> {
+  const now = Date.now();
+  if (cachedOverrideProbe && cachedOverrideProbe.expiresAt > now) {
+    return cachedOverrideProbe.value;
+  }
+  const value = await getActiveOverrideYouTubeVideoId();
+  cachedOverrideProbe = { value, expiresAt: now + 5_000 };
+  return value;
+}
 
 // ---------------------------------------------------------------------------
 // Automatic YouTube channel catalogue sync
