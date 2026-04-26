@@ -1,0 +1,28 @@
+Implement a live broadcast ingest system that supports vMix as the primary live source and automatically falls back to YouTube Live URLs when no vMix stream is available. The system must allow the admin to configure a YouTube Live URL as the only fallback ingest option when vMix ingest is not active, unavailable, or disconnected.
+
+Design the ingestion logic so the platform always prioritizes vMix as the primary live feed. If vMix is not connected, not streaming, or fails health checks, the system must automatically switch to a validated YouTube Live URL provided by the admin and immediately route it into the broadcast player without delay, page refresh, or playback interruption.
+
+Restrict fallback ingestion strictly to YouTube Live URLs only, ensuring the system validates that the provided URL is a valid active YouTube Live stream before activation. Reject invalid, offline, or non-live URLs and prevent them from being used as a fallback source.
+
+Ensure seamless switching between vMix and YouTube Live sources with zero black screen, zero dead-air, and zero playback reset. The broadcast player must maintain continuous TV-channel-style streaming behavior during all transitions.
+
+Add real-time stream detection, source validation, and health monitoring so the system continuously checks:
+
+* vMix stream availability and stability
+* YouTube Live stream validity and uptime
+* active source status
+
+Implement automatic fallback activation when vMix is unavailable and automatic recovery switching back to vMix when it becomes stable again, while allowing optional manual override from the admin panel.
+
+Enhance the admin broadcast control panel with:
+
+* primary vMix ingest status indicator
+* YouTube fallback URL input field
+* live validation status feedback
+* active source display (vMix or YouTube)
+* instant switching controls
+* emergency override toggle
+
+Ensure all live ingest routing is handled server-side for security and reliability, with no direct frontend manipulation of stream sources.
+
+Maintain continuous broadcast experience across web, mobile, tablet, and smart TV platforms, ensuring uninterrupted playback, consistent channel behavior, and enterprise-grade streaming reliability.
