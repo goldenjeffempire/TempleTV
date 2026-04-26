@@ -851,6 +851,106 @@ router.get("/admin/broadcast", async (_req, res) => {
   }
 });
 
+// ── Queue source-health probe ─────────────────────────────────────────────────
+// Operational diagnostic for the queue page. Walks every queue item and issues
+// a HEAD request against its source URL with a short timeout, so producers can
+// see at a glance which queue items point at dead assets. The most common
+// reason an item goes dead in practice: a legacy `/api/uploads/<uuid>.mp4` URL
+// whose disk file is gone (Render's filesystem is ephemeral and was never
+// mirrored to S3 for that upload). Reading the playback channel is enough to
+// surface this — the broken-item skip will roll past it at airtime — but
+// surfacing the dead URLs proactively lets the producer clean the queue
+// before viewers ever see a transition gap.
+//
+// We deliberately use a HEAD (not GET) and a tight 5s budget per item, all in
+// parallel, so the whole queue completes in roughly one round-trip even with
+// dozens of items. Items with no source URL (YouTube items use youtubeId
+// only) are reported as "skipped" rather than "broken" so they don't pollute
+// the bad-item count.
+router.get("/admin/broadcast/health", async (_req, res) => {
+  try {
+    const items = await db
+      .select()
+      .from(broadcastQueueTable)
+      .orderBy(asc(broadcastQueueTable.sortOrder));
+
+    type HealthStatus = "ok" | "broken" | "skipped";
+    interface HealthResult {
+      id: string;
+      title: string;
+      url: string | null;
+      videoSource: string | null;
+      status: HealthStatus;
+      httpStatus?: number;
+      error?: string;
+      checkedMs: number;
+    }
+
+    const TIMEOUT_MS = 5000;
+    async function probe(item: BroadcastItem): Promise<HealthResult> {
+      const url = item.localVideoUrl ?? null;
+      // YouTube-only items (no localVideoUrl) aren't ours to verify; skip.
+      if (!url) {
+        return {
+          id: item.id,
+          title: item.title,
+          url: null,
+          videoSource: item.videoSource ?? null,
+          status: "skipped",
+          checkedMs: 0,
+        };
+      }
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+      const startedAt = Date.now();
+      try {
+        // HEAD with redirect:"follow" so the /api/uploads → S3 redirect path
+        // is honoured exactly as the player would experience it. The server
+        // returns 200 on a present file (disk or S3) and 404 on a dead one.
+        const r = await fetch(url, {
+          method: "HEAD",
+          redirect: "follow",
+          signal: ctrl.signal,
+        });
+        clearTimeout(t);
+        return {
+          id: item.id,
+          title: item.title,
+          url,
+          videoSource: item.videoSource ?? null,
+          status: r.ok ? "ok" : "broken",
+          httpStatus: r.status,
+          checkedMs: Date.now() - startedAt,
+        };
+      } catch (err) {
+        clearTimeout(t);
+        return {
+          id: item.id,
+          title: item.title,
+          url,
+          videoSource: item.videoSource ?? null,
+          status: "broken",
+          error: err instanceof Error ? err.message : String(err),
+          checkedMs: Date.now() - startedAt,
+        };
+      }
+    }
+
+    const results = await Promise.all(items.map(probe));
+    const summary = {
+      total: results.length,
+      ok: results.filter((r) => r.status === "ok").length,
+      broken: results.filter((r) => r.status === "broken").length,
+      skipped: results.filter((r) => r.status === "skipped").length,
+      checkedAt: new Date().toISOString(),
+    };
+    res.json({ summary, items: results });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
 router.post("/admin/broadcast", async (req, res) => {
   const body = req.body as {
     videoId?: string;

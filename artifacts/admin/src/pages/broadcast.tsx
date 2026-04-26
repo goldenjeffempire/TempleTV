@@ -500,6 +500,7 @@ function QueueItem({
   onDurationEdit,
   wallClockStart,
   dragHandleProps,
+  health,
 }: {
   item: BroadcastItem;
   index: number;
@@ -512,6 +513,10 @@ function QueueItem({
   onDurationEdit: (durationSecs: number) => void;
   wallClockStart: Date;
   dragHandleProps?: HTMLAttributes<HTMLDivElement>;
+  // Source-reachability state from the most recent "Check sources" run.
+  // undefined = not yet checked → no badge; "ok"/"broken"/"skipped" render
+  // a small coloured dot next to the source-type icon.
+  health?: "ok" | "broken" | "skipped";
 }) {
   const [editingDuration, setEditingDuration] = useState(false);
   const [durationInput, setDurationInput] = useState("");
@@ -571,6 +576,23 @@ function QueueItem({
             ? <Youtube className="w-3 h-3 text-red-400 shrink-0" />
             : <HardDrive className="w-3 h-3 text-indigo-400 shrink-0" />
           }
+          {/* Source-reachability dot. Only rendered when a check has run. */}
+          {health === "broken" ? (
+            <span
+              className="inline-flex items-center gap-1 text-[10px] text-destructive font-medium shrink-0"
+              title="Source URL unreachable — viewers will see this item auto-skipped"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-destructive" />
+              Dead
+            </span>
+          ) : health === "ok" ? (
+            <span
+              className="inline-flex items-center shrink-0"
+              title="Source URL reachable"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+            </span>
+          ) : null}
           <button
             className="text-xs text-muted-foreground font-mono hover:text-foreground hover:underline transition-colors"
             onClick={startEdit}
@@ -645,6 +667,7 @@ function SortableQueueItem(props: {
   onRemove: () => void;
   onDurationEdit: (durationSecs: number) => void;
   wallClockStart: Date;
+  health?: "ok" | "broken" | "skipped";
 }) {
   const {
     attributes,
@@ -972,6 +995,18 @@ export default function Broadcast() {
   const [endingLive, setEndingLive] = useState(false);
   const [removingId, setRemovingId] = useState<string | null>(null);
 
+  // ── queue health probe ─────────────────────────────────────────────────────
+  // Per-item source reachability state, populated on demand by clicking
+  // "Check sources". Keyed by item.id; absent entries render no badge so the
+  // first paint stays clean. We deliberately don't auto-run on mount — a HEAD
+  // walk over a 50-item queue is a meaningful amount of network for an
+  // admin-only page and should be operator-initiated.
+  const [healthMap, setHealthMap] = useState<Record<string, "ok" | "broken" | "skipped">>({});
+  const [checkingHealth, setCheckingHealth] = useState(false);
+  const [healthSummary, setHealthSummary] = useState<{
+    ok: number; broken: number; skipped: number; checkedAt: string;
+  } | null>(null);
+
   const { toast } = useToast();
   const tickerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
@@ -1261,6 +1296,45 @@ export default function Broadcast() {
     }
   }, [toast, loadAll]);
 
+  // Walk the queue server-side and HEAD every item's source URL so dead
+  // assets (legacy /api/uploads files whose disk copy is gone and were
+  // never mirrored to S3) get flagged in the queue list. Operator-initiated
+  // because a 50-item queue is a noticeable burst of network traffic.
+  const handleCheckHealth = useCallback(async () => {
+    setCheckingHealth(true);
+    try {
+      const res = await adminFetch("/api/admin/broadcast/health");
+      if (!res.ok) {
+        toast({ title: `Health check failed: HTTP ${res.status}`, variant: "destructive" });
+        return;
+      }
+      const json = await res.json() as {
+        summary: { ok: number; broken: number; skipped: number; checkedAt: string };
+        items: { id: string; status: "ok" | "broken" | "skipped" }[];
+      };
+      const next: Record<string, "ok" | "broken" | "skipped"> = {};
+      for (const it of json.items) next[it.id] = it.status;
+      setHealthMap(next);
+      setHealthSummary(json.summary);
+      const { ok, broken, skipped } = json.summary;
+      toast({
+        title: broken > 0
+          ? `${broken} broken source${broken !== 1 ? "s" : ""} found`
+          : "All sources reachable",
+        description: `${ok} ok · ${broken} broken · ${skipped} skipped (YouTube)`,
+        variant: broken > 0 ? "destructive" : "default",
+      });
+    } catch (e) {
+      toast({
+        title: "Health check failed",
+        description: e instanceof Error ? e.message : "Network error",
+        variant: "destructive",
+      });
+    } finally {
+      setCheckingHealth(false);
+    }
+  }, [toast]);
+
   const handleClearQueue = useCallback(async () => {
     setClearConfirm(false);
     const ids = [...queue.map((i) => i.id)];
@@ -1499,15 +1573,37 @@ export default function Broadcast() {
               </div>
               <div className="flex items-center gap-2">
                 {queue.length > 0 && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-8 text-destructive hover:text-destructive text-xs"
-                    onClick={() => setClearConfirm(true)}
-                  >
-                    <Trash2 className="w-3.5 h-3.5 mr-1.5" />
-                    Clear All
-                  </Button>
+                  <>
+                    {/* Source-health probe. Disabled while in flight; the
+                        button label and icon both reflect the loading state
+                        so the operator never wonders whether the click
+                        registered. The summary line below the queue header
+                        carries the result counts. */}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 text-xs"
+                      onClick={handleCheckHealth}
+                      disabled={checkingHealth}
+                      title="HEAD every queue item's source URL and flag dead assets"
+                    >
+                      {checkingHealth ? (
+                        <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                      ) : (
+                        <Activity className="w-3.5 h-3.5 mr-1.5" />
+                      )}
+                      {checkingHealth ? "Checking…" : "Check sources"}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 text-destructive hover:text-destructive text-xs"
+                      onClick={() => setClearConfirm(true)}
+                    >
+                      <Trash2 className="w-3.5 h-3.5 mr-1.5" />
+                      Clear All
+                    </Button>
+                  </>
                 )}
                 <Button variant="outline" size="sm" className="h-8" onClick={() => setShowUploadModal(true)}>
                   <Upload className="w-3.5 h-3.5 mr-1.5" />
@@ -1554,6 +1650,7 @@ export default function Broadcast() {
                         onRemove={() => handleRemove(item.id)}
                         onDurationEdit={(secs) => handleDurationEdit(item.id, secs)}
                         wallClockStart={wallClockStarts[idx] ?? new Date()}
+                        health={healthMap[item.id]}
                       />
                     ))}
 
