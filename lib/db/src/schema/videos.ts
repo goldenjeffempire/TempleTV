@@ -30,6 +30,13 @@ export const videosTable = pgTable("managed_videos", {
   // admin upload flow migrates from local disk to presigned-PUT GCS uploads.
   objectPath: text("object_path"),
   uploadedBy: text("uploaded_by"),
+  // Timestamp of the most recent successful S3 mirror for this video's source
+  // bytes. Set by the upload finalize paths (when the post-finalize PUT
+  // succeeds) and by the startup reconciler. NULL means the bytes still live
+  // only on the api-server's ephemeral disk and the playback URL will fall
+  // back to the disk-streaming path — that's the foot-gun this column exists
+  // to detect and let the reconciler fix automatically.
+  s3MirroredAt: timestamp("s3_mirrored_at", { withTimezone: true }),
 }, (table) => [
   index("idx_managed_videos_imported_at").on(table.importedAt),
   index("idx_managed_videos_category").on(table.category),
@@ -39,6 +46,10 @@ export const videosTable = pgTable("managed_videos", {
   index("idx_managed_videos_preacher").on(table.preacher),
   index("idx_managed_videos_featured").on(table.featured),
   index("idx_managed_videos_view_count").on(table.viewCount),
+  // Partial-style index for the reconciler scan: most rows will be NULL only
+  // briefly (or never, for non-local sources), but the scan runs on every
+  // boot and benefits from not full-scanning the table.
+  index("idx_managed_videos_s3_mirrored_at").on(table.s3MirroredAt),
 ]);
 
 export const insertVideoSchema = createInsertSchema(videosTable).omit({ importedAt: true });

@@ -1719,6 +1719,10 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
           // fresh presigned GET URL. When the mirror failed we leave it
           // null and rely on /api/uploads/* (disk fast path + S3 fallback).
           objectPath: mirroredToS3 ? s3VideoKey : null,
+          // Stamped only when the post-finalize PUT actually succeeded; the
+          // startup reconciler (lib/s3MirrorReconciler.ts) will retry NULL
+          // rows on the next boot and set this then.
+          s3MirroredAt: mirroredToS3 ? new Date() : null,
           uploadedBy: null,
         })
         .returning();
@@ -2105,6 +2109,11 @@ router.post("/admin/videos/upload/s3-finalize", async (req, res) => {
         // Persist the canonical S3 key. Used by the playback redirect, the
         // transcoder source resolver, and any future bulk-cleanup pass.
         objectPath: objectKey,
+        // The bytes are already in S3 by definition for this code path
+        // (the client uploaded directly via a presigned PUT and we just
+        // HEAD-verified the object), so we can stamp the mirror time
+        // immediately without a separate PUT.
+        s3MirroredAt: new Date(),
         uploadedBy: null,
       })
       .returning();
@@ -2494,6 +2503,10 @@ router.post("/admin/videos/upload/s3-multipart-complete", async (req, res) => {
             ? checksumSha256.toLowerCase()
             : null,
         objectPath: objectKey,
+        // Multipart-complete means S3 has assembled the parts into a final
+        // object and we've HEAD-verified it; the bytes are in the bucket
+        // before we ever reach this insert, so the mirror is already done.
+        s3MirroredAt: new Date(),
         uploadedBy: null,
       })
       .returning();

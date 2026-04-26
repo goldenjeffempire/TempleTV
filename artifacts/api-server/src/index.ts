@@ -16,6 +16,7 @@ import { startStreamHealthEmitter } from "./lib/streamHealth";
 import { startYoutubeCatalogueScheduler } from "./routes/youtube";
 import { cache } from "./lib/cache";
 import { AWS_REGION, AWS_S3_BUCKET, isS3Configured } from "./lib/s3Storage";
+import { runS3MirrorReconciliation } from "./lib/s3MirrorReconciler";
 
 const REQUIRED_ENV_VARS = ["DATABASE_URL", "JWT_SECRET"] as const;
 
@@ -133,6 +134,16 @@ function startApiSchedulers() {
     const status = cache.status();
     logger.info({ cacheStatus: status }, "Cache backend resolved");
   }, 2_000);
+
+  // Reconcile any local uploads whose S3 mirror failed at finalize time.
+  // Fire-and-forget so a slow/large backlog never blocks request serving.
+  // The reconciler is internally bounded-concurrency and idempotent.
+  runS3MirrorReconciliation().catch((err) => {
+    logger.error(
+      { err: err instanceof Error ? err.message : String(err) },
+      "s3MirrorReconciler: pass crashed",
+    );
+  });
 }
 
 let server: http.Server | null = null;
