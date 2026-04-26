@@ -167,3 +167,9 @@ id = "7YmcQyKowxODIye59gIBL"
 uri = "file://artifacts/mobile/store-assets/screenshots/05-settings.jpg"
 type = "image"
 title = "Screen 5 — Settings"
+
+[[outputs]]
+id = "dGE1L8x11QRK5aR-Olwb-"
+uri = "file://artifacts/mobile/COMMANDS.md"
+type = "text"
+title = "Temple TV Mobile — Command Reference"
