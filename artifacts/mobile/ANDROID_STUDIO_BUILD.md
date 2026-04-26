@@ -29,7 +29,7 @@ This creates two files inside `android/`:
 
 ---
 
-## Step 2 — Set the Android SDK path
+## Step 2 — One-shot Android setup
 
 Run this from the `artifacts/mobile/` folder:
 
@@ -37,14 +37,18 @@ Run this from the `artifacts/mobile/` folder:
 bash scripts/setup-local-properties.sh
 ```
 
-The script checks common SDK locations (`~/Android/Sdk`, `$ANDROID_HOME`, etc.) and writes
-`android/local.properties` automatically. If it cannot find the SDK it will ask you for the
-path — you can find it in Android Studio under **File → Project Structure → SDK Location**.
+This single script does **everything** needed to make the project Android-Studio-ready:
 
-It then chains into `scripts/check-node-path.sh`, which detects your `node` binary and offers
-to pin its absolute path into `android/gradle.properties` (so Android Studio launched from a
-desktop icon — which doesn't inherit your shell `PATH` — can still find it during the build).
-Just answer `y` when prompted.
+1. **Generates `android/`** via `expo prebuild --platform android --no-install` if the folder
+   is missing (fresh clone). On subsequent runs, it skips this step.
+2. **Writes `android/local.properties`** with the detected Android SDK path. It checks common
+   locations (`~/Android/Sdk`, `$ANDROID_HOME`, `~/Library/Android/sdk`, etc.). If it can't
+   find the SDK it asks you for the path — you can find it in Android Studio under
+   **File → Project Structure → SDK Location**.
+3. **Chains into `scripts/check-node-path.sh`**, which detects your `node` binary and offers
+   to pin its absolute path into `android/gradle.properties` (so Android Studio launched from
+   a desktop icon — which doesn't inherit your shell `PATH` — can still find it during the
+   build). Just answer `y` when prompted.
 
 ---
 

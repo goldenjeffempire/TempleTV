@@ -11,6 +11,42 @@ echo ""
 echo "=== Temple TV Android SDK Setup ==="
 echo ""
 
+# ── 0. Generate android/ folder if missing (fresh clone) ──────────────────────
+# Expo projects don't commit the native android/ folder — it's regenerated from
+# app.json + plugins via `expo prebuild`. On a fresh clone we run prebuild here
+# so the rest of the script (and Android Studio) has something to work with.
+if [ ! -d "android" ]; then
+  echo "No android/ folder found — running Expo prebuild to generate it."
+  echo "(This reads app.json + plugins/ and creates a clean native project.)"
+  echo ""
+
+  if command -v pnpm >/dev/null 2>&1; then
+    PREBUILD_CMD=(pnpm expo prebuild --platform android --no-install)
+  elif command -v npx >/dev/null 2>&1; then
+    PREBUILD_CMD=(npx expo prebuild --platform android --no-install)
+  else
+    echo "ERROR: Neither 'pnpm' nor 'npx' found on PATH."
+    echo "       Install Node.js 20+ first, then re-run this script."
+    exit 1
+  fi
+
+  echo "Running: ${PREBUILD_CMD[*]}"
+  echo ""
+  if ! "${PREBUILD_CMD[@]}"; then
+    echo ""
+    echo "ERROR: Expo prebuild failed. Fix the error above, then re-run this script."
+    exit 1
+  fi
+
+  echo ""
+  echo "android/ folder generated successfully."
+  echo ""
+else
+  echo "Found existing android/ folder — skipping prebuild."
+  echo "(Re-run 'pnpm expo prebuild --platform android --no-install' manually if you bumped versionCode.)"
+  echo ""
+fi
+
 # ── 1. Already set via environment variables ──────────────────────────────────
 if [ -n "$ANDROID_HOME" ] && [ -d "$ANDROID_HOME" ]; then
   SDK_PATH="$ANDROID_HOME"
