@@ -38,6 +38,9 @@ yarn-error.*
 *.tsbuildinfo
 .vercel
 
+# device captures (from `pnpm run screenshot`)
+screenshots/
+
 .env
 
 # Google Play service account key (sensitive — never commit)
