@@ -331,6 +331,20 @@ export interface LiveStatus {
   title?: string | null;
   startedAt?: string | null;
   viewerCount: number;
+  /** True when the YouTube channel itself is currently live (independent of admin override). */
+  ytLive?: boolean;
+  /** 11-character YouTube video ID for the active live broadcast, when known. */
+  ytVideoId?: string | null;
+  /** Title of the active YouTube live broadcast, when known. */
+  ytTitle?: string | null;
+  /** Most recent concurrent-viewer count scraped from YouTube's live page; null when not live or not yet observed. */
+  ytViewerCount?: number | null;
+  /** Number of currently SSE-connected viewer clients across mobile, TV, and admin surfaces. */
+  concurrentViewers?: number;
+  /** Alias of concurrentViewers retained for legacy consumers. */
+  sseClients?: number;
+  /** Number of registered push-notification devices. */
+  deviceCount?: number;
   liveOverride?: LiveOverride | null;
 }
 

@@ -3899,7 +3899,6 @@ router.get("/admin/live-overrides/recent-youtube", async (_req, res) => {
         title: liveOverridesTable.title,
         youtubeVideoId: liveOverridesTable.youtubeVideoId,
         startedAt: liveOverridesTable.startedAt,
-        endedAt: liveOverridesTable.endedAt,
       })
       .from(liveOverridesTable)
       .where(isNotNull(liveOverridesTable.youtubeVideoId))

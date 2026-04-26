@@ -12,5 +12,18 @@
   "devDependencies": {
     "typescript": "~5.9.2",
     "prettier": "^3.8.1"
+  },
+  "pnpm": {
+    "overrides": {
+      "@xmldom/xmldom": ">=0.8.13",
+      "brace-expansion": ">=2.0.3",
+      "drizzle-orm": ">=0.45.2",
+      "lodash": ">=4.18.0",
+      "path-to-regexp": ">=8.4.0",
+      "picomatch": ">=4.0.4",
+      "postcss": ">=8.5.10",
+      "vite": ">=7.3.2",
+      "yaml": ">=2.8.3"
+    }
   }
 }

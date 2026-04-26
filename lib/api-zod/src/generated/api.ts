@@ -543,6 +543,42 @@ export const GetLiveStatusResponse = zod.object({
   title: zod.string().nullish(),
   startedAt: zod.string().nullish(),
   viewerCount: zod.number(),
+  ytLive: zod
+    .boolean()
+    .optional()
+    .describe(
+      "True when the YouTube channel itself is currently live (independent of admin override).",
+    ),
+  ytVideoId: zod
+    .string()
+    .nullish()
+    .describe(
+      "11-character YouTube video ID for the active live broadcast, when known.",
+    ),
+  ytTitle: zod
+    .string()
+    .nullish()
+    .describe("Title of the active YouTube live broadcast, when known."),
+  ytViewerCount: zod
+    .number()
+    .nullish()
+    .describe(
+      "Most recent concurrent-viewer count scraped from YouTube's live page; null when not live or not yet observed.",
+    ),
+  concurrentViewers: zod
+    .number()
+    .optional()
+    .describe(
+      "Number of currently SSE-connected viewer clients across mobile, TV, and admin surfaces.",
+    ),
+  sseClients: zod
+    .number()
+    .optional()
+    .describe("Alias of concurrentViewers retained for legacy consumers."),
+  deviceCount: zod
+    .number()
+    .optional()
+    .describe("Number of registered push-notification devices."),
   liveOverride: zod
     .object({
       id: zod.string(),

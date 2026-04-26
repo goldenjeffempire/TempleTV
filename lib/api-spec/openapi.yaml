@@ -1028,6 +1028,30 @@ components:
           nullable: true
         viewerCount:
           type: integer
+        ytLive:
+          type: boolean
+          description: True when the YouTube channel itself is currently live (independent of admin override).
+        ytVideoId:
+          type: string
+          nullable: true
+          description: 11-character YouTube video ID for the active live broadcast, when known.
+        ytTitle:
+          type: string
+          nullable: true
+          description: Title of the active YouTube live broadcast, when known.
+        ytViewerCount:
+          type: integer
+          nullable: true
+          description: Most recent concurrent-viewer count scraped from YouTube's live page; null when not live or not yet observed.
+        concurrentViewers:
+          type: integer
+          description: Number of currently SSE-connected viewer clients across mobile, TV, and admin surfaces.
+        sseClients:
+          type: integer
+          description: Alias of concurrentViewers retained for legacy consumers.
+        deviceCount:
+          type: integer
+          description: Number of registered push-notification devices.
         liveOverride:
           nullable: true
           $ref: "#/components/schemas/LiveOverride"
