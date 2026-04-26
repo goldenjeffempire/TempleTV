@@ -54,6 +54,24 @@ This single script does **everything** needed to make the project Android-Studio
 
 ## Step 3 — Open the project in Android Studio
 
+### On Linux — use the launcher script (recommended)
+
+Linux desktop launchers (`.desktop` files in GNOME/KDE/etc.) **do not** source your
+shell rc files, so Android Studio launched from the icon won't see `node` from
+`nvm` / `asdf` / `fnm` and Gradle will fail with `command 'node' error=2`. To avoid
+that, launch Android Studio with this script:
+
+```bash
+bash artifacts/mobile/scripts/launch-android-studio.sh
+```
+
+It sources `~/.profile`, `~/.bashrc`, `~/.zshrc`, plus `nvm`, `asdf`, and `fnm` init
+scripts; then locates `studio.sh` in common install paths (`~/android-studio/`,
+`/opt/android-studio/`, JetBrains Toolbox, Snap) and starts Android Studio in the
+background with `node` on PATH and your `android/` folder pre-opened.
+
+### On macOS / Windows — open normally
+
 1. Launch Android Studio
 2. Click **Open** (not "New Project")
 3. Navigate to and select the **`artifacts/mobile/android/`** folder
