@@ -83,6 +83,28 @@ If Android Studio asks to upgrade the Gradle plugin — click **Don't remind me 
 
 ## Step 4 — Build the signed .aab
 
+### Option A — Command line (fastest, no IDE needed)
+
+From the `artifacts/mobile/` folder:
+
+```bash
+pnpm run build:android         # produces a signed .aab
+pnpm run build:android:apk     # produces a signed .apk (for sideload testing)
+```
+
+The `.aab` lands at `android/app/build/outputs/bundle/release/app-release.aab`.
+
+Other helpers:
+
+| Command | Purpose |
+|---------|---------|
+| `pnpm run android:prebuild` | Regenerate `android/` from `app.json` after a versionCode bump |
+| `pnpm run android:setup` | One-shot SDK + node path setup (delegates to the scripts) |
+| `pnpm run android:clean` | `./gradlew clean` — clear stale build outputs |
+| `pnpm run android:stop` | Stop the Gradle daemon (use after PATH/env changes) |
+
+### Option B — Android Studio GUI
+
 1. In the menu bar: **Build → Generate Signed Bundle / APK…**
 2. Select **Android App Bundle** → click **Next**
 3. Click **Choose existing…** and select `android/temple-tv-release.keystore`
