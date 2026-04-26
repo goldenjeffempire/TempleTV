@@ -5,7 +5,8 @@ import { TempleTvLogo } from "../components/TempleTvLogo";
 import { SermonRow } from "../components/SermonRow";
 import { Clock } from "../components/Clock";
 import { useTVNav } from "../hooks/useTVNav";
-import { useSermons, useLiveStatus } from "../hooks/useData";
+import { useSermons } from "../hooks/useData";
+import { useUnifiedLive } from "../hooks/useUnifiedLive";
 import { fetchBroadcastCurrent } from "../lib/api";
 import type { VideoItem, BroadcastCurrent } from "../lib/api";
 import { useLiveSync } from "../hooks/useLiveSync";
@@ -29,7 +30,12 @@ interface HomeProps {
 
 export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: HomeProps) {
   const { byCategory, sermons, loading } = useSermons();
-  const liveStatus = useLiveStatus();
+  // Unified live state: an admin "Activate live stream" override (delivered
+  // via SSE through useLiveSync) takes priority; the YouTube channel scrape
+  // is the fallback when no override is active. This keeps the LiveHero,
+  // the channel-grid `__live__` row, and <Player> on the exact same source —
+  // the moment an admin presses Activate, every surface flips together.
+  const liveStatus = useUnifiedLive();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [guideButtonFocused, setGuideButtonFocused] = useState(false);
   const [searchButtonFocused, setSearchButtonFocused] = useState(false);

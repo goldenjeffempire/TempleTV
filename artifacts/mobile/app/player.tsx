@@ -662,6 +662,60 @@ export default function PlayerScreen() {
     return () => subscription?.close();
   }, [isBroadcastMode, tunedVideoId, tunedLocalVideoUrl, tuneToBroadcastItem]);
 
+  // Live YouTube re-tune from admin override.
+  //
+  // When the user is mid-watch on a live YouTube event (`isLive=true`,
+  // NOT `isBroadcastMode`) and the admin swaps the live URL via Live
+  // Control on the dashboard, the broadcast SSE channel emits a fresh
+  // `broadcast-current-updated` payload whose `liveOverride.youtubeVideoId`
+  // is the new ID. We mutate `tunedVideoId` in place so `<YoutubePlayer>`
+  // sees a new prop value and the iframe navigates to the new stream
+  // without remounting the player tree (which would unmount the chrome,
+  // wipe the OSD, and break the persistent-pipeline guarantee).
+  //
+  // Mirrors `LiveYouTubePlayer` on the TV side. The HLS path doesn't need
+  // an analog here because `LocalVideoPlayer` already swaps via its own
+  // A/B double-buffer when its `hlsMasterUrl` prop changes.
+  useEffect(() => {
+    if (!isLive || isBroadcastMode) return;
+    let lastSeenOverrideId: string | null = tunedVideoId ?? null;
+
+    const applyOverride = (current: BroadcastCurrentResult | null | undefined) => {
+      const overrideId = current?.liveOverride?.youtubeVideoId ?? null;
+      if (!overrideId || overrideId === lastSeenOverrideId) return;
+      lastSeenOverrideId = overrideId;
+      setTunedVideoId(overrideId);
+      const overrideTitle = current?.liveOverride?.title ?? null;
+      if (overrideTitle) setTunedTitle(overrideTitle);
+    };
+
+    const handler = async (payload?: any) => {
+      const bc =
+        (payload?.current as BroadcastCurrentResult | undefined) ??
+        (await checkBroadcastCurrent().catch(() => null));
+      if (!bc || !isMountedRef.current) return;
+      applyOverride(bc);
+    };
+
+    // Cold sync once at mount in case the broadcast/current payload
+    // already carries an override the route params didn't include
+    // (e.g., user tapped "Watch Live" the instant the admin activated it).
+    checkBroadcastCurrent()
+      .then((bc) => {
+        if (bc && isMountedRef.current) applyOverride(bc);
+      })
+      .catch(() => {});
+
+    const subscription = subscribeBroadcastEvents({
+      "broadcast-current-updated": handler,
+      "broadcast-control-updated": () => handler(),
+      "override-expired": () => handler(),
+      status: () => handler(),
+    });
+
+    return () => subscription?.close();
+  }, [isLive, isBroadcastMode]);
+
   // Deployment-resilience resync: when the app returns to the foreground, the
   // SSE socket may have been killed by the OS during background, and a backend
   // deploy may have rolled while we were away. Pull a fresh /broadcast/current
@@ -960,7 +1014,16 @@ export default function PlayerScreen() {
   // SSE / 15s poll / precision timer) so off-screen metadata reflects the
   // currently-airing item even after a queue advance. For VOD, fall back
   // to the active sermon / route params as before.
-  const displayVideoId = isLive ? undefined : (activeSermon?.youtubeId ?? tunedVideoId ?? paramVideoId);
+  // For live YouTube events: prefer the explicit override videoId
+  // (delivered via the broadcast SSE handler below — `tunedVideoId` is
+  // mutated in place when admin "Activate live stream" swaps URLs) over
+  // the channel-handle embed fallback. Only when no override / param
+  // videoId is present do we fall through to undefined, which causes
+  // `<YoutubePlayer>` to use the @templetvjctm channel deep-link.
+  // For VOD: unchanged — active sermon → tuned → route param.
+  const displayVideoId = isLive
+    ? (tunedVideoId ?? paramVideoId)
+    : (activeSermon?.youtubeId ?? tunedVideoId ?? paramVideoId);
   // Round 9c: extended the broadcast-clean override to ALL live surfaces,
   // not just the broadcast-queue mode. Live YouTube events (`isLive=true`)
   // and station-driven broadcast queue items (`isBroadcastMode=true`) both

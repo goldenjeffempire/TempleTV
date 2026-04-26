@@ -50,7 +50,19 @@ export interface BroadcastCurrent {
   syncedAt: string;
   serverTimeMs: number;
   activeSchedule?: { contentType: string } | null;
-  liveOverride?: { title: string } | null;
+  /**
+   * Admin-driven live override. When set by the "Activate live stream"
+   * action in the admin panel, this is the single source of truth for
+   * what the platform is currently broadcasting — it wins over the YouTube
+   * channel auto-detect (`/api/youtube/live/status`) and over the 24/7
+   * queue. Both `youtubeVideoId` and `hlsStreamUrl` are surfaced so the
+   * REST poll fallback exposes the same fields the SSE payload carries.
+   */
+  liveOverride?: {
+    title: string;
+    youtubeVideoId?: string | null;
+    hlsStreamUrl?: string | null;
+  } | null;
 }
 
 export interface GuideItem {

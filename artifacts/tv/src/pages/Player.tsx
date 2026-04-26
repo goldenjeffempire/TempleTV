@@ -78,7 +78,66 @@ export function Player({ videoId, title, onBack, hlsUrl, startPositionSecs = 0, 
       />
     );
   }
+  if (isLive) {
+    return (
+      <LiveYouTubePlayer
+        initialVideoId={videoId}
+        initialTitle={title}
+        onBack={onBack}
+      />
+    );
+  }
   return <YouTubePlayer videoId={videoId} title={title} onBack={onBack} isLive={isLive} />;
+}
+
+/**
+ * Live broadcast wrapper around `YouTubePlayer`.
+ *
+ * Mirrors `LiveBroadcastHlsPlayer` for the YouTube path: subscribes to
+ * `useLiveSync` so when the admin pastes a different YouTube URL into
+ * Live Control mid-watch, this wrapper updates its local `videoId` state
+ * and the underlying `<YouTubePlayer>` re-renders with the new ID. The
+ * `videoId` change flows through `YouTubePlayer`'s own
+ * `useEffect([videoId])` reset (current-time, watchdog, retry counters)
+ * so the iframe navigates cleanly to the new stream — no full-screen
+ * remount, no flash to black, no unmount of the keyboard / OSD wiring.
+ *
+ * Resolution priority (matches `useUnifiedLive` and the mobile player):
+ *  1. `sync.liveOverride.youtubeVideoId` — admin's explicit Live Control
+ *     selection. Wins always.
+ *  2. `sync.videoId` — the broadcast scheduler's current YouTube item
+ *     (queue mode), if any.
+ *  3. `initialVideoId` — what Home computed from its last snapshot when
+ *     SELECT was pressed; used until the SSE handshake completes.
+ */
+function LiveYouTubePlayer({
+  initialVideoId,
+  initialTitle,
+  onBack,
+}: {
+  initialVideoId: string;
+  initialTitle: string;
+  onBack: () => void;
+}) {
+  const sync = useLiveSync();
+
+  const [videoId, setVideoId] = useState(initialVideoId);
+  const [title, setTitle] = useState(initialTitle);
+
+  useEffect(() => {
+    const overrideId = sync.liveOverride?.youtubeVideoId ?? null;
+    const queueId = sync.videoId ?? null;
+    const nextId = overrideId ?? queueId;
+    if (nextId && nextId !== videoId) {
+      setVideoId(nextId);
+    }
+    const nextTitle = sync.liveOverride?.title ?? sync.title ?? null;
+    if (nextTitle && nextTitle !== title) {
+      setTitle(nextTitle);
+    }
+  }, [sync.liveOverride, sync.videoId, sync.title, videoId, title]);
+
+  return <YouTubePlayer videoId={videoId} title={title} onBack={onBack} isLive />;
 }
 
 /**

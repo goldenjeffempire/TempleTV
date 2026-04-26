@@ -97,14 +97,29 @@ export default function WatchScreen() {
           checkLiveStatus(useCached),
           checkBroadcastCurrent(),
         ]);
-        setLiveStatus(status);
+        // An admin "Activate live stream" override (set in Live Control on
+        // the admin dashboard) is the platform's authoritative live signal —
+        // it must win over the YouTube channel auto-scrape so every surface
+        // (this hero, the Live Now strip, the player) flips together to
+        // whatever URL the admin pasted. Mirror the override videoId/title
+        // back into liveStatus when present.
+        const overrideVideoId = broadcastRes?.liveOverride?.youtubeVideoId ?? null;
+        const overrideTitle = broadcastRes?.liveOverride?.title ?? null;
+        const merged: LiveCheckResult = overrideVideoId
+          ? {
+              isLive: true,
+              videoId: overrideVideoId,
+              title: overrideTitle ?? status.title ?? null,
+            }
+          : status;
+        setLiveStatus(merged);
         setBroadcastCurrent(broadcastRes);
         setCheckingLive(false);
-        if (status.isLive) {
+        if (merged.isLive) {
           if (!liveBannerDismissed) setShowLiveBanner(true);
-          if (status.videoId !== lastSeenVideoId) {
-            lastSeenVideoId = status.videoId;
-            sendLiveServiceNotification(status.title ?? "Temple TV JCTM is LIVE!");
+          if (merged.videoId !== lastSeenVideoId) {
+            lastSeenVideoId = merged.videoId;
+            sendLiveServiceNotification(merged.title ?? "Temple TV JCTM is LIVE!");
           }
           if (!autoStartedRef.current && !currentSermon && !playerIsLive) {
             autoStartedRef.current = true;
@@ -141,13 +156,49 @@ export default function WatchScreen() {
   }, [loading, sermons]);
 
   useEffect(() => {
+    // When a broadcast/current payload arrives via SSE, fold any active
+    // admin override directly into `liveStatus` so handleLivePress, the
+    // live banner, and the hero iframe all switch the moment the admin
+    // pastes a new URL into Live Control — no waiting on the 60s YouTube
+    // channel scrape, no divergence between this hero and the player.
+    const applyOverrideFromBroadcast = (current: BroadcastCurrentResult | null | undefined) => {
+      const overrideVideoId = current?.liveOverride?.youtubeVideoId ?? null;
+      const overrideTitle = current?.liveOverride?.title ?? null;
+      if (overrideVideoId) {
+        setLiveStatus((prev) => {
+          if (
+            prev.isLive &&
+            prev.videoId === overrideVideoId &&
+            (prev.title ?? null) === (overrideTitle ?? prev.title ?? null)
+          ) {
+            return prev;
+          }
+          return {
+            isLive: true,
+            videoId: overrideVideoId,
+            title: overrideTitle ?? prev.title ?? null,
+          };
+        });
+        if (!liveBannerDismissed) setShowLiveBanner(true);
+      }
+      // When the override is cleared (override-expired), we deliberately
+      // do NOT flip liveStatus.isLive=false here — the YouTube channel
+      // scrape (yt-status SSE / 60s poll) is the authority for organic
+      // live state, and prematurely hiding the live UI would cause a
+      // flicker if the channel is still live independently.
+    };
+
     const refreshBroadcast = async (payload?: any) => {
       if (payload?.current) {
         setBroadcastCurrent(payload.current);
+        applyOverrideFromBroadcast(payload.current);
         return;
       }
       const latest = await checkBroadcastCurrent().catch(() => null);
-      if (latest) setBroadcastCurrent(latest);
+      if (latest) {
+        setBroadcastCurrent(latest);
+        applyOverrideFromBroadcast(latest);
+      }
     };
 
     const subscription = subscribeBroadcastEvents({
@@ -158,21 +209,46 @@ export default function WatchScreen() {
       "override-expired": () => refreshBroadcast(),
       status: (payload) => {
         if (payload) {
+          // Admin override videoId (if any) wins over the channel scrape's
+          // ytVideoId — same priority rule as the player and the TV.
+          const overrideVideoId = payload.liveOverride?.youtubeVideoId ?? null;
           setLiveStatus({
-            isLive: !!payload.isLive,
-            videoId: payload.ytVideoId ?? null,
-            title: payload.ytTitle ?? payload.liveOverride?.title ?? null,
+            isLive: !!payload.isLive || !!overrideVideoId,
+            videoId: overrideVideoId ?? payload.ytVideoId ?? null,
+            title: payload.liveOverride?.title ?? payload.ytTitle ?? null,
           });
-          setShowLiveBanner(!!payload.isLive && !liveBannerDismissed);
+          setShowLiveBanner((!!payload.isLive || !!overrideVideoId) && !liveBannerDismissed);
         }
         refreshBroadcast();
       },
       "yt-status": (payload) => {
         if (payload) {
-          setLiveStatus({
-            isLive: !!payload.isLive,
-            videoId: payload.videoId ?? null,
-            title: payload.title ?? null,
+          // Don't clobber an active admin override with a stale channel
+          // scrape result — the override is the source of truth until
+          // override-expired fires.
+          setLiveStatus((prev) => {
+            const hasActiveOverride =
+              prev.isLive && prev.videoId && prev.videoId !== payload.videoId;
+            if (hasActiveOverride) {
+              // Refetch to confirm the override is still active before
+              // letting the channel scrape take over.
+              checkBroadcastCurrent()
+                .then((latest) => {
+                  if (latest?.liveOverride?.youtubeVideoId) return;
+                  setLiveStatus({
+                    isLive: !!payload.isLive,
+                    videoId: payload.videoId ?? null,
+                    title: payload.title ?? null,
+                  });
+                })
+                .catch(() => {});
+              return prev;
+            }
+            return {
+              isLive: !!payload.isLive,
+              videoId: payload.videoId ?? null,
+              title: payload.title ?? null,
+            };
           });
         }
       },
