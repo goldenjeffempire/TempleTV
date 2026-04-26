@@ -303,27 +303,68 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
   const activeSchedule = getActiveScheduleEntry(scheduleEntries as ScheduleEntry[]);
 
   if (activeSchedule?.contentType === "live") {
+    // The active schedule slot expects a live YouTube broadcast. If the
+    // channel is genuinely live right now, viewers should see YouTube and
+    // there's nothing for the queue to provide — return early with `item:
+    // null` so player surfaces resolve the videoId from `ytVideoId`.
+    //
+    // BUT: if YouTube isn't actually live (channel hasn't started yet, or
+    // dropped mid-service), the broadcast queue is supposed to act as the
+    // failover so viewers — and Mission Control — still see *something*
+    // playing. Falling all the way through to `item: null` here was
+    // defeating the queue's whole purpose and made the admin dashboard +
+    // /broadcast page show "Queue is empty" while a perfectly healthy
+    // 4-item rotation was sitting unused.
+    const activeScheduleMeta = {
+      id: activeSchedule.id,
+      title: activeSchedule.title,
+      contentType: activeSchedule.contentType,
+      contentId: activeSchedule.contentId,
+      startTime: activeSchedule.startTime,
+      endTime: activeSchedule.endTime,
+    };
+
+    if (ytStatus.isLive || queueItems.length === 0) {
+      result = {
+        item: null,
+        nextItem: null,
+        upcomingItems: [],
+        index: 0,
+        positionSecs: 0,
+        totalSecs: 0,
+        queueLength: 0,
+        progressPercent: 0,
+        syncedAt,
+        serverTimeMs: nowMs,
+        failoverReason: ytStatus.isLive
+          ? null
+          : "Live schedule slot is active but the YouTube channel is not streaming and the broadcast queue has no failover items.",
+        liveOverride: null,
+        activeSchedule: activeScheduleMeta,
+        ...ytFields,
+      };
+      await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
+      return result;
+    }
+
+    // Live slot + YouTube off + queue available → use the queue as failover.
+    const cachedAnchor = await getBroadcastAnchor();
+    const { result: calculated, newAnchor } = calculateCurrentFromItems(queueItems, cachedAnchor);
+    if (newAnchor) {
+      await setBroadcastAnchor(newAnchor);
+    }
     result = {
-      item: null,
-      nextItem: null,
-      upcomingItems: [],
-      index: 0,
-      positionSecs: 0,
-      totalSecs: 0,
-      queueLength: 0,
-      progressPercent: 0,
+      ...calculated,
+      // Preserve the user-visible failover signal (a real reason from
+      // calculateCurrentFromItems takes precedence — e.g. "no items have a
+      // valid duration").
+      failoverReason:
+        calculated.failoverReason ??
+        "YouTube live broadcast not detected — playing from broadcast queue.",
       syncedAt,
       serverTimeMs: nowMs,
-      failoverReason: null,
       liveOverride: null,
-      activeSchedule: {
-        id: activeSchedule.id,
-        title: activeSchedule.title,
-        contentType: activeSchedule.contentType,
-        contentId: activeSchedule.contentId,
-        startTime: activeSchedule.startTime,
-        endTime: activeSchedule.endTime,
-      },
+      activeSchedule: activeScheduleMeta,
       ...ytFields,
     };
     await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
