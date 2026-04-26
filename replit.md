@@ -1338,3 +1338,71 @@ auto-filled, and the Preview probe fires automatically.
 - Dropdown auto-fires the existing Preview probe on selection — the
   admin never goes live blind on a stale URL just because they clicked
   it from history.
+
+## Round 12c — Schedule a YouTube Stream for Future Auto-Go-Live (Apr 26, 2026)
+
+Follow-up to Round 12b. Recurring services have predictable times
+(Sunday 9am, midweek 6:30pm, etc.) — admins shouldn't need to be at a
+keyboard at the exact moment to push Go Live. Added a "Schedule for
+later" flow: paste a YouTube URL, pick a date/time, and the server
+auto-activates the override at that moment, broadcasting to every
+surface via the same SSE event the manual flow uses.
+
+### Architecture
+
+- **Schema** (`lib/db/src/schema/live-overrides.ts`): added
+  `scheduledFor timestamp` (nullable) + `autoStarted boolean default
+  false`. Drizzle push applied. Both fields are nullable / defaulted
+  so existing rows are unaffected.
+- **Scheduler** (`artifacts/api-server/src/lib/live-override-scheduler.ts`):
+  new module mirroring `notification-scheduler.ts` exactly — 30-second
+  interval, single-instance re-entrancy guard, errors logged but never
+  thrown. Atomically claims due rows via conditional UPDATE on
+  `(id, isActive=false, autoStarted=false)` so multi-replica deployments
+  on Render can run the scheduler everywhere safely (only one replica
+  wins per row). Started from `index.ts` alongside the other API
+  schedulers.
+- **Admin endpoints** (`artifacts/api-server/src/routes/admin.ts`):
+  - `POST /admin/live/override/schedule` — creates an inactive override
+    with `scheduledFor` set. Validates URL, title, future-time
+    guardrail (rejects past timestamps with >60s slack), and runs the
+    same YouTube probe as the manual flow but as a non-blocking
+    *warning* (the stream may not exist yet at scheduling time, which
+    is the whole point).
+  - `GET /admin/live/override/scheduled` — returns upcoming scheduled
+    rows ordered by `scheduledFor` ascending. Filters out stale
+    entries (anything older than 60s past its target — those were
+    superseded by a manual Go Live).
+  - `DELETE /admin/live/override/schedule/:id` — cancels a scheduled
+    override before it fires. Hard-deletes (cancelled schedules have
+    no audit value because they never aired). Refuses to delete an
+    already-active or already-fired row.
+- **API client** (`artifacts/admin/src/services/adminApi.ts`): new
+  `ScheduledOverride` type + `liveApi.schedule` / `getScheduled` /
+  `cancelScheduled` methods.
+- **Admin UI** (`artifacts/admin/src/pages/live-control.tsx`):
+  - "Upcoming Scheduled Broadcasts" card above the start form, hidden
+    when empty. Each row shows title, target wall-clock time, a live
+    countdown (e.g. "in 2h 15m"), source video ID/URL, and a one-click
+    cancel.
+  - "Schedule for later" toggle button next to "Go Live". Reveals a
+    `<input type="datetime-local">` pre-filled with "next hour, on the
+    hour" — a sensible default that's safely in the future.
+  - Reuses the same form fields (title, YouTube URL, HLS URL,
+    notes, duration) so admins don't relearn anything.
+
+### Why it's safe
+
+- All new columns nullable / defaulted — existing inserts and the
+  manual `/start` route work unchanged.
+- Past-time guardrail prevents the most likely typo (off-by-one am/pm)
+  from auto-firing on the next scheduler tick.
+- Only one override is ever active at a time — the scheduler stands
+  down any other active override before activating its claim, mirroring
+  the manual flow exactly.
+- YouTube probe is best-effort during scheduling because the stream
+  often doesn't exist yet at scheduling time.
+- Multi-instance safe: atomic conditional UPDATE means no double-fires
+  even when scaled horizontally.
+- Scheduled rows that get superseded by a manual Go Live are filtered
+  out of the upcoming list automatically.

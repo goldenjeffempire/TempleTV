@@ -8,6 +8,7 @@ import {
 } from "./lib/transcoder";
 import { assertFfmpegAvailable } from "./lib/ffmpeg";
 import { startNotificationScheduler } from "./lib/notification-scheduler";
+import { startLiveOverrideScheduler } from "./lib/live-override-scheduler";
 import { startSSEHeartbeat, closeAllSSEClients } from "./lib/liveEvents";
 import { startBroadcastTransitionTicker } from "./routes/broadcast";
 import { startLiveIngestHealthMonitor, stopLiveIngestHealthMonitor } from "./lib/liveIngestHealth";
@@ -120,6 +121,7 @@ function startTranscoderRole() {
 
 function startApiSchedulers() {
   startNotificationScheduler();
+  startLiveOverrideScheduler();
   startSSEHeartbeat();
   startBroadcastTransitionTicker();
   startStreamHealthEmitter();

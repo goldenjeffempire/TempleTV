@@ -19,6 +19,16 @@ export const liveOverridesTable = pgTable("live_overrides", {
   streamNotes: text("stream_notes"),
   startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
   endsAt: timestamp("ends_at", { withTimezone: true }),
+  /**
+   * When set in the future and `is_active=false`, the live-override
+   * scheduler activates this row at the specified time. Lets admins
+   * queue a recurring service URL (e.g. Sunday 9am) the night before
+   * and have it auto-go-live across all surfaces with no manual
+   * touch. `auto_started=true` is set when the scheduler fires it,
+   * for audit/visibility.
+   */
+  scheduledFor: timestamp("scheduled_for", { withTimezone: true }),
+  autoStarted: boolean("auto_started").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

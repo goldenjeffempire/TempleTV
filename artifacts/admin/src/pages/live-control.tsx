@@ -25,9 +25,9 @@ import {
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useSSE, useSSEEvent } from "@/contexts/SSEContext";
-import { liveApi, type LiveOverride, type YouTubePreviewResult, type RecentYoutubeStream } from "@/services/adminApi";
+import { liveApi, type LiveOverride, type YouTubePreviewResult, type RecentYoutubeStream, type ScheduledOverride } from "@/services/adminApi";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { History } from "lucide-react";
+import { History, CalendarClock, X } from "lucide-react";
 import { PageHeader } from "@/components/shared/page-header";
 import { cn } from "@/lib/utils";
 
@@ -96,6 +96,55 @@ export default function LiveControl() {
   });
   const recentItems: RecentYoutubeStream[] = recentYoutube?.items ?? [];
   const [recentOpen, setRecentOpen] = useState(false);
+
+  // Upcoming scheduled overrides — refreshed every 30s so the countdown
+  // stays roughly accurate, and after every schedule/cancel mutation.
+  const { data: scheduled } = useQuery({
+    queryKey: ["admin-scheduled-overrides"],
+    queryFn: () => liveApi.getScheduled(),
+    refetchInterval: 30_000,
+  });
+  const scheduledItems: ScheduledOverride[] = scheduled?.items ?? [];
+
+  // Local form state for the "Schedule for later" datetime picker.
+  // Hidden until the admin explicitly clicks the schedule button so
+  // the default Go Live flow stays single-click for spontaneous live
+  // events.
+  const [scheduleMode, setScheduleMode] = useState(false);
+  const [scheduledFor, setScheduledFor] = useState("");
+
+  const refreshScheduled = () =>
+    queryClient.invalidateQueries({ queryKey: ["admin-scheduled-overrides"] });
+
+  const scheduleMutation = useMutation({
+    mutationFn: (input: Parameters<typeof liveApi.schedule>[0]) =>
+      liveApi.schedule(input),
+    onSuccess: (res) => {
+      toast({
+        title: "Scheduled",
+        description: res.youtubeProbeWarning
+          ? `Will go live at ${new Date(res.override.scheduledFor).toLocaleString()}. Note: ${res.youtubeProbeWarning}`
+          : `Will go live at ${new Date(res.override.scheduledFor).toLocaleString()}.`,
+      });
+      setScheduleMode(false);
+      setScheduledFor("");
+      refreshScheduled();
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to schedule", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const cancelScheduleMutation = useMutation({
+    mutationFn: (id: string) => liveApi.cancelScheduled(id),
+    onSuccess: () => {
+      toast({ title: "Scheduled broadcast cancelled" });
+      refreshScheduled();
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to cancel", description: err.message, variant: "destructive" });
+    },
+  });
 
   const previewYoutube = useMutation({
     mutationFn: (url: string) => liveApi.previewYoutube(url),
@@ -198,6 +247,45 @@ export default function LiveControl() {
     }
     previewYoutube.mutate(url);
   };
+
+  const handleSchedule = () => {
+    if (!form.title.trim()) {
+      toast({ title: "Broadcast title is required", variant: "destructive" });
+      return;
+    }
+    if (!scheduledFor) {
+      toast({ title: "Pick a date and time first", variant: "destructive" });
+      return;
+    }
+    if (!form.youtubeUrl.trim() && !form.hlsStreamUrl.trim()) {
+      toast({ title: "Add a YouTube URL (or HLS URL) to schedule", variant: "destructive" });
+      return;
+    }
+    // <input type="datetime-local"> returns a wall-clock string with no
+    // timezone (e.g. "2026-04-27T09:00"). new Date() interprets it as
+    // local time, which is exactly what the admin sees on screen — then
+    // .toISOString() converts to UTC for the wire.
+    const whenIso = new Date(scheduledFor).toISOString();
+    scheduleMutation.mutate({
+      title: form.title.trim(),
+      youtubeUrl: form.youtubeUrl.trim() || undefined,
+      hlsStreamUrl: form.hlsStreamUrl.trim() || undefined,
+      streamNotes: form.streamNotes.trim() || undefined,
+      scheduledFor: whenIso,
+      durationMinutes: form.durationMins ? Math.max(1, parseInt(form.durationMins, 10)) : undefined,
+    });
+  };
+
+  // Default the datetime picker to "next hour, on the hour" — a sensible
+  // starting point that avoids accidentally scheduling something in the
+  // past while the admin types.
+  const defaultScheduleValue = (() => {
+    const d = new Date();
+    d.setHours(d.getHours() + 1, 0, 0, 0);
+    // Format as YYYY-MM-DDTHH:MM in local time for <input type="datetime-local">.
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  })();
 
   const previewIsCurrent = previewedUrl === form.youtubeUrl.trim() && form.youtubeUrl.trim() !== "";
   const previewBadge = (() => {
@@ -341,6 +429,71 @@ export default function LiveControl() {
           )}
         </CardContent>
       </Card>
+
+      {/* Upcoming scheduled broadcasts. Hidden when empty so the page
+          stays clean for first-time use. Each row shows the title,
+          target time, source (YouTube/HLS) and a one-click cancel. */}
+      {scheduledItems.length > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <CalendarClock className="w-4 h-4 text-primary" />
+              Upcoming Scheduled Broadcasts
+              <span className="text-xs font-normal text-muted-foreground">
+                ({scheduledItems.length})
+              </span>
+            </CardTitle>
+            <CardDescription>
+              These will auto-go-live across every platform at the time shown.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <div className="divide-y border rounded-lg">
+              {scheduledItems.map((item) => {
+                const when = new Date(item.scheduledFor);
+                const minsAway = Math.max(0, Math.round((when.getTime() - Date.now()) / 60_000));
+                const inHours = Math.floor(minsAway / 60);
+                const remMins = minsAway % 60;
+                const countdown = inHours > 0
+                  ? `in ${inHours}h ${remMins}m`
+                  : minsAway > 0 ? `in ${minsAway}m` : "any moment";
+                return (
+                  <div key={item.id} className="flex items-center gap-3 p-3">
+                    <CalendarClock className="w-4 h-4 text-muted-foreground shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium truncate">{item.title}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {when.toLocaleString()} <span className="text-primary">· {countdown}</span>
+                      </div>
+                      {item.youtubeVideoId && (
+                        <div className="text-[11px] font-mono text-muted-foreground truncate">
+                          YouTube: {item.youtubeVideoId}
+                        </div>
+                      )}
+                      {!item.youtubeVideoId && item.hlsStreamUrl && (
+                        <div className="text-[11px] font-mono text-muted-foreground truncate">
+                          HLS: {item.hlsStreamUrl}
+                        </div>
+                      )}
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="shrink-0 text-muted-foreground hover:text-destructive"
+                      onClick={() => cancelScheduleMutation.mutate(item.id)}
+                      disabled={cancelScheduleMutation.isPending}
+                      title="Cancel this scheduled broadcast"
+                    >
+                      <X className="w-4 h-4" />
+                    </Button>
+                  </div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Start Form */}
       {!activeOverride && (
@@ -578,6 +731,47 @@ export default function LiveControl() {
                 </div>
               </div>
 
+              {/* Schedule-for-later panel. Hidden by default so admins
+                  going live spontaneously aren't slowed down by an
+                  extra field. Toggling it reveals a datetime picker
+                  pre-filled with "next hour, on the hour" — a sensible
+                  starting point that's safely in the future. */}
+              {scheduleMode && (
+                <div className="rounded-lg border bg-primary/5 border-primary/30 p-4 space-y-3">
+                  <div className="flex items-start gap-2">
+                    <CalendarClock className="w-4 h-4 text-primary mt-0.5 shrink-0" />
+                    <div className="text-xs">
+                      <div className="font-semibold">Schedule this broadcast for later</div>
+                      <div className="text-muted-foreground">
+                        Times are in your local timezone. The server will auto-go-live
+                        across every platform at the chosen moment.
+                      </div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2 items-end">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="bc-when">Date & time</Label>
+                      <Input
+                        id="bc-when"
+                        type="datetime-local"
+                        value={scheduledFor || defaultScheduleValue}
+                        min={defaultScheduleValue.slice(0, 16)}
+                        onChange={(e) => setScheduledFor(e.target.value)}
+                      />
+                    </div>
+                    <Button
+                      type="button"
+                      onClick={handleSchedule}
+                      disabled={scheduleMutation.isPending || !form.title.trim()}
+                      className="gap-2"
+                    >
+                      <CalendarClock className="w-4 h-4" />
+                      {scheduleMutation.isPending ? "Scheduling…" : "Schedule"}
+                    </Button>
+                  </div>
+                </div>
+              )}
+
               <div className="flex flex-wrap gap-3">
                 <Button
                   type="submit"
@@ -587,6 +781,17 @@ export default function LiveControl() {
                 >
                   <span className="h-2 w-2 rounded-full bg-white animate-pulse" />
                   {startLive.isPending ? "Starting broadcast…" : "Go Live — Push to All Platforms"}
+                </Button>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="lg"
+                  className="gap-2"
+                  onClick={() => setScheduleMode((v) => !v)}
+                >
+                  <CalendarClock className="w-4 h-4" />
+                  {scheduleMode ? "Hide schedule" : "Schedule for later"}
                 </Button>
 
                 {/* Emergency override: skip the YouTube probe so admins can

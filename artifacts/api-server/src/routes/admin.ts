@@ -4062,6 +4062,171 @@ router.post("/admin/live/override/start", async (req, res) => {
   }
 });
 
+/**
+ * Queue a YouTube live URL to auto-go-live at a future timestamp.
+ * Inserts a `live_overrides` row with `is_active=false` + `scheduled_for=<ts>`;
+ * the live-override scheduler picks it up at tick time and activates it.
+ *
+ * URL/title validation mirrors `/admin/live/override/start` exactly so
+ * scheduling can't smuggle in malformed values that would crash the
+ * scheduler later.
+ */
+router.post("/admin/live/override/schedule", async (req, res) => {
+  try {
+    const {
+      title,
+      youtubeUrl,
+      hlsStreamUrl,
+      streamNotes,
+      scheduledFor,
+      durationMinutes = 120,
+      skipYoutubeValidation = false,
+    } = req.body as {
+      title?: string;
+      youtubeUrl?: string | null;
+      hlsStreamUrl?: string | null;
+      streamNotes?: string | null;
+      scheduledFor?: string;
+      durationMinutes?: number;
+      skipYoutubeValidation?: boolean;
+    };
+
+    if (!title || typeof title !== "string" || !title.trim()) {
+      return void res.status(400).json({ error: "title is required" });
+    }
+    if (!scheduledFor || typeof scheduledFor !== "string") {
+      return void res.status(400).json({ error: "scheduledFor is required (ISO timestamp)" });
+    }
+    const when = new Date(scheduledFor);
+    if (Number.isNaN(when.getTime())) {
+      return void res.status(400).json({ error: "scheduledFor must be a valid ISO timestamp" });
+    }
+    // Guardrail: don't let an admin schedule something in the past — that
+    // would auto-fire on the very next scheduler tick, which is almost
+    // certainly a typo (off-by-one am/pm, wrong date) rather than intent.
+    if (when.getTime() < Date.now() - 60_000) {
+      return void res.status(400).json({ error: "scheduledFor must be in the future" });
+    }
+
+    const urlCheck = validateStreamUrl(hlsStreamUrl);
+    if (!urlCheck.ok) return void res.status(400).json({ error: urlCheck.error });
+
+    let youtubeVideoId: string | null = null;
+    let youtubeProbeWarning: string | null = null;
+    if (youtubeUrl !== undefined && youtubeUrl !== null && youtubeUrl !== "") {
+      const yt = extractYouTubeVideoId(youtubeUrl);
+      if (!yt.ok) return void res.status(400).json({ error: `youtubeUrl: ${yt.error}` });
+      youtubeVideoId = yt.videoId;
+      // Probe is best-effort for scheduled streams — the stream may not
+      // exist yet (common for "schedule tomorrow's service"). Surface
+      // the result as a warning so the UI can show "we couldn't verify
+      // this video right now — that's normal for a future stream".
+      if (!skipYoutubeValidation) {
+        const probe = await validateYouTubeLiveStream(yt.videoId).catch(() => null);
+        if (probe && !probe.exists) {
+          youtubeProbeWarning = probe.reason ?? "Video not found yet — scheduling anyway";
+        } else if (probe && !probe.isLive) {
+          youtubeProbeWarning = probe.reason ?? "Video exists but not live yet";
+        }
+      }
+    }
+
+    if (!youtubeVideoId && !urlCheck.value) {
+      return void res.status(400).json({
+        error: "Provide either a YouTube URL or an HLS stream URL",
+      });
+    }
+
+    const safeDuration = Number.isFinite(durationMinutes)
+      ? Math.max(5, Math.min(480, durationMinutes))
+      : 120;
+
+    const [override] = await db
+      .insert(liveOverridesTable)
+      .values({
+        id: randomUUID(),
+        title: title.trim(),
+        hlsStreamUrl: urlCheck.value,
+        youtubeVideoId,
+        streamNotes: streamNotes?.trim() || null,
+        // Pre-fill startedAt with the scheduled time so the row sorts
+        // sensibly in admin lists; the scheduler overwrites it with the
+        // real activation time when it fires.
+        startedAt: when,
+        endsAt: new Date(when.getTime() + safeDuration * 60 * 1000),
+        scheduledFor: when,
+        isActive: false,
+        autoStarted: false,
+      })
+      .returning();
+
+    res.status(201).json({ override, youtubeProbeWarning });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "Unknown error" });
+  }
+});
+
+/**
+ * List upcoming scheduled overrides — anything with `scheduled_for >
+ * now` and not yet activated. Ordered soonest-first for the admin
+ * "Up next" panel.
+ */
+router.get("/admin/live/override/scheduled", async (_req, res) => {
+  try {
+    const rows = await db
+      .select()
+      .from(liveOverridesTable)
+      .where(
+        and(
+          eq(liveOverridesTable.autoStarted, false),
+          eq(liveOverridesTable.isActive, false),
+          isNotNull(liveOverridesTable.scheduledFor),
+        ),
+      )
+      .orderBy(asc(liveOverridesTable.scheduledFor));
+    // Filter to future-only client-side because some entries may have
+    // been scheduled, then manually superseded by a Go Live before the
+    // scheduler fired — those are stale and should drop off the list.
+    const now = Date.now();
+    const upcoming = rows.filter(
+      (r) => r.scheduledFor && new Date(r.scheduledFor).getTime() > now - 60_000,
+    );
+    res.json({ items: upcoming });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "Unknown error" });
+  }
+});
+
+/**
+ * Cancel a scheduled override before it fires. Hard-deletes the row
+ * because a cancelled schedule has no audit value (it never aired).
+ */
+router.delete("/admin/live/override/schedule/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id) return void res.status(400).json({ error: "id is required" });
+    const deleted = await db
+      .delete(liveOverridesTable)
+      .where(
+        and(
+          eq(liveOverridesTable.id, id),
+          eq(liveOverridesTable.isActive, false),
+          eq(liveOverridesTable.autoStarted, false),
+          isNotNull(liveOverridesTable.scheduledFor),
+        ),
+      )
+      .returning({ id: liveOverridesTable.id });
+    if (deleted.length === 0) {
+      return void res.status(404).json({
+        error: "Scheduled override not found, already started, or already cancelled",
+      });
+    }
+    res.json({ ok: true, id: deleted[0].id });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "Unknown error" });
+  }
+});
+
 router.post("/admin/live/override/stop", async (_req, res) => {
   try {
     const active = await getActiveLiveOverride();

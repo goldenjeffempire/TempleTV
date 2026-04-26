@@ -321,6 +321,21 @@ export const adminPatch = <T>(path: string, body?: unknown) =>
 export const adminDelete = <T>(path: string) =>
   adminRequest<T>("DELETE", path);
 
+/**
+ * One scheduled (not-yet-aired) live override returned from the
+ * `/admin/live/override/scheduled` list. Powers the "Up next" panel
+ * in Live Control.
+ */
+export interface ScheduledOverride {
+  id: string;
+  title: string;
+  youtubeVideoId: string | null;
+  hlsStreamUrl: string | null;
+  scheduledFor: string;
+  endsAt: string | null;
+  streamNotes: string | null;
+}
+
 export interface LiveOverride {
   id: string;
   title: string;
@@ -568,6 +583,28 @@ export const liveApi = {
    */
   getRecentYoutubeStreams: () =>
     adminGet<{ items: RecentYoutubeStream[] }>("/admin/live-overrides/recent-youtube"),
+  /**
+   * Queue a YouTube (or HLS) stream to auto-go-live at a future time.
+   * The server-side scheduler picks it up at tick time and fires the
+   * same SSE events as a manual Go Live.
+   */
+  schedule: (data: {
+    title: string;
+    youtubeUrl?: string;
+    hlsStreamUrl?: string;
+    streamNotes?: string;
+    /** ISO timestamp — when to auto-go-live. Must be in the future. */
+    scheduledFor: string;
+    durationMinutes?: number;
+    skipYoutubeValidation?: boolean;
+  }) => adminPost<{ override: ScheduledOverride; youtubeProbeWarning?: string | null }>(
+    "/admin/live/override/schedule",
+    data,
+  ),
+  getScheduled: () =>
+    adminGet<{ items: ScheduledOverride[] }>("/admin/live/override/scheduled"),
+  cancelScheduled: (id: string) =>
+    adminDelete<{ ok: boolean; id: string }>(`/admin/live/override/schedule/${encodeURIComponent(id)}`),
   getMonitor: (signal?: AbortSignal) => adminGet<LiveMonitorData>("/admin/live/monitor", signal),
   getStatus: (signal?: AbortSignal) => adminGet<{
     isLive: boolean;
