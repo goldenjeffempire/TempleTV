@@ -287,6 +287,9 @@ async function recoverSessionsFromDisk(): Promise<void> {
 
 recoverSessionsFromDisk();
 
+// .unref() so this background GC doesn't keep the event loop alive during
+// graceful shutdown. We still want SIGTERM to exit cleanly within a second
+// or two (Render's shutdown grace) instead of waiting on the 15s force-kill.
 setInterval(() => {
   const inactiveCutoff = new Date(Date.now() - 6 * 60 * 60 * 1000);
   for (const [id, session] of uploadSessions.entries()) {
@@ -297,7 +300,7 @@ setInterval(() => {
       destroyUploadSession(id, session.tmpDir);
     }
   }
-}, 30 * 60 * 1000);
+}, 30 * 60 * 1000).unref();
 
 async function autoExpireLiveOverrides(): Promise<void> {
   try {
@@ -361,7 +364,7 @@ async function buildLiveStatusPayload() {
   };
 }
 
-setInterval(autoExpireLiveOverrides, 30 * 1000);
+setInterval(autoExpireLiveOverrides, 30 * 1000).unref();
 autoExpireLiveOverrides();
 
 const router = Router();
@@ -3665,7 +3668,7 @@ router.get("/admin/live/events", async (req, res) => {
     const r = res as unknown as { flush?: () => void };
     if (typeof r.flush === "function") r.flush();
   } catch (err) {
-    console.error("[SSE /admin/live/events] initial write failed:", err);
+    logger.error({ err }, "[SSE /admin/live/events] initial write failed");
   }
 
   req.on("close", () => removeSSEClient(client));

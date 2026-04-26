@@ -622,6 +622,9 @@ export function startLiveIngestHealthMonitor() {
       logger.error({ err }, "Live ingest health sweep failed");
     }
   }, HEALTH_INTERVAL_MS);
+  // Don't keep the event loop alive just for the health sweep — Node should
+  // exit cleanly when the HTTP server closes during graceful shutdown.
+  _tickHandle.unref();
   logger.info({ intervalMs: HEALTH_INTERVAL_MS }, "Live ingest health monitor started");
 }
 

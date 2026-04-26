@@ -19,6 +19,7 @@ import {
   removeSSEClient,
 } from "../lib/liveEvents";
 import { validateStreamKey } from "../lib/liveIngestHealth";
+import { logger } from "../lib/logger";
 
 const router = Router();
 
@@ -833,7 +834,7 @@ router.get("/broadcast/events", async (req, res) => {
     res.write(`event: broadcast-current-updated\ndata: ${JSON.stringify({ reason: "connected", current })}\n\n`);
     flushRes();
   } catch (err) {
-    console.error("[SSE /broadcast/events] initial write failed:", err);
+    logger.error({ err }, "[SSE /broadcast/events] initial write failed");
   }
 
   req.on("close", () => removeSSEClient(client));

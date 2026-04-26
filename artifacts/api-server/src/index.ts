@@ -10,7 +10,7 @@ import { assertFfmpegAvailable } from "./lib/ffmpeg";
 import { startNotificationScheduler } from "./lib/notification-scheduler";
 import { startSSEHeartbeat, closeAllSSEClients } from "./lib/liveEvents";
 import { startBroadcastTransitionTicker } from "./routes/broadcast";
-import { startLiveIngestHealthMonitor } from "./lib/liveIngestHealth";
+import { startLiveIngestHealthMonitor, stopLiveIngestHealthMonitor } from "./lib/liveIngestHealth";
 import { startStreamHealthEmitter } from "./lib/streamHealth";
 import { startYoutubeCatalogueScheduler } from "./routes/youtube";
 import { cache } from "./lib/cache";
@@ -182,6 +182,14 @@ function shutdown(signal: string) {
       stopRetryTick();
     } catch (err) {
       logger.warn({ err }, "Error stopping retry tick");
+    }
+  }
+
+  if (RUNS_API) {
+    try {
+      stopLiveIngestHealthMonitor();
+    } catch (err) {
+      logger.warn({ err }, "Error stopping live ingest health monitor");
     }
   }
 

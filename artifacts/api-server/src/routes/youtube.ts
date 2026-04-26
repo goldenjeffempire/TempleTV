@@ -732,6 +732,8 @@ async function pollLiveStatus() {
 
   if (pollTimer) clearTimeout(pollTimer);
   pollTimer = setTimeout(pollLiveStatus, currentPollIntervalMs);
+  // Don't block graceful shutdown on this background poll loop.
+  pollTimer.unref();
 }
 
 pollLiveStatus();
@@ -1338,10 +1340,12 @@ export function startYoutubeCatalogueScheduler() {
       logger.error({ err }, "[YouTubeSync] Scheduled tick crashed");
     }
     catalogueSyncTimer = setTimeout(tick, CATALOGUE_SYNC_INTERVAL_MS);
+    catalogueSyncTimer.unref();
   };
   // Kick off first run immediately on startup; subsequent runs every interval.
   if (catalogueSyncTimer) clearTimeout(catalogueSyncTimer);
   catalogueSyncTimer = setTimeout(tick, 0);
+  catalogueSyncTimer.unref();
   logger.info({ intervalMs: CATALOGUE_SYNC_INTERVAL_MS }, "[YouTubeSync] Scheduler started");
 }
 
