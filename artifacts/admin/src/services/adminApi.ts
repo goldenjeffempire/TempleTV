@@ -686,3 +686,17 @@ export const transcodingApi = {
   clearHistory: (status: "done" | "failed" | "cancelled" | "all") =>
     adminDelete<{ cleared: number }>(`/admin/transcoding/clear?status=${status}`),
 };
+
+export interface YouTubeQuotaStatus {
+  estimatedUsedToday: number;
+  dailyLimit: number;
+  percentUsed: number;
+  exhaustedUntil: string | null;
+  exhausted: boolean;
+  nextResetAt: string;
+}
+
+export const youtubeQuotaApi = {
+  get: (signal?: AbortSignal) =>
+    adminGet<YouTubeQuotaStatus>("/admin/youtube/quota", signal),
+};

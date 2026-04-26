@@ -10,6 +10,7 @@ import { applyAutoTheme } from "@/lib/theme";
 import { SSEProvider } from "@/contexts/SSEContext";
 import { ApiHealthProvider } from "@/contexts/ApiHealthContext";
 import { ApiReconnectionBanner } from "@/components/api-reconnection-banner";
+import { YouTubeQuotaBanner } from "@/components/youtube-quota-banner";
 import { Suspense, lazy, useEffect } from "react";
 
 const Dashboard = lazy(() => import("@/pages/dashboard"));
@@ -93,6 +94,11 @@ function Router() {
       <ApiReconnectionBanner />
       <AuthGate>
         <SSEProvider>
+          {/* Quota banner lives inside SSEProvider so it can subscribe to
+              real-time `youtube-quota-exhausted` events. Sits below the API
+              reconnection banner (lower z) so a connectivity issue takes
+              visual priority. */}
+          <YouTubeQuotaBanner />
           <Layout>
             <RoutedContent />
           </Layout>
