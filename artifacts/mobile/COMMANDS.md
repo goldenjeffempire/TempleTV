@@ -76,6 +76,15 @@ pnpm run record 60      # 60s
 
 ---
 
+## Release
+
+### `pnpm run release:patch`
+Cuts a patch release in one shot. Refuses to run with a dirty working tree. Bumps `app.json` `expo.version` (semver patch), `app.json` `expo.android.versionCode` (+1 — Play Store requirement), and `package.json` `version`. Runs the full build. If the build fails, version edits are reverted and the working tree returns to exactly its pre-release state. If the build succeeds, creates a commit `Release vX.Y.Z`, an annotated tag `vX.Y.Z`, and a stub entry in `RELEASES.md` for you to fill in.
+
+Does **not** push the tag or upload the .aab — both require deliberate review. The script prints the four manual follow-up steps when it finishes.
+
+---
+
 ## Common failure messages
 
 | Message | Fix |

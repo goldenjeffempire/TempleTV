@@ -21,6 +21,7 @@
     "logcat": "bash scripts/logcat.sh",
     "screenshot": "bash scripts/screenshot.sh",
     "record": "bash scripts/record.sh",
+    "release:patch": "bash scripts/release.sh",
     "android:clean": "cd android && ./gradlew clean",
     "android:stop": "cd android && ./gradlew --stop"
   },
