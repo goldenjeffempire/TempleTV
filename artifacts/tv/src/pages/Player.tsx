@@ -103,12 +103,15 @@ export function Player({ videoId, title, onBack, hlsUrl, startPositionSecs = 0, 
  * so the iframe navigates cleanly to the new stream — no full-screen
  * remount, no flash to black, no unmount of the keyboard / OSD wiring.
  *
- * Resolution priority (matches `useUnifiedLive` and the mobile player):
+ * Resolution priority (matches `useUnifiedLive` and the mobile player —
+ * `useLiveSync` already collapses these into `sync.videoId` for us):
  *  1. `sync.liveOverride.youtubeVideoId` — admin's explicit Live Control
  *     selection. Wins always.
- *  2. `sync.videoId` — the broadcast scheduler's current YouTube item
- *     (queue mode), if any.
- *  3. `initialVideoId` — what Home computed from its last snapshot when
+ *  2. `sync.ytVideoId` — channel auto-detect (organic live). Without this
+ *     tier, an organic-live stream advertised by the Hero would silently
+ *     pivot to the queue item the moment the user opened the Player.
+ *  3. broadcast scheduler's current YouTube item (queue mode), if any.
+ *  4. `initialVideoId` — what Home computed from its last snapshot when
  *     SELECT was pressed; used until the SSE handshake completes.
  */
 function LiveYouTubePlayer({
@@ -126,17 +129,17 @@ function LiveYouTubePlayer({
   const [title, setTitle] = useState(initialTitle);
 
   useEffect(() => {
-    const overrideId = sync.liveOverride?.youtubeVideoId ?? null;
-    const queueId = sync.videoId ?? null;
-    const nextId = overrideId ?? queueId;
+    // `sync.videoId` is the canonical resolved live videoId from
+    // `useLiveSync`: override → ytVideoId → queue. We just consume it.
+    const nextId = sync.videoId ?? null;
     if (nextId && nextId !== videoId) {
       setVideoId(nextId);
     }
-    const nextTitle = sync.liveOverride?.title ?? sync.title ?? null;
+    const nextTitle = sync.liveOverride?.title ?? sync.ytTitle ?? sync.title ?? null;
     if (nextTitle && nextTitle !== title) {
       setTitle(nextTitle);
     }
-  }, [sync.liveOverride, sync.videoId, sync.title, videoId, title]);
+  }, [sync.liveOverride, sync.videoId, sync.title, sync.ytTitle, videoId, title]);
 
   // If THIS surface (or the LiveHero on Home) reports the live YouTube
   // iframe as failed, navigate back to home — where `useUnifiedLive` now

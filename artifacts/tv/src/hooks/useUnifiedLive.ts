@@ -48,12 +48,21 @@ export function useUnifiedLive(): UnifiedLiveStatus {
   const sync = useLiveSync();
 
   // Resolve the candidate live videoId BEFORE consulting the failure
-  // signal so the signal subscription is keyed off the right ID. Override
-  // wins; otherwise the channel scrape's videoId.
+  // signal so the signal subscription is keyed off the right ID.
+  // Resolution priority (must match `LiveYouTubePlayer` and the mobile
+  // player so every surface plays the SAME stream):
+  //   1. Admin override's YouTube videoId          (Live Control selection)
+  //   2. SSE-pushed channel auto-detect (`sync.ytVideoId`) — instant, the
+  //      same payload every other surface reads.
+  //   3. 30s polled `useLiveStatus()` — cold-start fallback for the brief
+  //      window before the SSE handshake completes.
   const overrideVideoId = sync.liveOverride?.youtubeVideoId ?? null;
   const overrideHls = sync.liveOverride?.hlsStreamUrl ?? null;
   const overrideActive = !!sync.liveOverride && (!!overrideVideoId || !!overrideHls);
-  const candidateVideoId = overrideActive ? overrideVideoId : (polledStatus?.videoId ?? null);
+  const ytSseLive = sync.ytLive && !!sync.ytVideoId;
+  const candidateVideoId = overrideActive
+    ? overrideVideoId
+    : (sync.ytVideoId ?? polledStatus?.videoId ?? null);
   const failed = useLiveFailureFor(candidateVideoId);
 
   return useMemo<UnifiedLiveStatus>(() => {
@@ -66,7 +75,7 @@ export function useUnifiedLive(): UnifiedLiveStatus {
       return {
         isLive: false,
         videoId: candidateVideoId,
-        title: sync.liveOverride?.title ?? polledStatus?.title ?? null,
+        title: sync.liveOverride?.title ?? sync.ytTitle ?? polledStatus?.title ?? null,
         checkedAt: Date.now(),
         detectionMethod: "live-failed-fallback",
         source: null,
@@ -78,10 +87,25 @@ export function useUnifiedLive(): UnifiedLiveStatus {
       return {
         isLive: true,
         videoId: overrideVideoId,
-        title: sync.liveOverride?.title ?? polledStatus?.title ?? null,
+        title: sync.liveOverride?.title ?? sync.ytTitle ?? polledStatus?.title ?? null,
         checkedAt: sync.serverTimeMs ?? Date.now(),
         detectionMethod: "admin-override",
         source: "override",
+      };
+    }
+
+    // Prefer the SSE-pushed channel signal (instant) over the polled one
+    // (up to 30 s stale). Both report the same `cachedLiveStatus` server-
+    // side, but the SSE path is what the Player consumes — keeping them
+    // identical here guarantees Hero ↔ Player consistency.
+    if (ytSseLive) {
+      return {
+        isLive: true,
+        videoId: sync.ytVideoId,
+        title: sync.ytTitle ?? polledStatus?.title ?? null,
+        checkedAt: sync.serverTimeMs ?? Date.now(),
+        detectionMethod: "channel-sse",
+        source: "channel",
       };
     }
 
@@ -109,9 +133,13 @@ export function useUnifiedLive(): UnifiedLiveStatus {
   }, [
     sync.liveOverride,
     sync.serverTimeMs,
+    sync.ytLive,
+    sync.ytVideoId,
+    sync.ytTitle,
     polledStatus,
     overrideActive,
     overrideVideoId,
+    ytSseLive,
     candidateVideoId,
     failed,
   ]);

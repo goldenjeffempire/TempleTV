@@ -56,6 +56,19 @@ export interface BroadcastCurrentResult {
      */
     youtubeVideoId?: string | null;
   } | null;
+  /**
+   * YouTube channel auto-detect signal, surfaced through the broadcast
+   * SSE/REST payload so every viewer surface (Hero, Player) resolves the
+   * active live videoId from a SINGLE source. Resolution priority is:
+   *   1. liveOverride.youtubeVideoId (admin-pinned)  ← always wins
+   *   2. ytVideoId (channel went live organically)
+   *   3. queue item                                   ← player-only fallback
+   * Optional for backwards-compat with API responses that pre-date the
+   * field — clients should treat `undefined` as "not live via channel".
+   */
+  ytLive?: boolean;
+  ytVideoId?: string | null;
+  ytTitle?: string | null;
 }
 
 function toAbsoluteUrl(url: string | null, base: string): string | null {

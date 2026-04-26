@@ -22,6 +22,7 @@ import {
 import { validateStreamKey } from "../lib/liveIngestHealth";
 import { logger } from "../lib/logger";
 import { getClientIp } from "../middlewares/security";
+import { getLiveStatus } from "./youtube";
 
 const router = Router();
 
@@ -82,6 +83,22 @@ type BroadcastCurrentPayload = {
      */
     youtubeVideoId?: string | null;
   } | null;
+  /**
+   * YouTube channel auto-detect signal. Surfaces the same `cachedLiveStatus`
+   * the YouTube poller maintains so every viewer surface (TV Hero, TV Player,
+   * mobile Hero, mobile Player) resolves the active live videoId from a
+   * SINGLE SSE-pushed payload. Resolution priority everywhere is:
+   *   1. liveOverride.youtubeVideoId (admin-pinned)  ← always wins
+   *   2. ytVideoId (channel went live organically)
+   *   3. queue item                                   ← player-only fallback
+   * Without these fields, the Hero (which used to consult a separate poll)
+   * could disagree with the Player (which only saw `liveOverride` + queue),
+   * causing the cinematic CTA to advertise one stream while the player
+   * pivoted to another.
+   */
+  ytLive: boolean;
+  ytVideoId: string | null;
+  ytTitle: string | null;
 };
 
 const CACHE_KEYS = {
@@ -209,6 +226,15 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
           (cached.itemStartEpochSecs + cached.item.durationSecs) * 1000;
       }
 
+      // Always overlay the freshest YouTube channel auto-detect signal on
+      // top of the cached payload — `getLiveStatus()` is an O(1) in-memory
+      // read, and overlaying here means the channel-scrape flip propagates
+      // to viewers within the broadcast cache TTL window even if no other
+      // broadcast event fires (e.g. the schedule is idle and queue is
+      // unchanged). Without this overlay, the Hero would see a fresh
+      // ytVideoId via its own poll while the Player (which reads SSE only)
+      // would still see a stale `null` until the next admin action.
+      const ytStatus = getLiveStatus();
       return {
         ...cached,
         positionSecs: livePositionSecs,
@@ -216,6 +242,9 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
         currentItemEndsAtMs: liveCurrentItemEndsAtMs,
         syncedAt,
         serverTimeMs: nowMs,
+        ytLive: ytStatus.isLive,
+        ytVideoId: ytStatus.videoId,
+        ytTitle: ytStatus.title,
       };
     }
   }
@@ -225,6 +254,18 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
     getScheduleEntries(),
     getBroadcastQueue(),
   ]);
+
+  // Snapshot the YouTube channel auto-detect signal once per fresh build so
+  // every result branch surfaces the same ytVideoId/ytTitle pair to viewers.
+  // The cached-return branch above re-reads `getLiveStatus()` so even cache
+  // hits stay fresh; this snapshot just bakes the same shape into the
+  // freshly-built result.
+  const ytStatus = getLiveStatus();
+  const ytFields = {
+    ytLive: ytStatus.isLive,
+    ytVideoId: ytStatus.videoId,
+    ytTitle: ytStatus.title,
+  } as const;
 
   let result: BroadcastCurrentPayload;
 
@@ -253,6 +294,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
         hlsStreamUrl: activeLiveOverride.hlsStreamUrl ?? null,
         youtubeVideoId: activeLiveOverride.youtubeVideoId ?? null,
       },
+      ...ytFields,
     };
     await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
     return result;
@@ -282,6 +324,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
         startTime: activeSchedule.startTime,
         endTime: activeSchedule.endTime,
       },
+      ...ytFields,
     };
     await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
     return result;
@@ -306,6 +349,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
           startTime: activeSchedule.startTime,
           endTime: activeSchedule.endTime,
         },
+        ...ytFields,
       };
       await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
       return result;
@@ -336,6 +380,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
           }
         : null,
       liveOverride: null,
+      ...ytFields,
     };
     await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
     return result;
@@ -373,6 +418,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
         }
       : null,
     liveOverride: null,
+    ...ytFields,
   };
   await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
   return result;

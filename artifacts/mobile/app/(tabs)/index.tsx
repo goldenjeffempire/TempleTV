@@ -98,21 +98,36 @@ export default function WatchScreen() {
           checkLiveStatus(useCached),
           checkBroadcastCurrent(),
         ]);
-        // An admin "Activate live stream" override (set in Live Control on
-        // the admin dashboard) is the platform's authoritative live signal —
-        // it must win over the YouTube channel auto-scrape so every surface
-        // (this hero, the Live Now strip, the player) flips together to
-        // whatever URL the admin pasted. Mirror the override videoId/title
-        // back into liveStatus when present.
+        // Resolution priority (must match TV `useUnifiedLive`, the TV
+        // Player wrapper, and the mobile Player so the Hero CTA, the Live
+        // Now strip, and the player all land on the SAME stream):
+        //   1. Admin override's YouTube videoId  (Live Control selection)
+        //   2. Channel auto-detect ytVideoId     (organic live, SSE-pushed)
+        //   3. Standalone /api/youtube/live/status (cold-start fallback)
+        // Without tier 2, this Hero would advertise an organic-live stream
+        // (via tier 3) while the Player — which only consumes broadcast
+        // SSE — silently pivoted to the queue item. By preferring the same
+        // broadcast payload here, both surfaces resolve to the same ID.
         const overrideVideoId = broadcastRes?.liveOverride?.youtubeVideoId ?? null;
         const overrideTitle = broadcastRes?.liveOverride?.title ?? null;
-        const merged: LiveCheckResult = overrideVideoId
-          ? {
-              isLive: true,
-              videoId: overrideVideoId,
-              title: overrideTitle ?? status.title ?? null,
-            }
-          : status;
+        const broadcastYtVideoId = broadcastRes?.ytVideoId ?? null;
+        const broadcastYtTitle = broadcastRes?.ytTitle ?? null;
+        let merged: LiveCheckResult;
+        if (overrideVideoId) {
+          merged = {
+            isLive: true,
+            videoId: overrideVideoId,
+            title: overrideTitle ?? broadcastYtTitle ?? status.title ?? null,
+          };
+        } else if (broadcastYtVideoId) {
+          merged = {
+            isLive: true,
+            videoId: broadcastYtVideoId,
+            title: broadcastYtTitle ?? status.title ?? null,
+          };
+        } else {
+          merged = status;
+        }
         setLiveStatus(merged);
         setBroadcastCurrent(broadcastRes);
         setCheckingLive(false);

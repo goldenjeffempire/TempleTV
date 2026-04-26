@@ -21,6 +21,18 @@ export interface BroadcastSyncState {
     /** YouTube live video ID set by the admin via "paste a URL" Live Control. */
     youtubeVideoId?: string | null;
   } | null;
+  /**
+   * YouTube channel auto-detect signal, surfaced through the SAME broadcast
+   * SSE channel that carries `liveOverride`. This is the missing piece that
+   * keeps the TV Player and the TV Hero in lock-step: when the channel goes
+   * live organically (no admin override), every surface that reads
+   * `useLiveSync` now sees the same `ytVideoId` and resolves to the SAME
+   * stream, eliminating the prior bug where the Hero advertised the
+   * organic-live video but the Player pivoted to the queue item.
+   */
+  ytLive: boolean;
+  ytVideoId: string | null;
+  ytTitle: string | null;
   syncedAt: string | null;
   serverTimeMs: number | null;
   connected: boolean;
@@ -48,6 +60,9 @@ const INITIAL: BroadcastSyncState = {
   videoId: null,
   hlsStreamUrl: null,
   liveOverride: null,
+  ytLive: false,
+  ytVideoId: null,
+  ytTitle: null,
   syncedAt: null,
   serverTimeMs: null,
   connected: false,
@@ -96,18 +111,34 @@ export function useLiveSync(): BroadcastSyncState {
         videoSource?: string;
       };
       const nextItem = current.nextItem as BroadcastNextItem | null ?? null;
+      const ytLive = current.ytLive === true;
+      const ytVideoId = (current.ytVideoId as string | null | undefined) ?? null;
+      const ytTitle = (current.ytTitle as string | null | undefined) ?? null;
 
       setState({
-        isLive: !!liveOverride || !!item,
-        title: liveOverride?.title ?? item?.title ?? null,
-        // The override's pasted YouTube URL takes priority — that's the
-        // admin's explicit "this is what's airing right now" signal. Falls
-        // back to whatever queue item the broadcast scheduler picked.
-        videoId: liveOverride?.youtubeVideoId ?? item?.youtubeId ?? null,
+        // `isLive` reflects "something live-class is airing right now."
+        // Promoting `ytLive` here means a Hero/Player consumer that just
+        // checks `sync.isLive` will treat an organic YouTube live the same
+        // as an admin override or a queue item — the unified resolver above
+        // (override → ytVideoId → queue) decides which video to actually
+        // load.
+        isLive: !!liveOverride || !!item || ytLive,
+        title: liveOverride?.title ?? ytTitle ?? item?.title ?? null,
+        // Resolution priority (matches `useUnifiedLive`, `LiveYouTubePlayer`,
+        // and the mobile player):
+        //   1. Admin override's YouTube videoId  (Live Control selection)
+        //   2. Channel auto-detect ytVideoId     (organic live)
+        //   3. Broadcast queue item              (fallback content)
+        // Without step 2, the Player would silently skip an organic live
+        // stream that the Hero was advertising.
+        videoId: liveOverride?.youtubeVideoId ?? ytVideoId ?? item?.youtubeId ?? null,
         hlsStreamUrl:
           liveOverride?.hlsStreamUrl ??
           (item?.videoSource === "local" ? (item.localVideoUrl ?? null) : null),
         liveOverride: liveOverride ?? null,
+        ytLive,
+        ytVideoId,
+        ytTitle,
         syncedAt: (current.syncedAt as string) ?? null,
         serverTimeMs: (current.serverTimeMs as number) ?? null,
         connected: true,

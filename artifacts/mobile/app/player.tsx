@@ -679,15 +679,26 @@ export default function PlayerScreen() {
   // A/B double-buffer when its `hlsMasterUrl` prop changes.
   useEffect(() => {
     if (!isLive || isBroadcastMode) return;
-    let lastSeenOverrideId: string | null = tunedVideoId ?? null;
+    let lastSeenLiveId: string | null = tunedVideoId ?? null;
 
+    // Resolution priority (must match TV `LiveYouTubePlayer` and TV
+    // `useUnifiedLive` so the Hero CTA and the Player both land on the
+    // SAME stream):
+    //   1. Admin override's YouTube videoId  (Live Control selection)
+    //   2. Channel auto-detect ytVideoId     (organic live)
+    // Without tier 2, an organic-live stream advertised by the Hero
+    // would silently stay on the queue item the user was previously
+    // tuned to — the Hero says "live now" while the Player keeps
+    // playing the rerun.
     const applyOverride = (current: BroadcastCurrentResult | null | undefined) => {
-      const overrideId = current?.liveOverride?.youtubeVideoId ?? null;
-      if (!overrideId || overrideId === lastSeenOverrideId) return;
-      lastSeenOverrideId = overrideId;
-      setTunedVideoId(overrideId);
-      const overrideTitle = current?.liveOverride?.title ?? null;
-      if (overrideTitle) setTunedTitle(overrideTitle);
+      const nextLiveId =
+        current?.liveOverride?.youtubeVideoId ?? current?.ytVideoId ?? null;
+      if (!nextLiveId || nextLiveId === lastSeenLiveId) return;
+      lastSeenLiveId = nextLiveId;
+      setTunedVideoId(nextLiveId);
+      const nextTitle =
+        current?.liveOverride?.title ?? current?.ytTitle ?? null;
+      if (nextTitle) setTunedTitle(nextTitle);
     };
 
     const handler = async (payload?: any) => {
