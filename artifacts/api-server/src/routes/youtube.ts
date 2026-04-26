@@ -45,32 +45,95 @@ const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes in ms
 //      ERROR — and logs the silent skips at DEBUG.
 const QUOTA_EXHAUSTED_KEY = "youtube:quota:exhaustedUntilMs";
 const QUOTA_USAGE_KEY_PREFIX = "youtube:quota:usage:"; // suffix: YYYY-MM-DD (UTC)
+const QUOTA_CONTEXT_KEY_PREFIX = "youtube:quota:context:"; // suffix: YYYY-MM-DD (UTC)
 const QUOTA_DAILY_LIMIT = Number(process.env.YOUTUBE_QUOTA_DAILY_LIMIT ?? "10000");
+// Number of historical days to render in the admin dashboard chart.
+const QUOTA_HISTORY_DAYS = 7;
 let _lastQuotaWarnAtMs = 0;
 
 // UTC date label for the bucket key. Quota actually resets at Pacific midnight,
 // but the YYYY-MM-DD bucket only needs to be monotonic+stable over a day —
 // the absolute reset moment is tracked separately by `nextQuotaResetMs()`.
-function quotaBucketKey(now: number = Date.now()): string {
+function utcDateLabel(now: number = Date.now()): string {
   const d = new Date(now);
   const yyyy = d.getUTCFullYear();
   const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
   const dd = String(d.getUTCDate()).padStart(2, "0");
-  return `${QUOTA_USAGE_KEY_PREFIX}${yyyy}-${mm}-${dd}`;
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function quotaBucketKey(now: number = Date.now()): string {
+  return `${QUOTA_USAGE_KEY_PREFIX}${utcDateLabel(now)}`;
+}
+
+function quotaContextKey(now: number = Date.now()): string {
+  return `${QUOTA_CONTEXT_KEY_PREFIX}${utcDateLabel(now)}`;
 }
 
 /**
  * Best-effort daily-quota counter. We can't query the real "units consumed"
  * from Google, so we attribute each call by its documented cost (search=100,
- * everything else we use today=1). The counter persists in the distributed
- * cache so it survives restarts and is shared across replicas. TTL is set
- * generously (30 h) so it covers the whole UTC day plus a safety margin.
+ * everything else we use today=1). Two parallel counters are written:
+ *
+ *   1. Daily total — for the headline number / banner threshold.
+ *   2. Per-context breakdown — a small object keyed by the API context name
+ *      (e.g. "playlistItems", "videos.details", "yt-status") so the admin
+ *      dashboard can show which scheduler / endpoint is burning units.
+ *
+ * Both persist in the distributed cache so they survive restarts and are
+ * shared across replicas. TTL is set generously (`QUOTA_HISTORY_DAYS + 1`
+ * days) so historical buckets are still readable for the chart.
  */
-async function recordQuotaUsage(costUnits: number): Promise<void> {
+async function recordQuotaUsage(
+  costUnits: number,
+  context: string,
+): Promise<void> {
   if (costUnits <= 0) return;
-  const key = quotaBucketKey();
-  const current = (await cache.get<number>(key)) ?? 0;
-  await cache.set(key, current + costUnits, 30 * 60 * 60 * 1000);
+  const ttlMs = (QUOTA_HISTORY_DAYS + 1) * 24 * 60 * 60 * 1000;
+
+  // Daily total
+  const totalKey = quotaBucketKey();
+  const currentTotal = (await cache.get<number>(totalKey)) ?? 0;
+  await cache.set(totalKey, currentTotal + costUnits, ttlMs);
+
+  // Per-context breakdown (small object; cheap read-modify-write)
+  const ctxKey = quotaContextKey();
+  const currentCtx =
+    (await cache.get<Record<string, number>>(ctxKey)) ?? {};
+  currentCtx[context] = (currentCtx[context] ?? 0) + costUnits;
+  await cache.set(ctxKey, currentCtx, ttlMs);
+}
+
+/**
+ * Last-N-days quota usage for the admin dashboard chart and per-context
+ * breakdown for today. `dailyTotals` is ordered oldest → newest and always
+ * contains exactly `QUOTA_HISTORY_DAYS` entries (zero-filled for missing days).
+ */
+export async function getYouTubeQuotaHistory(): Promise<{
+  dailyTotals: Array<{ date: string; units: number }>;
+  todayByContext: Array<{ context: string; units: number }>;
+  dailyLimit: number;
+}> {
+  const now = Date.now();
+  const oneDayMs = 24 * 60 * 60 * 1000;
+  const dailyTotals: Array<{ date: string; units: number }> = [];
+  for (let i = QUOTA_HISTORY_DAYS - 1; i >= 0; i--) {
+    const ts = now - i * oneDayMs;
+    const date = utcDateLabel(ts);
+    const units =
+      (await cache.get<number>(`${QUOTA_USAGE_KEY_PREFIX}${date}`)) ?? 0;
+    dailyTotals.push({ date, units });
+  }
+  const ctx =
+    (await cache.get<Record<string, number>>(quotaContextKey())) ?? {};
+  const todayByContext = Object.entries(ctx)
+    .map(([context, units]) => ({ context, units }))
+    .sort((a, b) => b.units - a.units);
+  return {
+    dailyTotals,
+    todayByContext,
+    dailyLimit: QUOTA_DAILY_LIMIT,
+  };
 }
 
 /**
@@ -170,8 +233,9 @@ async function youtubeApiFetch<T>(
   }
   if (res.ok) {
     // Attribute the cost only on successful responses — failed calls don't
-    // count against quota in Google's accounting.
-    void recordQuotaUsage(costUnits);
+    // count against quota in Google's accounting. Tagged with `context` so
+    // the admin dashboard can show which call sites are burning units.
+    void recordQuotaUsage(costUnits, context);
     try {
       return (await res.json()) as T;
     } catch (err) {

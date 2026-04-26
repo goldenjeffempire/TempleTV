@@ -13,7 +13,12 @@ import { eq, ilike, or, count, sql, desc, asc, and, lte, gte, inArray } from "dr
 import { queueTranscodingJob, retryTranscodingJob, TRANSCODER_HEARTBEAT_KEY } from "../lib/transcoder";
 import { isFfmpegReady } from "../lib/ffmpeg";
 import { broadcastLiveEvent, addSSEClient, removeSSEClient, getSSEClientCount } from "../lib/liveEvents";
-import { getLiveStatus, getLiveMonitorData, getYouTubeQuotaStatus } from "./youtube";
+import {
+  getLiveStatus,
+  getLiveMonitorData,
+  getYouTubeQuotaStatus,
+  getYouTubeQuotaHistory,
+} from "./youtube";
 import { emitBroadcastState } from "./broadcast";
 import { cache } from "../lib/cache";
 import { invalidatePublicVideoCaches, invalidatePublicPlaylistCaches } from "../lib/publicCacheInvalidation";
@@ -629,6 +634,21 @@ router.get("/admin/youtube/quota", async (_req, res) => {
   try {
     const status = await getYouTubeQuotaStatus();
     res.json(status);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+/**
+ * Historical YouTube quota usage — last 7 daily totals (oldest first) plus
+ * today's per-context breakdown. Drives the YouTube Quota detail page so
+ * operators can see which scheduler is burning units BEFORE the gate engages.
+ */
+router.get("/admin/youtube/quota/history", async (_req, res) => {
+  try {
+    const history = await getYouTubeQuotaHistory();
+    res.json(history);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });

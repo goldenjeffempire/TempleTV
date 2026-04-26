@@ -696,7 +696,15 @@ export interface YouTubeQuotaStatus {
   nextResetAt: string;
 }
 
+export interface YouTubeQuotaHistory {
+  dailyTotals: Array<{ date: string; units: number }>;
+  todayByContext: Array<{ context: string; units: number }>;
+  dailyLimit: number;
+}
+
 export const youtubeQuotaApi = {
   get: (signal?: AbortSignal) =>
     adminGet<YouTubeQuotaStatus>("/admin/youtube/quota", signal),
+  getHistory: (signal?: AbortSignal) =>
+    adminGet<YouTubeQuotaHistory>("/admin/youtube/quota/history", signal),
 };

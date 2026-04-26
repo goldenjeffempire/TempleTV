@@ -24,6 +24,7 @@ import {
   Loader2,
   ChevronRight,
   HandHeart,
+  Gauge,
 } from "lucide-react";
 import {
   applyAutoTheme,
@@ -205,6 +206,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         { href: "/broadcast", label: "Broadcast Queue", icon: Tv2 },
         { href: "/live-monitor", label: "Live Monitor", icon: MonitorPlay },
         { href: "/schedule", label: "Schedule", icon: Calendar },
+        { href: "/youtube-quota", label: "YouTube Quota", icon: Gauge },
       ],
     },
     {

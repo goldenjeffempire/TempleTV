@@ -27,6 +27,7 @@ const LaunchReadiness = lazy(() => import("@/pages/launch-readiness"));
 const UsersPage = lazy(() => import("@/pages/users"));
 const LiveControl = lazy(() => import("@/pages/live-control"));
 const LiveIngest = lazy(() => import("@/pages/live-ingest"));
+const YouTubeQuota = lazy(() => import("@/pages/youtube-quota"));
 const Prayers = lazy(() => import("@/pages/prayers"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
@@ -76,6 +77,7 @@ function RoutedContent() {
           <Route path="/launch-readiness" component={LaunchReadiness} />
           <Route path="/live-control" component={LiveControl} />
           <Route path="/live-ingest" component={LiveIngest} />
+          <Route path="/youtube-quota" component={YouTubeQuota} />
           <Route path="/prayers" component={Prayers} />
           <Route component={NotFound} />
         </Switch>
