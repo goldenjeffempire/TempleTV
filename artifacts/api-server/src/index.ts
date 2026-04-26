@@ -10,6 +10,7 @@ import { assertFfmpegAvailable } from "./lib/ffmpeg";
 import { startNotificationScheduler } from "./lib/notification-scheduler";
 import { startSSEHeartbeat, closeAllSSEClients } from "./lib/liveEvents";
 import { startBroadcastTransitionTicker } from "./routes/broadcast";
+import { startLiveIngestHealthMonitor } from "./lib/liveIngestHealth";
 import { startStreamHealthEmitter } from "./lib/streamHealth";
 import { startYoutubeCatalogueScheduler } from "./routes/youtube";
 import { cache } from "./lib/cache";
@@ -123,6 +124,7 @@ function startApiSchedulers() {
   startBroadcastTransitionTicker();
   startStreamHealthEmitter();
   startYoutubeCatalogueScheduler();
+  startLiveIngestHealthMonitor();
 
   // Log cache backend once it has had time to connect (2s warm-up).
   setTimeout(() => {

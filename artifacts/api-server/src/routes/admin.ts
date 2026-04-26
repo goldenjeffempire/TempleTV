@@ -1,5 +1,12 @@
 import { Router } from "express";
-import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, scheduledNotificationsTable, pushTokensTable, webPushSubscriptionsTable, liveOverridesTable, transcodingJobsTable, broadcastQueueTable, usersTable, userWatchHistoryTable, prayerRequestsTable, s3UploadTelemetryTable, S3_TELEMETRY_EVENTS, type S3TelemetryEvent } from "@workspace/db";
+import { db, videosTable, playlistsTable, playlistVideosTable, scheduleTable, notificationsTable, scheduledNotificationsTable, pushTokensTable, webPushSubscriptionsTable, liveOverridesTable, liveIngestEndpointsTable, transcodingJobsTable, broadcastQueueTable, usersTable, userWatchHistoryTable, prayerRequestsTable, s3UploadTelemetryTable, S3_TELEMETRY_EVENTS, type S3TelemetryEvent } from "@workspace/db";
+import {
+  generateStreamKey,
+  probeHlsEndpoint,
+  promoteEndpoint as promoteIngestEndpoint,
+  runHealthSweep as runIngestHealthSweep,
+  stopActiveIngestOverride,
+} from "../lib/liveIngestHealth";
 import { getVapidPublicKey, sendWebPushNotifications } from "../services/web-push";
 import { eq, ilike, or, count, sql, desc, asc, and, lte, gte, inArray } from "drizzle-orm";
 import { queueTranscodingJob, retryTranscodingJob, TRANSCODER_HEARTBEAT_KEY } from "../lib/transcoder";
@@ -4171,6 +4178,232 @@ router.delete("/admin/prayers/:id", async (req, res) => {
       .returning();
     if (!deleted) return void res.status(404).json({ error: "Prayer request not found" });
     res.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+// ===========================================================================
+// Live Ingest — Broadcast Operations Center
+// ===========================================================================
+//
+// Manages external broadcast inputs (vMix / OBS / Wirecast / Cloudflare Stream
+// / Mux / AWS IVS). Each row stores: ingest URL + stream key (handed to the
+// encoder), HLS playback URL (consumed by clients), and a fallback YouTube
+// URL used when every primary endpoint is unhealthy.
+//
+// The health monitor (lib/liveIngestHealth.ts) probes each active endpoint on
+// a 15-second cadence and auto-promotes the next healthy fallback when the
+// primary fails N consecutive times. Promotion creates a live override
+// pinned to the new endpoint's HLS URL, which the existing broadcast pipeline
+// already understands. No client-side changes required.
+// ===========================================================================
+
+const ALLOWED_INGEST_PROTOCOLS = ["rtmp", "rtmps", "srt", "hls", "whip"] as const;
+type IngestProtocol = (typeof ALLOWED_INGEST_PROTOCOLS)[number];
+
+router.get("/admin/live-ingest/endpoints", async (_req, res) => {
+  try {
+    const rows = await db
+      .select()
+      .from(liveIngestEndpointsTable)
+      .orderBy(desc(liveIngestEndpointsTable.isPrimary), asc(liveIngestEndpointsTable.priority));
+    res.json({
+      endpoints: rows,
+      summary: {
+        total: rows.length,
+        active: rows.filter((r) => r.isActive).length,
+        primary: rows.find((r) => r.isPrimary)?.id ?? null,
+        healthy: rows.filter((r) => r.healthStatus === "healthy").length,
+        degraded: rows.filter((r) => r.healthStatus === "degraded").length,
+        unhealthy: rows.filter((r) => r.healthStatus === "unhealthy").length,
+      },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/admin/live-ingest/endpoints", async (req, res) => {
+  try {
+    const {
+      name,
+      protocol,
+      ingestUrl,
+      hlsPlaybackUrl,
+      fallbackYoutubeUrl,
+      priority,
+      notes,
+    } = req.body as {
+      name?: string;
+      protocol?: string;
+      ingestUrl?: string;
+      hlsPlaybackUrl?: string;
+      fallbackYoutubeUrl?: string;
+      priority?: number;
+      notes?: string;
+    };
+    if (!name?.trim() || !protocol || !ingestUrl?.trim() || !hlsPlaybackUrl?.trim()) {
+      return void res.status(400).json({
+        error: "name, protocol, ingestUrl, and hlsPlaybackUrl are required",
+      });
+    }
+    if (!ALLOWED_INGEST_PROTOCOLS.includes(protocol as IngestProtocol)) {
+      return void res.status(400).json({
+        error: `protocol must be one of: ${ALLOWED_INGEST_PROTOCOLS.join(", ")}`,
+      });
+    }
+    const id = randomUUID();
+    const streamKey = generateStreamKey();
+    const row = {
+      id,
+      name: name.trim(),
+      protocol,
+      ingestUrl: ingestUrl.trim(),
+      streamKey,
+      hlsPlaybackUrl: hlsPlaybackUrl.trim(),
+      fallbackYoutubeUrl: fallbackYoutubeUrl?.trim() || null,
+      isPrimary: false,
+      isActive: true,
+      priority: typeof priority === "number" ? priority : 100,
+      notes: notes?.trim() || null,
+      healthStatus: "unknown" as const,
+    };
+    await db.insert(liveIngestEndpointsTable).values(row);
+    res.json(row);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.patch("/admin/live-ingest/endpoints/:id", async (req, res) => {
+  try {
+    const { id } = req.params as { id: string };
+    const body = req.body as Record<string, unknown>;
+    const allowed: Record<string, unknown> = {};
+    for (const key of [
+      "name",
+      "protocol",
+      "ingestUrl",
+      "hlsPlaybackUrl",
+      "fallbackYoutubeUrl",
+      "priority",
+      "notes",
+      "isActive",
+    ]) {
+      if (body[key] !== undefined) allowed[key] = body[key];
+    }
+    if (allowed.protocol && !ALLOWED_INGEST_PROTOCOLS.includes(allowed.protocol as IngestProtocol)) {
+      return void res.status(400).json({
+        error: `protocol must be one of: ${ALLOWED_INGEST_PROTOCOLS.join(", ")}`,
+      });
+    }
+    allowed.updatedAt = new Date();
+    const [updated] = await db
+      .update(liveIngestEndpointsTable)
+      .set(allowed as Parameters<typeof db.update>[0] extends never ? never : Record<string, unknown>)
+      .where(eq(liveIngestEndpointsTable.id, id))
+      .returning();
+    if (!updated) return void res.status(404).json({ error: "Endpoint not found" });
+    res.json(updated);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.delete("/admin/live-ingest/endpoints/:id", async (req, res) => {
+  try {
+    const { id } = req.params as { id: string };
+    const [deleted] = await db
+      .delete(liveIngestEndpointsTable)
+      .where(eq(liveIngestEndpointsTable.id, id))
+      .returning();
+    if (!deleted) return void res.status(404).json({ error: "Endpoint not found" });
+    res.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/admin/live-ingest/endpoints/:id/rotate-key", async (req, res) => {
+  try {
+    const { id } = req.params as { id: string };
+    const newKey = generateStreamKey();
+    const [updated] = await db
+      .update(liveIngestEndpointsTable)
+      .set({ streamKey: newKey, updatedAt: new Date() })
+      .where(eq(liveIngestEndpointsTable.id, id))
+      .returning();
+    if (!updated) return void res.status(404).json({ error: "Endpoint not found" });
+    res.json({ id, streamKey: newKey });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/admin/live-ingest/endpoints/:id/promote", async (req, res) => {
+  try {
+    const { id } = req.params as { id: string };
+    await promoteIngestEndpoint(id);
+    res.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/admin/live-ingest/stop", async (_req, res) => {
+  try {
+    await stopActiveIngestOverride();
+    res.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/admin/live-ingest/endpoints/:id/probe", async (req, res) => {
+  try {
+    const { id } = req.params as { id: string };
+    const rows = await db
+      .select()
+      .from(liveIngestEndpointsTable)
+      .where(eq(liveIngestEndpointsTable.id, id))
+      .limit(1);
+    const endpoint = rows[0];
+    if (!endpoint) return void res.status(404).json({ error: "Endpoint not found" });
+    const probe = await probeHlsEndpoint(endpoint.hlsPlaybackUrl);
+    const now = new Date();
+    await db
+      .update(liveIngestEndpointsTable)
+      .set({
+        healthStatus: probe.status,
+        lastHealthAt: now,
+        lastHealthyAt: probe.ok ? now : endpoint.lastHealthyAt,
+        consecutiveFailures: probe.ok ? 0 : endpoint.consecutiveFailures + 1,
+        lastBitrateKbps: probe.bitrateKbps,
+        lastSegmentLatencyMs: probe.segmentLatencyMs,
+        lastError: probe.error,
+        updatedAt: now,
+      })
+      .where(eq(liveIngestEndpointsTable.id, id));
+    res.json({ id, ...probe });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/admin/live-ingest/sweep", async (_req, res) => {
+  try {
+    const results = await runIngestHealthSweep();
+    res.json({ results });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });

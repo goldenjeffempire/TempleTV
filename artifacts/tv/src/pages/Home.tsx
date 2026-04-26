@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LiveHero } from "../components/LiveHero";
+import { BroadcastOnAirStrip } from "../components/BroadcastOnAirStrip";
 import { TempleTvLogo } from "../components/TempleTvLogo";
 import { SermonRow } from "../components/SermonRow";
 import { Clock } from "../components/Clock";
@@ -225,6 +226,10 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
           <Clock />
         </div>
       </div>
+
+      {/* NOW ON AIR + UP NEXT strip — overlays the hero so viewers always
+          see what's airing now and what's next, even before they interact. */}
+      <BroadcastOnAirStrip liveStatus={liveStatus} broadcastCurrent={broadcastCurrent} />
 
       {/* Scrollable content */}
       <div ref={scrollRef} style={{ position: "absolute", inset: 0, overflowY: "auto", overflowX: "hidden", paddingBottom: 40 }}>

@@ -25,6 +25,7 @@ const LiveMonitor = lazy(() => import("@/pages/live-monitor"));
 const LaunchReadiness = lazy(() => import("@/pages/launch-readiness"));
 const UsersPage = lazy(() => import("@/pages/users"));
 const LiveControl = lazy(() => import("@/pages/live-control"));
+const LiveIngest = lazy(() => import("@/pages/live-ingest"));
 const Prayers = lazy(() => import("@/pages/prayers"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
@@ -73,6 +74,7 @@ function RoutedContent() {
           <Route path="/users" component={UsersPage} />
           <Route path="/launch-readiness" component={LaunchReadiness} />
           <Route path="/live-control" component={LiveControl} />
+          <Route path="/live-ingest" component={LiveIngest} />
           <Route path="/prayers" component={Prayers} />
           <Route component={NotFound} />
         </Switch>

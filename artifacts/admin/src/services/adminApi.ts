@@ -582,6 +582,94 @@ export interface TranscodingJobDetail extends TranscodingJob {
   updatedAt?: string;
 }
 
+// ===========================================================================
+// Live Ingest — Broadcast Operations Center
+// ===========================================================================
+
+export type LiveIngestProtocol = "rtmp" | "rtmps" | "srt" | "hls" | "whip";
+export type LiveIngestHealthStatus = "healthy" | "degraded" | "unhealthy" | "unknown";
+
+export interface LiveIngestEndpoint {
+  id: string;
+  name: string;
+  protocol: LiveIngestProtocol | string;
+  ingestUrl: string;
+  streamKey: string;
+  hlsPlaybackUrl: string;
+  fallbackYoutubeUrl: string | null;
+  isPrimary: boolean;
+  isActive: boolean;
+  priority: number;
+  notes: string | null;
+  healthStatus: LiveIngestHealthStatus | string;
+  lastHealthAt: string | null;
+  lastHealthyAt: string | null;
+  consecutiveFailures: number;
+  lastBitrateKbps: number | null;
+  lastSegmentLatencyMs: number | null;
+  droppedFramesPct: number | null;
+  lastError: string | null;
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LiveIngestEndpointList {
+  endpoints: LiveIngestEndpoint[];
+  summary: {
+    total: number;
+    active: number;
+    primary: string | null;
+    healthy: number;
+    degraded: number;
+    unhealthy: number;
+  };
+}
+
+export interface LiveIngestProbeResult {
+  id: string;
+  ok: boolean;
+  status: LiveIngestHealthStatus;
+  latencyMs: number;
+  bitrateKbps: number | null;
+  segmentLatencyMs: number | null;
+  error: string | null;
+}
+
+export interface LiveIngestEndpointInput {
+  name: string;
+  protocol: LiveIngestProtocol;
+  ingestUrl: string;
+  hlsPlaybackUrl: string;
+  fallbackYoutubeUrl?: string;
+  priority?: number;
+  notes?: string;
+}
+
+export const liveIngestApi = {
+  list: (signal?: AbortSignal) =>
+    adminGet<LiveIngestEndpointList>("/admin/live-ingest/endpoints", signal),
+  create: (input: LiveIngestEndpointInput) =>
+    adminPost<LiveIngestEndpoint>("/admin/live-ingest/endpoints", input),
+  update: (id: string, patch: Partial<LiveIngestEndpointInput> & { isActive?: boolean }) =>
+    adminPatch<LiveIngestEndpoint>(`/admin/live-ingest/endpoints/${id}`, patch),
+  remove: (id: string) =>
+    adminDelete<{ ok: true }>(`/admin/live-ingest/endpoints/${id}`),
+  rotateKey: (id: string) =>
+    adminPost<{ id: string; streamKey: string }>(
+      `/admin/live-ingest/endpoints/${id}/rotate-key`,
+    ),
+  promote: (id: string) =>
+    adminPost<{ ok: true }>(`/admin/live-ingest/endpoints/${id}/promote`),
+  stop: () => adminPost<{ ok: true }>("/admin/live-ingest/stop"),
+  probe: (id: string) =>
+    adminPost<LiveIngestProbeResult>(`/admin/live-ingest/endpoints/${id}/probe`),
+  sweep: () =>
+    adminPost<{ results: Array<{ id: string; name: string; isPrimary: boolean; healthStatus: string; latencyMs: number; bitrateKbps: number | null; error: string | null }> }>(
+      "/admin/live-ingest/sweep",
+    ),
+};
+
 export const transcodingApi = {
   getQueue: (signal?: AbortSignal) => adminGet<TranscodingQueue>("/admin/transcoding/queue", signal),
   getJob: (jobId: string, signal?: AbortSignal) =>

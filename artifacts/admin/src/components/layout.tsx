@@ -201,6 +201,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             </span>
           ) : undefined,
         },
+        { href: "/live-ingest", label: "Live Ingest", icon: Radio },
         { href: "/broadcast", label: "Broadcast Queue", icon: Tv2 },
         { href: "/live-monitor", label: "Live Monitor", icon: MonitorPlay },
         { href: "/schedule", label: "Schedule", icon: Calendar },
