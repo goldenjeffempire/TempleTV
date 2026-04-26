@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { type LiveStatus, type BroadcastCurrent } from "../lib/api";
 import { LiveBroadcastVideo } from "./LiveBroadcastVideo";
 import { BROADCAST_HERO_TITLE } from "../lib/broadcastIdentity";
-import { reportLiveFailure } from "../lib/liveFailureSignal";
+import { reportLiveFailure, useLiveFallbackJustTriggered } from "../lib/liveFailureSignal";
 
 interface LiveHeroProps {
   liveStatus: LiveStatus | null;
@@ -41,6 +41,10 @@ interface LiveHeroProps {
 export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: LiveHeroProps) {
   const isLive = liveStatus?.isLive ?? false;
   const ytVideoId = liveStatus?.videoId;
+  // One-shot banner: flashes for ~5 s when the live YouTube embed for this
+  // device just dropped, so viewers understand why the cinematic preview
+  // suddenly switched to the broadcast queue. Auto-clears.
+  const showFallbackBanner = useLiveFallbackJustTriggered(ytVideoId);
   const ytThumbUrl = ytVideoId
     ? `https://img.youtube.com/vi/${ytVideoId}/maxresdefault.jpg`
     : null;
@@ -84,6 +88,48 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
       }}
       data-testid="live-hero"
     >
+      {/* Live-fallback flash banner — see useLiveFallbackJustTriggered. */}
+      {showFallbackBanner && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            position: "absolute",
+            top: 24,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 50,
+            background: "rgba(13, 17, 23, 0.92)",
+            border: "1px solid rgba(255, 255, 255, 0.18)",
+            color: "#FFF",
+            padding: "10px 18px",
+            borderRadius: 999,
+            fontSize: 14,
+            fontWeight: 600,
+            letterSpacing: "0.01em",
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            backdropFilter: "blur(12px)",
+            boxShadow: "0 6px 24px rgba(0, 0, 0, 0.45)",
+            animation: "tv-fallback-fade-in 240ms ease-out",
+          }}
+          data-testid="live-fallback-banner"
+        >
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              background: "#FF8A00",
+              boxShadow: "0 0 8px rgba(255, 138, 0, 0.7)",
+            }}
+          />
+          Live unavailable — playing the broadcast queue instead
+          <style>{`@keyframes tv-fallback-fade-in { from { opacity: 0; transform: translate(-50%, -8px); } to { opacity: 1; transform: translate(-50%, 0); } }`}</style>
+        </div>
+      )}
+
       {/* ── LAYER 1 (blur fill): Cinematic backdrop — covers the entire frame ── */}
       {/* This layer always covers 100% of the container so there are no empty edges,
           even when the actual video has a different aspect ratio. */}

@@ -33,7 +33,7 @@ import { checkLiveStatus, type LiveCheckResult } from "@/services/youtube";
 import { sendLiveServiceNotification } from "@/services/notifications";
 import { useWatchProgress } from "@/hooks/useWatchProgress";
 import { checkBroadcastCurrent, subscribeBroadcastEvents, type BroadcastCurrentResult } from "@/services/broadcast";
-import { reportLiveFailure, useLiveFailureFor } from "@/services/liveFailureSignal";
+import { reportLiveFailure, useLiveFailureFor, useLiveFallbackJustTriggered } from "@/services/liveFailureSignal";
 import {
   BROADCAST_TITLE,
   BROADCAST_HERO_TITLE,
@@ -365,6 +365,10 @@ export default function WatchScreen() {
   // a new URL).
   const liveYoutubeFailed = useLiveFailureFor(liveStatus.videoId);
   const effectiveLiveActive = liveStatus.isLive && !liveYoutubeFailed;
+  // One-shot banner: flashes for ~5 s when the live YouTube embed for this
+  // device just dropped, so viewers understand why the cinematic preview
+  // suddenly switched to the broadcast queue.
+  const showLiveFallbackBanner = useLiveFallbackJustTriggered(liveStatus.videoId);
   const showScheduledLive = !effectiveLiveActive && broadcastCurrent?.activeSchedule?.contentType === "live";
   const showBroadcast = !effectiveLiveActive && (broadcastItem !== null || showScheduledLive);
 
@@ -477,6 +481,24 @@ export default function WatchScreen() {
               accessibilityRole="button"
               accessibilityLabel={effectiveLiveActive ? "Watch live service" : "Watch Temple TV"}
             >
+              {/* Live-fallback flash banner — flashes for ~5 s when the live
+                  YouTube embed for this device just dropped. Auto-clears via
+                  the useLiveFallbackJustTriggered hook. */}
+              {showLiveFallbackBanner && (
+                <View
+                  pointerEvents="none"
+                  accessible
+                  accessibilityRole="alert"
+                  accessibilityLabel="Live unavailable, playing the broadcast queue instead"
+                  style={styles.liveFallbackBanner}
+                >
+                  <View style={styles.liveFallbackDot} />
+                  <Text style={styles.liveFallbackText} numberOfLines={2}>
+                    Live unavailable — playing the broadcast queue instead
+                  </Text>
+                </View>
+              )}
+
               {/* ── Backdrop: video > thumbnail > logo ── */}
               <View style={StyleSheet.absoluteFill}>
                 {showBroadcast && broadcastItem?.localVideoUrl && HeroVideoComponent && !heroVideoFailed ? (
@@ -812,6 +834,41 @@ const styles = StyleSheet.create({
     backgroundColor: "#0e0018",
     alignItems: "center",
     justifyContent: "center",
+  },
+  liveFallbackBanner: {
+    position: "absolute",
+    top: 16,
+    left: 16,
+    right: 16,
+    zIndex: 50,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    backgroundColor: "rgba(13, 17, 23, 0.92)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.18)",
+    shadowColor: "#000",
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+    alignSelf: "center",
+  },
+  liveFallbackDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#FF8A00",
+  },
+  liveFallbackText: {
+    flexShrink: 1,
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "600",
+    letterSpacing: 0.1,
   },
   heroLogoWatermark: {
     width: 220,

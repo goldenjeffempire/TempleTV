@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /**
  * Per-device "live YouTube embed failed" signal — mobile twin of
@@ -69,4 +69,39 @@ export function useLiveFailureFor(videoId: string | null | undefined): boolean {
     return false;
   }
   return Date.now() - current.failedAt < FAILURE_TTL_MS;
+}
+
+/**
+ * Edge-triggered hook: returns `true` for `BANNER_VISIBLE_MS` ms after a
+ * fresh failure is reported for `videoId`, then auto-flips back to `false`.
+ * Used to flash a one-shot fallback banner on the home hero.
+ *
+ * "Fresh" is keyed by `failedAt` so re-mounting the consumer after the
+ * banner already played won't re-flash it.
+ */
+const BANNER_VISIBLE_MS = 5_000;
+
+export function useLiveFallbackJustTriggered(videoId: string | null | undefined): boolean {
+  const [visible, setVisible] = useState(false);
+  const lastSeenAtRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const evaluate = () => {
+      if (!videoId || !current || current.videoId !== videoId) return;
+      if (lastSeenAtRef.current === current.failedAt) return;
+      lastSeenAtRef.current = current.failedAt;
+      setVisible(true);
+      const t = setTimeout(() => setVisible(false), BANNER_VISIBLE_MS);
+      return () => clearTimeout(t);
+    };
+    const cleanup = evaluate();
+    const fn = () => evaluate();
+    listeners.add(fn);
+    return () => {
+      if (typeof cleanup === "function") cleanup();
+      listeners.delete(fn);
+    };
+  }, [videoId]);
+
+  return visible;
 }
