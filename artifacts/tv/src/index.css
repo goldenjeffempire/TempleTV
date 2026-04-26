@@ -119,6 +119,21 @@ html, body, #root {
 }
 .live-pulse { animation: pulse-live 1.4s ease-in-out infinite; }
 
+/* LiveHero — soft entry for the "Holy Spirit Sunday Service — Live Now"
+ * title when the unified live SSE flips `isLive` true. Keeps the SSE-
+ * driven transition from feeling like a hard pop. */
+@keyframes tv-live-title-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* LiveHero — countdown urgency pulse used in the final 60 s before a
+ * scheduled live service starts. */
+@keyframes tv-imminent-pulse {
+  0%, 100% { transform: scale(1);   opacity: 1; }
+  50%      { transform: scale(1.4); opacity: 0.6; }
+}
+
 /* Spinner */
 @keyframes tt-spin {
   to { transform: rotate(360deg); }

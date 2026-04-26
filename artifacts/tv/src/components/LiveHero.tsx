@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { type LiveStatus, type BroadcastCurrent } from "../lib/api";
 import { LiveBroadcastVideo } from "./LiveBroadcastVideo";
 import { reportLiveFailure, useLiveFallbackJustTriggered } from "../lib/liveFailureSignal";
+import { useLiveCountdown } from "../lib/liveCountdown";
 
 interface LiveHeroProps {
   liveStatus: LiveStatus | null;
@@ -56,6 +57,13 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
   // branch evaluates false and the live "Now" copy takes over instantly.
   const showScheduledLive =
     !isLive && broadcastCurrent?.activeSchedule?.contentType === "live";
+  // Real-time countdown to the scheduled start, server-time-aligned so a
+  // misconfigured TV clock doesn't show a wrong number. Hidden when the
+  // schedule is missing a startTime, in the past, or >24h away.
+  const countdown = useLiveCountdown(
+    showScheduledLive ? broadcastCurrent?.activeSchedule?.startTime : null,
+    broadcastCurrent?.serverTimeMs ?? null,
+  );
 
   const broadcastThumb = broadcastItem?.thumbnailUrl ?? null;
   const bgThumb = isLive ? ytThumbUrl : (broadcastThumb || null);
@@ -365,9 +373,16 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
               {/* Live "Now" headline — replaces the previous channel-
                   identity title only while `isLive` is true, and reverts
                   the moment the unified live SSE reports the broadcast
-                  has ended (within ~1 s, no refresh needed). Mirrors the
-                  mobile hero copy so all surfaces stay in lock-step. */}
-              Holy Spirit Sunday Service — Live Now
+                  has ended (within ~1 s, no refresh needed). The fade-in
+                  animation softens the SSE-driven transition so the title
+                  doesn't pop in jarringly. Mirrors the mobile hero copy
+                  so all surfaces stay in lock-step. */}
+              <span
+                key={`live-on-${ytVideoId ?? "current"}`}
+                style={{ animation: "tv-live-title-in 360ms ease-out both" }}
+              >
+                Holy Spirit Sunday Service — Live Now
+              </span>
             </h1>
             <div
               className="flex items-center"
@@ -538,6 +553,9 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
                   height: 9,
                   background: showScheduledLive ? "#FF8A00" : "rgba(255,255,255,0.5)",
                   boxShadow: showScheduledLive ? "0 0 10px rgba(255,138,0,0.7)" : undefined,
+                  animation: countdown?.imminent
+                    ? "tv-imminent-pulse 900ms ease-in-out infinite"
+                    : undefined,
                 }}
               />
               <span
@@ -548,7 +566,11 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
                   letterSpacing: "0.14em",
                 }}
               >
-                {showScheduledLive ? "STARTING SOON" : "OFF AIR · 24/7 ON DEMAND"}
+                {showScheduledLive
+                  ? countdown
+                    ? countdown.label.toUpperCase()
+                    : "STARTING SOON"
+                  : "OFF AIR · 24/7 ON DEMAND"}
               </span>
             </div>
             <h1

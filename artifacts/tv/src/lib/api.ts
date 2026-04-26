@@ -49,7 +49,16 @@ export interface BroadcastCurrent {
   queueLength: number;
   syncedAt: string;
   serverTimeMs: number;
-  activeSchedule?: { contentType: string } | null;
+  activeSchedule?: {
+    id?: string;
+    title?: string;
+    contentType: string;
+    contentId?: string | null;
+    /** ISO-8601 — used by `useLiveCountdown` for the pre-live "Starts in
+     *  MM:SS" pill on the off-air hero. */
+    startTime?: string;
+    endTime?: string | null;
+  } | null;
   /**
    * Admin-driven live override. When set by the "Activate live stream"
    * action in the admin panel, this is the single source of truth for

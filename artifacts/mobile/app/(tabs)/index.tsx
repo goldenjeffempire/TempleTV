@@ -34,6 +34,7 @@ import { sendLiveServiceNotification } from "@/services/notifications";
 import { useWatchProgress } from "@/hooks/useWatchProgress";
 import { checkBroadcastCurrent, subscribeBroadcastEvents, type BroadcastCurrentResult } from "@/services/broadcast";
 import { reportLiveFailure, useLiveFailureFor, useLiveFallbackJustTriggered } from "@/services/liveFailureSignal";
+import { useLiveCountdown } from "@/services/liveCountdown";
 import {
   BROADCAST_TITLE,
   BROADCAST_LIVE_BANNER_TITLE,
@@ -369,6 +370,13 @@ export default function WatchScreen() {
   // suddenly switched to the broadcast queue.
   const showLiveFallbackBanner = useLiveFallbackJustTriggered(liveStatus.videoId);
   const showScheduledLive = !effectiveLiveActive && broadcastCurrent?.activeSchedule?.contentType === "live";
+  // Real-time, server-time-aligned countdown to the scheduled start.
+  // Returns null when out of window (>24h, in the past, missing data) so
+  // the badge below quietly hides itself when there's nothing to show.
+  const liveCountdown = useLiveCountdown(
+    showScheduledLive ? broadcastCurrent?.activeSchedule?.startTime ?? null : null,
+    broadcastCurrent?.serverTimeMs ?? null,
+  );
   const showBroadcast = !effectiveLiveActive && (broadcastItem !== null || showScheduledLive);
 
   // Compute the join offset ONCE per broadcast item so re-renders from drift
@@ -670,11 +678,15 @@ export default function WatchScreen() {
 
                 {/* Subtitle — intentionally suppressed during the live
                     "Now" state so the combined title carries the message
-                    on its own (per UX directive). */}
+                    on its own (per UX directive). When a scheduled live
+                    service is starting soon, append the live countdown
+                    so viewers can plan around it. */}
                 {!effectiveLiveActive && (
                   <Text style={styles.heroSubtitleMeta}>
                     {showScheduledLive
-                      ? "Scheduled live service — tap to join."
+                      ? liveCountdown
+                        ? `Scheduled live service — ${liveCountdown.label.toLowerCase()}.`
+                        : "Scheduled live service — tap to join."
                       : showBroadcast
                       ? "Spirit-filled broadcasts around the clock"
                       : "Temple TV Anywhere You Go"}
