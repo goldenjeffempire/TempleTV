@@ -235,6 +235,34 @@ export function LocalVideoPlayer({
   const WEB_LOAD_WATCHDOG_MS = 15_000;
   const [webNeedsPlayGesture, setWebNeedsPlayGesture] = useState(false);
 
+  // ── Mid-playback stall watchdog ────────────────────────────────────────
+  // Distinct from the web-load watchdog above (which only catches "video
+  // never started loading at all"). This one catches the third failure mode:
+  // playback HAS started, the video element thinks it's playing, but no
+  // frames are advancing. The browser/expo-av won't fire `error` for this —
+  // it's just a quiet stall (slow CDN, momentary network dip, edge of a
+  // corrupt segment). Without intervention the viewer sees a frozen frame
+  // forever and the "channel" effectively stops broadcasting.
+  //
+  // The watchdog tracks the last observed positionMillis and the wall-clock
+  // time at which it changed. A separate 1s interval checks whether playback
+  // has been "stuck" for more than STALL_NUDGE_MS while the player thinks
+  // it's playing. First stall: nudge the position by 100ms to force the
+  // buffer to re-prime. Persistent stall (>STALL_FAIL_MS): give up and call
+  // onError, which routes through the existing broken-item skip and rolls
+  // the channel forward to the next queue item.
+  const lastProgressMsRef = useRef(-1);
+  const lastProgressAtRef = useRef(0);
+  const stallNudgesRef = useRef(0);
+  // statusRef mirrors the `status` state but is read by the watchdog tick.
+  // We can't put `status` in the watchdog effect's deps — it changes on
+  // every position update, which would tear down and recreate the 1s
+  // interval before it ever fires.
+  const statusRef = useRef<any>(null);
+  const STALL_NUDGE_MS = 8_000;
+  const STALL_FAIL_MS = 18_000;
+  const MAX_STALL_NUDGES = 2;
+
   const getWebVideo = useCallback((slot: "A" | "B"): HTMLVideoElement | null =>
     slot === "A" ? webVideoRefA.current : webVideoRefB.current, []);
   const getWebHls = useCallback((slot: "A" | "B"): any =>
@@ -315,6 +343,7 @@ export function LocalVideoPlayer({
     (s: any) => {
       if (!isMountedRef.current) return;
       setStatus(s);
+      statusRef.current = s;
 
       if (s.isLoaded) {
         if (loading) {
@@ -329,6 +358,18 @@ export function LocalVideoPlayer({
         const currentSecs = (s.positionMillis ?? 0) / 1000;
         const durationSecs = (s.durationMillis ?? 0) / 1000;
         updatePlayback(currentSecs, durationSecs);
+
+        // Stall watchdog progress tracking — record any forward motion so
+        // the 1s tick below can distinguish "playing fine" from "wedged".
+        // Using positionMillis (not currentSecs) keeps sub-second nudges
+        // observable. We treat any change as progress, including the small
+        // bump that the nudge itself applies.
+        const posMs = s.positionMillis ?? 0;
+        if (posMs !== lastProgressMsRef.current) {
+          lastProgressMsRef.current = posMs;
+          lastProgressAtRef.current = Date.now();
+          if (stallNudgesRef.current > 0) stallNudgesRef.current = 0;
+        }
 
         if (s.isPlaying) {
           onPlay?.();
@@ -356,6 +397,60 @@ export function LocalVideoPlayer({
     },
     [loading, onEnd, onError, onPlay, onPause, startPositionMs, transitionOpacity, updatePlayback]
   );
+
+  // ── Mid-playback stall watchdog effect ────────────────────────────────
+  // Reset progress refs whenever the URL changes (queue advance, manual
+  // pick, etc.) so a fresh item starts from a clean slate. Then run a 1Hz
+  // tick that decides: nothing-to-do, nudge, or escalate-to-onError.
+  // Disabled when the player is paused, loading, or the host context says
+  // playback is paused — those are legitimate "no progress" reasons that
+  // should never trip the watchdog.
+  useEffect(() => {
+    lastProgressMsRef.current = -1;
+    lastProgressAtRef.current = Date.now();
+    stallNudgesRef.current = 0;
+    const tick = setInterval(() => {
+      if (!isMountedRef.current) return;
+      if (loading) return;
+      if (!isPlaying) return;
+      const s = statusRef.current;
+      // Only watchdog when the underlying element thinks it is playing.
+      // If it doesn't, expo-av's own pause path will handle it; we'd just
+      // be racing with intentional pauses.
+      if (!s || !s.isLoaded || !s.isPlaying) return;
+      const stalledFor = Date.now() - lastProgressAtRef.current;
+      if (stalledFor < STALL_NUDGE_MS) return;
+      if (stalledFor >= STALL_FAIL_MS || stallNudgesRef.current >= MAX_STALL_NUDGES) {
+        // Persistent stall — give up on this item. The broadcast handler's
+        // 2-in-30s rule will skip the item; a one-off stall in user-pick
+        // mode just triggers the host's recover path, which is a safe
+        // soft-refetch.
+        console.warn("[LocalVideoPlayer] stall watchdog escalating to onError after", stalledFor, "ms");
+        stallNudgesRef.current = 0;
+        lastProgressAtRef.current = Date.now();
+        onError?.();
+        return;
+      }
+      // Soft recovery: nudge currentTime forward by 100ms to force the
+      // buffer pipeline to re-prime. This costs the viewer nothing
+      // perceptible and recovers from the vast majority of transient
+      // stalls (slow CDN edge, momentary network dip, brief decode hiccup).
+      stallNudgesRef.current += 1;
+      const nudgeMs = (lastProgressMsRef.current >= 0 ? lastProgressMsRef.current : (s.positionMillis ?? 0)) + 100;
+      console.warn("[LocalVideoPlayer] stall watchdog nudging at", lastProgressMsRef.current, "ms (attempt", stallNudgesRef.current, ")");
+      if (Platform.OS === "web") {
+        const v = getWebVideo(webActiveSlotRef.current);
+        if (v) {
+          try { v.currentTime = nudgeMs / 1000; } catch {}
+          v.play?.().catch(() => {});
+        }
+      } else if (videoRef.current) {
+        videoRef.current.setPositionAsync?.(nudgeMs).catch(() => {});
+        videoRef.current.playAsync?.().catch(() => {});
+      }
+    }, 1_000);
+    return () => clearInterval(tick);
+  }, [effectiveUrl, loading, isPlaying, onError, getWebVideo]);
 
   // ── Web A/B watchdog & helpers ───────────────────────────────────────
   const clearWebWatchdog = useCallback(() => {
