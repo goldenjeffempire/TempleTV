@@ -219,6 +219,11 @@ export function LocalVideoPlayer({
   const webVideoRefB = useRef<HTMLVideoElement | null>(null);
   const webHlsRefA = useRef<any>(null);
   const webHlsRefB = useRef<any>(null);
+  // Per-slot fatal-error retry budget for hls.js. Reset to 0 each time a
+  // fresh URL is loaded into the slot; capped at 3 attempts per fresh load
+  // before escalating to onError. Mirrors the TV player's recovery budget.
+  const webRetryRefA = useRef(0);
+  const webRetryRefB = useRef(0);
   const webLoadedUrlA = useRef<string | null>(null);
   const webLoadedUrlB = useRef<string | null>(null);
   const [webActiveSlot, setWebActiveSlot] = useState<"A" | "B">("A");
@@ -275,6 +280,11 @@ export function LocalVideoPlayer({
     slot === "A" ? webLoadedUrlA.current : webLoadedUrlB.current, []);
   const setWebLoadedUrl = useCallback((slot: "A" | "B", u: string | null) => {
     if (slot === "A") webLoadedUrlA.current = u; else webLoadedUrlB.current = u;
+  }, []);
+  const getWebRetries = useCallback((slot: "A" | "B"): number =>
+    slot === "A" ? webRetryRefA.current : webRetryRefB.current, []);
+  const setWebRetries = useCallback((slot: "A" | "B", n: number) => {
+    if (slot === "A") webRetryRefA.current = n; else webRetryRefB.current = n;
   }, []);
   const otherWebSlot = (slot: "A" | "B"): "A" | "B" => slot === "A" ? "B" : "A";
 
@@ -487,6 +497,9 @@ export function LocalVideoPlayer({
     if (prev) { try { prev.destroy(); } catch { /* noop */ } setWebHls(slot, null); }
 
     setWebLoadedUrl(slot, url);
+    // Fresh URL into this slot ⇒ reset its hls.js retry budget so the new
+    // stream gets a full 3-attempt recovery window of its own.
+    setWebRetries(slot, 0);
     video.muted = mode === "preload";
 
     const armWatchdog = () => {
@@ -562,13 +575,45 @@ export function LocalVideoPlayer({
         safePlay();
       });
       hls.on("hlsError", (_e: any, data: any) => {
-        if (data?.fatal && webActiveSlotRef.current === slot) {
-          clearWebWatchdog();
-          if (typeof console !== "undefined" && console.warn) {
-            console.warn("[LocalVideoPlayer] fatal hls error on slot", slot, ":", data.type, data.details);
-          }
-          if (isMountedRef.current) { setLoading(false); onError?.(); }
+        if (!data?.fatal) return;
+        // Preload-mode failures must NEVER surface to the user: just
+        // tear down the slot. The next queue advance will fall back to a
+        // cold load through the active path.
+        if (mode === "preload") {
+          try { hls.destroy(); } catch { /* noop */ }
+          setWebHls(slot, null);
+          setWebLoadedUrl(slot, null);
+          return;
         }
+        // Active-loaded slot that has since been swapped out (queue
+        // advanced before this error fired): the user is no longer
+        // watching this video, so stay quiet.
+        if (webActiveSlotRef.current !== slot) return;
+        if (typeof console !== "undefined" && console.warn) {
+          console.warn("[LocalVideoPlayer] fatal hls error on slot", slot, ":", data.type, data.details);
+        }
+        // Mirror the TV player's progressive recovery: a 3-attempt budget
+        // per fresh URL. NETWORK errors → hls.startLoad() (re-fetch the
+        // failed segment); MEDIA errors → hls.recoverMediaError() (flush
+        // the decoder and rebuild the buffer). Only escalate to onError
+        // after the budget is exhausted or for non-recoverable types.
+        const retries = getWebRetries(slot);
+        const NETWORK_ERROR = HlsClass.ErrorTypes?.NETWORK_ERROR ?? "networkError";
+        const MEDIA_ERROR = HlsClass.ErrorTypes?.MEDIA_ERROR ?? "mediaError";
+        if (data.type === NETWORK_ERROR && retries < 3) {
+          setWebRetries(slot, retries + 1);
+          try { hls.startLoad(); } catch { /* noop */ }
+          armWatchdog();
+          return;
+        }
+        if (data.type === MEDIA_ERROR && retries < 3) {
+          setWebRetries(slot, retries + 1);
+          try { hls.recoverMediaError(); } catch { /* noop */ }
+          armWatchdog();
+          return;
+        }
+        clearWebWatchdog();
+        if (isMountedRef.current) { setLoading(false); onError?.(); }
       });
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
       video.src = url;
@@ -591,7 +636,7 @@ export function LocalVideoPlayer({
       video.addEventListener("loadedmetadata", onReady, { once: true });
       if (mode === "active") safePlay();
     }
-  }, [autoPlay, startPositionMs, onError, getWebVideo, getWebHls, setWebHls, getWebLoadedUrl, setWebLoadedUrl, clearWebWatchdog]);
+  }, [autoPlay, startPositionMs, onError, getWebVideo, getWebHls, setWebHls, getWebLoadedUrl, setWebLoadedUrl, getWebRetries, setWebRetries, clearWebWatchdog]);
 
   // Pause and silence the slot we are leaving so it stops competing for
   // the audio device and the decoder.
