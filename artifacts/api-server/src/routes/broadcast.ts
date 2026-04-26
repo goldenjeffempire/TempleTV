@@ -18,6 +18,7 @@ import {
   broadcastLiveEvent,
   removeSSEClient,
 } from "../lib/liveEvents";
+import { validateStreamKey } from "../lib/liveIngestHealth";
 
 const router = Router();
 
@@ -1195,6 +1196,49 @@ router.post("/broadcast/reaction", (req, res) => {
   }
   broadcastLiveEvent("live-reaction", { type, ts: Date.now() });
   res.json({ ok: true });
+});
+
+/**
+ * Public RTMP-gateway publish webhook — used by nginx-rtmp / srs / MediaLive
+ * `on_publish` callbacks to authorize an incoming RTMP/RTMPS/SRT publish
+ * attempt before the gateway forwards a single byte upstream.
+ *
+ * Gateways pass the encoder's stream name + key as form-encoded body fields:
+ *   nginx-rtmp:  `name=<endpoint-name>&key=<stream-key>`
+ *
+ * Security model:
+ *   - The endpoint is intentionally public (RTMP gateways can't carry an
+ *     admin bearer token) but is gated entirely on stream-key validation —
+ *     unknown name, disabled endpoint, or wrong key all return 403.
+ *   - Comparison is constant-time (see `safeEqual` in liveIngestHealth.ts).
+ *   - We never echo back the configured key, only success/failure.
+ *   - Every rejection is logged so unauthorized publish attempts can be
+ *     audited from the server logs.
+ *
+ * Most encoders pass the stream key as the second path segment of the RTMP
+ * URL (`rtmp://host/app/<key>`), so RTMP gateways typically send `name=app`
+ * and `key=<key>`. Configure your endpoint's `name` field accordingly.
+ */
+router.post("/live-ingest/auth", express.urlencoded({ extended: true }), async (req, res) => {
+  try {
+    const body = (req.body ?? {}) as Record<string, string>;
+    // nginx-rtmp uses `name`/`key`; some gateways use `stream`/`token`.
+    const name = body.name ?? body.stream ?? "";
+    const key = body.key ?? body.token ?? "";
+    const result = await validateStreamKey(name, key);
+    if (result.allowed) {
+      // Returning 200 is the universal "publish allowed" signal across nginx-
+      // rtmp / srs / MediaLive callbacks. Body is informational only.
+      res.status(200).json({ allowed: true });
+    } else {
+      // 403 is the universal "publish denied" signal — the gateway will drop
+      // the inbound connection before any frames flow upstream.
+      res.status(403).json({ allowed: false });
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
 });
 
 router.post("/broadcast/prayer", async (req, res) => {

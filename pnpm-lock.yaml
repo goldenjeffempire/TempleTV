@@ -175,6 +175,9 @@ importers:
       '@dnd-kit/utilities':
         specifier: ^3.2.2
         version: 3.2.2(react@19.1.0)
+      hls.js:
+        specifier: ^1.6.16
+        version: 1.6.16
       mp4-muxer:
         specifier: ^5.2.2
         version: 5.2.2
@@ -6608,6 +6611,7 @@ packages:
 
   shaka-player@4.16.26:
     resolution: {integrity: sha512-qoSQyqaBsARb+yDc2D9ab7D+4THP0bIAE6/7syCteZY7VtC7RVbHlQ8os8VfU2GAzYWqv9mik1ywDjRuQdvtSg==}
+    engines: {node: '>=18'}
 
   shallowequal@1.1.0:
     resolution: {integrity: sha512-y0m1JoUZSlPAjXVtPPW70aZWfIL/dSP7AFkRnniLCrK/8MDKog3TySTBmckD+RObVxH0v4Tox67+F14PdED2oQ==}

@@ -13,14 +13,89 @@ const CACHE_KEYS = {
 const HEALTH_INTERVAL_MS = Number(process.env.LIVE_INGEST_HEALTH_INTERVAL_MS ?? 15_000);
 const HEALTH_TIMEOUT_MS = Number(process.env.LIVE_INGEST_HEALTH_TIMEOUT_MS ?? 7_000);
 const FAILURE_THRESHOLD = Number(process.env.LIVE_INGEST_FAILURE_THRESHOLD ?? 3);
+const RECOVERY_THRESHOLD = Number(process.env.LIVE_INGEST_RECOVERY_THRESHOLD ?? 2);
+const AUTO_RECOVERY_ENABLED =
+  (process.env.LIVE_INGEST_AUTO_RECOVERY ?? "true").toLowerCase() !== "false";
 
 let _tickHandle: ReturnType<typeof setInterval> | null = null;
+
+// In-memory healthy-streak counter — used by the auto-recovery logic to
+// require N consecutive healthy probes before promoting an endpoint back to
+// primary. Prevents a single flapping check from triggering a swap-back loop.
+const _healthyStreaks = new Map<string, number>();
 
 export function generateStreamKey(): string {
   // 32-char URL-safe random token; vMix / OBS accept arbitrary stream keys.
   const buf = new Uint8Array(24);
   crypto.getRandomValues(buf);
   return Array.from(buf, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Constant-time comparison of two strings. Prevents timing-side-channel
+ * attacks against the stream-key validator (an attacker that can measure
+ * comparison time could otherwise brute-force the key one byte at a time).
+ */
+function safeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+/**
+ * Validates a stream key against an endpoint name (or arbitrary endpoint
+ * identifier). This is the backend behind the `on_publish` webhook used by
+ * RTMP gateways like nginx-rtmp, srs, and AWS MediaLive — the gateway POSTs
+ * the encoder's stream name + key here, and we either authorize the publish
+ * (200) or reject it (403).
+ *
+ * Returns `{ allowed: false }` for any unknown name, inactive endpoint, or
+ * mismatched key — never reveals which of those was the failure reason.
+ */
+export async function validateStreamKey(
+  name: string,
+  key: string,
+): Promise<{ allowed: boolean; endpointId: string | null; endpointName: string | null }> {
+  if (!name || !key) {
+    return { allowed: false, endpointId: null, endpointName: null };
+  }
+  const rows = await db
+    .select()
+    .from(liveIngestEndpointsTable)
+    .where(eq(liveIngestEndpointsTable.name, name))
+    .limit(1);
+  const endpoint = rows[0];
+  if (!endpoint) {
+    return { allowed: false, endpointId: null, endpointName: null };
+  }
+  if (!endpoint.isActive) {
+    logger.warn({ endpointId: endpoint.id }, "Stream-key validation rejected — endpoint disabled");
+    return { allowed: false, endpointId: null, endpointName: null };
+  }
+  const ok = safeEqual(endpoint.streamKey, key);
+  if (!ok) {
+    logger.warn(
+      { endpointId: endpoint.id, name },
+      "Stream-key validation rejected — key mismatch (possible unauthorized publish attempt)",
+    );
+    return { allowed: false, endpointId: null, endpointName: null };
+  }
+  // Mark the endpoint as recently authenticated so the ops center can
+  // surface "encoder connected" alongside health probes.
+  await db
+    .update(liveIngestEndpointsTable)
+    .set({
+      metadata: {
+        ...(endpoint.metadata ?? {}),
+        lastAuthAt: new Date().toISOString(),
+      },
+      updatedAt: new Date(),
+    })
+    .where(eq(liveIngestEndpointsTable.id, endpoint.id));
+  return { allowed: true, endpointId: endpoint.id, endpointName: endpoint.name };
 }
 
 export type ProbeResult = {
@@ -154,6 +229,14 @@ export async function runHealthSweep() {
     const probe = await probeHlsEndpoint(endpoint.hlsPlaybackUrl);
     const now = new Date();
     const consecutiveFailures = probe.ok ? 0 : endpoint.consecutiveFailures + 1;
+
+    // Update the healthy-streak counter used by auto-recovery.
+    if (probe.ok) {
+      _healthyStreaks.set(endpoint.id, (_healthyStreaks.get(endpoint.id) ?? 0) + 1);
+    } else {
+      _healthyStreaks.set(endpoint.id, 0);
+    }
+
     await db
       .update(liveIngestEndpointsTable)
       .set({
@@ -190,6 +273,15 @@ export async function runHealthSweep() {
     }
   }
 
+  // After the failover pass, run the recovery pass: if a higher-priority
+  // (lower numeric `priority`) endpoint has been stable for RECOVERY_THRESHOLD
+  // consecutive sweeps, promote it back automatically. This is the "switch
+  // back to vMix once it recovers" behavior — a real broadcast network never
+  // stays on a backup feed once the primary stabilizes.
+  if (AUTO_RECOVERY_ENABLED) {
+    await maybeAutoRecover();
+  }
+
   // Push a single SSE summary so the operations center updates live.
   broadcastLiveEvent("live-ingest-health", {
     endpoints: results,
@@ -197,6 +289,99 @@ export async function runHealthSweep() {
   });
 
   return results;
+}
+
+/**
+ * Auto-recovery: if a higher-priority (lower numeric `priority`) endpoint is
+ * healthy and has been stable for at least RECOVERY_THRESHOLD consecutive
+ * probes, promote it back to primary. This swaps the live override URL so
+ * the existing broadcast pipeline resumes streaming from the preferred source
+ * with no client-side action required.
+ *
+ * Recovery is gated by:
+ *   - AUTO_RECOVERY_ENABLED env (defaults true; set false for manual-only)
+ *   - The candidate's `consecutiveFailures` must be 0
+ *   - The candidate's healthy-streak counter must be >= RECOVERY_THRESHOLD
+ *   - The candidate must have strictly lower priority than the current primary
+ */
+async function maybeAutoRecover() {
+  const candidates = await db
+    .select()
+    .from(liveIngestEndpointsTable)
+    .where(eq(liveIngestEndpointsTable.isActive, true))
+    .orderBy(asc(liveIngestEndpointsTable.priority));
+
+  if (candidates.length === 0) return;
+
+  const currentPrimary = candidates.find((c) => c.isPrimary) ?? null;
+
+  // Find the highest-priority endpoint that is healthy, stable, and *not*
+  // the current primary. If none exists, nothing to do.
+  const recoveryCandidate = candidates.find((c) => {
+    if (currentPrimary && c.id === currentPrimary.id) return false;
+    if (c.healthStatus !== "healthy") return false;
+    if (c.consecutiveFailures !== 0) return false;
+    if ((_healthyStreaks.get(c.id) ?? 0) < RECOVERY_THRESHOLD) return false;
+    // Only switch *back* to a more-preferred (lower numeric priority) source.
+    // We never recover-promote a lower-priority endpoint over a healthy higher-
+    // priority one — that would be lateral churn, not recovery.
+    if (currentPrimary && c.priority >= currentPrimary.priority) return false;
+    return true;
+  });
+
+  if (!recoveryCandidate) return;
+
+  const previousPrimaryName = currentPrimary?.name ?? null;
+  const reason = currentPrimary
+    ? `Auto-recovery to preferred source "${recoveryCandidate.name}" (was "${currentPrimary.name}")`
+    : `Auto-recovery promoted "${recoveryCandidate.name}" — preferred source is healthy again`;
+
+  // Demote everyone, promote the recovery candidate.
+  await db
+    .update(liveIngestEndpointsTable)
+    .set({ isPrimary: false, updatedAt: new Date() })
+    .where(eq(liveIngestEndpointsTable.isPrimary, true));
+  await db
+    .update(liveIngestEndpointsTable)
+    .set({ isPrimary: true, updatedAt: new Date() })
+    .where(eq(liveIngestEndpointsTable.id, recoveryCandidate.id));
+
+  // Replace the active live override with the recovered endpoint's HLS URL.
+  await db
+    .update(liveOverridesTable)
+    .set({ isActive: false })
+    .where(eq(liveOverridesTable.isActive, true));
+  await db.insert(liveOverridesTable).values({
+    id: randomUUID(),
+    title: `LIVE — ${recoveryCandidate.name}`,
+    isActive: true,
+    hlsStreamUrl: recoveryCandidate.hlsPlaybackUrl,
+    streamNotes: reason,
+    startedAt: new Date(),
+    endsAt: null,
+  });
+
+  await Promise.all([
+    cache.del(CACHE_KEYS.liveOverride),
+    cache.del(CACHE_KEYS.payload),
+  ]);
+
+  logger.info(
+    {
+      recoveredEndpointId: recoveryCandidate.id,
+      previousPrimaryName,
+      streak: _healthyStreaks.get(recoveryCandidate.id),
+    },
+    "Live ingest auto-recovery — preferred source promoted",
+  );
+
+  broadcastLiveEvent("live-ingest-recovered", {
+    recoveredEndpointId: recoveryCandidate.id,
+    recoveredEndpointName: recoveryCandidate.name,
+    previousPrimaryName,
+    reason,
+    at: new Date().toISOString(),
+  });
 }
 
 /**

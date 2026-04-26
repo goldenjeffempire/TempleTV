@@ -13,7 +13,10 @@ import {
   Power,
   Zap,
   Loader2,
+  Eye,
+  EyeOff,
 } from "lucide-react";
+import { LivePreviewPlayer } from "@/components/live-ingest/LivePreviewPlayer";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -157,6 +160,14 @@ export default function LiveIngest() {
       title: "Auto-failover triggered",
       description: data?.reason ?? "Stream switched to a healthy fallback.",
       variant: "destructive",
+    });
+  });
+  useSSEEvent("live-ingest-recovered", (payload: unknown) => {
+    load();
+    const data = payload as { reason?: string } | null;
+    toast({
+      title: "Auto-recovery — preferred source restored",
+      description: data?.reason ?? "Stream switched back to the preferred source.",
     });
   });
 
@@ -384,6 +395,7 @@ function EndpointCard({
   onRotateKey: () => void;
   onDelete: () => void;
 }) {
+  const [previewOn, setPreviewOn] = useState(false);
   return (
     <div
       className={`rounded-lg border bg-card p-5 transition-shadow ${
@@ -427,6 +439,15 @@ function EndpointCard({
               Go Live
             </Button>
           )}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setPreviewOn((v) => !v)}
+            className="gap-1.5"
+          >
+            {previewOn ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+            {previewOn ? "Hide Preview" : "Preview"}
+          </Button>
           <Button size="sm" variant="outline" onClick={onProbe} disabled={busy} className="gap-1.5">
             <Activity className="w-3.5 h-3.5" /> Probe
           </Button>
@@ -437,6 +458,13 @@ function EndpointCard({
             <Trash2 className="w-3.5 h-3.5" />
           </Button>
         </div>
+      </div>
+
+      {/* Live preview — only mounts the player when the operator clicks
+          "Preview" to keep network footprint minimal on a dashboard with
+          many endpoints. */}
+      <div className="mt-4">
+        <LivePreviewPlayer hlsUrl={endpoint.hlsPlaybackUrl} enabled={previewOn} />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">

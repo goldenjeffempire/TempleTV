@@ -668,6 +668,11 @@ export const liveIngestApi = {
     adminPost<{ results: Array<{ id: string; name: string; isPrimary: boolean; healthStatus: string; latencyMs: number; bitrateKbps: number | null; error: string | null }> }>(
       "/admin/live-ingest/sweep",
     ),
+  validateKey: (name: string, key: string) =>
+    adminPost<{ allowed: boolean; endpointId: string | null; endpointName: string | null }>(
+      "/admin/live-ingest/validate-key",
+      { name, key },
+    ),
 };
 
 export const transcodingApi = {

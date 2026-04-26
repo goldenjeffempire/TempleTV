@@ -6,6 +6,7 @@ import {
   promoteEndpoint as promoteIngestEndpoint,
   runHealthSweep as runIngestHealthSweep,
   stopActiveIngestOverride,
+  validateStreamKey,
 } from "../lib/liveIngestHealth";
 import { getVapidPublicKey, sendWebPushNotifications } from "../services/web-push";
 import { eq, ilike, or, count, sql, desc, asc, and, lte, gte, inArray } from "drizzle-orm";
@@ -4394,6 +4395,21 @@ router.post("/admin/live-ingest/endpoints/:id/probe", async (req, res) => {
       })
       .where(eq(liveIngestEndpointsTable.id, id));
     res.json({ id, ...probe });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+// Stream-key validation endpoint for the operations center: lets an admin
+// confirm an encoder is configured with the right key without leaking the
+// key into a UI that auto-displays it. Used by the "Test encoder" flow.
+router.post("/admin/live-ingest/validate-key", async (req, res) => {
+  try {
+    const { name, key } = req.body as { name?: string; key?: string };
+    if (!name || !key) return void res.status(400).json({ error: "name and key are required" });
+    const result = await validateStreamKey(name, key);
+    res.json(result);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });
