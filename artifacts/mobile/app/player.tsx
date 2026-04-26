@@ -1400,7 +1400,12 @@ export default function PlayerScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  playerContainer: { width: "100%", backgroundColor: "#000", position: "relative" },
+  // Broadcast surround: a tinted deep charcoal (warm purple undertone from
+  // the #6A0DAD brand) instead of pure #000. Pure black against an otherwise
+  // light-themed chrome reads as an unfinished void; this tint reads as a
+  // deliberate TV-screen surround — the same approach Apple TV+ / Disney+
+  // use. Dark enough that the video dominates, light enough not to be harsh.
+  playerContainer: { width: "100%", backgroundColor: "#15131A", position: "relative" },
   // Absolute backdrop behind the <video> element so cold-start and the brief
   // pre-skip error window read as an intentional poster slide, not pure black.
   // The actual player overlays this on top — z-order is purely DOM order
@@ -1411,7 +1416,10 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: "#000",
+    // Match playerContainer's tinted broadcast surround so any gap between
+    // backdrop image load and the video element first frame reads as the
+    // intentional TV chassis tone, never pure black.
+    backgroundColor: "#15131A",
   },
   playerBackdropImage: {
     width: "100%",

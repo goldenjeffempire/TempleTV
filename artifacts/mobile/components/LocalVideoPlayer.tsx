@@ -86,7 +86,7 @@ function LocalAudioModeCard({
   const spin = rotateAnim.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
 
   return (
-    <View style={[audioStyles.card, { backgroundColor: "rgba(0,0,0,0.92)" }]}>
+    <View style={[audioStyles.card, { backgroundColor: "rgba(21,19,26,0.95)" }]}>
       <View style={[audioStyles.badge, { backgroundColor: "rgba(106,13,173,0.25)", borderColor: "rgba(106,13,173,0.4)" }]}>
         <Feather name="headphones" size={11} color="#B47FEB" />
         <Text style={[audioStyles.badgeText, { color: "#B47FEB" }]}>AUDIO MODE</Text>
@@ -964,14 +964,19 @@ export function LocalVideoPlayer({
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#0a0a0a", position: "relative", overflow: "hidden" },
+  // Tinted broadcast surround — matches the parent player container's
+  // #15131A so the video element sits inside a single continuous TV-screen
+  // surround, no harsh seam between wrapper and inner element.
+  container: { flex: 1, backgroundColor: "#15131A", position: "relative", overflow: "hidden" },
   thumbnail: { ...StyleSheet.absoluteFillObject, width: "100%", height: "100%" },
   overlay: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 10,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#0a0a0a",
+    // Same tinted surround as `container` above — keeps the loading-state
+    // overlay visually continuous with the player chassis.
+    backgroundColor: "#15131A",
   },
   overlayCenter: {
     ...StyleSheet.absoluteFillObject,
