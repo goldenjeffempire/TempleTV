@@ -121,8 +121,27 @@ const HLS_DIR = path.join(UPLOADS_DIR, "hls");
 // the disk fast-path window and the rare presigner-failure fallback.
 app.use(
   "/api/uploads",
-  (_req, res, next) => {
+  (req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
+    // CDN-scale delivery: every video served from /api/uploads has a content-
+    // unique UUID filename (videos table mints a fresh uuid per upload), so
+    // the bytes behind any given URL never change. That makes them safe to
+    // cache `immutable` for the full canonical year a CDN will accept.
+    //
+    // Without this header the disk fast-path served videos with no
+    // Cache-Control at all, forcing every browser and edge cache to
+    // revalidate on every load — a measurable TTFF cost on repeat plays
+    // and a hard blocker on any CDN edge actually caching the bytes. The
+    // 302-redirect path below sets its own (shorter) cache header tied
+    // to the signed URL TTL and overrides this one.
+    const p = req.path.toLowerCase();
+    if (
+      p.endsWith(".mp4") || p.endsWith(".m4v") || p.endsWith(".mov") ||
+      p.endsWith(".webm") || p.endsWith(".mkv") || p.endsWith(".m4a") ||
+      p.endsWith(".mp3")
+    ) {
+      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    }
     next();
   },
   uploadRangeGuard(),

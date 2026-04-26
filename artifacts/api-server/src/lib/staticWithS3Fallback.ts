@@ -183,8 +183,17 @@ export function s3FallbackMiddleware(opts: FallbackOptions): express.RequestHand
         const signedUrl = await getSignedGetUrl(key, redirectFromS3.signedUrlTtlSec);
         // Cache the redirect for less than the signed URL lifetime so a stale
         // cached redirect can never outlive the underlying URL signature.
+        //
+        // `public` (not `private`) is intentional: it lets a CDN edge in front
+        // of the API server cache the redirect lookup itself, so the second
+        // and subsequent viewers of the same asset never round-trip the API
+        // process at all — they hit the CDN, get the 302, and go straight to
+        // S3. This is the single biggest TTFF (time-to-first-frame) win for
+        // popular content under fan-out load. The signed URL is per-object,
+        // not per-user, so there is no leakage in sharing it across viewers
+        // (the underlying /api/uploads/<uuid> URL was already public).
         const maxAge = Math.max(60, Math.floor(redirectFromS3.signedUrlTtlSec / 2));
-        res.setHeader("Cache-Control", `private, max-age=${maxAge}`);
+        res.setHeader("Cache-Control", `public, max-age=${maxAge}`);
         res.setHeader("X-Storage-Source", "s3-redirect");
         res.redirect(302, signedUrl);
         return;
