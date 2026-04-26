@@ -14,6 +14,7 @@
     "android:prebuild": "expo prebuild --platform android --no-install",
     "android:setup": "bash scripts/setup-local-properties.sh",
     "mobile:doctor": "bash scripts/doctor.sh",
+    "android:reset": "bash scripts/android-reset.sh",
     "build:android": "bash scripts/doctor.sh && cd android && ./gradlew --no-daemon :app:bundleRelease && echo \"\\n.aab written to: $(pwd)/app/build/outputs/bundle/release/app-release.aab\"",
     "build:android:apk": "bash scripts/doctor.sh && cd android && ./gradlew --no-daemon :app:assembleRelease && echo \"\\nAPK written to: $(pwd)/app/build/outputs/apk/release/app-release.apk\"",
     "android:clean": "cd android && ./gradlew clean",
