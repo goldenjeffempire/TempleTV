@@ -1,3 +1,4 @@
+import { Platform } from "react-native";
 import { getApiBase } from "@/lib/apiBase";
 
 export interface BroadcastItem {
@@ -224,13 +225,126 @@ export async function submitPrayerRequest(name: string | null, message: string):
 const SSE_MIN_RETRY_MS = 2_000;
 const SSE_MAX_RETRY_MS = 60_000;
 
+/**
+ * Minimal EventSource-compatible SSE client backed by XMLHttpRequest.
+ * Used on React Native Android/iOS where `EventSource` is not a global.
+ * XHR's `onprogress` fires incrementally on RN's networking layer, so
+ * each SSE message is delivered as it arrives without buffering the full
+ * response in memory.
+ */
+class NativeSSEClient {
+  private xhr: XMLHttpRequest | null = null;
+  private eventHandlers: Record<string, Array<(e: any) => void>> = {};
+  private parseBuffer = "";
+  private lastLength = 0;
+
+  constructor(private readonly url: string) {
+    this.connect();
+  }
+
+  private connect() {
+    const xhr = new XMLHttpRequest();
+    this.xhr = xhr;
+    this.parseBuffer = "";
+    this.lastLength = 0;
+
+    xhr.open("GET", this.url, true);
+    xhr.setRequestHeader("Accept", "text/event-stream");
+    xhr.setRequestHeader("Cache-Control", "no-cache");
+
+    xhr.onreadystatechange = () => {
+      if (xhr.readyState === 2) {
+        this.dispatch("open", {});
+      }
+    };
+
+    xhr.onprogress = () => {
+      const raw = xhr.responseText ?? "";
+      if (raw.length <= this.lastLength) return;
+      const chunk = raw.slice(this.lastLength);
+      this.lastLength = raw.length;
+      this.parseBuffer += chunk;
+      this.flush();
+    };
+
+    xhr.onerror = () => this.dispatch("error", {});
+    xhr.onload = () => this.dispatch("error", {});
+
+    try {
+      xhr.send();
+    } catch {
+      this.dispatch("error", {});
+    }
+  }
+
+  private flush() {
+    const blocks = this.parseBuffer.split("\n\n");
+    this.parseBuffer = blocks.pop() ?? "";
+    for (const block of blocks) {
+      let eventType = "message";
+      let data = "";
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event:")) {
+          eventType = line.slice(6).trim();
+        } else if (line.startsWith("data:")) {
+          data += (data ? "\n" : "") + line.slice(5).trim();
+        }
+      }
+      if (data || eventType !== "message") {
+        this.dispatch(eventType, { data });
+      }
+    }
+  }
+
+  private dispatch(type: string, event: Record<string, unknown>) {
+    const handlers = this.eventHandlers[type];
+    if (!handlers) return;
+    const evt = { type, ...event };
+    for (const h of handlers) {
+      try { h(evt); } catch {}
+    }
+  }
+
+  addEventListener(type: string, listener: (e: any) => void) {
+    if (!this.eventHandlers[type]) this.eventHandlers[type] = [];
+    this.eventHandlers[type].push(listener);
+  }
+
+  removeEventListener(type: string, listener: (e: any) => void) {
+    if (!this.eventHandlers[type]) return;
+    this.eventHandlers[type] = this.eventHandlers[type].filter((h) => h !== listener);
+  }
+
+  close() {
+    try { this.xhr?.abort(); } catch {}
+    this.xhr = null;
+  }
+}
+
+/**
+ * Pick the best available EventSource implementation:
+ *   - Web: native browser EventSource
+ *   - Native (Android/iOS): NativeSSEClient backed by XMLHttpRequest
+ */
+function getEventSourceCtor(): (new (url: string) => {
+  addEventListener: (type: string, listener: (e: any) => void) => void;
+  removeEventListener: (type: string, listener: (e: any) => void) => void;
+  close: () => void;
+}) | null {
+  const globalES = (globalThis as any).EventSource;
+  if (typeof globalES === "function") return globalES;
+  if (Platform.OS !== "web") return NativeSSEClient;
+  return null;
+}
+
 export function subscribeBroadcastEvents(
   handlers: Partial<Record<BroadcastRealtimeEvent, (payload: any) => void>>,
 ): { close: () => void } | null {
   const apiBase = getApiBase();
-  const EventSourceCtor = (globalThis as any).EventSource;
-  if (!apiBase || typeof EventSourceCtor !== "function") return null;
+  const EventSourceCtor = getEventSourceCtor();
+  if (!apiBase || !EventSourceCtor) return null;
 
+  const Ctor = EventSourceCtor;
   let source: any = null;
   let closed = false;
   let retryMs = SSE_MIN_RETRY_MS;
@@ -238,19 +352,19 @@ export function subscribeBroadcastEvents(
 
   function connect() {
     if (closed) return;
-    source = new EventSourceCtor(`${apiBase}/api/broadcast/events?platform=mobile`);
+    source = new Ctor(`${apiBase}/api/broadcast/events?platform=mobile`);
 
     const listenerEntries = (Object.entries(handlers) as Array<[BroadcastRealtimeEvent, (payload: any) => void]>)
       .map(([event, handler]) => {
         const listener = (message: any) => {
-          retryMs = SSE_MIN_RETRY_MS; // reset backoff on any successful message
+          retryMs = SSE_MIN_RETRY_MS;
           try {
             handler(message?.data ? JSON.parse(message.data) : null);
           } catch {
             handler(null);
           }
         };
-        source.addEventListener(event, listener);
+        source!.addEventListener(event, listener);
         return [event, listener] as const;
       });
 
@@ -260,10 +374,9 @@ export function subscribeBroadcastEvents(
 
     source.addEventListener("error", () => {
       if (closed) return;
-      for (const [event, listener] of listenerEntries) source.removeEventListener?.(event, listener);
-      try { source.close(); } catch {}
+      for (const [event, listener] of listenerEntries) source!.removeEventListener?.(event, listener);
+      try { source!.close(); } catch {}
       source = null;
-      // Exponential backoff with jitter
       const jitter = Math.random() * 0.3 * retryMs;
       retryTimer = setTimeout(() => {
         if (!closed) connect();

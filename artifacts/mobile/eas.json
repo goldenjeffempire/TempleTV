@@ -23,6 +23,7 @@
     "preview": {
       "distribution": "internal",
       "channel": "preview",
+      "credentialsSource": "remote",
       "ios": {
         "simulator": false,
         "resourceClass": "m-medium"
@@ -38,12 +39,14 @@
     "production": {
       "autoIncrement": true,
       "channel": "production",
+      "credentialsSource": "remote",
       "ios": {
         "image": "latest",
         "resourceClass": "m-medium"
       },
       "android": {
-        "buildType": "app-bundle"
+        "buildType": "app-bundle",
+        "image": "latest"
       },
       "env": {
         "APP_ENV": "production",
@@ -53,6 +56,7 @@
     "firetv": {
       "autoIncrement": true,
       "channel": "firetv",
+      "credentialsSource": "remote",
       "android": {
         "buildType": "apk",
         "gradleCommand": ":app:assembleRelease",
@@ -67,6 +71,7 @@
     "androidtv": {
       "autoIncrement": true,
       "channel": "androidtv",
+      "credentialsSource": "remote",
       "android": {
         "buildType": "app-bundle",
         "image": "latest"
