@@ -14,6 +14,11 @@ import { queueTranscodingJob, retryTranscodingJob, TRANSCODER_HEARTBEAT_KEY } fr
 import { isFfmpegReady } from "../lib/ffmpeg";
 import { broadcastLiveEvent, addSSEClient, removeSSEClient, getSSEClientCount } from "../lib/liveEvents";
 import {
+  sendOpsAlert,
+  getAlertingChannels,
+  getLastAlertDelivery,
+} from "../lib/alerts";
+import {
   getLiveStatus,
   getLiveMonitorData,
   getYouTubeQuotaStatus,
@@ -640,6 +645,51 @@ router.get("/admin/youtube/quota", async (_req, res) => {
     // Bundle throttle state into the status payload so the banner and
     // headline card can render without a second round-trip.
     res.json({ ...status, throttle });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+/**
+ * Ops alerting status — channels configured + last delivery telemetry.
+ * Lets operators verify alerting is wired up without having to trigger a
+ * real incident.
+ */
+router.get("/admin/alerts/status", async (_req, res) => {
+  try {
+    const [channels, lastDelivery] = await Promise.all([
+      Promise.resolve(getAlertingChannels()),
+      getLastAlertDelivery(),
+    ]);
+    res.json({
+      channels,
+      configured: channels.slack || channels.webhook,
+      lastDelivery,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+/**
+ * Send a test alert through every configured channel. No dedup so operators
+ * can re-trigger as many times as they need to verify their receiving end.
+ */
+router.post("/admin/alerts/test", async (_req, res) => {
+  try {
+    const result = await sendOpsAlert({
+      severity: "info",
+      title: "Test alert from JCTM ops",
+      message:
+        "If you can see this, your alerting webhook(s) are wired up correctly. This message was triggered manually from the admin dashboard and is safe to ignore.",
+      fields: [
+        { label: "Triggered at", value: new Date().toISOString() },
+        { label: "Source", value: "admin /admin/alerts/test" },
+      ],
+    });
+    res.json(result);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });

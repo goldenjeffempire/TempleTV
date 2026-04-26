@@ -11,6 +11,7 @@ import {
 import { emitBroadcastState } from "./broadcast";
 import { cache } from "../lib/cache";
 import { logger } from "../lib/logger";
+import { sendOpsAlert } from "../lib/alerts";
 
 const router = Router();
 
@@ -333,6 +334,25 @@ async function youtubeApiFetch<T>(
       } catch {
         // SSE broadcast best-effort.
       }
+      // Page on-call (warning, not critical) — gives operators a chance to
+      // intervene before we hit the hard quota gate. Dedup is per
+      // context+day so each newly-throttled context fires once.
+      void sendOpsAlert({
+        severity: "warning",
+        title: "YouTube quota auto-throttle engaged",
+        message: `Pausing the noisiest YouTube call site for the rest of the UTC day to preserve remaining quota for cheaper / more important calls.`,
+        fields: [
+          { label: "Throttled context", value: context },
+          { label: "Usage", value: `${throttle.percentUsed}% of daily limit` },
+          { label: "Threshold", value: `${throttle.thresholdPct}%` },
+          {
+            label: "All paused",
+            value: throttle.contexts.join(", "),
+          },
+        ],
+        dedupKey: `youtube-quota-throttled:${context}:${today}`,
+        dedupTtlSec: 24 * 60 * 60,
+      }).catch(() => {});
     } else {
       logger.debug({ context }, "YouTube call skipped — auto-throttle active");
     }
@@ -385,6 +405,28 @@ async function youtubeApiFetch<T>(
       } catch {
         // SSE broadcast is best-effort; never let it break the API call.
       }
+      // Page on-call: critical alert with a 24h dedup so we don't spam during
+      // sustained exhaustion. Key is per-day so a recurring incident on the
+      // following day will fire again.
+      void sendOpsAlert({
+        severity: "critical",
+        title: "YouTube Data API quota exhausted",
+        message:
+          "All YouTube API features are paused until the quota resets. Mobile & TV live status will fall back to RSS/HTML detection.",
+        fields: [
+          { label: "Triggered by", value: context },
+          {
+            label: "Resets at",
+            value: new Date(until).toISOString(),
+          },
+          {
+            label: "Backoff",
+            value: `${Math.round((until - now) / 60_000)} min`,
+          },
+        ],
+        dedupKey: `youtube-quota-exhausted:${utcDateLabel()}`,
+        dedupTtlSec: 24 * 60 * 60,
+      }).catch(() => {});
     } else {
       logger.debug({ context }, "YouTube quota error (suppressed)");
     }

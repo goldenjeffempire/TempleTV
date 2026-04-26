@@ -716,3 +716,31 @@ export const youtubeQuotaApi = {
   getHistory: (signal?: AbortSignal) =>
     adminGet<YouTubeQuotaHistory>("/admin/youtube/quota/history", signal),
 };
+
+export type AlertChannelStatus = "sent" | "skipped" | "failed" | "disabled";
+
+export interface AlertingStatus {
+  channels: { slack: boolean; webhook: boolean };
+  configured: boolean;
+  lastDelivery: {
+    at: string;
+    title: string;
+    severity: "info" | "warning" | "critical";
+    slack: AlertChannelStatus;
+    webhook: AlertChannelStatus;
+    deduped: boolean;
+  } | null;
+}
+
+export interface AlertTestResult {
+  slack: AlertChannelStatus;
+  webhook: AlertChannelStatus;
+  dedupKey: string | null;
+  deduped: boolean;
+}
+
+export const opsAlertsApi = {
+  getStatus: (signal?: AbortSignal) =>
+    adminGet<AlertingStatus>("/admin/alerts/status", signal),
+  sendTest: () => adminPost<AlertTestResult>("/admin/alerts/test", {}),
+};

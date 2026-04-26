@@ -1,15 +1,22 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   AlertTriangle,
+  Bell,
+  BellOff,
   CheckCircle2,
   Clock,
   Gauge,
   PauseCircle,
   RefreshCw,
+  Send,
   TrendingUp,
 } from "lucide-react";
 import {
+  opsAlertsApi,
   youtubeQuotaApi,
+  type AlertChannelStatus,
+  type AlertingStatus,
+  type AlertTestResult,
   type YouTubeQuotaHistory,
   type YouTubeQuotaStatus,
 } from "@/services/adminApi";
@@ -88,8 +95,231 @@ export default function YouTubeQuotaPage() {
 
       {status && <StatusCard status={status} />}
       {status && <ThrottleCard status={status} />}
+      <AlertsCard />
       {history && <HistoryChart history={history} />}
       {history && <ContextBreakdown history={history} />}
+    </div>
+  );
+}
+
+function channelLabel(s: AlertChannelStatus): {
+  text: string;
+  className: string;
+} {
+  switch (s) {
+    case "sent":
+      return {
+        text: "sent",
+        className:
+          "text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/30",
+      };
+    case "failed":
+      return {
+        text: "failed",
+        className:
+          "text-red-700 dark:text-red-400 bg-red-500/10 border-red-500/30",
+      };
+    case "skipped":
+      return {
+        text: "skipped (deduped)",
+        className:
+          "text-amber-700 dark:text-amber-400 bg-amber-500/10 border-amber-500/30",
+      };
+    case "disabled":
+    default:
+      return {
+        text: "not configured",
+        className:
+          "text-muted-foreground bg-muted/40 border-border",
+      };
+  }
+}
+
+function AlertsCard() {
+  const [alerts, setAlerts] = useState<AlertingStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [testResult, setTestResult] = useState<AlertTestResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const s = await opsAlertsApi.getStatus();
+      setAlerts(s);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load alert status");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const sendTest = useCallback(async () => {
+    setSending(true);
+    setTestResult(null);
+    try {
+      const r = await opsAlertsApi.sendTest();
+      setTestResult(r);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Test alert failed");
+    } finally {
+      setSending(false);
+    }
+  }, [load]);
+
+  if (loading) return null;
+
+  const configured = alerts?.configured ?? false;
+  const Icon = configured ? Bell : BellOff;
+
+  return (
+    <div className="rounded-lg border bg-card p-5">
+      <div className="flex items-start gap-3">
+        <Icon
+          className={`w-5 h-5 mt-0.5 ${
+            configured ? "text-blue-600 dark:text-blue-400" : "text-muted-foreground"
+          }`}
+        />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div>
+              <h2 className="text-base font-semibold">Ops alerting</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Auto-throttle and quota-exhausted events fire warning /
+                critical alerts to your configured channels (de-duped per
+                day so on-call is never spammed).
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={sendTest}
+              disabled={sending || !configured}
+              className="gap-2"
+              title={
+                configured
+                  ? "Send a test alert through every configured channel"
+                  : "Configure ALERT_SLACK_WEBHOOK_URL or ALERT_WEBHOOK_URL first"
+              }
+            >
+              <Send className={`w-4 h-4 ${sending ? "animate-pulse" : ""}`} />
+              Send test alert
+            </Button>
+          </div>
+
+          <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div
+              className={`rounded-md border px-3 py-2 text-sm flex items-center justify-between ${
+                alerts?.channels.slack
+                  ? "bg-emerald-500/10 border-emerald-500/30"
+                  : "bg-muted/40"
+              }`}
+            >
+              <span className="font-medium">Slack-style webhook</span>
+              <span className="text-xs">
+                {alerts?.channels.slack ? "configured" : "not configured"}
+              </span>
+            </div>
+            <div
+              className={`rounded-md border px-3 py-2 text-sm flex items-center justify-between ${
+                alerts?.channels.webhook
+                  ? "bg-emerald-500/10 border-emerald-500/30"
+                  : "bg-muted/40"
+              }`}
+            >
+              <span className="font-medium">Generic JSON webhook</span>
+              <span className="text-xs">
+                {alerts?.channels.webhook ? "configured" : "not configured"}
+              </span>
+            </div>
+          </div>
+
+          {!configured && (
+            <p className="text-xs text-muted-foreground mt-3">
+              Set <code className="text-[11px]">ALERT_SLACK_WEBHOOK_URL</code>{" "}
+              (Slack/Discord/MS Teams incoming webhook) and/or{" "}
+              <code className="text-[11px]">ALERT_WEBHOOK_URL</code> (any
+              JSON receiver — Zapier, n8n, custom) to enable alerting. For
+              email, point the generic webhook at a Zapier "Webhook → Email"
+              zap.
+            </p>
+          )}
+
+          {testResult && (
+            <div className="mt-3 rounded-md border bg-muted/40 px-3 py-2 text-xs">
+              <div className="font-medium mb-1">Last test result</div>
+              <div className="flex flex-wrap gap-2">
+                <span
+                  className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 ${
+                    channelLabel(testResult.slack).className
+                  }`}
+                >
+                  Slack: {channelLabel(testResult.slack).text}
+                </span>
+                <span
+                  className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 ${
+                    channelLabel(testResult.webhook).className
+                  }`}
+                >
+                  Webhook: {channelLabel(testResult.webhook).text}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {alerts?.lastDelivery && (
+            <div className="mt-3 rounded-md border bg-muted/30 px-3 py-2 text-xs">
+              <div className="font-medium mb-1">
+                Last real delivery —{" "}
+                <span className="text-muted-foreground font-normal">
+                  {new Date(alerts.lastDelivery.at).toLocaleString()}
+                </span>
+              </div>
+              <div className="text-muted-foreground mb-1.5 truncate">
+                <span
+                  className={`mr-2 uppercase font-mono text-[10px] px-1.5 py-0.5 rounded ${
+                    alerts.lastDelivery.severity === "critical"
+                      ? "bg-red-500/15 text-red-700 dark:text-red-400"
+                      : alerts.lastDelivery.severity === "warning"
+                      ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
+                      : "bg-blue-500/15 text-blue-700 dark:text-blue-400"
+                  }`}
+                >
+                  {alerts.lastDelivery.severity}
+                </span>
+                {alerts.lastDelivery.title}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <span
+                  className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 ${
+                    channelLabel(alerts.lastDelivery.slack).className
+                  }`}
+                >
+                  Slack: {channelLabel(alerts.lastDelivery.slack).text}
+                </span>
+                <span
+                  className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 ${
+                    channelLabel(alerts.lastDelivery.webhook).className
+                  }`}
+                >
+                  Webhook: {channelLabel(alerts.lastDelivery.webhook).text}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {error && (
+            <p className="text-xs text-red-600 dark:text-red-400 mt-2">
+              {error}
+            </p>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
