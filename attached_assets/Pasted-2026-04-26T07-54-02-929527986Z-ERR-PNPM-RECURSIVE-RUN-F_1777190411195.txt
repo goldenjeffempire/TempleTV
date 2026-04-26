@@ -1,0 +1,50 @@
+2026-04-26T07:54:02.929527986Z  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/api-server@0.0.0 start: `node --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs`
+2026-04-26T07:54:02.929532966Z Exit status 1
+2026-04-26T07:54:50.153186715Z ==> Running 'pnpm --filter @workspace/api-server run start'
+2026-04-26T07:54:50.813274074Z ! Corepack is about to download https://registry.npmjs.org/pnpm/-/pnpm-10.33.2.tgz
+2026-04-26T07:54:53.804144641Z 
+2026-04-26T07:54:53.804166942Z > @workspace/api-server@0.0.0 start /opt/render/project/src/artifacts/api-server
+2026-04-26T07:54:53.804172042Z > node --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs
+2026-04-26T07:54:53.804174702Z 
+2026-04-26T07:54:57.042441952Z Error: DATABASE_URL must be set. Did you forget to provision a database?
+2026-04-26T07:54:57.042459092Z     at ../../lib/db/src/index.ts (/opt/render/project/src/lib/db/src/index.ts:8:9)
+2026-04-26T07:54:57.042462492Z     at __init (file:///opt/render/project/src/artifacts/api-server/dist/index.mjs:22:56)
+2026-04-26T07:54:57.042466823Z     at <anonymous> (/opt/render/project/src/artifacts/api-server/src/routes/health.ts:3:1)
+2026-04-26T07:54:57.042470103Z     at ModuleJob.run (node:internal/modules/esm/module_job:430:25)
+2026-04-26T07:54:57.042473463Z     at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:661:26)
+2026-04-26T07:54:57.042476633Z     at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
+2026-04-26T07:54:57.284139317Z /opt/render/project/src/artifacts/api-server:
+2026-04-26T07:54:57.284158908Z  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/api-server@0.0.0 start: `node --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs`
+2026-04-26T07:54:57.284165098Z Exit status 1
+2026-04-26T07:56:23.370123874Z ==> Running 'pnpm --filter @workspace/api-server run start'
+2026-04-26T07:56:23.730316625Z ! Corepack is about to download https://registry.npmjs.org/pnpm/-/pnpm-10.33.2.tgz
+2026-04-26T07:56:27.346432304Z 
+2026-04-26T07:56:27.346452995Z > @workspace/api-server@0.0.0 start /opt/render/project/src/artifacts/api-server
+2026-04-26T07:56:27.346458865Z > node --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs
+2026-04-26T07:56:27.346462855Z 
+2026-04-26T07:56:30.735163573Z Error: DATABASE_URL must be set. Did you forget to provision a database?
+2026-04-26T07:56:30.735181933Z     at ../../lib/db/src/index.ts (/opt/render/project/src/lib/db/src/index.ts:8:9)
+2026-04-26T07:56:30.735185543Z     at __init (file:///opt/render/project/src/artifacts/api-server/dist/index.mjs:22:56)
+2026-04-26T07:56:30.735190063Z     at <anonymous> (/opt/render/project/src/artifacts/api-server/src/routes/health.ts:3:1)
+2026-04-26T07:56:30.735193623Z     at ModuleJob.run (node:internal/modules/esm/module_job:430:25)
+2026-04-26T07:56:30.735196813Z     at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:661:26)
+2026-04-26T07:56:30.735200104Z     at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
+2026-04-26T07:56:30.957422959Z /opt/render/project/src/artifacts/api-server:
+2026-04-26T07:56:30.957441009Z  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/api-server@0.0.0 start: `node --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs`
+2026-04-26T07:56:30.9574476Z Exit status 1
+2026-04-26T07:59:15.527063118Z ==> Running 'pnpm --filter @workspace/api-server run start'
+2026-04-26T07:59:15.925181361Z ! Corepack is about to download https://registry.npmjs.org/pnpm/-/pnpm-10.33.2.tgz
+2026-04-26T07:59:19.481270619Z 
+2026-04-26T07:59:19.481294949Z > @workspace/api-server@0.0.0 start /opt/render/project/src/artifacts/api-server
+2026-04-26T07:59:19.48130124Z > node --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs
+2026-04-26T07:59:19.48130574Z 
+2026-04-26T07:59:23.231629408Z Error: DATABASE_URL must be set. Did you forget to provision a database?
+2026-04-26T07:59:23.231648118Z     at ../../lib/db/src/index.ts (/opt/render/project/src/lib/db/src/index.ts:8:9)
+2026-04-26T07:59:23.231652638Z     at __init (file:///opt/render/project/src/artifacts/api-server/dist/index.mjs:22:56)
+2026-04-26T07:59:23.231657989Z     at <anonymous> (/opt/render/project/src/artifacts/api-server/src/routes/health.ts:3:1)
+2026-04-26T07:59:23.231662139Z     at ModuleJob.run (node:internal/modules/esm/module_job:430:25)
+2026-04-26T07:59:23.231666149Z     at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:661:26)
+2026-04-26T07:59:23.231670119Z     at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
+2026-04-26T07:59:23.470376471Z /opt/render/project/src/artifacts/api-server:
+2026-04-26T07:59:23.470393361Z  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/api-server@0.0.0 start: `node --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs`
+2026-04-26T07:59:23.470399661Z Exit status 1
