@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+#
+# post-merge — Git hook that runs after every successful `git merge` or
+# `git pull` (since pull = fetch + merge).
+#
+# Purpose: catch mobile-environment drift the moment new code lands, instead
+# of when you next try to build. If the merge touched anything under
+# artifacts/mobile/, run the mobile doctor; otherwise exit silently so
+# unrelated pulls (docs, server, admin) stay quiet.
+#
+# This hook NEVER blocks or undoes the merge — it always exits 0. Doctor
+# warnings/failures are surfaced for you to act on, not enforced here.
+
+set -u
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+[ -z "$REPO_ROOT" ] && exit 0
+cd "$REPO_ROOT"
+
+# Only proceed if the doctor exists in this checkout.
+[ -f artifacts/mobile/scripts/doctor.sh ] || exit 0
+
+# Determine what changed in this merge. ORIG_HEAD is set by git merge to the
+# pre-merge tip of the current branch; HEAD is now the post-merge tip.
+if ! git rev-parse --verify ORIG_HEAD >/dev/null 2>&1; then
+  exit 0
+fi
+
+CHANGED="$(git diff-tree -r --name-only --no-commit-id ORIG_HEAD HEAD 2>/dev/null \
+  | grep -E '^artifacts/mobile/' || true)"
+
+if [ -z "$CHANGED" ]; then
+  exit 0
+fi
+
+echo ""
+echo "── post-merge hook ─────────────────────────────────────────────────────"
+echo "Mobile files changed in this pull. Running mobile:doctor to catch drift early."
+echo ""
+
+bash artifacts/mobile/scripts/doctor.sh || true
+
+echo "── end post-merge hook ─────────────────────────────────────────────────"
+echo ""
+
+exit 0
