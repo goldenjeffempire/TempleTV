@@ -1406,3 +1406,45 @@ surface via the same SSE event the manual flow uses.
   even when scaled horizontally.
 - Scheduled rows that get superseded by a manual Go Live are filtered
   out of the upcoming list automatically.
+
+## Round 12d — Refactor: Shared Live Status Helpers (Apr 26, 2026)
+
+Follow-up cleanup discovered while auditing Round 12c. The
+live-override scheduler was emitting only one of the three SSE/state
+events that the manual `POST /admin/live/override/start` route emits
+— meaning a scheduled go-live wouldn't push the canonical `status`
+payload to viewers, only a `broadcast-control-updated` ping. On
+clients that listen specifically for `status` (some tablet/web
+players), the new override wouldn't appear until the next periodic
+refetch instead of instantly.
+
+### What changed
+
+- New shared module **`artifacts/api-server/src/lib/liveStatus.ts`**
+  exporting `buildLiveStatusPayload()` and `getActiveLiveOverride()`.
+  These were previously local-only in `routes/admin.ts`.
+- `routes/admin.ts` now imports both from the shared lib. The local
+  duplicates are removed (replaced with a discoverability comment so
+  future grep-for-the-helper still lands somewhere informative).
+- `live-override-scheduler.ts` now performs the **same three-step
+  fan-out** the manual flow does:
+  1. Invalidate broadcast cache keys
+  2. Build + broadcast the canonical `status` SSE payload
+  3. Broadcast `broadcast-control-updated` ping
+  4. Emit `live-started` broadcast state for the admin activity feed
+- The scheduler also tags both events with `source: "scheduler"` so
+  observers can distinguish auto-fired from manually-started overrides
+  in logs/dashboards.
+
+### Why it matters
+
+Before this refactor, two slightly different code paths were
+maintaining their own copies of "what to send when an override goes
+live." Inevitably they would drift — and they had: only the manual
+path sent the `status` payload. Now there's one canonical builder
+and both paths use it, so viewers see identical behavior whether
+admin clicks "Go Live" or the scheduler fires at 9am Sunday.
+
+Build clean, server boots clean ("Live override scheduler started"
+visible in startup logs), endpoints all return expected status codes,
+no regressions in the existing `/api/broadcast/current` payload.

@@ -28,6 +28,7 @@ import {
   getYouTubeThrottleStatus,
 } from "./youtube";
 import { emitBroadcastState } from "./broadcast";
+import { buildLiveStatusPayload, getActiveLiveOverride } from "../lib/liveStatus";
 import { extractYouTubeVideoId, validateYouTubeLiveStream } from "../lib/youtubeUrl";
 import { cache } from "../lib/cache";
 import { invalidatePublicVideoCaches, invalidatePublicPlaylistCaches } from "../lib/publicCacheInvalidation";
@@ -339,34 +340,9 @@ async function autoExpireLiveOverrides(): Promise<void> {
   }
 }
 
-async function buildLiveStatusPayload() {
-  const liveOverride = await getActiveLiveOverride().catch(() => null);
-  const ytStatus = getLiveStatus();
-  const [deviceCountResult] = await db.select({ count: count() }).from(pushTokensTable).catch(() => [{ count: 0 }]);
-  const deviceCount = Number((deviceCountResult as any)?.count ?? 0);
-  const now = Date.now();
-  return {
-    isLive: !!(liveOverride || ytStatus.isLive),
-    ytLive: ytStatus.isLive,
-    ytVideoId: ytStatus.videoId,
-    ytTitle: ytStatus.title,
-    deviceCount,
-    sseClients: getSSEClientCount(),
-    liveOverride: liveOverride ? {
-      id: liveOverride.id,
-      title: liveOverride.title,
-      startedAt: liveOverride.startedAt.toISOString(),
-      endsAt: liveOverride.endsAt?.toISOString() ?? null,
-      elapsedSecs: Math.floor((now - liveOverride.startedAt.getTime()) / 1000),
-      remainingSecs: liveOverride.endsAt
-        ? Math.max(0, Math.floor((liveOverride.endsAt.getTime() - now) / 1000))
-        : null,
-      hlsStreamUrl: liveOverride.hlsStreamUrl ?? null,
-      youtubeVideoId: liveOverride.youtubeVideoId ?? null,
-    } : null,
-    ts: now,
-  };
-}
+// `buildLiveStatusPayload` and `getActiveLiveOverride` were extracted
+// to `lib/liveStatus.ts` so the live-override scheduler can emit the
+// exact same SSE payload the manual flow does. Imported above.
 
 setInterval(autoExpireLiveOverrides, 30 * 1000).unref();
 autoExpireLiveOverrides();
@@ -453,15 +429,9 @@ async function upsertBroadcastQueueVideo(video: typeof videosTable.$inferSelect)
   emitBroadcastState("queue-video-upserted", { videoId: video.id });
 }
 
-async function getActiveLiveOverride() {
-  const overrides = await db
-    .select()
-    .from(liveOverridesTable)
-    .where(eq(liveOverridesTable.isActive, true))
-    .orderBy(desc(liveOverridesTable.startedAt));
-  const now = new Date();
-  return overrides.find((override: typeof liveOverridesTable.$inferSelect) => !override.endsAt || override.endsAt > now) ?? null;
-}
+// `getActiveLiveOverride` is now imported from `lib/liveStatus.ts` —
+// see the import at the top of this file. Kept here as a comment for
+// discoverability when grepping for the helper name.
 
 async function sendExpoPushNotifications(
   tokens: string[],

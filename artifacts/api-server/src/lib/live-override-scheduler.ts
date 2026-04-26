@@ -3,6 +3,8 @@ import { and, eq, isNotNull, lte, ne } from "drizzle-orm";
 import { logger } from "./logger";
 import { broadcastLiveEvent } from "./liveEvents";
 import { cache } from "./cache";
+import { buildLiveStatusPayload } from "./liveStatus";
+import { emitBroadcastState } from "../routes/broadcast";
 
 /**
  * Periodically activates live overrides whose `scheduled_for` time has
@@ -89,12 +91,27 @@ async function processDueOverrides() {
           );
 
         // Fan out: viewers, admin dashboards, downstream caches.
+        // This is the same three-step sequence the manual `POST
+        // /admin/live/override/start` route does — cache invalidation
+        // first, then the canonical `status` payload (so reconnecting
+        // viewers see the new state immediately), then the lighter
+        // `broadcast-control-updated` ping for clients listening only
+        // for change notifications, then the broadcast-state event for
+        // the admin dashboard's activity stream. Keeping these in
+        // lockstep with the manual flow prevents subtle "scheduled
+        // overrides don't show up on tablet until refresh" bugs.
         await Promise.all(BROADCAST_CACHE_KEYS.map((k) => cache.del(k)));
+        buildLiveStatusPayload()
+          .then((payload) => broadcastLiveEvent("status", payload))
+          .catch((err) =>
+            logger.warn({ err, overrideId: row.id }, "Failed to broadcast status after scheduled go-live"),
+          );
         broadcastLiveEvent("broadcast-control-updated", {
           source: "scheduler",
           overrideId: row.id,
           startedAt: now.toISOString(),
         });
+        emitBroadcastState("live-started", { id: row.id, source: "scheduler" });
 
         logger.info(
           { overrideId: row.id, title: row.title, youtubeVideoId: row.youtubeVideoId },
