@@ -17,6 +17,7 @@ import { startYoutubeCatalogueScheduler } from "./routes/youtube";
 import { cache } from "./lib/cache";
 import { AWS_REGION, AWS_S3_BUCKET, isS3Configured } from "./lib/s3Storage";
 import { runS3MirrorReconciliation } from "./lib/s3MirrorReconciler";
+import { markDraining, markReady } from "./lib/lifecycle";
 
 const REQUIRED_ENV_VARS = ["DATABASE_URL", "JWT_SECRET"] as const;
 
@@ -144,6 +145,12 @@ function startApiSchedulers() {
       "s3MirrorReconciler: pass crashed",
     );
   });
+
+  // All schedulers armed and the HTTP server is already listening at this
+  // point — flip /healthz from `starting` (503) to `ok` (200) so load
+  // balancers begin routing traffic to this instance.
+  markReady();
+  logger.info("Lifecycle: ready (healthz now reports 200)");
 }
 
 let server: http.Server | null = null;
@@ -185,47 +192,87 @@ if (RUNS_API) {
 
 let isShuttingDown = false;
 
+/**
+ * Two-phase graceful shutdown.
+ *
+ * Phase 1 — DRAIN (default 5 s, override via SHUTDOWN_DRAIN_MS):
+ *   Flip /healthz to 503 `draining` immediately. The HTTP server keeps
+ *   accepting and serving requests so in-flight calls finish cleanly.
+ *   The drain window gives the LB time to observe ≥1 failed health probe
+ *   and stop routing new traffic to this instance. Without this window,
+ *   `server.close()` would race the LB and produce mid-request TCP resets
+ *   (the symptom users see as "API connection lost").
+ *
+ * Phase 2 — CLOSE:
+ *   Stop schedulers, close SSE clients, then `server.close()` to drain
+ *   any remaining in-flight requests. A hard 15 s overall timer prevents
+ *   a stuck connection from blocking the deploy forever.
+ */
 function shutdown(signal: string) {
   if (isShuttingDown) return;
   isShuttingDown = true;
-  logger.info({ signal, runMode: RUN_MODE }, "Graceful shutdown initiated");
 
-  if (RUNS_WORKER) {
-    try {
-      stopRetryTick();
-    } catch (err) {
-      logger.warn({ err }, "Error stopping retry tick");
-    }
-  }
+  const drainMs = Math.max(
+    0,
+    Number(process.env.SHUTDOWN_DRAIN_MS ?? 5_000) || 0,
+  );
 
+  logger.info(
+    { signal, runMode: RUN_MODE, drainMs },
+    "Graceful shutdown initiated — entering drain phase",
+  );
+
+  // Phase 1: announce drain via /healthz so the LB can divert new traffic.
   if (RUNS_API) {
-    try {
-      stopLiveIngestHealthMonitor();
-    } catch (err) {
-      logger.warn({ err }, "Error stopping live ingest health monitor");
-    }
+    markDraining();
   }
 
-  if (server) {
-    closeAllSSEClients();
-    server.close((err) => {
-      if (err) {
-        logger.error({ err }, "Error closing server");
-        process.exit(1);
-      }
-      logger.info("Server closed cleanly");
-      process.exit(0);
-    });
-  } else {
-    // Worker-only process — exit immediately after stopping the tick.
-    logger.info("Worker stopped cleanly");
-    setTimeout(() => process.exit(0), 100);
-  }
-
-  setTimeout(() => {
+  // Hard cap on the total shutdown — fires regardless of which phase we're in.
+  const forceTimer = setTimeout(() => {
     logger.warn("Forced shutdown after timeout");
     process.exit(1);
-  }, 15_000).unref();
+  }, 15_000);
+  forceTimer.unref();
+
+  const closePhase = () => {
+    if (RUNS_WORKER) {
+      try {
+        stopRetryTick();
+      } catch (err) {
+        logger.warn({ err }, "Error stopping retry tick");
+      }
+    }
+
+    if (RUNS_API) {
+      try {
+        stopLiveIngestHealthMonitor();
+      } catch (err) {
+        logger.warn({ err }, "Error stopping live ingest health monitor");
+      }
+    }
+
+    if (server) {
+      closeAllSSEClients();
+      server.close((err) => {
+        if (err) {
+          logger.error({ err }, "Error closing server");
+          process.exit(1);
+        }
+        logger.info("Server closed cleanly");
+        process.exit(0);
+      });
+    } else {
+      // Worker-only process — exit immediately after stopping the tick.
+      logger.info("Worker stopped cleanly");
+      setTimeout(() => process.exit(0), 100);
+    }
+  };
+
+  if (drainMs > 0 && RUNS_API) {
+    setTimeout(closePhase, drainMs).unref();
+  } else {
+    closePhase();
+  }
 }
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
