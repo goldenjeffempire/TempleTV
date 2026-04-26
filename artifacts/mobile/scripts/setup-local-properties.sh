@@ -70,8 +70,27 @@ echo ""
 echo "Written: $DEST"
 echo "  sdk.dir=${ESCAPED_PATH}"
 echo ""
+
+# ── 5. Configure Node.js path for Android Studio ──────────────────────────────
+# Android Studio launched from a desktop icon does NOT inherit shell PATH,
+# so Gradle often fails with: "command 'node' error=2 No such file or directory".
+# Pin the absolute node path into android/gradle.properties to prevent this.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+NODE_HELPER="$SCRIPT_DIR/check-node-path.sh"
+
+if [ -x "$NODE_HELPER" ]; then
+  echo "── Configuring Node.js path for Android Studio ─────────────────────────────"
+  echo ""
+  bash "$NODE_HELPER" || echo "(node path helper exited with a warning — continuing)"
+else
+  echo "Note: $NODE_HELPER not found or not executable — skipping node path setup."
+  echo "      If Android Studio later fails with 'command \"node\" error=2',"
+  echo "      see the Troubleshooting section in ANDROID_STUDIO_BUILD.md."
+  echo ""
+fi
+
 echo "You can now open the android/ folder in Android Studio."
-echo "Gradle will pick up the SDK path automatically."
+echo "Gradle will pick up the SDK path (and node path, if set) automatically."
 echo ""
 echo "Next: Build → Generate Signed Bundle / APK → Android App Bundle"
 echo "      Use android/temple-tv-release.keystore when prompted."

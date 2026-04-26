@@ -41,6 +41,11 @@ The script checks common SDK locations (`~/Android/Sdk`, `$ANDROID_HOME`, etc.) 
 `android/local.properties` automatically. If it cannot find the SDK it will ask you for the
 path — you can find it in Android Studio under **File → Project Structure → SDK Location**.
 
+It then chains into `scripts/check-node-path.sh`, which detects your `node` binary and offers
+to pin its absolute path into `android/gradle.properties` (so Android Studio launched from a
+desktop icon — which doesn't inherit your shell `PATH` — can still find it during the build).
+Just answer `y` when prompted.
+
 ---
 
 ## Step 3 — Open the project in Android Studio
