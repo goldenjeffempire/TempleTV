@@ -13,12 +13,35 @@ PASS="\033[32m PASS \033[0m"
 WARN="\033[33m WARN \033[0m"
 FAIL="\033[31m FAIL \033[0m"
 INFO="\033[36m INFO \033[0m"
+FIXED="\033[35m FIXED \033[0m"
+
+FIX_MODE=0
+for arg in "$@"; do
+  case "$arg" in
+    --fix) FIX_MODE=1 ;;
+    -h|--help)
+      cat <<EOF
+Usage: bash scripts/doctor.sh [--fix]
+
+Without --fix:  prints PASS/WARN/FAIL diagnostics only (read-only).
+With    --fix:  also stops the Gradle daemon and deletes stale .cxx /
+                build / codegen caches that cause CMake "codegen/jni/
+                is not an existing directory" errors.
+
+Exits 0 unless a hard FAIL check fires.
+EOF
+      exit 0
+      ;;
+  esac
+done
 
 EXIT_CODE=0
 WARN_COUNT=0
+FIXED_COUNT=0
 
-mark_fail() { EXIT_CODE=1; }
-mark_warn() { WARN_COUNT=$((WARN_COUNT + 1)); }
+mark_fail()  { EXIT_CODE=1; }
+mark_warn()  { WARN_COUNT=$((WARN_COUNT + 1)); }
+mark_fixed() { FIXED_COUNT=$((FIXED_COUNT + 1)); }
 
 echo ""
 echo "=== Temple TV — Mobile Environment Doctor ==="
@@ -142,7 +165,60 @@ else
   fi
 fi
 
-# ── 8. Free disk space in \$HOME ──────────────────────────────────────────────
+# ── 8. Stale Android build caches (cause CMake codegen failures) ──────────────
+ANDROID_DIR="$MOBILE_DIR/android"
+STALE_PATHS=(
+  "$ANDROID_DIR/.gradle"
+  "$ANDROID_DIR/.cxx"
+  "$ANDROID_DIR/build"
+  "$ANDROID_DIR/app/.cxx"
+  "$ANDROID_DIR/app/build"
+)
+
+if [ -d "$ANDROID_DIR" ]; then
+  STALE_FOUND=()
+  for p in "${STALE_PATHS[@]}"; do
+    [ -e "$p" ] && STALE_FOUND+=("$p")
+  done
+
+  CODEGEN_DIRS=()
+  if [ -d "$MOBILE_DIR/../../node_modules/.pnpm" ]; then
+    while IFS= read -r d; do CODEGEN_DIRS+=("$d"); done < <(
+      find "$MOBILE_DIR/../../node_modules/.pnpm" \
+        -type d -path '*/android/build/generated' -prune 2>/dev/null
+    )
+  fi
+
+  TOTAL_STALE=$(( ${#STALE_FOUND[@]} + ${#CODEGEN_DIRS[@]} ))
+
+  if [ "$TOTAL_STALE" -eq 0 ]; then
+    echo -e "$PASS no stale Android build caches"
+  elif [ "$FIX_MODE" -eq 1 ]; then
+    echo -e "$INFO --fix mode: stopping Gradle daemon and clearing $TOTAL_STALE stale path(s)"
+    if [ -x "$ANDROID_DIR/gradlew" ]; then
+      (cd "$ANDROID_DIR" && ./gradlew --stop >/dev/null 2>&1) || true
+    fi
+    for p in "${STALE_FOUND[@]}"; do
+      rm -rf "$p" && echo -e "$FIXED removed $p"
+      mark_fixed
+    done
+    for d in "${CODEGEN_DIRS[@]}"; do
+      rm -rf "$d" && echo -e "$FIXED removed codegen $(echo "$d" | sed "s|$MOBILE_DIR/../../||")"
+      mark_fixed
+    done
+  else
+    echo -e "$WARN $TOTAL_STALE stale Android build cache path(s) found:"
+    for p in "${STALE_FOUND[@]}";  do echo "       - $p"; done
+    for d in "${CODEGEN_DIRS[@]}"; do echo "       - $d"; done
+    echo "       These cause CMake \"codegen/jni/ is not an existing directory\" errors."
+    echo "       Auto-fix: pnpm run mobile:doctor -- --fix"
+    mark_warn
+  fi
+else
+  echo -e "$INFO android/ folder not generated yet (run: pnpm run android:prebuild)"
+fi
+
+# ── 9. Free disk space in \$HOME ──────────────────────────────────────────────
 FREE_KB="$(df -Pk "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')"
 if [ -n "$FREE_KB" ]; then
   FREE_GB=$((FREE_KB / 1024 / 1024))
@@ -159,10 +235,17 @@ fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
+if [ "$FIXED_COUNT" -gt 0 ]; then
+  echo "Auto-fixed $FIXED_COUNT stale path(s)."
+fi
 if [ "$EXIT_CODE" -eq 0 ] && [ "$WARN_COUNT" -eq 0 ]; then
   echo "All checks passed — you're ready to run: pnpm run build:android"
 elif [ "$EXIT_CODE" -eq 0 ]; then
   echo "$WARN_COUNT warning(s) — non-blocking, but worth addressing."
+  if [ "$FIX_MODE" -eq 0 ] && [ "$WARN_COUNT" -gt 0 ]; then
+    echo "Tip: re-run with auto-fix to resolve stale build caches:"
+    echo "     pnpm run mobile:doctor -- --fix"
+  fi
 else
   echo "One or more FAIL checks fired — fix them before running pnpm run build:android."
 fi
