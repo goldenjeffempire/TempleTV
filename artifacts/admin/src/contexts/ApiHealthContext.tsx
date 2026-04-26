@@ -30,19 +30,32 @@ export interface ApiDegradedDetail {
 /**
  * Status values the banner cares about:
  *
- *   • healthy    — everything reachable, no banner.
- *   • deploying  — the API instance is in its drain window (the new
- *                  /healthz returned `draining`) or in the brief
- *                  connection-refused gap that always immediately follows
- *                  a drain. Calm blue "Updating — viewers unaffected" banner.
- *                  This is the most important UX win: routine restarts no
- *                  longer look like outages.
- *   • degraded   — genuine failure (db_down, network error not preceded by
- *                  a drain, sustained 5xx). Amber "API connection lost" banner
- *                  with attempt counter and Retry-now.
- *   • recovering — brief green pulse after recovery, before going healthy.
+ *   • healthy     — everything reachable, no banner.
+ *   • classifying — first failure just arrived; we're probing /healthz right
+ *                   now to figure out whether this is a deploy or a genuine
+ *                   outage. Visually identical to `deploying` (calm slate)
+ *                   but with neutral "Checking connection…" copy so we never
+ *                   flash the alarming amber while the answer is still
+ *                   in flight. Auto-escalates to `degraded` after
+ *                   CLASSIFY_TIMEOUT_MS if probes keep failing without
+ *                   surfacing a `draining`/`starting` phase.
+ *   • deploying   — the API instance is in its drain window (the new
+ *                   /healthz returned `draining`) or in the brief
+ *                   connection-refused gap that always immediately follows
+ *                   a drain. Calm slate "Updating — viewers unaffected" banner.
+ *                   This is the most important UX win: routine restarts no
+ *                   longer look like outages.
+ *   • degraded    — genuine failure (db_down, network error not preceded by
+ *                   a drain, sustained 5xx). Amber "API connection lost"
+ *                   banner with attempt counter and Retry-now.
+ *   • recovering  — brief green pulse after recovery, before going healthy.
  */
-export type ApiHealthStatus = "healthy" | "deploying" | "degraded" | "recovering";
+export type ApiHealthStatus =
+  | "healthy"
+  | "classifying"
+  | "deploying"
+  | "degraded"
+  | "recovering";
 
 export interface ApiHealthState {
   status: ApiHealthStatus;
