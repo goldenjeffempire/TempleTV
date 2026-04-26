@@ -27,11 +27,26 @@ export interface ApiDegradedDetail {
   reason: string;
 }
 
-export type ApiHealthStatus = "healthy" | "degraded" | "recovering";
+/**
+ * Status values the banner cares about:
+ *
+ *   • healthy    — everything reachable, no banner.
+ *   • deploying  — the API instance is in its drain window (the new
+ *                  /healthz returned `draining`) or in the brief
+ *                  connection-refused gap that always immediately follows
+ *                  a drain. Calm blue "Updating — viewers unaffected" banner.
+ *                  This is the most important UX win: routine restarts no
+ *                  longer look like outages.
+ *   • degraded   — genuine failure (db_down, network error not preceded by
+ *                  a drain, sustained 5xx). Amber "API connection lost" banner
+ *                  with attempt counter and Retry-now.
+ *   • recovering — brief green pulse after recovery, before going healthy.
+ */
+export type ApiHealthStatus = "healthy" | "deploying" | "degraded" | "recovering";
 
 export interface ApiHealthState {
   status: ApiHealthStatus;
-  /** Wall-clock ms when the current degraded period started. */
+  /** Wall-clock ms when the current non-healthy period started. */
   degradedSinceMs: number | null;
   /** Last failure reason surfaced by an API caller. */
   lastReason: string | null;
@@ -50,10 +65,46 @@ const ApiHealthContext = createContext<ApiHealthState | null>(null);
 // Caps at 15s so a long outage doesn't pound the API once it returns.
 const PROBE_BACKOFF_MS = [3_000, 5_000, 8_000, 15_000] as const;
 
-// Hit /api/healthz directly — it's the lightest possible endpoint, public
-// (no auth header needed), and serves as the canonical reachability signal
-// for the API server.
-async function probeApiHealthz(timeoutMs = 4_000): Promise<boolean> {
+// While in `deploying`, probe more aggressively. A typical drain+restart
+// completes in ~5–10s so we want to catch the recovery quickly.
+const DEPLOY_PROBE_BACKOFF_MS = [1_500, 2_000, 3_000, 5_000] as const;
+
+// If we've been "deploying" for longer than this, treat it as a real outage
+// and escalate to `degraded`. Most rolling deploys finish well under 30s.
+const DEPLOY_ESCALATION_MS = 60_000;
+
+// After a confirmed `draining` probe, treat any subsequent network failures
+// (connection refused, abort) as part of the same deploy for this window.
+// This covers the gap between the old process exiting and the new one
+// accepting connections.
+const POST_DRAIN_GRACE_MS = 30_000;
+
+type HealthPhase = "ok" | "draining" | "starting" | "db_down" | "unknown";
+
+interface HealthProbeResult {
+  /** Did the probe receive any HTTP response (even 503)? */
+  reachable: boolean;
+  /** Is the API ready to serve traffic right now (HTTP 200)? */
+  ok: boolean;
+  /** Server-reported phase from the response body (when reachable). */
+  phase: HealthPhase;
+}
+
+/**
+ * Probe `/healthz` and parse the new richer response body so we can
+ * distinguish a planned drain from a real outage.
+ *
+ * The endpoint returns:
+ *   200 {status:"ok",       phase:"ready"}
+ *   503 {status:"starting", phase:"starting"}
+ *   503 {status:"draining", phase:"draining"}
+ *   503 {status:"db_down",  phase:"ready"}
+ *
+ * We map the body's `status` field to a simpler enum the state machine cares
+ * about. If the body is unparseable (network error, intermediate proxy 5xx
+ * with HTML body), fall back to `unknown`.
+ */
+async function probeApiHealth(timeoutMs = 4_000): Promise<HealthProbeResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -62,9 +113,20 @@ async function probeApiHealthz(timeoutMs = 4_000): Promise<boolean> {
       cache: "no-store",
       signal: controller.signal,
     });
-    return res.ok;
+    let phase: HealthPhase = "unknown";
+    try {
+      const body = (await res.json()) as { status?: unknown };
+      const s = typeof body?.status === "string" ? body.status : "";
+      if (s === "ok") phase = "ok";
+      else if (s === "draining") phase = "draining";
+      else if (s === "starting") phase = "starting";
+      else if (s === "db_down") phase = "db_down";
+    } catch {
+      // Body wasn't JSON (e.g. an upstream proxy 502 page). Leave as unknown.
+    }
+    return { reachable: true, ok: res.ok, phase };
   } catch {
-    return false;
+    return { reachable: false, ok: false, phase: "unknown" };
   } finally {
     clearTimeout(timer);
   }
@@ -83,6 +145,12 @@ export function ApiHealthProvider({ children }: { children: React.ReactNode }) {
   const attemptRef = useRef(0);
   const statusRef = useRef<ApiHealthStatus>("healthy");
   statusRef.current = status;
+  // Wall-clock ms of the most recent observed `draining` phase. Used to
+  // hold `deploying` state through the connection-refused gap that
+  // immediately follows a drain (old proc exited, new proc not yet
+  // listening). Without this, the banner would flip to red mid-deploy.
+  const lastDrainSeenMsRef = useRef<number | null>(null);
+  const deployingSinceMsRef = useRef<number | null>(null);
 
   const clearProbeTimer = useCallback(() => {
     if (probeTimerRef.current) {
@@ -91,44 +159,100 @@ export function ApiHealthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  /**
+   * Apply a probe result to the state machine. Returns the resolved status
+   * so callers can decide whether to schedule another probe.
+   */
+  const applyProbeResult = useCallback(
+    (result: HealthProbeResult): ApiHealthStatus => {
+      const now = Date.now();
+
+      // Healthy path — flush all degraded state.
+      if (result.ok && result.phase === "ok") {
+        attemptRef.current = 0;
+        deployingSinceMsRef.current = null;
+        setProbeAttempt(0);
+        setLastReason(null);
+        setLastSource(null);
+        setDegradedSinceMs(null);
+        // Brief "recovering" pulse so the banner shows "Connection restored"
+        // (or "Update complete") before disappearing — purely cosmetic.
+        setStatus("recovering");
+        setTimeout(() => {
+          if (statusRef.current === "recovering") setStatus("healthy");
+        }, 1_500);
+        return "recovering";
+      }
+
+      // Server explicitly told us it's draining or starting → planned restart.
+      if (result.phase === "draining") {
+        lastDrainSeenMsRef.current = now;
+      }
+      const isPlanned =
+        result.phase === "draining" || result.phase === "starting";
+      const recentlyDraining =
+        lastDrainSeenMsRef.current !== null &&
+        now - lastDrainSeenMsRef.current < POST_DRAIN_GRACE_MS;
+
+      // Network error: if it follows a recent drain, keep treating as deploy.
+      // Otherwise it's a real outage.
+      const treatAsDeploy = isPlanned || (!result.reachable && recentlyDraining);
+
+      if (treatAsDeploy) {
+        if (deployingSinceMsRef.current === null) {
+          deployingSinceMsRef.current = now;
+        }
+        // Escalate if the deploy is taking suspiciously long.
+        if (now - deployingSinceMsRef.current > DEPLOY_ESCALATION_MS) {
+          if (statusRef.current !== "degraded") {
+            setStatus("degraded");
+          }
+          return "degraded";
+        }
+        if (statusRef.current !== "deploying") {
+          if (degradedSinceMs === null) setDegradedSinceMs(now);
+          setStatus("deploying");
+        }
+        return "deploying";
+      }
+
+      // Genuine failure — db_down, sustained 5xx, or network error with no
+      // recent drain hint.
+      deployingSinceMsRef.current = null;
+      if (statusRef.current !== "degraded") {
+        if (degradedSinceMs === null) setDegradedSinceMs(now);
+        setStatus("degraded");
+      }
+      return "degraded";
+    },
+    [degradedSinceMs],
+  );
+
   const scheduleProbe = useCallback(
     (delayOverrideMs?: number) => {
       clearProbeTimer();
-      const idx = Math.min(attemptRef.current, PROBE_BACKOFF_MS.length - 1);
-      const delay = delayOverrideMs ?? PROBE_BACKOFF_MS[idx];
+      const isDeploy = statusRef.current === "deploying";
+      const schedule = isDeploy ? DEPLOY_PROBE_BACKOFF_MS : PROBE_BACKOFF_MS;
+      const idx = Math.min(attemptRef.current, schedule.length - 1);
+      const delay = delayOverrideMs ?? schedule[idx];
       probeTimerRef.current = setTimeout(async () => {
         probeTimerRef.current = null;
         attemptRef.current += 1;
         setProbeAttempt(attemptRef.current);
-        const ok = await probeApiHealthz();
-        if (ok) {
-          // Brief "recovering" pulse so the banner can show "Connection
-          // restored" before disappearing — purely cosmetic feedback.
-          attemptRef.current = 0;
-          setStatus("recovering");
-          setProbeAttempt(0);
-          setLastReason(null);
-          setLastSource(null);
-          setDegradedSinceMs(null);
-          setTimeout(() => {
-            // Only flip to healthy if no fresh failure arrived in the
-            // intervening 1.5s. Otherwise stay in whatever state the new
-            // failure put us in.
-            if (statusRef.current === "recovering") {
-              setStatus("healthy");
-            }
-          }, 1_500);
-        } else if (statusRef.current === "degraded") {
-          // Still down — schedule the next probe.
+        const result = await probeApiHealth();
+        const next = applyProbeResult(result);
+        // Keep probing until we're healthy/recovering.
+        if (next === "deploying" || next === "degraded") {
           scheduleProbe();
         }
       }, delay);
     },
-    [clearProbeTimer],
+    [clearProbeTimer, applyProbeResult],
   );
 
   const retryNow = useCallback(() => {
-    if (statusRef.current !== "degraded") return;
+    if (statusRef.current === "healthy" || statusRef.current === "recovering")
+      return;
     // Reset the backoff and probe immediately. The user explicitly asked.
     attemptRef.current = 0;
     setProbeAttempt(0);
@@ -144,28 +268,46 @@ export function ApiHealthProvider({ children }: { children: React.ReactNode }) {
       };
       setLastReason(detail.reason);
       setLastSource(detail.source);
-      // Only kick off probing on the first failure of an outage. Subsequent
-      // failures during the same outage just refresh the reason text.
-      if (statusRef.current !== "degraded") {
-        attemptRef.current = 0;
-        setProbeAttempt(0);
-        setDegradedSinceMs(Date.now());
-        setStatus("degraded");
-        scheduleProbe(PROBE_BACKOFF_MS[0]);
+
+      // Already in a non-healthy state — just refresh the reason and let the
+      // probe loop continue. (We still kick a fresh probe so the UI updates
+      // quickly if the server has since transitioned to draining.)
+      if (statusRef.current !== "healthy") {
+        scheduleProbe(0);
+        return;
       }
+
+      // First failure of a new outage. Probe immediately to classify it as
+      // deploy vs degraded BEFORE showing any banner — this avoids the
+      // amber-flash-then-blue UX glitch.
+      attemptRef.current = 0;
+      setProbeAttempt(0);
+      setDegradedSinceMs(Date.now());
+      // Start in `deploying` if we recently saw a drain; otherwise wait for
+      // the immediate probe below to classify. We can't show "healthy" while
+      // waiting (a request did just fail), so default to the calmer state
+      // and let the probe upgrade to `degraded` if needed.
+      const recentlyDraining =
+        lastDrainSeenMsRef.current !== null &&
+        Date.now() - lastDrainSeenMsRef.current < POST_DRAIN_GRACE_MS;
+      setStatus(recentlyDraining ? "deploying" : "degraded");
+      if (recentlyDraining && deployingSinceMsRef.current === null) {
+        deployingSinceMsRef.current = Date.now();
+      }
+      scheduleProbe(0);
     };
     const onHealthy = () => {
       // A successful API call from anywhere in the app means the API is up.
       // Snap straight to healthy without waiting for the next scheduled probe.
-      if (statusRef.current === "degraded" || statusRef.current === "recovering") {
-        clearProbeTimer();
-        attemptRef.current = 0;
-        setProbeAttempt(0);
-        setLastReason(null);
-        setLastSource(null);
-        setDegradedSinceMs(null);
-        setStatus("healthy");
-      }
+      if (statusRef.current === "healthy") return;
+      clearProbeTimer();
+      attemptRef.current = 0;
+      deployingSinceMsRef.current = null;
+      setProbeAttempt(0);
+      setLastReason(null);
+      setLastSource(null);
+      setDegradedSinceMs(null);
+      setStatus("healthy");
     };
     window.addEventListener(API_HEALTH_DEGRADED_EVENT, onDegraded);
     window.addEventListener(API_HEALTH_HEALTHY_EVENT, onHealthy);
