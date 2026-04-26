@@ -556,12 +556,45 @@ components:
           type: boolean
         liveViewerEstimate:
           type: integer
+        liveTitle:
+          type: string
+          nullable: true
+          description: Title of the currently airing broadcast (override or YouTube), if any.
+        liveVideoId:
+          type: string
+          nullable: true
+          description: YouTube video id of the currently airing live stream, if any.
+        liveSource:
+          type: string
+          nullable: true
+          enum: [override, youtube]
+          description: Origin of the live state — operator-pinned override or organic YouTube live detection.
+        ytLive:
+          type: boolean
+          description: True iff the YouTube channel is currently live (independent of any admin override).
+        ytViewerCount:
+          type: integer
+          nullable: true
+          description: Most recent scraped YouTube concurrent viewer count.
+        concurrentViewers:
+          type: integer
+          description: Real concurrent SSE-connected viewers across mobile, TV, and admin surfaces.
+        ytStaleSec:
+          type: integer
+          nullable: true
+          description: Seconds since the YouTube live status was last re-checked by the poller.
         recentImports:
           type: integer
         topCategory:
           type: string
+        registeredDevices:
+          type: integer
+          description: Native push tokens + web push subscriptions combined.
         registeredUsers:
           type: integer
+        ts:
+          type: integer
+          description: Server epoch milliseconds at the moment the payload was assembled.
       required:
         - totalVideos
         - totalPlaylists
@@ -569,9 +602,13 @@ components:
         - notificationsSentToday
         - isLiveNow
         - liveViewerEstimate
+        - ytLive
+        - concurrentViewers
         - recentImports
         - topCategory
+        - registeredDevices
         - registeredUsers
+        - ts
 
     AdminUser:
       type: object

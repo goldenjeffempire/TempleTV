@@ -1,6 +1,6 @@
 import { db, liveOverridesTable, pushTokensTable } from "@workspace/db";
 import { count, desc, eq } from "drizzle-orm";
-import { getLiveStatus } from "../routes/youtube";
+import { getLiveStatus, getLiveViewerCount } from "../routes/youtube";
 import { getSSEClientCount } from "./liveEvents";
 
 /**
@@ -52,13 +52,17 @@ export async function buildLiveStatusPayload() {
     .catch(() => [{ count: 0 }]);
   const deviceCount = Number((deviceCountResult as any)?.count ?? 0);
   const now = Date.now();
+  const concurrentViewers = getSSEClientCount();
+  const ytLiveViewerCount = ytStatus.isLive ? getLiveViewerCount() : null;
   return {
     isLive: !!(liveOverride || ytStatus.isLive),
     ytLive: ytStatus.isLive,
     ytVideoId: ytStatus.videoId,
     ytTitle: ytStatus.title,
+    ytViewerCount: ytLiveViewerCount,
     deviceCount,
-    sseClients: getSSEClientCount(),
+    concurrentViewers,
+    sseClients: concurrentViewers,
     liveOverride: liveOverride
       ? {
           id: liveOverride.id,

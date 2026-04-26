@@ -9,6 +9,18 @@ export interface HealthStatus {
   status: string;
 }
 
+/**
+ * Origin of the live state — operator-pinned override or organic YouTube live detection.
+ */
+export type AdminStatsLiveSource =
+  | (typeof AdminStatsLiveSource)[keyof typeof AdminStatsLiveSource]
+  | null;
+
+export const AdminStatsLiveSource = {
+  override: "override",
+  youtube: "youtube",
+} as const;
+
 export interface AdminStats {
   totalVideos: number;
   totalPlaylists: number;
@@ -16,10 +28,27 @@ export interface AdminStats {
   notificationsSentToday: number;
   isLiveNow: boolean;
   liveViewerEstimate: number;
+  /** Title of the currently airing broadcast (override or YouTube), if any. */
+  liveTitle?: string | null;
+  /** YouTube video id of the currently airing live stream, if any. */
+  liveVideoId?: string | null;
+  /** Origin of the live state — operator-pinned override or organic YouTube live detection. */
+  liveSource?: AdminStatsLiveSource;
+  /** True iff the YouTube channel is currently live (independent of any admin override). */
+  ytLive: boolean;
+  /** Most recent scraped YouTube concurrent viewer count. */
+  ytViewerCount?: number | null;
+  /** Real concurrent SSE-connected viewers across mobile, TV, and admin surfaces. */
+  concurrentViewers: number;
+  /** Seconds since the YouTube live status was last re-checked by the poller. */
+  ytStaleSec?: number | null;
   recentImports: number;
   topCategory: string;
-  registeredUsers: number;
+  /** Native push tokens + web push subscriptions combined. */
   registeredDevices: number;
+  registeredUsers: number;
+  /** Server epoch milliseconds at the moment the payload was assembled. */
+  ts: number;
 }
 
 export interface AdminUser {
@@ -44,10 +73,6 @@ export interface ManagedVideo {
   importedAt: string;
   viewCount?: number;
   featured: boolean;
-  videoSource?: string;
-  localVideoUrl?: string | null;
-  hlsMasterUrl?: string | null;
-  transcodingStatus?: string;
 }
 
 export interface VideoListResponse {

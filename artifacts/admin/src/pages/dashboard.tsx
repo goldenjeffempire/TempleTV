@@ -203,12 +203,33 @@ export default function Dashboard() {
   });
 
   const manualOverrideActive = Boolean(liveStatus?.liveOverride);
-  const isLiveNow = lastStatusPayload?.isLive ?? stats?.isLiveNow ?? false;
+  // Prefer SSE-pushed real-time payload, fall back to the (now-fresh) stats
+  // endpoint, finally to the standalone live-status REST call. Each layer
+  // is independently up to date so the hero never gets stuck on "Off Air"
+  // when YouTube has organically gone live.
+  const isLiveNow =
+    lastStatusPayload?.isLive ?? stats?.isLiveNow ?? Boolean(liveStatus?.isLive) ?? false;
   const overrideTitle = lastStatusPayload?.liveOverride?.title ?? liveStatus?.liveOverride?.title;
-  const ytLive = lastStatusPayload?.ytLive ?? false;
+  const ytLive = lastStatusPayload?.ytLive ?? stats?.ytLive ?? Boolean(liveStatus?.ytLive) ?? false;
   const liveTitle =
-    lastStatusPayload?.liveOverride?.title ?? lastStatusPayload?.ytTitle ?? overrideTitle ?? "Live broadcast";
-  const viewerCount = lastStatusPayload?.deviceCount ?? stats?.liveViewerEstimate ?? 0;
+    lastStatusPayload?.liveOverride?.title ??
+    lastStatusPayload?.ytTitle ??
+    overrideTitle ??
+    stats?.liveTitle ??
+    "Live broadcast";
+  // Real concurrent viewers (SSE-connected mobile/TV/admin clients).
+  // YouTube's own scraped viewer count is shown separately below.
+  const concurrentViewers =
+    (lastStatusPayload as unknown as { concurrentViewers?: number } | null)?.concurrentViewers ??
+    stats?.concurrentViewers ??
+    0;
+  const ytViewerCount =
+    (lastStatusPayload as unknown as { ytViewerCount?: number | null } | null)?.ytViewerCount ??
+    stats?.ytViewerCount ??
+    null;
+  // Headline number for the hero — prefer YouTube's reported viewers when
+  // we're live on YouTube, otherwise show our own concurrent SSE count.
+  const viewerCount = ytViewerCount ?? concurrentViewers;
 
   const handleGoLive = (e: React.FormEvent) => {
     e.preventDefault();
@@ -335,12 +356,23 @@ export default function Dashboard() {
                   <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Now broadcasting</div>
                   <div className="font-bold text-lg leading-snug line-clamp-2">{liveTitle}</div>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 flex-wrap">
                   <div className="flex items-center gap-1.5 text-sm font-semibold text-red-500">
                     <Users className="w-4 h-4" />
                     {viewerCount.toLocaleString()}
-                    <span className="text-xs text-muted-foreground font-normal ml-1">viewers</span>
+                    <span className="text-xs text-muted-foreground font-normal ml-1">
+                      {ytViewerCount != null ? "YouTube viewers" : "concurrent viewers"}
+                    </span>
                   </div>
+                  {ytViewerCount != null && concurrentViewers > 0 && (
+                    <div
+                      className="flex items-center gap-1.5 text-xs text-muted-foreground"
+                      title="Real concurrent SSE-connected clients across mobile, TV, and admin surfaces."
+                    >
+                      <Activity className="w-3 h-3" />
+                      {concurrentViewers.toLocaleString()} on Temple TV
+                    </div>
+                  )}
                   <span className="text-xs px-2 py-0.5 rounded-full border bg-background flex items-center gap-1">
                     {manualOverrideActive ? (
                       <>

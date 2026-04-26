@@ -22,6 +22,7 @@ import {
 } from "../lib/alerts";
 import {
   getLiveStatus,
+  getLiveViewerCount,
   getLiveMonitorData,
   getYouTubeQuotaStatus,
   getYouTubeQuotaHistory,
@@ -491,9 +492,44 @@ const ADMIN_STATS_TTL_MS = 2 * 60 * 1000; // 2 minutes
 
 router.get("/admin/stats", async (req, res) => {
   try {
+    // Live block — always fresh. Pulled from in-memory caches that the
+    // YouTube poller and override scheduler keep up to date in real
+    // time, so we never lag behind a state change waiting for a stats
+    // cache TTL to expire. Cheap (no network, no DB beyond one count).
+    const ytStatus = getLiveStatus();
+    const liveOverride = await getActiveLiveOverride().catch(() => null);
+    const isLiveNow = !!(liveOverride || ytStatus.isLive);
+    const liveTitle = liveOverride?.title ?? ytStatus.title ?? null;
+    const liveVideoId = liveOverride?.youtubeVideoId ?? ytStatus.videoId ?? null;
+    const liveSource = liveOverride
+      ? ("override" as const)
+      : ytStatus.isLive
+        ? ("youtube" as const)
+        : null;
+    const concurrentViewers = getSSEClientCount();
+    const ytViewerCount = ytStatus.isLive ? getLiveViewerCount() : null;
+    const liveBlock = {
+      isLiveNow,
+      liveTitle,
+      liveVideoId,
+      liveSource,
+      // Real concurrent SSE-connected viewers (admin + mobile + tv).
+      concurrentViewers,
+      // YouTube's own scraped viewer count when available.
+      liveViewerEstimate: ytViewerCount ?? concurrentViewers,
+      ytLive: ytStatus.isLive,
+      ytViewerCount,
+      ytStaleSec: ytStatus.checkedAt
+        ? Math.floor((Date.now() - ytStatus.checkedAt) / 1000)
+        : null,
+    };
+
+    // DB-counts block — cheap reads but we still cache them briefly so
+    // a polling dashboard doesn't pound Postgres. Live block above is
+    // always recomputed regardless of cache hit.
     const cached = await cache.get<object>(ADMIN_STATS_CACHE_KEY);
     if (cached) {
-      res.json(cached);
+      res.json({ ...cached, ...liveBlock, ts: Date.now() });
       return;
     }
 
@@ -522,36 +558,18 @@ router.get("/admin/stats", async (req, res) => {
       count: Number(registeredNativeDevicesResult?.count ?? 0) + Number(registeredWebDevicesResult?.count ?? 0),
     };
 
-    let liveStatus = { isLive: false, viewerCount: 0 };
-    try {
-      const liveRes = await fetch(
-        "https://www.youtube.com/oembed?url=https://www.youtube.com/@templetvjctm/live&format=json",
-        { signal: AbortSignal.timeout(5000) }
-      );
-      if (liveRes.ok) {
-        const d = (await liveRes.json()) as { title?: string; thumbnail_url?: string };
-        const vidMatch = (d.thumbnail_url ?? "").match(/\/vi\/([^/]+)\//);
-        liveStatus.isLive = !!(vidMatch?.[1] && d.title);
-      }
-    } catch {}
-
-    const liveOverride = await getActiveLiveOverride();
-    if (liveOverride) {
-      liveStatus.isLive = true;
-    }
-
-    const payload = {
+    const dbBlock = {
       totalVideos: totalVideosResult?.count ?? 0,
       totalPlaylists: totalPlaylistsResult?.count ?? 0,
       activeScheduleEntries: activeScheduleResult?.count ?? 0,
       notificationsSentToday: todayNotifResult?.count ?? 0,
-      isLiveNow: liveStatus.isLive,
-      liveViewerEstimate: liveStatus.viewerCount,
       recentImports: recentImportsResult?.count ?? 0,
       topCategory: categoryCounts[0]?.category ?? "sermon",
       registeredDevices: registeredDevicesResult?.count ?? 0,
       registeredUsers: Number(registeredUsersResult?.count ?? 0),
     };
+
+    const payload = { ...dbBlock, ...liveBlock, ts: Date.now() };
 
     await cache.set(ADMIN_STATS_CACHE_KEY, payload, ADMIN_STATS_TTL_MS);
     res.json(payload);

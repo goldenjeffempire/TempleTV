@@ -8,6 +8,7 @@
 
 export * from "./addVideoToPlaylistBody";
 export * from "./adminStats";
+export * from "./adminStatsLiveSource";
 export * from "./adminUser";
 export * from "./analytics";
 export * from "./categoryStat";

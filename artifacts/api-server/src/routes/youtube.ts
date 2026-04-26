@@ -494,6 +494,16 @@ export function getLiveStatus(): LiveStatus {
   return { ...cachedLiveStatus };
 }
 
+/**
+ * Returns the most-recent scraped concurrent viewer count for the
+ * currently-live YouTube broadcast, or null if we're off-air or the
+ * scrape hasn't run yet. Surfaced on /api/admin/stats and the
+ * Mission Control hero so admins see real-time viewership.
+ */
+export function getLiveViewerCount(): number | null {
+  return currentViewerCount;
+}
+
 export function getLiveMonitorData() {
   const uptimeSecs =
     cachedLiveStatus.isLive && liveSessionStartedAt
@@ -708,6 +718,25 @@ async function pollLiveStatus() {
       title: result.title,
       checkedAt: cachedLiveStatus.checkedAt,
     });
+
+    // Also push the canonical `status` payload that the admin Mission
+    // Control dashboard listens for. Without this, the dashboard would
+    // only update on manual override actions or on next page load —
+    // organic YouTube go-live transitions would silently leave the UI
+    // stuck on "Off Air". Dynamic import avoids a circular dep with
+    // lib/liveStatus (which imports getLiveStatus from this module).
+    import("../lib/liveStatus")
+      .then(({ buildLiveStatusPayload }) =>
+        buildLiveStatusPayload().then((payload) =>
+          broadcastLiveEvent("status", payload),
+        ),
+      )
+      .catch((err) => {
+        logger.warn(
+          { err },
+          "[LivePoller] failed to broadcast canonical status event",
+        );
+      });
   }
 
   if (result.isLive && result.videoId) {

@@ -24,9 +24,53 @@ export const GetAdminStatsResponse = zod.object({
   notificationsSentToday: zod.number(),
   isLiveNow: zod.boolean(),
   liveViewerEstimate: zod.number(),
+  liveTitle: zod
+    .string()
+    .nullish()
+    .describe(
+      "Title of the currently airing broadcast (override or YouTube), if any.",
+    ),
+  liveVideoId: zod
+    .string()
+    .nullish()
+    .describe("YouTube video id of the currently airing live stream, if any."),
+  liveSource: zod
+    .enum(["override", "youtube"])
+    .nullish()
+    .describe(
+      "Origin of the live state — operator-pinned override or organic YouTube live detection.",
+    ),
+  ytLive: zod
+    .boolean()
+    .describe(
+      "True iff the YouTube channel is currently live (independent of any admin override).",
+    ),
+  ytViewerCount: zod
+    .number()
+    .nullish()
+    .describe("Most recent scraped YouTube concurrent viewer count."),
+  concurrentViewers: zod
+    .number()
+    .describe(
+      "Real concurrent SSE-connected viewers across mobile, TV, and admin surfaces.",
+    ),
+  ytStaleSec: zod
+    .number()
+    .nullish()
+    .describe(
+      "Seconds since the YouTube live status was last re-checked by the poller.",
+    ),
   recentImports: zod.number(),
   topCategory: zod.string(),
+  registeredDevices: zod
+    .number()
+    .describe("Native push tokens + web push subscriptions combined."),
   registeredUsers: zod.number(),
+  ts: zod
+    .number()
+    .describe(
+      "Server epoch milliseconds at the moment the payload was assembled.",
+    ),
 });
 
 /**
