@@ -18,6 +18,7 @@
     "build:android": "bash scripts/doctor.sh && cd android && ./gradlew --no-daemon :app:bundleRelease && echo \"\\n.aab written to: $(pwd)/app/build/outputs/bundle/release/app-release.aab\"",
     "build:android:apk": "bash scripts/doctor.sh && cd android && ./gradlew --no-daemon :app:assembleRelease && echo \"\\nAPK written to: $(pwd)/app/build/outputs/apk/release/app-release.apk\"",
     "build:android:install": "pnpm run build:android:apk && adb install -r android/app/build/outputs/apk/release/app-release.apk && echo \"\\nInstalled app-release.apk on connected device. Launch it from your device app drawer.\"",
+    "logcat": "bash scripts/logcat.sh",
     "android:clean": "cd android && ./gradlew clean",
     "android:stop": "cd android && ./gradlew --stop"
   },
