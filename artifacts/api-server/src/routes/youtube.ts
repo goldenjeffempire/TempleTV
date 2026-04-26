@@ -6,12 +6,14 @@ import {
   addSSEClient,
   removeSSEClient,
   startSSEHeartbeat,
+  SSECapacityError,
   type LiveStatusSnapshot,
 } from "../lib/liveEvents";
 import { emitBroadcastState } from "./broadcast";
 import { cache } from "../lib/cache";
 import { logger } from "../lib/logger";
 import { sendOpsAlert } from "../lib/alerts";
+import { getClientIp } from "../middlewares/security";
 
 const router = Router();
 
@@ -1370,7 +1372,17 @@ router.get("/youtube/live/events", (req, res) => {
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
 
-  const client = addSSEClient(res, req.query.platform);
+  let client;
+  try {
+    client = addSSEClient(res, req.query.platform, getClientIp(req));
+  } catch (e) {
+    if (e instanceof SSECapacityError) {
+      res.setHeader("Retry-After", String(e.retryAfterSecs));
+      try { res.end(); } catch {}
+      return;
+    }
+    throw e;
+  }
 
   res.write(`event: connected\ndata: ${JSON.stringify({
     isLive: cachedLiveStatus.isLive,

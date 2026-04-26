@@ -25,9 +25,26 @@ interface SSEClient {
   connectedAt: number;
   lastWriteAt: number;
   platform: SSEPlatform;
+  ip: string;
 }
 
 const clients = new Set<SSEClient>();
+
+// Defence-in-depth caps for SSE so the per-process clients Set cannot grow
+// unbounded under a misbehaving client or low-effort DoS attempt. The per-IP
+// cap blocks a single host from monopolising the budget; the global cap keeps
+// the entire server within memory budget even under multi-IP fan-out. Both
+// are tunable via env vars for ops-driven scaling. The global cap is sized
+// for the realistic peak of ~3-4k concurrent live viewers with admin and TV
+// dashboards on top, with headroom.
+const MAX_SSE_CLIENTS_GLOBAL = Math.max(
+  64,
+  Number(process.env.MAX_SSE_CLIENTS_GLOBAL ?? "5000"),
+);
+const MAX_SSE_CLIENTS_PER_IP = Math.max(
+  4,
+  Number(process.env.MAX_SSE_CLIENTS_PER_IP ?? "32"),
+);
 
 function normalizePlatform(raw: unknown): SSEPlatform {
   if (raw === "tv" || raw === "mobile" || raw === "admin") return raw;
@@ -41,13 +58,45 @@ function flushClient(client: SSEClient): void {
   } catch {}
 }
 
-export function addSSEClient(res: Response, platform: unknown = "unknown"): SSEClient {
+function countClientsByIp(ip: string): number {
+  let n = 0;
+  for (const c of clients) if (c.ip === ip) n++;
+  return n;
+}
+
+/**
+ * Errors thrown from this function MUST be handled by the calling route — they
+ * indicate the client should be rejected (e.g. 503 Service Unavailable or
+ * 429 Too Many Requests) rather than added to the broadcast set.
+ */
+export class SSECapacityError extends Error {
+  constructor(
+    public readonly reason: "global_cap" | "per_ip_cap",
+    public readonly retryAfterSecs: number,
+  ) {
+    super(reason === "global_cap" ? "Server SSE capacity reached" : "Per-IP SSE limit reached");
+    this.name = "SSECapacityError";
+  }
+}
+
+export function addSSEClient(
+  res: Response,
+  platform: unknown = "unknown",
+  ip: string = "unknown",
+): SSEClient {
+  if (clients.size >= MAX_SSE_CLIENTS_GLOBAL) {
+    throw new SSECapacityError("global_cap", 30);
+  }
+  if (ip !== "unknown" && countClientsByIp(ip) >= MAX_SSE_CLIENTS_PER_IP) {
+    throw new SSECapacityError("per_ip_cap", 10);
+  }
   const client: SSEClient = {
     id: randomUUID(),
     res,
     connectedAt: Date.now(),
     lastWriteAt: Date.now(),
     platform: normalizePlatform(platform),
+    ip,
   };
   clients.add(client);
   return client;

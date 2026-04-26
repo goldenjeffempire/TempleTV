@@ -4,12 +4,25 @@ import { rateStore } from "../lib/rateStore";
 
 const WINDOW_MS = 60_000;
 
-function getClientIp(req: Request): string {
+export function getClientIp(req: Request): string {
   const forwarded = req.headers["x-forwarded-for"];
   if (typeof forwarded === "string" && forwarded.trim()) {
     return forwarded.split(",")[0]!.trim();
   }
   return req.socket.remoteAddress ?? "unknown";
+}
+
+// Permissive but log-safe: lets clients propagate trace IDs (UUID, ULID, etc.)
+// while rejecting CR/LF (log injection), control characters, and absurdly long
+// values. Falls back to a generated UUID when invalid so the request still gets
+// a correlation ID — never blocks the request.
+const REQUEST_ID_RE = /^[A-Za-z0-9._\-:]{8,128}$/;
+
+function sanitizeRequestId(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (!REQUEST_ID_RE.test(trimmed)) return null;
+  return trimmed;
 }
 
 function limitForPath(path: string): number {
@@ -45,7 +58,11 @@ function getPresentedAdminToken(req: Request): string | null {
 
 export function requestId(req: Request, res: Response, next: NextFunction) {
   const existing = req.headers["x-request-id"];
-  const id = typeof existing === "string" && existing.trim() ? existing : randomUUID();
+  const sanitized = typeof existing === "string" ? sanitizeRequestId(existing) : null;
+  const id = sanitized ?? randomUUID();
+  // Re-write the inbound header too so downstream handlers/loggers see only
+  // the sanitized value — never the raw, attacker-controlled string.
+  req.headers["x-request-id"] = id;
   res.setHeader("X-Request-Id", id);
   next();
 }

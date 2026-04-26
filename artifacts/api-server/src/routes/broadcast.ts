@@ -17,9 +17,11 @@ import {
   addSSEClient,
   broadcastLiveEvent,
   removeSSEClient,
+  SSECapacityError,
 } from "../lib/liveEvents";
 import { validateStreamKey } from "../lib/liveIngestHealth";
 import { logger } from "../lib/logger";
+import { getClientIp } from "../middlewares/security";
 
 const router = Router();
 
@@ -827,7 +829,17 @@ router.get("/broadcast/events", async (req, res) => {
   res.write("retry: 5000\n\n");
   flushRes();
 
-  const client = addSSEClient(res, req.query.platform);
+  let client;
+  try {
+    client = addSSEClient(res, req.query.platform, getClientIp(req));
+  } catch (e) {
+    if (e instanceof SSECapacityError) {
+      res.setHeader("Retry-After", String(e.retryAfterSecs));
+      try { res.end(); } catch {}
+      return;
+    }
+    throw e;
+  }
 
   try {
     const current = await buildBroadcastCurrentPayload();

@@ -12,7 +12,8 @@ import { getVapidPublicKey, sendWebPushNotifications } from "../services/web-pus
 import { eq, ilike, or, count, sql, desc, asc, and, lte, gte, inArray } from "drizzle-orm";
 import { queueTranscodingJob, retryTranscodingJob, TRANSCODER_HEARTBEAT_KEY } from "../lib/transcoder";
 import { isFfmpegReady } from "../lib/ffmpeg";
-import { broadcastLiveEvent, addSSEClient, removeSSEClient, getSSEClientCount } from "../lib/liveEvents";
+import { broadcastLiveEvent, addSSEClient, removeSSEClient, getSSEClientCount, SSECapacityError } from "../lib/liveEvents";
+import { getClientIp } from "../middlewares/security";
 import {
   sendOpsAlert,
   getAlertingChannels,
@@ -3659,7 +3660,17 @@ router.get("/admin/live/events", async (req, res) => {
 
   res.flushHeaders();
 
-  const client = addSSEClient(res, req.query.platform ?? "admin");
+  let client;
+  try {
+    client = addSSEClient(res, req.query.platform ?? "admin", getClientIp(req));
+  } catch (e) {
+    if (e instanceof SSECapacityError) {
+      res.setHeader("Retry-After", String(e.retryAfterSecs));
+      try { res.end(); } catch {}
+      return;
+    }
+    throw e;
+  }
 
   try {
     const payload = await buildLiveStatusPayload();
