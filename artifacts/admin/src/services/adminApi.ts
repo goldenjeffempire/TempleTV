@@ -618,6 +618,46 @@ export const opsApi = {
   getStatus: (signal?: AbortSignal) => adminGet<OpsStatus>("/admin/ops/status", signal),
 };
 
+export interface SlowRequestEntry {
+  method: string;
+  /** Path with high-cardinality segments collapsed to `:id`. */
+  path: string;
+  /** Original URL (path only, query stripped) before normalization. */
+  rawPath: string;
+  statusCode: number;
+  durationMs: number;
+  /** ISO timestamp of when the request started. */
+  at: string;
+  requestId: string | null;
+}
+
+export interface SlowRouteStats {
+  method: string;
+  path: string;
+  total: number;
+  errors: number;
+  slowCount: number;
+  averageMs: number;
+  maxMs: number;
+  lastStatus: number;
+  /** ms since epoch — when this route was last touched. */
+  lastAt: number;
+}
+
+export interface SlowRequestsSnapshot {
+  thresholdMs: number;
+  bufferSize: number;
+  bufferMaxAgeMs: number;
+  capturedCount: number;
+  entries: SlowRequestEntry[];
+  routes: SlowRouteStats[];
+}
+
+export const slowRequestsApi = {
+  get: (signal?: AbortSignal) =>
+    adminGet<SlowRequestsSnapshot>("/admin/ops/slow-requests", signal),
+};
+
 export interface ActiveUploadSession {
   sessionId: string;
   title: string;

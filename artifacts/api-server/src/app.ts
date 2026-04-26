@@ -14,6 +14,7 @@ import { s3RedirectFirstForLargeMedia } from "./lib/s3RedirectFirst";
 import { uploadRangeGuard } from "./lib/uploadRangeGuard";
 import { adminAccessControl, rateLimit, requestId, securityHeaders } from "./middlewares/security";
 import { requestMetrics } from "./middlewares/observability";
+import { requestTimeout } from "./middlewares/requestTimeout";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -34,6 +35,10 @@ app.use(requestId);
 app.use(securityHeaders);
 app.use(rateLimit);
 app.use(requestMetrics);
+// Per-request wall-clock timeout safety net. Skips SSE, uploads, HLS and
+// anything that legitimately streams long. Default 30s — overridable via
+// REQUEST_TIMEOUT_MS for slow batch admin endpoints if needed.
+app.use(requestTimeout());
 app.use(
   pinoHttp({
     logger,

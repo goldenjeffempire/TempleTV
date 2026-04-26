@@ -12,6 +12,7 @@ import {
   Server,
   ShieldCheck,
   Smartphone,
+  Timer,
   Upload,
   Wifi,
   X,
@@ -25,11 +26,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Link } from "wouter";
 import {
   opsApi,
+  slowRequestsApi,
   uploadsApi,
   AdminApiError,
   type ActiveUploadSession,
   type OpsStatus,
   type S3TelemetrySummary,
+  type SlowRequestsSnapshot,
 } from "@/services/adminApi";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
@@ -519,6 +522,212 @@ function ActivityFeedCard() {
   );
 }
 
+function relativeShort(ts: number | string): string {
+  const t = typeof ts === "string" ? new Date(ts).getTime() : ts;
+  const sec = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  return `${hr}h ago`;
+}
+
+function durationTone(ms: number, threshold: number): string {
+  if (ms >= threshold * 4) return "text-red-600 dark:text-red-400";
+  if (ms >= threshold * 2) return "text-amber-600 dark:text-amber-400";
+  return "text-foreground";
+}
+
+function statusTone(code: number): string {
+  if (code >= 500) return "text-red-600 dark:text-red-400";
+  if (code === 504) return "text-red-600 dark:text-red-400";
+  if (code >= 400) return "text-amber-600 dark:text-amber-400";
+  return "text-muted-foreground";
+}
+
+function SlowRequestsCard() {
+  const [snapshot, setSnapshot] = useState<SlowRequestsSnapshot | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const data = await slowRequestsApi.get();
+      setSnapshot(data);
+      setErr(null);
+    } catch (e) {
+      setErr((e as Error)?.message ?? "Unable to load slow-request telemetry");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+    // Polled separately from /admin/ops/status (10s) — slow-request telemetry
+    // changes much less often, so 30s is plenty and keeps the per-route stats
+    // payload off the busier status path.
+    const id = window.setInterval(load, 30_000);
+    return () => window.clearInterval(id);
+  }, [load]);
+
+  if (loading && !snapshot) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <Timer className="w-4 h-4 text-primary" />
+            Slow Requests
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Skeleton className="h-32 rounded-md" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (err && !snapshot) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <Timer className="w-4 h-4 text-primary" />
+            Slow Requests
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="text-sm text-muted-foreground">{err}</div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!snapshot) return null;
+
+  const { thresholdMs, entries, routes, capturedCount, bufferSize, bufferMaxAgeMs } = snapshot;
+  const ageWindow = `${Math.round(bufferMaxAgeMs / 60_000)}m`;
+
+  return (
+    <Card data-testid="slow-requests-card">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Timer className="w-4 h-4 text-primary" />
+          Slow Requests
+          <Badge
+            variant="outline"
+            className="ml-auto text-[10px] font-mono border-muted text-muted-foreground"
+          >
+            ≥ {thresholdMs}ms · last {ageWindow}
+          </Badge>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        {entries.length === 0 ? (
+          <div className="rounded-md border border-dashed bg-muted/10 p-5 text-center text-sm text-muted-foreground">
+            No requests have exceeded {thresholdMs}ms in the last {ageWindow}.
+          </div>
+        ) : (
+          <div>
+            <div className="mb-2 flex items-center justify-between">
+              <div className="text-xs font-medium text-muted-foreground">
+                Recent slow requests
+              </div>
+              <div className="text-[11px] text-muted-foreground tabular-nums">
+                {capturedCount} captured · buffer {bufferSize}
+              </div>
+            </div>
+            <div className="overflow-x-auto rounded-md border">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-muted/40 text-left text-[11px] uppercase tracking-wide text-muted-foreground">
+                    <th className="px-3 py-2 font-medium">Method</th>
+                    <th className="px-3 py-2 font-medium">Path</th>
+                    <th className="px-3 py-2 font-medium text-right">Status</th>
+                    <th className="px-3 py-2 font-medium text-right">Duration</th>
+                    <th className="px-3 py-2 font-medium text-right">When</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {entries.slice(0, 15).map((e, i) => (
+                    <tr key={`${e.at}-${i}`} data-testid="slow-request-row">
+                      <td className="px-3 py-2 font-mono text-[11px]">{e.method}</td>
+                      <td
+                        className="px-3 py-2 font-mono text-[11px] text-muted-foreground truncate max-w-[280px]"
+                        title={e.rawPath}
+                      >
+                        {e.path}
+                      </td>
+                      <td className={`px-3 py-2 text-right tabular-nums ${statusTone(e.statusCode)}`}>
+                        {e.statusCode}
+                      </td>
+                      <td className={`px-3 py-2 text-right tabular-nums font-medium ${durationTone(e.durationMs, thresholdMs)}`}>
+                        {e.durationMs.toLocaleString()}ms
+                      </td>
+                      <td className="px-3 py-2 text-right text-[11px] text-muted-foreground tabular-nums">
+                        {relativeShort(e.at)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {routes.length > 0 && (
+          <div>
+            <div className="mb-2 text-xs font-medium text-muted-foreground">
+              Per-route latency (top {Math.min(10, routes.length)})
+            </div>
+            <div className="overflow-x-auto rounded-md border">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-muted/40 text-left text-[11px] uppercase tracking-wide text-muted-foreground">
+                    <th className="px-3 py-2 font-medium">Method</th>
+                    <th className="px-3 py-2 font-medium">Route</th>
+                    <th className="px-3 py-2 font-medium text-right">Total</th>
+                    <th className="px-3 py-2 font-medium text-right">Errors</th>
+                    <th className="px-3 py-2 font-medium text-right">Slow</th>
+                    <th className="px-3 py-2 font-medium text-right">Avg</th>
+                    <th className="px-3 py-2 font-medium text-right">Max</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {routes.slice(0, 10).map((r) => (
+                    <tr key={`${r.method} ${r.path}`} data-testid="slow-route-row">
+                      <td className="px-3 py-2 font-mono text-[11px]">{r.method}</td>
+                      <td
+                        className="px-3 py-2 font-mono text-[11px] text-muted-foreground truncate max-w-[260px]"
+                        title={r.path}
+                      >
+                        {r.path}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">{r.total.toLocaleString()}</td>
+                      <td className={`px-3 py-2 text-right tabular-nums ${r.errors > 0 ? "text-red-600 dark:text-red-400" : "text-muted-foreground"}`}>
+                        {r.errors}
+                      </td>
+                      <td className={`px-3 py-2 text-right tabular-nums ${r.slowCount > 0 ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"}`}>
+                        {r.slowCount}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                        {r.averageMs.toLocaleString()}ms
+                      </td>
+                      <td className={`px-3 py-2 text-right tabular-nums ${durationTone(r.maxMs, thresholdMs)}`}>
+                        {r.maxMs.toLocaleString()}ms
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function Operations() {
   const [status, setStatus] = useState<OpsStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -837,6 +1046,8 @@ export default function Operations() {
               </CardContent>
             </Card>
           )}
+
+          <SlowRequestsCard />
         </>
       ) : !error ? (
         <Card>

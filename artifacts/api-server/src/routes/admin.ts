@@ -33,7 +33,7 @@ import { extractYouTubeVideoId, validateYouTubeLiveStream } from "../lib/youtube
 import { cache } from "../lib/cache";
 import { invalidatePublicVideoCaches, invalidatePublicPlaylistCaches } from "../lib/publicCacheInvalidation";
 import { logger } from "../lib/logger";
-import { metricsSnapshot } from "../middlewares/observability";
+import { metricsSnapshot, slowRequestsSnapshot } from "../middlewares/observability";
 import { randomUUID, createHash, webcrypto } from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -869,6 +869,21 @@ router.get("/admin/ops/status", async (_req, res) => {
       error: err instanceof Error ? err.message : "Unknown error",
     });
   }
+});
+
+/**
+ * Slow-request observability — separate from /admin/ops/status so the busy
+ * 10s status poll doesn't drag along the per-route stats payload. Polled by
+ * the SlowRequestsCard on the operations page roughly every 30s. Returns:
+ *   - thresholdMs:   what counts as "slow" (default 1500ms)
+ *   - entries:       last 50 slow requests in the past hour, newest first
+ *   - routes:        per-route totals/avg/max latency, sorted by slow-count
+ *
+ * Path-normalised (UUIDs/IDs collapsed to `:id`) so the route table stays
+ * bounded even with millions of distinct request URLs.
+ */
+router.get("/admin/ops/slow-requests", (_req, res) => {
+  res.json(slowRequestsSnapshot());
 });
 
 type LaunchCheckStatus = "ready" | "warning" | "blocked";

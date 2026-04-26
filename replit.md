@@ -1448,3 +1448,63 @@ admin clicks "Go Live" or the scheduler fires at 9am Sunday.
 Build clean, server boots clean ("Live override scheduler started"
 visible in startup logs), endpoints all return expected status codes,
 no regressions in the existing `/api/broadcast/current` payload.
+
+---
+
+## Round 12d — Per-route timeouts + slow-request observability widget
+
+### What changed
+
+- **`artifacts/api-server/src/middlewares/observability.ts`** extended:
+  - New per-route stats `Map` keyed by `${method} ${normalizedPath}` —
+    tracks total/errors/totalMs/maxMs/slowCount/lastStatus/lastAt.
+  - New 50-entry slow-request ring buffer (entries older than 1h are
+    pruned at read time). Captures method, normalised path, raw path,
+    status, durationMs, ISO timestamp, and request ID when present.
+  - Path normalisation collapses UUID/numeric/long-hex segments to
+    `:id` so `/api/videos/<uuid>` doesn't explode the route map. Hard
+    cap at 500 keys with LRU-ish eviction as defence in depth.
+  - New `slowRequestsSnapshot()` returns `{ thresholdMs, entries,
+    routes, capturedCount, bufferSize, bufferMaxAgeMs }` with routes
+    sorted by slowCount then maxMs and capped at 25.
+  - `requestMetrics` now also listens for `close` (not just `finish`)
+    so client aborts get recorded too, guarded by a `recorded` flag.
+- **`artifacts/api-server/src/middlewares/requestTimeout.ts`** (new):
+  - 30s default wall-clock timeout (configurable via
+    `REQUEST_TIMEOUT_MS`). On timeout, logs a `request_timeout` warn
+    and sends 504 if `!res.headersSent`.
+  - Skip patterns: `/api/uploads`, `/api/hls`, anything ending in
+    `/events`, `/api/admin/videos/upload*`, `/api/healthz`,
+    `/api/metrics`, plus any request with
+    `Accept: text/event-stream`.
+  - Timer is `unref()`-ed so graceful drain doesn't have to wait the
+    full timeout window for already-finished requests.
+- **`artifacts/api-server/src/app.ts`** wires `requestTimeout()` in
+  immediately after `requestMetrics`.
+- **`artifacts/api-server/src/routes/admin.ts`** new endpoint
+  `GET /admin/ops/slow-requests` — separate from `/admin/ops/status`
+  so the busy 10s status poll doesn't drag along the route stats.
+- **`artifacts/admin/src/services/adminApi.ts`** adds `slowRequestsApi`
+  + `SlowRequestEntry`, `SlowRouteStats`, `SlowRequestsSnapshot`
+  types.
+- **`artifacts/admin/src/pages/operations.tsx`** new `SlowRequestsCard`
+  rendered below the existing Request Metrics card. Polls every 30s,
+  shows the threshold + window in the badge, lists the 15 most recent
+  slow requests with status/duration colour tones, and a per-route
+  table (top 10) sorted by slowCount.
+
+### Why it matters
+
+Express has no per-route timeout. A handler that hangs (slow DB query,
+unbounded fetch, dead transcoder semaphore) will eat sockets until the
+HTTP server's max-sockets pool is exhausted and the whole API stops
+accepting connections. The middleware now caps every non-streaming
+request at 30s and surfaces a 504 to the client instead of silently
+hanging. The slow-request ring buffer + per-route stats give operators
+the evidence to find which route is the culprit without needing to
+SSH and grep logs.
+
+Both builds clean, server boots clean, new endpoint returns 200 and
+the response shape matches the typed admin client. Per-route stats
+(`GET /api/healthz`, `GET /api/admin/ops/slow-requests`) showed up
+correctly within the first two requests.
