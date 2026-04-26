@@ -1,0 +1,18 @@
+Implement an ultra-modern enterprise-grade vMix live broadcast infrastructure with secure RTMP/RTMPS/SRT ingest, real-time stream health monitoring, low-latency TV-style broadcasting, seamless playback continuity, intelligent preloading, adaptive streaming optimization, and uninterrupted multi-platform delivery across web, mobile, tablet, and smart TV environments.
+
+Prioritize live vMix feeds and implement instant automatic failover to YouTube live URL fallback when streams disconnect, freeze, fail, or degrade, with zero dead-air, zero black screens, and seamless recovery switching back to vMix when stable.
+
+Build a professional broadcast operations center with secure ingest URL generation, stream key management, live preview monitoring, source switching, emergency override controls, diagnostics, bitrate monitoring, dropped-frame detection, fallback status tracking, and multi-channel broadcast management.
+
+Mirror and synchronize the “NOW ON AIR” + “UP NEXT” strip across `artifacts/tv/` and all platform surfaces with real-time metadata synchronization, broadcast-grade typography, responsive scaling, smooth transitions, persistent channel continuity indicators, and large-screen optimized TV-channel presentation.
+
+Diagnose and fully repair unreachable admin API systems causing transcoding queue and notification queue failures by fixing backend workflows, routing, reverse proxy configuration, authentication middleware, CORS handling, deployment pipelines, and API server stability for:
+
+* `/api/admin/transcoding/queue`
+* `/api/admin/notifications/scheduled`
+
+Implement resilient API recovery systems including health monitoring, retries, fallback handling, structured error reporting, telemetry, logging, operational diagnostics, automated alerting, and self-healing infrastructure to ensure production-grade reliability.
+
+Secure all ingest pipelines and cloud operations with authenticated backend-only access, token validation, unauthorized stream prevention, and AWS S3 compatibility for archived media and continuous broadcast infrastructure.
+
+Deliver a globally competitive, cinematic, resilient, scalable, production-ready television broadcasting and premium streaming ecosystem that behaves exactly like a real-world professional TV network.
