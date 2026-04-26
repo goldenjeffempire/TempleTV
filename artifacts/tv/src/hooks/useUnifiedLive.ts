@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import type { LiveStatus } from "../lib/api";
+import { useLiveFailureFor } from "../lib/liveFailureSignal";
 import { useLiveStatus } from "./useData";
 import { useLiveSync } from "./useLiveSync";
 
@@ -35,19 +36,43 @@ import { useLiveSync } from "./useLiveSync";
  */
 export interface UnifiedLiveStatus extends LiveStatus {
   source: "override" | "channel" | null;
+  /** True when the active live videoId is currently in cool-down after a
+   *  reported iframe failure. Consumers can ignore this — we already flip
+   *  `isLive` to false when it's set — but it's useful for diagnostics
+   *  (e.g., logging "fell back to broadcast queue due to live failure"). */
+  failed?: boolean;
 }
 
 export function useUnifiedLive(): UnifiedLiveStatus {
   const polledStatus = useLiveStatus();
   const sync = useLiveSync();
 
+  // Resolve the candidate live videoId BEFORE consulting the failure
+  // signal so the signal subscription is keyed off the right ID. Override
+  // wins; otherwise the channel scrape's videoId.
+  const overrideVideoId = sync.liveOverride?.youtubeVideoId ?? null;
+  const overrideHls = sync.liveOverride?.hlsStreamUrl ?? null;
+  const overrideActive = !!sync.liveOverride && (!!overrideVideoId || !!overrideHls);
+  const candidateVideoId = overrideActive ? overrideVideoId : (polledStatus?.videoId ?? null);
+  const failed = useLiveFailureFor(candidateVideoId);
+
   return useMemo<UnifiedLiveStatus>(() => {
-    const overrideVideoId = sync.liveOverride?.youtubeVideoId ?? null;
-    const overrideHls = sync.liveOverride?.hlsStreamUrl ?? null;
-    // An override is "active" the moment the admin posts one to Live
-    // Control — even if it carries no YouTube ID (e.g., HLS-only or
-    // metadata-only override), we still treat the platform as live.
-    const overrideActive = !!sync.liveOverride && (!!overrideVideoId || !!overrideHls);
+    // If the YouTube live iframe was reported as failed for the candidate
+    // videoId on this device, suppress isLive so every consumer (LiveHero,
+    // channel-grid `__live__` row, and the player) falls through to the
+    // broadcast queue together. Suppression auto-lifts after the cool-down
+    // (see liveFailureSignal.FAILURE_TTL_MS).
+    if (failed) {
+      return {
+        isLive: false,
+        videoId: candidateVideoId,
+        title: sync.liveOverride?.title ?? polledStatus?.title ?? null,
+        checkedAt: Date.now(),
+        detectionMethod: "live-failed-fallback",
+        source: null,
+        failed: true,
+      };
+    }
 
     if (overrideActive) {
       return {
@@ -85,5 +110,9 @@ export function useUnifiedLive(): UnifiedLiveStatus {
     sync.liveOverride,
     sync.serverTimeMs,
     polledStatus,
+    overrideActive,
+    overrideVideoId,
+    candidateVideoId,
+    failed,
   ]);
 }

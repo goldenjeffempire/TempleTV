@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { type LiveStatus, type BroadcastCurrent } from "../lib/api";
 import { LiveBroadcastVideo } from "./LiveBroadcastVideo";
 import { BROADCAST_HERO_TITLE } from "../lib/broadcastIdentity";
+import { reportLiveFailure } from "../lib/liveFailureSignal";
 
 interface LiveHeroProps {
   liveStatus: LiveStatus | null;
@@ -87,20 +88,7 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
       {/* This layer always covers 100% of the container so there are no empty edges,
           even when the actual video has a different aspect ratio. */}
       {focused && ytVideoId && isLive ? (
-        <iframe
-          src={`https://www.youtube-nocookie.com/embed/${ytVideoId}?autoplay=1&mute=1&controls=0&modestbranding=1&playsinline=1&loop=1&playlist=${ytVideoId}&rel=0&iv_load_policy=3&disablekb=1`}
-          allow="autoplay; encrypted-media; picture-in-picture"
-          frameBorder={0}
-          style={{
-            position: "absolute",
-            inset: 0,
-            width: "100%",
-            height: "100%",
-            pointerEvents: "none",
-            border: 0,
-          }}
-          title="Temple TV ambient preview"
-        />
+        <LiveHeroPreviewIframe videoId={ytVideoId} />
       ) : showLiveBroadcast ? (
         <>
           {/* Poster fill — visible only until the live-broadcast layers fade in,
@@ -580,5 +568,52 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Wraps the YouTube live preview iframe with failure detection.
+ *
+ * The native iframe `error` event is unreliable for cross-origin embeds —
+ * a YouTube embed that's geo-blocked, age-restricted, or has embedding
+ * disabled often loads as a 200 with an error page rather than firing
+ * `onerror`. We therefore use a load watchdog (LIVE_HERO_LOAD_TIMEOUT_MS):
+ * if the iframe hasn't fired `onload` within the window, we treat that
+ * as a failure and report it via `reportLiveFailure`. The next render
+ * pass through `useUnifiedLive` flips `isLive=false` so this hero falls
+ * through to the broadcast queue, AND the full-screen player (which
+ * subscribes to the same signal) drops to its broadcast fallback too.
+ */
+const LIVE_HERO_LOAD_TIMEOUT_MS = 12_000;
+
+function LiveHeroPreviewIframe({ videoId }: { videoId: string }) {
+  const loadedRef = useRef(false);
+
+  useEffect(() => {
+    loadedRef.current = false;
+    const watchdog = setTimeout(() => {
+      if (!loadedRef.current) reportLiveFailure(videoId);
+    }, LIVE_HERO_LOAD_TIMEOUT_MS);
+    return () => clearTimeout(watchdog);
+  }, [videoId]);
+
+  return (
+    <iframe
+      key={videoId}
+      src={`https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&mute=1&controls=0&modestbranding=1&playsinline=1&loop=1&playlist=${videoId}&rel=0&iv_load_policy=3&disablekb=1`}
+      allow="autoplay; encrypted-media; picture-in-picture"
+      frameBorder={0}
+      onLoad={() => { loadedRef.current = true; }}
+      onError={() => reportLiveFailure(videoId)}
+      style={{
+        position: "absolute",
+        inset: 0,
+        width: "100%",
+        height: "100%",
+        pointerEvents: "none",
+        border: 0,
+      }}
+      title="Temple TV ambient preview"
+    />
   );
 }

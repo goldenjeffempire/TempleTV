@@ -36,6 +36,7 @@ import { useAuth } from "@/context/AuthContext";
 import { SERMONS } from "@/data/sermons";
 import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
 import { checkBroadcastCurrent, subscribeBroadcastEvents, type BroadcastCurrentResult, type ReactionType } from "@/services/broadcast";
+import { reportLiveFailure, useLiveFailureFor } from "@/services/liveFailureSignal";
 import { BROADCAST_TITLE, BROADCAST_PREACHER } from "@/lib/broadcastIdentity";
 import { ChannelBug } from "@/components/ChannelBug";
 import { BroadcastInfoStrip } from "@/components/BroadcastInfoStrip";
@@ -1052,6 +1053,27 @@ export default function PlayerScreen() {
   const showVolume = !isLive && Platform.OS === "web";
   const isBroadcastOrLive = isLive || isBroadcastMode;
 
+  // ── Live-mode failure escalation (mobile twin of TV LiveYouTubePlayer) ──
+  // When the YouTube live iframe gives up here in the full-screen player,
+  // we (a) raise the per-device live-failure flag so the home hero on this
+  // same device falls back to the broadcast queue together with us, and
+  // (b) back-navigate so the user lands on the broadcast view instead of
+  // a dead embed. Symmetrically, if the failure was raised by the home
+  // hero first (it loaded before the user opened the player), the
+  // subscription below fires and back-navigates immediately.
+  const livePlayerFailed = useLiveFailureFor(isLive ? displayVideoId : undefined);
+  useEffect(() => {
+    if (isLive && livePlayerFailed && router.canGoBack()) {
+      router.back();
+    }
+  }, [isLive, livePlayerFailed]);
+
+  const handleLiveError = useCallback(() => {
+    if (!isLive || !displayVideoId) return;
+    reportLiveFailure(displayVideoId);
+    if (router.canGoBack()) router.back();
+  }, [isLive, displayVideoId]);
+
   // Nudge guests watching broadcast to sign up — shown once, dismissible.
   const [nudgeDismissed, setNudgeDismissed] = useState(false);
 
@@ -1140,13 +1162,22 @@ export default function PlayerScreen() {
             playerHeight={videoPlayerHeight}
             autoPlay
             startPositionSecs={Math.floor(tunedStartPositionMs / 1000) || undefined}
+            // Live failure escalation: when the YouTube iframe gives up,
+            // report it so the home hero (which subscribes to the same
+            // signal) flips to the broadcast fallback together with us,
+            // then back-navigate so the user lands on the broadcast view
+            // instead of staring at a frozen iframe. handleLiveError
+            // wraps both steps and is a no-op outside live mode.
+            // (`onError` already routes to handleBroadcastError below for
+            // queue-mode error recovery; we layer the live escalation on
+            // top by calling both.)
+            onError={isLive ? handleLiveError : handleBroadcastError}
             // Round 6: broadcast YouTube items render with hidden YouTube
             // chrome (no control bar / fullscreen / keyboard seek) so the
             // station feed cannot be rewound or fast-forwarded even when
             // the underlying source is a non-live VOD.
             isBroadcastLive={isBroadcastOrLive}
             onEnd={handleVideoEnd}
-            onError={handleBroadcastError}
             onToggleAudioMode={handleToggleAudioMode}
           />
         )}

@@ -3,6 +3,7 @@ import { keyEventToAction } from "../lib/tvKeys";
 import { HlsVideoPlayer } from "../components/HlsVideoPlayer";
 import { BroadcastChannelBug } from "../components/BroadcastChannelBug";
 import { useLiveSync } from "../hooks/useLiveSync";
+import { reportLiveFailure, useLiveFailureFor } from "../lib/liveFailureSignal";
 
 interface PlayerProps {
   videoId: string;
@@ -137,7 +138,32 @@ function LiveYouTubePlayer({
     }
   }, [sync.liveOverride, sync.videoId, sync.title, videoId, title]);
 
-  return <YouTubePlayer videoId={videoId} title={title} onBack={onBack} isLive />;
+  // If THIS surface (or the LiveHero on Home) reports the live YouTube
+  // iframe as failed, navigate back to home — where `useUnifiedLive` now
+  // returns `isLive=false` so the hero drops into the broadcast queue
+  // fallback. This guarantees both surfaces switch together: the hero
+  // never keeps trying to embed a dead URL while the player has given up,
+  // and the user lands on broadcast content instead of a frozen "loading"
+  // state. The fired-once ref prevents loop re-entry while the cool-down
+  // is active.
+  const failed = useLiveFailureFor(videoId);
+  const navigatedAwayRef = useRef(false);
+  useEffect(() => {
+    if (failed && !navigatedAwayRef.current) {
+      navigatedAwayRef.current = true;
+      onBack();
+    }
+  }, [failed, onBack]);
+
+  return (
+    <YouTubePlayer
+      videoId={videoId}
+      title={title}
+      onBack={onBack}
+      isLive
+      onLiveError={() => reportLiveFailure(videoId)}
+    />
+  );
 }
 
 /**
@@ -238,7 +264,24 @@ function LiveBroadcastHlsPlayer({
 }
 
 /** Internal YouTube-iframe player (only rendered when no hlsUrl is provided). */
-function YouTubePlayer({ videoId, title, onBack, isLive = false }: { videoId: string; title: string; onBack: () => void; isLive?: boolean }) {
+function YouTubePlayer({
+  videoId,
+  title,
+  onBack,
+  isLive = false,
+  onLiveError,
+}: {
+  videoId: string;
+  title: string;
+  onBack: () => void;
+  isLive?: boolean;
+  /** Optional escalation hook for live mode. Fires once the iframe has
+   *  exhausted its automatic retries, AND on the iframe's own `onError`
+   *  event when in live mode. The wrapper (LiveYouTubePlayer) uses this
+   *  to report the failure to the shared liveFailureSignal so the hero
+   *  on Home falls through to the broadcast queue together with us. */
+  onLiveError?: () => void;
+}) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const [showControls, setShowControls] = useState(true);
@@ -305,6 +348,10 @@ function YouTubePlayer({ videoId, title, onBack, isLive = false }: { videoId: st
           );
         } else {
           setLoadError("We couldn't start playback. Please check the connection and try again.");
+          // In live mode, escalate the failure so the LiveHero on Home
+          // also drops to the broadcast queue together with us — see
+          // LiveYouTubePlayer.onLiveError.
+          if (isLive) onLiveError?.();
         }
       }
     }, LOAD_TIMEOUT_MS);
@@ -570,6 +617,7 @@ function YouTubePlayer({ videoId, title, onBack, isLive = false }: { videoId: st
               setRetryKey((k) => k + 1);
             } else {
               setLoadError("Playback failed to start. Please try again.");
+              if (isLive) onLiveError?.();
             }
           }}
           style={{ width: "100%", height: "100%", border: "none", display: "block", touchAction: "manipulation" }}

@@ -33,6 +33,7 @@ import { checkLiveStatus, type LiveCheckResult } from "@/services/youtube";
 import { sendLiveServiceNotification } from "@/services/notifications";
 import { useWatchProgress } from "@/hooks/useWatchProgress";
 import { checkBroadcastCurrent, subscribeBroadcastEvents, type BroadcastCurrentResult } from "@/services/broadcast";
+import { reportLiveFailure, useLiveFailureFor } from "@/services/liveFailureSignal";
 import {
   BROADCAST_TITLE,
   BROADCAST_HERO_TITLE,
@@ -355,8 +356,17 @@ export default function WatchScreen() {
   };
 
   const broadcastItem = broadcastCurrent?.item ?? null;
-  const showScheduledLive = !liveStatus.isLive && broadcastCurrent?.activeSchedule?.contentType === "live";
-  const showBroadcast = !liveStatus.isLive && (broadcastItem !== null || showScheduledLive);
+  // Subscribe to the live-failure signal so when the YouTube live iframe
+  // (here in the hero, OR over in the full-screen player) reports a failure,
+  // this surface treats the platform as not-live for ~60 s. That trips
+  // `showBroadcast` below, so the hero / Live Now strip render the broadcast
+  // queue instead of staring at a broken embed. Auto-recovers when the
+  // cool-down expires or when the active live videoId changes (admin pasted
+  // a new URL).
+  const liveYoutubeFailed = useLiveFailureFor(liveStatus.videoId);
+  const effectiveLiveActive = liveStatus.isLive && !liveYoutubeFailed;
+  const showScheduledLive = !effectiveLiveActive && broadcastCurrent?.activeSchedule?.contentType === "live";
+  const showBroadcast = !effectiveLiveActive && (broadcastItem !== null || showScheduledLive);
 
   // Compute the join offset ONCE per broadcast item so re-renders from drift
   // updates don't re-seek the hero video on every tick. The drift-correction
@@ -465,7 +475,7 @@ export default function WatchScreen() {
               ]}
               accessible
               accessibilityRole="button"
-              accessibilityLabel={liveStatus.isLive ? "Watch live service" : "Watch Temple TV"}
+              accessibilityLabel={effectiveLiveActive ? "Watch live service" : "Watch Temple TV"}
             >
               {/* ── Backdrop: video > thumbnail > logo ── */}
               <View style={StyleSheet.absoluteFill}>
@@ -527,15 +537,9 @@ export default function WatchScreen() {
                   </>
                 ) : showBroadcast && broadcastItem?.thumbnailUrl ? (
                   <Image source={{ uri: broadcastItem.thumbnailUrl }} style={StyleSheet.absoluteFill} resizeMode="cover" />
-                ) : liveStatus.isLive && liveStatus.videoId && Platform.OS === "web" ? (
+                ) : effectiveLiveActive && liveStatus.videoId && Platform.OS === "web" ? (
                   <View style={[StyleSheet.absoluteFill, { overflow: "hidden" as const }]}>
-                    <iframe
-                      src={`https://www.youtube-nocookie.com/embed/${liveStatus.videoId}?autoplay=1&mute=1&controls=0&modestbranding=1&playsinline=1&loop=1&playlist=${liveStatus.videoId}&rel=0&iv_load_policy=3`}
-                      allow="autoplay; encrypted-media"
-                      frameBorder={0}
-                      style={{ position: "absolute", inset: 0, width: "100%", height: "100%", border: 0, pointerEvents: "none" } as any}
-                      title="Temple TV Live Preview"
-                    />
+                    <LiveHeroPreviewIframe videoId={liveStatus.videoId} />
                   </View>
                 ) : (
                   /* Off-air: branded gradient backdrop with subtle logo */
@@ -600,7 +604,7 @@ export default function WatchScreen() {
               </View>
 
               {/* ── Channel Bug (TV network-style watermark) ── */}
-              {(showBroadcast || liveStatus.isLive) && (
+              {(showBroadcast || effectiveLiveActive) && (
                 <View style={styles.channelBug}>
                   <Text style={styles.channelBugText}>TEMPLE TV</Text>
                 </View>
@@ -610,7 +614,7 @@ export default function WatchScreen() {
               <View style={[styles.heroContent, { paddingBottom: Math.max(insets.bottom + 20, 28) }]}>
                 {/* Status badge */}
                 {!checkingLive && (
-                  liveStatus.isLive ? (
+                  effectiveLiveActive ? (
                     <LiveBadge size="large" />
                   ) : showBroadcast ? (
                     <View style={styles.onAirBadge}>
@@ -631,7 +635,7 @@ export default function WatchScreen() {
                     matching the TV LiveHero behaviour and the player
                     chrome overrides. */}
                 <Text style={styles.heroTitle} numberOfLines={2}>
-                  {liveStatus.isLive
+                  {effectiveLiveActive
                     ? BROADCAST_HERO_TITLE
                     : showScheduledLive
                     ? "Live Service Coming Up"
@@ -640,7 +644,7 @@ export default function WatchScreen() {
 
                 {/* Subtitle */}
                 <Text style={styles.heroSubtitleMeta}>
-                  {liveStatus.isLive
+                  {effectiveLiveActive
                     ? "Live worship service — tune in now"
                     : showScheduledLive
                     ? "Scheduled live service — tap to join"
@@ -661,7 +665,7 @@ export default function WatchScreen() {
                     onPress={showBroadcast ? handleBroadcastPress : handleLivePress}
                     style={({ pressed }) => [
                       styles.heroWatchBtn,
-                      { backgroundColor: liveStatus.isLive ? "#FF0040" : "#6A0DAD" },
+                      { backgroundColor: effectiveLiveActive ? "#FF0040" : "#6A0DAD" },
                       pressed && { opacity: 0.85 },
                     ]}
                   >
@@ -960,3 +964,48 @@ const styles = StyleSheet.create({
   section: { marginTop: 28, gap: 12 },
   listContainer: { paddingHorizontal: 16, gap: 10 },
 });
+
+/**
+ * Web-only YouTube live preview iframe with failure detection — mobile
+ * twin of `LiveHeroPreviewIframe` in `artifacts/tv/src/components/LiveHero.tsx`.
+ *
+ * Why a watchdog: the YouTube embed is a cross-origin iframe and its
+ * `error` event is unreliable for the failure modes we care about
+ * (geo-block, embedding disabled, age-restricted). If the iframe hasn't
+ * fired `onload` within MOBILE_LIVE_HERO_LOAD_TIMEOUT_MS, we treat it
+ * as a failure. Reporting the failure flips `effectiveLiveActive` to
+ * false here AND in the player on the same device, so both surfaces
+ * fall through to the broadcast queue together.
+ */
+const MOBILE_LIVE_HERO_LOAD_TIMEOUT_MS = 12_000;
+
+function LiveHeroPreviewIframe({ videoId }: { videoId: string }) {
+  const loadedRef = useRef(false);
+  useEffect(() => {
+    loadedRef.current = false;
+    const watchdog = setTimeout(() => {
+      if (!loadedRef.current) reportLiveFailure(videoId);
+    }, MOBILE_LIVE_HERO_LOAD_TIMEOUT_MS);
+    return () => clearTimeout(watchdog);
+  }, [videoId]);
+
+  // Render a real DOM iframe — Platform.OS === "web" is already gated
+  // by the caller, so this only runs in the browser bundle.
+  return React.createElement("iframe", {
+    key: videoId,
+    src: `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&mute=1&controls=0&modestbranding=1&playsinline=1&loop=1&playlist=${videoId}&rel=0&iv_load_policy=3`,
+    allow: "autoplay; encrypted-media",
+    frameBorder: 0,
+    onLoad: () => { loadedRef.current = true; },
+    onError: () => reportLiveFailure(videoId),
+    style: {
+      position: "absolute",
+      inset: 0,
+      width: "100%",
+      height: "100%",
+      border: 0,
+      pointerEvents: "none",
+    },
+    title: "Temple TV Live Preview",
+  });
+}
