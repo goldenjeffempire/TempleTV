@@ -1,5 +1,6 @@
 import { logger } from "./logger";
 import { cache } from "./cache";
+import { broadcastLiveEvent } from "./liveEvents";
 
 export type AlertSeverity = "info" | "warning" | "critical";
 
@@ -37,6 +38,12 @@ export interface OpsAlertResult {
 
 const DEDUP_PREFIX = "ops:alert:dedup:";
 const LAST_DELIVERY_KEY = "ops:alert:lastDelivery";
+const RECENT_ALERTS_KEY = "ops:alert:recent";
+// Hard cap on the rolling history. Bounded so the cache row stays small
+// (each entry is ~300-500 bytes → ~50 KB max). Operators that need long-term
+// retention should pipe the generic webhook into their log aggregator.
+const RECENT_ALERTS_LIMIT = 100;
+const RECENT_ALERTS_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const SLACK_WEBHOOK_URL = process.env.ALERT_SLACK_WEBHOOK_URL?.trim() || "";
 const GENERIC_WEBHOOK_URL = process.env.ALERT_WEBHOOK_URL?.trim() || "";
@@ -88,6 +95,55 @@ export interface LastDelivery {
 
 export async function getLastAlertDelivery(): Promise<LastDelivery | null> {
   return (await cache.get<LastDelivery>(LAST_DELIVERY_KEY)) ?? null;
+}
+
+/**
+ * One row in the rolling alert history. Mirrors `LastDelivery` but adds the
+ * full message body, structured fields, dedup key, and severity so the
+ * admin timeline can render a self-contained record without needing to
+ * cross-reference Slack.
+ */
+export interface AlertHistoryEntry {
+  at: string;
+  severity: AlertSeverity;
+  title: string;
+  message: string;
+  fields: OpsAlertField[];
+  slack: ChannelStatus;
+  webhook: ChannelStatus;
+  deduped: boolean;
+  dedupKey: string | null;
+}
+
+/**
+ * Append an entry to the rolling history. Keeps the newest at index 0 and
+ * trims to RECENT_ALERTS_LIMIT. Read-modify-write under a single cache key
+ * — fine for our throughput (alerts are rare events, not a hot path).
+ */
+async function appendToHistory(entry: AlertHistoryEntry): Promise<void> {
+  const existing =
+    (await cache.get<AlertHistoryEntry[]>(RECENT_ALERTS_KEY)) ?? [];
+  const next = [entry, ...existing].slice(0, RECENT_ALERTS_LIMIT);
+  await cache.set<AlertHistoryEntry[]>(
+    RECENT_ALERTS_KEY,
+    next,
+    RECENT_ALERTS_TTL_MS,
+  );
+}
+
+/**
+ * Recent alert history (newest first). Capped at RECENT_ALERTS_LIMIT and
+ * stored in the distributed cache so it's shared across replicas and
+ * survives restarts. `limit` further trims the response if provided.
+ */
+export async function getRecentAlerts(
+  limit?: number,
+): Promise<AlertHistoryEntry[]> {
+  const all = (await cache.get<AlertHistoryEntry[]>(RECENT_ALERTS_KEY)) ?? [];
+  if (typeof limit === "number" && limit > 0 && limit < all.length) {
+    return all.slice(0, limit);
+  }
+  return all;
 }
 
 async function postSlack(input: OpsAlertInput): Promise<ChannelStatus> {
@@ -177,6 +233,8 @@ async function postGenericWebhook(
 export async function sendOpsAlert(
   input: OpsAlertInput,
 ): Promise<OpsAlertResult> {
+  const at = new Date().toISOString();
+
   // Distributed dedup — one process sending the alert blocks duplicates
   // from any other replica for the configured window.
   if (input.dedupKey) {
@@ -193,43 +251,83 @@ export async function sendOpsAlert(
         { dedupKey: input.dedupKey, title: input.title },
         "Ops alert deduped (already sent within window)",
       );
+      // Record dedup-suppressed events too so the admin history can show
+      // "we tried to alert about X but suppressed it" — invaluable when
+      // debugging "why didn't I get paged for that?"
+      const entry: AlertHistoryEntry = {
+        at,
+        severity: input.severity,
+        title: input.title,
+        message: input.message,
+        fields: input.fields ?? [],
+        slack: "skipped",
+        webhook: "skipped",
+        deduped: true,
+        dedupKey: input.dedupKey,
+      };
+      await appendToHistory(entry);
+      try {
+        broadcastLiveEvent("ops-alert-sent", entry);
+      } catch {
+        // SSE best-effort.
+      }
       return result;
     }
     const ttlMs = (input.dedupTtlSec ?? 4 * 60 * 60) * 1000;
     await cache.set(key, Date.now(), ttlMs);
   }
 
+  let slack: ChannelStatus = "disabled";
+  let webhook: ChannelStatus = "disabled";
+
   if (!isAlertingConfigured()) {
     logger.info(
       { title: input.title, severity: input.severity },
       "Ops alert raised but no channels configured",
     );
-    return {
-      slack: "disabled",
-      webhook: "disabled",
-      dedupKey: input.dedupKey ?? null,
-      deduped: false,
-    };
+  } else {
+    const [s, w] = await Promise.all([
+      postSlack(input),
+      postGenericWebhook(input),
+    ]);
+    slack = s;
+    webhook = w;
+
+    // Record last-delivery telemetry for the admin UI.
+    await cache.set<LastDelivery>(
+      LAST_DELIVERY_KEY,
+      {
+        at,
+        title: input.title,
+        severity: input.severity,
+        slack,
+        webhook,
+        deduped: false,
+      },
+      7 * 24 * 60 * 60 * 1000,
+    );
   }
 
-  const [slack, webhook] = await Promise.all([
-    postSlack(input),
-    postGenericWebhook(input),
-  ]);
-
-  // Record last-delivery telemetry for the admin UI.
-  await cache.set<LastDelivery>(
-    LAST_DELIVERY_KEY,
-    {
-      at: new Date().toISOString(),
-      title: input.title,
-      severity: input.severity,
-      slack,
-      webhook,
-      deduped: false,
-    },
-    7 * 24 * 60 * 60 * 1000,
-  );
+  // Always append to history (even when no channels are configured) so
+  // operators can see what *would* have been alerted on before they
+  // wired up Slack/webhook.
+  const entry: AlertHistoryEntry = {
+    at,
+    severity: input.severity,
+    title: input.title,
+    message: input.message,
+    fields: input.fields ?? [],
+    slack,
+    webhook,
+    deduped: false,
+    dedupKey: input.dedupKey ?? null,
+  };
+  await appendToHistory(entry);
+  try {
+    broadcastLiveEvent("ops-alert-sent", entry);
+  } catch {
+    // SSE best-effort.
+  }
 
   return {
     slack,

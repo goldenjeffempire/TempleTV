@@ -28,6 +28,7 @@ const UsersPage = lazy(() => import("@/pages/users"));
 const LiveControl = lazy(() => import("@/pages/live-control"));
 const LiveIngest = lazy(() => import("@/pages/live-ingest"));
 const YouTubeQuota = lazy(() => import("@/pages/youtube-quota"));
+const AlertsHistory = lazy(() => import("@/pages/alerts"));
 const Prayers = lazy(() => import("@/pages/prayers"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
@@ -78,6 +79,7 @@ function RoutedContent() {
           <Route path="/live-control" component={LiveControl} />
           <Route path="/live-ingest" component={LiveIngest} />
           <Route path="/youtube-quota" component={YouTubeQuota} />
+          <Route path="/alerts" component={AlertsHistory} />
           <Route path="/prayers" component={Prayers} />
           <Route component={NotFound} />
         </Switch>

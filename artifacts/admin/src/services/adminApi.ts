@@ -739,8 +739,30 @@ export interface AlertTestResult {
   deduped: boolean;
 }
 
+export interface AlertHistoryEntry {
+  at: string;
+  severity: "info" | "warning" | "critical";
+  title: string;
+  message: string;
+  fields: Array<{ label: string; value: string }>;
+  slack: AlertChannelStatus;
+  webhook: AlertChannelStatus;
+  deduped: boolean;
+  dedupKey: string | null;
+}
+
+export interface AlertHistoryResponse {
+  entries: AlertHistoryEntry[];
+  count: number;
+}
+
 export const opsAlertsApi = {
   getStatus: (signal?: AbortSignal) =>
     adminGet<AlertingStatus>("/admin/alerts/status", signal),
   sendTest: () => adminPost<AlertTestResult>("/admin/alerts/test", {}),
+  getHistory: (limit?: number, signal?: AbortSignal) =>
+    adminGet<AlertHistoryResponse>(
+      `/admin/alerts/history${limit ? `?limit=${limit}` : ""}`,
+      signal,
+    ),
 };

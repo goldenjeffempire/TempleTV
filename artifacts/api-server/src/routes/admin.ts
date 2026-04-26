@@ -17,6 +17,7 @@ import {
   sendOpsAlert,
   getAlertingChannels,
   getLastAlertDelivery,
+  getRecentAlerts,
 } from "../lib/alerts";
 import {
   getLiveStatus,
@@ -667,6 +668,27 @@ router.get("/admin/alerts/status", async (_req, res) => {
       configured: channels.slack || channels.webhook,
       lastDelivery,
     });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+/**
+ * Rolling history of recent ops alerts (newest first). Capped at 100 entries
+ * server-side; client may further narrow with `?limit=N`. Includes both real
+ * deliveries and dedup-suppressed events so operators can debug "why didn't
+ * I get paged?" without tailing logs.
+ */
+router.get("/admin/alerts/history", async (req, res) => {
+  try {
+    const raw = req.query.limit;
+    const limit =
+      typeof raw === "string" && /^\d+$/.test(raw)
+        ? Math.min(100, Math.max(1, Number(raw)))
+        : undefined;
+    const entries = await getRecentAlerts(limit);
+    res.json({ entries, count: entries.length });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });
