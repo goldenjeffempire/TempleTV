@@ -29,7 +29,21 @@ This creates two files inside `android/`:
 
 ---
 
-## Step 2 — Open the project in Android Studio
+## Step 2 — Set the Android SDK path
+
+Run this from the `artifacts/mobile/` folder:
+
+```bash
+bash scripts/setup-local-properties.sh
+```
+
+The script checks common SDK locations (`~/Android/Sdk`, `$ANDROID_HOME`, etc.) and writes
+`android/local.properties` automatically. If it cannot find the SDK it will ask you for the
+path — you can find it in Android Studio under **File → Project Structure → SDK Location**.
+
+---
+
+## Step 3 — Open the project in Android Studio
 
 1. Launch Android Studio
 2. Click **Open** (not "New Project")
@@ -40,7 +54,7 @@ If Android Studio asks to upgrade the Gradle plugin — click **Don't remind me 
 
 ---
 
-## Step 3 — Build the signed .aab
+## Step 4 — Build the signed .aab
 
 1. In the menu bar: **Build → Generate Signed Bundle / APK…**
 2. Select **Android App Bundle** → click **Next**
@@ -63,7 +77,7 @@ Build time: ~10–20 minutes on first run (subsequent builds are faster).
 
 ---
 
-## Step 4 — Upload to Google Play
+## Step 5 — Upload to Google Play
 
 1. Go to https://play.google.com/console
 2. Create a new app (package: `com.templetv.jctm`)
@@ -85,7 +99,7 @@ No manual configuration needed.
 
 | Issue | Fix |
 |-------|-----|
-| Gradle sync fails: `SDK not found` | In Android Studio → SDK Manager → install API 35 |
+| Gradle sync fails: `SDK not found` | Run `bash scripts/setup-local-properties.sh` first, or set `sdk.dir` in `android/local.properties` manually |
 | `keytool not found` | keytool comes with Java. Open Android Studio terminal — it has Java in PATH |
 | Build fails: `Duplicate class` | In Android Studio terminal: `./gradlew clean` then rebuild |
 | `minSdkVersion` mismatch | No action needed — already set to 24 (Android 7) |
