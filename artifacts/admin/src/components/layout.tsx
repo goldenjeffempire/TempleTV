@@ -26,6 +26,7 @@ import {
   HandHeart,
   Gauge,
   Siren,
+  Youtube,
 } from "lucide-react";
 import {
   applyAutoTheme,
@@ -203,6 +204,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             </span>
           ) : undefined,
         },
+        { href: "/live-youtube", label: "Live YouTube", icon: Youtube },
         { href: "/live-ingest", label: "Live Ingest", icon: Radio },
         { href: "/broadcast", label: "Broadcast Queue", icon: Tv2 },
         { href: "/live-monitor", label: "Live Monitor", icon: MonitorPlay },

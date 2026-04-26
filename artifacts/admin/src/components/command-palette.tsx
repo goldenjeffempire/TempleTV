@@ -30,6 +30,7 @@ import {
   Search,
   StopCircle,
   Send,
+  Youtube,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
@@ -62,6 +63,7 @@ type NavTarget = {
 const NAV_TARGETS: NavTarget[] = [
   { id: "nav-dashboard", label: "Dashboard", icon: LayoutDashboard, href: "/", hint: "Mission Control" },
   { id: "nav-live-control", label: "Live Control", icon: Signal, href: "/live-control", hint: "Go live · stop override" },
+  { id: "nav-live-youtube", label: "Live YouTube", icon: Youtube, href: "/live-youtube", hint: "Paste a YouTube live URL · go live in one click" },
   { id: "nav-broadcast", label: "Broadcast Queue", icon: Tv2, href: "/broadcast" },
   { id: "nav-live-monitor", label: "Live Monitor", icon: MonitorPlay, href: "/live-monitor", hint: "Stream health & viewers" },
   { id: "nav-schedule", label: "Schedule", icon: Calendar, href: "/schedule" },
