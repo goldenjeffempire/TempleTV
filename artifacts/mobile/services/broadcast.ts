@@ -13,6 +13,13 @@ export interface BroadcastItem {
 export interface BroadcastCurrentResult {
   item: BroadcastItem | null;
   nextItem: BroadcastItem | null;
+  /**
+   * The next few items in the broadcast rotation after `item`, in air order.
+   * Server caps this at 3 distinct items and wraps around the queue. Optional
+   * for backwards-compat with API responses that pre-date the field — clients
+   * should treat `undefined` and `[]` identically.
+   */
+  upcomingItems?: BroadcastItem[];
   index: number;
   positionSecs: number;
   totalSecs: number;
@@ -111,6 +118,9 @@ export async function checkBroadcastCurrent(): Promise<BroadcastCurrentResult | 
       ...data,
       item: normalizeItem(data.item, apiBase),
       nextItem: normalizeItem(data.nextItem, apiBase),
+      upcomingItems: (data.upcomingItems ?? [])
+        .map((it) => normalizeItem(it, apiBase))
+        .filter((it): it is BroadcastItem => it !== null),
     };
   } catch {
     return null;

@@ -27,6 +27,14 @@ type ScheduleEntry = typeof scheduleTable.$inferSelect;
 type BroadcastCurrentPayload = {
   item: BroadcastItem | null;
   nextItem: BroadcastItem | null;
+  /**
+   * The next few items in the broadcast rotation after `item`, in air order.
+   * Used by viewer-facing "Up Next" surfaces so the player feels like a TV
+   * channel rather than an isolated video page. Capped at 3 distinct items
+   * and wraps around the queue; never repeats the currently-airing item.
+   * Empty when the queue has fewer than 2 playable items.
+   */
+  upcomingItems: BroadcastItem[];
   index: number;
   positionSecs: number;
   totalSecs: number;
@@ -210,6 +218,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
     result = {
       item: null,
       nextItem: null,
+      upcomingItems: [],
       index: 0,
       positionSecs: 0,
       totalSecs: 0,
@@ -239,6 +248,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
     result = {
       item: null,
       nextItem: null,
+      upcomingItems: [],
       index: 0,
       positionSecs: 0,
       totalSecs: 0,
@@ -290,6 +300,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
     result = {
       item: null,
       nextItem: null,
+      upcomingItems: [],
       index: 0,
       positionSecs: 0,
       totalSecs: 0,
@@ -472,6 +483,7 @@ function parseDurationSecs(value: string | null | undefined): number {
 type CalculateCurrentResult = {
   item: BroadcastItem | null;
   nextItem: BroadcastItem | null;
+  upcomingItems: BroadcastItem[];
   index: number;
   positionSecs: number;
   totalSecs: number;
@@ -481,6 +493,27 @@ type CalculateCurrentResult = {
   itemStartEpochSecs?: number;
   currentItemEndsAtMs?: number;
 };
+
+/**
+ * Build the "Up Next" preview list — the next N distinct items after the
+ * current one in the rotation. Wraps around the queue but never repeats the
+ * currently-airing item, and never returns more items than the queue has
+ * (so a 2-item queue produces exactly one upcoming item).
+ */
+function buildUpcomingItems(
+  items: BroadcastItem[],
+  currentIdx: number,
+  count: number = 3,
+): BroadcastItem[] {
+  if (items.length <= 1) return [];
+  const max = Math.min(count, items.length - 1);
+  const out: BroadcastItem[] = [];
+  for (let i = 1; i <= max; i++) {
+    const it = items[(currentIdx + i) % items.length];
+    if (it) out.push(it);
+  }
+  return out;
+}
 
 /**
  * Compute the live edge of the broadcast queue.
@@ -513,6 +546,7 @@ function calculateCurrentFromItems(
       result: {
         item: null,
         nextItem: null,
+        upcomingItems: [],
         index: 0,
         positionSecs: 0,
         totalSecs: 0,
@@ -554,10 +588,12 @@ function calculateCurrentFromItems(
             const positionSecs = Math.max(0, epochSecs - cursorStart);
             const nextItem =
               playableItems[(cursorIdx + 1) % playableItems.length] ?? null;
+            const upcomingItems = buildUpcomingItems(playableItems, cursorIdx);
             return {
               result: {
                 item: cursorItem,
                 nextItem,
+                upcomingItems,
                 index: cursorIdx,
                 positionSecs,
                 totalSecs,
@@ -606,12 +642,14 @@ function calculateCurrentFromItems(
   }
 
   const nextItem = playableItems[(index + 1) % playableItems.length] ?? null;
+  const upcomingItems = buildUpcomingItems(playableItems, index);
   const itemStartEpochSecs = epochSecs - positionSecs;
   const currentItemEndsAtMs = (itemStartEpochSecs + currentItem.durationSecs) * 1000;
   return {
     result: {
       item: currentItem,
       nextItem,
+      upcomingItems,
       index,
       positionSecs,
       totalSecs,

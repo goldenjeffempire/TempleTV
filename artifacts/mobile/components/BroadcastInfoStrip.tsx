@@ -27,11 +27,16 @@ export function BroadcastInfoStrip({ broadcast, playerHeight }: BroadcastInfoStr
 
   if (!broadcast?.item) return null;
 
-  // Round 8: per the broadcast-clean directive, no video titles, queue
-  // metadata, or "Up Next" sneak peeks are exposed on viewer surfaces.
-  // The strip is reduced to the bare TV-channel affordances: NOW ON AIR
-  // and the channel identity. The component is kept in the tree so the
-  // gradient + safe-area math driving the player chrome stays stable.
+  // Round 11 (live-TV ecosystem): the Round 8 "broadcast-clean" directive
+  // hid all queue metadata from on-air surfaces. The current product
+  // direction reverses that — viewers should always feel connected to a
+  // running channel, with a real-time "NOW ON AIR" indicator and a small
+  // "UP NEXT" preview of what's airing in the next few slots. Titles only;
+  // no thumbnails, no countdown, no per-item progress (those still belong
+  // to the EPG / guide page, not the player chrome).
+  const upcoming = (broadcast.upcomingItems ?? []).filter((it) => it && it.title);
+  const upcomingTitles = upcoming.slice(0, 3).map((it) => it.title.trim()).filter(Boolean);
+
   return (
     <Animated.View
       style={[styles.container, { opacity: fadeAnim, transform: [{ translateY: slideAnim }], pointerEvents: "none" }]}
@@ -52,6 +57,14 @@ export function BroadcastInfoStrip({ broadcast, playerHeight }: BroadcastInfoStr
               <Text style={styles.channelLabel}>TEMPLE TV</Text>
             </View>
           </View>
+          {upcomingTitles.length > 0 ? (
+            <View style={styles.upNextRow}>
+              <Text style={styles.upNextLabel}>UP NEXT</Text>
+              <Text style={styles.upNextText} numberOfLines={1} ellipsizeMode="tail">
+                {upcomingTitles.join("  •  ")}
+              </Text>
+            </View>
+          ) : null}
         </View>
       </LinearGradient>
     </Animated.View>
@@ -119,11 +132,18 @@ const styles = StyleSheet.create({
   upNextRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
+    gap: 8,
+    marginTop: 6,
+  },
+  upNextLabel: {
+    color: "rgba(255,255,255,0.85)",
+    fontSize: 9,
+    fontWeight: "700",
+    letterSpacing: 1.2,
   },
   upNextText: {
-    color: "rgba(255,255,255,0.55)",
-    fontSize: 10,
+    color: "rgba(255,255,255,0.7)",
+    fontSize: 11,
     flex: 1,
   },
 });
