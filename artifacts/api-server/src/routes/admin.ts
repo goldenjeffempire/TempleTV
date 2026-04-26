@@ -937,7 +937,34 @@ router.get("/admin/launch/readiness", async (_req, res) => {
     const queuedTranscodes = Number(queuedJobsResult[0]?.count ?? 0);
     const adminTokenConfigured = Boolean(process.env.ADMIN_API_TOKEN?.trim());
     const corsConfigured = Boolean(process.env.ALLOWED_ORIGINS?.trim());
-    const objectStorageConfigured = Boolean(process.env.PRIVATE_OBJECT_DIR?.trim() || process.env.PUBLIC_OBJECT_SEARCH_PATHS?.trim());
+
+    // ── Production-critical infrastructure ────────────────────────────────────
+    // Each AWS S3 credential is checked individually so the operator sees
+    // exactly which env var is missing — not a vague "object storage is not
+    // configured". The startup fatal in `index.ts` enumerates the same four
+    // keys; surfacing them here lets ops fix the issue from the dashboard
+    // before the next deploy crashloops.
+    const isProduction = process.env.NODE_ENV === "production";
+    const awsS3BucketSet = Boolean(process.env.AWS_S3_BUCKET?.trim());
+    const awsRegionSet = Boolean(process.env.AWS_REGION?.trim());
+    const awsAccessKeyIdSet = Boolean(process.env.AWS_ACCESS_KEY_ID?.trim());
+    const awsSecretAccessKeySet = Boolean(process.env.AWS_SECRET_ACCESS_KEY?.trim());
+    const s3FullyConfigured = isS3Configured();
+    // Object storage paths are independent of S3 credentials — they're for
+    // the public-asset CDN search path used by the object-storage shim.
+    const privateObjectDirSet = Boolean(process.env.PRIVATE_OBJECT_DIR?.trim());
+    const publicObjectPathsSet = Boolean(process.env.PUBLIC_OBJECT_SEARCH_PATHS?.trim());
+    const objectStorageConfigured = privateObjectDirSet && publicObjectPathsSet;
+    const ffmpegReady = isFfmpegReady();
+    // In production a missing S3 bucket/region/credentials is a `blocked`
+    // status because the startup guard in index.ts will refuse to boot the
+    // worker — the exact crashloop scenario we surface here. In dev it's a
+    // warning so the readiness banner doesn't go red on every machine.
+    const s3Status: LaunchCheckStatus = s3FullyConfigured
+      ? "ready"
+      : isProduction
+        ? "blocked"
+        : "warning";
     // Distributed cache is active when Redis is configured OR when the PostgreSQL
     // cache is ready (which is always true when DATABASE_URL is set — our standard).
     const distributedCacheConfigured = Boolean(process.env.REDIS_URL?.trim()) || Boolean(process.env.DATABASE_URL?.trim());
@@ -954,6 +981,77 @@ router.get("/admin/launch/readiness", async (_req, res) => {
     const appStoreConfigured = Boolean(process.env.APPLE_TEAM_ID?.trim() || process.env.EXPO_PUBLIC_REPL_ID?.trim());
 
     const categories = [
+      {
+        key: "infrastructure",
+        label: "Production infrastructure",
+        checks: [
+          launchCheck(
+            "aws-s3-bucket",
+            "AWS S3 bucket",
+            awsS3BucketSet ? "ready" : isProduction ? "blocked" : "warning",
+            awsS3BucketSet
+              ? `Bucket "${process.env.AWS_S3_BUCKET}" is configured.`
+              : "AWS_S3_BUCKET is not set — uploaded videos and HLS segments would land on ephemeral disk and disappear on the next deploy.",
+            awsS3BucketSet ? undefined : "Set AWS_S3_BUCKET to your media bucket name in the deployment environment.",
+          ),
+          launchCheck(
+            "aws-region",
+            "AWS region",
+            awsRegionSet ? "ready" : isProduction ? "blocked" : "warning",
+            awsRegionSet
+              ? `Region "${process.env.AWS_REGION}" is configured.`
+              : "AWS_REGION is not set — the S3 SDK has no region to address requests to.",
+            awsRegionSet ? undefined : "Set AWS_REGION to the bucket's region (e.g. us-east-1).",
+          ),
+          launchCheck(
+            "aws-access-key",
+            "AWS access key ID",
+            awsAccessKeyIdSet ? "ready" : isProduction ? "blocked" : "warning",
+            awsAccessKeyIdSet
+              ? "AWS_ACCESS_KEY_ID is configured."
+              : "AWS_ACCESS_KEY_ID is not set — the S3 SDK cannot authenticate.",
+            awsAccessKeyIdSet ? undefined : "Set AWS_ACCESS_KEY_ID from an IAM user with S3 read/write on the bucket.",
+          ),
+          launchCheck(
+            "aws-secret-key",
+            "AWS secret access key",
+            awsSecretAccessKeySet ? "ready" : isProduction ? "blocked" : "warning",
+            awsSecretAccessKeySet
+              ? "AWS_SECRET_ACCESS_KEY is configured."
+              : "AWS_SECRET_ACCESS_KEY is not set — the S3 SDK cannot authenticate.",
+            awsSecretAccessKeySet ? undefined : "Set AWS_SECRET_ACCESS_KEY paired with the access key ID above.",
+          ),
+          launchCheck(
+            "s3-startup-guard",
+            "Production startup guard",
+            s3Status,
+            s3FullyConfigured
+              ? "All four AWS S3 environment variables are present — workers will boot cleanly."
+              : isProduction
+                ? "The startup guard in index.ts will refuse to boot the worker until all four AWS_* variables above are set. Crashloop expected on next deploy."
+                : "AWS S3 is not fully configured. The production startup guard would refuse to boot — fix before deploying.",
+            s3FullyConfigured ? undefined : "Add the missing AWS_* variables to your deployment dashboard, then redeploy.",
+          ),
+          launchCheck(
+            "object-storage-paths",
+            "Object storage paths",
+            objectStorageConfigured ? "ready" : "warning",
+            objectStorageConfigured
+              ? "PRIVATE_OBJECT_DIR and PUBLIC_OBJECT_SEARCH_PATHS are both configured."
+              : `${privateObjectDirSet ? "" : "PRIVATE_OBJECT_DIR missing. "}${publicObjectPathsSet ? "" : "PUBLIC_OBJECT_SEARCH_PATHS missing."}`.trim(),
+            objectStorageConfigured ? undefined : "Set both PRIVATE_OBJECT_DIR and PUBLIC_OBJECT_SEARCH_PATHS so the object-storage shim can serve assets.",
+          ),
+          launchCheck(
+            "ffmpeg",
+            "FFmpeg transcoder",
+            ffmpegReady ? "ready" : isProduction ? "blocked" : "warning",
+            ffmpegReady
+              ? "FFmpeg + ffprobe are present and the transcoding pipeline is active."
+              : "FFmpeg preflight has not passed. Either the binaries are missing or the worker process has not finished its preflight check yet.",
+            ffmpegReady ? undefined : "Install ffmpeg/ffprobe on the worker container or set FFMPEG_PATH to their location.",
+          ),
+        ],
+      },
       {
         key: "security",
         label: "Security & access",
@@ -1018,13 +1116,6 @@ router.get("/admin/launch/readiness", async (_req, res) => {
         key: "streaming",
         label: "Streaming pipeline",
         checks: [
-          launchCheck(
-            "object-storage",
-            "Cloud media storage",
-            objectStorageConfigured ? "ready" : "warning",
-            objectStorageConfigured ? "Object storage paths are configured." : "Object storage environment paths are not configured.",
-            "Configure object storage before relying on large production media libraries.",
-          ),
           launchCheck(
             "hls",
             "Adaptive HLS readiness",

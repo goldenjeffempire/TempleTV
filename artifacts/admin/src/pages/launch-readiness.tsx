@@ -10,6 +10,7 @@ import {
   Lock,
   RefreshCw,
   Rocket,
+  Server,
   Tv2,
   XCircle,
 } from "lucide-react";
@@ -59,6 +60,7 @@ interface LaunchReadiness {
 }
 
 const categoryIcons: Record<string, typeof Lock> = {
+  infrastructure: Server,
   security: Lock,
   content: Tv2,
   streaming: Cloud,
