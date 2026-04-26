@@ -9,7 +9,7 @@ import {
   validateStreamKey,
 } from "../lib/liveIngestHealth";
 import { getVapidPublicKey, sendWebPushNotifications } from "../services/web-push";
-import { eq, ilike, or, count, sql, desc, asc, and, lte, gte, inArray } from "drizzle-orm";
+import { eq, ilike, or, count, sql, desc, asc, and, lte, gte, inArray, isNotNull } from "drizzle-orm";
 import { queueTranscodingJob, retryTranscodingJob, TRANSCODER_HEARTBEAT_KEY } from "../lib/transcoder";
 import { isFfmpegReady } from "../lib/ffmpeg";
 import { broadcastLiveEvent, addSSEClient, removeSSEClient, getSSEClientCount, SSECapacityError } from "../lib/liveEvents";
@@ -3758,6 +3758,62 @@ router.get("/admin/live-overrides", async (_req, res) => {
   try {
     const overrides = await db.select().from(liveOverridesTable).orderBy(desc(liveOverridesTable.startedAt));
     res.json(overrides);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "Unknown error" });
+  }
+});
+
+/**
+ * Returns the most-recently-broadcast distinct YouTube video IDs from
+ * the live_overrides history. Powers the "Re-broadcast recent stream"
+ * dropdown in Live Control so admins running recurring services
+ * (Sunday service, midweek prayer, etc.) can re-fire a previous URL
+ * with a single click instead of digging up the watch link again.
+ *
+ * Distinct on `youtubeVideoId` because the same recurring stream can
+ * appear many times in history. We hand-collapse client-side rather
+ * than `SELECT DISTINCT ON (...)` to keep this portable across the
+ * stack and avoid pg-specific syntax.
+ */
+router.get("/admin/live-overrides/recent-youtube", async (_req, res) => {
+  try {
+    const rows = await db
+      .select({
+        id: liveOverridesTable.id,
+        title: liveOverridesTable.title,
+        youtubeVideoId: liveOverridesTable.youtubeVideoId,
+        startedAt: liveOverridesTable.startedAt,
+        endedAt: liveOverridesTable.endedAt,
+      })
+      .from(liveOverridesTable)
+      .where(isNotNull(liveOverridesTable.youtubeVideoId))
+      .orderBy(desc(liveOverridesTable.startedAt))
+      .limit(50);
+
+    const seen = new Set<string>();
+    const recent: Array<{
+      videoId: string;
+      url: string;
+      title: string;
+      thumbnailUrl: string;
+      lastBroadcastAt: string | null;
+    }> = [];
+    for (const r of rows) {
+      const vid = r.youtubeVideoId;
+      if (!vid || seen.has(vid)) continue;
+      seen.add(vid);
+      recent.push({
+        videoId: vid,
+        url: `https://www.youtube.com/watch?v=${vid}`,
+        title: r.title,
+        // mqdefault = 320×180, the lightweight thumbnail size YouTube
+        // serves for *every* video — no API call required.
+        thumbnailUrl: `https://i.ytimg.com/vi/${vid}/mqdefault.jpg`,
+        lastBroadcastAt: r.startedAt ? new Date(r.startedAt).toISOString() : null,
+      });
+      if (recent.length >= 10) break;
+    }
+    res.json({ items: recent });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : "Unknown error" });
   }

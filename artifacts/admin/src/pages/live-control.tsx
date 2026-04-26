@@ -25,7 +25,9 @@ import {
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useSSE, useSSEEvent } from "@/contexts/SSEContext";
-import { liveApi, type LiveOverride, type YouTubePreviewResult } from "@/services/adminApi";
+import { liveApi, type LiveOverride, type YouTubePreviewResult, type RecentYoutubeStream } from "@/services/adminApi";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { History } from "lucide-react";
 import { PageHeader } from "@/components/shared/page-header";
 import { cn } from "@/lib/utils";
 
@@ -82,6 +84,19 @@ export default function LiveControl() {
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["admin-live-status"] });
 
+  // Recent YouTube streams for the "re-broadcast" dropdown. Loaded once
+  // when the page mounts and refreshed when an override is started/stopped
+  // (those mutations invalidate `admin-live-status`, but recent history
+  // changes only when a new override actually fires — so we additionally
+  // refetch on Go Live success below).
+  const { data: recentYoutube } = useQuery({
+    queryKey: ["admin-recent-youtube-streams"],
+    queryFn: () => liveApi.getRecentYoutubeStreams(),
+    staleTime: 30_000,
+  });
+  const recentItems: RecentYoutubeStream[] = recentYoutube?.items ?? [];
+  const [recentOpen, setRecentOpen] = useState(false);
+
   const previewYoutube = useMutation({
     mutationFn: (url: string) => liveApi.previewYoutube(url),
     onSuccess: (res, url) => {
@@ -120,6 +135,10 @@ export default function LiveControl() {
         description: `Push sent to ${res.push?.sent ?? 0} devices.`,
       });
       invalidate();
+      // Refresh the recent-streams list so the just-started YouTube URL
+      // appears at the top of the dropdown for next time (e.g. recurring
+      // weekly service that's started, ended, then re-started).
+      queryClient.invalidateQueries({ queryKey: ["admin-recent-youtube-streams"] });
     },
     onError: (err: Error) => {
       toast({ title: "Failed to start broadcast", description: err.message, variant: "destructive" });
@@ -375,6 +394,76 @@ export default function LiveControl() {
                     }}
                     className="font-mono text-sm flex-1"
                   />
+                  {/* Re-broadcast a recent stream — pulls distinct YouTube
+                      video IDs from broadcast history. The button is hidden
+                      entirely when there's no history so first-time users
+                      see a clean form. Picking an item populates the URL
+                      field AND auto-fires Preview so the admin sees its
+                      live state immediately. */}
+                  {recentItems.length > 0 && (
+                    <Popover open={recentOpen} onOpenChange={setRecentOpen}>
+                      <PopoverTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="gap-2 shrink-0"
+                          title="Re-broadcast a recent YouTube stream"
+                        >
+                          <History className="w-4 h-4" />
+                          Recent
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent align="end" className="w-80 p-0">
+                        <div className="p-3 border-b">
+                          <div className="text-xs font-semibold">Recent YouTube broadcasts</div>
+                          <div className="text-[11px] text-muted-foreground">
+                            Click to fill the URL and auto-preview.
+                          </div>
+                        </div>
+                        <div className="max-h-72 overflow-y-auto divide-y">
+                          {recentItems.map((item) => (
+                            <button
+                              key={item.videoId}
+                              type="button"
+                              className="w-full flex items-start gap-2.5 p-2.5 text-left hover:bg-muted/60 transition-colors"
+                              onClick={() => {
+                                setForm((f) => ({ ...f, youtubeUrl: item.url, title: item.title }));
+                                setRecentOpen(false);
+                                // Auto-preview so the admin sees the live
+                                // badge for the chosen stream without an
+                                // extra click. Mirrors handlePreviewYoutube.
+                                previewYoutube.mutate(item.url);
+                              }}
+                            >
+                              <img
+                                src={item.thumbnailUrl}
+                                alt=""
+                                className="h-10 w-16 object-cover rounded shrink-0 bg-muted"
+                                loading="lazy"
+                                onError={(e) => {
+                                  // YouTube returns a 120x90 grey placeholder
+                                  // for deleted/private videos. Hide the img
+                                  // rather than show a broken icon.
+                                  (e.currentTarget as HTMLImageElement).style.visibility = "hidden";
+                                }}
+                              />
+                              <div className="min-w-0 flex-1">
+                                <div className="text-xs font-medium truncate">{item.title}</div>
+                                <div className="text-[10px] text-muted-foreground font-mono truncate">
+                                  {item.videoId}
+                                </div>
+                                {item.lastBroadcastAt && (
+                                  <div className="text-[10px] text-muted-foreground">
+                                    Last aired {new Date(item.lastBroadcastAt).toLocaleString()}
+                                  </div>
+                                )}
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      </PopoverContent>
+                    </Popover>
+                  )}
                   <Button
                     type="button"
                     variant="outline"

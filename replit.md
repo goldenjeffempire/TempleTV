@@ -1299,3 +1299,42 @@ mechanism — added one nullable `youtube_video_id` column.
   timeout and the admin can bypass it with `skipYoutubeValidation`.
 - Players prefer YouTube when both `youtubeVideoId` and `hlsStreamUrl`
   are set — documented inline in the admin form helper text.
+
+## Round 12b — "Recent YouTube Streams" Re-Broadcast Dropdown (Apr 26, 2026)
+
+Follow-up to Round 12. Recurring services (Sunday service, midweek
+prayer, etc.) re-use the same YouTube live URL pattern week after week —
+admins shouldn't have to dig up the link every time. Added a Recent
+button next to the YouTube URL field in Live Control that opens a
+dropdown of distinct, most-recently-broadcast YouTube video IDs from
+override history. Click an item → URL field is populated, title is
+auto-filled, and the Preview probe fires automatically.
+
+### Architecture
+
+- **Endpoint** (`artifacts/api-server/src/routes/admin.ts`):
+  `GET /admin/live-overrides/recent-youtube` queries the last 50
+  override rows that have a non-null `youtube_video_id`, dedupes
+  client-side by video ID, and returns the top 10 with title + a
+  free `i.ytimg.com/vi/<id>/mqdefault.jpg` thumbnail. No YouTube API
+  quota consumed.
+- **API client** (`artifacts/admin/src/services/adminApi.ts`): new
+  `RecentYoutubeStream` interface + `liveApi.getRecentYoutubeStreams()`.
+- **UI** (`artifacts/admin/src/pages/live-control.tsx`): Popover with
+  thumbnail + title + last-aired timestamp. Hidden entirely when no
+  history exists so first-time setups stay clean. Auto-invalidated
+  when a new override starts so the just-broadcast stream is at the
+  top of the list next time.
+
+### Why it's safe
+
+- Read-only endpoint, sits behind the same admin auth middleware as
+  every other admin route.
+- The query is bounded (`limit 50`) and indexed on `started_at`
+  (the existing default-desc primary access pattern for live_overrides),
+  so it stays cheap regardless of history size.
+- Thumbnails are `<img>` tags with a `loading="lazy"` + `onError`
+  hide so deleted/private videos don't render a broken icon.
+- Dropdown auto-fires the existing Preview probe on selection — the
+  admin never goes live blind on a stale URL just because they clicked
+  it from history.

@@ -339,6 +339,19 @@ export interface LiveOverride {
 }
 
 /**
+ * One row from the "recently broadcast YouTube streams" dropdown that
+ * lets admins re-fire a recurring service with a single click. Built
+ * server-side from the `live_overrides` history, deduped by video ID.
+ */
+export interface RecentYoutubeStream {
+  videoId: string;
+  url: string;
+  title: string;
+  thumbnailUrl: string;
+  lastBroadcastAt: string | null;
+}
+
+/**
  * Result of the YouTube URL preview probe. The admin uses this to confirm
  * the URL resolves to a real, public, currently-live video before going
  * live across every viewer surface.
@@ -548,6 +561,13 @@ export const liveApi = {
    */
   previewYoutube: (url: string) =>
     adminPost<YouTubePreviewResult>("/admin/live/override/preview-youtube", { url }),
+  /**
+   * Distinct most-recently-broadcast YouTube streams from history. Used
+   * by the "Re-broadcast recent stream" dropdown so admins can re-fire
+   * a recurring service without re-typing the URL.
+   */
+  getRecentYoutubeStreams: () =>
+    adminGet<{ items: RecentYoutubeStream[] }>("/admin/live-overrides/recent-youtube"),
   getMonitor: (signal?: AbortSignal) => adminGet<LiveMonitorData>("/admin/live/monitor", signal),
   getStatus: (signal?: AbortSignal) => adminGet<{
     isLive: boolean;
