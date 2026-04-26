@@ -19,6 +19,8 @@ echo "  2. A key password       (can be the same as keystore password)"
 echo "  3. Your organisation info (can be approximate)"
 echo ""
 
+mkdir -p "${DEST}"
+
 keytool \
   -genkeypair \
   -v \
