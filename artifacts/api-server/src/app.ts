@@ -10,6 +10,7 @@ import legalRouter from "./routes/legal";
 import sitemapRouter from "./routes/sitemap";
 import { logger } from "./lib/logger";
 import { s3FallbackMiddleware } from "./lib/staticWithS3Fallback";
+import { s3RedirectFirstForLargeMedia } from "./lib/s3RedirectFirst";
 import { uploadRangeGuard } from "./lib/uploadRangeGuard";
 import { adminAccessControl, rateLimit, requestId, securityHeaders } from "./middlewares/security";
 import { requestMetrics } from "./middlewares/observability";
@@ -145,6 +146,22 @@ app.use(
     next();
   },
   uploadRangeGuard(),
+  // ── S3-redirect-first for large media ────────────────────────────────────
+  // Critical: this runs BEFORE express.static, so videos/audio that already
+  // exist in the S3 mirror always 302 to a presigned URL — even when the
+  // file ALSO exists on Render's ephemeral disk. Without this, the disk
+  // fast-path streams hundreds of megabytes through the API process per
+  // viewer, hits the per-client concurrency cap, and 429s real users
+  // (observed in production logs at 2026-04-26T06:24Z). The disk copy is
+  // only useful for the few-seconds window after a fresh upload before the
+  // S3 mirror completes — that case still works, because this middleware
+  // falls through when S3 has no copy yet, and `express.static` below
+  // serves from disk.
+  s3RedirectFirstForLargeMedia({
+    s3Prefix: "videos/",
+    signedUrlTtlSec: 3600,
+    extensions: [".mp4", ".m4v", ".mov", ".webm", ".mkv", ".m4a", ".mp3"],
+  }),
   express.static(UPLOADS_DIR, { fallthrough: true, acceptRanges: true }),
   s3FallbackMiddleware({
     s3Prefix: "videos/",

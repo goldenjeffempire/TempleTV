@@ -44,7 +44,62 @@ const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes in ms
 //   3. Logs the quota-exhaustion event at WARN once per hour at most — never
 //      ERROR — and logs the silent skips at DEBUG.
 const QUOTA_EXHAUSTED_KEY = "youtube:quota:exhaustedUntilMs";
+const QUOTA_USAGE_KEY_PREFIX = "youtube:quota:usage:"; // suffix: YYYY-MM-DD (UTC)
+const QUOTA_DAILY_LIMIT = Number(process.env.YOUTUBE_QUOTA_DAILY_LIMIT ?? "10000");
 let _lastQuotaWarnAtMs = 0;
+
+// UTC date label for the bucket key. Quota actually resets at Pacific midnight,
+// but the YYYY-MM-DD bucket only needs to be monotonic+stable over a day —
+// the absolute reset moment is tracked separately by `nextQuotaResetMs()`.
+function quotaBucketKey(now: number = Date.now()): string {
+  const d = new Date(now);
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${QUOTA_USAGE_KEY_PREFIX}${yyyy}-${mm}-${dd}`;
+}
+
+/**
+ * Best-effort daily-quota counter. We can't query the real "units consumed"
+ * from Google, so we attribute each call by its documented cost (search=100,
+ * everything else we use today=1). The counter persists in the distributed
+ * cache so it survives restarts and is shared across replicas. TTL is set
+ * generously (30 h) so it covers the whole UTC day plus a safety margin.
+ */
+async function recordQuotaUsage(costUnits: number): Promise<void> {
+  if (costUnits <= 0) return;
+  const key = quotaBucketKey();
+  const current = (await cache.get<number>(key)) ?? 0;
+  await cache.set(key, current + costUnits, 30 * 60 * 60 * 1000);
+}
+
+/**
+ * Snapshot of quota state for the admin operations dashboard. Returns the
+ * estimated units consumed today, the configured daily limit, the percentage
+ * used, and (if we've hit the gate) the exact reset timestamp. Always cheap,
+ * always read-only.
+ */
+export async function getYouTubeQuotaStatus(): Promise<{
+  estimatedUsedToday: number;
+  dailyLimit: number;
+  percentUsed: number;
+  exhaustedUntil: string | null;
+  exhausted: boolean;
+  nextResetAt: string;
+}> {
+  const used = (await cache.get<number>(quotaBucketKey())) ?? 0;
+  const exhaustedUntilMs = await cache.get<number>(QUOTA_EXHAUSTED_KEY);
+  const isGated =
+    typeof exhaustedUntilMs === "number" && exhaustedUntilMs > Date.now();
+  return {
+    estimatedUsedToday: used,
+    dailyLimit: QUOTA_DAILY_LIMIT,
+    percentUsed: Math.min(100, Math.round((used / QUOTA_DAILY_LIMIT) * 100)),
+    exhaustedUntil: isGated ? new Date(exhaustedUntilMs!).toISOString() : null,
+    exhausted: isGated,
+    nextResetAt: new Date(nextQuotaResetMs()).toISOString(),
+  };
+}
 
 // Compute the next quota reset (~ midnight Pacific = 08:00 UTC during PST,
 // 07:00 UTC during PDT). We use 08:00 UTC as a safe upper bound; if we're
@@ -86,10 +141,21 @@ async function setQuotaGate(): Promise<number> {
  *   - Detects quota-exhaustion 403s, sets the gate, and warns at most once/hr.
  *   - Returns parsed JSON on 2xx, or null on any non-OK response (caller is
  *     expected to treat null as "no data this attempt").
+ *   - Records best-effort daily quota usage so the admin dashboard can show
+ *     how close we are to the cap before exhaustion.
+ *
+ * `costUnits` should match Google's documented cost for the endpoint:
+ *   - search.list           → 100
+ *   - playlistItems.list    →   1
+ *   - videos.list           →   1
+ *   - channels.list         →   1
+ * Defaults to 1 (the cheapest read), which is correct for every call site
+ * we make today except `search.list`.
  */
 async function youtubeApiFetch<T>(
   url: string,
   context: string,
+  costUnits: number = 1,
 ): Promise<T | null> {
   if (await isQuotaGateActive()) {
     logger.debug({ context }, "YouTube call skipped — quota gate active");
@@ -103,6 +169,9 @@ async function youtubeApiFetch<T>(
     return null;
   }
   if (res.ok) {
+    // Attribute the cost only on successful responses — failed calls don't
+    // count against quota in Google's accounting.
+    void recordQuotaUsage(costUnits);
     try {
       return (await res.json()) as T;
     } catch (err) {
@@ -125,6 +194,19 @@ async function youtubeApiFetch<T>(
         },
         "YouTube Data API quota exhausted — backing off until next reset",
       );
+      // Real-time admin notification — admin dashboard shows a banner so
+      // operators know YouTube features are degraded without having to
+      // tail server logs. Only fired once per warn window (≥1h) so we don't
+      // spam connected SSE clients during sustained exhaustion.
+      try {
+        broadcastLiveEvent("youtube-quota-exhausted", {
+          context,
+          quotaResetAt: new Date(until).toISOString(),
+          backoffMs: until - now,
+        });
+      } catch {
+        // SSE broadcast is best-effort; never let it break the API call.
+      }
     } else {
       logger.debug({ context }, "YouTube quota error (suppressed)");
     }

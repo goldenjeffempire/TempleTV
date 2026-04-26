@@ -13,7 +13,7 @@ import { eq, ilike, or, count, sql, desc, asc, and, lte, gte, inArray } from "dr
 import { queueTranscodingJob, retryTranscodingJob, TRANSCODER_HEARTBEAT_KEY } from "../lib/transcoder";
 import { isFfmpegReady } from "../lib/ffmpeg";
 import { broadcastLiveEvent, addSSEClient, removeSSEClient, getSSEClientCount } from "../lib/liveEvents";
-import { getLiveStatus, getLiveMonitorData } from "./youtube";
+import { getLiveStatus, getLiveMonitorData, getYouTubeQuotaStatus } from "./youtube";
 import { emitBroadcastState } from "./broadcast";
 import { cache } from "../lib/cache";
 import { invalidatePublicVideoCaches, invalidatePublicPlaylistCaches } from "../lib/publicCacheInvalidation";
@@ -609,6 +609,26 @@ router.get("/admin/users", async (req, res) => {
       page,
       totalPages: Math.max(1, Math.ceil(total / limit)),
     });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
+/**
+ * Real-time YouTube Data API quota status — used by the admin dashboard to
+ * show a banner before the daily 10,000-unit limit is reached. Without this
+ * the first sign of trouble was a flood of `quotaExceeded` 403s in the logs.
+ *
+ * `estimatedUsedToday` is best-effort — we attribute each successful call by
+ * its documented cost (search=100, list endpoints=1) since Google doesn't
+ * expose a "real consumed units" query. Counter persists in the distributed
+ * cache so it survives restarts and is shared across replicas.
+ */
+router.get("/admin/youtube/quota", async (_req, res) => {
+  try {
+    const status = await getYouTubeQuotaStatus();
+    res.json(status);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });
