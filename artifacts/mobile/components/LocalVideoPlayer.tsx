@@ -22,6 +22,7 @@ import {
   stopTrackPlayer,
   isTrackPlayerSetup,
 } from "@/services/nowPlaying";
+import { postPlaybackTelemetryDelta } from "@/services/broadcast";
 
 let VideoComponent: any = null;
 let ResizeMode: any = null;
@@ -765,6 +766,53 @@ export function LocalVideoPlayer({
       playerSeekRef.current = (t: number) => { try { v.currentTime = t; } catch { /* noop */ } };
     }
   }, [webActiveSlot, getWebVideo, playerPlayRef, playerPauseRef, playerSeekRef]);
+
+  // ── Effect: playback-quality telemetry → /broadcast/playback-telemetry ─
+  // Every 5 s, read the active web video's cumulative frame counters via
+  // HTMLVideoElement.getVideoPlaybackQuality() and POST the delta. This is
+  // the only signal the api-server cannot measure on its own — without it,
+  // the `droppedFrameRate` field on the admin live-monitor's stream-health
+  // SSE channel is permanently null. Telemetry is best-effort: any failure
+  // (no API, no method, paused video, slot swap) is silent, and the player
+  // never sees a UI side-effect. Slot swaps and counter-resets re-baseline
+  // so the next sample doesn't emit a synthetic spike.
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    const TELEMETRY_INTERVAL_MS = 5_000;
+    let baselineSlot: "A" | "B" = webActiveSlotRef.current;
+    let baselineDecoded = 0;
+    let baselineDropped = 0;
+
+    const tick = () => {
+      const slot = webActiveSlotRef.current;
+      const v = getWebVideo(slot);
+      if (!v || typeof v.getVideoPlaybackQuality !== "function") return;
+      let q: VideoPlaybackQuality;
+      try { q = v.getVideoPlaybackQuality(); } catch { return; }
+      const total = q.totalVideoFrames ?? 0;
+      const dropped = q.droppedVideoFrames ?? 0;
+      // Re-baseline (and skip emission) when the active slot changes or
+      // the cumulative counters appear to have reset (new media element /
+      // src change). Without this, a slot swap would emit a giant spike
+      // equal to the entire previous video's frame count.
+      if (slot !== baselineSlot || total < baselineDecoded || dropped < baselineDropped) {
+        baselineSlot = slot;
+        baselineDecoded = total;
+        baselineDropped = dropped;
+        return;
+      }
+      const dDec = total - baselineDecoded;
+      const dDrop = dropped - baselineDropped;
+      baselineDecoded = total;
+      baselineDropped = dropped;
+      if (dDec > 0 || dDrop > 0) {
+        void postPlaybackTelemetryDelta("mobile", dDec, dDrop);
+      }
+    };
+
+    const id = setInterval(tick, TELEMETRY_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [getWebVideo]);
 
   // ── Effect: cleanup hls instances on unmount ─────────────────────────
   useEffect(() => () => {

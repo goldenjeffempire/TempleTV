@@ -1059,6 +1059,55 @@ export function HlsVideoPlayer({
     zIndex: slot === activeSlot ? 1 : 0,
   });
 
+  // ── Effect: playback-quality telemetry → /broadcast/playback-telemetry ─
+  // Read the active <video>'s cumulative frame counters every 5 s and POST
+  // the delta. This is the only signal the api-server cannot measure on
+  // its own — without it, the `droppedFrameRate` on the admin live-monitor
+  // is permanently null. Best-effort and silent: never disturbs playback.
+  // Slot swaps and counter resets re-baseline so we never emit a spike.
+  useEffect(() => {
+    const TELEMETRY_INTERVAL_MS = 5_000;
+    let baselineSlot: Slot = activeSlotRef.current;
+    let baselineDecoded = 0;
+    let baselineDropped = 0;
+
+    const tick = () => {
+      const slot = activeSlotRef.current;
+      const v = getVideo(slot);
+      if (!v || typeof v.getVideoPlaybackQuality !== "function") return;
+      let q: VideoPlaybackQuality;
+      try { q = v.getVideoPlaybackQuality(); } catch { return; }
+      const total = q.totalVideoFrames ?? 0;
+      const dropped = q.droppedVideoFrames ?? 0;
+      if (slot !== baselineSlot || total < baselineDecoded || dropped < baselineDropped) {
+        baselineSlot = slot;
+        baselineDecoded = total;
+        baselineDropped = dropped;
+        return;
+      }
+      const dDec = total - baselineDecoded;
+      const dDrop = dropped - baselineDropped;
+      baselineDecoded = total;
+      baselineDropped = dropped;
+      if (dDec <= 0 && dDrop <= 0) return;
+
+      try {
+        void fetch(`${window.location.origin}/api/broadcast/playback-telemetry`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            platform: "tv",
+            decoded: Math.max(0, Math.round(dDec)),
+            dropped: Math.max(0, Math.round(dDrop)),
+          }),
+        }).catch(() => {});
+      } catch {}
+    };
+
+    const id = setInterval(tick, TELEMETRY_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, []);
+
   return (
     <div
       ref={containerRef}

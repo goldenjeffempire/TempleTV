@@ -139,6 +139,38 @@ export type BroadcastRealtimeEvent =
 
 export type ReactionType = "amen" | "fire" | "hallelujah";
 
+/**
+ * Fire-and-forget POST of a playback-quality delta. Feeds the
+ * `droppedFrameRate` field on the admin live-monitor's `stream-health` SSE
+ * channel — the only frame-quality signal the server cannot measure on its
+ * own. The server expects deltas (not cumulative totals) at roughly 5 s
+ * cadence per active player; callers are responsible for tracking the last
+ * cumulative reading and computing the difference. Silently no-ops on:
+ *   - missing apiBase (offline / unconfigured)
+ *   - both deltas <= 0 (server would discard anyway, save the round-trip)
+ *   - any network or fetch failure (telemetry must never disturb playback)
+ */
+export async function postPlaybackTelemetryDelta(
+  platform: "mobile" | "tv" | "admin",
+  decodedDelta: number,
+  droppedDelta: number,
+): Promise<void> {
+  if (decodedDelta <= 0 && droppedDelta <= 0) return;
+  const apiBase = getApiBase();
+  if (!apiBase) return;
+  try {
+    await fetch(`${apiBase}/api/broadcast/playback-telemetry`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        platform,
+        decoded: Math.max(0, Math.round(decodedDelta)),
+        dropped: Math.max(0, Math.round(droppedDelta)),
+      }),
+    });
+  } catch {}
+}
+
 export async function sendReaction(type: ReactionType): Promise<void> {
   const apiBase = getApiBase();
   if (!apiBase) return;
