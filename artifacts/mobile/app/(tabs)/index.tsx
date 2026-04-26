@@ -1041,7 +1041,7 @@ function LiveHeroPreviewIframe({ videoId }: { videoId: string }) {
   useEffect(() => {
     loadedRef.current = false;
     const watchdog = setTimeout(() => {
-      if (!loadedRef.current) reportLiveFailure(videoId);
+      if (!loadedRef.current) reportLiveFailure(videoId, "mobile-hero");
     }, MOBILE_LIVE_HERO_LOAD_TIMEOUT_MS);
     return () => clearTimeout(watchdog);
   }, [videoId]);
@@ -1054,7 +1054,7 @@ function LiveHeroPreviewIframe({ videoId }: { videoId: string }) {
     allow: "autoplay; encrypted-media",
     frameBorder: 0,
     onLoad: () => { loadedRef.current = true; },
-    onError: () => reportLiveFailure(videoId),
+    onError: () => reportLiveFailure(videoId, "mobile-hero"),
     style: {
       position: "absolute",
       inset: 0,

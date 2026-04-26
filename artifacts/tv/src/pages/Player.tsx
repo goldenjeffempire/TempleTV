@@ -161,7 +161,7 @@ function LiveYouTubePlayer({
       title={title}
       onBack={onBack}
       isLive
-      onLiveError={() => reportLiveFailure(videoId)}
+      onLiveError={() => reportLiveFailure(videoId, "tv-player")}
     />
   );
 }

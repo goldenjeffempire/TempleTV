@@ -132,6 +132,7 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
       "override-expired",
       "heartbeat",
       "stream-health",
+      "live-failure-stats",
     ];
 
     knownEvents.forEach((evt) => {

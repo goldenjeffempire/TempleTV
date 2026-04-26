@@ -611,8 +611,31 @@ export const liveApi = {
     ytLive: boolean;
     liveOverride: LiveOverride | null;
     viewerCount: number;
+    failureStats?: LiveFailureStats;
   }>("/admin/live", signal),
 };
+
+/**
+ * Aggregated viewer-side YouTube live embed failure telemetry.
+ * Surfaces "N viewers reported the live stream failed" on the Live Control
+ * page so admins can spot platform-wide YouTube problems vs. one-off device
+ * issues. Backed by `artifacts/api-server/src/lib/liveFailureReports.ts`.
+ */
+export interface LiveFailureStats {
+  videoId: string | null;
+  deviceCount: number;
+  totalReports: number;
+  surfaces: {
+    "tv-hero"?: number;
+    "tv-player"?: number;
+    "mobile-hero"?: number;
+    "mobile-player"?: number;
+    unknown?: number;
+  };
+  ipCount: number;
+  mostRecentAt: number | null;
+  windowMs: number;
+}
 
 export const opsApi = {
   getStatus: (signal?: AbortSignal) => adminGet<OpsStatus>("/admin/ops/status", signal),

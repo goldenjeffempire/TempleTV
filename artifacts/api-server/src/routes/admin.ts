@@ -29,6 +29,7 @@ import {
 } from "./youtube";
 import { emitBroadcastState } from "./broadcast";
 import { buildLiveStatusPayload, getActiveLiveOverride } from "../lib/liveStatus";
+import { getFailureStats } from "../lib/liveFailureReports";
 import { extractYouTubeVideoId, validateYouTubeLiveStream } from "../lib/youtubeUrl";
 import { cache } from "../lib/cache";
 import { invalidatePublicVideoCaches, invalidatePublicPlaylistCaches } from "../lib/publicCacheInvalidation";
@@ -3708,6 +3709,13 @@ router.get("/admin/live", async (_req, res) => {
       ? Math.max(0, Math.floor((liveOverride.endsAt.getTime() - now) / 1000))
       : null;
 
+    // Failure stats for the currently-active YouTube live videoId — surfaces
+    // a "N viewers reported the embed failed" warning on the admin Live
+    // Control page so platform-wide YouTube issues are visible at a glance.
+    // Only meaningful when there's an actual YouTube embed in play.
+    const focusVideoId = liveOverride?.youtubeVideoId ?? ytVideoId ?? null;
+    const failureStats = getFailureStats(focusVideoId);
+
     res.json({
       isLive,
       deviceCount,
@@ -3725,6 +3733,7 @@ router.get("/admin/live", async (_req, res) => {
         hlsStreamUrl: liveOverride.hlsStreamUrl ?? null,
         youtubeVideoId: liveOverride.youtubeVideoId ?? null,
       } : null,
+      failureStats,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";

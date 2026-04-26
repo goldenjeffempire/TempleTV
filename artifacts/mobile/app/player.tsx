@@ -1070,7 +1070,7 @@ export default function PlayerScreen() {
 
   const handleLiveError = useCallback(() => {
     if (!isLive || !displayVideoId) return;
-    reportLiveFailure(displayVideoId);
+    reportLiveFailure(displayVideoId, "mobile-player");
     if (router.canGoBack()) router.back();
   }, [isLive, displayVideoId]);
 

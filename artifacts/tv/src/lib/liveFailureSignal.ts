@@ -37,10 +37,71 @@ function notify() {
   for (const fn of listeners) fn();
 }
 
-export function reportLiveFailure(videoId: string | null | undefined): void {
+export type LiveFailureSurface = "tv-hero" | "tv-player";
+
+export function reportLiveFailure(
+  videoId: string | null | undefined,
+  surface: LiveFailureSurface = "tv-hero",
+): void {
   if (!videoId) return;
   current = { videoId, failedAt: Date.now() };
   notify();
+  // Fire-and-forget telemetry to the backend so the admin Live Control page
+  // can surface a "N viewers reported failure" indicator. Failures here
+  // (network down, blocked by enterprise FW, etc.) are intentionally
+  // swallowed — the local fallback already happened, telemetry is bonus.
+  postFailureReport(videoId, surface).catch(() => {});
+}
+
+const DEVICE_ID_STORAGE_KEY = "tv.liveFailure.deviceId";
+
+function getOrCreateDeviceId(): string {
+  if (typeof window === "undefined" || !window.localStorage) {
+    // SSR / non-browser context — generate a per-process ID so the request
+    // still aggregates correctly within this session.
+    return `tv-eph-${Math.random().toString(36).slice(2, 12)}-${Date.now().toString(36)}`;
+  }
+  try {
+    const existing = window.localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+    if (existing && /^[A-Za-z0-9_-]{8,64}$/.test(existing)) return existing;
+    const fresh = generateDeviceId();
+    window.localStorage.setItem(DEVICE_ID_STORAGE_KEY, fresh);
+    return fresh;
+  } catch {
+    return `tv-eph-${Math.random().toString(36).slice(2, 12)}-${Date.now().toString(36)}`;
+  }
+}
+
+function generateDeviceId(): string {
+  const cryptoObj: Crypto | undefined =
+    typeof window !== "undefined" ? window.crypto : undefined;
+  if (cryptoObj && typeof cryptoObj.randomUUID === "function") {
+    return `tv-${cryptoObj.randomUUID().replace(/-/g, "").slice(0, 24)}`;
+  }
+  // Fallback: 24-char base36 from Math.random — fine for opaque device IDs.
+  return `tv-${Math.random().toString(36).slice(2, 14)}${Date.now().toString(36)}`;
+}
+
+async function postFailureReport(videoId: string, surface: LiveFailureSurface): Promise<void> {
+  if (typeof fetch === "undefined" || typeof window === "undefined") return;
+  const deviceId = getOrCreateDeviceId();
+  const body = JSON.stringify({ videoId, deviceId, surface });
+  // Use sendBeacon when available — survives page unload (e.g. when the
+  // failure is reported as the user is closing the tab). Fall back to fetch
+  // with keepalive so we don't block the UI thread either way.
+  const url = `${window.location.origin}/api/live/report-failure`;
+  if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+    try {
+      const blob = new Blob([body], { type: "application/json" });
+      if (navigator.sendBeacon(url, blob)) return;
+    } catch { /* fall through */ }
+  }
+  await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+    keepalive: true,
+  });
 }
 
 export function clearLiveFailure(): void {

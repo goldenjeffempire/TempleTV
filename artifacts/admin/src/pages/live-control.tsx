@@ -25,7 +25,8 @@ import {
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useSSE, useSSEEvent } from "@/contexts/SSEContext";
-import { liveApi, type LiveOverride, type YouTubePreviewResult, type RecentYoutubeStream, type ScheduledOverride } from "@/services/adminApi";
+import { liveApi, type LiveOverride, type LiveFailureStats, type YouTubePreviewResult, type RecentYoutubeStream, type ScheduledOverride } from "@/services/adminApi";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { History, CalendarClock, X } from "lucide-react";
 import { PageHeader } from "@/components/shared/page-header";
@@ -59,6 +60,78 @@ const PLATFORMS = [
   { icon: Mic, label: "Radio Mode", desc: "Audio-only from the same stream" },
 ];
 
+/**
+ * Compact "N viewers reported failure" indicator shown next to the LIVE ON
+ * AIR badge. Only renders when at least one device has reported a failure
+ * within the backend's rolling window. The tooltip exposes the per-surface
+ * breakdown so admins can tell whether the issue is platform-wide (TV +
+ * mobile both failing on the same videoId is a strong signal that YouTube
+ * itself is down) vs isolated to one surface.
+ */
+function FailureIndicator({ stats }: { stats: LiveFailureStats }) {
+  const surfaceLabels: Record<string, string> = {
+    "tv-hero": "TV (home)",
+    "tv-player": "TV (player)",
+    "mobile-hero": "Mobile (home)",
+    "mobile-player": "Mobile (player)",
+    unknown: "Other",
+  };
+  const surfaceEntries = Object.entries(stats.surfaces).filter(
+    ([, v]) => typeof v === "number" && v > 0,
+  ) as Array<[string, number]>;
+  const windowMin = Math.round(stats.windowMs / 60_000);
+  const tone = stats.deviceCount >= 3
+    ? "border-red-400/60 bg-red-500/10 text-red-700 dark:text-red-300"
+    : "border-amber-400/50 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div
+            data-testid="live-failure-indicator"
+            className={cn(
+              "flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium cursor-help",
+              tone,
+            )}
+          >
+            <AlertTriangle className="w-3.5 h-3.5" />
+            <span>
+              {stats.deviceCount} {stats.deviceCount === 1 ? "viewer" : "viewers"} reported failure
+            </span>
+          </div>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-xs">
+          <div className="text-xs space-y-1">
+            <div className="font-semibold">
+              YouTube embed failures (last {windowMin} min)
+            </div>
+            <div className="text-muted-foreground">
+              {stats.totalReports} report{stats.totalReports === 1 ? "" : "s"} from{" "}
+              {stats.deviceCount} device{stats.deviceCount === 1 ? "" : "s"}
+              {stats.ipCount > 0 && <> across {stats.ipCount} network{stats.ipCount === 1 ? "" : "s"}</>}.
+            </div>
+            {surfaceEntries.length > 0 && (
+              <ul className="mt-1.5 space-y-0.5">
+                {surfaceEntries.map(([surface, count]) => (
+                  <li key={surface} className="flex justify-between gap-3">
+                    <span>{surfaceLabels[surface] ?? surface}</span>
+                    <span className="font-mono">{count}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="mt-1.5 text-muted-foreground italic">
+              {stats.deviceCount >= 3
+                ? "Multiple devices failing — likely a platform-wide YouTube issue."
+                : "May be isolated. Watch for the count to grow."}
+            </div>
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
 export default function LiveControl() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -83,6 +156,13 @@ export default function LiveControl() {
   const [previewedUrl, setPreviewedUrl] = useState<string>("");
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["admin-live-status"] });
+
+  // Refetch immediately when the backend reports a change in viewer-side
+  // failure telemetry — keeps the "N viewers reported failure" indicator
+  // live without waiting for the 15s polling tick.
+  useSSEEvent("live-failure-stats", () => {
+    queryClient.invalidateQueries({ queryKey: ["admin-live-status"] });
+  });
 
   // Recent YouTube streams for the "re-broadcast" dropdown. Loaded once
   // when the page mounts and refreshed when an override is started/stopped
@@ -368,12 +448,17 @@ export default function LiveControl() {
                 )}
               </div>
             </div>
-            {liveStatus && (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Users className="w-4 h-4" />
-                <span>{liveStatus.viewerCount} viewers</span>
-              </div>
-            )}
+            <div className="flex items-center gap-3 flex-wrap">
+              {liveStatus?.failureStats && liveStatus.failureStats.deviceCount > 0 && (
+                <FailureIndicator stats={liveStatus.failureStats} />
+              )}
+              {liveStatus && (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Users className="w-4 h-4" />
+                  <span>{liveStatus.viewerCount} viewers</span>
+                </div>
+              )}
+            </div>
           </div>
 
           {activeOverride && (

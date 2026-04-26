@@ -1,4 +1,4 @@
-import { Router } from "express";
+import express, { Router } from "express";
 import { db, pushTokensTable, notificationsTable, liveOverridesTable } from "@workspace/db";
 import { eq, asc } from "drizzle-orm";
 import { randomUUID } from "crypto";
@@ -15,6 +15,7 @@ import { cache } from "../lib/cache";
 import { logger } from "../lib/logger";
 import { sendOpsAlert } from "../lib/alerts";
 import { getClientIp } from "../middlewares/security";
+import { recordFailureReport, type LiveFailureSurface } from "../lib/liveFailureReports";
 
 const router = Router();
 
@@ -1192,6 +1193,61 @@ router.get("/youtube/live/status", async (_req, res) => {
     staleSec: Math.floor((Date.now() - cachedLiveStatus.checkedAt) / 1000),
     detectionMethod: cachedLiveStatus.detectionMethod,
   });
+});
+
+/**
+ * Viewer-side YouTube live embed failure telemetry.
+ *
+ * TV / mobile devices POST here when their YouTube live iframe fails to load
+ * (load watchdog timeout, iframe `error` event, or `<YoutubePlayer>` onError
+ * in live mode). The aggregated counts are surfaced on the admin Live Control
+ * page so admins can spot platform-wide YouTube problems vs. one-off device
+ * issues.
+ *
+ * Unauthenticated by design — viewer telemetry must work for anonymous TVs
+ * and mobile guests too. Per-IP rate limiting in the lib protects against
+ * abuse, and stored data is bounded + purely transient (5-min window, no DB).
+ */
+router.post("/live/report-failure", express.json({ limit: "1kb" }), (req, res) => {
+  const body = (req.body ?? {}) as {
+    videoId?: unknown;
+    deviceId?: unknown;
+    surface?: unknown;
+  };
+  const videoId = typeof body.videoId === "string" ? body.videoId.trim() : "";
+  const deviceId = typeof body.deviceId === "string" ? body.deviceId.trim() : "";
+  const rawSurface = typeof body.surface === "string" ? body.surface : "";
+
+  // Validate videoId — YouTube IDs are 11 chars [A-Za-z0-9_-]. We accept up
+  // to 32 to leave headroom for any future format change but reject obvious
+  // junk so the ring stays clean.
+  if (!videoId || videoId.length < 6 || videoId.length > 32 || !/^[A-Za-z0-9_-]+$/.test(videoId)) {
+    return void res.status(400).json({ ok: false, error: "invalid_videoId" });
+  }
+  // DeviceId is opaque — we just need it stable per device. Anything between
+  // 8–64 chars of url-safe characters is fine.
+  if (!deviceId || deviceId.length < 8 || deviceId.length > 64 || !/^[A-Za-z0-9_-]+$/.test(deviceId)) {
+    return void res.status(400).json({ ok: false, error: "invalid_deviceId" });
+  }
+  const surface: LiveFailureSurface =
+    rawSurface === "tv-hero" ||
+    rawSurface === "tv-player" ||
+    rawSurface === "mobile-hero" ||
+    rawSurface === "mobile-player"
+      ? rawSurface
+      : "unknown";
+
+  const result = recordFailureReport({
+    videoId,
+    deviceId,
+    surface,
+    ip: getClientIp(req),
+  });
+  if (!result.ok) {
+    res.set("Retry-After", String(result.retryAfterSecs));
+    return void res.status(429).json({ ok: false, error: result.reason });
+  }
+  res.status(204).end();
 });
 
 // 5-second in-process cache for the override probe. Polling clients
