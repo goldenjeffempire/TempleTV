@@ -1,0 +1,65 @@
+Completely rebuild and optimize the broadcast player page into a modern, enterprise-grade TV channel experience that behaves like a real-world professional television broadcasting platform. Fix all playback, buffering, loading, transition, UI, and performance issues affecting the viewer experience across web, mobile, tablet, and smart TV platforms.
+
+Critical Performance Fixes:
+
+* Diagnose and eliminate slow video loading issues affecting initial playback startup.
+* Optimize media streaming performance for fast playback initialization and reduced buffering time.
+* Implement aggressive intelligent preloading/pre-buffering of the next queued video while the current video is still playing.
+* Ensure the next broadcast video starts instantly and seamlessly after the current one ends with zero black screen, delay, refresh, flicker, or buffering gap.
+* Prevent slow transitions between queued videos and ensure continuous uninterrupted playback similar to real television channel broadcasting.
+* Optimize streaming requests, media caching, and network handling for stable playback under weak or unstable internet conditions.
+* Reduce unnecessary player re-renders and eliminate UI lag during playback transitions.
+* Implement adaptive streaming optimization for different network speeds and device capabilities.
+
+Broadcast Playback System:
+
+* Rebuild the playback queue engine into a true TV-channel-style continuous broadcast system.
+* Ensure videos auto-play sequentially forever without requiring user interaction.
+* Add automatic fallback skipping for corrupted, unavailable, or failed videos so the channel never stops broadcasting.
+* Preserve player state during transitions to prevent audio/video interruptions.
+* Ensure livestreams, scheduled broadcasts, and queued media all transition smoothly.
+
+Advanced TV Channel Experience Enhancements:
+
+* Redesign the broadcast page into a premium modern television network interface inspired by enterprise-grade streaming and broadcast systems.
+* Create a cinematic but clean and highly readable interface optimized for long viewing sessions.
+* Replace overly dark UI sections with balanced premium gradients, modern surfaces, and optimized contrast for readability.
+* Improve visual hierarchy, spacing, typography, and accessibility across the entire broadcast experience.
+* Add smooth transitions and subtle motion effects without reducing playback performance.
+* Implement a persistent live-channel feel so viewers always feel like they are watching an active TV station rather than isolated video files.
+
+Professional TV Features:
+
+* Add a persistent “Now Playing” section with current broadcast metadata.
+* Add an “Up Next” system that updates in real-time without disrupting playback.
+* Add live broadcast indicators where applicable.
+* Ensure channel continuity even during media switching.
+* Implement automatic reconnection and recovery handling if playback temporarily fails.
+
+Streaming Infrastructure Optimization:
+
+* Optimize AWS S3 media delivery and streaming request handling.
+* Ensure media URLs are valid, stable, and optimized for rapid delivery.
+* Prevent playback failures caused by expired URLs or delayed object retrieval.
+* Implement CDN-ready architecture support for future scaling.
+
+User Experience & Responsiveness:
+
+* Ensure the interface is fully responsive and optimized for:
+
+  * Web
+  * Mobile
+  * Tablets
+  * Smart TVs
+
+* Optimize remote-control navigation support for smart TV environments.
+
+* Ensure all text and controls remain highly visible and accessible under all viewing conditions.
+
+Expected Final Result:
+
+* Videos load extremely fast.
+* Queue transitions happen instantly without visible delay.
+* The broadcast behaves exactly like a real TV station channel.
+* Playback remains continuous and uninterrupted.
+* The platform feels modern, premium, scalable, cinematic, and enterprise-grade for real-world broadcasting operations.

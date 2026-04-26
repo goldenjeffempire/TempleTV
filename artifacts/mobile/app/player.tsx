@@ -3,6 +3,7 @@ import {
   Animated,
   AppState,
   type AppStateStatus,
+  Image,
   Linking,
   Platform,
   Pressable,
@@ -788,15 +789,23 @@ export default function PlayerScreen() {
   }, [isBroadcastMode, broadcastRecovering, tuneToBroadcastItem]);
 
   // ── Broken-item skip protection ────────────────────────────────────────
-  // If the currently-airing item fails to load 3+ times within a 60-second
+  // If the currently-airing item fails to load 2+ times within a 30-second
   // window, treat it as broken and locally jump to the up-next item so the
   // broadcast keeps flowing instead of looping on a 404 / corrupt manifest.
   // The server's own anchor will catch up on the next /broadcast/current
   // call, so this is a temporary client-side bypass — not a desync source.
+  //
+  // Tightened from 3-in-60s on 2026-04-26: legacy queue items pointing at
+  // /api/uploads/<uuid>.mp4 whose source files are gone from Render's
+  // ephemeral disk (and were never mirrored to S3) hard-404 immediately.
+  // Two errors in 30s is plenty of signal that the asset is dead — waiting
+  // a full minute on the original threshold left viewers staring at a black
+  // void. A real network blip on a healthy item will retry well inside this
+  // window and the counter resets after every clean transition end-event.
   const consecutiveErrorsRef = useRef(0);
   const lastErrorAtRef = useRef(0);
-  const SKIP_AFTER_ERRORS = 3;
-  const ERROR_WINDOW_MS = 60_000;
+  const SKIP_AFTER_ERRORS = 2;
+  const ERROR_WINDOW_MS = 30_000;
 
   const handleBroadcastError = useCallback(async () => {
     if (!isBroadcastMode) {
@@ -1010,6 +1019,29 @@ export default function PlayerScreen() {
           },
         ]}
       >
+        {/* Broadcast backdrop. Real TV stations never show pure black during
+            a tune-in or a brief signal hiccup — they show the program's
+            poster art behind the bug. We mount the thumbnail as an absolute
+            backdrop layer behind the video element so the cold-start frame
+            and the brief window after a load error (before the broken-item
+            skip swaps to the next item) reads as an intentional "tuning in"
+            slide instead of a void. The video element overlays on top of
+            this layer the moment a frame decodes, hiding it automatically. */}
+        {tunedThumbnail ? (
+          // Wrap in a View so we can set pointerEvents="none" — RN's
+          // ImageStyle type doesn't accept pointerEvents, but it's valid on
+          // a View. This guarantees taps fall through to the player chrome
+          // above when the video element doesn't fully cover the backdrop
+          // (letterboxing in cover mode on portrait phones).
+          <View style={styles.playerBackdrop} pointerEvents="none">
+            <Image
+              source={{ uri: tunedThumbnail }}
+              style={styles.playerBackdropImage}
+              resizeMode="cover"
+              blurRadius={Platform.OS === "web" ? 0 : 8}
+            />
+          </View>
+        ) : null}
         {tunedLocalVideoUrl ? (
           <LocalVideoPlayer
             videoUrl={tunedLocalVideoUrl}
@@ -1369,6 +1401,23 @@ export default function PlayerScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   playerContainer: { width: "100%", backgroundColor: "#000", position: "relative" },
+  // Absolute backdrop behind the <video> element so cold-start and the brief
+  // pre-skip error window read as an intentional poster slide, not pure black.
+  // The actual player overlays this on top — z-order is purely DOM order
+  // since neither layer sets zIndex; the video element comes after the Image.
+  playerBackdrop: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "#000",
+  },
+  playerBackdropImage: {
+    width: "100%",
+    height: "100%",
+    opacity: 0.6,
+  },
   topGradient: { position: "absolute", top: 0, left: 0, right: 0, height: 110 },
   topControls: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, gap: 12 },
   backBtn: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.4)" },
