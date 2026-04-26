@@ -1508,3 +1508,73 @@ Both builds clean, server boots clean, new endpoint returns 200 and
 the response shape matches the typed admin client. Per-route stats
 (`GET /api/healthz`, `GET /api/admin/ops/slow-requests`) showed up
 correctly within the first two requests.
+
+---
+
+## Round 12d-hotfix — YouTube live validator was rejecting actually-live streams
+
+### Symptom
+
+Admin pasted `https://www.youtube.com/live/f51qV6XvQ40?...` into the
+Live YouTube admin page. Validator returned **"Video exists but is
+not currently live."**  Same video ID was simultaneously detected as
+live by the LivePoller (boot logs at 08:49:58: `[LivePoller] New live
+stream detected method=live-page videoId=f51qV6XvQ40`) — so the two
+code paths probing the same YouTube stream were disagreeing.
+
+### Root cause
+
+Two unrelated YouTube probes had drifted apart over time:
+
+- **LivePoller** (`routes/youtube.ts checkViaYouTubeLivePage`) — hits
+  the channel `/live` page, requires only `"isLiveNow":true` to
+  declare the stream live. Used a Chrome User-Agent.
+- **Validator** (`lib/youtubeUrl.ts validateYouTubeLiveStream`) — hit
+  the per-video `/watch?v=<id>` page, required BOTH
+  `"isLiveContent":true` AND `"isLiveNow":true`, with a
+  `TempleTV-LiveControl/1.0` User-Agent and a 6s timeout.
+
+Three things conspired to false-negative the validator:
+
+1. **Bot-shaped User-Agent.** YouTube ships a stripped-down
+   "compatibility" page to obvious bots that frequently omits the
+   `isLiveContent` JSON marker entirely.
+2. **6s timeout on a 1MB+ page.** Under typical Replit-egress latency
+   to YouTube the fetch+read could time out partway through, the
+   regex never matched, and the validator silently fell through to
+   `isLive: false`.
+3. **AND-ing two markers when either alone is sufficient.**
+   `isLiveNow:true` is YouTube's canonical "currently live RIGHT
+   NOW" flag — the LivePoller already trusts it alone. Requiring
+   `isLiveContent:true` on top added no real signal but doubled the
+   surface area for a single missing field to break the verdict.
+
+### What changed (`artifacts/api-server/src/lib/youtubeUrl.ts`)
+
+- Switched the `USER_AGENT` constant to a real Chrome 120 UA so YT
+  serves the full hydrated page with the live-marker JSON intact.
+- Bumped `PROBE_TIMEOUT_MS` from 6s → 10s — comfortable headroom for
+  the 1MB watch-page download without dragging admin UX.
+- Liveness verdict now triggers on **any one** of:
+  - `"isLiveNow":true`
+  - `"liveBroadcastDetails":{… "isLiveNow":true …}`
+  - `"hlsManifestUrl":"…"` (only present on actively-airing streams)
+- Added `hasLiveBroadcastBlock` and `hasHlsManifest` as additional
+  `exists` evidence so we never call a real broadcast non-existent.
+- Added a **Step 3 channel-page fallback** that hits
+  `https://www.youtube.com/live/<videoId>` (the same shape the
+  LivePoller uses for channel-wide detection) when the watch-page
+  probe was inconclusive. Only runs when Step 2 didn't already
+  confirm liveness — keeps the happy path single-fetch.
+- Inline comment ties the regression to the live-evidence date and
+  video ID so the next reviewer doesn't tighten the gates again
+  without context.
+
+### Verified post-fix
+
+- **Live URL** (the failing one): `isLive=true, method=live-page`,
+  0.67s.
+- **Known VOD** (Rick Astley): `exists=true, isLive=false`, 1.45s.
+- **Bogus 11-char ID**: `exists=false`, 0.12s.
+
+All three correct. Build clean, server boots clean.

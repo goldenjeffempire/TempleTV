@@ -101,9 +101,19 @@ export interface YouTubeStreamProbe {
   method: "oembed" | "live-page" | "none";
 }
 
-const PROBE_TIMEOUT_MS = 6_000;
+// Watch-page HTML is ~1MB. 6s was too tight under typical Replit-egress
+// latency to YouTube — the fetch+read would time out partway through, the
+// regex would never match, and the validator would falsely say "not live."
+// 10s leaves comfortable headroom while still bounding admin UI wait time.
+const PROBE_TIMEOUT_MS = 10_000;
+// Posing as a real browser User-Agent matters here: YouTube serves a
+// stripped-down "compatibility" page to obvious bots that omits the
+// `isLiveContent` / `isLiveNow` JSON markers entirely. The admin validator
+// MUST get the full page to see the live markers — the LivePoller already
+// uses a Chrome UA for the same reason.
 const USER_AGENT =
-  "Mozilla/5.0 (compatible; TempleTV-LiveControl/1.0; +https://templetv.org.ng)";
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 /**
  * Probe a YouTube video ID for existence + liveness.
@@ -177,40 +187,101 @@ export async function validateYouTubeLiveStream(
 
   // Step 2 — watch-page probe: looks for live-stream markers.
   // YouTube's watch page emits explicit JSON markers for live broadcasts.
+  // Detection is heuristic by necessity (no public liveness API for arbitrary
+  // video IDs without an OAuth-scoped key), so we accept ANY single strong
+  // signal rather than requiring every marker to align — YouTube ships
+  // multiple page variants (A/B layouts, geo-stripped pages, partial
+  // hydration on slow renders) and a single missing field would otherwise
+  // false-negative an actually-live stream. Earlier this code required
+  // `isLiveContent:true` AND `isLiveNow:true` together; that lost real
+  // streams in the wild (observed 2026-04-26: stream f51qV6XvQ40 was live
+  // and detected by the LivePoller, but the admin validator rejected it).
   let isLive = false;
   let method: YouTubeStreamProbe["method"] = "oembed";
-  try {
-    const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+
+  const probeWatchPage = async (id: string) => {
+    const pageRes = await fetch(`https://www.youtube.com/watch?v=${id}`, {
       headers: {
         "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
       },
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
-    if (pageRes.ok) {
-      const html = await pageRes.text();
-      // Markers YouTube emits for live broadcasts:
-      //   "isLiveContent":true          (always — applies even after end)
-      //   "isLiveNow":true              (only while currently live)
-      //   "liveBroadcastDetails":{…"isLiveNow":true…}
-      // We require BOTH `isLiveContent:true` and a "now" marker to be
-      // confident the stream is actually airing right now.
-      const hasLiveContent = /"isLiveContent"\s*:\s*true/.test(html);
-      const hasLiveNow =
-        /"isLiveNow"\s*:\s*true/.test(html) ||
+    if (!pageRes.ok) return null;
+    return pageRes.text();
+  };
+
+  try {
+    const html = await probeWatchPage(videoId);
+    if (html) {
+      // Strong "currently live RIGHT NOW" markers — any one is sufficient.
+      // `isLiveNow:true` is YouTube's canonical real-time flag; the LivePoller
+      // already trusts it alone for the channel-wide live page.
+      const hasLiveNow = /"isLiveNow"\s*:\s*true/.test(html);
+      const hasLiveBroadcastNow =
         /"liveBroadcastDetails"[^}]*"isLiveNow"\s*:\s*true/.test(html);
-      if (hasLiveContent) exists = true;
-      if (hasLiveContent && hasLiveNow) {
+      // Live broadcasts (only) ship an HLS manifest URL in their player
+      // response — VOD videos do not. Strong corroborating signal.
+      const hasHlsManifest = /"hlsManifestUrl"\s*:\s*"[^"]+/.test(html);
+      // Block presence (without requiring the inner flag) — present for
+      // any live event including upcoming/ended, so we use it only as
+      // existence evidence not as a live verdict on its own.
+      const hasLiveBroadcastBlock = /"liveBroadcastDetails"\s*:\s*\{/.test(html);
+      // Catalogue marker — true for every live broadcast (including ended).
+      // Used as `exists` evidence + as a tiebreaker, never on its own as
+      // proof of CURRENT liveness.
+      const hasLiveContent = /"isLiveContent"\s*:\s*true/.test(html);
+
+      if (hasLiveContent || hasLiveBroadcastBlock || hasHlsManifest) {
+        exists = true;
+      }
+
+      if (hasLiveNow || hasLiveBroadcastNow || hasHlsManifest) {
         isLive = true;
         method = "live-page";
       }
+
       if (!title) {
         const titleMatch = html.match(/<meta\s+name="title"\s+content="([^"]+)"/i);
         if (titleMatch) title = titleMatch[1];
       }
     }
   } catch {
-    // Probe failed — keep the oembed verdict.
+    // Probe failed (timeout/network) — fall through to channel-page fallback
+    // which is smaller and faster.
+  }
+
+  // Step 3 — channel-page fallback. If the watch-page probe was inconclusive
+  // (timed out, or returned an A/B-tested layout with no markers), fall back
+  // to the same `/live` URL the LivePoller hits. We don't know the channel
+  // handle here, so we use the per-video `/live/<id>` form which YouTube
+  // accepts for direct deep-links into a live broadcast. This second probe
+  // only runs when the first didn't already confirm liveness — keeps the
+  // happy path single-fetch.
+  if (!isLive) {
+    try {
+      const pageRes = await fetch(`https://www.youtube.com/live/${videoId}`, {
+        headers: {
+          "User-Agent": USER_AGENT,
+          "Accept": "text/html,application/xhtml+xml",
+          "Accept-Language": "en-US,en;q=0.9",
+        },
+        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      });
+      if (pageRes.ok) {
+        const html = await pageRes.text();
+        const hasLiveNow = /"isLiveNow"\s*:\s*true/.test(html);
+        const hasHlsManifest = /"hlsManifestUrl"\s*:\s*"[^"]+/.test(html);
+        if (hasLiveNow || hasHlsManifest) {
+          isLive = true;
+          exists = true;
+          method = "live-page";
+        }
+      }
+    } catch {
+      // Both probes failed — keep whatever the oembed step gave us.
+    }
   }
 
   if (!exists) {
