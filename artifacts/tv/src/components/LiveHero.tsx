@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { type LiveStatus, type BroadcastCurrent } from "../lib/api";
 import { LiveBroadcastVideo } from "./LiveBroadcastVideo";
-import { BROADCAST_HERO_TITLE } from "../lib/broadcastIdentity";
 import { reportLiveFailure, useLiveFallbackJustTriggered } from "../lib/liveFailureSignal";
 
 interface LiveHeroProps {
@@ -51,6 +50,12 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
 
   const broadcastItem = broadcastCurrent?.item ?? null;
   const hasBroadcast = !isLive && broadcastItem !== null;
+  // A scheduled live service is starting soon — surfaced in the off-air
+  // hero copy so viewers know what's coming. The unified live SSE flips
+  // `isLive` true the moment the stream goes hot, at which point this
+  // branch evaluates false and the live "Now" copy takes over instantly.
+  const showScheduledLive =
+    !isLive && broadcastCurrent?.activeSchedule?.contentType === "live";
 
   const broadcastThumb = broadcastItem?.thumbnailUrl ?? null;
   const bgThumb = isLive ? ytThumbUrl : (broadcastThumb || null);
@@ -357,26 +362,13 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
                 margin: 0,
               }}
             >
-              {/* Round 8: hardcoded to a generic broadcaster heading.
-                  Per the broadcast-clean directive, the live program's
-                  title is never surfaced — the hero reads as a real TV
-                  channel identity, not as a sermon-specific landing.
-                  Round 9c: sourced from the shared identity module so
-                  TV + mobile heros stay in lock-step. */}
-              {BROADCAST_HERO_TITLE}
+              {/* Live "Now" headline — replaces the previous channel-
+                  identity title only while `isLive` is true, and reverts
+                  the moment the unified live SSE reports the broadcast
+                  has ended (within ~1 s, no refresh needed). Mirrors the
+                  mobile hero copy so all surfaces stay in lock-step. */}
+              Holy Spirit Sunday Service — Live Now
             </h1>
-            <p
-              style={{
-                fontSize: "clamp(16px, 1.4vw, 22px)",
-                color: "rgba(255,255,255,0.82)",
-                maxWidth: 720,
-                lineHeight: 1.5,
-                textShadow: "0 2px 16px rgba(0,0,0,0.55)",
-                margin: 0,
-              }}
-            >
-              Live worship & teachings from Jesus Christ Temple Ministry — streaming right now.
-            </p>
             <div
               className="flex items-center"
               style={{
@@ -528,26 +520,35 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
             <div
               className="flex items-center gap-2 rounded-full"
               style={{
-                background: "rgba(255,255,255,0.14)",
+                background: showScheduledLive
+                  ? "rgba(255,138,0,0.18)"
+                  : "rgba(255,255,255,0.14)",
                 width: "fit-content",
                 padding: "6px 16px",
                 backdropFilter: "blur(6px)",
-                border: "1px solid rgba(255,255,255,0.12)",
+                border: showScheduledLive
+                  ? "1px solid rgba(255,138,0,0.45)"
+                  : "1px solid rgba(255,255,255,0.12)",
               }}
             >
               <div
                 className="rounded-full"
-                style={{ width: 9, height: 9, background: "rgba(255,255,255,0.5)" }}
+                style={{
+                  width: 9,
+                  height: 9,
+                  background: showScheduledLive ? "#FF8A00" : "rgba(255,255,255,0.5)",
+                  boxShadow: showScheduledLive ? "0 0 10px rgba(255,138,0,0.7)" : undefined,
+                }}
               />
               <span
                 style={{
                   fontSize: 12,
                   fontWeight: 700,
-                  color: "rgba(255,255,255,0.88)",
+                  color: showScheduledLive ? "#FFD79A" : "rgba(255,255,255,0.88)",
                   letterSpacing: "0.14em",
                 }}
               >
-                OFF AIR · 24/7 ON DEMAND
+                {showScheduledLive ? "STARTING SOON" : "OFF AIR · 24/7 ON DEMAND"}
               </span>
             </div>
             <h1
@@ -561,7 +562,7 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
                 margin: 0,
               }}
             >
-              Temple TV
+              {showScheduledLive ? "Live Service Coming Up" : "Temple TV"}
             </h1>
             <p
               style={{
@@ -573,7 +574,9 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
                 margin: 0,
               }}
             >
-              Jesus Christ Temple Ministry — Spirit-filled broadcasts, worship, and teachings any time you need them.
+              {showScheduledLive
+                ? "Scheduled live service — tap to join."
+                : "Jesus Christ Temple Ministry — Spirit-filled broadcasts, worship, and teachings any time you need them."}
             </p>
             <div
               className="flex items-center rounded-xl"

@@ -36,7 +36,6 @@ import { checkBroadcastCurrent, subscribeBroadcastEvents, type BroadcastCurrentR
 import { reportLiveFailure, useLiveFailureFor, useLiveFallbackJustTriggered } from "@/services/liveFailureSignal";
 import {
   BROADCAST_TITLE,
-  BROADCAST_HERO_TITLE,
   BROADCAST_LIVE_BANNER_TITLE,
   BROADCAST_PREACHER,
 } from "@/lib/broadcastIdentity";
@@ -651,29 +650,36 @@ export default function WatchScreen() {
                   )
                 )}
 
-                {/* Title — Round 9c: per the broadcast-clean directive,
-                    the live state must NEVER expose the per-program title.
-                    The hero now reads as the channel identity when live,
-                    matching the TV LiveHero behaviour and the player
-                    chrome overrides. */}
+                {/* Title — three real-time states driven by the unified
+                    live signal (SSE) so the hero flips instantly when the
+                    broadcast starts/ends without a page refresh:
+                      • effectiveLiveActive   → "Holy Spirit Sunday Service — Live Now"
+                      • showScheduledLive     → "Live Service Coming Up"
+                      • otherwise             → "Temple TV"
+                    The live "Now" copy auto-disappears the moment
+                    `liveStatus.isLive` flips false (broadcast ends or
+                    content source switches), which the unified hook
+                    receives over SSE within ~1 s. */}
                 <Text style={styles.heroTitle} numberOfLines={2}>
                   {effectiveLiveActive
-                    ? BROADCAST_HERO_TITLE
+                    ? "Holy Spirit Sunday Service — Live Now"
                     : showScheduledLive
                     ? "Live Service Coming Up"
                     : "Temple TV"}
                 </Text>
 
-                {/* Subtitle */}
-                <Text style={styles.heroSubtitleMeta}>
-                  {effectiveLiveActive
-                    ? "Live worship service — tune in now"
-                    : showScheduledLive
-                    ? "Scheduled live service — tap to join"
-                    : showBroadcast
-                    ? "Spirit-filled broadcasts around the clock"
-                    : "Temple TV Anywhere You Go"}
-                </Text>
+                {/* Subtitle — intentionally suppressed during the live
+                    "Now" state so the combined title carries the message
+                    on its own (per UX directive). */}
+                {!effectiveLiveActive && (
+                  <Text style={styles.heroSubtitleMeta}>
+                    {showScheduledLive
+                      ? "Scheduled live service — tap to join."
+                      : showBroadcast
+                      ? "Spirit-filled broadcasts around the clock"
+                      : "Temple TV Anywhere You Go"}
+                  </Text>
+                )}
 
                 {/* Round 8: removed both the broadcast progress bar (Round 6)
                     and the "Up Next: <title>" chip. Per the broadcast-clean
