@@ -168,7 +168,7 @@ export default function Dashboard() {
 
   const startLiveOverride = useStartLiveOverride({
     mutation: {
-      onSuccess: (result) => {
+      onSuccess: (result: { push: { sent: number; failed: number } }) => {
         toast({ title: "Live override started", description: `Push sent to ${result.push.sent} devices.` });
         queryClient.invalidateQueries({ queryKey: getGetLiveStatusQueryKey() });
         setGoLiveOpen(false);
@@ -741,7 +741,7 @@ export default function Dashboard() {
               </div>
             ) : videosData?.videos && videosData.videos.length > 0 ? (
               <div className="space-y-2.5">
-                {videosData.videos.slice(0, 3).map((video) => (
+                {videosData.videos.slice(0, 3).map((video: { id: string; thumbnailUrl: string; title: string; duration?: string | null; preacher?: string | null; category?: string | null }) => (
                   <div key={video.id} className="flex items-center gap-2.5 group">
                     <div className="relative w-20 h-12 rounded overflow-hidden bg-muted shrink-0 border">
                       <img

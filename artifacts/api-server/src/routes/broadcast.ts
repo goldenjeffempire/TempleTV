@@ -123,8 +123,10 @@ async function setBroadcastAnchor(anchor: BroadcastAnchor | null): Promise<void>
   }
 }
 
+type LiveOverrideRow = typeof liveOverridesTable.$inferSelect;
+
 async function getActiveLiveOverride() {
-  const overrides = await cache.getOrSet(
+  const overrides = await cache.getOrSet<LiveOverrideRow[]>(
     CACHE_KEYS.liveOverride,
     () =>
       db
@@ -146,8 +148,8 @@ async function getScheduleEntries() {
   );
 }
 
-async function getBroadcastQueue() {
-  return cache.getOrSet(
+async function getBroadcastQueue(): Promise<BroadcastItem[]> {
+  return cache.getOrSet<BroadcastItem[]>(
     CACHE_KEYS.broadcastQueue,
     () =>
       db
@@ -695,7 +697,7 @@ async function getScheduledItems(entry: ScheduleEntry): Promise<BroadcastItem[]>
       .where(eq(playlistVideosTable.playlistId, entry.contentId))
       .orderBy(asc(playlistVideosTable.sortOrder));
 
-    return videos.map((video, index) => ({
+    return videos.map((video: typeof playlistVideosTable.$inferSelect, index: number) => ({
       id: `schedule-${entry.id}-${video.id}`,
       videoId: video.videoId,
       youtubeId: video.youtubeId ?? "",
@@ -726,10 +728,10 @@ router.get("/broadcast/guide", async (_req, res) => {
       ? await getScheduledItems(activeSchedule)
       : await getBroadcastQueue();
 
-    const playableItems = items.filter((item) => item.durationSecs > 0);
+    const playableItems = items.filter((item: BroadcastItem) => item.durationSecs > 0);
     if (playableItems.length === 0) return void res.json({ items: [] });
 
-    const totalSecs = playableItems.reduce((acc, i) => acc + i.durationSecs, 0);
+    const totalSecs = playableItems.reduce((acc: number, i: BroadcastItem) => acc + i.durationSecs, 0);
     const epochSecs = Math.floor(Date.now() / 1000);
     const cyclePos = epochSecs % totalSecs;
 
@@ -976,11 +978,12 @@ router.get("/admin/broadcast/health", async (_req, res) => {
     }
 
     const results = await Promise.all(items.map(probe));
+    type ProbeResult = (typeof results)[number];
     const summary = {
       total: results.length,
-      ok: results.filter((r) => r.status === "ok").length,
-      broken: results.filter((r) => r.status === "broken").length,
-      skipped: results.filter((r) => r.status === "skipped").length,
+      ok: results.filter((r: ProbeResult) => r.status === "ok").length,
+      broken: results.filter((r: ProbeResult) => r.status === "broken").length,
+      skipped: results.filter((r: ProbeResult) => r.status === "skipped").length,
       checkedAt: new Date().toISOString(),
     };
     res.json({ summary, items: results });
@@ -1041,7 +1044,8 @@ router.post("/admin/broadcast", async (req, res) => {
   let item: (typeof broadcastQueueTable.$inferSelect) | undefined;
   let wasUpdate = false;
 
-  await db.transaction(async (tx) => {
+  type DbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+  await db.transaction(async (tx: DbTx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${BROADCAST_QUEUE_LOCK_KEY})`);
 
     const [existingMatch] = videoId
@@ -1167,7 +1171,8 @@ router.put("/admin/broadcast/reorder", async (req, res) => {
     }
 
     // Use a transaction so all sort orders are updated atomically
-    await db.transaction(async (tx) => {
+    type DbTx2 = Parameters<Parameters<typeof db.transaction>[0]>[0];
+    await db.transaction(async (tx: DbTx2) => {
       for (let i = 0; i < orderedIds.length; i++) {
         await tx
           .update(broadcastQueueTable)

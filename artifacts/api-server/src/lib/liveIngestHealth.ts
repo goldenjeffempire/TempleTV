@@ -314,11 +314,12 @@ async function maybeAutoRecover() {
 
   if (candidates.length === 0) return;
 
-  const currentPrimary = candidates.find((c) => c.isPrimary) ?? null;
+  type Candidate = (typeof candidates)[number];
+  const currentPrimary = candidates.find((c: Candidate) => c.isPrimary) ?? null;
 
   // Find the highest-priority endpoint that is healthy, stable, and *not*
   // the current primary. If none exists, nothing to do.
-  const recoveryCandidate = candidates.find((c) => {
+  const recoveryCandidate = candidates.find((c: Candidate) => {
     if (currentPrimary && c.id === currentPrimary.id) return false;
     if (c.healthStatus !== "healthy") return false;
     if (c.consecutiveFailures !== 0) return false;
@@ -429,8 +430,9 @@ async function maybeAutoFailover(failedEndpointId: string, reason: string) {
     .where(eq(liveIngestEndpointsTable.isActive, true))
     .orderBy(asc(liveIngestEndpointsTable.priority));
 
+  type FailoverCandidate = (typeof candidates)[number];
   const nextHealthy = candidates.find(
-    (c) =>
+    (c: FailoverCandidate) =>
       c.id !== failedEndpointId &&
       c.healthStatus === "healthy" &&
       c.consecutiveFailures < FAILURE_THRESHOLD,
@@ -444,7 +446,7 @@ async function maybeAutoFailover(failedEndpointId: string, reason: string) {
 
   let promotedReason: string;
   let newOverrideUrl: string | null = null;
-  let newOverrideTitle: string;
+  let newOverrideTitle: string = "LIVE";
 
   if (nextHealthy) {
     await db

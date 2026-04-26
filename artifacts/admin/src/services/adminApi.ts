@@ -350,8 +350,10 @@ export interface OpsStatus {
   };
   infrastructure: {
     objectStorage: {
+      provider: string;
       configured: boolean;
-      bucketId: string | null;
+      bucket: string | null;
+      region: string | null;
       publicSearchPaths: string | null;
       privateDir: string | null;
     };

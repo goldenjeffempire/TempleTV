@@ -190,7 +190,8 @@ export async function rotateRefreshToken(
   const ip = getClientIp(req);
   const now = new Date();
 
-  return await db.transaction(async (tx) => {
+  type AuthDbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+  return await db.transaction(async (tx: AuthDbTx) => {
     // Row-lock the presented token to serialize concurrent rotations.
     const [row] = await tx
       .select()
@@ -344,5 +345,5 @@ export async function listActiveSessions(userId: string): Promise<SessionInfo[]>
     .limit(50);
 
   const now = new Date();
-  return rows.filter((r) => r.expiresAt > now);
+  return rows.filter((r: (typeof rows)[number]) => r.expiresAt > now);
 }

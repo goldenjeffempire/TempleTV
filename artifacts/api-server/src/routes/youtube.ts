@@ -603,10 +603,10 @@ async function checkYouTubeLive(): Promise<{ isLive: boolean; videoId: string | 
 async function sendLiveAutoNotification(title: string, videoId: string | null) {
   try {
     const tokenRows = await db.select({ token: pushTokensTable.token }).from(pushTokensTable);
-    const tokens = tokenRows.map((r) => r.token);
+    const tokens = tokenRows.map((r: { token: string }) => r.token);
     if (tokens.length === 0) return;
 
-    const messages = tokens.map((token) => ({
+    const messages = tokens.map((token: string) => ({
       to: token,
       title: "🔴 Temple TV is LIVE!",
       body: title,
@@ -1169,10 +1169,10 @@ export function getCatalogueSyncStatus() {
 async function sendNewVideoNotification(video: VideoItem) {
   try {
     const tokenRows = await db.select({ token: pushTokensTable.token }).from(pushTokensTable);
-    const tokens = tokenRows.map((r) => r.token);
+    const tokens = tokenRows.map((r: { token: string }) => r.token);
     if (tokens.length === 0) return;
 
-    const messages = tokens.map((token) => ({
+    const messages = tokens.map((token: string) => ({
       to: token,
       title: "🆕 New on Temple TV",
       body: video.title,

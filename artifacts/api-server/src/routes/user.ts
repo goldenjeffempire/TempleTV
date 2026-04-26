@@ -141,7 +141,7 @@ router.get("/user/continue-watching", requireAuth, async (req, res) => {
     .limit(limit);
 
   res.json({
-    items: rows.map((r) => ({
+    items: rows.map((r: (typeof rows)[number]) => ({
       videoId: r.videoId,
       videoTitle: r.videoTitle,
       videoThumbnail: r.videoThumbnail,

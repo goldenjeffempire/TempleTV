@@ -80,7 +80,7 @@ export default function Analytics() {
       return;
     }
     const header = ["rank", "title", "youtube_id", "views"].join(",");
-    const rows = top.map((v, i) =>
+    const rows = top.map((v: { title: string; youtubeId: string; views: number }, i: number) =>
       [String(i + 1), v.title, v.youtubeId, String(v.views)].map(csvEscape).join(","),
     );
     const csv = [header, ...rows].join("\r\n");
@@ -185,7 +185,7 @@ export default function Analytics() {
           <CardContent>
             {isLoading ? <Skeleton className="h-[300px] w-full" /> : (
               <div className="h-[300px] w-full mt-4">
-                {(!Array.isArray(data?.dailyViews) || data.dailyViews.every((d) => d.views === 0)) ? (
+                {(!Array.isArray(data?.dailyViews) || data.dailyViews.every((d: { date: string; views: number }) => d.views === 0)) ? (
                   <div className="h-full flex flex-col items-center justify-center text-muted-foreground gap-2">
                     <Eye className="w-10 h-10 opacity-20" />
                     <p className="text-sm">No views recorded in this period yet</p>
@@ -236,7 +236,7 @@ export default function Analytics() {
               </div>
             ) : (
               <div className="space-y-4 mt-4">
-                {(Array.isArray(data?.categoryBreakdown) ? data.categoryBreakdown : []).map((cat) => (
+                {(Array.isArray(data?.categoryBreakdown) ? data.categoryBreakdown : []).map((cat: { category: string; count: number; percentage: number }) => (
                   <div key={cat.category} className="space-y-1">
                     <div className="flex justify-between text-sm">
                       <span className="font-medium capitalize">{cat.category}</span>
@@ -268,7 +268,7 @@ export default function Analytics() {
             </div>
           ) : (
             <div className="divide-y">
-              {(Array.isArray(data?.topVideos) ? data.topVideos : []).map((video, index) => (
+              {(Array.isArray(data?.topVideos) ? data.topVideos : []).map((video: { youtubeId: string; thumbnailUrl: string; title: string; views: number }, index: number) => (
                 <div key={video.youtubeId} className="py-3 flex items-center gap-4 group">
                   <div className="w-8 text-center font-bold text-muted-foreground group-hover:text-primary">{index + 1}</div>
                   <div className="w-24 h-14 rounded overflow-hidden bg-muted shrink-0">

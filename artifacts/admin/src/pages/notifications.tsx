@@ -129,7 +129,7 @@ export default function Notifications() {
 
   const doSend = () => {
     sendNotification.mutate({ data: formData }, {
-      onSuccess: (res) => {
+      onSuccess: (res: { sent: number; failed: number }) => {
         toast({ title: "Notification Sent", description: `Successfully sent to ${res.sent} devices. Failed: ${res.failed}` });
         setFormData({ title: "", body: "", type: "announcement", videoId: "" });
         queryClient.invalidateQueries({ queryKey: getListNotificationHistoryQueryKey() });

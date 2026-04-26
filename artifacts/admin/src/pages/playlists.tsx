@@ -445,8 +445,9 @@ function PlaylistDetail({ id }: { id: string }) {
   };
 
   const existingVideoIds = new Set(playlistVideos.map((v) => v.videoId));
+  type LibVideo = (typeof libraryVideos)[number];
   const filteredLibrary = libraryVideos.filter(
-    (v) =>
+    (v: LibVideo) =>
       !existingVideoIds.has(v.id) &&
       (videoSearch === "" || v.title.toLowerCase().includes(videoSearch.toLowerCase()) || (v.preacher ?? "").toLowerCase().includes(videoSearch.toLowerCase()))
   );
@@ -512,7 +513,7 @@ function PlaylistDetail({ id }: { id: string }) {
                       : "All videos are already in this playlist."}
                   </p>
                 ) : (
-                  filteredLibrary.map((video) => (
+                  filteredLibrary.map((video: LibVideo) => (
                     <button
                       key={video.id}
                       onClick={() => handleAddFromLibrary(video.id)}

@@ -238,7 +238,7 @@ export default function Schedule() {
                         ? (Array.isArray(playlists) ? playlists : []).map((playlist) => (
                             <SelectItem key={playlist.id} value={playlist.id}>{playlist.name}</SelectItem>
                           ))
-                        : (Array.isArray(videos?.videos) ? videos.videos : []).map((video) => (
+                        : (Array.isArray(videos?.videos) ? videos.videos : []).map((video: { id: string; title: string }) => (
                             <SelectItem key={video.id} value={video.id}>{video.title}</SelectItem>
                           ))}
                     </SelectContent>

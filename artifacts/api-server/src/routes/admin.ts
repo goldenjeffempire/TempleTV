@@ -397,7 +397,8 @@ async function upsertBroadcastQueueVideo(video: typeof videosTable.$inferSelect)
   // Acquire the advisory lock first, then run dedup-check + insert/update in a
   // single transaction. Without this, two concurrent calls for the same videoId
   // could both miss the existing-row check and insert duplicate rows.
-  await db.transaction(async (tx) => {
+  type AdminDbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+  await db.transaction(async (tx: AdminDbTx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${BROADCAST_QUEUE_LOCK_KEY})`);
 
     const [matching] = await tx
@@ -452,7 +453,7 @@ async function getActiveLiveOverride() {
     .where(eq(liveOverridesTable.isActive, true))
     .orderBy(desc(liveOverridesTable.startedAt));
   const now = new Date();
-  return overrides.find((override) => !override.endsAt || override.endsAt > now) ?? null;
+  return overrides.find((override: typeof liveOverridesTable.$inferSelect) => !override.endsAt || override.endsAt > now) ?? null;
 }
 
 async function sendExpoPushNotifications(
@@ -932,7 +933,7 @@ router.get("/admin/launch/readiness", async (_req, res) => {
     ]);
 
     const totalVideos = Number(totalVideosResult[0]?.count ?? 0);
-    const hlsReadyLocalVideos = localVideos.filter((video) => Boolean(video.hlsMasterUrl)).length;
+    const hlsReadyLocalVideos = localVideos.filter((video: (typeof localVideos)[number]) => Boolean(video.hlsMasterUrl)).length;
     const featuredVideos = Number(featuredVideosResult[0]?.count ?? 0);
     const activeScheduleEntries = Number(activeScheduleResult[0]?.count ?? 0);
     const activeBroadcastItems = Number(activeBroadcastResult[0]?.count ?? 0);
@@ -2746,7 +2747,7 @@ router.get("/admin/uploads/s3-telemetry/summary", async (req, res) => {
           avgSizeBytes: tp.avg_size_bytes != null ? Number(tp.avg_size_bytes) : null,
           totalBytes: tp.total_bytes != null ? Number(tp.total_bytes) : null,
         },
-        topErrors: topErrors.map((e) => ({
+        topErrors: topErrors.map((e: { errorKind: string | null; errorMessage: string | null; count: number | string }) => ({
           errorKind: e.errorKind,
           errorMessage: e.errorMessage,
           count: Number(e.count),
@@ -3436,7 +3437,7 @@ router.post("/admin/notifications/send", async (req, res) => {
     const { title, body, type, videoId } = parsed.data;
 
     const tokenRows = await db.select({ token: pushTokensTable.token }).from(pushTokensTable);
-    const tokens = tokenRows.map((r) => r.token);
+    const tokens = tokenRows.map((r: { token: string }) => r.token);
 
     const expoData: { type: typeof type; videoId?: string } = { type };
     if (videoId) expoData.videoId = videoId;
@@ -3614,8 +3615,8 @@ router.get("/admin/analytics", async (req, res) => {
         .where(gte(liveOverridesTable.createdAt, cutoff)),
     ]);
 
-    const totalCatCount = categoryRows.reduce((s, r) => s + r.count, 0);
-    const dailyViewsMap = new Map<string, number>(dailyWatchRows.map((r) => [r.date, Number(r.views)]));
+    const totalCatCount = categoryRows.reduce((s: number, r: { category: string; count: number }) => s + r.count, 0);
+    const dailyViewsMap = new Map<string, number>(dailyWatchRows.map((r: { date: string; views: number | string }) => [r.date, Number(r.views)]));
 
     const dailyViews = Array.from({ length: days }, (_, i) => {
       const d = new Date();
@@ -3631,7 +3632,7 @@ router.get("/admin/analytics", async (req, res) => {
       avgWatchTimeMinutes: Math.round(Number(avgWatchTimeResult[0]?.avgSecs ?? 0) / 60),
       liveStreamEvents: Number(liveEventsResult[0]?.count ?? 0),
       topVideos: topVideosRows,
-      categoryBreakdown: categoryRows.map((r) => ({
+      categoryBreakdown: categoryRows.map((r: { category: string; count: number }) => ({
         category: r.category,
         count: r.count,
         percentage: totalCatCount > 0 ? Math.round((r.count / totalCatCount) * 100) : 0,
@@ -3770,7 +3771,7 @@ router.post("/admin/live-overrides", async (req, res) => {
     if (notify) {
       const tokenRows = await db.select().from(pushTokensTable);
       const pushResult = await sendExpoPushNotifications(
-        tokenRows.map((r) => r.token),
+        tokenRows.map((r: typeof pushTokensTable.$inferSelect) => r.token),
         "Temple TV is Live",
         override.title,
         { type: "live_service", route: "/player", live: true }
@@ -3888,7 +3889,7 @@ router.post("/admin/live/override/start", async (req, res) => {
     if (notify) {
       const tokenRows = await db.select().from(pushTokensTable);
       pushResult = await sendExpoPushNotifications(
-        tokenRows.map((row) => row.token),
+        tokenRows.map((row: typeof pushTokensTable.$inferSelect) => row.token),
         "Temple TV is live",
         override.title,
         { type: "live_service", route: "/player", live: true }
@@ -4101,13 +4102,14 @@ router.get("/admin/transcoding/queue", async (_req, res) => {
       .leftJoin(videosTable, eq(transcodingJobsTable.videoId, videosTable.id))
       .orderBy(desc(transcodingJobsTable.priority), asc(transcodingJobsTable.createdAt));
 
-    const activeCount = jobs.filter((j) => j.job.status === "processing").length;
-    const queuedCount = jobs.filter((j) => j.job.status === "queued").length;
-    const failedCount = jobs.filter((j) => j.job.status === "failed").length;
-    const doneCount = jobs.filter((j) => j.job.status === "done").length;
+    type JobRow = (typeof jobs)[number];
+    const activeCount = jobs.filter((j: JobRow) => j.job.status === "processing").length;
+    const queuedCount = jobs.filter((j: JobRow) => j.job.status === "queued").length;
+    const failedCount = jobs.filter((j: JobRow) => j.job.status === "failed").length;
+    const doneCount = jobs.filter((j: JobRow) => j.job.status === "done").length;
 
     res.json({
-      jobs: jobs.map((r) => ({
+      jobs: jobs.map((r: JobRow) => ({
         ...r.job,
         videoTitle: r.videoTitle ?? "Unknown",
         videoThumbnail: r.videoThumbnail ?? "",
@@ -4332,11 +4334,11 @@ router.get("/admin/live-ingest/endpoints", async (_req, res) => {
       endpoints: rows,
       summary: {
         total: rows.length,
-        active: rows.filter((r) => r.isActive).length,
-        primary: rows.find((r) => r.isPrimary)?.id ?? null,
-        healthy: rows.filter((r) => r.healthStatus === "healthy").length,
-        degraded: rows.filter((r) => r.healthStatus === "degraded").length,
-        unhealthy: rows.filter((r) => r.healthStatus === "unhealthy").length,
+        active: rows.filter((r: (typeof rows)[number]) => r.isActive).length,
+        primary: rows.find((r: (typeof rows)[number]) => r.isPrimary)?.id ?? null,
+        healthy: rows.filter((r: (typeof rows)[number]) => r.healthStatus === "healthy").length,
+        degraded: rows.filter((r: (typeof rows)[number]) => r.healthStatus === "degraded").length,
+        unhealthy: rows.filter((r: (typeof rows)[number]) => r.healthStatus === "unhealthy").length,
       },
     });
   } catch (err) {

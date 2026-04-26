@@ -120,8 +120,8 @@ export default function UsersPage() {
   // (the "showing X of Y" line) so it isn't misleading when paginated.
   const visibleUsers: AdminUser[] = useMemo(() => {
     const all = Array.isArray(data?.users) ? data!.users! : [];
-    if (verifiedFilter === "verified") return all.filter((u) => u.emailVerified);
-    if (verifiedFilter === "unverified") return all.filter((u) => !u.emailVerified);
+    if (verifiedFilter === "verified") return all.filter((u: AdminUser) => u.emailVerified);
+    if (verifiedFilter === "unverified") return all.filter((u: AdminUser) => !u.emailVerified);
     return all;
   }, [data, verifiedFilter]);
 
