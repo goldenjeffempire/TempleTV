@@ -3,6 +3,7 @@ import { eq, and, desc, asc } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { logger } from "./logger.js";
 import { broadcastLiveEvent } from "./liveEvents.js";
+import { sendOpsAlert } from "./alerts.js";
 import { cache } from "./cache.js";
 
 const CACHE_KEYS = {
@@ -382,6 +383,28 @@ async function maybeAutoRecover() {
     reason,
     at: new Date().toISOString(),
   });
+
+  // Page on-call (info severity — good news, but on-call wants to know
+  // the broadcast is back on the preferred source). Dedup per-endpoint per
+  // 15-minute window so a flapping endpoint doesn't generate alert pairs.
+  void sendOpsAlert({
+    severity: "info",
+    title: "Live ingest auto-recovered",
+    message: `Broadcast resumed on the preferred source "${recoveryCandidate.name}" after ${RECOVERY_THRESHOLD} consecutive healthy probes.`,
+    fields: [
+      { label: "Recovered to", value: recoveryCandidate.name },
+      {
+        label: "Was on",
+        value: previousPrimaryName ?? "(no active primary)",
+      },
+      {
+        label: "Healthy streak",
+        value: `${_healthyStreaks.get(recoveryCandidate.id) ?? 0} probes`,
+      },
+    ],
+    dedupKey: `live-ingest-recovered:${recoveryCandidate.id}:${Math.floor(Date.now() / (15 * 60_000))}`,
+    dedupTtlSec: 15 * 60,
+  }).catch(() => {});
 }
 
 /**
@@ -477,6 +500,37 @@ async function maybeAutoFailover(failedEndpointId: string, reason: string) {
     reason: promotedReason,
     at: new Date().toISOString(),
   });
+
+  // Page on-call. Severity ladder:
+  //   - Healthy backup promoted        → warning (degraded but live)
+  //   - YouTube fallback engaged       → critical (no real ingest backup)
+  //   - No backup at all               → critical (broadcast queue resumed)
+  // Dedup per-endpoint per 15-min window so a flapping primary doesn't
+  // page on-call dozens of times — the first failover of a new incident
+  // pages, repeats are suppressed until the window rolls over.
+  const promotedHealthyBackup = Boolean(nextHealthy);
+  const fellBackToYoutube = !nextHealthy && Boolean(failedEndpoint.fallbackYoutubeUrl);
+  const severity = promotedHealthyBackup ? "warning" : "critical";
+  const summary = promotedHealthyBackup
+    ? `Promoted backup ingest "${nextHealthy!.name}" — broadcast remains live but is no longer on the preferred source.`
+    : fellBackToYoutube
+      ? `All ingest endpoints unhealthy. Switched to the configured YouTube fallback URL — degraded mode, please investigate.`
+      : `All ingest endpoints unhealthy and no YouTube fallback is configured. The 24/7 broadcast queue has resumed in place of live programming.`;
+  void sendOpsAlert({
+    severity,
+    title: "Live ingest auto-failover triggered",
+    message: summary,
+    fields: [
+      { label: "Failed source", value: failedEndpoint.name },
+      { label: "Reason", value: reason },
+      {
+        label: "Promoted to",
+        value: nextHealthy?.name ?? (fellBackToYoutube ? "YouTube fallback" : "broadcast queue"),
+      },
+    ],
+    dedupKey: `live-ingest-failover:${failedEndpointId}:${Math.floor(Date.now() / (15 * 60_000))}`,
+    dedupTtlSec: 15 * 60,
+  }).catch(() => {});
 }
 
 /**
