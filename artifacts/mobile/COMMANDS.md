@@ -83,6 +83,11 @@ Cuts a patch release in one shot. Refuses to run with a dirty working tree. Bump
 
 Does **not** push the tag or upload the .aab — both require deliberate review. The script prints the four manual follow-up steps when it finishes.
 
+### `pnpm run release:rollback`
+Safely undoes the most recent **local** release before you push. Deletes the local tag, hard-resets HEAD to the pre-release commit, restoring `app.json`, `package.json`, and `RELEASES.md` byte-identically. Refuses if the working tree is dirty, if HEAD isn't a release commit, or if the tag has been pushed to a remote. Asks for `y/N` confirmation before doing anything destructive.
+
+If the tag is already on the remote, the script prints the deliberate-undo recipe (`git push --delete origin <tag>` + `git revert HEAD`) instead of acting silently.
+
 ---
 
 ## Common failure messages
