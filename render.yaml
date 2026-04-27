@@ -39,7 +39,14 @@ services:
     branch: main
     rootDir: .
     buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @workspace/api-server run build
-    startCommand: pnpm --filter @workspace/api-server run start
+    # Invoke `node` directly instead of routing through `pnpm run start`. The
+    # pnpm-mediated invocation made every cold-start (deploy, restart, OOM
+    # recovery) re-trigger Corepack to download pnpm-10.33.2.tgz from npm
+    # before Node ever booted — adding 5–10s of needless latency to every
+    # restart and a hard dependency on npmjs.org being reachable. Calling
+    # node straight from the artifact directory is faster, has no external
+    # dependency at boot, and produces identical runtime behavior.
+    startCommand: cd artifacts/api-server && node --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs
     healthCheckPath: /api/healthz
     autoDeploy: true
     numInstances: 1
@@ -120,7 +127,11 @@ services:
     branch: main
     rootDir: .
     buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @workspace/api-server run build
-    startCommand: pnpm --filter @workspace/api-server run start
+    # Same direct-node optimization as the API service above — eliminates the
+    # Corepack/pnpm download on every worker cold-start. Critical for a
+    # worker process because Render restarts workers more aggressively than
+    # web services (no health-check grace window).
+    startCommand: cd artifacts/api-server && node --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs
     autoDeploy: true
     numInstances: 1
     envVars:

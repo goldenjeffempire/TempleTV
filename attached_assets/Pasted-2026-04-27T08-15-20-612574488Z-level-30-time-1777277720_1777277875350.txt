@@ -1,0 +1,50 @@
+2026-04-27T08:15:20.612574488Z {"level":30,"time":1777277720608,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-756658d85d-nf6sf","intervalMs":30000,"msg":"Transcoding retry tick started"}
+2026-04-27T08:15:21.397479051Z {"level":30,"time":1777277721396,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-756658d85d-nf6sf","msg":"PostgreSQL distributed cache ready"}
+2026-04-27T08:15:55.340944962Z ==> Running 'pnpm --filter @workspace/api-server run start'
+2026-04-27T08:15:55.709417092Z ! Corepack is about to download https://registry.npmjs.org/pnpm/-/pnpm-10.33.2.tgz
+2026-04-27T08:15:59.220259777Z 
+2026-04-27T08:15:59.220280837Z > @workspace/api-server@0.0.0 start /opt/render/project/src/artifacts/api-server
+2026-04-27T08:15:59.220285057Z > node --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs
+2026-04-27T08:15:59.220287647Z 
+2026-04-27T08:16:02.104832534Z {"level":30,"time":1777277762103,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-756658d85d-nf6sf","msg":"Rate limiter using PostgreSQL-backed store (multi-instance safe)"}
+2026-04-27T08:16:02.224690971Z [Sentry] express is not instrumented. Please make sure to initialize Sentry in a separate file that you `--import` when running node, see: https://docs.sentry.io/platforms/javascript/guides/express/install/esm/.
+2026-04-27T08:16:02.502878986Z (node:63) Warning: SECURITY WARNING: The SSL modes 'prefer', 'require', and 'verify-ca' are treated as aliases for 'verify-full'.
+2026-04-27T08:16:02.502901307Z In the next major version (pg-connection-string v3.0.0 and pg v9.0.0), these modes will adopt standard libpq semantics, which have weaker security guarantees.
+2026-04-27T08:16:02.502906137Z 
+2026-04-27T08:16:02.502911897Z To prepare for this change:
+2026-04-27T08:16:02.502977188Z - If you want the current behavior, explicitly use 'sslmode=verify-full'
+2026-04-27T08:16:02.502982949Z - If you want libpq compatibility now, use 'uselibpqcompat=true&sslmode=require'
+2026-04-27T08:16:02.502987669Z 
+2026-04-27T08:16:02.502992739Z See https://www.postgresql.org/docs/current/libpq-ssl.html for libpq SSL mode definitions.
+2026-04-27T08:16:02.502997539Z (Use `node --trace-warnings ...` to show where the warning was created)
+2026-04-27T08:16:02.503247935Z {"level":30,"time":1777277762224,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-756658d85d-nf6sf","runMode":"worker","runsApi":false,"runsWorker":true,"msg":"Process role resolved"}
+2026-04-27T08:16:02.503258725Z {"level":30,"time":1777277762225,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-756658d85d-nf6sf","msg":"Starting in worker-only mode (no HTTP listener)"}
+2026-04-27T08:16:02.503265146Z {"level":30,"time":1777277762225,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-756658d85d-nf6sf","objectStorage":{"provider":"aws-s3","configured":true,"bucket":"temple-tv-media-storage","region":"eu-north-1","publicPaths":"not set","privateDir":"not set"},"distributedCache":{"redis":"not configured","pgCache":"active (cache_entries table)","note":"PostgreSQL distributed cache active across all instances"},"hlsTranscoder":{"ffmpegPath":"system PATH","cloudUpload":"enabled (AWS S3)","runsInThisProcess":true},"msg":"Infrastructure status at startup"}
+2026-04-27T08:16:02.503272366Z {"level":30,"time":1777277762445,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-756658d85d-nf6sf","ffmpeg":"/usr/bin/ffmpeg","ffprobe":"/usr/bin/ffprobe","ffmpegVersion":"ffmpeg version 5.1.8-0+deb12u1 Copyright (c) 2000-2025 the FFmpeg developers","msg":"FFmpeg binaries verified"}
+2026-04-27T08:16:02.503277876Z {"level":30,"time":1777277762498,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-756658d85d-nf6sf","msg":"FFmpeg preflight passed — transcoding pipeline active"}
+2026-04-27T08:16:02.503282906Z {"level":30,"time":1777277762499,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-756658d85d-nf6sf","intervalMs":30000,"msg":"Transcoding retry tick started"}
+2026-04-27T08:16:03.199601004Z {"level":30,"time":1777277763198,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-756658d85d-nf6sf","msg":"PostgreSQL distributed cache ready"}
+2026-04-27T08:16:46.06859764Z ==> Running 'pnpm --filter @workspace/api-server run start'
+2026-04-27T08:16:46.430810996Z ! Corepack is about to download https://registry.npmjs.org/pnpm/-/pnpm-10.33.2.tgz
+2026-04-27T08:16:49.948638186Z 
+2026-04-27T08:16:49.948655296Z > @workspace/api-server@0.0.0 start /opt/render/project/src/artifacts/api-server
+2026-04-27T08:16:49.948659836Z > node --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs
+2026-04-27T08:16:49.948662576Z 
+2026-04-27T08:16:53.02038787Z {"level":30,"time":1777277813019,"pid":62,"hostname":"srv-d7med7m7r5hc7385bb50-756658d85d-nf6sf","msg":"Rate limiter using PostgreSQL-backed store (multi-instance safe)"}
+2026-04-27T08:16:53.15630851Z [Sentry] express is not instrumented. Please make sure to initialize Sentry in a separate file that you `--import` when running node, see: https://docs.sentry.io/platforms/javascript/guides/express/install/esm/.
+2026-04-27T08:16:53.403272652Z (node:62) Warning: SECURITY WARNING: The SSL modes 'prefer', 'require', and 'verify-ca' are treated as aliases for 'verify-full'.
+2026-04-27T08:16:53.403284702Z In the next major version (pg-connection-string v3.0.0 and pg v9.0.0), these modes will adopt standard libpq semantics, which have weaker security guarantees.
+2026-04-27T08:16:53.403288202Z 
+2026-04-27T08:16:53.403291672Z To prepare for this change:
+2026-04-27T08:16:53.403295272Z - If you want the current behavior, explicitly use 'sslmode=verify-full'
+2026-04-27T08:16:53.403298372Z - If you want libpq compatibility now, use 'uselibpqcompat=true&sslmode=require'
+2026-04-27T08:16:53.403301223Z 
+2026-04-27T08:16:53.403304612Z See https://www.postgresql.org/docs/current/libpq-ssl.html for libpq SSL mode definitions.
+2026-04-27T08:16:53.403308253Z (Use `node --trace-warnings ...` to show where the warning was created)
+2026-04-27T08:16:53.40401511Z {"level":30,"time":1777277813156,"pid":62,"hostname":"srv-d7med7m7r5hc7385bb50-756658d85d-nf6sf","runMode":"worker","runsApi":false,"runsWorker":true,"msg":"Process role resolved"}
+2026-04-27T08:16:53.40402265Z {"level":30,"time":1777277813156,"pid":62,"hostname":"srv-d7med7m7r5hc7385bb50-756658d85d-nf6sf","msg":"Starting in worker-only mode (no HTTP listener)"}
+2026-04-27T08:16:53.4040295Z {"level":30,"time":1777277813157,"pid":62,"hostname":"srv-d7med7m7r5hc7385bb50-756658d85d-nf6sf","objectStorage":{"provider":"aws-s3","configured":true,"bucket":"temple-tv-media-storage","region":"eu-north-1","publicPaths":"not set","privateDir":"not set"},"distributedCache":{"redis":"not configured","pgCache":"active (cache_entries table)","note":"PostgreSQL distributed cache active across all instances"},"hlsTranscoder":{"ffmpegPath":"system PATH","cloudUpload":"enabled (AWS S3)","runsInThisProcess":true},"msg":"Infrastructure status at startup"}
+2026-04-27T08:16:53.40403459Z {"level":30,"time":1777277813393,"pid":62,"hostname":"srv-d7med7m7r5hc7385bb50-756658d85d-nf6sf","ffmpeg":"/usr/bin/ffmpeg","ffprobe":"/usr/bin/ffprobe","ffmpegVersion":"ffmpeg version 5.1.8-0+deb12u1 Copyright (c) 2000-2025 the FFmpeg developers","msg":"FFmpeg binaries verified"}
+2026-04-27T08:16:53.404038621Z {"level":30,"time":1777277813398,"pid":62,"hostname":"srv-d7med7m7r5hc7385bb50-756658d85d-nf6sf","msg":"FFmpeg preflight passed — transcoding pipeline active"}
+2026-04-27T08:16:53.404041621Z {"level":30,"time":1777277813399,"pid":62,"hostname":"srv-d7med7m7r5hc7385bb50-756658d85d-nf6sf","intervalMs":30000,"msg":"Transcoding retry tick started"}
+2026-04-27T08:16:54.293862663Z {"level":30,"time":1777277814293,"pid":62,"hostname":"srv-d7med7m7r5hc7385bb50-756658d85d-nf6sf","msg":"PostgreSQL distributed cache ready"}
