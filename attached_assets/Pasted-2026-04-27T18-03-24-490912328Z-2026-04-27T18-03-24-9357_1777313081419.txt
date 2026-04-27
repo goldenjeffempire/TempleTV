@@ -1,0 +1,50 @@
+2026-04-27T18:03:24.490912328Z 
+2026-04-27T18:03:24.935775939Z [verify:catalog] OK — 21 catalog entries, all in sync with lockfile.
+2026-04-27T18:03:25.569434425Z 
+2026-04-27T18:03:25.569480285Z > workspace@0.0.0 verify:recharts-shim /opt/render/project/src
+2026-04-27T18:03:25.569486515Z > pnpm --filter @workspace/scripts run verify-recharts-shim
+2026-04-27T18:03:25.569491405Z 
+2026-04-27T18:03:26.181540776Z 
+2026-04-27T18:03:26.181577086Z > @workspace/scripts@0.0.0 verify-recharts-shim /opt/render/project/src/scripts
+2026-04-27T18:03:26.181607866Z > tsx ./src/verify-recharts-shim.ts
+2026-04-27T18:03:26.181611076Z 
+2026-04-27T18:03:26.633584822Z [verify:recharts-shim] OK — no direct recharts imports in artifacts/admin/src/ (only artifacts/admin/src/lib/recharts-shim.ts may import recharts directly).
+2026-04-27T18:03:27.265139478Z 
+2026-04-27T18:03:27.265167468Z > workspace@0.0.0 typecheck:production /opt/render/project/src
+2026-04-27T18:03:27.265172088Z > pnpm run typecheck:libs && pnpm --filter @workspace/scripts run run-typechecks
+2026-04-27T18:03:27.265175478Z 
+2026-04-27T18:03:27.824093638Z 
+2026-04-27T18:03:27.824127108Z > workspace@0.0.0 typecheck:libs /opt/render/project/src
+2026-04-27T18:03:27.824130928Z > tsc --build
+2026-04-27T18:03:27.824134328Z 
+2026-04-27T18:03:33.976491931Z 
+2026-04-27T18:03:33.976538871Z > @workspace/scripts@0.0.0 run-typechecks /opt/render/project/src/scripts
+2026-04-27T18:03:33.976545131Z > tsx ./src/run-typechecks.ts
+2026-04-27T18:03:33.976550111Z 
+2026-04-27T18:03:34.399240894Z 
+2026-04-27T18:03:34.399290244Z ==> [run-typechecks] @workspace/api-server typecheck — start (log: /opt/render/project/src/dist/typecheck-logs/api-server.log)
+2026-04-27T18:03:35.033332533Z 
+2026-04-27T18:03:35.033363383Z > @workspace/api-server@0.0.0 typecheck /opt/render/project/src/artifacts/api-server
+2026-04-27T18:03:35.033369573Z > tsc -p tsconfig.json --noEmit
+2026-04-27T18:03:35.033374583Z 
+2026-04-27T18:03:41.65623238Z ==> [run-typechecks] @workspace/api-server typecheck — ok (7.3s)
+2026-04-27T18:03:41.65627053Z 
+2026-04-27T18:03:41.65627664Z ==> [run-typechecks] @workspace/admin typecheck — start (log: /opt/render/project/src/dist/typecheck-logs/admin.log)
+2026-04-27T18:03:42.275716938Z 
+2026-04-27T18:03:42.275787628Z > @workspace/admin@0.0.0 typecheck /opt/render/project/src/artifacts/admin
+2026-04-27T18:03:42.275797379Z > tsc -p tsconfig.json --noEmit
+2026-04-27T18:03:42.275802459Z 
+2026-04-27T18:03:56.205714099Z ==> [run-typechecks] @workspace/admin typecheck — ok (14.5s)
+2026-04-27T18:03:56.20577932Z 
+2026-04-27T18:03:56.20579137Z ==> [run-typechecks] @workspace/tv typecheck — start (log: /opt/render/project/src/dist/typecheck-logs/tv.log)
+2026-04-27T18:03:56.876725771Z 
+2026-04-27T18:03:56.876783952Z > @workspace/tv@0.0.0 typecheck /opt/render/project/src/artifacts/tv
+2026-04-27T18:03:56.876796462Z > tsc -p tsconfig.json --noEmit
+2026-04-27T18:03:56.876802112Z 
+2026-04-27T18:04:04.737388934Z ==> [run-typechecks] @workspace/tv typecheck — ok (8.5s)
+2026-04-27T18:04:04.737427944Z 
+2026-04-27T18:04:04.737434234Z ==> [run-typechecks] @workspace/mobile typecheck — start (log: /opt/render/project/src/dist/typecheck-logs/mobile.log)
+2026-04-27T18:04:05.383100893Z 
+2026-04-27T18:04:05.383138853Z > @workspace/mobile@0.0.0 typecheck /opt/render/project/src/artifacts/mobile
+2026-04-27T18:04:05.383145273Z > tsc -p tsconfig.json --noEmit
+2026-04-27T18:04:05.383150293Z 
