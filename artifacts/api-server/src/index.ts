@@ -327,10 +327,22 @@ if (RUNS_API) {
     // chain end-to-end: `Memory pressure: RSS X >= Y` → no EXIT_REASON →
     // process restart = OOM-kill (uncatchable SIGKILL by kernel).
     const warnAtMb = Number(process.env.MEMORY_WARN_RSS_MB ?? 1500);
+    // Critical-pressure restart threshold. 0 (the default) keeps the legacy
+    // behaviour — only WARN, never self-restart. In production we set
+    // MEMORY_RESTART_RSS_MB=1650 (defence-in-depth on the 2 GiB Render plan)
+    // so a graceful drain replaces an uncatchable OOM-kill.
+    const restartAtMb = Number(process.env.MEMORY_RESTART_RSS_MB ?? 0);
     startMemoryPressureSampler({
       runMode: RUN_MODE,
       intervalMs: 60_000,
       warnAtRssBytes: warnAtMb * 1024 * 1024,
+      restartAtRssBytes: restartAtMb > 0 ? restartAtMb * 1024 * 1024 : 0,
+      onCriticalPressure: () => {
+        // Trigger the same graceful path SIGTERM uses. `shutdown()` is
+        // idempotent — if a real SIGTERM races with this, only the first
+        // call wins and the second is a cheap no-op.
+        shutdown("memory-pressure");
+      },
     });
 
     // Fire-and-forget: schedulers start synchronously, the awaited section

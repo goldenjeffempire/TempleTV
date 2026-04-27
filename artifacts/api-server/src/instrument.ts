@@ -27,8 +27,17 @@ Sentry.init({
   environment,
   release,
   sendDefaultPii: true,
-  tracesSampleRate: environment === "production" ? 0.1 : 1.0,
-  profilesSampleRate: environment === "production" ? 0.1 : 1.0,
+  // ── Memory-conscious tracing ───────────────────────────────────────────────
+  // Each sampled span keeps request/response metadata + headers in memory
+  // until the next batch flush (~5 s). On a long-running API serving 50+
+  // req/s, even 0.1 sampling means ~25 spans queued at any given moment.
+  // 0.05 keeps incident-investigation visibility while halving the in-flight
+  // span buffer (relevant to the 2026-04-27 RSS bloat incident on Render).
+  tracesSampleRate: environment === "production" ? 0.05 : 1.0,
+  // `@sentry/profiling-node` is NOT installed (intentional — its native
+  // V8 CPU sampler holds C++ profile buffers in `external` memory and was
+  // a suspected contributor to the RSS bloat). Setting profilesSampleRate
+  // would be a no-op without the integration; we leave it unset for clarity.
   integrations: isWorkerOnly
     ? (defaults) => defaults.filter((i) => i.name !== "Express")
     : undefined,

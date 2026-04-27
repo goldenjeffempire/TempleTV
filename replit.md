@@ -1883,3 +1883,89 @@ the live content would degrade the lean-back experience, but viewers in
 the room still benefit from seeing congregational reactions and the
 shared `N watching` signal. The shared SSE bus keeps both surfaces
 identical to the second.
+
+## Render Deployment Hardening — RSS Bloat Fix (Apr 27, 2026)
+
+Production logs at `2026-04-27T14:09:19Z` showed the API process climbing
+to `RSS=1.47 GiB / heapUsed=70 MiB / external=1.34 GiB` and getting
+SIGKILL'd by the kernel ~3 minutes later (no `EXIT_REASON` line emitted →
+uncatchable OOM-kill). Render dashboard then flipped `temple-tv-api` to
+"Failed service".
+
+The signature `external=1.34 GiB` with `heapUsed=70 MiB` is the textbook
+profile of **glibc malloc-arena fragmentation** under sustained Buffer
+churn (AWS SDK keep-alive pool + pg connection pool + zlib + multer).
+By default glibc creates `8 × CPU` arenas which rarely return memory to
+the OS, so RSS grows monotonically until the cgroup limit triggers OOM.
+
+### Fix package (deployed in `render.yaml` + api-server code)
+
+1. **`MALLOC_ARENA_MAX=2`** on both `temple-tv-api` and
+   `temple-tv-transcoder`. Caps glibc arena count, which on identical
+   Node workloads typically reduces RSS by 30-50 %. This is the canonical
+   container-Node memory-bloat mitigation.
+
+2. **`NODE_OPTIONS=--max-old-space-size=1536 --max-http-header-size=16384`**
+   on the API (1.5 GiB V8 heap cap inside the 2 GiB plan) and
+   `--max-old-space-size=320` on the worker (320 MiB inside the 512 MiB
+   plan, paired with the existing `MAX_NODE_RSS_MB_BEFORE_TRANSCODE=380`
+   transcoder backpressure).
+
+3. **Lowered `MEMORY_WARN_RSS_MB` from 1500 → 1300** so the `Memory
+   pressure` WARN fires with actionable headroom instead of arriving
+   minutes before the OOM-kill.
+
+4. **New `MEMORY_RESTART_RSS_MB=1650` self-restart guard.** If RSS ever
+   crosses the restart threshold, `startMemoryPressureSampler` (in
+   `lib/exitReason.ts`) fires `logger.fatal` and calls the wired
+   `onCriticalPressure` callback in `index.ts`, which in turn invokes
+   the existing `shutdown("memory-pressure")` path. The LB sees
+   `/healthz=503 draining`, in-flight requests finish, `server.close()`
+   completes, and Render restarts the pod cleanly. Net effect: a graceful
+   handoff replaces the SIGKILL → 502 storm pattern.
+
+5. **`tracesSampleRate` 0.1 → 0.05** in `instrument.ts`. Each sampled
+   span keeps request/response metadata in memory until the next batch
+   flush (~5 s). At 50+ req/s the in-flight span buffer is meaningful.
+   Removed the `profilesSampleRate` line entirely — `@sentry/profiling-
+   node` is intentionally NOT installed (its native V8 sampler holds
+   profile buffers in `external` memory), so the option was a no-op.
+
+6. **`chunkUpload` switched from `multer.memoryStorage()` to
+   `diskStorage`** in `routes/admin.ts`. The old in-memory store could
+   pin up to `5 × 200 MB = 1 GB` of heap during a burst of parallel
+   chunks. The handler was rewritten to:
+   - track the temp-file path and unlink it on every error path,
+   - stream-hash the on-disk chunk for SHA-256 verification (~64 KB
+     resident regardless of chunk size, vs. up to 200 MB before),
+   - `fs.rename` (atomic, zero-copy) the validated chunk into the
+     session's chunk directory, with a streaming-copy fallback for
+     cross-device cases.
+
+7. **The memory sampler now logs `external` on every sample**, not just
+   on the WARN line. This makes the next investigation immediate — the
+   bytes are right there in the time-series.
+
+### Verification
+
+* `pnpm --filter @workspace/api-server typecheck` — passes.
+* `pnpm --filter @workspace/api-server build` — passes (3.0 MB bundle,
+  same as before).
+* Local `Start application` workflow boots clean: server listens on
+  8080, all schedulers (notification, live-override, YouTube sync,
+  ingest health, signed-URL watchdog, broadcast latency watchdog) come
+  up, FFmpeg preflight passes, `Lifecycle: ready (healthz now reports
+  200)`. No errors.
+
+### What to watch after the next deploy
+
+* `external` should land in the **150-300 MiB band** (vs. 1.34 GiB
+  pre-fix). If it's still climbing, the next suspect is either the AWS
+  SDK keep-alive pool (Agent.maxSockets) or pg pool sizing —
+  `MALLOC_ARENA_MAX=2` will hide the symptom of those leaks too, but
+  the root-cause investigation should follow if RSS drift returns.
+* If `RSS` ever crosses 1.65 GiB anyway, the new self-restart guard
+  fires `Critical memory pressure: ...` → `EXIT_REASON {…}` →
+  `Lifecycle: draining` → clean restart. The ABSENCE of an
+  `EXIT_REASON` line on the next death remains the diagnostic
+  signature of a kernel-level kill.

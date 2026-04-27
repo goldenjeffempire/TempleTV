@@ -59,6 +59,38 @@ services:
         value: production
       - key: PORT
         value: 8080
+      # ── Memory containment (production hardening, 2026-04-27) ──────────────
+      # Production logs at 14:09:19 UTC showed RSS climbing to 1.47 GiB with
+      # heapUsed only 70 MiB and `external` at 1.34 GiB — the textbook
+      # signature of glibc malloc-arena fragmentation under sustained Buffer
+      # churn (AWS SDK keep-alive + pg pool + zlib + multer). With the
+      # default 8× CPU arenas, glibc rarely returns memory to the OS, and
+      # RSS bloats until the kernel SIGKILLs the process. `MALLOC_ARENA_MAX=2`
+      # is the canonical mitigation — it caps arena count, defragments the
+      # external pool, and on identical workloads typically cuts RSS by
+      # 30-50 %. Combined with the V8 heap cap below, this leaves a clean
+      # 400 MiB headroom on the 2 GiB Render `standard` plan.
+      - key: MALLOC_ARENA_MAX
+        value: "2"
+      # Hard V8 heap cap (1.5 GiB). Forces aggressive GC well before the
+      # 2 GiB cgroup ceiling. `--max-http-header-size=16384` keeps the
+      # Render LB's larger headers within Node's parser budget without
+      # bloating per-connection buffers. Source maps stay enabled so
+      # production stack traces remain useful.
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=1536 --max-http-header-size=16384"
+      # Lower the warn threshold to 1.3 GiB so the memory-pressure WARN
+      # fires with actionable headroom (was 1.5 GiB — too close to the
+      # 2 GiB OOM-kill ceiling to react in time).
+      - key: MEMORY_WARN_RSS_MB
+        value: "1300"
+      # Defence-in-depth: at 1.65 GiB RSS the process self-initiates a
+      # graceful shutdown. Render auto-restarts the service, replacing
+      # an OOM-killed pod (uncatchable SIGKILL, no cleanup) with a
+      # graceful drain → ready handoff → fresh process. Net effect: zero
+      # dropped requests instead of a flurry of 502s during a kernel kill.
+      - key: MEMORY_RESTART_RSS_MB
+        value: "1650"
       # Process role: "api" runs HTTP only (no ffmpeg, no transcode loop).
       # The temple-tv-transcoder worker below runs RUN_MODE=worker. This
       # split prevents ffmpeg memory spikes from killing the API process.
@@ -139,6 +171,19 @@ services:
         value: 8080
       - key: RUN_MODE
         value: worker
+      # Mirror the API service's glibc-arena fix here. The worker churns
+      # Buffers even harder than the API (S3 multipart up/down + ffmpeg
+      # frame I/O), so on the 512 MiB starter plan arena fragmentation is
+      # the difference between staying inside the cgroup limit and getting
+      # OOM-killed mid-encode.
+      - key: MALLOC_ARENA_MAX
+        value: "2"
+      # Hard V8 heap cap at 320 MiB so transcoding + Node runtime + ffmpeg
+      # spawn fit inside the 512 MiB plan ceiling with headroom. Pair with
+      # MAX_NODE_RSS_MB_BEFORE_TRANSCODE=380 below to backpressure the
+      # claim loop before V8 itself starts thrashing.
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=320"
       # Conservative tuning for the 512MB starter plan. Bump these alongside
       # any plan upgrade — no code changes required.
       - key: FFMPEG_THREADS

@@ -251,10 +251,20 @@ export function startMemoryPressureSampler(opts: {
   runMode: string;
   intervalMs?: number;
   warnAtRssBytes?: number;
+  /**
+   * If RSS crosses this threshold, the sampler invokes `onCriticalPressure`
+   * (typically a graceful shutdown) and then ARMS itself to no-op so the
+   * shutdown isn't called repeatedly. Defence-in-depth against OOM-kill:
+   * a graceful drain → restart cycle replaces an uncatchable SIGKILL.
+   */
+  restartAtRssBytes?: number;
+  onCriticalPressure?: (mem: NodeJS.MemoryUsage) => void;
 }): NodeJS.Timeout {
   const intervalMs = opts.intervalMs ?? 60_000;
   const warnAtRssBytes = opts.warnAtRssBytes ?? 1_500 * 1024 * 1024;
+  const restartAtRssBytes = opts.restartAtRssBytes ?? 0; // 0 = disabled
   let lastWarnAtMs = 0;
+  let criticalFired = false;
 
   const timer = setInterval(() => {
     const mem = process.memoryUsage();
@@ -284,16 +294,56 @@ export function startMemoryPressureSampler(opts: {
           "the dying process). Increase the Render plan or reduce " +
           "in-memory buffer caps.",
       );
-    } else {
+    } else if (!isHigh) {
       logger.info(
         {
           rss: mem.rss,
           rssHuman: fmtBytes(mem.rss),
           heapUsed: mem.heapUsed,
           heapUsedHuman: fmtBytes(mem.heapUsed),
+          external: mem.external,
         },
         "memory sample",
       );
+    }
+
+    // ── Critical pressure: trigger graceful self-restart ──────────────────
+    // When RSS crosses `restartAtRssBytes` (typically 1.65 GiB on the 2 GiB
+    // Render `standard` plan, configured via MEMORY_RESTART_RSS_MB), invoke
+    // `onCriticalPressure` exactly once. The wired callback in index.ts
+    // initiates a graceful shutdown — the LB observes /healthz=503, drains
+    // in-flight requests, then `server.close()` lets Render restart with
+    // a fresh process. Net: a clean handoff instead of a kernel SIGKILL
+    // that drops every in-flight request and emits a flurry of 502s.
+    if (
+      !criticalFired &&
+      restartAtRssBytes > 0 &&
+      mem.rss >= restartAtRssBytes &&
+      opts.onCriticalPressure
+    ) {
+      criticalFired = true;
+      logger.fatal(
+        {
+          rss: mem.rss,
+          rssHuman: fmtBytes(mem.rss),
+          heapUsed: mem.heapUsed,
+          heapUsedHuman: fmtBytes(mem.heapUsed),
+          external: mem.external,
+          restartAtRssBytes,
+          restartAtRssHuman: fmtBytes(restartAtRssBytes),
+          runMode: opts.runMode,
+        },
+        `Critical memory pressure: RSS ${fmtBytes(mem.rss)} >= ` +
+          `${fmtBytes(restartAtRssBytes)} restart threshold. Initiating ` +
+          "graceful self-shutdown to let Render restart this process " +
+          "before the kernel OOM-killer fires (which would SIGKILL " +
+          "in-flight requests with no drain window).",
+      );
+      try {
+        opts.onCriticalPressure(mem);
+      } catch (err) {
+        logger.error({ err }, "onCriticalPressure callback threw");
+      }
     }
   }, intervalMs);
   timer.unref();

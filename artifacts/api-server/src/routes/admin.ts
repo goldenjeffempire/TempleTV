@@ -108,8 +108,24 @@ const upload = multer({
   },
 });
 
+// Switched from `multer.memoryStorage()` to `diskStorage` (2026-04-27).
+// memoryStorage was holding the entire chunk in the V8 heap before the
+// route handler streamed it to disk — under parallel uploads (5+ chunks
+// in flight × up to 200 MB each) this could pin a gigabyte+ of memory in
+// the API process, which is one of the contributors to the production RSS
+// bloat we saw on Render. diskStorage streams straight to a temp file,
+// keeping the per-chunk memory footprint at the OS-buffer level (~64 KB).
+// The chunk handler reads the temp file with a stream and the temp file
+// is deleted on response end, so behaviour is functionally identical.
+const chunkUploadTmpDir = path.join(__dirname, "..", "uploads", "_tmp_chunks");
+fs.mkdir(chunkUploadTmpDir, { recursive: true }).catch(() => {
+  // Non-fatal: handler will surface the error if the directory is missing.
+});
 const chunkUpload = multer({
-  storage: multer.memoryStorage(),
+  storage: multer.diskStorage({
+    destination: chunkUploadTmpDir,
+    filename: (_req, _file, cb) => cb(null, `chunk-${randomUUID()}.bin`),
+  }),
   limits: { fileSize: 200 * 1024 * 1024 }, // 200 MB — supports up to 64 MB adaptive chunks
 });
 
@@ -1589,18 +1605,37 @@ router.post("/admin/videos/upload/init", async (req, res) => {
 });
 
 router.post("/admin/videos/upload/:sessionId/chunk", chunkUpload.single("chunk"), async (req, res) => {
+  // multer.diskStorage writes the chunk straight to a temp file and exposes
+  // it as `req.file.path` (NOT `req.file.buffer`). We always clean that temp
+  // file up — either by renaming it into the session's chunk directory on
+  // success, or by `fs.unlink` on every error path — so the chunk never sits
+  // in either V8 heap or disk longer than necessary.
+  let tmpPath: string | undefined;
+  const cleanupTmp = async () => {
+    if (tmpPath) {
+      await fs.unlink(tmpPath).catch(() => {});
+      tmpPath = undefined;
+    }
+  };
+
   try {
     const { sessionId } = req.params as { sessionId: string };
     const { chunkIndex, checksum } = req.body as { chunkIndex?: string; checksum?: string };
 
     const session = uploadSessions.get(sessionId);
-    if (!session) return void res.status(404).json({ error: "Upload session not found or expired" });
+    if (!session) {
+      await cleanupTmp();
+      return void res.status(404).json({ error: "Upload session not found or expired" });
+    }
 
     const chunk = req.file;
     if (!chunk) return void res.status(400).json({ error: "No chunk data provided" });
+    tmpPath = chunk.path;
+    const chunkSize = chunk.size;
 
     const idx = parseInt(chunkIndex ?? "0", 10);
     if (isNaN(idx) || idx < 0 || idx >= session.totalChunks) {
+      await cleanupTmp();
       return void res.status(400).json({ error: `Invalid chunk index: ${idx}` });
     }
 
@@ -1614,28 +1649,53 @@ router.post("/admin/videos/upload/:sessionId/chunk", chunkUpload.single("chunk")
     // totalChunks=10000 chunks of 200 MB each fills 2 TB of disk.
     const wouldBeNew = !session.uploadedChunks.has(idx);
     if (wouldBeNew) {
-      const projected = session.receivedBytes + (req.file?.buffer?.length ?? 0);
+      const projected = session.receivedBytes + chunkSize;
       if (projected > session.totalBytes + 1024 * 1024) {
+        await cleanupTmp();
         return void res.status(413).json({
           error: `Cumulative upload size ${projected} would exceed declared totalBytes ${session.totalBytes}`,
         });
       }
     }
 
-    // Verify SHA-256 checksum when provided — uses async Web Crypto so the
-    // event loop is never blocked, keeping all concurrent chunks flowing freely.
+    // Verify SHA-256 checksum when provided — stream-hash the on-disk temp
+    // file so we never load the full chunk into memory. The streaming hash
+    // tops out at ~64 KB resident regardless of chunk size (vs. up to
+    // 200 MB resident with the previous in-memory subtle.digest path).
     if (checksum) {
-      const hashBuf = await (webcrypto as Crypto).subtle.digest("SHA-256", new Uint8Array(chunk.buffer as unknown as ArrayBuffer));
-      const actualChecksum = Buffer.from(hashBuf).toString("hex");
+      const actualChecksum = await new Promise<string>((resolve, reject) => {
+        const h = createHash("sha256");
+        const stream = createReadStream(chunk.path);
+        stream.on("data", (d) => h.update(d));
+        stream.on("end", () => resolve(h.digest("hex")));
+        stream.on("error", reject);
+      });
       if (actualChecksum !== checksum) {
         logger.warn({ sessionId, chunkIndex: idx, expected: checksum, actual: actualChecksum }, "Chunk checksum mismatch");
+        await cleanupTmp();
         return void res.status(400).json({ error: `Checksum mismatch for chunk ${idx} — data corrupted in transit` });
       }
     }
 
-    // Kick off disk write and checksum verification concurrently
+    // Move the validated chunk into the session's chunk directory by rename
+    // (atomic, zero-copy on the same filesystem). The chunkUpload tmp dir
+    // and session.tmpDir both live under artifacts/api-server/uploads, so
+    // rename never crosses devices and never falls back to copy+delete.
     const chunkPath = path.join(session.tmpDir, `chunk-${String(idx).padStart(6, "0")}`);
-    await fs.writeFile(chunkPath, chunk.buffer);
+    await fs.rename(chunk.path, chunkPath).catch(async (err) => {
+      // Cross-device or other rename failure — fall back to streaming copy.
+      await new Promise<void>((resolve, reject) => {
+        const r = createReadStream(chunk.path);
+        const w = createWriteStream(chunkPath);
+        r.pipe(w);
+        w.on("finish", () => resolve());
+        w.on("error", reject);
+        r.on("error", reject);
+      });
+      await fs.unlink(chunk.path).catch(() => {});
+      logger.debug({ err }, "chunk rename fell back to streaming copy");
+    });
+    tmpPath = undefined; // moved into session — do not unlink
 
     // Idempotency: only count bytes the first time a chunk arrives. The same
     // index can be uploaded twice (network retry, mid-flight failover) and we
@@ -1644,7 +1704,7 @@ router.post("/admin/videos/upload/:sessionId/chunk", chunkUpload.single("chunk")
     const isNewChunk = !session.uploadedChunks.has(idx);
     session.uploadedChunks.add(idx);
     if (isNewChunk) {
-      session.receivedBytes += chunk.buffer.length;
+      session.receivedBytes += chunkSize;
     }
     session.lastActivity = new Date();
 
@@ -1660,6 +1720,7 @@ router.post("/admin/videos/upload/:sessionId/chunk", chunkUpload.single("chunk")
       checksumVerified: !!checksum,
     });
   } catch (err) {
+    await cleanupTmp();
     const msg = err instanceof Error ? err.message : "Unknown error";
     res.status(500).json({ error: msg });
   }
