@@ -37,6 +37,7 @@ import {
 } from "lucide-react";
 import { AdminApiError, transcodingApi, type TranscodingJob, type TranscodingJobDetail, type TranscodingQueue } from "@/services/adminApi";
 import { PageHeader } from "@/components/shared/page-header";
+import { usePollingWhenVisible } from "@/hooks/usePollingWhenVisible";
 import { ErrorAlert } from "@/components/shared/error-alert";
 
 type JobStatus = TranscodingJob["status"];
@@ -271,11 +272,14 @@ export default function Transcoding() {
     }
   }, []);
 
-  useEffect(() => {
-    loadQueue();
-    const id = setInterval(loadQueue, 5000);
-    return () => clearInterval(id);
-  }, [loadQueue]);
+  // Visibility-aware polling — pauses when the operator switches tabs and
+  // fires immediately on return. Cadence raised from 5s to 15s: an HLS
+  // transcode job typically takes 30s–10min depending on source duration,
+  // so a 5s refresh was 3–120x finer-grained than any real state change
+  // could ever be. The Operations page already shows higher-level pipeline
+  // health on a faster cadence; this page is for inspecting individual
+  // jobs, where 15s is plenty.
+  usePollingWhenVisible(loadQueue, 15_000);
 
   const handleRetry = async (jobId: string) => {
     setRetrying(jobId);

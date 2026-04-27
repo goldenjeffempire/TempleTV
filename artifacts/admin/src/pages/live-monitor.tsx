@@ -17,6 +17,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useSSEEvent } from "@/contexts/SSEContext";
+import { usePollingWhenVisible } from "@/hooks/usePollingWhenVisible";
 import {
   Area,
   AreaChart,
@@ -581,15 +582,14 @@ export default function LiveMonitor() {
     }
   }, [toast]);
 
-  useEffect(() => {
-    fetchHealth();
-    // Reduced from 15 s to 60 s — the per-second `stream-health` SSE event now
-    // drives the realtime card and the YouTube-status SSE drives liveness
-    // changes, so this poll exists only as a belt-and-suspenders refresh for
-    // the historical viewer-snapshot list and aggregate stats.
-    const interval = setInterval(() => fetchHealth(true), 60_000);
-    return () => clearInterval(interval);
-  }, [fetchHealth]);
+  // Visibility-aware belt-and-suspenders poll. Cadence stays at 60 s — the
+  // per-second `stream-health` SSE drives the realtime card and the
+  // YouTube-status SSE drives liveness changes, so this exists only to
+  // refresh the historical viewer-snapshot list and aggregate stats. Now
+  // gated by tab visibility so a backgrounded tab adds zero load. The hook
+  // also fires once on mount (and on tab return), replacing the prior
+  // `fetchHealth()` mount call that lived in the removed `useEffect`.
+  usePollingWhenVisible(() => fetchHealth(true), 60_000);
 
   // ───────────────────────────────────────────────────────────────────────
   // Realtime stream-health subscription — pushed every 1 s by the API server

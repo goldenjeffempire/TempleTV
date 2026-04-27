@@ -36,6 +36,7 @@ import {
   type SlowRequestsSnapshot,
 } from "@/services/adminApi";
 import { PageHeader } from "@/components/shared/page-header";
+import { usePollingWhenVisible } from "@/hooks/usePollingWhenVisible";
 import { ErrorAlert } from "@/components/shared/error-alert";
 import { MetricCard } from "@/components/shared/metric-card";
 import { useRecentSSEEvents, useSSE } from "@/contexts/SSEContext";
@@ -973,11 +974,17 @@ export default function Operations() {
     }
   }, []);
 
-  useEffect(() => {
-    loadStatus();
-    const id = window.setInterval(() => loadStatus(), 10_000);
-    return () => window.clearInterval(id);
-  }, [loadStatus]);
+  // Visibility-aware polling — pauses entirely when the operator switches
+  // tabs or backgrounds the browser, and fires immediately on return so the
+  // first thing they see on focus is fresh data. /admin/ops/status runs four
+  // PG count queries plus several in-memory metric snapshots per call; with
+  // the historical 10s cadence and N admin tabs left open across the team
+  // that was the dominant source of admin-driven backend load. Bumped to 30s
+  // because every metric on this page is slow-changing infrastructure data
+  // (uptime, DB connectivity, cache backend, queue counts, signed-URL hit
+  // rate) that nobody monitors second-by-second; the visibility gate is the
+  // bigger multiplier (instant 100% reduction for inactive tabs).
+  usePollingWhenVisible(loadStatus, 30_000);
 
   const requestMetrics = useMemo(
     () => (Array.isArray(status?.metrics?.requests) ? status.metrics.requests : []),

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { adminGet, AdminApiError } from "@/services/adminApi";
+import { usePollingWhenVisible } from "@/hooks/usePollingWhenVisible";
 import { ErrorAlert } from "@/components/shared/error-alert";
 import {
   AlertTriangle,
@@ -138,15 +139,17 @@ export default function LaunchReadinessPage() {
     }
   }, [toast]);
 
+  // Visibility-aware polling — same 15s cadence when the operator is
+  // looking, but pauses entirely while the tab is hidden. The readiness
+  // probe is multi-stage and non-trivial; previously every backgrounded
+  // launch-readiness tab kept hammering it forever.
   useEffect(() => {
     isMountedRef.current = true;
-    fetchReadiness();
-    const interval = window.setInterval(() => fetchReadiness(), 15000);
     return () => {
       isMountedRef.current = false;
-      window.clearInterval(interval);
     };
-  }, [fetchReadiness]);
+  }, []);
+  usePollingWhenVisible(fetchReadiness, 15_000);
 
   const readinessScore = useMemo(() => {
     if (!readiness || readiness.summary.total === 0) return 0;
