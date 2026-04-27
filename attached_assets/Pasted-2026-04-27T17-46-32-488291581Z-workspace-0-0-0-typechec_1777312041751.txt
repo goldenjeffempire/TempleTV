@@ -1,0 +1,50 @@
+2026-04-27T17:46:32.488291581Z > workspace@0.0.0 typecheck:libs /opt/render/project/src
+2026-04-27T17:46:32.488317071Z > tsc --build
+2026-04-27T17:46:32.488320411Z 
+2026-04-27T17:46:39.752250077Z 
+2026-04-27T17:46:39.752283728Z > @workspace/scripts@0.0.0 run-typechecks /opt/render/project/src/scripts
+2026-04-27T17:46:39.752291428Z > tsx ./src/run-typechecks.ts
+2026-04-27T17:46:39.752297168Z 
+2026-04-27T17:46:40.250143894Z 
+2026-04-27T17:46:40.250175355Z ==> [run-typechecks] @workspace/api-server typecheck — start (log: /opt/render/project/src/dist/typecheck-logs/api-server.log)
+2026-04-27T17:46:40.957314639Z 
+2026-04-27T17:46:40.95735457Z > @workspace/api-server@0.0.0 typecheck /opt/render/project/src/artifacts/api-server
+2026-04-27T17:46:40.95736302Z > tsc -p tsconfig.json --noEmit
+2026-04-27T17:46:40.95737113Z 
+2026-04-27T17:46:47.90621783Z ==> [run-typechecks] @workspace/api-server typecheck — ok (7.7s)
+2026-04-27T17:46:47.906252031Z 
+2026-04-27T17:46:47.906257821Z ==> [run-typechecks] @workspace/admin typecheck — start (log: /opt/render/project/src/dist/typecheck-logs/admin.log)
+2026-04-27T17:46:48.588662077Z 
+2026-04-27T17:46:48.588702128Z > @workspace/admin@0.0.0 typecheck /opt/render/project/src/artifacts/admin
+2026-04-27T17:46:48.588710838Z > tsc -p tsconfig.json --noEmit
+2026-04-27T17:46:48.588715928Z 
+2026-04-27T17:47:04.244598865Z src/components/ui/chart.tsx(105,24): error TS2344: Type 'typeof Tooltip' does not satisfy the constraint 'JSXElementConstructor<any> | keyof IntrinsicElements'.
+2026-04-27T17:47:04.244630556Z   Type 'typeof Tooltip' is not assignable to type 'new (props: any, context: any) => Component<any, any, any>'.
+2026-04-27T17:47:04.244636826Z     Type 'Tooltip<ValueType, NameType>' is missing the following properties from type 'Component<any, any, any>': context, setState, forceUpdate, props, state
+2026-04-27T17:47:04.244757908Z src/components/ui/chart.tsx(116,7): error TS2339: Property 'active' does not exist on type 'Omit<ClassAttributes<HTMLDivElement> & HTMLAttributes<HTMLDivElement> & { hideLabel?: boolean | undefined; hideIndicator?: boolean | undefined; indicator?: "line" | ... 2 more ... | undefined; nameKey?: string | undefined; labelKey?: string | undefined; }, "ref">'.
+2026-04-27T17:47:04.245276606Z src/components/ui/chart.tsx(117,7): error TS2339: Property 'payload' does not exist on type 'Omit<ClassAttributes<HTMLDivElement> & HTMLAttributes<HTMLDivElement> & { hideLabel?: boolean | undefined; hideIndicator?: boolean | undefined; indicator?: "line" | ... 2 more ... | undefined; nameKey?: string | undefined; labelKey?: string | undefined; }, "ref">'.
+2026-04-27T17:47:04.245315336Z src/components/ui/chart.tsx(122,7): error TS2339: Property 'label' does not exist on type 'Omit<ClassAttributes<HTMLDivElement> & HTMLAttributes<HTMLDivElement> & { hideLabel?: boolean | undefined; hideIndicator?: boolean | undefined; indicator?: "line" | ... 2 more ... | undefined; nameKey?: string | undefined; labelKey?: string | undefined; }, "ref">'.
+2026-04-27T17:47:04.245323616Z src/components/ui/chart.tsx(123,7): error TS2339: Property 'labelFormatter' does not exist on type 'Omit<ClassAttributes<HTMLDivElement> & HTMLAttributes<HTMLDivElement> & { hideLabel?: boolean | undefined; hideIndicator?: boolean | undefined; indicator?: "line" | ... 2 more ... | undefined; nameKey?: string | undefined; labelKey?: string | undefined; }, "ref">'.
+2026-04-27T17:47:04.245330957Z src/components/ui/chart.tsx(124,7): error TS2339: Property 'labelClassName' does not exist on type 'Omit<ClassAttributes<HTMLDivElement> & HTMLAttributes<HTMLDivElement> & { hideLabel?: boolean | undefined; hideIndicator?: boolean | undefined; indicator?: "line" | ... 2 more ... | undefined; nameKey?: string | undefined; labelKey?: string | undefined; }, "ref">'.
+2026-04-27T17:47:04.245337947Z src/components/ui/chart.tsx(125,7): error TS2339: Property 'formatter' does not exist on type 'Omit<ClassAttributes<HTMLDivElement> & HTMLAttributes<HTMLDivElement> & { hideLabel?: boolean | undefined; hideIndicator?: boolean | undefined; indicator?: "line" | ... 2 more ... | undefined; nameKey?: string | undefined; labelKey?: string | undefined; }, "ref">'.
+2026-04-27T17:47:04.245365607Z src/components/ui/chart.tsx(187,22): error TS7006: Parameter 'item' implicitly has an 'any' type.
+2026-04-27T17:47:04.245370687Z src/components/ui/chart.tsx(188,19): error TS7006: Parameter 'item' implicitly has an 'any' type.
+2026-04-27T17:47:04.245405748Z src/components/ui/chart.tsx(188,25): error TS7006: Parameter 'index' implicitly has an 'any' type.
+2026-04-27T17:47:04.245412998Z src/components/ui/input-otp.tsx(36,44): error TS18046: 'inputOTPContext' is of type 'unknown'.
+2026-04-27T17:47:04.377039839Z /opt/render/project/src/artifacts/admin:
+2026-04-27T17:47:04.37709472Z  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/admin@0.0.0 typecheck: `tsc -p tsconfig.json --noEmit`
+2026-04-27T17:47:04.37710016Z Exit status 2
+2026-04-27T17:47:04.413041439Z 
+2026-04-27T17:47:04.41314248Z ==> [run-typechecks] @workspace/admin typecheck — FAILED (exit 2, 16.5s)
+2026-04-27T17:47:04.413157401Z 
+2026-04-27T17:47:04.413161351Z ==> [run-typechecks] FAIL — @workspace/admin typecheck failed after 24.2s total.
+2026-04-27T17:47:04.413165191Z ==> [run-typechecks] Per-package log captured (3259 bytes): /opt/render/project/src/dist/typecheck-logs/admin.log
+2026-04-27T17:47:04.413168511Z ==> [run-typechecks] All package logs: /opt/render/project/src/dist/typecheck-logs
+2026-04-27T17:47:04.413172351Z ==> [run-typechecks] If the streamed output above was truncated, cat the failing log file for the complete TypeScript error text.
+2026-04-27T17:47:04.457437007Z /opt/render/project/src/scripts:
+2026-04-27T17:47:04.457465618Z  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/scripts@0.0.0 run-typechecks: `tsx ./src/run-typechecks.ts`
+2026-04-27T17:47:04.457469318Z Exit status 2
+2026-04-27T17:47:04.51065209Z  ELIFECYCLE  Command failed with exit code 2.
+2026-04-27T17:47:04.568441493Z  ELIFECYCLE  Command failed with exit code 2.
+2026-04-27T17:47:04.663497485Z ==> Build failed 😞
+2026-04-27T17:47:04.663528726Z ==> Common ways to troubleshoot your deploy: https://render.com/docs/troubleshooting-deploys

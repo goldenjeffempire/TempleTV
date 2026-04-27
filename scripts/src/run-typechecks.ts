@@ -35,13 +35,31 @@
 //   real-time output entirely. On failure, the runner cats the failing
 //   package's log file path so operators always know exactly where to look.
 //
+//   Layer 3 — failure marker: on failure, the runner writes a small JSON
+//   marker file at dist/last-failure.txt containing the failing package
+//   name, its per-package log file path, exit code/signal, elapsed ms, and
+//   an ISO timestamp. Any subsequent step (a Slack notifier, a Render
+//   post-build hook, a CI webhook, a developer 1-liner) can `cat` or
+//   `jq -r .logPath` this file to get a stable, parseable handle to the
+//   failure without grepping multi-thousand-line build output. The marker
+//   is unconditionally deleted at the START of every run so a successful
+//   re-run never leaves a stale marker behind, and a failed run never sees
+//   a previous run's marker.
+//
 // Pass --include-mockup to also typecheck @workspace/mockup-sandbox (used by
 // the local `verify` chain). Production (`verify:production`) omits it
 // because mockup-sandbox is a Replit-canvas-only dev preview tool that
 // ships in zero of the 5 deployed Render services.
 
 import { spawn } from "node:child_process";
-import { mkdirSync, createWriteStream, existsSync, statSync } from "node:fs";
+import {
+  mkdirSync,
+  createWriteStream,
+  existsSync,
+  statSync,
+  writeFileSync,
+  unlinkSync,
+} from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -61,8 +79,20 @@ const ARTIFACTS: readonly string[] = [
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "..", "..");
 const LOG_DIR = join(REPO_ROOT, "dist", "typecheck-logs");
+const FAILURE_MARKER_PATH = join(REPO_ROOT, "dist", "last-failure.txt");
 
 mkdirSync(LOG_DIR, { recursive: true });
+
+// Always start clean: a previous run's marker would mislead any downstream
+// step (Slack notifier, post-build hook, etc.) into reporting a stale failure.
+if (existsSync(FAILURE_MARKER_PATH)) {
+  try {
+    unlinkSync(FAILURE_MARKER_PATH);
+  } catch {
+    // Non-fatal — if we can't unlink, the overwrite below (on failure) or
+    // the absence-check (on success) still produces correct semantics.
+  }
+}
 
 function logFilePathFor(pkg: string): string {
   // "@workspace/api-server" → "api-server.log"
@@ -161,10 +191,31 @@ async function main() {
 
   if (failed) {
     const sizeBytes = existsSync(failed.logPath) ? statSync(failed.logPath).size : 0;
+    const marker = {
+      pkg: failed.pkg,
+      logPath: failed.logPath,
+      logSizeBytes: sizeBytes,
+      exitCode: failed.exitCode,
+      signal: failed.signal,
+      elapsedMs: failed.elapsedMs,
+      totalElapsedMs: Date.now() - totalStart,
+      spawnError: failed.spawnError ? failed.spawnError.message : null,
+      timestamp: new Date().toISOString(),
+      logDir: LOG_DIR,
+    };
+    let markerWriteError: string | null = null;
+    try {
+      writeFileSync(FAILURE_MARKER_PATH, JSON.stringify(marker, null, 2) + "\n", "utf8");
+    } catch (err) {
+      markerWriteError = err instanceof Error ? err.message : String(err);
+    }
     process.stdout.write(
       `\n==> [run-typechecks] FAIL — ${failed.pkg} typecheck failed after ${totalSecs}s total.\n` +
         `==> [run-typechecks] Per-package log captured (${sizeBytes} bytes): ${failed.logPath}\n` +
         `==> [run-typechecks] All package logs: ${LOG_DIR}\n` +
+        (markerWriteError
+          ? `==> [run-typechecks] WARN — failed to write failure marker (${markerWriteError})\n`
+          : `==> [run-typechecks] Failure marker: ${FAILURE_MARKER_PATH} (JSON; downstream steps can read .logPath/.pkg/.exitCode without grep)\n`) +
         `==> [run-typechecks] If the streamed output above was truncated, cat the failing log file for the complete TypeScript error text.\n`,
     );
     process.exit(typeof failed.exitCode === "number" ? failed.exitCode : 1);
