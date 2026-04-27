@@ -120,8 +120,41 @@ app.use(
         };
       },
       res(res) {
+        // `bytes` mirrors the Content-Length header the response will send
+        // out (set by express for buffered writes; absent for streamed /
+        // chunked / SSE responses, in which case we omit the field rather
+        // than emit `null` and pollute the structured-log schema).
+        // Why this exists: production triage on 2026-04-27 traced a flood
+        // of identical 223158-byte responses in Render's edge access log
+        // (which records `responseBytes` but NOT the URL or status). The
+        // pino access log is the only place that ties URL + statusCode to
+        // a request, so without `bytes` here we could not correlate
+        // "huge response served per request" to a route, only to a clock
+        // time — making any RCA guesswork. With this field, a single grep
+        // (`bytes >= 100000`) over an hour of logs pinpoints the route.
+        //
+        // Note on the `res` shape: pino-std-serializers v7 hands us a
+        // *snapshot* object (NOT the raw http.ServerResponse), so methods
+        // like `res.getHeader()` are undefined here — the previous attempt
+        // crashed with "res.getHeader is not a function" for that reason.
+        // We must read from the snapshot's `headers` map instead, which
+        // already contains the lowercased final response headers. Both
+        // string and number values are tolerated to stay forward-compatible
+        // with future pino-std-serializers versions.
+        const headers =
+          (res as unknown as { headers?: Record<string, string | number | string[]> }).headers ??
+          {};
+        const raw = headers["content-length"];
+        const lenStr = Array.isArray(raw) ? raw[0] : raw;
+        const bytes =
+          typeof lenStr === "number"
+            ? lenStr
+            : typeof lenStr === "string"
+              ? Number(lenStr)
+              : undefined;
         return {
           statusCode: res.statusCode,
+          ...(typeof bytes === "number" && Number.isFinite(bytes) ? { bytes } : {}),
         };
       },
     },
