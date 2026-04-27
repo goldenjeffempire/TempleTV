@@ -84,8 +84,15 @@ function logInfrastructureStatus() {
   // ephemeral container disk and disappears on the next deploy/restart — a
   // silent data-loss path that should never reach users.
   if (process.env.NODE_ENV === "production" && !s3Configured) {
+    // Each Render service has its OWN environment-variable scope. A common
+    // failure mode is the operator setting AWS_* on the web service but
+    // forgetting to mirror them onto the worker service (or vice-versa) —
+    // the worker then crashloops with this exact message. Surfacing the
+    // role name explicitly so the operator knows WHICH Render service to
+    // open in the dashboard saves a real triage round-trip.
     logger.fatal(
       {
+        runMode: RUN_MODE,
         missing: [
           process.env.AWS_S3_BUCKET ? null : "AWS_S3_BUCKET",
           process.env.AWS_REGION ? null : "AWS_REGION",
@@ -93,10 +100,11 @@ function logInfrastructureStatus() {
           process.env.AWS_SECRET_ACCESS_KEY ? null : "AWS_SECRET_ACCESS_KEY",
         ].filter(Boolean),
       },
-      "Refusing to start: AWS S3 is required in production but is not configured. " +
+      `Refusing to start (role=${RUN_MODE}): AWS S3 is required in production but is not configured on THIS service. ` +
         "Uploads would be written to ephemeral disk and lost on the next deploy. " +
         "Set AWS_S3_BUCKET, AWS_REGION, AWS_ACCESS_KEY_ID, and AWS_SECRET_ACCESS_KEY " +
-        "in the deployment environment, then redeploy.",
+        `in the environment of the '${RUN_MODE}' service (each Render service has its own env-var scope — ` +
+        "the web service env vars do NOT propagate to the worker service), then redeploy.",
     );
     setTimeout(() => process.exit(1), 250);
     return;

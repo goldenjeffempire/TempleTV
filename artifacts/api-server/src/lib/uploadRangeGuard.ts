@@ -37,9 +37,18 @@ import { logger } from "./logger";
  * redeploy if a legitimate workload needs more headroom.
  */
 
+// Default raised from 4 → 8 after production traffic showed legitimate
+// HLS/MP4 players (notably mobile WebView and some smart-TV browsers) routinely
+// open 6–8 parallel range requests for the same source — initial probe + first
+// few seek-ahead chunks + a retry triggered by a slow-to-respond fallback
+// path was tipping over the previous cap and 429-ing real viewers. Eight is
+// the comfortable headroom value: still bounded enough to defend the disk
+// fast-path against a buggy client or DDoS, but high enough that a single
+// real human watching one video never sees a 429. Operators can still tune
+// via the env var without a redeploy.
 const MAX_CONCURRENT_PER_KEY = Math.max(
   1,
-  Number(process.env.UPLOAD_RANGE_MAX_CONCURRENT ?? "4"),
+  Number(process.env.UPLOAD_RANGE_MAX_CONCURRENT ?? "8"),
 );
 const MAX_RANGE_BYTES = Math.max(
   1024 * 1024,

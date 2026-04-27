@@ -44,6 +44,10 @@ app.use(
     logger,
     serializers: {
       req(req) {
+        // Strip the query string entirely from the access log. We rely on
+        // structured fields elsewhere for query parameters that matter, and
+        // this guarantees no credential ever leaks through `?adminToken=…`,
+        // `?token=…`, signed-URL signatures, or future query secrets.
         return {
           id: req.id,
           method: req.method,

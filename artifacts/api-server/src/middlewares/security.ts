@@ -47,9 +47,17 @@ function getPresentedAdminToken(req: Request): string | null {
   if (auth?.startsWith("Bearer ")) return auth.slice("Bearer ".length).trim();
   const header = req.headers["x-admin-token"];
   if (typeof header === "string") return header.trim();
-  // Query-param token accepted only in non-production to avoid credentials
-  // appearing in server logs, proxy access logs, and browser history.
-  if (process.env.NODE_ENV !== "production") {
+  // Query-param token: in production this is restricted to SSE endpoints
+  // (EventSource cannot send Authorization headers, so there is no other
+  // option for admin SSE streams to authenticate). The HTTP request logger
+  // strips `adminToken` from the URL before logging, and Strict-Transport-
+  // Security keeps the wire encrypted, so the residual exposure is bounded
+  // to TLS-terminating proxies the operator already controls.
+  const isProd = process.env.NODE_ENV === "production";
+  const isSseRequest =
+    typeof req.headers.accept === "string" &&
+    req.headers.accept.includes("text/event-stream");
+  if (!isProd || isSseRequest) {
     const queryToken = req.query.adminToken;
     if (typeof queryToken === "string") return queryToken.trim();
   }

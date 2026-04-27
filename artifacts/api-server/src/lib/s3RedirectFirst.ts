@@ -52,6 +52,11 @@ interface HeadCacheEntry {
   expiresAt: number;
 }
 
+interface HeadErrorEntry {
+  expiresAt: number;
+  loggedAt: number;
+}
+
 export function s3RedirectFirstForLargeMedia(
   opts: S3RedirectFirstOptions,
 ): express.RequestHandler {
@@ -63,6 +68,15 @@ export function s3RedirectFirstForLargeMedia(
   } = opts;
   const extSet = new Set(extensions.map((e) => e.toLowerCase()));
   const headCache = new Map<string, HeadCacheEntry>();
+  // Negative cache for transient HEAD errors (auth blip, AWS 5xx, network):
+  // without this the middleware re-issues a HEAD on EVERY viewer request,
+  // re-throws, and floods the log with one warn line per request — observed
+  // in production at multiple lines/sec for a single hot key. We cache the
+  // failure for a short window so the disk fallback runs immediately, and
+  // we log AT MOST one warn per key per error window.
+  const HEAD_ERROR_TTL_MS = 60 * 1000;
+  const HEAD_ERROR_LOG_INTERVAL_MS = 5 * 60 * 1000;
+  const headErrors = new Map<string, HeadErrorEntry>();
 
   return async function s3RedirectFirst(req, res, next) {
     if (req.method !== "GET" && req.method !== "HEAD") return next();
@@ -81,6 +95,18 @@ export function s3RedirectFirstForLargeMedia(
 
     // ── HEAD existence check, with a short in-memory TTL cache ─────────────
     const now = Date.now();
+
+    // Skip S3 entirely if we're inside the negative-cache window for this
+    // key — the disk fallback or s3FallbackMiddleware will handle the
+    // request, and we avoid the HEAD round-trip (which on a sustained AWS
+    // outage was adding 1–2s to every single video request).
+    const errEntry = headErrors.get(key);
+    if (errEntry && errEntry.expiresAt > now) {
+      return next();
+    } else if (errEntry) {
+      headErrors.delete(key);
+    }
+
     let cached = headCache.get(key);
     if (cached && cached.expiresAt < now) {
       headCache.delete(key);
@@ -96,10 +122,23 @@ export function s3RedirectFirstForLargeMedia(
         exists = head !== null;
         headCache.set(key, { exists, expiresAt: now + headCacheTtlMs });
       } catch (err) {
-        logger.warn(
-          { err: err instanceof Error ? err.message : String(err), key },
-          "s3RedirectFirst: HEAD failed — falling through to disk path",
-        );
+        const prev = errEntry;
+        const shouldLog =
+          !prev || now - prev.loggedAt >= HEAD_ERROR_LOG_INTERVAL_MS;
+        headErrors.set(key, {
+          expiresAt: now + HEAD_ERROR_TTL_MS,
+          loggedAt: shouldLog ? now : (prev?.loggedAt ?? now),
+        });
+        if (shouldLog) {
+          logger.warn(
+            {
+              err: err instanceof Error ? err.message : String(err),
+              key,
+              suppressedForMs: HEAD_ERROR_LOG_INTERVAL_MS,
+            },
+            "s3RedirectFirst: HEAD failed — falling through to disk path (further log lines for this key suppressed)",
+          );
+        }
         return next();
       }
     }
