@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { keyEventToAction } from "../lib/tvKeys";
 import { HlsVideoPlayer } from "../components/HlsVideoPlayer";
 import { BroadcastChannelBug } from "../components/BroadcastChannelBug";
+import { BroadcastLiveCompanion } from "../components/BroadcastLiveCompanion";
 import { useLiveSync } from "../hooks/useLiveSync";
 import { reportLiveFailure, useLiveFailureFor } from "../lib/liveFailureSignal";
 
@@ -159,13 +160,20 @@ function LiveYouTubePlayer({
   }, [failed, onBack]);
 
   return (
-    <YouTubePlayer
-      videoId={videoId}
-      title={title}
-      onBack={onBack}
-      isLive
-      onLiveError={() => reportLiveFailure(videoId, "tv-player")}
-    />
+    // Wrap in a positioning host so the passive companion chip can be
+    // absolutely positioned over the iframe. The wrapper is sized by its
+    // child (full-screen) so layout is unchanged versus the previous bare
+    // <YouTubePlayer> render.
+    <div style={{ position: "relative", width: "100%", height: "100%" }}>
+      <YouTubePlayer
+        videoId={videoId}
+        title={title}
+        onBack={onBack}
+        isLive
+        onLiveError={() => reportLiveFailure(videoId, "tv-player")}
+      />
+      <BroadcastLiveCompanion isLive={sync.isLive} viewerCount={sync.viewerCount} />
+    </div>
   );
 }
 
@@ -307,14 +315,19 @@ function LiveBroadcastHlsPlayer({
   }, [sync.currentItemEndsAtMs, sync.nextItem, nextHlsUrl, hlsUrl]);
 
   return (
-    <HlsVideoPlayer
-      hlsUrl={hlsUrl}
-      title={title}
-      onBack={onBack}
-      startPositionSecs={startPositionSecs}
-      nextHlsUrl={nextHlsUrl}
-      isLive
-    />
+    // Same positioning-host pattern as LiveYouTubePlayer — the companion
+    // chip is decoration over the player, not part of the player chrome.
+    <div style={{ position: "relative", width: "100%", height: "100%" }}>
+      <HlsVideoPlayer
+        hlsUrl={hlsUrl}
+        title={title}
+        onBack={onBack}
+        startPositionSecs={startPositionSecs}
+        nextHlsUrl={nextHlsUrl}
+        isLive
+      />
+      <BroadcastLiveCompanion isLive={sync.isLive} viewerCount={sync.viewerCount} />
+    </div>
   );
 }
 

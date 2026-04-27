@@ -53,6 +53,14 @@ export interface BroadcastSyncState {
   /** Next item metadata (title, ID). */
   nextItem: BroadcastNextItem | null;
   /**
+   * Live viewer count from the same SSE channel (`stream-health` event).
+   * `null` until the first health frame arrives. The TV broadcast companion
+   * chip in `Player.tsx` consumes this — no other surface uses it yet.
+   * Adding it here (vs. a second EventSource) avoids opening a duplicate
+   * connection per page load.
+   */
+  viewerCount: number | null;
+  /**
    * Raw `BroadcastCurrentPayload` straight from the latest SSE message — used by
    * `Home.tsx` so the cinematic hero can render full item metadata (thumbnail,
    * durationSecs, activeSchedule, liveOverride) without a separate HTTP fetch.
@@ -82,6 +90,7 @@ const INITIAL: BroadcastSyncState = {
   queueLength: null,
   progressPercent: null,
   nextItem: null,
+  viewerCount: null,
   payload: null,
 };
 
@@ -124,7 +133,12 @@ export function useLiveSync(): BroadcastSyncState {
       const ytVideoId = (current.ytVideoId as string | null | undefined) ?? null;
       const ytTitle = (current.ytTitle as string | null | undefined) ?? null;
 
-      setState({
+      // Use the functional setter so we preserve `viewerCount` across
+      // broadcast-current-updated frames — otherwise an item-rotation event
+      // would clobber the most recent viewer count (which arrives on the
+      // separate `stream-health` channel) until the next health frame.
+      setState((prev) => ({
+        viewerCount: prev.viewerCount,
         // `isLive` reflects "something live-class is airing right now."
         // Promoting `ytLive` here means a Hero/Player consumer that just
         // checks `sync.isLive` will treat an organic YouTube live the same
@@ -164,7 +178,7 @@ export function useLiveSync(): BroadcastSyncState {
         progressPercent: typeof current.progressPercent === "number" ? current.progressPercent : null,
         nextItem,
         payload: current,
-      });
+      }));
     };
 
     const fallbackPoll = async () => {
@@ -194,6 +208,20 @@ export function useLiveSync(): BroadcastSyncState {
             const { current } = JSON.parse(e.data) as { current: Record<string, unknown> };
             reconnectDelayRef.current = SSE_MIN_RETRY_MS;
             applyPayload(current);
+          } catch {}
+        });
+
+        // Stream-health frames carry the live viewer count; we just lift
+        // that single field into state. The full payload (bitrate, dropped
+        // frames, encoder uptime) is consumed by the admin Live Monitor on
+        // a separate code path and not relevant on TV.
+        es.addEventListener("stream-health", (e: MessageEvent) => {
+          if (destroyed) return;
+          try {
+            const data = JSON.parse(e.data) as { viewerCount?: number };
+            if (typeof data.viewerCount === "number" && Number.isFinite(data.viewerCount)) {
+              setState((prev) => (prev.viewerCount === data.viewerCount ? prev : { ...prev, viewerCount: data.viewerCount! }));
+            }
           } catch {}
         });
 

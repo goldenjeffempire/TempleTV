@@ -1817,3 +1817,69 @@ minutes forever — but the broader RSS picture needs a separate
 investigation, most likely splitting `RUN_MODE=api` from
 `RUN_MODE=worker` in production (the architecture already supports
 this).
+
+## Broadcast Live-Interaction Bar + Bottom Sheet (Apr 27, 2026)
+
+Redesigned the live broadcast surface around two new components, plus a
+passive companion strip on TV.
+
+### Mobile (`artifacts/mobile/`)
+
+* `components/BroadcastLiveBar.tsx` — sticky bottom bar always visible on
+  the live/broadcast player. Six segments:
+  `LIVE pulse · Viewers count · Reactions cycle · Chat tab · Prayer tab · Share`.
+  All non-action segments tap through to `onOpenSheet(tab)` to surface the
+  matching tab; the reactions segment cycles `amen → fire → hallelujah` per
+  press and fires the existing `sendReaction()` POST + the local `LiveReactions`
+  emoji burst overlay (haptic on press).
+* `components/BroadcastLiveSheet.tsx` — animated bottom sheet (Animated +
+  PanResponder, deliberately not reanimated for web compat). Five tabs:
+  - **Chat** — polished "coming soon" placeholder with status pills (no
+    chat MVP yet — chat-with-moderation is its own focused project).
+  - **Prayer** — hero card that opens the existing `PrayerRequestModal`.
+  - **Schedule** — "now on air" card + next-up list pulled from
+    `BroadcastCurrentResult.upcomingItems` (already supplied by the API).
+  - **Donate** — hero card that routes to existing `/donate` page.
+  - **Settings** — toggles for Audio-only (`toggleRadioMode`), Data Saver
+    (`toggleDataSaver`), and a local Notifications opt-in flag, plus
+    quick-action tiles for Share / Send-Amen / YouTube.
+  Sheet height is capped at 78vh on phones / 720px on tablet+desktop, with
+  a centered max-width of 720px on web. Pull-down gesture and ESC (web)
+  dismiss; tap on backdrop dismisses.
+* `app/player.tsx` — replaced the previous flat broadcast footer (Audio
+  toggle / Share / Prayer pills + station-ID row) with the new bar +
+  sheet. The signup nudge for guests was relocated as a slim card above
+  the bar so the conversion opportunity stays visible without crowding
+  the new chrome. Live viewer count is sourced from the `stream-health`
+  SSE event (already broadcast every 1s by `streamHealth.ts`); no new
+  server work was needed — only adding `"stream-health"` to
+  `BroadcastRealtimeEvent` and wiring a subscription in the player.
+
+### TV (`artifacts/tv/`)
+
+TV is a lean-back form factor with no good text-input model on a remote,
+so the live-interaction surface there is intentionally **passive**:
+
+* `components/BroadcastLiveCompanion.tsx` — bottom-left lower-third chip
+  showing `LIVE pulse · viewer count · floating reaction emojis`. No
+  taps, no focus stealing (`pointer-events: none`). Subscribes to
+  `live-reaction` SSE events directly (a tiny dedicated EventSource so
+  reaction churn doesn't re-render the whole `useLiveSync` tree) and
+  floats each emoji upward over ~2.4 s.
+* `hooks/useLiveSync.ts` — extended `BroadcastSyncState` with
+  `viewerCount: number | null` and added a `stream-health` SSE listener
+  that lifts only the `viewerCount` field into state, preserving it
+  across `broadcast-current-updated` rotations via a functional setter.
+* `pages/Player.tsx` — wraps both `LiveYouTubePlayer` and
+  `LiveBroadcastHlsPlayer` returns in a relative-positioned host so
+  `BroadcastLiveCompanion` overlays the iframe / HLS surface without
+  affecting layout.
+
+### Why this carving
+Mobile owns the bidirectional interaction (chat placeholder, reactions,
+prayer requests, share, settings) because the form factor invites it. TV
+sits one screen back from the viewer; piling modal overlays in front of
+the live content would degrade the lean-back experience, but viewers in
+the room still benefit from seeing congregational reactions and the
+shared `N watching` signal. The shared SSE bus keeps both surfaces
+identical to the second.

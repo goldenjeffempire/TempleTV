@@ -185,7 +185,14 @@ export type BroadcastRealtimeEvent =
   | "status"
   | "override-expired"
   | "yt-status"
-  | "live-reaction";
+  | "live-reaction"
+  // Per-second stream-health snapshot. Mobile consumes only `viewerCount` for
+  // the live-interaction bar; the full payload (bitrate, dropped frames,
+  // segment latency) is already consumed by the admin Live Monitor. Adding
+  // this here is the mobile side opting into the same SSE channel; no new
+  // server work is needed because the event is already broadcast to every
+  // connected client per `streamHealth.ts`.
+  | "stream-health";
 
 export type ReactionType = "amen" | "fire" | "hallelujah";
 

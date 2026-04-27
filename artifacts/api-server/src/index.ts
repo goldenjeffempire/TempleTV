@@ -289,6 +289,28 @@ if (RUNS_API) {
   }
 
   server = http.createServer(app);
+  // ── HTTP keep-alive tuning for HLS segment delivery ──────────────────────
+  // Node's defaults (`keepAliveTimeout: 5_000`, `headersTimeout: 60_000`) are
+  // tuned for short request/response APIs, not the 6-second HLS segment
+  // cadence this server fronts. With the default 5 s keepalive, a viewer's
+  // TCP+TLS connection drops between consecutive segment fetches — every
+  // `.ts` request then pays a fresh handshake (~150–300 ms on a warm CDN
+  // edge, more on a cold one). Multiplied across thousands of viewers and
+  // continuous playback, that's measurable startup + mid-stream latency.
+  //
+  // We bump keepalive to 75 s (one segment cadence past the 60 s typical
+  // segment-list horizon, so a slow viewer never accidentally races the
+  // close), and headersTimeout to 80 s (must exceed keepAliveTimeout per
+  // Node docs to avoid spurious 408s from in-flight clients). Tunable via
+  // env in case a future Render plan or fronting LB needs a different
+  // envelope. requestTimeout intentionally left at the default (0 = no
+  // wall-clock cap at this layer) because the per-request timeout
+  // middleware (`middlewares/requestTimeout.ts`) handles that with
+  // SSE/upload/HLS exemptions, which the raw socket-level timeout can't.
+  const keepAliveTimeoutMs = Number(process.env.HTTP_KEEPALIVE_MS ?? 75_000);
+  const headersTimeoutMs = Number(process.env.HTTP_HEADERS_TIMEOUT_MS ?? 80_000);
+  server.keepAliveTimeout = keepAliveTimeoutMs;
+  server.headersTimeout = headersTimeoutMs;
   server.listen(port, "0.0.0.0", () => {
     logger.info({ port, host: "0.0.0.0" }, "Server listening");
     const verdict = logInfrastructureStatus();

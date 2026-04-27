@@ -44,6 +44,9 @@ import { useNetworkStatus } from "@/hooks/useNetworkStatus";
 import { BroadcastInfoStrip } from "@/components/BroadcastInfoStrip";
 import { LiveReactions } from "@/components/LiveReactions";
 import { PrayerRequestModal } from "@/components/PrayerRequestModal";
+import { BroadcastLiveBar, type LiveBarTab } from "@/components/BroadcastLiveBar";
+import { BroadcastLiveSheet } from "@/components/BroadcastLiveSheet";
+import { sendReaction } from "@/services/broadcast";
 import type { Sermon } from "@/types";
 import { usePageSeo } from "@/hooks/usePageSeo";
 
@@ -287,6 +290,7 @@ export default function PlayerScreen() {
     cycleLoopMode,
     togglePlay,
     toggleRadioMode,
+    toggleDataSaver,
     setIsBroadcastMode: setCtxBroadcastMode,
     volume,
     dataSaver,
@@ -1170,10 +1174,63 @@ export default function PlayerScreen() {
   const [latestReaction, setLatestReaction] = useState<{ type: ReactionType; ts: number } | null>(null);
   const [prayerModalVisible, setPrayerModalVisible] = useState(false);
 
+  // ── Live-interaction sheet (Chat / Prayer / Schedule / Donate / Settings) ──
+  const [sheetVisible, setSheetVisible] = useState(false);
+  const [sheetTab, setSheetTab] = useState<LiveBarTab>("schedule");
+  // Notifications opt-in is a local UI toggle for now — wiring to the actual
+  // push notification subscribe flow is tracked separately. Keeping the
+  // toggle in the bar gives users immediate visibility of the setting and
+  // lets us hook it up without touching this file again.
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+
+  // ── Live viewer count via stream-health SSE ────────────────────────────
+  // Subscribes to the same `/api/broadcast/events` channel everything else
+  // uses. The server emits a `stream-health` frame every 1 s with a
+  // `viewerCount` field — we just lift that single number into local state
+  // so the live-interaction bar can render it. Throttled via
+  // `requestAnimationFrame` so the 1 Hz update rate doesn't cause re-renders
+  // mid-frame on lower-end Androids.
+  const [liveViewers, setLiveViewers] = useState<number | null>(null);
+  useEffect(() => {
+    if (!isBroadcastOrLive) return;
+    const sub = subscribeBroadcastEvents({
+      "stream-health": (payload: any) => {
+        const v = payload?.viewerCount;
+        if (typeof v === "number" && Number.isFinite(v)) setLiveViewers(v);
+      },
+    });
+    return () => sub?.close();
+  }, [isBroadcastOrLive]);
+
+  // ── Reaction bar pulse: re-fires the burst animation every time a
+  // reaction event lands so the heart icon "throbs" in sync with the
+  // overlaid LiveReactions emoji burst.
+  const [reactionPulseKey, setReactionPulseKey] = useState(0);
+  useEffect(() => {
+    if (!latestReaction) return;
+    setReactionPulseKey((k) => k + 1);
+  }, [latestReaction?.ts]);
+
   const handleToggleAudioMode = useCallback(() => {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     toggleRadioMode();
   }, [toggleRadioMode]);
+
+  // Open the live-interaction sheet to a specific tab. Single entry point so
+  // the bar, the prayer/share/donate quick-actions, and any deep-link can all
+  // route through one state setter.
+  const handleOpenSheet = useCallback((tab: LiveBarTab) => {
+    setSheetTab(tab);
+    setSheetVisible(true);
+  }, []);
+
+  // Bar reactions: optimistic local burst + fire-and-forget POST. Errors are
+  // swallowed (the existing sendReaction is best-effort by design — a failed
+  // POST should never disturb playback or surface a toast on a tap).
+  const handleSendReaction = useCallback((type: ReactionType) => {
+    setLatestReaction({ type, ts: Date.now() });
+    void sendReaction(type);
+  }, []);
 
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
@@ -1344,81 +1401,35 @@ export default function PlayerScreen() {
         )}
       </View>
 
-      {/* ── Broadcast / Live: clean immersive footer — no metadata clutter ── */}
+      {/* ── Broadcast / Live: structured live-interaction surface ─────────
+          Replaces the previous flat-list footer (Audio toggle / Share /
+          Prayer buttons + station ID row) with a sticky bottom bar
+          (Live · Viewers · Reactions · Chat · Prayer · Share) and a
+          swipe-up bottom sheet (Chat / Prayer / Schedule / Donate /
+          Settings). The video player sizing above is unchanged so the
+          new bar doesn't push the video off-screen — instead it sits
+          BELOW the video in the residual chrome height. The signup
+          nudge that lived in the old footer was relocated here as a
+          slim prompt above the bar so guests still see the conversion
+          opportunity without crowding the new bar. */}
       {isBroadcastOrLive ? (
-        <View style={[styles.broadcastFooter, { paddingBottom: insets.bottom + 12 }]}>
-          {/* Live reactions overlay */}
+        <View style={[styles.broadcastInteractiveSurface]}>
+          {/* Persistent emoji burst overlay so reactions visibly land
+              even when the sheet is closed. The bar's heart icon also
+              pulses via reactionPulseKey. */}
           <LiveReactions
             latestIncoming={latestReaction}
             containerWidth={screenWidth}
           />
 
-          {/* Channel identification row.
-              The plain "Temple TV · JCTM Broadcasting" text label was replaced
-              with the actual brand mark — exactly how real TV networks show
-              their station identity in this slot (CNN/ESPN/NBC don't spell
-              their name out next to the LIVE badge, they show the mark).
-              The pulsing bottom-right <ChannelBug mode="watermark"> overlay
-              is intentionally left untouched: it's a separate broadcaster
-              convention (program-change-triggered fade-in) and serves a
-              different purpose than the persistent footer identity. */}
-          <View style={styles.broadcastChannelRow}>
-            <View style={styles.onAirIndicator}>
-              <View style={styles.onAirDot} />
-              <Text style={styles.onAirLabel}>{isLive ? "LIVE" : "ON AIR"}</Text>
-            </View>
-            <Image
-              source={require("@/assets/images/temple-tv-logo.png")}
-              style={styles.broadcastChannelLogo}
-              resizeMode="contain"
-              accessibilityLabel="Temple TV — JCTM Broadcasting"
-            />
-            <View style={{ flex: 1 }} />
-            {isRadioMode && (
-              <View style={[styles.playbackModeBadge, { backgroundColor: c.secondary }]}>
-                <Feather name="radio" size={13} color={c.primary} />
-                <Text style={[styles.playbackModeText, { color: c.primary }]}>Audio</Text>
-              </View>
-            )}
-          </View>
-
-          {/* Action buttons */}
-          <View style={styles.broadcastActions}>
-            <Pressable
-              onPress={handleToggleAudioMode}
-              style={({ pressed }) => [
-                styles.broadcastActionBtn,
-                { backgroundColor: isRadioMode ? c.primary : c.secondary, opacity: pressed ? 0.75 : 1 },
-              ]}
-              hitSlop={8}
-            >
-              <Feather name={isRadioMode ? "video" : "headphones"} size={18} color={isRadioMode ? "#FFF" : c.foreground} />
-              <Text style={[styles.broadcastActionLabel, { color: isRadioMode ? "#FFF" : c.mutedForeground }]}>
-                {isRadioMode ? "Video" : "Audio only"}
-              </Text>
-            </Pressable>
-            <Pressable
-              onPress={handleShare}
-              style={({ pressed }) => [styles.broadcastActionBtn, { backgroundColor: c.secondary, opacity: pressed ? 0.75 : 1 }]}
-              hitSlop={8}
-            >
-              <Feather name="share-2" size={18} color={c.foreground} />
-              <Text style={[styles.broadcastActionLabel, { color: c.mutedForeground }]}>Share</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setPrayerModalVisible(true)}
-              style={({ pressed }) => [styles.broadcastActionBtn, { backgroundColor: "rgba(106,13,173,0.22)", opacity: pressed ? 0.75 : 1 }]}
-              hitSlop={8}
-            >
-              <Text style={{ fontSize: 18, lineHeight: 22 }}>🙏</Text>
-              <Text style={[styles.broadcastActionLabel, { color: c.primary }]}>Prayer</Text>
-            </Pressable>
-          </View>
-
-          {/* Non-intrusive sign-up nudge for guests — shown once, dismissible */}
+          {/* Optional, dismissible signup nudge — slim card above the bar */}
           {!isLoggedIn && !nudgeDismissed && (
             <Pressable
-              style={[styles.signupNudge, { backgroundColor: "rgba(106,13,173,0.15)", borderColor: "rgba(106,13,173,0.3)" }]}
+              style={[
+                styles.signupNudge,
+                styles.signupNudgeOverBar,
+                { backgroundColor: "rgba(106,13,173,0.15)", borderColor: "rgba(106,13,173,0.3)" },
+              ]}
               onPress={() => {
                 openAuthGate({
                   pathname: "/player",
@@ -1438,6 +1449,18 @@ export default function PlayerScreen() {
               </Pressable>
             </Pressable>
           )}
+
+          {/* Sticky bottom bar — always visible during live playback. */}
+          <View style={{ paddingBottom: insets.bottom }}>
+            <BroadcastLiveBar
+              viewers={liveViewers}
+              isLive={isBroadcastOrLive}
+              onOpenSheet={handleOpenSheet}
+              onSendReaction={handleSendReaction}
+              onShare={handleShare}
+              reactionPulseKey={reactionPulseKey}
+            />
+          </View>
         </View>
       ) : (
         /* ── VOD: standard scrollable metadata + controls section ── */
@@ -1605,6 +1628,31 @@ export default function PlayerScreen() {
         visible={prayerModalVisible}
         onClose={() => setPrayerModalVisible(false)}
       />
+
+      {/* Live-interaction sheet — mounted at the root so it overlays the
+          player, the broadcast bar, and even the system-tinted edges of
+          the safe-area inset. The sheet manages its own backdrop and
+          escape/back handling. Mounted only for live/broadcast (VOD has
+          its own metadata pane). */}
+      {isBroadcastOrLive && (
+        <BroadcastLiveSheet
+          visible={sheetVisible}
+          activeTab={sheetTab}
+          onTabChange={setSheetTab}
+          onClose={() => setSheetVisible(false)}
+          broadcast={broadcastInfo}
+          viewers={liveViewers}
+          isLive={isBroadcastOrLive}
+          isRadioMode={isRadioMode}
+          onToggleRadioMode={handleToggleAudioMode}
+          dataSaver={dataSaver}
+          onToggleDataSaver={toggleDataSaver}
+          notificationsEnabled={notificationsEnabled}
+          onToggleNotifications={() => setNotificationsEnabled((v) => !v)}
+          onSendReaction={handleSendReaction}
+          onShare={handleShare}
+        />
+      )}
     </View>
   );
 }
@@ -1734,6 +1782,27 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     paddingHorizontal: 16,
     paddingVertical: 13,
+  },
+  // Slim variant of the signup nudge when it sits directly above the
+  // sticky live bar — tighter padding/margins so the nudge + bar combo
+  // doesn't feel like two stacked panels.
+  signupNudgeOverBar: {
+    marginHorizontal: 14,
+    marginTop: 8,
+    marginBottom: 6,
+    paddingVertical: 10,
+  },
+  // Wrapper for the new live-interaction surface (signup nudge + sticky
+  // BroadcastLiveBar). `flex:1` lets it fill the residual chrome height
+  // below the player so the bar genuinely sticks to the bottom on every
+  // form factor (phone / tablet / desktop web). The transparent
+  // background defers to the page background — the bar paints its own.
+  broadcastInteractiveSurface: {
+    flex: 1,
+    justifyContent: "flex-end",
+    backgroundColor: LIGHT_PAGE_BG,
+    borderTopWidth: 1,
+    borderTopColor: LIGHT_DIVIDER,
   },
   nudgeTitle: {
     fontSize: 13,
