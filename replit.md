@@ -795,6 +795,45 @@ the SSE-driven path remains as the metadata source of truth (now-playing card,
 up-next list, mission-control hero) so on-screen labels stay in lock-step with
 the actual video transition.
 
+**Security baseline — clean SAST and dependency audit (April 2026):** Ran the
+full security suite (osv-scanner dependency audit, semgrep SAST, HoundDog
+dataflow). Findings and resolutions:
+- **Dependency audit**: 0 critical, 0 high, 3 moderate. All 3 moderate
+  (esbuild GHSA-67mh-4wv8-2f99 dev-server CORS; uuid GHSA-w5hq-g745-h8pq
+  silent partial writes) are non-exploitable in this codebase — esbuild is
+  used only as a bundler (the dev preview is Vite, not esbuild's serve mode);
+  uuid is only ever called as `uuid()` for ID generation, never with
+  caller-supplied buffers. Documented but not patched (transitive deps;
+  patches require major-version bumps with no security benefit here).
+- **SAST**: 3 HIGH initially, all false positives. Two suppressed at the
+  source line with explanatory `nosemgrep:<rule-id>` markers and detailed
+  comments — `artifacts/api-server/src/routes/auth.ts` (the deliberately
+  invalid `dummyHash` literal used for constant-time auth flow to prevent
+  user-enumeration timing attacks; not a credential), and
+  `artifacts/api-server/src/lib/ffmpeg.ts` (the `name` arg in
+  `resolveBinary` is only ever called with hard-coded literals `"ffmpeg"`
+  / `"ffprobe"` from the same file; tightened the type to a string-literal
+  union to make the no-untrusted-input invariant compile-time-enforced).
+  The third HIGH was a coincidental gitleaks regex match against minified
+  third-party `shaka-player` JS in expo's `web-dist/` build artifact — fixed
+  by (a) adding `web-dist/` to `artifacts/mobile/.gitignore` (was missing
+  alongside `dist/` and `web-build/`) so future builds don't drag minified
+  bundles into git, and (b) creating a workspace-root `.semgrepignore` that
+  excludes `node_modules/`, `dist/`, `build/`, `web-dist/`, `web-build/`,
+  `.next/`, `.expo/`, source maps, and minified bundles from scan scope —
+  industry-standard SAST hygiene so dependency-vuln tracking lives in the
+  dep audit (osv-scanner) rather than coincidental regex matches in
+  third-party minified code. Existing tracked `web-dist/` files remain in
+  git history; full cleanup would require `git rm --cached -r
+  artifacts/mobile/web-dist/` (a destructive op left for explicit user
+  approval).
+- **HoundDog**: 0 findings (no privacy-data leaks).
+- **LSP**: 0 type errors across the entire workspace (api-server, admin, tv,
+  mobile, mockup-sandbox).
+- **Net result**: Clean security baseline — 0 critical, 0 high in both deps
+  and SAST. Every HIGH finding that appears in future scans will be a real
+  signal, not noise.
+
 **Cinematic hero — cold-start instant paint (April 2026):** Closed the last
 remaining "blank-on-landing" window. Both the TV `Home.tsx` and mobile
 `(tabs)/index.tsx` previously waited on the HTTP cold-start primer

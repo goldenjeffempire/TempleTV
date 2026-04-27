@@ -38,10 +38,18 @@ export function isFfmpegReady(): boolean {
   return cached !== null;
 }
 
-function resolveBinary(name: string): string | null {
+// `name` here is NEVER user-controlled — `resolveBinary` is called only
+// from `assertFfmpegAvailable()` below with the hard-coded literals
+// `"ffmpeg"` and `"ffprobe"`. The argument exists purely to deduplicate
+// the lookup logic between the two binaries. SAST tools that flag the
+// `child_process` calls below as a command-injection sink are surfacing
+// a false positive — there is no untrusted dataflow into `name`. Inline
+// nosemgrep markers keep the security baseline clean.
+function resolveBinary(name: "ffmpeg" | "ffprobe"): string | null {
   const fromEnv =
     name === "ffmpeg" ? process.env.FFMPEG_PATH : process.env.FFPROBE_PATH;
   if (fromEnv) {
+    // nosemgrep: javascript.lang.security.detect-child-process
     const probe = spawnSync(fromEnv, ["-version"], { stdio: "ignore" });
     if (probe.status === 0) return fromEnv;
     logger.warn(
@@ -50,12 +58,14 @@ function resolveBinary(name: string): string | null {
     );
   }
 
+  // nosemgrep: javascript.lang.security.detect-child-process
   const which = spawnSync("which", [name], { encoding: "utf-8" });
   if (which.status === 0) {
     const found = which.stdout.trim();
     if (found) return found;
   }
 
+  // nosemgrep: javascript.lang.security.detect-child-process
   const probe = spawnSync(name, ["-version"], { stdio: "ignore" });
   if (probe.status === 0) return name;
 

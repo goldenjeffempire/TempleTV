@@ -1,0 +1,36 @@
+# Build artifacts and third-party dependencies should never be in the
+# security-scan baseline — vulnerabilities in node_modules are tracked by
+# the dependency audit (osv-scanner), not SAST, and minified third-party
+# bundles in build outputs (e.g. shaka-player in expo's web-dist) trigger
+# coincidental regex matches against credential-detection rules. Keeping
+# these out of scope makes the SAST baseline meaningful — every finding
+# that surfaces is either real, in our code, or a known false positive
+# explicitly suppressed at the source line with `nosemgrep:<rule-id>`.
+
+# JS / TS dependencies
+node_modules/
+**/node_modules/
+
+# Build outputs
+**/dist/
+**/build/
+**/.next/
+**/web-dist/
+**/web-build/
+**/.expo/
+
+# Source maps and minified bundles
+**/*.min.js
+**/*.bundle.js
+**/*.map
+
+# TypeScript build info
+**/*.tsbuildinfo
+
+# Test snapshots and coverage
+**/coverage/
+**/__snapshots__/
+
+# Local logs and artifacts
+.local/logs/
+/tmp/
