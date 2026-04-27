@@ -3,7 +3,6 @@ import {
   Animated,
   Dimensions,
   Easing,
-  Image,
   Modal,
   Platform,
   Pressable,
@@ -16,6 +15,7 @@ import { Feather } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
+import { Logo } from "@/components/Logo";
 import { useAuth } from "@/context/AuthContext";
 
 /**
@@ -132,11 +132,7 @@ export function AuthGateModal() {
               end={{ x: 1, y: 1 }}
               style={styles.heroGradient}
             />
-            <Image
-              source={require("@/assets/images/logo.png")}
-              style={styles.logo}
-              resizeMode="contain"
-            />
+            <Logo style={styles.logo} />
           </View>
 
           <Pressable

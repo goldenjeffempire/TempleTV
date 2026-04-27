@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useState } from "react";
 import {
   Alert,
   Animated,
-  Image,
   Linking,
   Platform,
   Pressable,
@@ -17,6 +16,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
 import { GlassCard } from "@/components/GlassCard";
+import { Logo } from "@/components/Logo";
 import { usePlayer } from "@/context/PlayerContext";
 import { useWatchHistory } from "@/hooks/useWatchHistory";
 import { useFavorites } from "@/hooks/useFavorites";
@@ -205,11 +205,7 @@ export default function SettingsScreen() {
         <Text style={[styles.header, { color: c.foreground }]}>Settings</Text>
 
         <GlassCard style={styles.profileCard} intensity="high">
-          <Image
-            source={require("@/assets/images/logo.png")}
-            style={styles.logoImage}
-            resizeMode="contain"
-          />
+          <Logo style={styles.logoImage} />
           <View style={styles.profileInfo}>
             <Text style={[styles.profileName, { color: c.foreground }]}>Temple TV</Text>
             <Text style={[styles.profileSub, { color: c.mutedForeground }]}>

@@ -52,7 +52,17 @@
     <meta name="twitter:image" content="https://templetv.org.ng/og-image.png" />
 
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="alternate icon" type="image/png" href="/temple-tv-logo.png" />
+    <link rel="apple-touch-icon" href="/temple-tv-logo.png" />
+    <link rel="mask-icon" href="/favicon.svg" color="#E11D48" />
     <link rel="manifest" href="/manifest.webmanifest" />
+
+    <!-- Preload the brand mark so the splash fallback and Home hero
+         paint the logo with the very first frame instead of flashing
+         a blank box first. `as=image` is the spec-correct hint for
+         critical above-the-fold images; `fetchpriority=high` ensures
+         it jumps the queue ahead of secondary thumbnail data. -->
+    <link rel="preload" as="image" href="/temple-tv-logo.png" fetchpriority="high" />
 
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

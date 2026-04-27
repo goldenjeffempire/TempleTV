@@ -11,7 +11,25 @@
     <meta name="bingbot" content="noindex, nofollow" />
     <meta name="referrer" content="no-referrer" />
 
+    <!--
+      Vite rewrites root-absolute asset paths to be `base`-prefixed during
+      build, so `/temple-tv-logo.png` becomes `/admin/temple-tv-logo.png`
+      in production where the admin app is mounted under `/admin/`. Using
+      a root-absolute path keeps the source identical between dev (`base=/`)
+      and prod (`base=/admin/`) without any branching here.
+    -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="alternate icon" type="image/png" href="/temple-tv-logo.png" />
+    <link rel="apple-touch-icon" href="/temple-tv-logo.png" />
+    <link rel="mask-icon" href="/favicon.svg" color="#E11D48" />
+
+    <!-- Preload the brand mark so the sidebar header and auth-gate hero
+         paint with the very first frame instead of flashing a blank box.
+         The admin sidebar is the first surface every operator sees on
+         every page navigation, so this preload pays off across the
+         whole admin session. -->
+    <link rel="preload" as="image" href="/temple-tv-logo.png" fetchpriority="high" />
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />

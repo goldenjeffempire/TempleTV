@@ -11,7 +11,6 @@ import {
   TextInput,
   View,
   ActivityIndicator,
-  Image,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
@@ -20,6 +19,7 @@ import { Feather } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
 import { useAuth } from "@/context/AuthContext";
 import { apiLogin } from "@/services/authApi";
+import { Logo } from "@/components/Logo";
 import { usePageSeo } from "@/hooks/usePageSeo";
 
 function AnimatedInput({
@@ -198,11 +198,7 @@ export default function LoginScreen() {
             ]}
           >
             <View style={styles.logoWrap}>
-              <Image
-                source={require("@/assets/images/logo.png")}
-                style={styles.logo}
-                resizeMode="contain"
-              />
+              <Logo style={styles.logo} />
               <View style={styles.dividerLine} />
             </View>
 

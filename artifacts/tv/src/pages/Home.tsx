@@ -206,7 +206,7 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
         }}
       >
         <div style={{ pointerEvents: "auto" }}>
-          <TempleTvLogo size={44} withWordmark />
+          <TempleTvLogo size={44} variant="wordmark" priority />
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 10, pointerEvents: "auto" }}>

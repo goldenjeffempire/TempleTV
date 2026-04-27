@@ -2,6 +2,7 @@ import { Suspense, lazy, useCallback, useState } from "react";
 import type { VideoItem } from "./lib/api";
 import { usePlatformInit } from "./hooks/usePlatformInit";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { TempleTvLogo } from "./components/TempleTvLogo";
 
 const Home = lazy(() => import("./pages/Home").then((m) => ({ default: m.Home })));
 const TVGuide = lazy(() => import("./pages/TVGuide").then((m) => ({ default: m.TVGuide })));
@@ -21,12 +22,23 @@ function getInitialScreen(): Screen {
   return "home";
 }
 
+/**
+ * Splash fallback shown while a lazy-loaded route bundle is downloading
+ * (cold visit, route switch, slow Smart-TV CPU). Renders the actual brand
+ * mark instead of just a spinner + uppercase text — the logo is preloaded
+ * via the `<link rel="preload">` in `index.html`, so this paints with the
+ * very first frame of the SPA, not after a network round-trip.
+ *
+ * The spinner sits *under* the wordmark so the screen reads "Temple TV
+ * is loading" at a glance, exactly the same way the YouTube TV / Netflix
+ * splash screens establish brand identity before any content arrives.
+ */
 function SplashFallback() {
   return (
     <div className="min-h-screen w-full flex items-center justify-center bg-black text-white">
-      <div className="flex flex-col items-center gap-4">
-        <div className="h-12 w-12 rounded-full border-4 border-white/20 border-t-white animate-spin" />
-        <div className="text-sm tracking-widest opacity-70 uppercase">Temple TV</div>
+      <div className="flex flex-col items-center gap-6">
+        <TempleTvLogo size={56} variant="wordmark" priority />
+        <div className="h-10 w-10 rounded-full border-4 border-white/20 border-t-white animate-spin" />
       </div>
     </div>
   );

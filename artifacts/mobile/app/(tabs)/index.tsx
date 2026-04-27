@@ -20,6 +20,7 @@ import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
+import { Logo } from "@/components/Logo";
 import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
 import { useNetworkStatus } from "@/hooks/useNetworkStatus";
 import { LiveBadge } from "@/components/LiveBadge";
@@ -588,11 +589,7 @@ export default function WatchScreen() {
                 ) : (
                   /* Off-air: branded gradient backdrop with subtle logo */
                   <View style={[StyleSheet.absoluteFill, styles.heroBrandedBg]}>
-                    <Image
-                      source={require("@/assets/images/logo.png")}
-                      style={styles.heroLogoWatermark}
-                      resizeMode="contain"
-                    />
+                    <Logo style={styles.heroLogoWatermark} decorative />
                   </View>
                 )}
               </View>
@@ -623,11 +620,7 @@ export default function WatchScreen() {
               {/* ── Floating Header ── */}
               <View style={[styles.heroHeader, { paddingTop: topPad + 10 }]}>
                 <View style={styles.headerLogoWrap}>
-                  <Image
-                    source={require("@/assets/images/logo.png")}
-                    style={styles.headerLogo}
-                    resizeMode="contain"
-                  />
+                  <Logo style={styles.headerLogo} />
                   <View style={styles.logoMeta}>
                     <Text style={styles.heroSubtitle}>JCTM Broadcasting</Text>
                     {isFromRss && !feedError && (
