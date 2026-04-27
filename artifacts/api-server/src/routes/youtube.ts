@@ -1609,10 +1609,39 @@ export function startYoutubeCatalogueScheduler() {
     catalogueSyncTimer = setTimeout(tick, CATALOGUE_SYNC_INTERVAL_MS);
     catalogueSyncTimer.unref();
   };
-  // Kick off first run immediately on startup; subsequent runs every interval.
+
+  // Wait for the distributed cache to come ready before the first tick
+  // (max ~10 s of polling). Without this gate the very first sync ran
+  // BEFORE PgCache.init() resolved — so when the YouTube quota gate fired
+  // its `sendOpsAlert` with a 24 h dedupKey, the dedup write went only to
+  // the in-memory L1 (PgCache.set was a silent no-op while !ready). On the
+  // next process restart (Render OOM-kill or rolling deploy), the in-memory
+  // dedup was gone and the same WARN re-fired. Production logs at
+  // 2026-04-27T15:08-15:23 show the same "YouTube Data API quota exhausted"
+  // + "Ops alert raised but no channels configured" pair logged on FIVE
+  // consecutive cold starts despite the 24 h dedup TTL — root cause was
+  // this boot race, not a bug in the dedup itself.
   if (catalogueSyncTimer) clearTimeout(catalogueSyncTimer);
-  catalogueSyncTimer = setTimeout(tick, 0);
-  catalogueSyncTimer.unref();
+  const startedAt = Date.now();
+  const MAX_WAIT_MS = 10_000;
+  const waitForCache = () => {
+    if (cache.isPgCacheActive() || cache.isRedisActive()) {
+      catalogueSyncTimer = setTimeout(tick, 0);
+      catalogueSyncTimer.unref();
+      return;
+    }
+    if (Date.now() - startedAt >= MAX_WAIT_MS) {
+      // Cache never came ready — proceed anyway. Dedup will fall back to
+      // in-memory only (re-warn risk on next cold start), but a single
+      // WARN line beats blocking YouTube sync forever on a degraded DB.
+      catalogueSyncTimer = setTimeout(tick, 0);
+      catalogueSyncTimer.unref();
+      return;
+    }
+    catalogueSyncTimer = setTimeout(waitForCache, 200);
+    catalogueSyncTimer.unref();
+  };
+  waitForCache();
   logger.info({ intervalMs: CATALOGUE_SYNC_INTERVAL_MS }, "[YouTubeSync] Scheduler started");
 }
 

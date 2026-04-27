@@ -137,7 +137,7 @@ services:
       pnpm install --frozen-lockfile --prefer-offline && \
       pnpm run typecheck:libs && \
       pnpm --filter @workspace/api-server run build
-    startCommand: pnpm --filter @workspace/api-server run start
+    startCommand: pnpm --filter @workspace/api-server run start:prod
 
     # ── Health check ───────────────────────────────────────────────────────
     # `/api/healthz` returns:
@@ -173,12 +173,23 @@ services:
       - key: MALLOC_ARENA_MAX
         value: "2"
 
-      # Layer 2: hard V8 heap cap at 1.5 GiB. Forces aggressive GC well
-      # before the 2 GiB cgroup ceiling. `--max-http-header-size=16384`
-      # accommodates Render's LB header sizes without bloating per-connection
-      # buffers. Source maps stay enabled for production stack traces.
+      # Layer 2: hard V8 heap cap at 1.25 GiB. Forces aggressive GC well
+      # before the 2 GiB cgroup ceiling AND leaves ~750 MiB of headroom for
+      # `external` memory (off-heap Buffers held by AWS SDK keep-alive,
+      # zlib/compression, multer parsing, pino transport, pg pool). Production
+      # logs at 2026-04-27T15:08:20Z showed the previous 1536 MiB cap was
+      # racing the OOM-killer when external memory transiently hit 675 MiB
+      # (heapMax 1536 + external 675 ≈ 2211 MiB > 2 GiB cgroup → SIGKILL,
+      # observed as silent restarts every 2-10 min with no shutdown log).
+      # 1280 MiB heap + ≤700 MiB external + ≤70 MiB stacks/code stays under
+      # 2 GiB even at peak. `--max-http-header-size=16384` accommodates
+      # Render's LB header sizes without bloating per-connection buffers.
+      # Source maps DELIBERATELY DISABLED in production: Sentry remaps stack
+      # traces server-side against the uploaded source map (see instrument.mjs)
+      # so `--enable-source-maps` adds ~5 MiB heap pressure on cold start
+      # without any operator-visible benefit.
       - key: NODE_OPTIONS
-        value: "--max-old-space-size=1536 --max-http-header-size=16384"
+        value: "--max-old-space-size=1280 --max-http-header-size=16384"
 
       # Layer 3: observability. WARN at 1.4 GiB so we get actionable lead
       # time before any kernel intervention. Logged structurally to Sentry
