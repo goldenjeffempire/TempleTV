@@ -150,6 +150,256 @@ function computeRecoveryStats(): {
   return { recoveriesByPlatform: by, recoveryRatePerMin };
 }
 
+// ---------------------------------------------------------------------------
+// Broken-item skip telemetry — Mission Control feed
+// ---------------------------------------------------------------------------
+//
+// The mobile player's `handleBroadcastError` runs a 2-in-30s broken-item gate:
+// when the same broadcast queue item fails to load twice within 30 seconds AND
+// the device is online, the player jumps locally to the up-next item rather
+// than looping on a 404 / corrupt manifest. That gate has been silently saving
+// viewer experience since 2026-04-26, but operators had no way to SEE it
+// firing in production — which means dead assets sat in the broadcast queue
+// indefinitely (every viewer hit them, skipped past them locally, but the
+// queue itself was never cleaned up and the underlying root cause — usually
+// "Render's ephemeral disk evicted the file before S3 mirroring caught up" —
+// stayed invisible).
+//
+// This module captures every gate firing into two complementary structures:
+//
+//   1. `skipEvents`          — bounded ring buffer of the most recent N events
+//                              (timestamp, platform, videoId, title, reason).
+//                              Powers the "Recent skips" timeline in the admin
+//                              dashboard and any forensic "what skipped at
+//                              09:42?" investigation.
+//   2. `skipAggregatesById`  — Map<videoId → {count, title, lastSeenAt,
+//                              lastReason, platforms}> rolled up over the
+//                              full retention window. Powers the "Top
+//                              offenders" leaderboard so operators can
+//                              triage the highest-impact assets first.
+//
+// Retention: 7 days OR 2000 events, whichever bound trips first. 7 days
+// covers a full weekly programming cycle (so operators see "this Tuesday's
+// 9pm slot has skipped 18 times" patterns), and the 2000-event hard cap
+// keeps memory bounded under a misconfigured-client storm. Each event is
+// ~200 bytes → max ~400 KB resident, trivial.
+//
+// Privacy: we deliberately do NOT record viewer device IDs, IPs, or any
+// per-user attribute. The signal is asset-quality and platform-mix, both
+// aggregate-only. Same posture as the existing recovery counter.
+
+const SKIP_EVENTS_MAX = 2000;
+const SKIP_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+interface SkipEvent {
+  ts: number;
+  platform: SSEPlatform;
+  videoId: string;
+  videoTitle: string | null;
+  reason: string;
+}
+
+interface SkipAggregate {
+  videoId: string;
+  videoTitle: string | null;
+  count: number;
+  firstSeenAt: number;
+  lastSeenAt: number;
+  lastReason: string;
+  platforms: Record<SSEPlatform, number>;
+}
+
+const skipEvents: SkipEvent[] = [];
+const skipAggregatesById = new Map<string, SkipAggregate>();
+
+function decrementAggregateFor(evicted: SkipEvent): void {
+  // Bookkeeping helper used by both eviction paths (age cutoff + hard cap):
+  // when an event leaves the ring buffer, decrement its aggregate's count
+  // and platform-split, and drop the aggregate entry entirely once it hits
+  // zero so the Map doesn't accumulate dead videoIds forever.
+  const agg = skipAggregatesById.get(evicted.videoId);
+  if (!agg) return;
+  agg.count -= 1;
+  const platCount = agg.platforms[evicted.platform];
+  if (typeof platCount === "number" && platCount > 0) {
+    agg.platforms[evicted.platform] = platCount - 1;
+  }
+  if (agg.count <= 0) skipAggregatesById.delete(evicted.videoId);
+}
+
+function trimSkipEvents(now: number): void {
+  // Drop anything past the retention window. The buffer is append-only and
+  // ordered by insertion time, so a single from-the-front shift loop is the
+  // cheapest way to maintain the invariant without a heap.
+  const cutoff = now - SKIP_RETENTION_MS;
+  while (skipEvents.length > 0 && skipEvents[0]!.ts < cutoff) {
+    decrementAggregateFor(skipEvents.shift()!);
+  }
+  // Hard-cap the ring buffer regardless of timestamps — protects against a
+  // misbehaving client flooding the endpoint inside the retention window.
+  while (skipEvents.length > SKIP_EVENTS_MAX) {
+    decrementAggregateFor(skipEvents.shift()!);
+  }
+}
+
+export function recordSkipEvent(input: {
+  platform: unknown;
+  videoId: unknown;
+  videoTitle?: unknown;
+  reason?: unknown;
+}): void {
+  // Validate inputs strictly — telemetry endpoints are the easiest place for
+  // a misbehaving client to inject garbage that pollutes operator dashboards.
+  if (typeof input.videoId !== "string") return;
+  const videoId = input.videoId.trim();
+  if (videoId.length === 0 || videoId.length > 128) return;
+
+  const platform: SSEPlatform =
+    input.platform === "tv" || input.platform === "mobile" || input.platform === "admin"
+      ? input.platform
+      : "unknown";
+
+  const rawTitle = typeof input.videoTitle === "string" ? input.videoTitle.trim() : "";
+  // Cap title to a reasonable display length — broadcast item titles are
+  // already short (~80 chars), but we don't want a bug to push 10 KB strings.
+  const videoTitle = rawTitle.length === 0 ? null : rawTitle.slice(0, 200);
+
+  const rawReason = typeof input.reason === "string" ? input.reason.trim() : "";
+  // Reasons are agent-emitted ("broken-item-skip", "decode-error", etc.) so
+  // a small allowed alphabet + length cap is sufficient sanitation.
+  const reason = rawReason.length === 0
+    ? "unspecified"
+    : rawReason.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 64) || "unspecified";
+
+  const now = Date.now();
+  const event: SkipEvent = { ts: now, platform, videoId, videoTitle, reason };
+  skipEvents.push(event);
+
+  // Update or create the aggregate. We keep the freshest title we've seen
+  // (operators usually rename queue items as they investigate, and the
+  // most-recent title is the most actionable one).
+  const existing = skipAggregatesById.get(videoId);
+  if (existing) {
+    existing.count += 1;
+    existing.lastSeenAt = now;
+    existing.lastReason = reason;
+    if (videoTitle) existing.videoTitle = videoTitle;
+    existing.platforms[platform] = (existing.platforms[platform] ?? 0) + 1;
+  } else {
+    skipAggregatesById.set(videoId, {
+      videoId,
+      videoTitle,
+      count: 1,
+      firstSeenAt: now,
+      lastSeenAt: now,
+      lastReason: reason,
+      platforms: {
+        tv: platform === "tv" ? 1 : 0,
+        mobile: platform === "mobile" ? 1 : 0,
+        admin: platform === "admin" ? 1 : 0,
+        unknown: platform === "unknown" ? 1 : 0,
+      },
+    });
+  }
+
+  trimSkipEvents(now);
+}
+
+export interface SkipTelemetrySnapshot {
+  /** Server time when the snapshot was generated, for client-side age math. */
+  generatedAt: number;
+  /** Total skips in three rolling windows — quick at-a-glance trend signal. */
+  totals: { lastHour: number; last24h: number; last7d: number };
+  /** Per-platform splits over the full 7-day retention window. */
+  byPlatform: Record<SSEPlatform, number>;
+  /** Reason histogram over the full retention window. */
+  byReason: Record<string, number>;
+  /**
+   * Highest-skip-count assets (descending by count). Capped at 25 so the JSON
+   * payload stays under 10 KB even at peak retention. Operator drills into
+   * the queue page for full forensics.
+   */
+  topVideos: Array<{
+    videoId: string;
+    videoTitle: string | null;
+    count: number;
+    lastSeenAt: number;
+    lastReason: string;
+  }>;
+  /** Most recent N events (newest first). Capped at 50 for the timeline view. */
+  recent: Array<{
+    ts: number;
+    platform: SSEPlatform;
+    videoId: string;
+    videoTitle: string | null;
+    reason: string;
+  }>;
+  /** Total events currently in the ring buffer (informational). */
+  bufferSize: number;
+  /** Hard cap on the ring buffer (informational, helps spot saturation). */
+  bufferCap: number;
+}
+
+export function getSkipTelemetrySnapshot(): SkipTelemetrySnapshot {
+  const now = Date.now();
+  trimSkipEvents(now);
+
+  const HOUR = 60 * 60 * 1000;
+  const DAY = 24 * HOUR;
+  const WEEK = 7 * DAY;
+
+  let lastHour = 0;
+  let last24h = 0;
+  let last7d = 0;
+  const byPlatform: Record<SSEPlatform, number> = { tv: 0, mobile: 0, admin: 0, unknown: 0 };
+  const byReason: Record<string, number> = {};
+
+  for (const ev of skipEvents) {
+    const age = now - ev.ts;
+    if (age < HOUR) lastHour += 1;
+    if (age < DAY) last24h += 1;
+    if (age < WEEK) last7d += 1;
+    byPlatform[ev.platform] += 1;
+    byReason[ev.reason] = (byReason[ev.reason] ?? 0) + 1;
+  }
+
+  const topVideos = Array.from(skipAggregatesById.values())
+    .sort((a, b) => b.count - a.count || b.lastSeenAt - a.lastSeenAt)
+    .slice(0, 25)
+    .map((a) => ({
+      videoId: a.videoId,
+      videoTitle: a.videoTitle,
+      count: a.count,
+      lastSeenAt: a.lastSeenAt,
+      lastReason: a.lastReason,
+    }));
+
+  // Recent timeline = newest 50 events, ordered newest-first. We slice from
+  // the end of the ring buffer (already chronological) and reverse, which is
+  // O(50) regardless of buffer size — no full sort needed.
+  const recent = skipEvents
+    .slice(-50)
+    .reverse()
+    .map((ev) => ({
+      ts: ev.ts,
+      platform: ev.platform,
+      videoId: ev.videoId,
+      videoTitle: ev.videoTitle,
+      reason: ev.reason,
+    }));
+
+  return {
+    generatedAt: now,
+    totals: { lastHour, last24h, last7d },
+    byPlatform,
+    byReason,
+    topVideos,
+    recent,
+    bufferSize: skipEvents.length,
+    bufferCap: SKIP_EVENTS_MAX,
+  };
+}
+
 function computeDroppedFrameRate(): {
   droppedFrameRate: number | null;
   decodedFramesWindow: number;
