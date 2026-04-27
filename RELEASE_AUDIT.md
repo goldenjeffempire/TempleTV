@@ -783,11 +783,11 @@ had trusted the subagent verbatim.
 
 **Observed latency after fix:** <300 ms (one round-trip from admin POST to SSE push to hero re-render).
 
-### §15 — Deferred (separate follow-up)
+### §15 — Deferred (separate follow-up) — RESOLVED in §16
 
 | Severity | Finding | Location | Notes |
 | -------- | ------- | -------- | ----- |
-| Medium | Radio "pure-live mode" produces silent iframe | `mobile/components/PersistentAudioPlayer.tsx:32` | Sets `videoId = isLive ? undefined : currentSermon?.youtubeId` and does NOT pass `channelHandle` to `YoutubePlayer`. Per `YoutubePlayer.buildEmbedUrl()` line 72-74, no `videoId` and no `channelHandle` → empty `src=""`. When the user is in radio context with no sermon and a live broadcast becomes active, the persistent audio surface produces no audio. Need to read `PlayerContext` + radio screen to determine intended behavior (suppress in pure-live? thread the live videoId through?) before patching. **Not user-reported broken** — likely the early-return at line 29 should be tightened to `if (!currentSermon) return null;` if pure-live audio is meant to come from `/player` only. Defer until verified against PlayerContext semantics. |
+| ~~Medium~~ **RESOLVED** | Radio "pure-live mode" produces silent iframe | `mobile/components/PersistentAudioPlayer.tsx:32` | Original deferred analysis kept for context. Verified against `PlayerContext` + `LiveBroadcastSupervisor` + `radio.tsx` semantics and fixed as documented in §16 below — the early-return tightening to `if (!currentSermon) return null;` was the right call. |
 
 ## §16 — Radio pure-live silent-iframe fix (Apr 27)
 
