@@ -311,12 +311,21 @@ export default function PlayerScreen() {
   // Sizing: broadcast/live gets a slightly taller container (11:16 ≈ cinema 4:3)
   // so the video dominates more of the screen without requiring landscape rotation.
   const isBroadcastOrLiveForSizing = isLive || isBroadcastMode;
-  const heightCapRatio = isDesktop ? 0.7 : isTablet ? (isBroadcastOrLiveForSizing ? 0.65 : 0.55) : (isBroadcastOrLiveForSizing ? 0.52 : 0.45);
+  // Round 10 (TV-station full-screen): broadcast/live takes the entire
+  // viewport — no aspect-ratio cap, no leftover off-white chrome below.
+  // The video element internally uses `coverMode={true}` so portrait
+  // letterboxing is replaced with center-cover crop, exactly how a TV
+  // channel fills a phone screen in landscape orientation. VOD playback
+  // keeps the existing responsive 16:9 cap so metadata stays visible
+  // below the fold.
+  const heightCapRatio = isDesktop ? 0.7 : isTablet ? 0.55 : 0.45;
   const aspectRatioH = isBroadcastOrLiveForSizing ? 11 : 9;
-  const videoPlayerHeight = Math.min(
-    Math.round(playerColumnWidth * (aspectRatioH / 16)),
-    Math.round(availableHeight * heightCapRatio),
-  );
+  const videoPlayerHeight = isBroadcastOrLiveForSizing
+    ? screenHeight
+    : Math.min(
+        Math.round(playerColumnWidth * (aspectRatioH / 16)),
+        Math.round(availableHeight * heightCapRatio),
+      );
 
   const noPlaybackRef = useRef(false);
   useEffect(() => {
@@ -1146,6 +1155,15 @@ export default function PlayerScreen() {
   const showSeekBar = !isLive && !isBroadcastMode && duration > 0;
   const showVolume = !isLive && Platform.OS === "web";
   const isBroadcastOrLive = isLive || isBroadcastMode;
+  // Round 10 (TV-station full-screen): in broadcast/live mode the video
+  // fills the ENTIRE viewport — no off-white chrome below the player, no
+  // top safe-area light spacer above it. The interactive bar (LIVE chip /
+  // viewers / reactions / chat / prayer / share) floats over the video as
+  // an absolute overlay above the home-bar safe area, exactly how a real
+  // TV station's on-screen graphics are composited. VOD playback keeps the
+  // existing scrollable metadata layout — the cap below only applies
+  // outside of broadcast/live.
+  const fullScreenPlayer = isBroadcastOrLive;
 
   // ── Live-mode failure escalation (mobile twin of TV LiveYouTubePlayer) ──
   // When the YouTube live iframe gives up here in the full-screen player,
@@ -1233,11 +1251,21 @@ export default function PlayerScreen() {
   }, []);
 
   return (
-    <View style={[styles.container, { backgroundColor: c.background }]}>
-      {Platform.OS !== "web" && <StatusBar barStyle="dark-content" backgroundColor={LIGHT_PAGE_BG} />}
+    <View style={[styles.container, { backgroundColor: fullScreenPlayer ? "#000" : c.background }]}>
+      {Platform.OS !== "web" && (
+        <StatusBar
+          barStyle={fullScreenPlayer ? "light-content" : "dark-content"}
+          backgroundColor={fullScreenPlayer ? "#000" : LIGHT_PAGE_BG}
+          translucent={fullScreenPlayer}
+        />
+      )}
 
-      {/* Light safe-area spacer — keeps video below notch / Dynamic Island */}
-      {Platform.OS !== "web" && insets.top > 0 && (
+      {/* Light safe-area spacer — keeps video below notch / Dynamic Island.
+          Skipped in broadcast/live mode where the video is composited under
+          the status bar (TV-station full-screen) and the back button + LIVE
+          badge ride above the notch via `topGradient`'s native inset
+          padding below. */}
+      {Platform.OS !== "web" && insets.top > 0 && !fullScreenPlayer && (
         <View style={{ height: insets.top, backgroundColor: LIGHT_PAGE_BG }} />
       )}
 
@@ -1347,7 +1375,20 @@ export default function PlayerScreen() {
         <LinearGradient
           colors={["rgba(13,17,23,0.78)", "rgba(13,17,23,0.32)", "transparent"]}
           locations={[0, 0.55, 1]}
-          style={[styles.topGradient, { paddingTop: webTopPad + 12, pointerEvents: "box-none" }]}
+          style={[
+            styles.topGradient,
+            {
+              // In TV-station full-screen mode there's no LIGHT_PAGE_BG safe-
+              // area spacer above us, so the back button + LIVE badge would
+              // collide with the notch / Dynamic Island. Add the native
+              // `insets.top` here so the chrome rides above the system UI
+              // exactly as a real broadcaster's lower-third does. Web keeps
+              // the existing 67px nav-bar offset; non-broadcast VOD playback
+              // still has the spacer above and only needs the 12px breath.
+              paddingTop: webTopPad + (fullScreenPlayer && Platform.OS !== "web" ? insets.top : 0) + 12,
+              pointerEvents: "box-none",
+            },
+          ]}
         >
           <View style={styles.topControls}>
             <Pressable
@@ -1413,54 +1454,71 @@ export default function PlayerScreen() {
           slim prompt above the bar so guests still see the conversion
           opportunity without crowding the new bar. */}
       {isBroadcastOrLive ? (
-        <View style={[styles.broadcastInteractiveSurface]}>
+        <View style={styles.broadcastInteractiveSurface} pointerEvents="box-none">
           {/* Persistent emoji burst overlay so reactions visibly land
               even when the sheet is closed. The bar's heart icon also
-              pulses via reactionPulseKey. */}
+              pulses via reactionPulseKey. Pinned to the lower portion of
+              the video so bursts read against the broadcast frame instead
+              of crowding the LIVE badge in the chrome. */}
           <LiveReactions
             latestIncoming={latestReaction}
             containerWidth={screenWidth}
           />
 
-          {/* Optional, dismissible signup nudge — slim card above the bar */}
-          {!isLoggedIn && !nudgeDismissed && (
-            <Pressable
-              style={[
-                styles.signupNudge,
-                styles.signupNudgeOverBar,
-                { backgroundColor: "rgba(106,13,173,0.15)", borderColor: "rgba(106,13,173,0.3)" },
-              ]}
-              onPress={() => {
-                openAuthGate({
-                  pathname: "/player",
-                  params: Object.fromEntries(
-                    Object.entries(routeParams).filter((e): e is [string, string] => typeof e[1] === "string"),
-                  ),
-                  reason: "Sign up free to save your watch history and never miss a live service.",
-                });
-              }}
-            >
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.nudgeTitle, { color: c.foreground }]}>Save your watch history</Text>
-                <Text style={[styles.nudgeSub, { color: c.mutedForeground }]}>Create a free account — takes 30 seconds</Text>
-              </View>
-              <Pressable onPress={(e) => { e.stopPropagation(); setNudgeDismissed(true); }} hitSlop={12}>
-                <Feather name="x" size={18} color={c.mutedForeground} />
+          {/* Round 10: bottom-anchored floating overlay (signup nudge +
+              sticky live bar). Sits ABOVE the full-screen video as a
+              translucent layer so the broadcast continues edge-to-edge
+              behind it — exactly how a real TV station composites its
+              lower-third over a live program. The soft top-fade gradient
+              guarantees legibility on bright shots without putting a hard
+              edge against the video. */}
+          <LinearGradient
+            colors={["transparent", "rgba(0,0,0,0.55)", "rgba(0,0,0,0.85)"]}
+            locations={[0, 0.55, 1]}
+            style={styles.broadcastBottomOverlay}
+            pointerEvents="box-none"
+          >
+            {/* Optional, dismissible signup nudge — slim card above the bar */}
+            {!isLoggedIn && !nudgeDismissed && (
+              <Pressable
+                style={[
+                  styles.signupNudge,
+                  styles.signupNudgeOverBar,
+                  { backgroundColor: "rgba(106,13,173,0.55)", borderColor: "rgba(255,255,255,0.18)" },
+                ]}
+                onPress={() => {
+                  openAuthGate({
+                    pathname: "/player",
+                    params: Object.fromEntries(
+                      Object.entries(routeParams).filter((e): e is [string, string] => typeof e[1] === "string"),
+                    ),
+                    reason: "Sign up free to save your watch history and never miss a live service.",
+                  });
+                }}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.nudgeTitle, { color: "#FFFFFF" }]}>Save your watch history</Text>
+                  <Text style={[styles.nudgeSub, { color: "rgba(255,255,255,0.78)" }]}>Create a free account — takes 30 seconds</Text>
+                </View>
+                <Pressable onPress={(e) => { e.stopPropagation(); setNudgeDismissed(true); }} hitSlop={12}>
+                  <Feather name="x" size={18} color="rgba(255,255,255,0.78)" />
+                </Pressable>
               </Pressable>
-            </Pressable>
-          )}
+            )}
 
-          {/* Sticky bottom bar — always visible during live playback. */}
-          <View style={{ paddingBottom: insets.bottom }}>
-            <BroadcastLiveBar
-              viewers={liveViewers}
-              isLive={isBroadcastOrLive}
-              onOpenSheet={handleOpenSheet}
-              onSendReaction={handleSendReaction}
-              onShare={handleShare}
-              reactionPulseKey={reactionPulseKey}
-            />
-          </View>
+            {/* Sticky bottom bar — always visible during live playback,
+                lifted above the home-bar safe area. */}
+            <View style={{ paddingBottom: insets.bottom }}>
+              <BroadcastLiveBar
+                viewers={liveViewers}
+                isLive={isBroadcastOrLive}
+                onOpenSheet={handleOpenSheet}
+                onSendReaction={handleSendReaction}
+                onShare={handleShare}
+                reactionPulseKey={reactionPulseKey}
+              />
+            </View>
+          </LinearGradient>
         </View>
       ) : (
         /* ── VOD: standard scrollable metadata + controls section ── */
@@ -1792,17 +1850,33 @@ const styles = StyleSheet.create({
     marginBottom: 6,
     paddingVertical: 10,
   },
-  // Wrapper for the new live-interaction surface (signup nudge + sticky
-  // BroadcastLiveBar). `flex:1` lets it fill the residual chrome height
-  // below the player so the bar genuinely sticks to the bottom on every
-  // form factor (phone / tablet / desktop web). The transparent
-  // background defers to the page background — the bar paints its own.
+  // Round 10 (TV-station full-screen): the live-interaction surface is no
+  // longer a flex sibling that consumes residual chrome height below the
+  // player — that approach left a strip of off-white background under the
+  // video. Instead it's an absolute-positioned passthrough host that
+  // anchors floating overlays (signup nudge + sticky BroadcastLiveBar)
+  // to the BOTTOM of the screen so the video fills the entire viewport
+  // edge-to-edge behind them, exactly like a real broadcaster's lower-
+  // third graphics. `pointerEvents="box-none"` (set on the JSX) lets
+  // taps fall through to the video for areas the bar/nudge don't cover.
   broadcastInteractiveSurface: {
-    flex: 1,
-    justifyContent: "flex-end",
-    backgroundColor: LIGHT_PAGE_BG,
-    borderTopWidth: 1,
-    borderTopColor: LIGHT_DIVIDER,
+    position: "absolute",
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    backgroundColor: "transparent",
+  },
+  // The actual visible overlay panel — gradient-backed for legibility
+  // against any frame the broadcast happens to be on (bright white pulpit
+  // shot, dark sanctuary, animated lower-third). Pinned to the bottom
+  // edge; height is content-driven (signup nudge + bar + safe-area).
+  broadcastBottomOverlay: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingTop: 24,
   },
   nudgeTitle: {
     fontSize: 13,
