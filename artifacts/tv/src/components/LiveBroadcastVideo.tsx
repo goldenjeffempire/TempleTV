@@ -20,6 +20,14 @@ interface LiveBroadcastVideoProps {
   serverTimeMs: number;
   /** Next queued item — preloaded silently into the inactive slot for instant cut-over. */
   nextItem?: NextItemShape | null;
+  /**
+   * Server-authoritative epoch ms when the current item is expected to end.
+   * When provided, the hero performs a proactive client-side cut-over to the
+   * preloaded next item ~200 ms before this boundary, eliminating the visible
+   * "frozen last frame" gap that would otherwise appear while waiting for the
+   * SSE-pushed `item` prop change to arrive.
+   */
+  currentItemEndsAtMs?: number | null;
   onError?: () => void;
 }
 
@@ -63,6 +71,7 @@ export function LiveBroadcastVideo({
   positionSecs,
   serverTimeMs,
   nextItem,
+  currentItemEndsAtMs,
   onError,
 }: LiveBroadcastVideoProps) {
   // Foreground (objectFit: contain) and background (objectFit: cover, blurred)
@@ -130,6 +139,17 @@ export function LiveBroadcastVideo({
   const durationSecs = item?.durationSecs ?? 0;
   const nextUrl = nextItem?.localVideoUrl ?? null;
   const nextDurationSecs = nextItem?.durationSecs ?? 0;
+
+  // ── Proactive cut-over machinery ────────────────────────────────────────
+  // True for the brief window between a client-side proactive swap and the
+  // arrival of the SSE-pushed `item` prop change for the same item. Used by
+  // the active-slot effect to avoid fighting the proactive advance (it
+  // would otherwise see `loadedUrl !== url` and re-trigger a fresh load on
+  // the still-old slot).
+  const proactiveAdvanceLockRef = useRef(false);
+  // Tracks the URL most recently promoted by a proactive advance. The lock
+  // releases as soon as the parent's `url` prop catches up to this value.
+  const proactivePromotedUrlRef = useRef<string | null>(null);
 
   const computeLiveOffset = (durSecs: number): number => {
     const drift = (Date.now() - serverTimeMsRef.current) / 1000;
@@ -269,6 +289,16 @@ export function LiveBroadcastVideo({
   //    scratch and seek to the live offset.
   useEffect(() => {
     if (!url) return;
+
+    // If a proactive advance has already promoted this URL, the active
+    // slot ALREADY shows the new item — release the lock and bail. The
+    // SSE-pushed `url` prop has finally caught up to where we already are.
+    if (proactiveAdvanceLockRef.current && proactivePromotedUrlRef.current === url) {
+      proactiveAdvanceLockRef.current = false;
+      proactivePromotedUrlRef.current = null;
+      return;
+    }
+
     const activeUrl = activeSlot === "A" ? loadedUrlA.current : loadedUrlB.current;
     const inactiveUrl = activeSlot === "A" ? loadedUrlB.current : loadedUrlA.current;
 
@@ -280,7 +310,10 @@ export function LiveBroadcastVideo({
       const newSlot: Slot = activeSlot === "A" ? "B" : "A";
       const newFg = newSlot === "A" ? fgRefA.current : fgRefB.current;
       const newBg = newSlot === "A" ? bgRefA.current : bgRefB.current;
-      // Resync to live offset and resume playback (preloaded slot was paused).
+      // SSE-driven swap: this is a fresh queue advance, so the new item
+      // should start from the very beginning (positionSecs ≈ 0 from the
+      // server). Use computeLiveOffset to honor whatever the server says
+      // is the current playhead — for a freshly-cut item that's ~0.
       if (newFg) {
         try { newFg.currentTime = computeLiveOffset(durationSecs); } catch { /* noop */ }
         newFg.play().catch(() => {});
@@ -301,6 +334,79 @@ export function LiveBroadcastVideo({
     return teardown;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [url, itemId]);
+
+  // ── Proactive cut-over: advance the hero to the preloaded next item ~200 ms
+  //    BEFORE the server's authoritative end-of-item boundary. This eliminates
+  //    the visible "frozen last frame" gap that would otherwise appear while
+  //    waiting for the SSE-pushed `item` prop change to arrive (~100–300 ms
+  //    after the active video hits its last frame, plus another ~100–300 ms of
+  //    HLS end-of-stream dead-air). When the client and server agree on the
+  //    boundary, the hero feels like a real TV channel: a 1-frame cut to the
+  //    next program with no spinner, no black box, no last-frame freeze.
+  //
+  //    The autonomous `onEnded` listener below is the safety net for cases
+  //    where `currentItemEndsAtMs` is missing or wall-clock drift makes the
+  //    proactive timer fire late.
+  const performProactiveAdvance = (reason: "wall-clock" | "ended") => {
+    if (!nextUrl) return false;
+    if (proactiveAdvanceLockRef.current) return false;
+
+    const inactive: Slot = activeSlot === "A" ? "B" : "A";
+    const inactiveLoaded = inactive === "A" ? loadedUrlA.current : loadedUrlB.current;
+    const inactiveReady = inactive === "A" ? readyA.current : readyB.current;
+    // Only swap if the next item is preloaded AND has decoded its first
+    // frame. Otherwise we'd promote a black slot — strictly worse than the
+    // last-frame freeze we're trying to avoid.
+    if (inactiveLoaded !== nextUrl || !inactiveReady) return false;
+
+    const newFg = inactive === "A" ? fgRefA.current : fgRefB.current;
+    const newBg = inactive === "A" ? bgRefA.current : bgRefB.current;
+    // Freshly-cut item starts at second 0. Don't use computeLiveOffset
+    // here — the parent's positionSecs/durationSecs still reflect the OLD
+    // item until the SSE refresh arrives.
+    if (newFg) {
+      try { newFg.currentTime = 0; } catch { /* noop */ }
+      newFg.play().catch(() => {});
+    }
+    if (newBg) {
+      try { newBg.currentTime = 0; } catch { /* noop */ }
+      newBg.play().catch(() => {});
+    }
+    proactiveAdvanceLockRef.current = true;
+    proactivePromotedUrlRef.current = nextUrl;
+    setActiveSlot(inactive);
+    setHasEverShown(true);
+    void reason; // available for future telemetry
+    return true;
+  };
+
+  // Wall-clock-driven proactive advance.
+  useEffect(() => {
+    if (!url || !nextUrl) return;
+    if (!currentItemEndsAtMs || currentItemEndsAtMs <= 0) return;
+    const PROACTIVE_LEAD_MS = 200;
+    const delay = Math.max(0, currentItemEndsAtMs - Date.now() - PROACTIVE_LEAD_MS);
+    // Cap the timer at 2 hours so a stale `currentItemEndsAtMs` (e.g., a
+    // pause by the admin) never schedules a swap arbitrarily far in the
+    // future. The drift loop / next SSE will reschedule.
+    if (delay > 2 * 60 * 60 * 1000) return;
+    const id = window.setTimeout(() => {
+      performProactiveAdvance("wall-clock");
+    }, delay);
+    return () => window.clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [url, nextUrl, currentItemEndsAtMs, activeSlot]);
+
+  // Autonomous `ended` safety net on the active foreground element.
+  useEffect(() => {
+    if (!url) return;
+    const fg = activeSlot === "A" ? fgRefA.current : fgRefB.current;
+    if (!fg) return;
+    const handler = () => { performProactiveAdvance("ended"); };
+    fg.addEventListener("ended", handler);
+    return () => { fg.removeEventListener("ended", handler); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [url, itemId, activeSlot, nextUrl]);
 
   // ── Inactive slot preloader: keeps the upcoming item warm so the queue
   //    advance feels instantaneous. Never seeks past 0 — preloaded media

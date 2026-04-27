@@ -179,6 +179,7 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect }: Li
             positionSecs={broadcastCurrent?.positionSecs ?? 0}
             serverTimeMs={broadcastCurrent?.serverTimeMs ?? Date.now()}
             nextItem={broadcastCurrent?.nextItem ?? null}
+            currentItemEndsAtMs={broadcastCurrent?.currentItemEndsAtMs ?? null}
             onError={() => setBroadcastVideoFailed(true)}
           />
         </>

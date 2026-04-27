@@ -49,6 +49,16 @@ export interface BroadcastCurrent {
   queueLength: number;
   syncedAt: string;
   serverTimeMs: number;
+  /**
+   * Epoch ms when the current item is expected to finish on the server's
+   * authoritative clock. Surfaces the same value `useLiveSync` exposes so
+   * the cinematic hero can perform a client-side proactive advance to the
+   * next item ~200 ms before the SSE arrives — eliminating the visible
+   * "frozen last frame" gap between queue items.
+   */
+  currentItemEndsAtMs?: number | null;
+  /** Epoch seconds when the current item started — companion to the above. */
+  itemStartEpochSecs?: number | null;
   activeSchedule?: {
     id?: string;
     title?: string;

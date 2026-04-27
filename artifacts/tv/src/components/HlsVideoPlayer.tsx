@@ -461,7 +461,7 @@ export function HlsVideoPlayer({
         // Only seek into the future for the active slot. Preload starts at 0
         // and is repositioned on swap by the active-load logic.
         startPosition: mode === "active" && startPositionSecs > 0 ? startPositionSecs : -1,
-        maxBufferLength: isPreload ? 12 : 60,
+        maxBufferLength: isPreload ? 24 : 60,
         maxMaxBufferLength: isPreload ? 24 : 120,
         maxBufferSize: isPreload ? 20 * 1_000 * 1_000 : 60 * 1_000 * 1_000,
         abrEwmaFastLive: 3,
@@ -798,16 +798,22 @@ export function HlsVideoPlayer({
     v.addEventListener("loadeddata", tryPromote);
     v.addEventListener("canplay", tryPromote);
     v.addEventListener("playing", tryPromote);
-    // Safety: if the inactive slot can't get ready within the watchdog
-    // window, fall back to a hard cold-load on the active slot so the
-    // viewer at least sees the new stream (with the veil if needed).
+    // Safety: if the inactive slot can't get ready within a short window,
+    // fall back to a hard cold-load on the active slot so the viewer at
+    // least sees the new stream (with the veil if needed). We keep this
+    // tighter than `LOAD_WATCHDOG_MS` (which is the cold-start budget for
+    // the active slot itself): the active slot is still showing the OLD
+    // program here, so every additional second is a stale-frame freeze
+    // for the viewer. 5 s is long enough for a slow CDN handshake but
+    // short enough that a misconfigured next URL recovers quickly.
+    const PROMOTION_FALLBACK_MS = 5_000;
     const fallback = setTimeout(() => {
       if (done) return;
       if (pendingPromotionUrlRef.current !== target) return;
       done = true;
       pendingPromotionUrlRef.current = null;
       loadIntoSlot(activeSlotRef.current, target, "active");
-    }, LOAD_WATCHDOG_MS);
+    }, PROMOTION_FALLBACK_MS);
     return () => {
       v.removeEventListener("loadeddata", tryPromote);
       v.removeEventListener("canplay", tryPromote);
@@ -891,7 +897,35 @@ export function HlsVideoPlayer({
       markEverShown();
       clearLoadWatchdog();
     };
-    const onTimeUpdate = () => setCurrentTime(video.currentTime);
+    const onTimeUpdate = () => {
+      setCurrentTime(video.currentTime);
+      // ── Pre-emptive seamless cut-over ───────────────────────────────────
+      // The native `ended` event has ~100–300 ms of HLS end-of-stream
+      // dead-air baked in (hls.js drains its internal buffers, the media
+      // element decodes the last sample, fires `ended`, and only then can
+      // we promote the inactive slot). When the inactive slot is already
+      // primed with the *next* queue item, we can promote it ~350 ms BEFORE
+      // the active stream's natural end and the viewer sees a true 1-frame
+      // cut between programs — exactly how broadcast TV feels.
+      if (avplayActiveRef.current) return; // single-engine path, no A/B
+      const dur = video.duration;
+      if (!Number.isFinite(dur) || dur <= 0) return;
+      const remaining = dur - video.currentTime;
+      if (remaining > 0.4) return;
+      const inactive = otherSlot(activeSlotRef.current);
+      const inactiveUrl = getLoadedUrl(inactive);
+      const inactiveVideo = getVideo(inactive);
+      if (!inactiveUrl || !inactiveVideo) return;
+      // Don't pre-empt to the URL we're currently playing — it would just
+      // restart this video. Wait for the SSE-driven hlsUrl change.
+      if (inactiveUrl === getLoadedUrl(activeSlotRef.current)) return;
+      // Inactive must be at least loadable; if it's still warming we let
+      // `ended` (with its dead-air) be the safety net rather than promote
+      // a slot that would immediately show a buffering spinner.
+      if (inactiveVideo.readyState < 2) return;
+      pendingPromotionUrlRef.current = null;
+      swapToInactive();
+    };
     const onDurationChange = () => {
       if (Number.isFinite(video.duration)) setDuration(video.duration);
     };
