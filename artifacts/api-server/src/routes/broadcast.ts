@@ -1,5 +1,5 @@
 import express, { Router } from "express";
-import { recordPlaybackTelemetry } from "../lib/streamHealth";
+import { recordPlaybackTelemetry, recordRecoverEvent } from "../lib/streamHealth";
 import {
   db,
   broadcastQueueTable,
@@ -1136,8 +1136,25 @@ router.get("/broadcast/events", async (req, res) => {
 // running delta every ~5 s. This feeds the dropped-frame field on the
 // stream-health SSE channel — the only metric we genuinely cannot measure on
 // the server.
+//
+// 2026-04-27: same endpoint also accepts a discriminated `event: "recover"`
+// payload (no decoded/dropped fields) marking that a viewer's player took
+// the `recoverBroadcastPlayback()` path. Single endpoint = single CORS rule,
+// single CDN cache exclusion, single rate-limit envelope. The discriminator
+// is checked first so legacy frame-quality clients (which never set `event`)
+// continue to work unmodified — backward compat is the entire point.
 router.post("/broadcast/playback-telemetry", express.json({ limit: "1kb" }), (req, res) => {
-  const body = (req.body ?? {}) as { platform?: unknown; decoded?: unknown; dropped?: unknown };
+  const body = (req.body ?? {}) as {
+    platform?: unknown;
+    event?: unknown;
+    decoded?: unknown;
+    dropped?: unknown;
+  };
+  if (body.event === "recover") {
+    recordRecoverEvent(body.platform);
+    res.status(204).end();
+    return;
+  }
   const decoded = Number(body.decoded);
   const dropped = Number(body.dropped);
   recordPlaybackTelemetry(body.platform, decoded, dropped);

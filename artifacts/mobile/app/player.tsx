@@ -35,7 +35,7 @@ import { usePlayer, usePlayerProgress } from "@/context/PlayerContext";
 import { useAuth } from "@/context/AuthContext";
 import { SERMONS } from "@/data/sermons";
 import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
-import { checkBroadcastCurrent, normalizeBroadcastResult, subscribeBroadcastEvents, type BroadcastCurrentResult, type ReactionType } from "@/services/broadcast";
+import { checkBroadcastCurrent, normalizeBroadcastResult, postBroadcastRecoverEvent, subscribeBroadcastEvents, type BroadcastCurrentResult, type ReactionType } from "@/services/broadcast";
 import { reportLiveFailure, useLiveFailureFor } from "@/services/liveFailureSignal";
 import { BROADCAST_TITLE, BROADCAST_PREACHER } from "@/lib/broadcastIdentity";
 import { ChannelBug } from "@/components/ChannelBug";
@@ -869,6 +869,14 @@ export default function PlayerScreen() {
   const recoverBroadcastPlayback = useCallback(async () => {
     if (!isBroadcastMode || broadcastRecovering) return;
     setBroadcastRecovering(true);
+    // Mark a recovery in the platform-wide telemetry stream the moment we
+    // commit to the recovery path (not after it succeeds). The admin
+    // live-monitor's "Recoveries (60s)" tile reads this rolling 60s window
+    // and lets operators spot a CDN-edge or carrier-wide trouble surge
+    // (e.g. mobile recoveries 0/min → 40/min in 30 s) long before viewers
+    // start churning. Fire-and-forget — never awaited and never throws,
+    // because telemetry must never disturb the recovery itself.
+    void postBroadcastRecoverEvent("mobile");
     try {
       await new Promise((resolve) => setTimeout(resolve, 500));
       const bc = await checkBroadcastCurrent();

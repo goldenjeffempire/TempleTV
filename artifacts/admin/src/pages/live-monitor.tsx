@@ -57,6 +57,8 @@ interface StreamHealthSnapshot {
   decodedFramesWindow: number;
   droppedFramesWindow: number;
   reportingClients: number;
+  recoveriesByPlatform: { tv: number; mobile: number; admin: number; unknown: number };
+  recoveryRatePerMin: number;
   isOnAir: boolean;
   currentTitle: string | null;
   itemUptimeSecs: number;
@@ -338,7 +340,7 @@ function RealtimeStreamHealth({
         )}
       </CardHeader>
       <CardContent>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8 gap-3">
           <HealthMetric
             icon={<Users className="w-3.5 h-3.5" />}
             label="Viewers"
@@ -429,6 +431,41 @@ function RealtimeStreamHealth({
             tone={
               snapshot
                 ? snapshot.connectionFailureRate > 0.05
+                  ? "warning"
+                  : "ok"
+                : undefined
+            }
+          />
+          {/* Per-platform recovery rate. Counts every viewer-side
+              `recoverBroadcastPlayback()` invocation in the last 60 s and
+              shows the breakdown so operators can tell whether a surge is
+              concentrated on one surface (one CDN edge / carrier) or
+              system-wide. Tone thresholds are deliberately loose: a few
+              recoveries per minute is healthy plumbing absorbing flaky
+              edges; warning at >10/min, critical at >30/min — empirically
+              the inflection where viewer churn starts in production. */}
+          <HealthMetric
+            icon={<RefreshCw className="w-3.5 h-3.5" />}
+            label="Recoveries (60s)"
+            value={snapshot ? `${snapshot.recoveryRatePerMin.toFixed(1)}/min` : "—"}
+            sub={
+              snapshot
+                ? (() => {
+                    const r = snapshot.recoveriesByPlatform;
+                    const parts: string[] = [];
+                    if (r.tv) parts.push(`${r.tv} TV`);
+                    if (r.mobile) parts.push(`${r.mobile} mobile`);
+                    if (r.admin) parts.push(`${r.admin} admin`);
+                    if (r.unknown) parts.push(`${r.unknown} other`);
+                    return parts.length > 0 ? parts.join(" · ") : "no recoveries";
+                  })()
+                : "—"
+            }
+            tone={
+              snapshot
+                ? snapshot.recoveryRatePerMin > 30
+                  ? "critical"
+                  : snapshot.recoveryRatePerMin > 10
                   ? "warning"
                   : "ok"
                 : undefined

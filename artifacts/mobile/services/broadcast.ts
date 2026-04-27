@@ -221,6 +221,32 @@ export async function postPlaybackTelemetryDelta(
   } catch {}
 }
 
+/**
+ * Fire-and-forget recovery mark. Posted exactly once per
+ * `recoverBroadcastPlayback()` invocation so the admin live-monitor can show
+ * a per-platform "Recoveries (60s)" tile and operators get advance notice
+ * of CDN-edge or carrier-wide trouble before viewers churn.
+ *
+ * Reuses the existing `/broadcast/playback-telemetry` endpoint via the
+ * `event: "recover"` discriminator: one CORS rule, one rate-limit envelope,
+ * one CDN cache exclusion. Silently no-ops on missing apiBase or any
+ * network failure — telemetry must never disturb playback recovery, which
+ * is the whole point of the path firing it.
+ */
+export async function postBroadcastRecoverEvent(
+  platform: "mobile" | "tv" | "admin",
+): Promise<void> {
+  const apiBase = getApiBase();
+  if (!apiBase) return;
+  try {
+    await fetch(`${apiBase}/api/broadcast/playback-telemetry`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ platform, event: "recover" }),
+    });
+  } catch {}
+}
+
 export async function sendReaction(type: ReactionType): Promise<void> {
   const apiBase = getApiBase();
   if (!apiBase) return;

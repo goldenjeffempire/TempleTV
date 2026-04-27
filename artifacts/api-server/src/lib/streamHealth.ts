@@ -95,6 +95,61 @@ export function recordPlaybackTelemetry(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Client recovery telemetry — per-platform "the player had to realign" events
+// ---------------------------------------------------------------------------
+//
+// Whenever a player invokes its `recoverBroadcastPlayback()` path (offline
+// short-circuit in the network-aware skip gate, post-reconnect grace window,
+// queued-retry straggler, drift correction, broken-item soft fallback) it
+// fires a one-shot POST here. We keep the last 60 s of those marks per
+// platform and surface two derived fields on the stream-health snapshot:
+//   • `recoveriesByPlatform` — raw counts in the window, per-platform
+//   • `recoveryRatePerMin`  — total events normalized to "events / minute"
+//                              so the admin card reads the same regardless
+//                              of polling cadence.
+//
+// Critically: we do NOT alert on this. A handful of recoveries per minute is
+// healthy plumbing doing its job. This metric is for spotting a sudden
+// surge — e.g. "mobile recoveries 0/min → 40/min in 30 s" almost always
+// means a CDN edge is hiccuping for an entire mobile carrier, and the
+// operator can mitigate (force-rotate the manifest, switch ingest, etc.)
+// long before viewers churn. The signal that drove this surface area:
+// the network-aware skip gate shipped 2026-04-27 silently absorbs flaky
+// connectivity, and without this metric operators have no way to see it
+// firing in production.
+
+const RECOVERY_WINDOW_MS = 60_000;
+type RecoverySample = { ts: number; platform: SSEPlatform };
+const recoverySamples: RecoverySample[] = [];
+
+export function recordRecoverEvent(platform: unknown): void {
+  const p: SSEPlatform =
+    platform === "tv" || platform === "mobile" || platform === "admin" ? platform : "unknown";
+  const now = Date.now();
+  recoverySamples.push({ ts: now, platform: p });
+  // Same rolling-window trim pattern as the frame samples — bounded memory
+  // even under sustained chatty clients, and the per-second snapshot reads
+  // a simple linear scan over what's at most a few hundred entries.
+  const cutoff = now - RECOVERY_WINDOW_MS;
+  while (recoverySamples.length > 0 && recoverySamples[0]!.ts < cutoff) {
+    recoverySamples.shift();
+  }
+}
+
+function computeRecoveryStats(): {
+  recoveriesByPlatform: Record<SSEPlatform, number>;
+  recoveryRatePerMin: number;
+} {
+  const by: Record<SSEPlatform, number> = { tv: 0, mobile: 0, admin: 0, unknown: 0 };
+  for (const s of recoverySamples) by[s.platform] += 1;
+  // The window is exactly 60 s, so total / 1.0 = events-per-minute. Kept as
+  // an explicit divide so future window tweaks don't silently break the unit.
+  const total = recoverySamples.length;
+  const recoveryRatePerMin = Math.round((total / (RECOVERY_WINDOW_MS / 60_000)) * 10) / 10;
+  return { recoveriesByPlatform: by, recoveryRatePerMin };
+}
+
 function computeDroppedFrameRate(): {
   droppedFrameRate: number | null;
   decodedFramesWindow: number;
@@ -218,6 +273,16 @@ export interface StreamHealthSnapshot {
   droppedFramesWindow: number;
   /** Number of distinct client samples that contributed to the rate (0 = no telemetry) */
   reportingClients: number;
+  /**
+   * Per-platform count of `recoverBroadcastPlayback()` invocations in the
+   * last 60 s, reported by viewer clients. Healthy baseline is 0–a few per
+   * minute (flaky-edge absorption); a sudden surge signals a real upstream
+   * problem (CDN edge, ingest, carrier-wide outage). Surfaced on the admin
+   * live-monitor as the "Recoveries (60s)" tile.
+   */
+  recoveriesByPlatform: Record<SSEPlatform, number>;
+  /** Total recovery events normalized to events-per-minute (0–1 decimal). */
+  recoveryRatePerMin: number;
   /** Whether anything is currently airing */
   isOnAir: boolean;
   /** Title of the currently airing item, if any */
@@ -291,6 +356,7 @@ function buildSnapshot(): StreamHealthSnapshot {
   const itemUptimeSecs = itemStart ? Math.max(0, Math.floor(Date.now() / 1000 - itemStart)) : 0;
   const { stabilityPercent, failureRate } = computeStability();
   const frames = computeDroppedFrameRate();
+  const recovery = computeRecoveryStats();
 
   const base = {
     ts: Date.now(),
@@ -300,6 +366,8 @@ function buildSnapshot(): StreamHealthSnapshot {
     decodedFramesWindow: frames.decodedFramesWindow,
     droppedFramesWindow: frames.droppedFramesWindow,
     reportingClients: frames.reportingClients,
+    recoveriesByPlatform: recovery.recoveriesByPlatform,
+    recoveryRatePerMin: recovery.recoveryRatePerMin,
     isOnAir,
     currentTitle: item?.title ?? null,
     itemUptimeSecs,
