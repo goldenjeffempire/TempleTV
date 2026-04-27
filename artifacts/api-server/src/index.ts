@@ -298,6 +298,43 @@ if (RUNS_API) {
   }
   // verdict.kind === "fatal-exit" cannot happen for worker mode: the gate
   // chooses degraded-standby for workers and only fatal-exits for api/all.
+
+  // ── Startup self-check guardrail ────────────────────────────────────────
+  // Defence-in-depth against the silent-exit class of bug fixed by the
+  // keep-alive interval above. If a future change accidentally removes the
+  // keep-alive, OR a future module-load side-effect calls `.unref()` on
+  // every handle the worker owns, this check fires LOUDLY rather than
+  // letting the process exit silently and crashloop on Render with the
+  // useless "Application exited early" message in the dashboard.
+  //
+  // Mechanism: 2 s after worker setup, inspect the active-resources list.
+  // If no Timeout handle is present we know the keep-alive is gone — log
+  // fatal (which the fatalLogBuffer surfaces in Mission Control) and exit
+  // with code 1 so Render reports a real failed deploy instead of a
+  // mysterious silent restart loop. The setTimeout itself is `.unref()`'d
+  // so it can NEVER be the thing holding the loop alive.
+  const guardrail = setTimeout(() => {
+    const resources = process.getActiveResourcesInfo();
+    const hasTimer = resources.some(
+      (r) => r === "Timeout" || r === "Immediate",
+    );
+    if (!hasTimer) {
+      logger.fatal(
+        { activeResources: resources },
+        "Worker startup guardrail TRIPPED: no active timers in event loop. " +
+          "The keep-alive interval is missing or has been unref'd. Without a " +
+          "ref'd handle the process will exit cleanly with code 0 and Render " +
+          "will report 'Application exited early' on every restart. Aborting " +
+          "with code 1 so the failure is visible.",
+      );
+      process.exit(1);
+    }
+    logger.info(
+      { activeResources: resources.length },
+      "Worker startup guardrail OK — event loop has ref'd handles, process is stable",
+    );
+  }, 2_000);
+  guardrail.unref();
 }
 
 let isShuttingDown = false;

@@ -611,3 +611,91 @@ matches the code as of this date.
 External operator actions remaining are unchanged from §10.3 (credential
 rotation, EAS / App Store / Play Store submission, Render deploy) plus the
 new DNS-level 301 from `templetv.app` (§12.4).
+
+## §13 — Worker crashloop root cause + fix (Apr 27, 2026)
+
+### 13.1 Symptom
+
+The standalone `temple-tv-transcoder` Render worker service entered an
+infinite restart loop. The Render dashboard showed repeated
+`Instance failed: <pod-id>` events with the message
+**"Application exited early while running your code"**, followed by
+`Service recovered`, every ~30–60 s, on the same pod hostname. No error,
+stack trace, shutdown log, OOM-kill log, or non-zero exit code appeared
+anywhere in the worker's stdout/stderr. The API service (`RUN_MODE=api`)
+was healthy throughout — the bug only affected the worker.
+
+### 13.2 False leads (and why each was investigated)
+
+These were investigated as part of the audit and turned out NOT to be the
+cause of the crashloop, though several were real hardening wins worth
+keeping. Documenting them so the next operator does not waste time on the
+same paths:
+
+| Hypothesis | Why suspected | Why ruled out |
+|---|---|---|
+| OOM-kill on the 512 MB starter plan | ffmpeg + Node easily exceeds 512 MB; Render starter plan is 512 MB; SIGKILL leaves no log | No `Resuming transcoding queue after startup` log ever appeared, so no ffmpeg ever spawned. The crash happened *before* any encode. |
+| Missing AWS credentials forcing `process.exit(1)` from the startup gate | Historical bug; gate used to fatal-exit on missing `AWS_*` | Verified `AWS_*` env vars are present (logs show `objectStorage.configured: true, bucket: temple-tv-media-storage`). Also the gate now degraded-standby's instead of exiting (Fix #4 earlier in this audit). |
+| pg `sslmode=verify-full` rejection | pg-pool warns about deprecated sslmode values | Warning is non-fatal; cache and queries succeed (`PostgreSQL distributed cache ready` always logs). Normalized in `lib/db` anyway as a hygiene win. |
+| Sentry's "express is not instrumented" error | Visible in worker logs | Cosmetic Sentry warning, not a crash. Suppressed on worker by skipping the express integration when `RUN_MODE=worker` (cosmetic fix kept). |
+| Hand-rolled `node` `startCommand` bypassing pnpm context | A speculative cold-start latency optimization | Caused an actual API outage when deployed — reverted to `pnpm --filter @workspace/api-server run start`. Unrelated to the worker crashloop. |
+| Stuck "processing" job poison-pill | `resumePendingJobsOnStartup()` could re-claim a job that previously OOM'd | The crash-loop guard already exists (`CRASH_RECOVERY_MARKER`, `CRASH_LOOP_LIMIT = 1`); also no resume log ever fires before the silent exit. |
+
+### 13.3 Actual root cause
+
+**The Node event loop was draining and the process exited cleanly with
+code 0.** Every timer the worker process owns is intentionally `.unref()`'d:
+
+| Handle | File | Why unref'd |
+|---|---|---|
+| Transcoding retry tick (30 s) | `transcoder.ts:815` | So API graceful-shutdown can drain it without waiting |
+| `MemoryCache` GC (60 s) | `cache.ts:16` | So `process.exit()` works during shutdown |
+| `PgCache` GC (5 min) | `cache.ts:70` | Same |
+
+In `RUN_MODE=all` (local dev and the historical single-process production
+deploy) the HTTP server's `.listen()` is a ref'd handle that holds the
+event loop open forever. This masked the latent bug. The moment we split
+the worker into its own Render service (`RUN_MODE=worker`, no HTTP server,
+no API schedulers), nothing was holding the loop. As soon as the cache
+`init()` promise settled (~1 s after the `PostgreSQL distributed cache
+ready` log line), the event loop drained and Node exited 0 of its own
+accord. Render correctly interpreted exit-0 from a worker as
+"Application exited early" and restarted in an infinite loop.
+
+This explains every symptom exactly: silent exit ~1–30 s after the cache
+log, no error, no shutdown log, no OOM event, same pod hostname across all
+restarts (Render reuses the pod for fast retries until backoff escalates).
+
+### 13.4 Fix
+
+`artifacts/api-server/src/index.ts` — in the `RUN_MODE=worker` branch,
+install a single ref'd `setInterval(noop, 60_000)` that does nothing but
+hold the event loop open. The shutdown handler clears it during SIGTERM
+so graceful shutdown still completes within the 15 s force-timer (without
+the cleanup, redeploys would exit with code 1 and Render would
+mis-attribute every legitimate redeploy as a crash).
+
+### 13.5 Defence-in-depth: startup self-check guardrail
+
+Same file, immediately after worker setup: an unref'd 2-second timer
+inspects `process.getActiveResourcesInfo()` and, if no `Timeout` /
+`Immediate` resource is present, logs `fatal` (which the
+`fatalLogBuffer` surfaces in the admin Mission Control panel) and exits
+with code 1. This converts the "silent exit → mysterious crashloop" class
+of bug into a loud, debuggable failure if any future change accidentally
+re-introduces it. The guardrail itself is unref'd so it can never be the
+thing keeping the loop alive.
+
+### 13.6 Verification
+
+- Local typecheck (`pnpm run typecheck:libs`) and api-server build (`pnpm --filter @workspace/api-server run build`): **clean**.
+- Local `Start application` workflow boots cleanly in `RUN_MODE=all`; the keep-alive and guardrail are confined to the worker-only branch and are inert in `all` mode.
+- The fix is a 4-line code change plus the guardrail; no schema, no env-var, no plan-tier change required.
+- After deploy: the worker should log `Worker startup guardrail OK — event loop has ref'd handles, process is stable` once at boot and then stay running until SIGTERM. The Render dashboard should stop reporting `Instance failed` events for `temple-tv-transcoder`.
+
+### 13.7 Operator-facing summary
+
+No external action is required. The fix lands automatically on the next
+auto-deploy of `main`. Once Render reports a successful deploy of the
+`temple-tv-transcoder` service, the silent-exit loop is over and the
+transcoding queue resumes draining normally.
