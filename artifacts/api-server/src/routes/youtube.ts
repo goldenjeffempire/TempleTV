@@ -409,11 +409,17 @@ async function youtubeApiFetch<T>(
       } catch {
         // SSE broadcast is best-effort; never let it break the API call.
       }
-      // Page on-call: critical alert with a 24h dedup so we don't spam during
-      // sustained exhaustion. Key is per-day so a recurring incident on the
-      // following day will fire again.
+      // Page on-call: WARNING (not critical). Quota exhaustion is a routine
+      // ceiling on the free 10K-units/day tier — the gate auto-clears at the
+      // next UTC-08:00 reset, mobile/TV live detection cleanly falls back to
+      // RSS/HTML, and the 24h dedup prevents spam. Tagging it `critical`
+      // surfaced as ERROR-level log noise on every reset boundary (observed
+      // in production at 2026-04-27T13:33:23Z) and would train operators to
+      // ignore the critical channel. A real critical condition here would be
+      // "RSS fallback is also failing" — that's caught separately by the
+      // live-ingest health monitor, which DOES warrant critical.
       void sendOpsAlert({
-        severity: "critical",
+        severity: "warning",
         title: "YouTube Data API quota exhausted",
         message:
           "All YouTube API features are paused until the quota resets. Mobile & TV live status will fall back to RSS/HTML detection.",
