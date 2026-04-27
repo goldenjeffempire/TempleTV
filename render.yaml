@@ -334,7 +334,15 @@ services:
       pnpm install --frozen-lockfile --prefer-offline --prod=false && \
       pnpm run verify:production && \
       pnpm --filter @workspace/api-server run build
-    startCommand: pnpm --filter @workspace/api-server run start
+    # `start:prod` (NOT `start`) — same reasoning as temple-tv-api above:
+    # `start` enables --enable-source-maps which adds ~5 MiB heap pressure on
+    # cold start with zero operator-visible benefit (Sentry remaps stack
+    # traces server-side against the uploaded source map). On the worker's
+    # tight 512 MiB starter plan, with V8 capped at 320 MiB and ffmpeg
+    # eating its share, every megabyte of heap matters more than it does on
+    # the API. Prior to 2026-04-27 this service silently used `start` and
+    # paid the 5 MiB tax on every cold start without anyone noticing.
+    startCommand: pnpm --filter @workspace/api-server run start:prod
 
     envVars:
       - fromGroup: temple-tv-aws
@@ -395,13 +403,30 @@ services:
       pnpm --filter @workspace/admin run build
     staticPublishPath: ./artifacts/admin/dist/public
     envVars:
+      # Build-time env vars — Vite inlines `import.meta.env.VITE_*` at build,
+      # so these are baked into the bundle and not read at runtime.
       - key: VITE_API_URL
         value: https://api.templetv.org.ng
       - key: BASE_PATH
         value: /
-      - key: PORT
-        value: 3000
+      # NOTE: previously `PORT: 3000` was declared here. Removed 2026-04-27 —
+      # this is a `runtime: static` service (Render's global CDN serves the
+      # built `dist/public` directory directly), so PORT is dead config that
+      # was inherited from an earlier non-static deployment shape. Static
+      # services don't bind to ports.
     headers:
+      # ── Security headers (defense-in-depth) ────────────────────────────────
+      # These mirror the headers the API server's `securityHeaders` middleware
+      # sends on api.templetv.org.ng. Static SPAs are served by Render's CDN,
+      # NOT by the Express middleware, so they need their own header config —
+      # browsers that land on admin.templetv.org.ng without ever touching the
+      # API would otherwise get NO security headers at all on the first paint.
+      # HSTS in particular: even though api.* sends HSTS with `includeSubDomains`,
+      # that only protects users who hit the API first. Direct first-touch on
+      # admin.* (e.g. clicking a bookmark) is downgrade-attackable without this.
+      - path: /*
+        name: Strict-Transport-Security
+        value: "max-age=63072000; includeSubDomains; preload"
       - path: /*
         name: X-Frame-Options
         value: DENY
@@ -413,7 +438,14 @@ services:
         value: strict-origin-when-cross-origin
       - path: /*
         name: Permissions-Policy
-        value: camera=(), microphone=(), geolocation=()
+        value: camera=(), microphone=(), geolocation=(), interest-cohort=()
+      # COOP gives the admin tab process-level isolation from any other-origin
+      # window opener — defense against Spectre-class side-channels and
+      # cross-origin tab-nabbing. `same-origin` is the strongest setting that
+      # still allows the admin's own popups (auth flows, file pickers).
+      - path: /*
+        name: Cross-Origin-Opener-Policy
+        value: same-origin
       - path: /assets/*
         name: Cache-Control
         value: public, max-age=31536000, immutable
@@ -439,6 +471,8 @@ services:
       pnpm --filter @workspace/mobile run build:web
     staticPublishPath: ./artifacts/mobile/web-dist
     envVars:
+      # Build-time env vars — Expo inlines `process.env.EXPO_PUBLIC_*` at
+      # build, so these are baked into the bundle and not read at runtime.
       - key: EXPO_PUBLIC_API_URL
         value: https://api.templetv.org.ng
       - key: EXPO_PUBLIC_DOMAIN
@@ -446,8 +480,14 @@ services:
       - key: BASE_PATH
         value: /
     headers:
+      # ── Security headers (mirror admin's set, with PWA-friendly tweaks) ────
+      # Same rationale as the admin headers above: the SPA is served by
+      # Render's CDN, not the API middleware, so it needs its own headers.
+      - path: /*
+        name: Strict-Transport-Security
+        value: "max-age=63072000; includeSubDomains; preload"
       # SAMEORIGIN (not DENY) because the Expo PWA can be embedded in the
-      # admin's preview pane for QA.
+      # admin's preview pane for QA — same-origin only.
       - path: /*
         name: X-Frame-Options
         value: SAMEORIGIN
@@ -457,6 +497,14 @@ services:
       - path: /*
         name: Referrer-Policy
         value: strict-origin-when-cross-origin
+      # Permissions-Policy on the PWA: camera/microphone/geolocation are
+      # disabled because the Expo Web build is a streaming-viewer surface
+      # only — none of the audience-facing screens request these. Disabling
+      # them by header prevents accidental future-feature surprises and
+      # silences Lighthouse/observatory warnings.
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(), geolocation=(), interest-cohort=()
       - path: /_expo/static/*
         name: Cache-Control
         value: public, max-age=31536000, immutable
@@ -485,13 +533,27 @@ services:
       pnpm --filter @workspace/tv run build
     staticPublishPath: ./artifacts/tv/dist/public
     envVars:
+      # Build-time env vars — Vite inlines `import.meta.env.VITE_*` at build,
+      # so these are baked into the bundle and not read at runtime.
       - key: VITE_API_URL
         value: https://api.templetv.org.ng
       - key: BASE_PATH
         value: /
-      - key: PORT
-        value: 3000
+      # NOTE: previously `PORT: 3000` was declared here. Removed 2026-04-27 —
+      # this is a `runtime: static` service (Render's global CDN serves the
+      # built `dist/public` directory directly), so PORT is dead config that
+      # was inherited from an earlier non-static deployment shape. Static
+      # services don't bind to ports.
     headers:
+      # ── Security headers (mirror admin's set, with TV-app-friendly tweaks) ─
+      # Same rationale as the admin headers above: the SPA is served by
+      # Render's CDN, not the API middleware, so it needs its own headers.
+      - path: /*
+        name: Strict-Transport-Security
+        value: "max-age=63072000; includeSubDomains; preload"
+      # SAMEORIGIN (not DENY) because Tizen/webOS native TV shells embed the
+      # web SPA in a system WebView whose origin chain Render cannot certify
+      # in advance — DENY would block legitimate native-TV launches.
       - path: /*
         name: X-Frame-Options
         value: SAMEORIGIN
@@ -501,6 +563,12 @@ services:
       - path: /*
         name: Referrer-Policy
         value: strict-origin-when-cross-origin
+      # Permissions-Policy on the TV SPA: camera/microphone/geolocation are
+      # disabled because TV viewers are passive consumers — none of the TV
+      # screens request these capabilities. Closes attack surface.
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(), geolocation=(), interest-cohort=()
       - path: /assets/*
         name: Cache-Control
         value: public, max-age=31536000, immutable
