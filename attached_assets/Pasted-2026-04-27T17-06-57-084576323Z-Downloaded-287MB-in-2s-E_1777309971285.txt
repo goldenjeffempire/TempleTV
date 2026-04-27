@@ -1,0 +1,50 @@
+2026-04-27T17:06:57.084576323Z ==> Downloaded 287MB in 2s. Extraction took 26s.
+2026-04-27T17:06:58.580063315Z ==> Using Node.js version 24.13.0 via /opt/render/project/src/.nvmrc
+2026-04-27T17:06:58.627007119Z ==> Docs on specifying a Node.js version: https://render.com/docs/node-version
+2026-04-27T17:06:58.829056519Z ==> Running build command 'corepack enable && \
+2026-04-27T17:06:58.829089379Z pnpm install --frozen-lockfile --prefer-offline --prod=false && \
+2026-04-27T17:06:58.829094079Z pnpm run verify:production && \
+2026-04-27T17:06:58.829098189Z pnpm --filter @workspace/api-server run build
+2026-04-27T17:06:58.829101779Z '...
+2026-04-27T17:07:03.338008117Z 
+2026-04-27T17:07:03.338046367Z > workspace@0.0.0 verify:production /opt/render/project/src
+2026-04-27T17:07:03.338054127Z > pnpm run verify:codegen && pnpm run verify:catalog && pnpm run typecheck:production
+2026-04-27T17:07:03.338059317Z 
+2026-04-27T17:07:03.925635048Z 
+2026-04-27T17:07:03.925668069Z > workspace@0.0.0 verify:codegen /opt/render/project/src
+2026-04-27T17:07:03.925674379Z > pnpm --filter @workspace/api-spec run codegen && (git diff --exit-code -- lib/api-zod/src/generated lib/api-client-react/src/generated || (echo '\n[verify:codegen] FAIL: lib/api-spec/openapi.yaml is out of sync with generated clients. Run: pnpm --filter @workspace/api-spec run codegen, then commit the changes.' >&2; exit 1))
+2026-04-27T17:07:03.925680599Z 
+2026-04-27T17:07:04.56265558Z 
+2026-04-27T17:07:04.56268138Z > @workspace/api-spec@0.0.0 codegen /opt/render/project/src/lib/api-spec
+2026-04-27T17:07:04.56268765Z > orval --config ./orval.config.ts && node ./postcodegen.mjs
+2026-04-27T17:07:04.562692591Z 
+2026-04-27T17:07:05.263145334Z 🍻 orval v8.5.3 - A swagger client generator for typescript
+2026-04-27T17:07:05.584714957Z api-client-react Cleaning output folder
+2026-04-27T17:07:07.005167134Z 🎉 api-client-react - Your OpenAPI spec has been converted into ready to use orval!
+2026-04-27T17:07:07.017517916Z zod Cleaning output folder
+2026-04-27T17:07:07.586403796Z 🎉 zod - Your OpenAPI spec has been converted into ready to use orval!
+2026-04-27T17:07:07.70408182Z [postcodegen] normalized lib/api-zod/src/index.ts
+2026-04-27T17:07:08.352444334Z 
+2026-04-27T17:07:08.352489645Z > workspace@0.0.0 verify:catalog /opt/render/project/src
+2026-04-27T17:07:08.352496425Z > pnpm --filter @workspace/scripts run verify-catalog-lockfile-sync
+2026-04-27T17:07:08.352501245Z 
+2026-04-27T17:07:08.993333798Z 
+2026-04-27T17:07:08.993373908Z > @workspace/scripts@0.0.0 verify-catalog-lockfile-sync /opt/render/project/src/scripts
+2026-04-27T17:07:08.993380168Z > tsx ./src/verify-catalog-lockfile-sync.ts
+2026-04-27T17:07:08.993385088Z 
+2026-04-27T17:07:09.438379037Z [verify:catalog] OK — 21 catalog entries, all in sync with lockfile.
+2026-04-27T17:07:10.084999732Z 
+2026-04-27T17:07:10.085033833Z > workspace@0.0.0 typecheck:production /opt/render/project/src
+2026-04-27T17:07:10.085040203Z > pnpm run typecheck:libs && pnpm -r --reporter=append-only --filter "./artifacts/**" --filter "!@workspace/mockup-sandbox" --filter "./scripts" --if-present run typecheck
+2026-04-27T17:07:10.085045453Z 
+2026-04-27T17:07:10.668193416Z 
+2026-04-27T17:07:10.668253687Z > workspace@0.0.0 typecheck:libs /opt/render/project/src
+2026-04-27T17:07:10.668259397Z > tsc --build
+2026-04-27T17:07:10.668263147Z 
+2026-04-27T17:07:25.680807468Z /opt/render/project/src/artifacts/tv:
+2026-04-27T17:07:25.680848539Z  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/tv@0.0.0 typecheck: `tsc -p tsconfig.json --noEmit`
+2026-04-27T17:07:25.680856799Z Exit status 2
+2026-04-27T17:07:25.732706556Z  ELIFECYCLE  Command failed with exit code 2.
+2026-04-27T17:07:25.791412846Z  ELIFECYCLE  Command failed with exit code 2.
+2026-04-27T17:07:25.887294896Z ==> Build failed 😞
+2026-04-27T17:07:25.887330856Z ==> Common ways to troubleshoot your deploy: https://render.com/docs/troubleshooting-deploys
