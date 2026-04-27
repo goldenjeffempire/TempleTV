@@ -67,10 +67,17 @@ export function useGuide() {
   // When useLiveSync receives a broadcast-current-updated SSE event its
   // syncedAt changes — immediately refresh the guide so the "NOW" indicator
   // and progress bar update within seconds of a real item transition.
-  const { syncedAt } = useLiveSync();
+  // `scheduleRevision` is bumped on broadcast-schedule-updated (admin
+  // creates/edits/deletes a schedule entry) so an admin schedule change
+  // shows on the TV Guide within one event round-trip instead of waiting
+  // on the 60s polling tick above.
+  const { syncedAt, scheduleRevision } = useLiveSync();
   useEffect(() => {
     if (syncedAt) loadRef.current?.(false);
   }, [syncedAt]);
+  useEffect(() => {
+    if (scheduleRevision > 0) loadRef.current?.(false);
+  }, [scheduleRevision]);
 
   const toggleReminder = useCallback((itemId: string) => {
     setReminders((prev) => {

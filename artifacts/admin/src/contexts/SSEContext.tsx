@@ -138,15 +138,57 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
       attempt.current = 0;
     });
 
+    // ── Whitelist of SSE event types this context will dispatch ──────────────
+    // EventSource only fires `addEventListener(type)` callbacks for events
+    // whose `event:` field matches. Any event the server emits that isn't in
+    // this list is silently dropped on the admin side — even if a page calls
+    // `useSSEEvent("foo", ...)` for it. This used to silently break:
+    //   - Live ingest health monitoring (live-ingest-* on /admin/streams)
+    //   - Ops alert pulses (ops-alert-sent on /admin/dashboard)
+    //   - Real-time content list refresh (videos-library-updated)
+    //   - Schedule editor live sync (broadcast-schedule-updated)
+    //   - In-flight transcode progress (transcoding-update)
+    //   - Channel auto-detect status pings (yt-status)
+    // Keep this list in sync with `broadcastLiveEvent(...)` callsites in
+    // artifacts/api-server/src — when adding a new server event type that the
+    // admin needs to react to, add it here too.
     const knownEvents = [
       "status",
       "broadcast-current-updated",
       "broadcast-queue-updated",
+      "broadcast-schedule-updated",
       "broadcast-control-updated",
       "override-expired",
       "heartbeat",
       "stream-health",
       "live-failure-stats",
+      // Video library mutation pings — let any admin list/grid that wants
+      // to mirror the public site's live-update behaviour subscribe and
+      // refetch on the same signal the TV/mobile clients use.
+      "videos-library-updated",
+      // Per-job transcoding progress pulses (transcoder.ts) — used by the
+      // upload/encoding panels to drive real-time progress bars without
+      // polling.
+      "transcoding-update",
+      // Live ingest pipeline state — admin's stream-health surfaces consume
+      // these via useSSEEvent. Were previously silently dropped because the
+      // event names weren't in this list.
+      "live-ingest-health",
+      "live-ingest-recovered",
+      "live-ingest-failover",
+      "live-ingest-promoted",
+      "live-ingest-stopped",
+      // Ops alert fan-out — driven by alerts.ts when a fatal log line or
+      // cross-process incident fires. Admin dashboards subscribe to surface
+      // a banner without re-polling /api/admin/alerts.
+      "ops-alert-sent",
+      // YouTube channel auto-detect status (yt poller). Worth carrying so
+      // the live-monitor + dashboard can show the ytLive/ytVideoId state
+      // without a second EventSource.
+      "yt-status",
+      // Live audience reaction pulses (broadcast.ts /reactions). Admin
+      // engagement panels can subscribe to render real-time reaction counts.
+      "live-reaction",
       // YouTube quota signals — emitted by routes/youtube.ts when the
       // Data API hits its soft-throttle threshold or hard daily cap. Without
       // these listeners the events were dropped on the floor and operators

@@ -79,6 +79,15 @@ export interface BroadcastSyncState {
    * connection per page load.
    */
   libraryRevision: number;
+  /**
+   * Sibling counter to `libraryRevision` but bumped on `broadcast-schedule-updated`
+   * — the API fires that event when an admin creates, edits, or deletes a
+   * schedule entry. The TV Guide page subscribes via `useLiveSync` and
+   * refetches `/api/broadcast/schedule` whenever this counter changes, so an
+   * admin schedule edit reflects on every connected TV within ~one event
+   * round-trip (no 30s polling lag, no manual refresh).
+   */
+  scheduleRevision: number;
 }
 
 const INITIAL: BroadcastSyncState = {
@@ -104,6 +113,7 @@ const INITIAL: BroadcastSyncState = {
   viewerCount: null,
   payload: null,
   libraryRevision: 0,
+  scheduleRevision: 0,
 };
 
 function apiUrl(path: string): string {
@@ -149,12 +159,14 @@ export function useLiveSync(): BroadcastSyncState {
       // broadcast-current-updated frames — otherwise an item-rotation event
       // would clobber the most recent viewer count (which arrives on the
       // separate `stream-health` channel) until the next health frame.
-      // Also preserve `libraryRevision` for the same reason: it's bumped by
-      // the `videos-library-updated` event handler below and would otherwise
-      // be reset on every broadcast frame.
+      // Also preserve `libraryRevision` and `scheduleRevision` for the same
+      // reason: they're bumped by the `videos-library-updated` and
+      // `broadcast-schedule-updated` handlers below and would otherwise be
+      // reset on every broadcast frame.
       setState((prev) => ({
         viewerCount: prev.viewerCount,
         libraryRevision: prev.libraryRevision,
+        scheduleRevision: prev.scheduleRevision,
         // `isLive` reflects "something live-class is airing right now."
         // Promoting `ytLive` here means a Hero/Player consumer that just
         // checks `sync.isLive` will treat an organic YouTube live the same
@@ -235,6 +247,17 @@ export function useLiveSync(): BroadcastSyncState {
         es.addEventListener("videos-library-updated", () => {
           if (destroyed) return;
           setState((prev) => ({ ...prev, libraryRevision: prev.libraryRevision + 1 }));
+        });
+
+        // Schedule-mutation signal. The API fires this whenever an admin
+        // creates, edits, or deletes a `broadcast_schedules` entry. The TV
+        // Guide hook (`useGuide` / `TVGuide.tsx`) reads `scheduleRevision`
+        // off this state and refetches `/api/broadcast/schedule` on change
+        // — same propagation pattern as `libraryRevision`, just for the
+        // separate schedule endpoint.
+        es.addEventListener("broadcast-schedule-updated", () => {
+          if (destroyed) return;
+          setState((prev) => ({ ...prev, scheduleRevision: prev.scheduleRevision + 1 }));
         });
 
         // Stream-health frames carry the live viewer count; we just lift
