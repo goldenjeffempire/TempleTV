@@ -61,6 +61,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useSSEEvent } from "@/contexts/SSEContext";
 import { liveApi, type LiveOverride, type YouTubePreviewResult } from "@/services/adminApi";
 import { PageHeader } from "@/components/shared/page-header";
+import { YouTubeQuotaBanner } from "@/components/youtube-quota-banner";
 import { cn } from "@/lib/utils";
 
 /** Default duration for a YouTube live override. */
@@ -328,6 +329,18 @@ export default function LiveYouTube() {
         title="Live YouTube"
         description="Paste a YouTube live link, validate it, and broadcast it instantly to every viewer surface."
       />
+
+      {/* QUOTA-PRESSURE BANNER ──────────────────────────────────────
+          Persistent in-page warning that surfaces when the YouTube Data
+          API quota is throttling or exhausted. Hidden entirely below
+          80% usage so it never adds noise during normal operation.
+          Renders nothing in the DOM until quota state crosses the
+          threshold, then snaps into view via SSE within ~1 second of
+          the gate engaging on the server. Anchored here (not just to
+          the global floating banner) so a operator paying attention to
+          this page can't miss it while pasting a live URL whose probe
+          will silently fall back to cached data. */}
+      <YouTubeQuotaBanner variant="inline" />
 
       {/* CURRENT STATUS ─────────────────────────────────────────────── */}
       <Card data-testid="card-live-status">
