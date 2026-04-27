@@ -3,8 +3,9 @@
 //
 // Sequential typecheck runner for all artifact packages plus the scripts
 // package. Bypasses pnpm's --reporter / --stream machinery entirely by using
-// child_process.spawnSync with stdio:'inherit', which inherits the parent's
-// file descriptors at the OS level.
+// child_process.spawn with stdio piped explicitly into BOTH the parent
+// stdout/stderr (real-time visibility) AND a per-package log file under
+// dist/typecheck-logs/<pkg>.log (durable artifact).
 //
 // History (April 2026): Render's build environment empirically swallowed
 // per-package output from `pnpm -r run typecheck`, even with
@@ -12,24 +13,37 @@
 // artifact's typecheck failed on Render the actual TypeScript error text
 // never reached the build log — only the `ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL`
 // summary did, leaving operators guessing across multiple sessions about
-// which of several plausible causes was hitting. By spawning each child with
-// stdio:'inherit', this runner guarantees that:
-//   1. tsc's stdout/stderr lines reach the parent log immediately (kernel
-//      pipe — no Node-side buffering, no pnpm reporter in the way),
-//   2. an explicit `==> [run-typechecks] <pkg> typecheck — start` banner is
-//      flushed BEFORE each spawn, so even if a child crashes before
-//      printing anything, the build log clearly shows which package was
-//      being checked at the point of failure,
-//   3. on failure, an explicit FAIL marker with elapsed time and exit code
-//      is appended after the child's own output so the failing package and
-//      the actual error text always sit adjacent in the log.
+// which of several plausible causes was hitting.
+//
+// This runner gives a two-layer guarantee:
+//
+//   Layer 1 — real-time log: each child's stdout/stderr is piped through
+//   Node into process.stdout/process.stderr line-by-line. An explicit
+//   `==> [run-typechecks] <pkg> typecheck — start` banner is flushed BEFORE
+//   each spawn, so even if a child crashes before printing anything, the
+//   build log shows which package was being checked at the point of failure.
+//   On failure: `==> [run-typechecks] <pkg> typecheck — FAILED (exit N, X.Xs)`
+//   is appended after the child's own output so the failing package and
+//   the actual error text always sit adjacent in the log.
+//
+//   Layer 2 — durable file: every byte of every child's stdout+stderr is
+//   ALSO appended to dist/typecheck-logs/<pkg>.log (with `@workspace/`
+//   stripped from the filename). On Render, the build cwd persists across
+//   the build command and the post-build step, so the log files can be
+//   uploaded as build artifacts, inspected via shell, or copied into the
+//   final image — even if Render's streaming log mechanism swallows the
+//   real-time output entirely. On failure, the runner cats the failing
+//   package's log file path so operators always know exactly where to look.
 //
 // Pass --include-mockup to also typecheck @workspace/mockup-sandbox (used by
 // the local `verify` chain). Production (`verify:production`) omits it
-// because mockup-sandbox is a Replit-canvas-only dev preview tool that ships
-// in zero of the 5 deployed Render services and should never block a deploy.
+// because mockup-sandbox is a Replit-canvas-only dev preview tool that
+// ships in zero of the 5 deployed Render services.
 
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { mkdirSync, createWriteStream, existsSync, statSync } from "node:fs";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const args = process.argv.slice(2);
 const includeMockup = args.includes("--include-mockup");
@@ -43,53 +57,126 @@ const ARTIFACTS: readonly string[] = [
   "@workspace/scripts",
 ];
 
-const totalStart = Date.now();
-let failed: { pkg: string; status: number | null; signal: NodeJS.Signals | null } | null = null;
+// Resolve repo root from this file's location: scripts/src/run-typechecks.ts → ../..
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(__dirname, "..", "..");
+const LOG_DIR = join(REPO_ROOT, "dist", "typecheck-logs");
 
-for (const pkg of ARTIFACTS) {
-  process.stdout.write(`\n==> [run-typechecks] ${pkg} typecheck — start\n`);
+mkdirSync(LOG_DIR, { recursive: true });
+
+function logFilePathFor(pkg: string): string {
+  // "@workspace/api-server" → "api-server.log"
+  const safe = pkg.replace(/^@workspace\//, "").replace(/[^a-zA-Z0-9._-]/g, "_");
+  return join(LOG_DIR, `${safe}.log`);
+}
+
+interface PackageResult {
+  pkg: string;
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  spawnError: Error | null;
+  elapsedMs: number;
+  logPath: string;
+}
+
+function runOne(pkg: string): Promise<PackageResult> {
+  const logPath = logFilePathFor(pkg);
+  const fileStream = createWriteStream(logPath, { flags: "w" });
   const t0 = Date.now();
-  const result = spawnSync(
-    "pnpm",
-    ["--filter", pkg, "--if-present", "run", "typecheck"],
-    { stdio: "inherit", env: process.env },
-  );
-  const elapsedSecs = ((Date.now() - t0) / 1000).toFixed(1);
-  if (result.error) {
-    process.stdout.write(
-      `\n==> [run-typechecks] ${pkg} typecheck — FAILED to spawn: ${result.error.message}\n`,
+
+  return new Promise<PackageResult>((res) => {
+    const child = spawn(
+      "pnpm",
+      ["--filter", pkg, "--if-present", "run", "typecheck"],
+      { stdio: ["inherit", "pipe", "pipe"], env: process.env },
     );
-    failed = { pkg, status: null, signal: null };
-    break;
-  }
-  if (typeof result.status === "number" && result.status !== 0) {
+
+    let spawnError: Error | null = null;
+    child.on("error", (err) => {
+      spawnError = err;
+    });
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      process.stdout.write(chunk);
+      fileStream.write(chunk);
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      process.stderr.write(chunk);
+      fileStream.write(chunk);
+    });
+
+    child.on("close", (code, signal) => {
+      fileStream.end(() => {
+        res({
+          pkg,
+          exitCode: code,
+          signal,
+          spawnError,
+          elapsedMs: Date.now() - t0,
+          logPath,
+        });
+      });
+    });
+  });
+}
+
+async function main() {
+  const totalStart = Date.now();
+  let failed: PackageResult | null = null;
+  const completed: PackageResult[] = [];
+
+  for (const pkg of ARTIFACTS) {
+    process.stdout.write(`\n==> [run-typechecks] ${pkg} typecheck — start (log: ${logFilePathFor(pkg)})\n`);
+    const result = await runOne(pkg);
+    completed.push(result);
+    const elapsedSecs = (result.elapsedMs / 1000).toFixed(1);
+
+    if (result.spawnError) {
+      process.stdout.write(
+        `\n==> [run-typechecks] ${pkg} typecheck — FAILED to spawn: ${result.spawnError.message}\n`,
+      );
+      failed = result;
+      break;
+    }
+    if (result.signal) {
+      process.stdout.write(
+        `\n==> [run-typechecks] ${pkg} typecheck — TERMINATED by signal ${result.signal} (${elapsedSecs}s)\n`,
+      );
+      failed = result;
+      break;
+    }
+    if (typeof result.exitCode === "number" && result.exitCode !== 0) {
+      process.stdout.write(
+        `\n==> [run-typechecks] ${pkg} typecheck — FAILED (exit ${result.exitCode}, ${elapsedSecs}s)\n`,
+      );
+      failed = result;
+      break;
+    }
     process.stdout.write(
-      `\n==> [run-typechecks] ${pkg} typecheck — FAILED (exit ${result.status}, ${elapsedSecs}s)\n`,
+      `==> [run-typechecks] ${pkg} typecheck — ok (${elapsedSecs}s)\n`,
     );
-    failed = { pkg, status: result.status, signal: result.signal };
-    break;
   }
-  if (result.signal) {
+
+  const totalSecs = ((Date.now() - totalStart) / 1000).toFixed(1);
+
+  if (failed) {
+    const sizeBytes = existsSync(failed.logPath) ? statSync(failed.logPath).size : 0;
     process.stdout.write(
-      `\n==> [run-typechecks] ${pkg} typecheck — TERMINATED by signal ${result.signal} (${elapsedSecs}s)\n`,
+      `\n==> [run-typechecks] FAIL — ${failed.pkg} typecheck failed after ${totalSecs}s total.\n` +
+        `==> [run-typechecks] Per-package log captured (${sizeBytes} bytes): ${failed.logPath}\n` +
+        `==> [run-typechecks] All package logs: ${LOG_DIR}\n` +
+        `==> [run-typechecks] If the streamed output above was truncated, cat the failing log file for the complete TypeScript error text.\n`,
     );
-    failed = { pkg, status: null, signal: result.signal };
-    break;
+    process.exit(typeof failed.exitCode === "number" ? failed.exitCode : 1);
   }
+
   process.stdout.write(
-    `==> [run-typechecks] ${pkg} typecheck — ok (${elapsedSecs}s)\n`,
+    `\n==> [run-typechecks] OK — all ${ARTIFACTS.length} artifact(s) typechecked clean in ${totalSecs}s\n` +
+      `==> [run-typechecks] Per-package logs: ${LOG_DIR}\n`,
   );
 }
 
-const totalSecs = ((Date.now() - totalStart) / 1000).toFixed(1);
-
-if (failed) {
-  process.stdout.write(
-    `\n==> [run-typechecks] FAIL — ${failed.pkg} typecheck failed after ${totalSecs}s total. See per-package output above for the actual TypeScript error(s).\n`,
-  );
-  process.exit(typeof failed.status === "number" ? failed.status : 1);
-}
-
-process.stdout.write(
-  `\n==> [run-typechecks] OK — all ${ARTIFACTS.length} artifact(s) typechecked clean in ${totalSecs}s\n`,
-);
+main().catch((err) => {
+  process.stderr.write(`\n==> [run-typechecks] FATAL: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
+  process.exit(1);
+});

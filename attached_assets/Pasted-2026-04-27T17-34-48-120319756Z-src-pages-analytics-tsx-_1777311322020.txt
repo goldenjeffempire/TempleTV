@@ -1,0 +1,50 @@
+2026-04-27T17:34:48.120319756Z src/pages/analytics.tsx(207,23): error TS2607: JSX element class does not support attributes because it does not have a 'props' property.
+2026-04-27T17:34:48.120330476Z src/pages/analytics.tsx(207,24): error TS2786: 'YAxis' cannot be used as a JSX component.
+2026-04-27T17:34:48.120334777Z   Its type 'typeof YAxis' is not a valid JSX element type.
+2026-04-27T17:34:48.120338767Z     Type 'typeof YAxis' is not assignable to type 'new (props: any, context: any) => Component<any, any, any>'.
+2026-04-27T17:34:48.120343107Z       Type 'YAxis' is missing the following properties from type 'Component<any, any, any>': context, setState, forceUpdate, props, state
+2026-04-27T17:34:48.120362947Z src/pages/analytics.tsx(208,23): error TS2607: JSX element class does not support attributes because it does not have a 'props' property.
+2026-04-27T17:34:48.120387007Z src/pages/analytics.tsx(208,24): error TS2786: 'RechartsTooltip' cannot be used as a JSX component.
+2026-04-27T17:34:48.120391497Z   Its type 'typeof Tooltip' is not a valid JSX element type.
+2026-04-27T17:34:48.120395087Z     Type 'typeof Tooltip' is not assignable to type 'new (props: any, context: any) => Component<any, any, any>'.
+2026-04-27T17:34:48.120399167Z       Type 'Tooltip<ValueType, NameType>' is missing the following properties from type 'Component<any, any, any>': context, setState, forceUpdate, props, state
+2026-04-27T17:34:48.120406657Z src/pages/analytics.tsx(212,42): error TS7006: Parameter 'val' implicitly has an 'any' type.
+2026-04-27T17:34:48.120413567Z src/pages/analytics.tsx(218,23): error TS2607: JSX element class does not support attributes because it does not have a 'props' property.
+2026-04-27T17:34:48.120477507Z src/pages/analytics.tsx(218,24): error TS2786: 'Area' cannot be used as a JSX component.
+2026-04-27T17:34:48.120485317Z   Its type 'typeof Area' is not a valid JSX element type.
+2026-04-27T17:34:48.120489067Z     Type 'typeof Area' is not assignable to type 'new (props: any, context: any) => Component<any, any, any>'.
+2026-04-27T17:34:48.120493087Z       Type 'Area' is missing the following properties from type 'Component<any, any, any>': context, setState, forceUpdate, props
+2026-04-27T17:34:48.120496697Z src/pages/live-monitor.tsx(222,9): error TS2607: JSX element class does not support attributes because it does not have a 'props' property.
+2026-04-27T17:34:48.120536278Z src/pages/live-monitor.tsx(222,10): error TS2786: 'XAxis' cannot be used as a JSX component.
+2026-04-27T17:34:48.120554878Z   Its type 'typeof XAxis' is not a valid JSX element type.
+2026-04-27T17:34:48.120559288Z     Type 'typeof XAxis' is not assignable to type 'new (props: any, context: any) => Component<any, any, any>'.
+2026-04-27T17:34:48.120563648Z       Type 'XAxis' is missing the following properties from type 'Component<any, any, any>': context, setState, forceUpdate, props, state
+2026-04-27T17:34:48.120567038Z src/pages/live-monitor.tsx(229,9): error TS2607: JSX element class does not support attributes because it does not have a 'props' property.
+2026-04-27T17:34:48.120580318Z src/pages/live-monitor.tsx(229,10): error TS2786: 'YAxis' cannot be used as a JSX component.
+2026-04-27T17:34:48.120583968Z   Its type 'typeof YAxis' is not a valid JSX element type.
+2026-04-27T17:34:48.120587168Z     Type 'typeof YAxis' is not assignable to type 'new (props: any, context: any) => Component<any, any, any>'.
+2026-04-27T17:34:48.120590918Z       Type 'YAxis' is missing the following properties from type 'Component<any, any, any>': context, setState, forceUpdate, props, state
+2026-04-27T17:34:48.120594828Z src/pages/live-monitor.tsx(237,9): error TS2607: JSX element class does not support attributes because it does not have a 'props' property.
+2026-04-27T17:34:48.120598728Z src/pages/live-monitor.tsx(237,10): error TS2786: 'Tooltip' cannot be used as a JSX component.
+2026-04-27T17:34:48.120602638Z   Its type 'typeof Tooltip' is not a valid JSX element type.
+2026-04-27T17:34:48.120607198Z     Type 'typeof Tooltip' is not assignable to type 'new (props: any, context: any) => Component<any, any, any>'.
+2026-04-27T17:34:48.120611818Z       Type 'Tooltip<ValueType, NameType>' is missing the following properties from type 'Component<any, any, any>': context, setState, forceUpdate, props, state
+2026-04-27T17:34:48.120624898Z src/pages/live-monitor.tsx(247,9): error TS2607: JSX element class does not support attributes because it does not have a 'props' property.
+2026-04-27T17:34:48.120634648Z src/pages/live-monitor.tsx(247,10): error TS2786: 'Area' cannot be used as a JSX component.
+2026-04-27T17:34:48.120638708Z   Its type 'typeof Area' is not a valid JSX element type.
+2026-04-27T17:34:48.120642578Z     Type 'typeof Area' is not assignable to type 'new (props: any, context: any) => Component<any, any, any>'.
+2026-04-27T17:34:48.120645768Z       Type 'Area' is missing the following properties from type 'Component<any, any, any>': context, setState, forceUpdate, props
+2026-04-27T17:34:48.250497671Z /opt/render/project/src/artifacts/admin:
+2026-04-27T17:34:48.250527491Z  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/admin@0.0.0 typecheck: `tsc -p tsconfig.json --noEmit`
+2026-04-27T17:34:48.250531031Z Exit status 2
+2026-04-27T17:34:48.286156385Z 
+2026-04-27T17:34:48.286195936Z ==> [run-typechecks] @workspace/admin typecheck — FAILED (exit 2, 14.9s)
+2026-04-27T17:34:48.286200026Z 
+2026-04-27T17:34:48.286204336Z ==> [run-typechecks] FAIL — @workspace/admin typecheck failed after 22.8s total. See per-package output above for the actual TypeScript error(s).
+2026-04-27T17:34:48.32767739Z /opt/render/project/src/scripts:
+2026-04-27T17:34:48.32770869Z  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/scripts@0.0.0 run-typechecks: `tsx ./src/run-typechecks.ts`
+2026-04-27T17:34:48.32771238Z Exit status 2
+2026-04-27T17:34:48.383716991Z  ELIFECYCLE  Command failed with exit code 2.
+2026-04-27T17:34:48.442706186Z  ELIFECYCLE  Command failed with exit code 2.
+2026-04-27T17:34:48.536016569Z ==> Build failed 😞
+2026-04-27T17:34:48.53606678Z ==> Common ways to troubleshoot your deploy: https://render.com/docs/troubleshooting-deploys
