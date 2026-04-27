@@ -1280,15 +1280,26 @@ export default function PlayerScreen() {
             containerWidth={screenWidth}
           />
 
-          {/* Channel identification row */}
+          {/* Channel identification row.
+              The plain "Temple TV · JCTM Broadcasting" text label was replaced
+              with the actual brand mark — exactly how real TV networks show
+              their station identity in this slot (CNN/ESPN/NBC don't spell
+              their name out next to the LIVE badge, they show the mark).
+              The pulsing bottom-right <ChannelBug mode="watermark"> overlay
+              is intentionally left untouched: it's a separate broadcaster
+              convention (program-change-triggered fade-in) and serves a
+              different purpose than the persistent footer identity. */}
           <View style={styles.broadcastChannelRow}>
             <View style={styles.onAirIndicator}>
               <View style={styles.onAirDot} />
               <Text style={styles.onAirLabel}>{isLive ? "LIVE" : "ON AIR"}</Text>
             </View>
-            <Text style={[styles.broadcastChannelName, { color: c.foreground }]} numberOfLines={1}>
-              Temple TV · JCTM Broadcasting
-            </Text>
+            <Image
+              source={require("@/assets/images/temple-tv-logo.png")}
+              style={styles.broadcastChannelLogo}
+              resizeMode="contain"
+              accessibilityLabel="Temple TV — JCTM Broadcasting"
+            />
             <View style={{ flex: 1 }} />
             {isRadioMode && (
               <View style={[styles.playbackModeBadge, { backgroundColor: c.secondary }]}>
@@ -1614,6 +1625,17 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_600SemiBold",
     letterSpacing: 0.1,
     flexShrink: 1,
+  },
+  broadcastChannelLogo: {
+    // Source asset is ~900×600 (3:2 dove + "Temple.tv" mark). Sizing the
+    // height to 32 gives a width of ~48 at the native aspect, which slots
+    // cleanly between the LIVE/ON AIR badge (≈26 tall) and the action
+    // pills below — visually weighty enough to read as the station mark
+    // but never crowding the row. `resizeMode="contain"` preserves the
+    // original aspect across screen widths instead of stretching.
+    height: 32,
+    width: 48,
+    flexShrink: 0,
   },
   broadcastActions: {
     flexDirection: "row",
