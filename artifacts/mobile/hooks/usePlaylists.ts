@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Sermon, SermonCategory } from "@/types";
+import { getApiBase } from "@/lib/apiBase";
 
 export interface PlaylistItem {
   id: string;
@@ -41,9 +42,14 @@ function playlistVideoToSermon(v: PlaylistVideo): Sermon {
   };
 }
 
+// Thin shim around the canonical `getApiBase()` helper. Kept under the
+// same `getBase()` name to avoid touching every call site in this file —
+// behavior is now: prefer `EXPO_PUBLIC_API_URL` (the documented going-
+// forward env, set by EAS profiles and `render.yaml`), fall back to the
+// legacy `EXPO_PUBLIC_DOMAIN`, return "" when neither is set so callers
+// continue to early-return on no-op builds. See `mobile/lib/apiBase.ts`.
 function getBase() {
-  const domain = process.env.EXPO_PUBLIC_DOMAIN ?? "";
-  return domain ? `https://${domain}` : "";
+  return getApiBase();
 }
 
 export function usePlaylists() {

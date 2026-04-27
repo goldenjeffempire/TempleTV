@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Platform } from "react-native";
 import type { Sermon } from "@/types";
+import { getApiBase } from "@/lib/apiBase";
 
 let FileSystem: any = null;
 try {
@@ -91,13 +92,18 @@ export function useDownloads() {
       if (isDownloaded(sermon.id)) return;
       if (progress[sermon.id]?.status === "downloading") return;
 
-      const domain = process.env.EXPO_PUBLIC_DOMAIN;
-      if (!domain) return;
+      // Use the canonical `getApiBase()` resolver so this hook honours
+      // the going-forward `EXPO_PUBLIC_API_URL` env var as well as the
+      // legacy `EXPO_PUBLIC_DOMAIN` fallback. Reading `EXPO_PUBLIC_DOMAIN`
+      // directly would silently break offline downloads on any future
+      // EAS profile that ships only the canonical variable.
+      const apiBase = getApiBase();
+      if (!apiBase) return;
 
       const rawUrl = sermon.localVideoUrl;
       const downloadUrl = rawUrl.startsWith("http")
         ? rawUrl
-        : `https://${domain}${rawUrl.startsWith("/") ? "" : "/"}${rawUrl}`;
+        : `${apiBase}${rawUrl.startsWith("/") ? "" : "/"}${rawUrl}`;
 
       setProgress((prev) => ({
         ...prev,

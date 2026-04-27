@@ -829,3 +829,15 @@ Did **not** add `broadcast-current-updated` to the supervisor's listener set —
 **Fix:** `useLocalVideos.ts` now imports `getApiBase` from `@/lib/apiBase` and composes its fetch URL as `${apiBase}/api/videos?limit=500`. Strictly additive — `getApiBase()` falls back to `EXPO_PUBLIC_DOMAIN` when `EXPO_PUBLIC_API_URL` is unset, so no existing deployment behavior changes.
 
 **Same anti-pattern lives in 2 sibling hooks (NOT touched in this pass):** `usePlaylists.ts:45` and `useDownloads.ts:94` both read `EXPO_PUBLIC_DOMAIN` directly. Same fix would apply mechanically. Plus `errorReporter.ts:12` has its own private duplicate of `getApiBase()` — works correctly today (handles both env vars) but is duplicate code that should eventually import from the canonical helper. Flagged here, not fixed, to keep this pass scoped to the file under verification.
+
+## §20 — Sibling-hook `getApiBase()` migration (Apr 27)
+
+**Continuation of §19 — same fix applied to the two sibling hooks identified there.** Both `usePlaylists.ts` and `useDownloads.ts` were reading `process.env.EXPO_PUBLIC_DOMAIN` directly, with the same latent failure mode: any future EAS profile that sets only the canonical `EXPO_PUBLIC_API_URL` (the documented going-forward env var) would silently break the playlists list and offline downloads while every hook using `getApiBase()` keeps working.
+
+**Fixes:**
+- `usePlaylists.ts` — local `getBase()` helper (which inlined the legacy env-var read) is now a one-line shim around `getApiBase()`. Kept the `getBase()` name to avoid touching call sites, behavior is now correct.
+- `useDownloads.ts:94` — replaced `process.env.EXPO_PUBLIC_DOMAIN` read with `getApiBase()`. Strictly additive: existing deployments with `EXPO_PUBLIC_DOMAIN` keep working via the helper's fallback.
+
+**NOT touched in this pass:** `errorReporter.ts:12` still has its own private duplicate of `getApiBase()`. That copy is functionally correct (handles both env vars) — it's just duplicate code, not a latent bug. Deferred as cosmetic refactor.
+
+Mobile typecheck clean after both edits. The three hot mobile hooks (`useLocalVideos`, `usePlaylists`, `useDownloads`) and the existing `useYouTubeChannel` now all share a single resolver, so a future env-var migration touches one file (`apiBase.ts`) instead of four.
