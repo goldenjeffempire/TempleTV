@@ -202,6 +202,25 @@ export function HlsVideoPlayer({
   // video is loaded and ready — the user just needs to confirm playback.
   const [needsPlayGesture, setNeedsPlayGesture] = useState(false);
 
+  // ── Network-aware "Reconnecting…" state ─────────────────────────────────
+  // True when the device has gone offline (or when an HLS NETWORK_ERROR
+  // fires while the device is offline) and we're waiting to retry. While
+  // this is true we suppress the hard error UI, keep the last visible
+  // frame on screen, surface a discreet "Reconnecting…" overlay, and
+  // automatically retry as soon as `online` fires. Critically, NETWORK
+  // errors raised while offline do NOT consume the per-URL retry budget,
+  // so a long disconnect doesn't burn through retries and skip the item.
+  const [isOfflineWaiting, setIsOfflineWaiting] = useState(false);
+  const isOfflineWaitingRef = useRef(false);
+  useEffect(() => { isOfflineWaitingRef.current = isOfflineWaiting; }, [isOfflineWaiting]);
+  const offlineRetryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearOfflineRetryTimer = useCallback(() => {
+    if (offlineRetryTimer.current) {
+      clearTimeout(offlineRetryTimer.current);
+      offlineRetryTimer.current = null;
+    }
+  }, []);
+
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const seekOsdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Watchdog: fires if the player makes no observable progress (no
@@ -255,6 +274,48 @@ export function HlsVideoPlayer({
     };
   }, []);
 
+  // ── Network status listener ────────────────────────────────────────────
+  // When the device flips offline, surface the "Reconnecting…" overlay
+  // immediately (don't wait for hls.js to surface the next NETWORK_ERROR).
+  // When it flips online, reset the per-URL retry budget, dismiss the
+  // overlay, and immediately ask the active hls.js engine to resume
+  // loading. The engine remembers where it was, so this typically picks
+  // up on the segment that was missing — no item skip, no manual retry.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleOnline = () => {
+      if (!isOfflineWaitingRef.current) return;
+      clearOfflineRetryTimer();
+      setRetries(0);
+      retriesRef.current = 0;
+      setIsOfflineWaiting(false);
+      const hls = getHls(activeSlotRef.current);
+      try { hls?.startLoad(); } catch { /* noop */ }
+      // Also kick the inactive slot (preload) — its engine may have died
+      // mid-fetch during the disconnect.
+      const inactive = activeSlotRef.current === "A" ? "B" : "A";
+      const inactiveHls = getHls(inactive);
+      try { inactiveHls?.startLoad(); } catch { /* noop */ }
+      armLoadWatchdog();
+    };
+    const handleOffline = () => {
+      // Don't claim "Reconnecting…" while we have nothing playing yet —
+      // the cinematic veil is the right surface for cold start.
+      if (!hasEverShownRef.current) return;
+      setIsOfflineWaiting(true);
+      setIsBuffering(false);
+    };
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+      clearOfflineRetryTimer();
+    };
+    // armLoadWatchdog and getHls are stable refs/callbacks
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── Attempt playback and surface autoplay-blocked errors ──────────────────
   // Browser autoplay policies can reject `play()` even after a user gesture
   // (e.g., when the navigation transition consumes the gesture). Catching the
@@ -284,6 +345,16 @@ export function HlsVideoPlayer({
     loadWatchdog.current = setTimeout(() => {
       const v = getVideo(activeSlotRef.current);
       if (v && v.readyState >= 2) return; // already playable, suppress
+      // Network-aware: if the device is offline (or already in our
+      // offline-waiting state) the right behavior is to keep the last
+      // visible frame and show "Reconnecting…", not a hard error. The
+      // online-event listener below will rearm playback automatically.
+      const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+      if (offline || isOfflineWaitingRef.current) {
+        setIsOfflineWaiting(true);
+        setIsBuffering(false);
+        return;
+      }
       if (typeof console !== "undefined" && console.warn) {
         console.warn("[HlsVideoPlayer] Load watchdog fired — no progress within", LOAD_WATCHDOG_MS, "ms");
       }
@@ -448,10 +519,45 @@ export function HlsVideoPlayer({
           setLoadedUrl(slot, null);
           return;
         }
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR && retriesRef.current < 3) {
-          hls.startLoad();
-          setRetries((r) => r + 1);
-          armLoadWatchdog();
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          // Network-aware: when the device itself is offline, do NOT
+          // consume the per-URL retry budget — a long disconnect would
+          // otherwise burn through 3 retries in seconds and skip the
+          // item. Hold the slot, surface the "Reconnecting…" overlay,
+          // and schedule a backoff retry. The window-level `online`
+          // listener below short-circuits the wait the moment the
+          // device reconnects.
+          const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+          if (offline || isOfflineWaitingRef.current) {
+            setIsOfflineWaiting(true);
+            setIsBuffering(false);
+            clearLoadWatchdog();
+            clearOfflineRetryTimer();
+            offlineRetryTimer.current = setTimeout(() => {
+              try { hls.startLoad(); } catch { /* noop */ }
+              armLoadWatchdog();
+            }, 4_000);
+            return;
+          }
+          if (retriesRef.current < 3) {
+            hls.startLoad();
+            setRetries((r) => r + 1);
+            armLoadWatchdog();
+          } else {
+            // Online but still failing: one last grace check — if the
+            // browser flips offline between fatal and the budget read,
+            // treat it as offline rather than skipping the item.
+            const flippedOffline = typeof navigator !== "undefined" && navigator.onLine === false;
+            if (flippedOffline) {
+              setIsOfflineWaiting(true);
+              setIsBuffering(false);
+              clearLoadWatchdog();
+              return;
+            }
+            clearLoadWatchdog();
+            setError("Stream unavailable. Please check your connection and try again.");
+            setIsBuffering(false);
+          }
         } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR && retriesRef.current < 3) {
           hls.recoverMediaError();
           setRetries((r) => r + 1);
@@ -1249,6 +1355,51 @@ export function HlsVideoPlayer({
               animation: "tt-spin 0.9s linear infinite",
             }}
           />
+        </div>
+      )}
+
+      {/* ── Reconnecting overlay (network-aware) ───────────────────────────
+          Shown when the device is offline or the active hls.js engine has
+          repeatedly failed with NETWORK_ERROR while offline. The last
+          rendered frame stays visible behind it so the viewer sees "we're
+          still here, waiting", not "the broadcast is broken". Suppressed
+          on cold start (no frame yet) and during a hard error (separate
+          surface for that). Auto-dismisses on `online`. */}
+      {hasEverShown && isOfflineWaiting && !error && (
+        <div
+          aria-live="polite"
+          aria-label="Reconnecting"
+          style={{
+            position: "absolute",
+            top: 18,
+            left: "50%",
+            transform: "translateX(-50%)",
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "9px 16px 9px 14px",
+            borderRadius: 999,
+            background: "rgba(13,17,23,0.78)",
+            backdropFilter: "blur(10px)",
+            WebkitBackdropFilter: "blur(10px)",
+            border: "1px solid rgba(255,255,255,0.10)",
+            zIndex: 8,
+          }}
+        >
+          <div
+            aria-hidden
+            style={{
+              width: 14,
+              height: 14,
+              borderRadius: "50%",
+              border: "2px solid rgba(255,255,255,0.18)",
+              borderTopColor: "#FFC97A",
+              animation: "tt-spin 0.9s linear infinite",
+            }}
+          />
+          <span style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: "0.04em", color: "#FFC97A" }}>
+            Reconnecting…
+          </span>
         </div>
       )}
 

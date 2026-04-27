@@ -100,6 +100,30 @@ export function LiveBroadcastVideo({
   useEffect(() => { positionSecsRef.current = positionSecs; }, [positionSecs]);
   useEffect(() => { serverTimeMsRef.current = serverTimeMs; }, [serverTimeMs]);
   useEffect(() => { onErrorRef.current = onError; }, [onError]);
+  // Network-aware "we're holding because the device is offline" flag.
+  // Set by the hls.js error handler when a NETWORK_ERROR fires while
+  // navigator.onLine is false; cleared by the `online` listener below
+  // after it kicks the slot's hls.js engine to resume loading. Suppresses
+  // the onError → broken-item-skip path for the duration of the outage.
+  const offlineWaitingRef = useRef(false);
+  // ── Online recovery: kick all live hls.js engines on reconnect ─────────
+  // The ambient hero has no visible "Reconnecting…" surface (the hero is
+  // intentionally chrome-less), but it still needs to recover. On `online`
+  // edge, ask every mounted hls.js instance (active + preload, fg + bg)
+  // to resume loading. The browser keeps the last decoded frame on the
+  // <video> element until the stream picks back up.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleOnline = () => {
+      if (!offlineWaitingRef.current) return;
+      offlineWaitingRef.current = false;
+      for (const ref of [hlsFgARef, hlsFgBRef, hlsBgARef, hlsBgBRef]) {
+        try { ref.current?.startLoad(); } catch { /* noop */ }
+      }
+    };
+    window.addEventListener("online", handleOnline);
+    return () => window.removeEventListener("online", handleOnline);
+  }, []);
 
   const url = item?.localVideoUrl ?? null;
   const itemId = item?.id ?? null;
@@ -192,7 +216,29 @@ export function LiveBroadcastVideo({
           }
         });
         hls.on(Hls.Events.ERROR, (_e, data) => {
-          if (data.fatal && isForeground && !cancelled) onErrorRef.current?.();
+          if (!data.fatal || !isForeground || cancelled) return;
+          // Network-aware: when the device is offline, the right
+          // behavior is to NOT escalate to onError — the parent surface
+          // would route that to a broken-item skip. Hold the slot,
+          // wait for `online`, and ask hls.js to resume loading; the
+          // slot's last decoded frame stays on screen in the meantime.
+          // Only NETWORK_ERROR is treated this way — MEDIA_ERROR and
+          // OTHER_ERROR still escalate so genuinely broken URLs roll
+          // forward to the next queue item.
+          const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+          const isNetwork = data.type === Hls.ErrorTypes.NETWORK_ERROR;
+          if (isNetwork && offline) {
+            offlineWaitingRef.current = true;
+            return;
+          }
+          if (isNetwork) {
+            // Online but a network-class error — try one quiet
+            // recovery before escalating. hls.startLoad is a no-cost
+            // re-fetch of the failing segment.
+            try { hls.startLoad(); } catch { /* noop */ }
+            return;
+          }
+          onErrorRef.current?.();
         });
       } else if (el.canPlayType("application/vnd.apple.mpegurl")) {
         armNativeOrMp4(el, isForeground);

@@ -241,6 +241,21 @@ export function LocalVideoPlayer({
   const WEB_LOAD_WATCHDOG_MS = 15_000;
   const [webNeedsPlayGesture, setWebNeedsPlayGesture] = useState(false);
 
+  // ── Network-aware "Reconnecting…" state (web only) ─────────────────────
+  // Set when the active web slot's hls.js engine fires a NETWORK_ERROR
+  // while `navigator.onLine === false`. While true, the player keeps the
+  // last decoded frame visible (no veil flicker, no skip), surfaces a
+  // small "Reconnecting…" pill, and waits for the `online` event below
+  // to reset retries and call hls.startLoad() on the active engine.
+  // Native (expo-av) handles this via the broader handleBroadcastError
+  // gate in app/player.tsx, which is already isOnline-aware.
+  const [webOfflineWaiting, setWebOfflineWaiting] = useState(false);
+  const webOfflineWaitingRef = useRef(false);
+  useEffect(() => { webOfflineWaitingRef.current = webOfflineWaiting; }, [webOfflineWaiting]);
+  const webOfflineRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // (online-recovery effect declared after the slot ref helpers below,
+  // because it needs setWebRetries which is declared down there.)
+
   // ── Mid-playback stall watchdog ────────────────────────────────────────
   // Distinct from the web-load watchdog above (which only catches "video
   // never started loading at all"). This one catches the third failure mode:
@@ -287,6 +302,39 @@ export function LocalVideoPlayer({
     if (slot === "A") webRetryRefA.current = n; else webRetryRefB.current = n;
   }, []);
   const otherWebSlot = (slot: "A" | "B"): "A" | "B" => slot === "A" ? "B" : "A";
+
+  // ── Online recovery (web only) ─────────────────────────────────────────
+  // Restart the active and inactive web slots' hls.js engines when the
+  // device flips back online, then dismiss the "Reconnecting…" pill. The
+  // browser keeps the last decoded frame on the <video> element until
+  // startLoad picks back up, so the transition from offline-waiting back
+  // to playing is seamless — no veil flicker, no skip.
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    if (typeof window === "undefined") return;
+    const handleOnline = () => {
+      if (!webOfflineWaitingRef.current) return;
+      if (webOfflineRetryRef.current) {
+        clearTimeout(webOfflineRetryRef.current);
+        webOfflineRetryRef.current = null;
+      }
+      const active = webActiveSlotRef.current;
+      const activeHls = active === "A" ? webHlsRefA.current : webHlsRefB.current;
+      try { activeHls?.startLoad(); } catch { /* noop */ }
+      const inactiveHls = active === "A" ? webHlsRefB.current : webHlsRefA.current;
+      try { inactiveHls?.startLoad(); } catch { /* noop */ }
+      setWebRetries(active, 0);
+      setWebOfflineWaiting(false);
+    };
+    window.addEventListener("online", handleOnline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      if (webOfflineRetryRef.current) {
+        clearTimeout(webOfflineRetryRef.current);
+        webOfflineRetryRef.current = null;
+      }
+    };
+  }, [setWebRetries]);
 
   const playerHeight = playerHeightOverride ?? Math.min(Math.round(width * (9 / 16)), 260);
 
@@ -600,6 +648,26 @@ export function LocalVideoPlayer({
         const retries = getWebRetries(slot);
         const NETWORK_ERROR = HlsClass.ErrorTypes?.NETWORK_ERROR ?? "networkError";
         const MEDIA_ERROR = HlsClass.ErrorTypes?.MEDIA_ERROR ?? "mediaError";
+        // Network-aware: if the device is offline, the right behavior is
+        // to PAUSE on the last visible frame and wait for `online`, NOT
+        // to consume the retry budget and skip the item. The window-
+        // level `online` listener below resets retries and calls
+        // hls.startLoad() the moment connectivity returns. Setting the
+        // offline-waiting flag also hides the loading veil and surfaces
+        // the "Reconnecting…" pill.
+        const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+        if (data.type === NETWORK_ERROR && (offline || webOfflineWaitingRef.current)) {
+          webOfflineWaitingRef.current = true;
+          setWebOfflineWaiting(true);
+          clearWebWatchdog();
+          // Schedule a backoff retry; if we're still offline when it
+          // fires, the next NETWORK_ERROR will land us right back here.
+          if (webOfflineRetryRef.current) clearTimeout(webOfflineRetryRef.current);
+          webOfflineRetryRef.current = setTimeout(() => {
+            try { hls.startLoad(); } catch { /* noop */ }
+          }, 4_000);
+          return;
+        }
         if (data.type === NETWORK_ERROR && retries < 3) {
           setWebRetries(slot, retries + 1);
           try { hls.startLoad(); } catch { /* noop */ }
@@ -610,6 +678,15 @@ export function LocalVideoPlayer({
           setWebRetries(slot, retries + 1);
           try { hls.recoverMediaError(); } catch { /* noop */ }
           armWatchdog();
+          return;
+        }
+        // Last grace check: if the device flipped offline between the
+        // budget-exhausted moment and this read, treat as offline-wait
+        // rather than skipping the item.
+        if (typeof navigator !== "undefined" && navigator.onLine === false) {
+          webOfflineWaitingRef.current = true;
+          setWebOfflineWaiting(true);
+          clearWebWatchdog();
           return;
         }
         clearWebWatchdog();
@@ -1012,6 +1089,36 @@ export function LocalVideoPlayer({
           <Feather name="layers" size={12} color="#FFF" />
           <Text style={styles.modeBadgeText}>
             {hlsMasterUrl ? "HLS ABR" : "MP4"}
+          </Text>
+        </View>
+      )}
+
+      {/* Reconnecting pill — surfaced when hls.js reports NETWORK_ERROR
+          while the device is offline. The last decoded frame stays
+          visible behind the pill so the viewer sees "we're holding for
+          you", not a black screen. Auto-dismisses on `online`. */}
+      {!isRadioMode && webOfflineWaiting && (
+        <View
+          pointerEvents="none"
+          style={{
+            position: "absolute",
+            top: 12,
+            alignSelf: "center",
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 8,
+            paddingVertical: 7,
+            paddingHorizontal: 14,
+            borderRadius: 999,
+            backgroundColor: "rgba(13,17,23,0.82)",
+            borderWidth: 1,
+            borderColor: "rgba(255,255,255,0.10)",
+            zIndex: 11,
+          }}
+        >
+          <ActivityIndicator size="small" color="#FFC97A" />
+          <Text style={{ color: "#FFC97A", fontSize: 12.5, fontWeight: "600" }}>
+            Reconnecting…
           </Text>
         </View>
       )}
