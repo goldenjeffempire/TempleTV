@@ -182,6 +182,12 @@ export type BroadcastRealtimeEvent =
   | "broadcast-queue-updated"
   | "broadcast-schedule-updated"
   | "broadcast-control-updated"
+  // Fired by the API whenever the public video library changes
+  // (admin upload finalize, edit, delete, transcoding completion, or
+  // YouTube sync). Consumers like `useLocalVideos` listen for this so
+  // newly uploaded videos appear in the Library tab within a few
+  // hundred ms instead of waiting on the next mount or manual refresh.
+  | "videos-library-updated"
   | "status"
   | "override-expired"
   | "yt-status"

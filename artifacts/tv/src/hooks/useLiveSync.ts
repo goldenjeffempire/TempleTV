@@ -68,6 +68,17 @@ export interface BroadcastSyncState {
    * Consumers that only need the projected fields above should keep using them.
    */
   payload: Record<string, unknown> | null;
+  /**
+   * Monotonically increasing counter incremented every time the API
+   * broadcasts a `videos-library-updated` SSE event (admin upload finalize,
+   * edit, delete, transcoding completion, YouTube sync). Library list
+   * consumers (`useSermons`, `useSearch`) watch this and refetch
+   * `/api/videos` whenever it changes — making admin uploads visible on TV
+   * within a few hundred ms instead of waiting on the 5-minute poll.
+   * Piggybacks on the same EventSource so we don't open a second SSE
+   * connection per page load.
+   */
+  libraryRevision: number;
 }
 
 const INITIAL: BroadcastSyncState = {
@@ -92,6 +103,7 @@ const INITIAL: BroadcastSyncState = {
   nextItem: null,
   viewerCount: null,
   payload: null,
+  libraryRevision: 0,
 };
 
 function apiUrl(path: string): string {
@@ -137,8 +149,12 @@ export function useLiveSync(): BroadcastSyncState {
       // broadcast-current-updated frames — otherwise an item-rotation event
       // would clobber the most recent viewer count (which arrives on the
       // separate `stream-health` channel) until the next health frame.
+      // Also preserve `libraryRevision` for the same reason: it's bumped by
+      // the `videos-library-updated` event handler below and would otherwise
+      // be reset on every broadcast frame.
       setState((prev) => ({
         viewerCount: prev.viewerCount,
+        libraryRevision: prev.libraryRevision,
         // `isLive` reflects "something live-class is airing right now."
         // Promoting `ytLive` here means a Hero/Player consumer that just
         // checks `sync.isLive` will treat an organic YouTube live the same
@@ -209,6 +225,16 @@ export function useLiveSync(): BroadcastSyncState {
             reconnectDelayRef.current = SSE_MIN_RETRY_MS;
             applyPayload(current);
           } catch {}
+        });
+
+        // Library-mutation signal. The API fires this whenever a video is
+        // added, edited, deleted, or finishes transcoding. Consumers like
+        // `useSermons` and `useSearch` watch the resulting `libraryRevision`
+        // counter and refetch — making admin uploads visible on TV within
+        // a few hundred ms.
+        es.addEventListener("videos-library-updated", () => {
+          if (destroyed) return;
+          setState((prev) => ({ ...prev, libraryRevision: prev.libraryRevision + 1 }));
         });
 
         // Stream-health frames carry the live viewer count; we just lift

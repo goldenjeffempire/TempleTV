@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchVideos, fetchLiveStatus, type VideoItem, type LiveStatus } from "../lib/api";
+import { useLiveSync } from "./useLiveSync";
 
 export interface Sermon extends VideoItem {
   category: string;
@@ -66,6 +67,13 @@ export function useSermons() {
   const [sermons, setSermons] = useState<Sermon[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // `useLiveSync` carries a `libraryRevision` counter that the server bumps
+  // (via the `videos-library-updated` SSE event) whenever the public video
+  // catalogue changes — admin upload finalize, edit, delete, transcoding
+  // completion, or YouTube sync. Watching it here means newly uploaded
+  // sermons appear on TV within a few hundred ms instead of waiting on the
+  // 5-minute background poll.
+  const { libraryRevision } = useLiveSync();
 
   useEffect(() => {
     let cancelled = false;
@@ -92,6 +100,22 @@ export function useSermons() {
     const timer = setInterval(() => load(false), POLL_INTERVAL_MS);
     return () => { cancelled = true; clearInterval(timer); };
   }, []);
+
+  // Refetch on every library-revision bump (skip the initial 0 value, which
+  // is already covered by the mount-time load above).
+  useEffect(() => {
+    if (libraryRevision === 0) return;
+    let cancelled = false;
+    fetchVideos()
+      .then((videos) => {
+        if (!cancelled) setSermons(categorize(videos));
+      })
+      .catch(() => {
+        // SSE-driven refetch failures are non-fatal — the next poll boundary
+        // or the next SSE bump will catch up.
+      });
+    return () => { cancelled = true; };
+  }, [libraryRevision]);
 
   const byCategory = useMemo(
     () =>

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { Sermon, SermonCategory } from "@/types";
 import { getApiBase } from "@/lib/apiBase";
+import { subscribeBroadcastEvents } from "@/services/broadcast";
 
 const CACHE_KEY = "@temple_tv/local_videos_cache";
 // Cache is only used as an offline fallback — fresh data is always fetched on mount.
@@ -166,6 +167,30 @@ export function useLocalVideos() {
       // a placeholder while the network request is in flight.
       fetchVideos(true);
     }
+  }, [fetchVideos]);
+
+  // Real-time refresh on admin uploads/edits/deletes. The API broadcasts
+  // `videos-library-updated` whenever the public video catalogue changes;
+  // listening here means newly uploaded videos appear in the Library tab
+  // within a few hundred ms instead of waiting on a manual refresh or app
+  // restart. Coalesce a brief window of bursty events (e.g. transcoding
+  // completion fires immediately after the upload finalize) into a single
+  // refetch to avoid hammering /api/videos.
+  useEffect(() => {
+    let coalesceTimer: ReturnType<typeof setTimeout> | null = null;
+    const subscription = subscribeBroadcastEvents({
+      "videos-library-updated": () => {
+        if (coalesceTimer) return;
+        coalesceTimer = setTimeout(() => {
+          coalesceTimer = null;
+          fetchVideos(true);
+        }, 250);
+      },
+    });
+    return () => {
+      if (coalesceTimer) clearTimeout(coalesceTimer);
+      subscription?.close();
+    };
   }, [fetchVideos]);
 
   const refresh = useCallback(() => fetchVideos(true), [fetchVideos]);

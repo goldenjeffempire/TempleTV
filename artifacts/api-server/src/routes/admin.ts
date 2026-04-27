@@ -35,7 +35,7 @@ import { buildLiveStatusPayload, getActiveLiveOverride } from "../lib/liveStatus
 import { getFailureStats } from "../lib/liveFailureReports";
 import { extractYouTubeVideoId, validateYouTubeLiveStream } from "../lib/youtubeUrl";
 import { cache } from "../lib/cache";
-import { invalidatePublicVideoCaches, invalidatePublicPlaylistCaches } from "../lib/publicCacheInvalidation";
+import { invalidatePublicVideoCaches, invalidatePublicPlaylistCaches, registerTrendingCacheKey } from "../lib/publicCacheInvalidation";
 import { logger } from "../lib/logger";
 import { metricsSnapshot, slowRequestsSnapshot } from "../middlewares/observability";
 import { signedUrlMetricsSnapshot } from "../lib/signedUrlMetrics";
@@ -3344,6 +3344,10 @@ router.get("/videos/trending", async (req, res) => {
     const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
     const sinceDays = Math.min(365, Math.max(1, Number(req.query.sinceDays) || 90));
     const cacheKey = `public:videos:trending:${limit}:${sinceDays}`;
+    // Track the variant so a later invalidation pass clears every
+    // (limit, sinceDays) the clients have actually used — not just the
+    // default — preventing stale lists after admin uploads/edits.
+    registerTrendingCacheKey(cacheKey);
 
     const payload = await cache.getOrSet(
       cacheKey,
