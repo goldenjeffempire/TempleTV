@@ -76,6 +76,28 @@ function isHealthzRequest(req: { url?: string }): boolean {
   return HEALTHZ_PATH_PATTERN.test(path);
 }
 
+// Large-media S3 redirect path — `/api/uploads/<uuid>.<ext>` returning 302.
+// HTML5 <video> elements do not cache 302 redirects, so EVERY HTTP Range
+// request a viewer's browser issues during playback round-trips this endpoint
+// (observed in production at 2026-04-27T12:08–12:09Z: same .mp4 URL hit ~20
+// times in 60s by a single client, all served in 2-5ms from the in-memory
+// signedUrlCache in `lib/s3RedirectFirst.ts`, no S3 round-trip, no presign).
+// The redirect is doing its job — but logging every Range probe at INFO
+// drowns the access log under a single asset and inflates log-storage cost
+// with zero operational value. We demote ONLY successful 302/304 redirects
+// for media extensions; any 4xx/5xx (auth failure, presign error, missing
+// file) still logs at its normal level so real failures stay loud.
+const UPLOAD_REDIRECT_PATH_PATTERN =
+  /^\/api\/uploads\/[^/]+\.(?:mp4|m4v|mov|webm|mkv|m4a|mp3)$/i;
+function isUploadMediaRedirect(
+  req: { url?: string },
+  res: { statusCode: number },
+): boolean {
+  if (res.statusCode !== 302 && res.statusCode !== 304) return false;
+  const path = (req.url ?? "/").split("?")[0];
+  return UPLOAD_REDIRECT_PATH_PATTERN.test(path);
+}
+
 app.use(
   pinoHttp({
     logger,
@@ -111,6 +133,13 @@ app.use(
       // server-initiated close on shutdown) still log normally.
       const aborted = (req as unknown as { aborted?: boolean }).aborted === true;
       if (aborted && isSseResponse(req, res)) return "debug";
+      // Successful LB liveness probe and large-media S3-redirect chatter —
+      // see UPLOAD_REDIRECT_PATH_PATTERN comment block above for the upload
+      // case rationale, and HEALTHZ_PATH_PATTERN for the /healthz one. Both
+      // are pure infrastructure noise at INFO; failures (5xx for healthz,
+      // any non-302/304 for uploads) still surface at their normal levels.
+      if (res.statusCode === 200 && isHealthzRequest(req)) return "debug";
+      if (isUploadMediaRedirect(req, res)) return "debug";
       // Preserve current production behaviour for everything else: 4xx and
       // 2xx/3xx all log at INFO, matching the existing access-log shape that
       // downstream observability pipelines and dashboards already key off.
