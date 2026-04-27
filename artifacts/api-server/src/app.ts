@@ -56,6 +56,26 @@ function isSseResponse(req: { url?: string }, res: { getHeader: (k: string) => u
   return SSE_PATH_PATTERN.test(path);
 }
 
+// Lifecycle / readiness probe path — `/healthz` is mounted under the API
+// router as `/api/healthz`. The endpoint legitimately returns 503 in three
+// distinct cases (`starting` during boot warm-up, `draining` after SIGTERM,
+// `db_down` if the DB is unreachable), and the LB depends on those 503s to
+// route traffic correctly. The first two are NORMAL, expected, frequent
+// (every deploy a new instance returns dozens of 503s before markReady()
+// flips the gate; every shutdown returns 503s during the drain window).
+// Treating them as ERROR-level pollutes Sentry with one false alert per
+// deploy per instance and trains operators to ignore real failures.
+//
+// We demote ALL /healthz 503s to INFO at the request-log layer; the genuine
+// `db_down` case is loudly surfaced by a dedicated `logger.warn` inside
+// `routes/health.ts` itself, so the real signal stays loud while the
+// lifecycle-routing chatter stays quiet.
+const HEALTHZ_PATH_PATTERN = /^(?:\/api)?\/healthz(?:\/|$)/;
+function isHealthzRequest(req: { url?: string }): boolean {
+  const path = (req.url ?? "/").split("?")[0];
+  return HEALTHZ_PATH_PATTERN.test(path);
+}
+
 app.use(
   pinoHttp({
     logger,
@@ -78,6 +98,11 @@ app.use(
       },
     },
     customLogLevel(req, res, err) {
+      // /healthz 503s are intentional lifecycle/readiness signaling, not a
+      // process error — see the HEALTHZ_PATH_PATTERN comment block above for
+      // the full rationale. Demote BEFORE the >=500 check so they never trip
+      // the error branch and never fan out to Sentry.
+      if (res.statusCode === 503 && isHealthzRequest(req)) return "info";
       // Surface real failures loudly.
       if (err || res.statusCode >= 500) return "error";
       // Silently drop "request aborted" log entries for SSE streams — the

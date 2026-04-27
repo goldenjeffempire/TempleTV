@@ -71,6 +71,21 @@ router.get("/healthz", async (_req, res) => {
   }
 
   if (!dbOk) {
+    // We deliberately demote /healthz 503s to INFO at the request-log layer
+    // (see app.ts customLogLevel + HEALTHZ_PATH_PATTERN), because `starting`
+    // and `draining` 503s are routine LB signaling, not errors. The flip
+    // side is that the genuinely-bad `db_down` case — process up but DB
+    // unreachable, so the LB will route this pod out — must surface its own
+    // explicit signal at WARN so we still see it in logs and Sentry instead
+    // of having it silently disappear into the access-log noise.
+    logger.warn(
+      {
+        phase: lifecycle.phase,
+        uptimeSec: lifecycle.uptimeSec,
+        dbProbeBudgetMs: DB_PROBE_BUDGET_MS,
+      },
+      "/healthz returning 503 db_down — DB unreachable within probe budget",
+    );
     res.status(503).json({
       status: "db_down",
       phase: lifecycle.phase,
