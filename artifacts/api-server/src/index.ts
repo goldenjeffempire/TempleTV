@@ -216,6 +216,9 @@ function startApiSchedulers() {
 }
 
 let server: http.Server | null = null;
+// Worker-only ref'd keep-alive (see the long comment in the worker branch
+// below). Cleared during graceful shutdown so SIGTERM can drain the loop.
+let workerKeepAlive: ReturnType<typeof setInterval> | null = null;
 
 if (RUNS_API) {
   const rawPort = process.env["PORT"];
@@ -247,9 +250,35 @@ if (RUNS_API) {
     process.exit(1);
   });
 } else {
-  // Pure worker process: no HTTP listener. The retry interval (and any
-  // in-flight ffmpeg child) keeps the event loop alive. Render `worker`
-  // services do not expose a port and do not require a health endpoint.
+  // Pure worker process: no HTTP listener. Render `worker` services do not
+  // expose a port and do not require a health endpoint.
+  //
+  // ── Event-loop keep-alive (the silent-exit fix) ───────────────────────────
+  // Every timer the worker process owns is intentionally `.unref()`'d so that
+  // a SIGTERM during graceful shutdown drains them cleanly:
+  //   - transcoder.ts:retryTickHandle.unref()
+  //   - cache.ts:MemoryCache gc interval .unref()
+  //   - cache.ts:PgCache       gc interval .unref()
+  // In RUN_MODE=all (local dev / the historical single-process deploy) the
+  // HTTP `server.listen()` is a ref'd handle that holds the event loop open
+  // forever, which masked the fact that the worker side has nothing keeping
+  // it alive on its own. The moment we split the worker off into its own
+  // Render service (RUN_MODE=worker, no HTTP server, no API schedulers), the
+  // event loop drains as soon as the cache `init()` promise settles — Node
+  // exits cleanly with code 0, and Render reports
+  //   "Application exited early while running your code"
+  // and restarts in an infinite loop with no error in the logs.
+  //
+  // The fix: install a single ref'd interval that does nothing but keep the
+  // event loop alive. It runs once a minute (negligible cost), unref'd by
+  // SIGTERM via the shutdown handler, so graceful shutdown still works.
+  const keepAlive = setInterval(() => {
+    // intentional no-op — sole purpose is to hold the event loop open
+  }, 60_000);
+  // Stash on the shutdown path so SIGTERM stops it (otherwise the 15s force
+  // timer in shutdown() would fire and we'd exit with code 1 every redeploy).
+  workerKeepAlive = keepAlive;
+
   logger.info("Starting in worker-only mode (no HTTP listener)");
   const verdict = logInfrastructureStatus();
   if (verdict.kind === "degraded-standby") {
@@ -321,6 +350,14 @@ function shutdown(signal: string) {
         stopRetryTick();
       } catch (err) {
         logger.warn({ err }, "Error stopping retry tick");
+      }
+      // Release the ref'd keep-alive interval so the event loop can drain
+      // and the process can exit on its own without waiting for the 15 s
+      // forceTimer to fire (which would exit with code 1 and cause Render
+      // to misreport the redeploy as a crash).
+      if (workerKeepAlive) {
+        clearInterval(workerKeepAlive);
+        workerKeepAlive = null;
       }
     }
 

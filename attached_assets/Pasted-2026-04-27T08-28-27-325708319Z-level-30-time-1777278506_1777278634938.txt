@@ -1,0 +1,50 @@
+2026-04-27T08:28:27.325708319Z {"level":30,"time":1777278506434,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","objectStorage":{"provider":"aws-s3","configured":true,"bucket":"temple-tv-media-storage","region":"eu-north-1","publicPaths":"not set","privateDir":"not set"},"distributedCache":{"redis":"not configured","pgCache":"active (cache_entries table)","note":"PostgreSQL distributed cache active across all instances"},"hlsTranscoder":{"ffmpegPath":"system PATH","cloudUpload":"enabled (AWS S3)","runsInThisProcess":true},"msg":"Infrastructure status at startup"}
+2026-04-27T08:28:27.325715189Z {"level":30,"time":1777278507317,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","ffmpeg":"/usr/bin/ffmpeg","ffprobe":"/usr/bin/ffprobe","ffmpegVersion":"ffmpeg version 5.1.8-0+deb12u1 Copyright (c) 2000-2025 the FFmpeg developers","msg":"FFmpeg binaries verified"}
+2026-04-27T08:28:27.325719659Z {"level":30,"time":1777278507322,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","msg":"FFmpeg preflight passed — transcoding pipeline active"}
+2026-04-27T08:28:27.325722419Z {"level":30,"time":1777278507323,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","intervalMs":30000,"msg":"Transcoding retry tick started"}
+2026-04-27T08:28:28.10966369Z {"level":30,"time":1777278508109,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","msg":"PostgreSQL distributed cache ready"}
+2026-04-27T08:28:43.493013098Z ==> Running 'pnpm --filter @workspace/api-server run start'
+2026-04-27T08:28:43.926095977Z ! Corepack is about to download https://registry.npmjs.org/pnpm/-/pnpm-10.33.2.tgz
+2026-04-27T08:28:47.552050736Z 
+2026-04-27T08:28:47.552082087Z > @workspace/api-server@0.0.0 start /opt/render/project/src/artifacts/api-server
+2026-04-27T08:28:47.552087368Z > node --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs
+2026-04-27T08:28:47.552090128Z 
+2026-04-27T08:28:50.685609978Z {"level":30,"time":1777278530684,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","msg":"Rate limiter using PostgreSQL-backed store (multi-instance safe)"}
+2026-04-27T08:28:50.876514007Z [Sentry] express is not instrumented. Please make sure to initialize Sentry in a separate file that you `--import` when running node, see: https://docs.sentry.io/platforms/javascript/guides/express/install/esm/.
+2026-04-27T08:28:51.159633262Z {"level":30,"time":1777278530874,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","runMode":"worker","runsApi":false,"runsWorker":true,"msg":"Process role resolved"}
+2026-04-27T08:28:51.159669663Z {"level":30,"time":1777278530875,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","msg":"Starting in worker-only mode (no HTTP listener)"}
+2026-04-27T08:28:51.159674573Z {"level":30,"time":1777278530875,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","objectStorage":{"provider":"aws-s3","configured":true,"bucket":"temple-tv-media-storage","region":"eu-north-1","publicPaths":"not set","privateDir":"not set"},"distributedCache":{"redis":"not configured","pgCache":"active (cache_entries table)","note":"PostgreSQL distributed cache active across all instances"},"hlsTranscoder":{"ffmpegPath":"system PATH","cloudUpload":"enabled (AWS S3)","runsInThisProcess":true},"msg":"Infrastructure status at startup"}
+2026-04-27T08:28:51.159682343Z {"level":30,"time":1777278531104,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","ffmpeg":"/usr/bin/ffmpeg","ffprobe":"/usr/bin/ffprobe","ffmpegVersion":"ffmpeg version 5.1.8-0+deb12u1 Copyright (c) 2000-2025 the FFmpeg developers","msg":"FFmpeg binaries verified"}
+2026-04-27T08:28:51.159686003Z {"level":30,"time":1777278531152,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","msg":"FFmpeg preflight passed — transcoding pipeline active"}
+2026-04-27T08:28:51.159689023Z {"level":30,"time":1777278531154,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","intervalMs":30000,"msg":"Transcoding retry tick started"}
+2026-04-27T08:28:51.884573251Z {"level":30,"time":1777278531884,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","msg":"PostgreSQL distributed cache ready"}
+2026-04-27T08:29:18.236944682Z ==> Running 'pnpm --filter @workspace/api-server run start'
+2026-04-27T08:29:18.621220923Z ! Corepack is about to download https://registry.npmjs.org/pnpm/-/pnpm-10.33.2.tgz
+2026-04-27T08:29:21.717721975Z 
+2026-04-27T08:29:21.717762326Z > @workspace/api-server@0.0.0 start /opt/render/project/src/artifacts/api-server
+2026-04-27T08:29:21.717767796Z > node --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs
+2026-04-27T08:29:21.717770486Z 
+2026-04-27T08:29:24.243767438Z {"level":30,"time":1777278564243,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","msg":"Rate limiter using PostgreSQL-backed store (multi-instance safe)"}
+2026-04-27T08:29:24.414794265Z [Sentry] express is not instrumented. Please make sure to initialize Sentry in a separate file that you `--import` when running node, see: https://docs.sentry.io/platforms/javascript/guides/express/install/esm/.
+2026-04-27T08:29:24.628530782Z {"level":30,"time":1777278564415,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","runMode":"worker","runsApi":false,"runsWorker":true,"msg":"Process role resolved"}
+2026-04-27T08:29:24.628556972Z {"level":30,"time":1777278564415,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","msg":"Starting in worker-only mode (no HTTP listener)"}
+2026-04-27T08:29:24.628562633Z {"level":30,"time":1777278564415,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","objectStorage":{"provider":"aws-s3","configured":true,"bucket":"temple-tv-media-storage","region":"eu-north-1","publicPaths":"not set","privateDir":"not set"},"distributedCache":{"redis":"not configured","pgCache":"active (cache_entries table)","note":"PostgreSQL distributed cache active across all instances"},"hlsTranscoder":{"ffmpegPath":"system PATH","cloudUpload":"enabled (AWS S3)","runsInThisProcess":true},"msg":"Infrastructure status at startup"}
+2026-04-27T08:29:24.628568133Z {"level":30,"time":1777278564618,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","ffmpeg":"/usr/bin/ffmpeg","ffprobe":"/usr/bin/ffprobe","ffmpegVersion":"ffmpeg version 5.1.8-0+deb12u1 Copyright (c) 2000-2025 the FFmpeg developers","msg":"FFmpeg binaries verified"}
+2026-04-27T08:29:24.628571843Z {"level":30,"time":1777278564624,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","msg":"FFmpeg preflight passed — transcoding pipeline active"}
+2026-04-27T08:29:24.628574563Z {"level":30,"time":1777278564625,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","intervalMs":30000,"msg":"Transcoding retry tick started"}
+2026-04-27T08:29:25.3096311Z {"level":30,"time":1777278565309,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","msg":"PostgreSQL distributed cache ready"}
+2026-04-27T08:30:09.430689973Z ==> Running 'pnpm --filter @workspace/api-server run start'
+2026-04-27T08:30:09.822971079Z ! Corepack is about to download https://registry.npmjs.org/pnpm/-/pnpm-10.33.2.tgz
+2026-04-27T08:30:13.500595284Z 
+2026-04-27T08:30:13.500643276Z > @workspace/api-server@0.0.0 start /opt/render/project/src/artifacts/api-server
+2026-04-27T08:30:13.500648385Z > node --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs
+2026-04-27T08:30:13.500651116Z 
+2026-04-27T08:30:16.333398334Z {"level":30,"time":1777278616332,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","msg":"Rate limiter using PostgreSQL-backed store (multi-instance safe)"}
+2026-04-27T08:30:16.468182686Z [Sentry] express is not instrumented. Please make sure to initialize Sentry in a separate file that you `--import` when running node, see: https://docs.sentry.io/platforms/javascript/guides/express/install/esm/.
+2026-04-27T08:30:16.730241178Z {"level":30,"time":1777278616468,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","runMode":"worker","runsApi":false,"runsWorker":true,"msg":"Process role resolved"}
+2026-04-27T08:30:16.730260788Z {"level":30,"time":1777278616468,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","msg":"Starting in worker-only mode (no HTTP listener)"}
+2026-04-27T08:30:16.730264788Z {"level":30,"time":1777278616468,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","objectStorage":{"provider":"aws-s3","configured":true,"bucket":"temple-tv-media-storage","region":"eu-north-1","publicPaths":"not set","privateDir":"not set"},"distributedCache":{"redis":"not configured","pgCache":"active (cache_entries table)","note":"PostgreSQL distributed cache active across all instances"},"hlsTranscoder":{"ffmpegPath":"system PATH","cloudUpload":"enabled (AWS S3)","runsInThisProcess":true},"msg":"Infrastructure status at startup"}
+2026-04-27T08:30:16.730268508Z {"level":30,"time":1777278616721,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","ffmpeg":"/usr/bin/ffmpeg","ffprobe":"/usr/bin/ffprobe","ffmpegVersion":"ffmpeg version 5.1.8-0+deb12u1 Copyright (c) 2000-2025 the FFmpeg developers","msg":"FFmpeg binaries verified"}
+2026-04-27T08:30:16.730271388Z {"level":30,"time":1777278616726,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","msg":"FFmpeg preflight passed — transcoding pipeline active"}
+2026-04-27T08:30:16.730312069Z {"level":30,"time":1777278616728,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","intervalMs":30000,"msg":"Transcoding retry tick started"}
+2026-04-27T08:30:17.415022929Z {"level":30,"time":1777278617414,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-645b46c8f4-nlrcg","msg":"PostgreSQL distributed cache ready"}
