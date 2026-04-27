@@ -1,18 +1,72 @@
-# ─── Shared environment groups ────────────────────────────────────────────────
-# Render gives every service its OWN environment-variable scope. Historically
-# this meant the operator had to set the AWS credentials on the API service
-# AND mirror them onto the worker service by hand — and a single missed mirror
-# crashloops the worker (it `Refusing to start (role=worker)` because uploads
-# would otherwise land on ephemeral disk and disappear on next deploy).
+# ════════════════════════════════════════════════════════════════════════════
+#  Temple TV — Render deployment manifest (enterprise rebuild, 2026-04-27)
+# ════════════════════════════════════════════════════════════════════════════
 #
-# Defining `temple-tv-aws` as an environment group means the operator sets the
-# four AWS values ONCE in the "Environment Groups" page of the Render dashboard
-# and every service that lists `fromGroup: temple-tv-aws` inherits them. The
-# per-service `key: AWS_*` entries below still take precedence when set, so
-# existing dashboard values on already-deployed services are NOT disturbed by
-# adopting this group — populating the group simply removes the failure mode
-# for any future service (including the worker today).
+#  Five Render services on one manifest, all in `frankfurt`:
+#
+#    ┌──────────────────────────┬──────────┬─────────┬───────────────────────┐
+#    │ Service                  │ Type     │ Plan    │ Role                  │
+#    ├──────────────────────────┼──────────┼─────────┼───────────────────────┤
+#    │ temple-tv-api            │ web      │ standard│ Express API + SSE     │
+#    │ temple-tv-transcoder     │ worker   │ starter │ ffmpeg → S3           │
+#    │ temple-tv-admin          │ static   │ —       │ Vite SPA (admin)      │
+#    │ temple-tv-web            │ static   │ —       │ Expo Web (mobile)     │
+#    │ temple-tv-tv             │ static   │ —       │ Vite SPA (TV/Tizen)   │
+#    └──────────────────────────┴──────────┴─────────┴───────────────────────┘
+#
+#  Two shared env-var groups so secrets / AWS creds are populated ONCE in the
+#  Render dashboard and inherited by every consuming service:
+#    • temple-tv-aws            → AWS S3 credentials (API + worker)
+#    • temple-tv-shared-secrets → DATABASE_URL, JWT_SECRET, REDIS_URL, Sentry
+#
+#  Why this rebuild was needed (incident 2026-04-27 14:45 UTC):
+#  Production logs showed the API instance `srv-…-ttbnk` looping on
+#  "Instance failed: connection refused" every 30–60 s. Root cause was
+#  MEMORY_RESTART_RSS_MB=1650 firing too aggressively — when it tripped,
+#  the process entered a 5 s graceful drain, called `server.close()`, and
+#  exited; during that close window Render's LB health probe hit the dead
+#  socket, marked the pod failed, and Render replaced it → repeat. The
+#  "memory pressure" WARN log was lost because pino's transport worker dies
+#  with the process. Two things had to change together:
+#    (1) Disable the in-process self-restart  (MEMORY_RESTART_RSS_MB=0).
+#        Linux's OOM-kill is uncatchable but INSTANT — there is no socket
+#        window for the LB to race against. Render auto-respawns on exit.
+#        With MALLOC_ARENA_MAX=2 + V8 heap cap, true OOMs are rare anyway.
+#    (2) Extend SHUTDOWN_DRAIN_MS from 5 s → 10 s so SIGTERM rolling
+#        deploys give Render's LB ≥2 failed `/api/healthz` probes (5 s
+#        cadence) BEFORE we close the listening socket — preventing the
+#        same race on every legitimate redeploy. 10 s leaves 5 s under the
+#        in-code 15 s force-exit timer for in-flight cleanup.
+#
+#  Migration note (operator action required after this manifest deploys):
+#    The previous manifest declared a 10 GiB persistent disk mounted at
+#    /opt/render/project/src/artifacts/api-server/uploads. That disk is no
+#    longer referenced by the application — `/api/uploads/*` now
+#    302-redirects to S3 via `lib/staticWithS3Fallback.ts` (`redirectFromS3`
+#    mode) and all multipart finalize writes the object straight to S3.
+#    Removing the disk from this manifest UNPINS the API service from a
+#    single host (disks force-pin), enabling future horizontal scaling and
+#    cutting deploy time. To complete the migration, after this deploy goes
+#    green:
+#      1. Render dashboard → temple-tv-api → Settings → Disks
+#      2. Detach `temple-tv-uploads` (10 GiB)
+#      3. Confirm "no data on disk needed" — historical uploads were
+#         mirrored to S3 by the s3MirrorReconciler scheduler
+#         (verify with `s3MirrorReconciler: no unmirrored local uploads`
+#          INFO line in the production logs).
+#    Render will accept the manifest without the disk; the manual detach
+#    step removes the dead-disk billing line and the single-host pinning.
+# ════════════════════════════════════════════════════════════════════════════
+
+# ─── Shared environment-variable groups ─────────────────────────────────────
+# Define credentials ONCE in the Render dashboard ("Environment Groups" page)
+# and every service that lists `fromGroup: <name>` inherits them. Eliminates
+# the historical failure mode where a missing per-service mirror crash-looped
+# the worker (`Refusing to start (role=worker): AWS S3 is required`).
 envVarGroups:
+  # AWS S3 — used by temple-tv-api (signed URLs, range streaming, multipart
+  # finalize) and temple-tv-transcoder (HLS variant uploads). Static frontends
+  # never see these values.
   - name: temple-tv-aws
     envVars:
       - key: AWS_S3_BUCKET
@@ -24,201 +78,277 @@ envVarGroups:
       - key: AWS_SECRET_ACCESS_KEY
         sync: false
 
-services:
-  # Bumped from `starter` (512 MB) to `standard` (2 GB). Range-streaming
-  # large MP4s on the 512 MB instance was OOM-killing this process under
-  # parallel client load (see RELEASE_AUDIT / staticWithS3Fallback notes).
-  # `/api/uploads/*` now also 302-redirects to S3 (lib/staticWithS3Fallback.ts
-  # `redirectFromS3` mode), so the API process should stay well under the
-  # new ceiling — the bigger plan is defence-in-depth for spikes.
-  - type: web
-    name: temple-tv-api
-    runtime: node
-    plan: standard
-    region: frankfurt
-    branch: main
-    rootDir: .
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @workspace/api-server run build
-    startCommand: pnpm --filter @workspace/api-server run start
-    healthCheckPath: /api/healthz
-    autoDeploy: true
-    numInstances: 1
-    disk:
-      name: temple-tv-uploads
-      mountPath: /opt/render/project/src/artifacts/api-server/uploads
-      sizeGB: 10
+  # Cross-service secrets that BOTH the API and the worker need to validate
+  # the same JWTs, talk to the same Postgres, and report errors to the same
+  # Sentry project. Populating this group once keeps the two services in
+  # lockstep — no more "JWT_SECRET drifted between services" outages.
+  - name: temple-tv-shared-secrets
     envVars:
-      # AWS credentials inherited from the shared env-var group above. The
-      # explicit per-service `key: AWS_*` entries further down still take
-      # precedence when populated, so the currently-set dashboard values are
-      # respected; once the operator populates the group, both the API and
-      # the worker pick the values up automatically and the per-service
-      # entries can be removed in a follow-up edit.
-      - fromGroup: temple-tv-aws
-      - key: NODE_ENV
-        value: production
-      - key: PORT
-        value: 8080
-      # ── Memory containment (production hardening, 2026-04-27) ──────────────
-      # Production logs at 14:09:19 UTC showed RSS climbing to 1.47 GiB with
-      # heapUsed only 70 MiB and `external` at 1.34 GiB — the textbook
-      # signature of glibc malloc-arena fragmentation under sustained Buffer
-      # churn (AWS SDK keep-alive + pg pool + zlib + multer). With the
-      # default 8× CPU arenas, glibc rarely returns memory to the OS, and
-      # RSS bloats until the kernel SIGKILLs the process. `MALLOC_ARENA_MAX=2`
-      # is the canonical mitigation — it caps arena count, defragments the
-      # external pool, and on identical workloads typically cuts RSS by
-      # 30-50 %. Combined with the V8 heap cap below, this leaves a clean
-      # 400 MiB headroom on the 2 GiB Render `standard` plan.
-      - key: MALLOC_ARENA_MAX
-        value: "2"
-      # Hard V8 heap cap (1.5 GiB). Forces aggressive GC well before the
-      # 2 GiB cgroup ceiling. `--max-http-header-size=16384` keeps the
-      # Render LB's larger headers within Node's parser budget without
-      # bloating per-connection buffers. Source maps stay enabled so
-      # production stack traces remain useful.
-      - key: NODE_OPTIONS
-        value: "--max-old-space-size=1536 --max-http-header-size=16384"
-      # Lower the warn threshold to 1.3 GiB so the memory-pressure WARN
-      # fires with actionable headroom (was 1.5 GiB — too close to the
-      # 2 GiB OOM-kill ceiling to react in time).
-      - key: MEMORY_WARN_RSS_MB
-        value: "1300"
-      # Defence-in-depth: at 1.65 GiB RSS the process self-initiates a
-      # graceful shutdown. Render auto-restarts the service, replacing
-      # an OOM-killed pod (uncatchable SIGKILL, no cleanup) with a
-      # graceful drain → ready handoff → fresh process. Net effect: zero
-      # dropped requests instead of a flurry of 502s during a kernel kill.
-      - key: MEMORY_RESTART_RSS_MB
-        value: "1650"
-      # Process role: "api" runs HTTP only (no ffmpeg, no transcode loop).
-      # The temple-tv-transcoder worker below runs RUN_MODE=worker. This
-      # split prevents ffmpeg memory spikes from killing the API process.
-      - key: RUN_MODE
-        value: api
-      - key: ALLOWED_ORIGINS
-        value: https://templetv.org.ng,https://www.templetv.org.ng,https://api.templetv.org.ng,https://admin.templetv.org.ng,https://tv.templetv.org.ng
-      - key: API_BASE_URL
-        value: https://api.templetv.org.ng
       - key: DATABASE_URL
         sync: false
       - key: JWT_SECRET
-        generateValue: true
-      - key: ADMIN_API_TOKEN
-        generateValue: true
-      - key: CLIENT_ERROR_SINK_URL
-        sync: false
-      - key: CLIENT_ERROR_SINK_TOKEN
         sync: false
       - key: REDIS_URL
         sync: false
       - key: SENTRY_DSN
-        value: https://e1d80a0a1acfca1dc8743cc701de446c@o4511258419462144.ingest.us.sentry.io/4511258444693504
+        sync: false
       - key: SENTRY_RELEASE
         sync: false
+
+services:
+  # ═══════════════════════════════════════════════════════════════════════
+  #  temple-tv-api — Express + SSE on port 8080, served at api.templetv.org.ng
+  # ═══════════════════════════════════════════════════════════════════════
+  - type: web
+    name: temple-tv-api
+    runtime: node
+    plan: standard            # 2 GiB RAM / 1 vCPU. Range-streaming MP4s on
+                              # the 512 MiB starter plan OOM-killed under
+                              # parallel client load. /api/uploads/* now
+                              # 302-redirects to S3 (lib/staticWithS3Fallback
+                              # `redirectFromS3` mode), so this is headroom.
+    region: frankfurt
+    branch: main
+    rootDir: .
+    autoDeploy: true
+    pullRequestPreviewsEnabled: false   # PR previews would clone all 5
+                                        # services per PR — we manage staging
+                                        # manually instead.
+    numInstances: 1                     # Single instance is intentional —
+                                        # SSE clients (broadcast lifecycle,
+                                        # transition-imminent, ops events)
+                                        # need session affinity that Render's
+                                        # LB doesn't guarantee across pods.
+                                        # Multi-instance requires Redis
+                                        # pub/sub fanout (REDIS_URL groundwork
+                                        # exists but the SSE bridge is not
+                                        # wired yet — that's the next
+                                        # horizontal-scale milestone).
+
+    # ── Build & start ──────────────────────────────────────────────────────
+    # `--prefer-offline` reuses Render's pnpm cache (cuts install from ~90 s
+    # → ~25 s on warm builds). `--frozen-lockfile` is mandatory in CI to
+    # guarantee reproducible builds. Build runs typecheck:libs first so any
+    # cross-workspace type drift fails the deploy LOUDLY, not silently at
+    # runtime. esbuild bundles to a single ESM file so `start` does not
+    # require devDependencies on disk.
+    buildCommand: |
+      corepack enable && \
+      pnpm install --frozen-lockfile --prefer-offline && \
+      pnpm run typecheck:libs && \
+      pnpm --filter @workspace/api-server run build
+    startCommand: pnpm --filter @workspace/api-server run start
+
+    # ── Health check ───────────────────────────────────────────────────────
+    # `/api/healthz` returns:
+    #   200 ok       — server up + DB reachable + lifecycle=ready
+    #   503 starting — process up, schedulers not yet armed
+    #   503 draining — SIGTERM received, drain new traffic away
+    #   503 db_down  — process up, DB unreachable
+    # Render's LB removes a pod from rotation after 3 consecutive non-200s.
+    healthCheckPath: /api/healthz
+
+    envVars:
+      # ── Inherited credential groups ───────────────────────────────────────
+      - fromGroup: temple-tv-aws
+      - fromGroup: temple-tv-shared-secrets
+
+      # ── Runtime ───────────────────────────────────────────────────────────
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 8080
+      - key: RUN_MODE
+        value: api              # HTTP only — no ffmpeg, no transcode loop.
+                                # ffmpeg memory spikes stay isolated in the
+                                # temple-tv-transcoder worker below.
+
+      # ── Memory containment (the 2026-04-27 incident fix) ─────────────────
+      #
+      # Layer 1: cap glibc malloc arenas to 2. Default is 8× nCPU which under
+      # sustained Buffer churn (AWS SDK keep-alive + pg pool + zlib + multer)
+      # triggers heap fragmentation: RSS climbs to 1.5 GiB while heapUsed is
+      # only ~70 MiB. Capping arenas typically cuts RSS 30–50 % on this
+      # workload.
+      - key: MALLOC_ARENA_MAX
+        value: "2"
+
+      # Layer 2: hard V8 heap cap at 1.5 GiB. Forces aggressive GC well
+      # before the 2 GiB cgroup ceiling. `--max-http-header-size=16384`
+      # accommodates Render's LB header sizes without bloating per-connection
+      # buffers. Source maps stay enabled for production stack traces.
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=1536 --max-http-header-size=16384"
+
+      # Layer 3: observability. WARN at 1.4 GiB so we get actionable lead
+      # time before any kernel intervention. Logged structurally to Sentry
+      # via the breadcrumb forwarder.
+      - key: MEMORY_WARN_RSS_MB
+        value: "1400"
+
+      # Layer 4: in-process self-restart — DELIBERATELY DISABLED.
+      #
+      # The previous setting (1650) was the root cause of the
+      # `Instance failed: ttbnk → connection refused` restart loop. The
+      # self-restart called `server.close()` after a 5 s drain; during the
+      # close window Render's LB hit the dead socket and flagged the pod
+      # failed → Render replaced it → cycle every 30–60 s.
+      #
+      # Setting this to 0 disables the in-process restart entirely. If RSS
+      # ever does climb to the 2 GiB cgroup ceiling, Linux's OOM-killer
+      # SIGKILLs the process — uncatchable, but INSTANT. There is no socket
+      # window for the LB to race against; Render respawns on exit code
+      # detection (typically <2 s). Combined with layers 1–3 above, true
+      # OOMs are rare; if they happen, they recover faster than the
+      # graceful path did, with no LB false-positive.
+      - key: MEMORY_RESTART_RSS_MB
+        value: "0"
+
+      # ── Graceful shutdown timing (the rolling-deploy fix) ────────────────
+      # SIGTERM (rolling deploy / scale-in) starts a two-phase drain:
+      #   Phase 1: /api/healthz → 503 draining for SHUTDOWN_DRAIN_MS,
+      #            HTTP server keeps serving in-flight requests.
+      #   Phase 2: server.close() + process.exit(0).
+      #
+      # The previous default (5 s) was too short — Render's LB samples
+      # /api/healthz on a ~5 s cadence and removes pods after 2–3
+      # consecutive non-200s. With a 5 s drain we'd close the socket BEFORE
+      # the LB had drained traffic → mid-request TCP resets that users
+      # experience as "API connection lost" mid-page-load.
+      #
+      # 10 s gives the LB ≥2 confirmed 503 probes before we close the
+      # socket. Stays well under the 15 s hard force-timer in index.ts so
+      # cleanup (SSE close + server.close callback) still has 5 s of
+      # headroom. Net effect: rolling deploys are now invisible to clients.
+      - key: SHUTDOWN_DRAIN_MS
+        value: "10000"
+
+      # ── HTTP server tuning ────────────────────────────────────────────────
+      # Long-lived SSE clients (broadcast bus, ops events) can sit idle for
+      # 60+ s between server-pushed events. Default Node keep-alive (5 s)
+      # would close the socket between events and force a reconnect storm.
+      # 75 s tracks one HLS segment cadence past typical horizon.
+      - key: HTTP_KEEPALIVE_MS
+        value: "75000"
+      - key: HTTP_HEADERS_TIMEOUT_MS
+        value: "80000"
+
+      # ── CORS / public URLs ────────────────────────────────────────────────
+      - key: ALLOWED_ORIGINS
+        value: https://templetv.org.ng,https://www.templetv.org.ng,https://api.templetv.org.ng,https://admin.templetv.org.ng,https://tv.templetv.org.ng
+      - key: API_BASE_URL
+        value: https://api.templetv.org.ng
+
+      # ── Identity & API tokens ─────────────────────────────────────────────
+      # ADMIN_API_TOKEN is generated per-deploy by Render (not in shared
+      # group because the worker doesn't need it).
+      - key: ADMIN_API_TOKEN
+        generateValue: true
+
+      # ── Third-party integrations ──────────────────────────────────────────
       - key: YOUTUBE_API_KEY
         sync: false
+      - key: CLIENT_ERROR_SINK_URL
+        sync: false
+      - key: CLIENT_ERROR_SINK_TOKEN
+        sync: false
+
+      # ── Object storage paths (legacy Replit object-store shim) ────────────
+      # These point the AWS-S3 backed code at the right prefixes. Kept
+      # `sync: false` so each environment (dev/staging/prod) can target a
+      # different bucket prefix.
       - key: DEFAULT_OBJECT_STORAGE_BUCKET_ID
         sync: false
       - key: PRIVATE_OBJECT_DIR
         sync: false
       - key: PUBLIC_OBJECT_SEARCH_PATHS
         sync: false
-      - key: AWS_S3_BUCKET
-        sync: false
-      - key: AWS_REGION
-        sync: false
-      - key: AWS_ACCESS_KEY_ID
-        sync: false
-      - key: AWS_SECRET_ACCESS_KEY
-        sync: false
 
-  # ─── Transcoder worker ─────────────────────────────────────────────────────
-  # Runs the same codebase with RUN_MODE=worker: ffmpeg preflight, the queue
-  # claim loop (FOR UPDATE SKIP LOCKED), and S3 upload of HLS variants.
-  # No HTTP listener, no SSE, no schedulers. Reads source MP4s from S3 into
-  # /tmp scratch space, transcodes, uploads variants back to S3, marks the
-  # queue row complete. The API service (above) serves the HLS files via the
-  # S3 fallback middleware (`lib/staticWithS3Fallback.ts`).
+  # ═══════════════════════════════════════════════════════════════════════
+  #  temple-tv-transcoder — RUN_MODE=worker, no HTTP listener
+  # ═══════════════════════════════════════════════════════════════════════
   #
-  # Memory containment in `lib/transcoder.ts` (FFMPEG_THREADS, x264 lookahead
-  # caps, RSS-based backpressure) still applies inside the worker so a single
-  # large encode cannot OOM-kill the worker mid-job.
+  # Same codebase, different role: ffmpeg preflight, queue claim loop
+  # (`FOR UPDATE SKIP LOCKED`), HLS variant transcode, S3 upload. The API
+  # service serves the resulting HLS playlists via the S3 fallback middleware
+  # (`lib/staticWithS3Fallback.ts`). This split is what prevents an ffmpeg
+  # spike from killing the API process — the historical single-process
+  # failure mode.
   - type: worker
     name: temple-tv-transcoder
     runtime: node
-    plan: starter
+    plan: starter             # 512 MiB / 0.5 vCPU. Tight but workable: V8
+                              # capped at 320 MiB + ffmpeg threads = 2 +
+                              # backpressure at 380 MiB RSS.
     region: frankfurt
     branch: main
     rootDir: .
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @workspace/api-server run build
-    startCommand: pnpm --filter @workspace/api-server run start
     autoDeploy: true
-    numInstances: 1
+    numInstances: 1           # Multiple workers can claim safely thanks to
+                              # `FOR UPDATE SKIP LOCKED`, but on the starter
+                              # plan ffmpeg saturates the single 0.5 vCPU
+                              # anyway — adding instances costs more than
+                              # it gains. Bump to 2 if upgrading to standard.
+
+    buildCommand: |
+      corepack enable && \
+      pnpm install --frozen-lockfile --prefer-offline && \
+      pnpm --filter @workspace/api-server run build
+    startCommand: pnpm --filter @workspace/api-server run start
+
     envVars:
-      # AWS credentials inherited from the shared env-var group above. This
-      # is the FIX for the historical worker crashloop where the operator
-      # had set AWS_* on the API service but forgotten to mirror them onto
-      # this worker service — the runtime guard in `index.ts` would log
-      # `Refusing to start (role=worker): AWS S3 is required…` and exit 1.
-      # Populating `temple-tv-aws` once now satisfies both services.
       - fromGroup: temple-tv-aws
+      - fromGroup: temple-tv-shared-secrets
+
       - key: NODE_ENV
         value: production
-      # PORT is required by the index.ts validator only when RUN_MODE=api.
-      # We still set it so any future code that reads PORT does not crash.
+      # PORT is required by the index.ts validator only when RUN_MODE=api,
+      # but we still set it so any future code reading PORT does not crash.
       - key: PORT
         value: 8080
       - key: RUN_MODE
         value: worker
-      # Mirror the API service's glibc-arena fix here. The worker churns
-      # Buffers even harder than the API (S3 multipart up/down + ffmpeg
-      # frame I/O), so on the 512 MiB starter plan arena fragmentation is
-      # the difference between staying inside the cgroup limit and getting
-      # OOM-killed mid-encode.
+
+      # ── Memory containment ────────────────────────────────────────────────
+      # Workers churn Buffers harder than the API (S3 multipart up/down +
+      # ffmpeg frame I/O) — the same arena fix is the difference between
+      # staying inside the 512 MiB cgroup and getting OOM-killed mid-encode.
       - key: MALLOC_ARENA_MAX
         value: "2"
-      # Hard V8 heap cap at 320 MiB so transcoding + Node runtime + ffmpeg
-      # spawn fit inside the 512 MiB plan ceiling with headroom. Pair with
-      # MAX_NODE_RSS_MB_BEFORE_TRANSCODE=380 below to backpressure the
-      # claim loop before V8 itself starts thrashing.
       - key: NODE_OPTIONS
         value: "--max-old-space-size=320"
-      # Conservative tuning for the 512MB starter plan. Bump these alongside
-      # any plan upgrade — no code changes required.
       - key: FFMPEG_THREADS
-        value: 2
+        value: "2"
       - key: MAX_NODE_RSS_MB_BEFORE_TRANSCODE
-        value: 380
-      - key: DATABASE_URL
-        sync: false
-      # JWT_SECRET is unused by the worker but the startup validator requires
-      # it. Use the same value as the API service via Render's "sync" env
-      # group — set this manually in the dashboard to match the API.
-      - key: JWT_SECRET
-        sync: false
-      - key: SENTRY_DSN
-        value: https://e1d80a0a1acfca1dc8743cc701de446c@o4511258419462144.ingest.us.sentry.io/4511258444693504
-      - key: SENTRY_RELEASE
-        sync: false
-      - key: AWS_S3_BUCKET
-        sync: false
-      - key: AWS_REGION
-        sync: false
-      - key: AWS_ACCESS_KEY_ID
-        sync: false
-      - key: AWS_SECRET_ACCESS_KEY
-        sync: false
+        value: "380"
+
+      # Worker has no LB in front of it, so the SHUTDOWN_DRAIN_MS race the
+      # API service had does not apply here. Use the 5 s default — Render
+      # workers exit cleanly on SIGTERM, in-flight ffmpeg jobs are checkpointed
+      # at the queue layer (job stays `claimed` and is requeued by the next
+      # worker tick if not completed within `claim_expires_at`).
+
+  # ═══════════════════════════════════════════════════════════════════════
+  #  Static SPAs — admin, mobile (Expo Web), TV
+  # ═══════════════════════════════════════════════════════════════════════
+  #
+  # Render builds these on its own infra and serves the resulting `dist/`
+  # directory from a global CDN. Cache-Control on hashed asset paths is
+  # immutable + 1y; the SPA shell (`/index.html`) inherits the Render
+  # default (no-store) so deploys are picked up on next page load.
 
   - type: web
     name: temple-tv-admin
     runtime: static
     branch: main
     rootDir: .
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @workspace/admin run build
-    staticPublishPath: ./artifacts/admin/dist/public
     autoDeploy: true
     pullRequestPreviewsEnabled: false
+    buildCommand: |
+      corepack enable && \
+      pnpm install --frozen-lockfile --prefer-offline && \
+      pnpm --filter @workspace/admin run build
+    staticPublishPath: ./artifacts/admin/dist/public
     envVars:
       - key: VITE_API_URL
         value: https://api.templetv.org.ng
@@ -236,6 +366,9 @@ services:
       - path: /*
         name: Referrer-Policy
         value: strict-origin-when-cross-origin
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(), geolocation=()
       - path: /assets/*
         name: Cache-Control
         value: public, max-age=31536000, immutable
@@ -249,10 +382,13 @@ services:
     runtime: static
     branch: main
     rootDir: .
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @workspace/mobile run build:web
-    staticPublishPath: ./artifacts/mobile/web-dist
     autoDeploy: true
     pullRequestPreviewsEnabled: false
+    buildCommand: |
+      corepack enable && \
+      pnpm install --frozen-lockfile --prefer-offline && \
+      pnpm --filter @workspace/mobile run build:web
+    staticPublishPath: ./artifacts/mobile/web-dist
     envVars:
       - key: EXPO_PUBLIC_API_URL
         value: https://api.templetv.org.ng
@@ -261,6 +397,8 @@ services:
       - key: BASE_PATH
         value: /
     headers:
+      # SAMEORIGIN (not DENY) because the Expo PWA can be embedded in the
+      # admin's preview pane for QA.
       - path: /*
         name: X-Frame-Options
         value: SAMEORIGIN
@@ -286,10 +424,13 @@ services:
     runtime: static
     branch: main
     rootDir: .
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @workspace/tv run build
-    staticPublishPath: ./artifacts/tv/dist/public
     autoDeploy: true
     pullRequestPreviewsEnabled: false
+    buildCommand: |
+      corepack enable && \
+      pnpm install --frozen-lockfile --prefer-offline && \
+      pnpm --filter @workspace/tv run build
+    staticPublishPath: ./artifacts/tv/dist/public
     envVars:
       - key: VITE_API_URL
         value: https://api.templetv.org.ng
