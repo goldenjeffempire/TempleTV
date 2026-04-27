@@ -55,7 +55,12 @@ logger.info(
 // stdout/Sentry anyway, the buffer's purpose is recurring crashloops).
 installFatalAppender();
 
-function logInfrastructureStatus() {
+type StartupGateVerdict =
+  | { kind: "ok" }
+  | { kind: "fatal-exit" }
+  | { kind: "degraded-standby" };
+
+function logInfrastructureStatus(): StartupGateVerdict {
   const s3Configured = isS3Configured();
   const redisConfigured = Boolean(process.env.REDIS_URL?.trim());
 
@@ -88,36 +93,76 @@ function logInfrastructureStatus() {
   );
 
   // ── Production safety gate ─────────────────────────────────────────────────
-  // In production, refuse to keep serving traffic if AWS S3 is not configured.
-  // Without S3, every uploaded video and transcoded HLS segment lands on the
-  // ephemeral container disk and disappears on the next deploy/restart — a
-  // silent data-loss path that should never reach users.
+  // In production, AWS S3 is mandatory: without it, every uploaded video and
+  // every transcoded HLS segment lands on the ephemeral container disk and
+  // disappears on the next deploy/restart — a silent data-loss path that
+  // must never reach users.
+  //
+  // The two roles handle the missing-config case differently because the
+  // operational trade-offs differ:
+  //
+  //   • API (`role=api` / `role=all`) — serves user uploads and HLS reads in
+  //     real time. Continuing to accept uploads with no backing storage would
+  //     cause silent data loss. Hard-exit so Render's load balancer stops
+  //     routing traffic; the previous good revision keeps serving until the
+  //     operator populates the env vars and redeploys.
+  //
+  //   • Worker (`role=worker`) — picks transcoding jobs from a queue and
+  //     uploads HLS variants to S3. Hard-exit here used to crashloop the
+  //     entire deploy red even though no live traffic was ever at risk:
+  //     the only consequence of "worker missing S3" is that pending jobs
+  //     stay queued (not lost). Crashlooping made the operator's deploy
+  //     dashboard look catastrophically broken and obscured the real fix
+  //     (populate AWS_* on the worker service / `temple-tv-aws` env-var
+  //     group). We now enter a "degraded standby" mode instead: the process
+  //     stays alive so the deploy goes green, the retry tick is NEVER armed
+  //     (so no job is ever transcoded onto ephemeral disk), and a fatal log
+  //     line is re-emitted every 5 minutes so the operator can spot the
+  //     misconfig in the Render log viewer. As soon as the operator sets
+  //     the env vars, Render auto-restarts the service and it boots fully
+  //     active — no manual intervention beyond the env-var update needed.
   if (process.env.NODE_ENV === "production" && !s3Configured) {
-    // Each Render service has its OWN environment-variable scope. A common
-    // failure mode is the operator setting AWS_* on the web service but
-    // forgetting to mirror them onto the worker service (or vice-versa) —
-    // the worker then crashloops with this exact message. Surfacing the
-    // role name explicitly so the operator knows WHICH Render service to
-    // open in the dashboard saves a real triage round-trip.
+    const missing = [
+      process.env.AWS_S3_BUCKET ? null : "AWS_S3_BUCKET",
+      process.env.AWS_REGION ? null : "AWS_REGION",
+      process.env.AWS_ACCESS_KEY_ID ? null : "AWS_ACCESS_KEY_ID",
+      process.env.AWS_SECRET_ACCESS_KEY ? null : "AWS_SECRET_ACCESS_KEY",
+    ].filter(Boolean);
+
+    const baseMessage =
+      `AWS S3 is not configured on this '${RUN_MODE}' service. ` +
+      "Each Render service has its OWN environment-variable scope — the web service env vars do NOT propagate to the worker service. " +
+      "Set AWS_S3_BUCKET, AWS_REGION, AWS_ACCESS_KEY_ID, and AWS_SECRET_ACCESS_KEY directly on this service, " +
+      "or populate the shared 'temple-tv-aws' env-var group in render.yaml so every service inherits the credentials in one place.";
+
+    if (RUN_MODE === "worker") {
+      logger.fatal(
+        { runMode: RUN_MODE, missing, mode: "degraded-standby" },
+        `Worker entering DEGRADED STANDBY (no transcode jobs will be picked up): ${baseMessage}`,
+      );
+      // Keep the process alive so the deploy is green; re-emit the fatal
+      // every 5 minutes so the operator notices in the Render log viewer
+      // and the fatalLogBuffer (Mission Control) keeps surfacing it.
+      const reLogIntervalMs = 5 * 60_000;
+      setInterval(() => {
+        logger.fatal(
+          { runMode: RUN_MODE, missing, mode: "degraded-standby" },
+          `Worker still in DEGRADED STANDBY — AWS S3 not configured. ${baseMessage}`,
+        );
+      }, reLogIntervalMs);
+      return { kind: "degraded-standby" };
+    }
+
     logger.fatal(
-      {
-        runMode: RUN_MODE,
-        missing: [
-          process.env.AWS_S3_BUCKET ? null : "AWS_S3_BUCKET",
-          process.env.AWS_REGION ? null : "AWS_REGION",
-          process.env.AWS_ACCESS_KEY_ID ? null : "AWS_ACCESS_KEY_ID",
-          process.env.AWS_SECRET_ACCESS_KEY ? null : "AWS_SECRET_ACCESS_KEY",
-        ].filter(Boolean),
-      },
-      `Refusing to start (role=${RUN_MODE}): AWS S3 is required in production but is not configured on THIS service. ` +
-        "Uploads would be written to ephemeral disk and lost on the next deploy. " +
-        "Set AWS_S3_BUCKET, AWS_REGION, AWS_ACCESS_KEY_ID, and AWS_SECRET_ACCESS_KEY " +
-        `in the environment of the '${RUN_MODE}' service (each Render service has its own env-var scope — ` +
-        "the web service env vars do NOT propagate to the worker service), then redeploy.",
+      { runMode: RUN_MODE, missing },
+      `Refusing to start (role=${RUN_MODE}): ${baseMessage} ` +
+        "Continuing to accept uploads would silently lose every file on the next deploy.",
     );
     setTimeout(() => process.exit(1), 250);
-    return;
+    return { kind: "fatal-exit" };
   }
+
+  return { kind: "ok" };
 }
 
 function startTranscoderRole() {
@@ -187,7 +232,10 @@ if (RUNS_API) {
   server = http.createServer(app);
   server.listen(port, "0.0.0.0", () => {
     logger.info({ port, host: "0.0.0.0" }, "Server listening");
-    logInfrastructureStatus();
+    const verdict = logInfrastructureStatus();
+    // For the API role the gate either passes or hard-exits — we never reach
+    // here in the degraded-standby branch because that branch is worker-only.
+    if (verdict.kind !== "ok") return;
     startApiSchedulers();
     if (RUNS_WORKER) {
       startTranscoderRole();
@@ -203,8 +251,24 @@ if (RUNS_API) {
   // in-flight ffmpeg child) keeps the event loop alive. Render `worker`
   // services do not expose a port and do not require a health endpoint.
   logger.info("Starting in worker-only mode (no HTTP listener)");
-  logInfrastructureStatus();
-  startTranscoderRole();
+  const verdict = logInfrastructureStatus();
+  if (verdict.kind === "degraded-standby") {
+    // The 5-minute fatal-log heartbeat (set up inside logInfrastructureStatus)
+    // keeps the event loop alive on its own. Deliberately do NOT call
+    // startTranscoderRole(): we must not arm the retry tick or claim any
+    // transcoding job from the queue while S3 is missing — doing so would
+    // write HLS variants to ephemeral disk and lose them on the next deploy.
+    // The deploy succeeds (process stays up), pending jobs simply queue up
+    // until the operator populates AWS_* and Render restarts this service.
+    logger.warn(
+      { runMode: RUN_MODE },
+      "Worker armed in degraded-standby mode — transcoding queue will not be drained until AWS S3 is configured.",
+    );
+  } else if (verdict.kind === "ok") {
+    startTranscoderRole();
+  }
+  // verdict.kind === "fatal-exit" cannot happen for worker mode: the gate
+  // chooses degraded-standby for workers and only fatal-exits for api/all.
 }
 
 let isShuttingDown = false;
