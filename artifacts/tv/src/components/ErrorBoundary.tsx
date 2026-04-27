@@ -25,9 +25,13 @@ type State = {
  * This boundary intercepts the error, shows a calm Temple TV-branded
  * recovery screen, and exposes a single OK button (and Enter/Back keys)
  * that reloads the app. Errors are also POSTed to the api-server's
- * `/api/telemetry/client-error` endpoint when available, so operators see
- * the crash in Mission Control instead of having to wait for a viewer
- * complaint.
+ * `/api/client-errors` endpoint so operators see the crash in Mission
+ * Control instead of having to wait for a viewer complaint. The endpoint,
+ * payload shape, and field names are deliberately identical to the admin
+ * boundary (artifacts/admin/src/components/error-boundary.tsx) and the
+ * mobile reporter (artifacts/mobile/lib/errorReporter.ts) so a single
+ * cross-platform error feed shows web, TV, and mobile crashes uniformly.
+ * The schema lives in artifacts/api-server/src/routes/client-errors.ts.
  *
  * Design choices
  * ──────────────
@@ -53,21 +57,28 @@ export class ErrorBoundary extends Component<Props, State> {
     // eslint-disable-next-line no-console
     console.error("[TV ErrorBoundary]", error, info.componentStack);
 
-    // Best-effort server telemetry. If the endpoint isn't deployed yet
-    // (older api-server build) we just absorb the failure — the recovery
-    // UI still renders.
+    // Best-effort server telemetry. The previous code POSTed to
+    // `/api/telemetry/client-error`, an endpoint that has never existed on
+    // the api-server — every TV crash report 404'd into the void. Switched
+    // to `/api/client-errors` (the real endpoint, also used by mobile and
+    // admin) and aligned the payload to the server's `ClientErrorSchema`
+    // (`errorMessage`, not `message`; `occurredAt` ISO, not `ts`; userAgent
+    // and url moved into `context` so they don't get dropped by the schema).
     try {
       const body = JSON.stringify({
-        platform: "tv",
-        message: error.message,
-        stack: error.stack ?? null,
-        componentStack: info.componentStack ?? null,
-        userAgent:
-          typeof navigator !== "undefined" ? navigator.userAgent : null,
-        url: typeof window !== "undefined" ? window.location.href : null,
-        ts: new Date().toISOString(),
+        platform: "tv" as const,
+        errorName: error.name,
+        errorMessage: error.message.slice(0, 2048),
+        stack: error.stack?.slice(0, 8192),
+        componentStack: info.componentStack?.slice(0, 8192) ?? undefined,
+        context: {
+          userAgent:
+            typeof navigator !== "undefined" ? navigator.userAgent : "",
+          url: typeof window !== "undefined" ? window.location.href : "",
+        },
+        occurredAt: new Date().toISOString(),
       });
-      fetch("/api/telemetry/client-error", {
+      fetch("/api/client-errors", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body,
