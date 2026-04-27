@@ -9,6 +9,7 @@
     "load-test-broadcast-current": "tsx ./src/load-test-broadcast-current.ts",
     "analyze-access-log": "tsx ./src/analyze-access-log.ts",
     "verify-catalog-lockfile-sync": "tsx ./src/verify-catalog-lockfile-sync.ts",
+    "run-typechecks": "tsx ./src/run-typechecks.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

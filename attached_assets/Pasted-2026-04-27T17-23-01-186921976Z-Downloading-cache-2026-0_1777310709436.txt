@@ -1,0 +1,53 @@
+2026-04-27T17:23:01.186921976Z ==> Downloading cache...
+2026-04-27T17:23:01.255248783Z ==> Cloning from https://github.com/goldenjeffempire/TempleTV
+2026-04-27T17:23:06.740158664Z ==> Checking out commit 1257b733137e26702301b9d7181d44723431fab7 in branch main
+2026-04-27T17:23:33.795460663Z ==> Downloaded 287MB in 2s. Extraction took 26s.
+2026-04-27T17:23:35.324760533Z ==> Using Node.js version 24.13.0 via /opt/render/project/src/.nvmrc
+2026-04-27T17:23:35.37131934Z ==> Docs on specifying a Node.js version: https://render.com/docs/node-version
+2026-04-27T17:23:35.582953799Z ==> Running build command 'corepack enable && \
+2026-04-27T17:23:35.58298396Z pnpm install --frozen-lockfile --prefer-offline --prod=false && \
+2026-04-27T17:23:35.58298837Z pnpm run verify:production && \
+2026-04-27T17:23:35.58299225Z pnpm --filter @workspace/api-server run build
+2026-04-27T17:23:35.58299545Z '...
+2026-04-27T17:23:40.245514075Z 
+2026-04-27T17:23:40.245550965Z > workspace@0.0.0 verify:production /opt/render/project/src
+2026-04-27T17:23:40.245557735Z > pnpm run verify:codegen && pnpm run verify:catalog && pnpm run typecheck:production
+2026-04-27T17:23:40.245561236Z 
+2026-04-27T17:23:40.823786968Z 
+2026-04-27T17:23:40.823829958Z > workspace@0.0.0 verify:codegen /opt/render/project/src
+2026-04-27T17:23:40.823836238Z > pnpm --filter @workspace/api-spec run codegen && (git diff --exit-code -- lib/api-zod/src/generated lib/api-client-react/src/generated || (echo '\n[verify:codegen] FAIL: lib/api-spec/openapi.yaml is out of sync with generated clients. Run: pnpm --filter @workspace/api-spec run codegen, then commit the changes.' >&2; exit 1))
+2026-04-27T17:23:40.823843668Z 
+2026-04-27T17:23:41.469025401Z 
+2026-04-27T17:23:41.469063831Z > @workspace/api-spec@0.0.0 codegen /opt/render/project/src/lib/api-spec
+2026-04-27T17:23:41.469069911Z > orval --config ./orval.config.ts && node ./postcodegen.mjs
+2026-04-27T17:23:41.469074832Z 
+2026-04-27T17:23:42.183454181Z 🍻 orval v8.5.3 - A swagger client generator for typescript
+2026-04-27T17:23:42.527971581Z api-client-react Cleaning output folder
+2026-04-27T17:23:43.934325782Z 🎉 api-client-react - Your OpenAPI spec has been converted into ready to use orval!
+2026-04-27T17:23:43.94667504Z zod Cleaning output folder
+2026-04-27T17:23:44.605896461Z 🎉 zod - Your OpenAPI spec has been converted into ready to use orval!
+2026-04-27T17:23:44.720888825Z [postcodegen] normalized lib/api-zod/src/index.ts
+2026-04-27T17:23:45.357527786Z 
+2026-04-27T17:23:45.357577457Z > workspace@0.0.0 verify:catalog /opt/render/project/src
+2026-04-27T17:23:45.357585637Z > pnpm --filter @workspace/scripts run verify-catalog-lockfile-sync
+2026-04-27T17:23:45.357592137Z 
+2026-04-27T17:23:46.027373264Z 
+2026-04-27T17:23:46.027413354Z > @workspace/scripts@0.0.0 verify-catalog-lockfile-sync /opt/render/project/src/scripts
+2026-04-27T17:23:46.027419774Z > tsx ./src/verify-catalog-lockfile-sync.ts
+2026-04-27T17:23:46.027424834Z 
+2026-04-27T17:23:46.474184935Z [verify:catalog] OK — 21 catalog entries, all in sync with lockfile.
+2026-04-27T17:23:47.120257509Z 
+2026-04-27T17:23:47.120281109Z > workspace@0.0.0 typecheck:production /opt/render/project/src
+2026-04-27T17:23:47.120288169Z > pnpm run typecheck:libs && pnpm -r --stream --filter "./artifacts/**" --filter "!@workspace/mockup-sandbox" --filter "./scripts" --if-present run typecheck
+2026-04-27T17:23:47.120293299Z 
+2026-04-27T17:23:47.726614777Z 
+2026-04-27T17:23:47.726635218Z > workspace@0.0.0 typecheck:libs /opt/render/project/src
+2026-04-27T17:23:47.726663098Z > tsc --build
+2026-04-27T17:23:47.726667298Z 
+2026-04-27T17:24:03.64795454Z /opt/render/project/src/artifacts/tv:
+2026-04-27T17:24:03.648004971Z  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/tv@0.0.0 typecheck: `tsc -p tsconfig.json --noEmit`
+2026-04-27T17:24:03.648013021Z Exit status 2
+2026-04-27T17:24:03.709156502Z  ELIFECYCLE  Command failed with exit code 2.
+2026-04-27T17:24:03.763802655Z  ELIFECYCLE  Command failed with exit code 2.
+2026-04-27T17:24:03.877903739Z ==> Build failed 😞
+2026-04-27T17:24:03.87793815Z ==> Common ways to troubleshoot your deploy: https://render.com/docs/troubleshooting-deploys
