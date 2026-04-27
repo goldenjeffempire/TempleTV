@@ -3,6 +3,7 @@ import * as Sentry from "@sentry/node";
 import cors from "cors";
 import compression from "compression";
 import pinoHttp from "pino-http";
+import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import router from "./routes";
@@ -298,19 +299,98 @@ app.use(legalRouter);
 app.use(sitemapRouter);
 app.use("/api", router);
 
-app.get("/", (_req: express.Request, res: express.Response) => {
-  res.status(200).json({
-    service: "Temple TV API",
-    status: "ok",
-    documentation: "https://templetv.org.ng",
-    endpoints: {
-      health: "/api/healthz",
-      api: "/api",
-      legal: "/legal/privacy, /legal/terms",
-    },
-    version: process.env.npm_package_version ?? "1.0.0",
+// ── Admin SPA static serving ─────────────────────────────────────────────────
+// In production the admin Vite bundle is built once during `[deployment.build]`
+// (→ artifacts/admin/dist/public/) and served by THIS Node process on the
+// same port the API listens on. Co-locating the admin and API on a single
+// process is the canonical 2 GiB autoscale fit:
+//
+//   • Vite's dev server (which the previous deploy ran via `vite dev`) keeps
+//     the entire module graph + source maps + HMR clients in RAM and
+//     routinely sits at 400–600 MB of RSS on its own — that's a third of
+//     the autoscale memory budget burned on a build tool, which has no
+//     business running in production at all.
+//   • express.static streams files from disk with O(1) memory per request,
+//     so even thousands of concurrent admin SPA loads add a negligible
+//     amount of resident memory beyond the small Node baseline.
+//
+// We probe for the bundle ONCE at module load (cheap fs.existsSync — runs
+// before the HTTP server starts accepting traffic) instead of on every
+// wildcard request. This gives a clean dev/prod split:
+//   • prod (bundle present)  → admin SPA at /, hashed assets cached 1y,
+//                              client-side router fallback for deep links
+//   • dev  (bundle absent)   → workspace developers still hit the admin
+//                              via the Vite dev server on port 5000, and
+//                              the legacy JSON service banner answers `/`
+//                              on port 8080 for any monitoring probe that
+//                              expects it (preserves prior contract).
+const ADMIN_DIST = path.resolve(__dirname, "../../admin/dist/public");
+const ADMIN_INDEX = path.join(ADMIN_DIST, "index.html");
+const HAS_ADMIN_BUNDLE = fs.existsSync(ADMIN_INDEX);
+
+logger.info(
+  { adminDist: ADMIN_DIST, hasAdminBundle: HAS_ADMIN_BUNDLE },
+  HAS_ADMIN_BUNDLE
+    ? "Admin SPA bundle detected — serving static assets + SPA fallback from API"
+    : "Admin SPA bundle not built — `/` will return JSON service banner",
+);
+
+if (HAS_ADMIN_BUNDLE) {
+  app.use(
+    express.static(ADMIN_DIST, {
+      fallthrough: true,
+      // Hashed JS/CSS chunks are safe to cache for a year; `index.html`
+      // gets a no-store override below so SPA redeploys land instantly.
+      maxAge: "1y",
+      immutable: true,
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith("index.html")) {
+          res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        }
+      },
+    }),
+  );
+
+  // SPA client-side routing fallback. Any GET that DIDN'T match a route
+  // above (admin static asset, /api/*, /uploads/*, /hls/*, /legal/*,
+  // /sitemap.xml, /robots.txt) and looks like an HTML page request gets
+  // the admin index.html so React Router can take over. The
+  // `Accept: text/html` gate ensures /api/* 404s, JSON requests, and
+  // asset 404s still surface as proper errors rather than being shadowed
+  // by a 200 + index.html (which would silently break every API client,
+  // including the mobile + TV apps).
+  // Note: Express 5 + path-to-regexp v8 reject the legacy `"*"` wildcard
+  // ("Missing parameter name" boot error). Use a regex pattern instead.
+  app.get(/.*/, (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (req.path.startsWith("/api/")) return next();
+    if (req.path.startsWith("/uploads/")) return next();
+    if (req.path.startsWith("/hls/")) return next();
+    if (req.path.startsWith("/legal/")) return next();
+    if (req.path === "/sitemap.xml" || req.path === "/robots.txt") return next();
+    const accept = req.headers.accept ?? "";
+    if (!accept.includes("text/html")) return next();
+    res.sendFile(ADMIN_INDEX, (err) => {
+      if (err) next();
+    });
   });
-});
+} else {
+  // Dev fallback: the original JSON service banner answers at `/` so any
+  // health-check or monitoring probe that pre-dates the SPA serving
+  // continues to get the same shape it always did.
+  app.get("/", (_req: express.Request, res: express.Response) => {
+    res.status(200).json({
+      service: "Temple TV API",
+      status: "ok",
+      documentation: "https://templetv.org.ng",
+      endpoints: {
+        health: "/api/healthz",
+        api: "/api",
+        legal: "/legal/privacy, /legal/terms",
+      },
+      version: process.env.npm_package_version ?? "1.0.0",
+    });
+  });
+}
 
 app.use((_req: express.Request, res: express.Response) => {
   res.status(404).json({ error: "not_found", message: "The requested endpoint does not exist." });
