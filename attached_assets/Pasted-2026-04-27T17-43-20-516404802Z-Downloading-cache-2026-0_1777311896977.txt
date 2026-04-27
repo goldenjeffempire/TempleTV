@@ -1,0 +1,63 @@
+2026-04-27T17:43:20.516404802Z ==> Downloading cache...
+2026-04-27T17:43:20.581609931Z ==> Cloning from https://github.com/goldenjeffempire/TempleTV
+2026-04-27T17:43:26.012162196Z ==> Checking out commit bf4b4351a8476dcfd790672e99e438da95e65220 in branch main
+2026-04-27T17:43:53.940671851Z ==> Downloaded 287MB in 2s. Extraction took 26s.
+2026-04-27T17:43:55.572920212Z ==> Using Node.js version 24.13.0 via /opt/render/project/src/.nvmrc
+2026-04-27T17:43:55.619000733Z ==> Docs on specifying a Node.js version: https://render.com/docs/node-version
+2026-04-27T17:43:55.821911327Z ==> Running build command 'corepack enable && \
+2026-04-27T17:43:55.821935557Z pnpm install --frozen-lockfile --prefer-offline --prod=false && \
+2026-04-27T17:43:55.821942537Z pnpm run verify:production && \
+2026-04-27T17:43:55.821947757Z pnpm --filter @workspace/api-server run build
+2026-04-27T17:43:55.821952027Z '...
+2026-04-27T17:44:00.334293055Z 
+2026-04-27T17:44:00.334340726Z > workspace@0.0.0 verify:production /opt/render/project/src
+2026-04-27T17:44:00.334348046Z > pnpm run verify:codegen && pnpm run verify:catalog && pnpm run typecheck:production
+2026-04-27T17:44:00.334352956Z 
+2026-04-27T17:44:00.930082887Z 
+2026-04-27T17:44:00.930148078Z > workspace@0.0.0 verify:codegen /opt/render/project/src
+2026-04-27T17:44:00.930159568Z > pnpm --filter @workspace/api-spec run codegen && (git diff --exit-code -- lib/api-zod/src/generated lib/api-client-react/src/generated || (echo '\n[verify:codegen] FAIL: lib/api-spec/openapi.yaml is out of sync with generated clients. Run: pnpm --filter @workspace/api-spec run codegen, then commit the changes.' >&2; exit 1))
+2026-04-27T17:44:00.930168348Z 
+2026-04-27T17:44:01.55816537Z 
+2026-04-27T17:44:01.558192181Z > @workspace/api-spec@0.0.0 codegen /opt/render/project/src/lib/api-spec
+2026-04-27T17:44:01.558198011Z > orval --config ./orval.config.ts && node ./postcodegen.mjs
+2026-04-27T17:44:01.558202781Z 
+2026-04-27T17:44:02.330035365Z 🍻 orval v8.5.3 - A swagger client generator for typescript
+2026-04-27T17:44:02.701253178Z api-client-react Cleaning output folder
+2026-04-27T17:44:04.100306935Z 🎉 api-client-react - Your OpenAPI spec has been converted into ready to use orval!
+2026-04-27T17:44:04.112626459Z zod Cleaning output folder
+2026-04-27T17:44:04.690189883Z 🎉 zod - Your OpenAPI spec has been converted into ready to use orval!
+2026-04-27T17:44:04.806279934Z [postcodegen] normalized lib/api-zod/src/index.ts
+2026-04-27T17:44:05.438994417Z 
+2026-04-27T17:44:05.439020077Z > workspace@0.0.0 verify:catalog /opt/render/project/src
+2026-04-27T17:44:05.439025947Z > pnpm --filter @workspace/scripts run verify-catalog-lockfile-sync
+2026-04-27T17:44:05.439031017Z 
+2026-04-27T17:44:06.074376899Z 
+2026-04-27T17:44:06.07441288Z > @workspace/scripts@0.0.0 verify-catalog-lockfile-sync /opt/render/project/src/scripts
+2026-04-27T17:44:06.07441918Z > tsx ./src/verify-catalog-lockfile-sync.ts
+2026-04-27T17:44:06.07442411Z 
+2026-04-27T17:44:06.520327413Z [verify:catalog] OK — 21 catalog entries, all in sync with lockfile.
+2026-04-27T17:44:07.166496663Z 
+2026-04-27T17:44:07.166527213Z > workspace@0.0.0 typecheck:production /opt/render/project/src
+2026-04-27T17:44:07.166536653Z > pnpm run typecheck:libs && pnpm --filter @workspace/scripts run run-typechecks
+2026-04-27T17:44:07.166541593Z 
+2026-04-27T17:44:07.77107081Z 
+2026-04-27T17:44:07.7711066Z > workspace@0.0.0 typecheck:libs /opt/render/project/src
+2026-04-27T17:44:07.771169341Z > tsc --build
+2026-04-27T17:44:07.771175951Z 
+2026-04-27T17:44:14.280793293Z 
+2026-04-27T17:44:14.280832664Z > @workspace/scripts@0.0.0 run-typechecks /opt/render/project/src/scripts
+2026-04-27T17:44:14.280839174Z > tsx ./src/run-typechecks.ts
+2026-04-27T17:44:14.280844344Z 
+2026-04-27T17:44:14.71683846Z 
+2026-04-27T17:44:14.71687434Z ==> [run-typechecks] @workspace/api-server typecheck — start (log: /opt/render/project/src/dist/typecheck-logs/api-server.log)
+2026-04-27T17:44:15.380281307Z 
+2026-04-27T17:44:15.380325457Z > @workspace/api-server@0.0.0 typecheck /opt/render/project/src/artifacts/api-server
+2026-04-27T17:44:15.380333657Z > tsc -p tsconfig.json --noEmit
+2026-04-27T17:44:15.380339627Z 
+2026-04-27T17:44:22.211718634Z ==> [run-typechecks] @workspace/api-server typecheck — ok (7.5s)
+2026-04-27T17:44:22.211748044Z 
+2026-04-27T17:44:22.211754534Z ==> [run-typechecks] @workspace/admin typecheck — start (log: /opt/render/project/src/dist/typecheck-logs/admin.log)
+2026-04-27T17:44:22.847403029Z 
+2026-04-27T17:44:22.847443529Z > @workspace/admin@0.0.0 typecheck /opt/render/project/src/artifacts/admin
+2026-04-27T17:44:22.847450099Z > tsc -p tsconfig.json --noEmit
+2026-04-27T17:44:22.847454939Z 
