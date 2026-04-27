@@ -841,3 +841,16 @@ Did **not** add `broadcast-current-updated` to the supervisor's listener set —
 **NOT touched in this pass:** `errorReporter.ts:12` still has its own private duplicate of `getApiBase()`. That copy is functionally correct (handles both env vars) — it's just duplicate code, not a latent bug. Deferred as cosmetic refactor.
 
 Mobile typecheck clean after both edits. The three hot mobile hooks (`useLocalVideos`, `usePlaylists`, `useDownloads`) and the existing `useYouTubeChannel` now all share a single resolver, so a future env-var migration touches one file (`apiBase.ts`) instead of four.
+
+## §21 — Verification of TV `HlsVideoPlayer.tsx:496` Tizen `avplayPollRef` cleanup claim (Apr 27)
+
+**False positive.** The audit flagged a potential interval-leak in the Samsung AVPlay polling loop. Verified against actual source: the lifecycle is correct. Only 3 references in the file (`useRef` declaration at line 147, idempotent clear-before-set at lines 495-496 inside the AVPlay branch of `loadIntoSlot`, and final clear at line 705 inside the `useEffect(()=>{...return()=>{...}}, [])` unmount cleanup).
+
+Reachability analysis covers every path:
+- **Same-AVPlay re-runs:** Line 495's `clearInterval` precedes line 496's `setInterval`, so each call atomically replaces the previous interval.
+- **AVPlay → non-AVPlay mid-session transition:** Not reachable. `Hls.isSupported()` reflects static device MSE capability, not a stream property — once a device is on the AVPlay path it stays there. Confirmed by line 677's explicit `if (avplayActiveRef.current) return; // AVPlay path doesn't double-buffer` which makes the engine choice sticky for the component's lifetime.
+- **Unmount:** Line 705's cleanup reads `avplayPollRef.current` at cleanup-execution time (not closed-over), so it always sees the most-recent interval handle.
+- **React 18 StrictMode double-mount:** First cleanup reads null (AVPlay branch hasn't fired yet); remount registers fresh cleanup; final unmount clears the actual handle.
+- **AVPlay open/prepare throws:** Interval set at line 496 only *after* `prepare()` and `play()` succeed; any throw before reaching line 495 leaves no new interval to clean up.
+
+**No code change. Tally update:** verified-claim false-positive rate is now **6 out of 7** for the cross-platform-clients audit (§19 was a false positive on the literal claim with a real adjacent latent finding; §21 is a clean false positive). The methodology rule from §14 has now paid off six different times: anyone who'd trusted the audit verbatim would have spent time on cleanup code that was already correct, while missing the real adjacent latent issue §19 actually surfaced.
