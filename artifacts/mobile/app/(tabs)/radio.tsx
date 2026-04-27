@@ -258,6 +258,14 @@ export default function RadioScreen() {
     const item = broadcastInfo?.item;
     if (!item) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    // Tear down any radio-mode playback BEFORE navigating to the broadcast
+    // player. Without this, the PersistentAudioPlayer (radio's audio engine)
+    // keeps streaming the on-demand sermon while the /player route mounts a
+    // SECOND YoutubePlayer for the live broadcast — both audio sources play
+    // simultaneously until the user manually pauses one. stopPlayback()
+    // fully releases the audio session so the broadcast player can claim it
+    // cleanly on mount.
+    stopPlayback();
     const startMs = String((broadcastInfo?.positionSecs ?? 0) * 1000);
     if (item.videoSource === "local" && item.localVideoUrl) {
       router.push({

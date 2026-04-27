@@ -181,13 +181,34 @@ export function startSSEHeartbeat(): void {
         continue;
       }
       try {
-        client.res.write(payload);
+        // write() returns false when the socket buffer is full (backpressure).
+        // A client whose buffer keeps filling is already wedged — refusing to
+        // accept more bytes — and continuing to push payloads at it just
+        // grows our process memory until OOM. Treat it as dead so the next
+        // tick reclaims the FD.
+        const ok = client.res.write(payload);
+        if (!ok) {
+          dead.push(client);
+          continue;
+        }
         flushClient(client);
       } catch {
         dead.push(client);
       }
     }
-    for (const c of dead) clients.delete(c);
+    // Drop dead clients from the broadcast set AND tear down their underlying
+    // socket. Without the explicit res.end()/destroy(), Node holds the
+    // Response object alive until the OS TCP keepalive eventually times out
+    // (minutes to hours), leaking memory and file descriptors per stale
+    // connection. Under sustained reconnect churn this exhausts the FD limit.
+    for (const c of dead) {
+      clients.delete(c);
+      try { c.res.end(); } catch {}
+      try {
+        const sock = (c.res as unknown as { socket?: { destroy?: () => void } }).socket;
+        sock?.destroy?.();
+      } catch {}
+    }
 
     broadcastLiveEvent("heartbeat", { ts: now, clients: clients.size });
   }, 20_000);

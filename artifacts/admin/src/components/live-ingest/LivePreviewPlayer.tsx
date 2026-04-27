@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
-import { Loader2, AlertTriangle, VideoOff } from "lucide-react";
+import { Loader2, AlertTriangle, VideoOff, Play } from "lucide-react";
 
 interface LivePreviewPlayerProps {
   hlsUrl: string;
@@ -17,8 +17,24 @@ interface LivePreviewPlayerProps {
 export function LivePreviewPlayer({ hlsUrl, enabled }: LivePreviewPlayerProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
-  const [state, setState] = useState<"idle" | "loading" | "playing" | "error">("idle");
+  const [state, setState] = useState<"idle" | "loading" | "playing" | "blocked" | "error">("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Manual click-to-play recovery for browsers that block autoplay (Chrome
+  // since M64, Safari since 11). The autoplay block surfaces as a rejected
+  // play() Promise — previously we silently swallowed it with `.catch(() => {})`
+  // and the UI sat on the "Connecting…" spinner forever with no escape.
+  const handleManualPlay = () => {
+    if (!videoRef.current) return;
+    setState("loading");
+    setErrorMsg(null);
+    videoRef.current.play()
+      .then(() => setState("playing"))
+      .catch((err) => {
+        setState("error");
+        setErrorMsg(err instanceof Error ? err.message : "Playback failed");
+      });
+  };
 
   useEffect(() => {
     if (!enabled || !videoRef.current) {
@@ -34,11 +50,31 @@ export function LivePreviewPlayer({ hlsUrl, enabled }: LivePreviewPlayerProps) {
     setState("loading");
     setErrorMsg(null);
 
+    // Surface autoplay-blocked failures as a "blocked" state with a manual
+    // play button rather than swallowing them. Chrome and Safari both reject
+    // play() with NotAllowedError when the page hasn't yet had a user
+    // gesture; muted+autoplay usually wins, but the operator's browser may
+    // have stricter site settings.
+    const tryAutoplay = () => {
+      const p = video.play();
+      if (p && typeof p.then === "function") {
+        p.catch((err: unknown) => {
+          const name = (err as { name?: string } | null)?.name;
+          if (name === "NotAllowedError" || name === "AbortError") {
+            setState("blocked");
+          } else {
+            setState("error");
+            setErrorMsg(err instanceof Error ? err.message : "Autoplay failed");
+          }
+        });
+      }
+    };
+
     // Safari / iOS support HLS natively — skip hls.js to avoid double-buffering.
     const canNative = video.canPlayType("application/vnd.apple.mpegurl");
     if (canNative) {
       video.src = hlsUrl;
-      video.play().catch(() => {});
+      tryAutoplay();
       const onPlaying = () => setState("playing");
       const onError = () => {
         setState("error");
@@ -73,7 +109,7 @@ export function LivePreviewPlayer({ hlsUrl, enabled }: LivePreviewPlayerProps) {
     hls.loadSource(hlsUrl);
     hls.attachMedia(video);
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
-      video.play().catch(() => {});
+      tryAutoplay();
     });
     hls.on(Hls.Events.ERROR, (_event, data) => {
       if (data.fatal) {
@@ -114,6 +150,19 @@ export function LivePreviewPlayer({ hlsUrl, enabled }: LivePreviewPlayerProps) {
           <Loader2 className="w-6 h-6 animate-spin" />
           <div className="text-xs">Connecting to ingest…</div>
         </div>
+      )}
+      {state === "blocked" && (
+        <button
+          type="button"
+          onClick={handleManualPlay}
+          className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/70 text-white hover:bg-black/80 transition-colors cursor-pointer"
+        >
+          <div className="w-14 h-14 rounded-full bg-white/10 border border-white/30 flex items-center justify-center">
+            <Play className="w-7 h-7 ml-1" />
+          </div>
+          <div className="text-xs font-medium">Click to start preview</div>
+          <div className="text-[10px] text-white/60">Browser blocked autoplay</div>
+        </button>
       )}
       {state === "error" && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-red-500/20 text-white p-4 text-center">

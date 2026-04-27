@@ -622,15 +622,26 @@ export default function VideoLibrary() {
     }
   }, [toast, queryClient, refetch]);
 
+  // Per-row in-flight set so the dropdown menu item can show pending state
+  // and reject double-clicks. Without this, a user clicking "Mark as
+  // Featured" twice in a row (common when API latency is >200ms) fires the
+  // mutation twice — the second one races against the first and the cached
+  // optimistic UI flickers. A Set (rather than a single id) supports the
+  // case where multiple rows are toggled in quick succession.
+  const [togglingFeatured, setTogglingFeatured] = useState<Set<string>>(new Set());
   const handleToggleFeatured = useCallback(async (video: VideoRow) => {
+    if (togglingFeatured.has(video.id)) return;
+    setTogglingFeatured((s) => { const n = new Set(s); n.add(video.id); return n; });
     try {
       await updateVideo({ id: video.id, data: { featured: !video.featured } });
       queryClient.invalidateQueries({ queryKey: getListAdminVideosQueryKey() });
       refetch();
     } catch (e) {
       toast({ title: "Update failed", description: e instanceof Error ? e.message : "Unknown error", variant: "destructive" });
+    } finally {
+      setTogglingFeatured((s) => { const n = new Set(s); n.delete(video.id); return n; });
     }
-  }, [updateVideo, queryClient, refetch, toast]);
+  }, [togglingFeatured, updateVideo, queryClient, refetch, toast]);
 
   // ── selection helpers ──────────────────────────────────────────────────────
   const allSelected = videos.length > 0 && videos.every((v) => selected.has(v.id));
@@ -992,10 +1003,15 @@ export default function VideoLibrary() {
                           }
                           Add to Broadcast Queue
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => handleToggleFeatured(video)}>
-                          {video.featured
-                            ? <><StarOff className="w-4 h-4 mr-2" />Remove from Featured</>
-                            : <><Star className="w-4 h-4 mr-2" />Mark as Featured</>
+                        <DropdownMenuItem
+                          onClick={() => handleToggleFeatured(video)}
+                          disabled={togglingFeatured.has(video.id)}
+                        >
+                          {togglingFeatured.has(video.id)
+                            ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Updating…</>
+                            : video.featured
+                              ? <><StarOff className="w-4 h-4 mr-2" />Remove from Featured</>
+                              : <><Star className="w-4 h-4 mr-2" />Mark as Featured</>
                           }
                         </DropdownMenuItem>
                         {video.videoSource === "youtube" && video.youtubeId && (

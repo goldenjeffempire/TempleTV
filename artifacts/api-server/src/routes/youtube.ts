@@ -1529,10 +1529,29 @@ router.get("/admin/youtube/sync/status", (_req, res) => {
 
 router.get("/youtube/live/events", (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Accel-Buffering", "no");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  // Disable Nagle so each SSE frame is sent immediately (parity with
+  // /broadcast/events — without this, frames could be coalesced).
+  req.socket?.setNoDelay(true);
   res.flushHeaders();
+
+  // Jittered retry hint AND first chunk written immediately. Some reverse
+  // proxies (nginx, Cloudflare) hold the response in pending state until the
+  // first body byte arrives — flushHeaders() alone is not enough — so the
+  // retry comment doubles as a "wake the proxy" first chunk. Jitter range
+  // matches /broadcast/events to spread reconnect waves identically.
+  const retryMs = 3000 + Math.floor(Math.random() * 5000);
+  try {
+    res.write(`retry: ${retryMs}\n\n`);
+    const r = res as unknown as { flush?: () => void };
+    if (typeof r.flush === "function") r.flush();
+  } catch {
+    // Client hung up before we could write anything — nothing to clean up.
+    return;
+  }
 
   let client;
   try {
@@ -1546,13 +1565,23 @@ router.get("/youtube/live/events", (req, res) => {
     throw e;
   }
 
-  res.write(`event: connected\ndata: ${JSON.stringify({
-    isLive: cachedLiveStatus.isLive,
-    videoId: cachedLiveStatus.videoId,
-    title: cachedLiveStatus.title,
-    checkedAt: cachedLiveStatus.checkedAt,
-    ts: Date.now(),
-  })}\n\n`);
+  // The initial "connected" snapshot can throw if the client disconnects
+  // between addSSEClient and the first write. Without try/catch this surfaces
+  // as an unhandled error in the request scope. Wrapping it cleanly degrades
+  // to "client never got initial state" — the next status broadcast will
+  // catch them up anyway.
+  try {
+    res.write(`event: connected\ndata: ${JSON.stringify({
+      isLive: cachedLiveStatus.isLive,
+      videoId: cachedLiveStatus.videoId,
+      title: cachedLiveStatus.title,
+      checkedAt: cachedLiveStatus.checkedAt,
+      ts: Date.now(),
+    })}\n\n`);
+  } catch {
+    removeSSEClient(client);
+    return;
+  }
 
   req.on("close", () => removeSSEClient(client));
 });

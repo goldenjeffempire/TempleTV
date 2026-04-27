@@ -37,13 +37,23 @@ const queryClient = new QueryClient({
 async function setupAudioSession() {
   if (Platform.OS === "web") return;
   try {
-    const { Audio } = await import("expo-av");
+    const { Audio, InterruptionModeIOS, InterruptionModeAndroid } = await import("expo-av");
     await Audio.setAudioModeAsync({
       allowsRecordingIOS: false,
       staysActiveInBackground: true,
       playsInSilentModeIOS: true,
       shouldDuckAndroid: true,
       playThroughEarpieceAndroid: false,
+      // Interruption modes — REQUIRED for the OS to know what to do when a
+      // higher-priority audio source (phone call, alarm, Siri, navigation
+      // prompt) needs the audio focus. Without these set, behaviour is
+      // undefined: on iOS the app may keep playing at full volume OVER an
+      // incoming call; on Android it may either continue or be silently
+      // killed depending on the OEM. DoNotMix tells the OS to pause us when
+      // another app needs exclusive audio (calls, video apps), which is the
+      // correct behaviour for a live broadcast / radio app.
+      interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+      interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
     });
   } catch {
     // Non-critical — audio session setup failure won't break the app

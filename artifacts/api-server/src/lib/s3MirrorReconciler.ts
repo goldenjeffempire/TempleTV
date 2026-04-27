@@ -241,6 +241,17 @@ export async function runS3MirrorReconciliation(): Promise<ReconcileResult> {
     return result;
   }
 
+  // Hard cap on the per-pass batch size. Without this LIMIT, a large backlog
+  // (e.g. after extended S3 downtime, or on the first reconciliation in a
+  // newly-restored environment) loads every unmirrored row into memory at
+  // once and can OOM the API server on boot. The reconciler runs on a
+  // schedule, so capping at 500/pass simply means a 50k backlog drains over
+  // ~100 passes instead of OOM'ing on the first one. Tunable via env var so
+  // ops can speed up large recoveries on hosts with more memory.
+  const RECONCILE_BATCH_SIZE = Math.max(
+    50,
+    Number(process.env.S3_MIRROR_BATCH_SIZE ?? "500"),
+  );
   const rows = await db
     .select()
     .from(videosTable)
@@ -250,7 +261,8 @@ export async function runS3MirrorReconciliation(): Promise<ReconcileResult> {
         isNull(videosTable.s3MirroredAt),
       ),
     )
-    .orderBy(sql`imported_at asc`);
+    .orderBy(sql`imported_at asc`)
+    .limit(RECONCILE_BATCH_SIZE);
 
   result.scanned = rows.length;
   if (rows.length === 0) {

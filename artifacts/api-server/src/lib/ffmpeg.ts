@@ -302,6 +302,13 @@ export function runFfmpeg(opts: FfmpegRunOptions): Promise<void> {
     let lastStderrAt = Date.now();
     let killedReason: string | null = null;
 
+    // Track the SIGKILL escalation timer so we can clear it when the process
+    // exits naturally between SIGTERM and the 5s mark. unref() prevents the
+    // timer from holding the event loop open, but each unfired timer still
+    // costs a Timer object until its scheduled fire — under heavy churn (a
+    // crashing transcode loop, batch cancellations) this accumulates. Clearing
+    // on exit makes the pattern strictly leak-free.
+    let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
     const killGracefully = (reason: string) => {
       if (killedReason) return;
       killedReason = reason;
@@ -311,7 +318,7 @@ export function runFfmpeg(opts: FfmpegRunOptions): Promise<void> {
       } catch {
         /* ignore */
       }
-      setTimeout(() => {
+      sigkillTimer = setTimeout(() => {
         if (proc.exitCode === null && proc.signalCode === null) {
           try {
             proc.kill("SIGKILL");
@@ -319,8 +326,16 @@ export function runFfmpeg(opts: FfmpegRunOptions): Promise<void> {
             /* ignore */
           }
         }
-      }, 5_000).unref();
+        sigkillTimer = null;
+      }, 5_000);
+      sigkillTimer.unref();
     };
+    proc.once("exit", () => {
+      if (sigkillTimer) {
+        clearTimeout(sigkillTimer);
+        sigkillTimer = null;
+      }
+    });
 
     const wallClockTimer = setTimeout(
       () => killGracefully(`exceeded max wall clock ${maxWallClockMs}ms`),

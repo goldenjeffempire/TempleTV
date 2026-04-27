@@ -1469,6 +1469,27 @@ router.post("/admin/videos/upload/init", async (req, res) => {
     if (!title?.trim()) return void res.status(400).json({ error: "Title is required" });
     if (!totalChunks || !totalBytes) return void res.status(400).json({ error: "totalChunks and totalBytes are required" });
 
+    // Hard ceiling on declared total file size. Without this, an admin (or
+    // compromised credential) can declare totalBytes = 1TB and proceed to
+    // fill the server's disk one 200 MB chunk at a time. 20 GB matches the
+    // realistic upper bound for a 4-hour high-bitrate service recording.
+    // Tunable via env var so a Sunday-conference recording can be raised
+    // without a code change. The per-chunk receivedBytes accounting below
+    // also enforces this at runtime to defend against a lying client.
+    const MAX_DECLARED_UPLOAD_BYTES = Math.max(
+      1024 * 1024 * 1024, // 1 GB floor
+      Number(process.env.MAX_DECLARED_UPLOAD_BYTES ?? String(20 * 1024 * 1024 * 1024)),
+    );
+    const declaredTotalBytes = parseInt(totalBytes, 10);
+    if (!Number.isFinite(declaredTotalBytes) || declaredTotalBytes <= 0) {
+      return void res.status(400).json({ error: "totalBytes must be a positive integer" });
+    }
+    if (declaredTotalBytes > MAX_DECLARED_UPLOAD_BYTES) {
+      return void res.status(413).json({
+        error: `Declared upload size ${declaredTotalBytes} exceeds server cap ${MAX_DECLARED_UPLOAD_BYTES}`,
+      });
+    }
+
     // The client generates a UUID and sends it here. This sidesteps all proxy
     // issues — no response body or headers need to carry the session ID back.
     // We validate the format strictly so clients can't inject arbitrary IDs.
@@ -1540,6 +1561,24 @@ router.post("/admin/videos/upload/:sessionId/chunk", chunkUpload.single("chunk")
     const idx = parseInt(chunkIndex ?? "0", 10);
     if (isNaN(idx) || idx < 0 || idx >= session.totalChunks) {
       return void res.status(400).json({ error: `Invalid chunk index: ${idx}` });
+    }
+
+    // Defend against a lying client: if accepting this NEW chunk (re-uploads
+    // of an already-received chunk are idempotent — see below) would push
+    // receivedBytes past the declared totalBytes, reject before writing to
+    // disk. A 1 MB tolerance handles the legitimate case of slightly larger
+    // last-chunk metadata; anything beyond that is either client confusion or
+    // a deliberate attempt to fill the disk past the declared budget. Without
+    // this check, an admin who declares totalBytes=10 MB but uploads
+    // totalChunks=10000 chunks of 200 MB each fills 2 TB of disk.
+    const wouldBeNew = !session.uploadedChunks.has(idx);
+    if (wouldBeNew) {
+      const projected = session.receivedBytes + (req.file?.buffer?.length ?? 0);
+      if (projected > session.totalBytes + 1024 * 1024) {
+        return void res.status(413).json({
+          error: `Cumulative upload size ${projected} would exceed declared totalBytes ${session.totalBytes}`,
+        });
+      }
     }
 
     // Verify SHA-256 checksum when provided — uses async Web Crypto so the
@@ -1666,8 +1705,19 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
 
     const finalFilename = `${randomUUID()}${session.ext}`;
     const finalPath = path.join(__dirname, "..", "uploads", finalFilename);
+    // Atomic-assembly: write to a tmp path FIRST, then rename into uploads/
+    // only after the file is fully assembled and validated. Without this, the
+    // static file middleware that serves /uploads/* can race the writer and
+    // hand a partial/corrupt file to a viewer who happens to request the
+    // newly-created path during the assembly window. fs.rename() within the
+    // same filesystem is atomic from the reader's perspective (POSIX
+    // guarantee), so readers see either no file or the complete file —
+    // never a half-written one.
+    const tmpAssemblyDir = path.join(__dirname, "..", "uploads", "tmp");
+    await fs.mkdir(tmpAssemblyDir, { recursive: true });
+    const tmpAssemblyPath = path.join(tmpAssemblyDir, `assembling-${randomUUID()}${session.ext}`);
     // 4 MB write buffer — fewer kernel flushes than the default 64 KB
-    const writeStream = createWriteStream(finalPath, { highWaterMark: 4 * 1024 * 1024 });
+    const writeStream = createWriteStream(tmpAssemblyPath, { highWaterMark: 4 * 1024 * 1024 });
     const assemblyStart = Date.now();
 
     try {
@@ -1712,20 +1762,32 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
       });
     } catch (err) {
       writeStream.destroy();
-      await fs.unlink(finalPath).catch(() => {});
+      await fs.unlink(tmpAssemblyPath).catch(() => {});
       throw err;
     }
 
     const assemblyMs = Date.now() - assemblyStart;
 
-    // Magic-byte validation on the assembled video (defends against MIME spoofing).
-    const magicCheck = await validateUploadedFileMagicBytes(finalPath, "video");
+    // Magic-byte validation on the assembled video (defends against MIME
+    // spoofing) — runs against the tmp path, BEFORE we promote it into the
+    // public uploads/ directory. This way an invalid file is never visible
+    // to the static file middleware, even briefly.
+    const magicCheck = await validateUploadedFileMagicBytes(tmpAssemblyPath, "video");
     if (!magicCheck.valid) {
-      await fs.unlink(finalPath).catch(() => {});
+      await fs.unlink(tmpAssemblyPath).catch(() => {});
       destroyUploadSession(sessionId, session.tmpDir);
       return void res.status(415).json({
         error: "Uploaded file does not appear to be a valid video (magic-byte mismatch)",
       });
+    }
+
+    // Atomic promote: rename tmp → uploads/. Same filesystem (both under
+    // uploads/), so this is a metadata-only operation and POSIX atomic.
+    try {
+      await fs.rename(tmpAssemblyPath, finalPath);
+    } catch (err) {
+      await fs.unlink(tmpAssemblyPath).catch(() => {});
+      throw err;
     }
 
     await fs.rm(session.tmpDir, { recursive: true, force: true });

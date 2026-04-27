@@ -922,8 +922,14 @@ router.get("/broadcast/events", async (req, res) => {
     if (typeof r.flush === "function") r.flush();
   };
 
-  // Tell clients to retry connection after 5s on disconnect
-  res.write("retry: 5000\n\n");
+  // Tell clients to retry connection after a JITTERED interval on disconnect.
+  // A fixed 5s value across all clients caused a thundering herd on every
+  // process restart: thousands of TVs/mobiles/admins reconnecting at the same
+  // 5s mark could blow past MAX_SSE_CLIENTS_GLOBAL and surface as a wave of
+  // 503s to legitimate users. Per-connection jitter (3–8s) spreads the
+  // reconnect wave across a 5-second window, smoothing the load curve.
+  const retryMs = 3000 + Math.floor(Math.random() * 5000);
+  res.write(`retry: ${retryMs}\n\n`);
   flushRes();
 
   let client;
