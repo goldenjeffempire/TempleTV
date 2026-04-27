@@ -6,6 +6,7 @@
   "scripts": {
     "hello": "tsx ./src/hello.ts",
     "backfill-legacy-video-urls": "tsx ./src/backfill-legacy-video-urls.ts",
+    "load-test-broadcast-current": "tsx ./src/load-test-broadcast-current.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
