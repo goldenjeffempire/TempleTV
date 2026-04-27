@@ -128,20 +128,25 @@ services:
     # ── Build & start ──────────────────────────────────────────────────────
     # `--prefer-offline` reuses Render's pnpm cache (cuts install from ~90 s
     # → ~25 s on warm builds). `--frozen-lockfile` is mandatory in CI to
-    # guarantee reproducible builds. `pnpm run verify` runs BEFORE the
-    # esbuild bundle so any type drift across workspaces OR any drift between
-    # `lib/api-spec/openapi.yaml` and the generated zod / react-query clients
-    # fails the deploy LOUDLY at the build step — not silently at runtime
-    # after the artifact is already in front of users. The same gate runs
-    # locally on every merge via `scripts/post-merge.sh`; wiring it here too
-    # closes the gap where a force-push or out-of-band branch could otherwise
-    # ship a drift- or type-broken commit straight to production.
+    # guarantee reproducible builds. `pnpm run verify:production` runs BEFORE
+    # the esbuild bundle so any type drift across PRODUCTION workspaces OR
+    # any drift between `lib/api-spec/openapi.yaml` and the generated zod /
+    # react-query clients fails the deploy LOUDLY at the build step — not
+    # silently at runtime after the artifact is already in front of users.
+    # `verify:production` deliberately excludes `@workspace/mockup-sandbox`
+    # (a Replit-canvas-only dev preview tool that ships in zero production
+    # services and whose typecheck failures cannot affect any deployed
+    # artifact) — gating production on it would couple deploys to a tool
+    # that isn't part of any deployed surface. The fuller `pnpm run verify`
+    # (which DOES include mockup-sandbox) still runs locally via the
+    # pre-commit hook and `scripts/post-merge.sh`, so mockup-sandbox drift
+    # is still caught — just not on the Render critical path.
     # esbuild bundles to a single ESM file so `start` does not
     # require devDependencies on disk.
     buildCommand: |
       corepack enable && \
       pnpm install --frozen-lockfile --prefer-offline && \
-      pnpm run verify && \
+      pnpm run verify:production && \
       pnpm --filter @workspace/api-server run build
     startCommand: pnpm --filter @workspace/api-server run start:prod
 
@@ -307,14 +312,15 @@ services:
                               # anyway — adding instances costs more than
                               # it gains. Bump to 2 if upgrading to standard.
 
-    # Same `pnpm run verify` gate as temple-tv-api: drift between
+    # Same `pnpm run verify:production` gate as temple-tv-api: drift between
     # openapi.yaml and the generated clients OR a cross-workspace type
-    # error in any artifact fails the deploy at build time, before the
-    # transcoder ever pulls a job off the queue.
+    # error in any production artifact fails the deploy at build time,
+    # before the transcoder ever pulls a job off the queue. (The dev-only
+    # `@workspace/mockup-sandbox` is excluded — it ships in zero services.)
     buildCommand: |
       corepack enable && \
       pnpm install --frozen-lockfile --prefer-offline && \
-      pnpm run verify && \
+      pnpm run verify:production && \
       pnpm --filter @workspace/api-server run build
     startCommand: pnpm --filter @workspace/api-server run start
 
@@ -366,13 +372,14 @@ services:
     rootDir: .
     autoDeploy: true
     pullRequestPreviewsEnabled: false
-    # `pnpm run verify` ensures the admin SPA build can never ship a UI
-    # whose generated react-query hooks have drifted from openapi.yaml,
-    # nor a UI whose TS doesn't typecheck against the libs it imports.
+    # `pnpm run verify:production` ensures the admin SPA build can never
+    # ship a UI whose generated react-query hooks have drifted from
+    # openapi.yaml, nor a UI whose TS doesn't typecheck against the libs
+    # it imports. Excludes the dev-only `@workspace/mockup-sandbox`.
     buildCommand: |
       corepack enable && \
       pnpm install --frozen-lockfile --prefer-offline && \
-      pnpm run verify && \
+      pnpm run verify:production && \
       pnpm --filter @workspace/admin run build
     staticPublishPath: ./artifacts/admin/dist/public
     envVars:
@@ -410,12 +417,13 @@ services:
     rootDir: .
     autoDeploy: true
     pullRequestPreviewsEnabled: false
-    # `pnpm run verify` keeps the mobile (Expo Web) build honest against
-    # the same openapi-generated client + cross-workspace types as the API.
+    # `pnpm run verify:production` keeps the mobile (Expo Web) build honest
+    # against the same openapi-generated client + cross-workspace types as
+    # the API. Excludes the dev-only `@workspace/mockup-sandbox`.
     buildCommand: |
       corepack enable && \
       pnpm install --frozen-lockfile --prefer-offline && \
-      pnpm run verify && \
+      pnpm run verify:production && \
       pnpm --filter @workspace/mobile run build:web
     staticPublishPath: ./artifacts/mobile/web-dist
     envVars:
@@ -455,12 +463,13 @@ services:
     rootDir: .
     autoDeploy: true
     pullRequestPreviewsEnabled: false
-    # `pnpm run verify` keeps the TV (Tizen) build honest against the same
-    # openapi-generated client + cross-workspace types as the API.
+    # `pnpm run verify:production` keeps the TV (Tizen) build honest against
+    # the same openapi-generated client + cross-workspace types as the API.
+    # Excludes the dev-only `@workspace/mockup-sandbox`.
     buildCommand: |
       corepack enable && \
       pnpm install --frozen-lockfile --prefer-offline && \
-      pnpm run verify && \
+      pnpm run verify:production && \
       pnpm --filter @workspace/tv run build
     staticPublishPath: ./artifacts/tv/dist/public
     envVars:

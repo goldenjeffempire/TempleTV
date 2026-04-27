@@ -1,0 +1,45 @@
+2026-04-27T16:39:25.388141922Z ==> Downloading cache...
+2026-04-27T16:39:25.452327186Z ==> Cloning from https://github.com/goldenjeffempire/TempleTV
+2026-04-27T16:39:29.931275222Z ==> Checking out commit 5b86fd6274127af4f81fc7b80dab13ab040a75a7 in branch main
+2026-04-27T16:39:58.133904293Z ==> Downloaded 283MB in 2s. Extraction took 26s.
+2026-04-27T16:39:59.465896594Z ==> Using Node.js version 24.13.0 via /opt/render/project/src/.nvmrc
+2026-04-27T16:39:59.513099038Z ==> Docs on specifying a Node.js version: https://render.com/docs/node-version
+2026-04-27T16:40:02.515805125Z ==> Running build command 'corepack enable && \
+2026-04-27T16:40:02.515831916Z pnpm install --frozen-lockfile --prefer-offline && \
+2026-04-27T16:40:02.515838146Z pnpm run verify && \
+2026-04-27T16:40:02.515843846Z pnpm --filter @workspace/api-server run build
+2026-04-27T16:40:02.515848766Z '...
+2026-04-27T16:40:02.754409601Z ! Corepack is about to download https://registry.npmjs.org/pnpm/-/pnpm-10.26.1.tgz
+2026-04-27T16:40:09.294639023Z 
+2026-04-27T16:40:09.294668144Z > workspace@0.0.0 verify /opt/render/project/src
+2026-04-27T16:40:09.294674804Z > pnpm run verify:codegen && pnpm run typecheck
+2026-04-27T16:40:09.294679894Z 
+2026-04-27T16:40:09.885669599Z 
+2026-04-27T16:40:09.885690209Z > workspace@0.0.0 verify:codegen /opt/render/project/src
+2026-04-27T16:40:09.885696349Z > pnpm --filter @workspace/api-spec run codegen && (git diff --exit-code -- lib/api-zod/src/generated lib/api-client-react/src/generated || (echo '\n[verify:codegen] FAIL: lib/api-spec/openapi.yaml is out of sync with generated clients. Run: pnpm --filter @workspace/api-spec run codegen, then commit the changes.' >&2; exit 1))
+2026-04-27T16:40:09.885703129Z 
+2026-04-27T16:40:10.521805896Z 
+2026-04-27T16:40:10.521840306Z > @workspace/api-spec@0.0.0 codegen /opt/render/project/src/lib/api-spec
+2026-04-27T16:40:10.521846086Z > orval --config ./orval.config.ts && node ./postcodegen.mjs
+2026-04-27T16:40:10.521851516Z 
+2026-04-27T16:40:11.223801206Z 🍻 orval v8.5.3 - A swagger client generator for typescript
+2026-04-27T16:40:11.56909069Z api-client-react Cleaning output folder
+2026-04-27T16:40:12.975787669Z 🎉 api-client-react - Your OpenAPI spec has been converted into ready to use orval!
+2026-04-27T16:40:12.98894683Z zod Cleaning output folder
+2026-04-27T16:40:13.617999201Z 🎉 zod - Your OpenAPI spec has been converted into ready to use orval!
+2026-04-27T16:40:13.727816043Z [postcodegen] normalized lib/api-zod/src/index.ts
+2026-04-27T16:40:14.385004465Z 
+2026-04-27T16:40:14.385041696Z > workspace@0.0.0 typecheck /opt/render/project/src
+2026-04-27T16:40:14.385048276Z > pnpm run typecheck:libs && pnpm -r --filter "./artifacts/**" --filter "./scripts" --if-present run typecheck
+2026-04-27T16:40:14.385053096Z 
+2026-04-27T16:40:14.962451766Z 
+2026-04-27T16:40:14.962487377Z > workspace@0.0.0 typecheck:libs /opt/render/project/src
+2026-04-27T16:40:14.962493327Z > tsc --build
+2026-04-27T16:40:14.962498147Z 
+2026-04-27T16:40:28.590490457Z /opt/render/project/src/artifacts/mockup-sandbox:
+2026-04-27T16:40:28.590551678Z  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/mockup-sandbox@2.0.0 typecheck: `tsc -p tsconfig.json --noEmit`
+2026-04-27T16:40:28.590562048Z Exit status 2
+2026-04-27T16:40:28.644308051Z  ELIFECYCLE  Command failed with exit code 2.
+2026-04-27T16:40:28.698803423Z  ELIFECYCLE  Command failed with exit code 2.
+2026-04-27T16:40:28.792726445Z ==> Build failed 😞
+2026-04-27T16:40:28.792759625Z ==> Common ways to troubleshoot your deploy: https://render.com/docs/troubleshooting-deploys

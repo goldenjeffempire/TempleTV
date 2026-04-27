@@ -7,8 +7,10 @@
     "build": "pnpm run typecheck && pnpm -r --if-present run build",
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck",
+    "typecheck:production": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"!@workspace/mockup-sandbox\" --filter \"./scripts\" --if-present run typecheck",
     "verify:codegen": "pnpm --filter @workspace/api-spec run codegen && (git diff --exit-code -- lib/api-zod/src/generated lib/api-client-react/src/generated || (echo '\\n[verify:codegen] FAIL: lib/api-spec/openapi.yaml is out of sync with generated clients. Run: pnpm --filter @workspace/api-spec run codegen, then commit the changes.' >&2; exit 1))",
-    "verify": "pnpm run verify:codegen && pnpm run typecheck"
+    "verify": "pnpm run verify:codegen && pnpm run typecheck",
+    "verify:production": "pnpm run verify:codegen && pnpm run typecheck:production"
   },
   "private": true,
   "engines": {
