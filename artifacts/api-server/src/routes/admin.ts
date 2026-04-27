@@ -2659,6 +2659,32 @@ router.post("/admin/videos/upload/s3-multipart-complete", async (req, res) => {
       return { partNumber: p.partNumber, etag };
     });
 
+    // ── Idempotency guard ────────────────────────────────────────────────
+    // The client may retry this POST if the response packet was lost on a
+    // flaky cellular link (see `uploadAdminFetch` retry wrapper in
+    // VideoUploadModal.tsx). Without this guard, the retry would call
+    // s3CompleteMultipartUpload again (which is idempotent on S3's side and
+    // returns the same object) and then INSERT a second `videos` row with a
+    // fresh `randomUUID()` — corrupting the library with duplicates.
+    //
+    // Looking up by `objectPath` is safe because every multipart upload mints
+    // a fresh `${S3_VIDEO_PREFIX}/${sessionId}.${ext}` key in init, so a row
+    // with this key can only have come from a prior successful complete of
+    // THIS exact upload session. Returning the existing row makes the entire
+    // sign→upload→complete pipeline safely end-to-end retryable.
+    const [existing] = await db
+      .select()
+      .from(videosTable)
+      .where(eq(videosTable.objectPath, objectKey))
+      .limit(1);
+    if (existing) {
+      logger.info(
+        { videoId: existing.id, sessionId, objectKey },
+        "s3-multipart-complete: returning existing row (idempotent retry)",
+      );
+      return void res.status(200).json({ ...existing, broadcastQueued: true });
+    }
+
     // Tell S3 to assemble the parts. After this returns, the object exists.
     await s3CompleteMultipartUpload(objectKey, uploadId, cleanedParts);
 

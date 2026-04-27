@@ -580,28 +580,81 @@ export function VideoUploadModal({
         const putElapsedMs = Date.now() - putStartedAt;
         updateTask(taskId, { state: "finalizing", abortController: null, error: null });
 
-        const finalizeRes = await uploadAdminFetch(
-          "/api/admin/videos/upload/s3-multipart-complete",
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              sessionId: mpInit.sessionId,
-              uploadId: mpInit.uploadId,
-              objectKey: mpInit.objectKey,
-              parts,
-              title,
-              category: task.category,
-              preacher: task.preacher,
-              featured: task.featured,
-              durationSecs,
-              sizeBytes: uploadFile.size,
-              mimeType: uploadFile.type || undefined,
-              originalFilename: uploadFile.name,
-              clientDurationMs: putElapsedMs,
-            }),
-          },
-        );
+        // ── Robust multipart-complete with timeout + retry ────────────────
+        // After all 118 parts land in S3, this single POST asks the server
+        // to call S3 CompleteMultipartUpload, HEAD-verify, insert the videos
+        // row, and queue transcoding. On large files (1GB+) over a flaky
+        // cellular link, the response packet can be dropped after the
+        // server has already done all the work — leaving the UI permanently
+        // stuck in "Finalizing" state with no error to surface. We saw this
+        // exact "stuck at 99%" symptom in production on a 3G uplink with
+        // two 580 MB files.
+        //
+        // Without a per-attempt timeout the browser fetch sits on the dead
+        // socket until the OS gives up (often 2+ minutes), then surfaces a
+        // generic TypeError. The retry+idempotency contract on the server
+        // (see "Idempotency guard" in admin.ts s3-multipart-complete) makes
+        // re-POSTing safe — the server returns the existing videos row if
+        // the prior call succeeded, or completes the upload if it didn't.
+        const FINALIZE_PER_ATTEMPT_MS = 90_000;
+        const FINALIZE_MAX_ATTEMPTS = 3;
+        const finalizeBody = JSON.stringify({
+          sessionId: mpInit.sessionId,
+          uploadId: mpInit.uploadId,
+          objectKey: mpInit.objectKey,
+          parts,
+          title,
+          category: task.category,
+          preacher: task.preacher,
+          featured: task.featured,
+          durationSecs,
+          sizeBytes: uploadFile.size,
+          mimeType: uploadFile.type || undefined,
+          originalFilename: uploadFile.name,
+          clientDurationMs: putElapsedMs,
+        });
+        let finalizeRes: Response | null = null;
+        let finalizeLastErr: unknown = null;
+        for (let attempt = 1; attempt <= FINALIZE_MAX_ATTEMPTS; attempt++) {
+          const ctl = new AbortController();
+          const timer = setTimeout(() => ctl.abort(), FINALIZE_PER_ATTEMPT_MS);
+          try {
+            const res = await uploadAdminFetch(
+              "/api/admin/videos/upload/s3-multipart-complete",
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: finalizeBody,
+                signal: ctl.signal,
+              },
+            );
+            // 5xx → retry (transient server/DB hiccup). 4xx → throw, no retry.
+            if (res.status >= 500 && attempt < FINALIZE_MAX_ATTEMPTS) {
+              finalizeLastErr = new Error(
+                `multipart-complete attempt ${attempt} returned HTTP ${res.status}`,
+              );
+              await new Promise((r) => setTimeout(r, 1000 * 2 ** (attempt - 1)));
+              continue;
+            }
+            finalizeRes = res;
+            break;
+          } catch (err) {
+            // AbortError = our 90s timeout fired, OR the user cancelled.
+            // Treat timeouts as retryable; user-initiated aborts propagate.
+            const e = err as Error & { name?: string };
+            finalizeLastErr = err;
+            const isTimeout = e?.name === "AbortError";
+            if (!isTimeout || attempt >= FINALIZE_MAX_ATTEMPTS) throw err;
+            await new Promise((r) => setTimeout(r, 1000 * 2 ** (attempt - 1)));
+          } finally {
+            clearTimeout(timer);
+          }
+        }
+        if (!finalizeRes) {
+          throw finalizeLastErr instanceof Error
+            ? finalizeLastErr
+            : new Error("S3 multipart complete failed after all retries");
+        }
         const finalizeJson = await readJsonOrThrow<{
           id: string;
           broadcastQueued?: boolean;

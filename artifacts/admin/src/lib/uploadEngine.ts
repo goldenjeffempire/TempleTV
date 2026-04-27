@@ -661,6 +661,25 @@ export interface S3MultipartUploadOpts {
 
 const PART_BATCH_SIZE = 500;             // server caps this at 1000
 const PART_MAX_RETRIES = 4;              // per-part retry budget
+// Hard ceiling on a single part-PUT attempt, regardless of progress.
+//
+// The stall timer alone is not enough: it only fires when bytes STOP flowing
+// for `stallTimeoutMs` seconds. On a degraded cellular link delivering bytes
+// at <1 KB/s the upload progress events keep firing in tiny dribbles, which
+// resets the stall timer indefinitely — a 5 MB part can sit on the wire for
+// 80+ minutes without ever tripping the stall guard. Multiplied by the
+// PART_MAX_RETRIES retry budget, a single trickling part can block the
+// entire upload for 5+ hours while the user watches "115/118 chunks · 1.3
+// MB/s" with no error to surface (this is exactly the symptom we observed
+// on 3G with two 580 MB sermons).
+//
+// `xhr.timeout` is the right primitive here: it bounds the TOTAL request
+// time end-to-end (bytes sent + S3 response received) and surfaces a
+// retryable TimeoutError so the worker can re-PUT the same part fresh.
+// 15 minutes is generous even for a 64 MB part on a 100 KB/s link
+// (~10 min upload), but tight enough that one bad cell tower handoff can't
+// freeze a whole upload session.
+const PART_MAX_REQUEST_MS = 15 * 60 * 1000;
 
 async function putOnePart(
   url: string,
@@ -701,6 +720,20 @@ async function putOnePart(
     resetStall();
 
     const xhr = new XMLHttpRequest();
+    // Hard request-time ceiling — see PART_MAX_REQUEST_MS rationale above.
+    xhr.timeout = PART_MAX_REQUEST_MS;
+    xhr.ontimeout = () =>
+      settle(() =>
+        reject(
+          Object.assign(
+            new Error(
+              `Part ${partNumber} timed out after ${PART_MAX_REQUEST_MS / 1000}s ` +
+                `(uploaded ${lastLoaded}/${body.size} bytes) — link too slow, will retry`,
+            ),
+            { name: "TimeoutError", retryable: true },
+          ),
+        ),
+      );
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && e.loaded > lastLoaded) {
         const delta = e.loaded - lastLoaded;
