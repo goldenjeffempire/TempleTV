@@ -498,6 +498,8 @@ export interface ProcessStatus {
           nodeVersion: string;
           rssMb: number;
           sameProcess: boolean;
+          uptimeSec: number | null;
+          guardrailPassed: boolean | null;
         }
       | null;
     alive: boolean;
@@ -554,6 +556,8 @@ export interface RenderDeployHealth {
           runMode: string;
           nodeVersion: string;
           rssMb: number;
+          uptimeSec: number | null;
+          guardrailPassed: boolean | null;
         }
       | null;
   };

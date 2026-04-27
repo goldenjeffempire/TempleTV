@@ -5,6 +5,7 @@ import {
   resumePendingJobsOnStartup,
   startRetryTick,
   stopRetryTick,
+  markWorkerGuardrailPassed,
 } from "./lib/transcoder";
 import { assertFfmpegAvailable } from "./lib/ffmpeg";
 import { startNotificationScheduler } from "./lib/notification-scheduler";
@@ -333,6 +334,12 @@ if (RUNS_API) {
       { activeResources: resources.length },
       "Worker startup guardrail OK — event loop has ref'd handles, process is stable",
     );
+    // Latch the guardrail-passed flag so every subsequent worker heartbeat
+    // carries `guardrailPassed: true`. Mission Control reads this off the
+    // heartbeat to render a green "self-check OK" badge — concrete proof
+    // the worker survived the silent-exit window, not just a freshness
+    // signal that could be 60 s stale by the time anyone looks at it.
+    markWorkerGuardrailPassed();
   }, 2_000);
   guardrail.unref();
 }

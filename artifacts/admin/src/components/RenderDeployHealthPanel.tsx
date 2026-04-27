@@ -225,6 +225,46 @@ export function RenderDeployHealthPanel() {
                 <Row label="Run mode" value={worker.heartbeat.runMode} />
                 <Row label="PID" value={String(worker.heartbeat.pid)} mono />
                 <Row label="RSS" value={`${worker.heartbeat.rssMb} MB`} />
+                {worker.heartbeat.uptimeSec !== null && (
+                  <Row
+                    label="Uptime"
+                    value={formatUptime(worker.heartbeat.uptimeSec)}
+                  />
+                )}
+                {/*
+                  Self-check badge — the worker startup guardrail in
+                  api-server/src/index.ts confirms the event loop has ref'd
+                  handles ~2 s after boot. A green badge here is concrete
+                  proof the worker survived the silent-exit window that
+                  caused the historical Render crashloop (see
+                  RELEASE_AUDIT.md §13). `null` means an older worker
+                  build (pre-guardrail) is still running and the field
+                  hasn't been populated yet.
+                */}
+                <div className="flex items-center justify-between text-xs pt-0.5">
+                  <span className="text-muted-foreground">Self-check</span>
+                  {worker.heartbeat.guardrailPassed === true ? (
+                    <Badge
+                      variant="outline"
+                      className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/40 text-[10px] gap-1"
+                    >
+                      <CheckCircle2 className="h-3 w-3" />
+                      passed
+                    </Badge>
+                  ) : worker.heartbeat.guardrailPassed === false ? (
+                    <Badge
+                      variant="outline"
+                      className="bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/40 text-[10px] gap-1"
+                    >
+                      <AlertTriangle className="h-3 w-3" />
+                      pending
+                    </Badge>
+                  ) : (
+                    <span className="text-[10px] text-muted-foreground">
+                      n/a
+                    </span>
+                  )}
+                </div>
               </>
             ) : (
               <div className="text-xs text-amber-600 dark:text-amber-300/80 flex items-center gap-2 pt-1">

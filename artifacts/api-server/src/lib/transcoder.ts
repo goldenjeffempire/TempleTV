@@ -764,6 +764,26 @@ export interface TranscoderHeartbeat {
   runMode: string;     // "worker" | "all"
   nodeVersion: string;
   rssMb: number;
+  uptimeSec: number;
+  // True once the worker startup self-check guardrail (see index.ts) has
+  // confirmed the event loop has ref'd handles. Surfaced in Mission Control
+  // so operators can see at a glance that the worker survived the
+  // silent-exit window — not just "alive" but "self-check passed".
+  guardrailPassed: boolean;
+}
+
+// Module-level latch flipped by `markWorkerGuardrailPassed()`. Stays false
+// until the index.ts guardrail timer fires successfully ~2s after boot.
+let workerGuardrailPassed = false;
+
+/**
+ * Called from `index.ts` when the worker startup guardrail confirms the
+ * event loop has ref'd handles. After this fires, every subsequent
+ * heartbeat carries `guardrailPassed: true` so the admin panel can render
+ * a green "self-check OK" badge.
+ */
+export function markWorkerGuardrailPassed(): void {
+  workerGuardrailPassed = true;
 }
 
 async function writeWorkerHeartbeat(): Promise<void> {
@@ -774,6 +794,8 @@ async function writeWorkerHeartbeat(): Promise<void> {
       runMode: (process.env.RUN_MODE ?? "all").toLowerCase(),
       nodeVersion: process.version,
       rssMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+      uptimeSec: Math.round(process.uptime()),
+      guardrailPassed: workerGuardrailPassed,
     };
     await cache.set(TRANSCODER_HEARTBEAT_KEY, beat, TRANSCODER_HEARTBEAT_TTL_MS);
   } catch (err) {

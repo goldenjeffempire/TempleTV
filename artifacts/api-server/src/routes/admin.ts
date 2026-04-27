@@ -4497,6 +4497,8 @@ router.get("/admin/process-status", async (_req, res) => {
       runMode: string;
       nodeVersion: string;
       rssMb: number;
+      uptimeSec?: number;
+      guardrailPassed?: boolean;
     }>(TRANSCODER_HEARTBEAT_KEY);
 
     const now = Date.now();
@@ -4560,6 +4562,8 @@ router.get("/admin/process-status", async (_req, res) => {
               nodeVersion: beat.nodeVersion,
               rssMb: beat.rssMb,
               sameProcess,
+              uptimeSec: beat.uptimeSec ?? null,
+              guardrailPassed: beat.guardrailPassed ?? null,
             }
           : null,
         alive: workerAlive,
@@ -4611,6 +4615,8 @@ router.get("/admin/render-deploy-health", async (_req, res) => {
       runMode: string;
       nodeVersion: string;
       rssMb: number;
+      uptimeSec?: number;
+      guardrailPassed?: boolean;
     }>(TRANSCODER_HEARTBEAT_KEY);
 
     const now = Date.now();
@@ -4652,6 +4658,8 @@ router.get("/admin/render-deploy-health", async (_req, res) => {
               runMode: beat.runMode,
               nodeVersion: beat.nodeVersion,
               rssMb: beat.rssMb,
+              uptimeSec: beat.uptimeSec ?? null,
+              guardrailPassed: beat.guardrailPassed ?? null,
             }
           : null,
       },
