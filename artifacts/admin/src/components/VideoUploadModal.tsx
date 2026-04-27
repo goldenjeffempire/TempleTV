@@ -1165,13 +1165,18 @@ export function VideoUploadModal({
           { method: "POST" },
         );
         if (!finalRes.ok) {
-          const err = await readJsonOrThrow<{ error?: string }>(
-            finalRes,
-            "Finalize failed",
-          ).catch((e) => {
-            throw new Error(e instanceof Error ? e.message : String(e));
-          });
-          throw new Error(err.error ?? `Finalization failed (HTTP ${finalRes.status})`);
+          // Read the error body inline — `readJsonOrThrow` now throws on
+          // non-OK responses, so this branch can't use it. Surface the
+          // server's `error` field if present, fall back to the HTTP status.
+          const errText = await finalRes.text().catch(() => "");
+          let serverMsg: string | null = null;
+          if (errText) {
+            try {
+              const parsed = JSON.parse(errText) as { error?: unknown };
+              if (typeof parsed.error === "string") serverMsg = parsed.error;
+            } catch { /* non-JSON — fall through */ }
+          }
+          throw new Error(serverMsg ?? `Finalization failed (HTTP ${finalRes.status})`);
         }
 
         updateTask(taskId, { state: "done", progress: 100 });

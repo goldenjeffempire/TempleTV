@@ -247,8 +247,45 @@ export async function detectVideoDuration(file: File): Promise<number> {
   });
 }
 
+/**
+ * Read a Response and return it parsed as `T`, or throw a useful error.
+ *
+ * Throws when:
+ *   • `res.ok` is false (HTTP 4xx/5xx) — surfaces the server's `error`
+ *     field if the body is JSON-shaped, otherwise a body snippet.
+ *   • body is empty — proxy / network truncation indicator.
+ *   • body is non-JSON — typically a Cloudflare / nginx HTML error page.
+ *
+ * Why the `res.ok` check matters: TypeScript type-asserts the parsed
+ * response to `T`, so without this guard a 4xx response with body
+ * `{ error: "..." }` would parse cleanly and be cast to a success
+ * shape — every field then reads as `undefined` downstream, producing
+ * confusing errors at the next call site (e.g. an init failure showing
+ * up as "Multipart sign returned 0 URLs for undefined parts" because
+ * `mpInit.totalParts` was silently undefined).
+ *
+ * Callers that intentionally want to read the body of a non-OK response
+ * (e.g. to display the server's `error` message in a toast) should
+ * `await res.text()` directly and parse manually — not use this helper.
+ */
 export async function readJsonOrThrow<T>(res: Response, label: string): Promise<T> {
   const text = await res.text();
+  if (!res.ok) {
+    let serverMsg: string | null = null;
+    if (text) {
+      try {
+        const parsed = JSON.parse(text) as { error?: unknown; message?: unknown };
+        if (typeof parsed.error === "string") serverMsg = parsed.error;
+        else if (typeof parsed.message === "string") serverMsg = parsed.message;
+      } catch {
+        // Non-JSON body — fall through to snippet below.
+      }
+    }
+    const detail = serverMsg ?? (text ? text.slice(0, 200) : "no body");
+    throw new Error(
+      `${label}: HTTP ${res.status} ${res.statusText || ""} — ${detail}`,
+    );
+  }
   if (!text) {
     throw new Error(
       `${label}: empty response (HTTP ${res.status} ${res.statusText || "no status text"}). ` +
@@ -751,6 +788,26 @@ export async function uploadFileToS3Multipart(
     file, partSize, totalParts, maxConcurrency,
     stallTimeoutMs, signPartUrls, signal, onProgress,
   } = opts;
+
+  // ── Defensive entry validation ─────────────────────────────────────────
+  // If a future caller forgets to validate the multipart-init response and
+  // passes through `undefined` or `0`, fail loudly here with a message that
+  // points at the real cause. Without this, `Array.from({ length: undefined })`
+  // silently returns `[]`, the worker pool drains immediately, and the
+  // engine throws "Multipart sign returned 0 URLs for undefined parts" —
+  // which blames the wrong endpoint.
+  if (!Number.isInteger(totalParts) || totalParts < 1) {
+    throw new Error(
+      `Multipart upload misconfigured: totalParts is ${String(totalParts)} ` +
+        `(expected positive integer). The s3-multipart-init response was likely missing or malformed.`,
+    );
+  }
+  if (!Number.isInteger(partSize) || partSize < 1) {
+    throw new Error(
+      `Multipart upload misconfigured: partSize is ${String(partSize)} ` +
+        `(expected positive integer). The s3-multipart-init response was likely missing or malformed.`,
+    );
+  }
 
   // ── Prefetch presigned URLs in batches of PART_BATCH_SIZE ──────────────
   const allPartNumbers = Array.from({ length: totalParts }, (_, i) => i + 1);
