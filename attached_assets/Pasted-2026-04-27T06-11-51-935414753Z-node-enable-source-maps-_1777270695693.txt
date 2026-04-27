@@ -1,0 +1,50 @@
+2026-04-27T06:11:51.935414753Z > node --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs
+2026-04-27T06:11:51.935417763Z 
+2026-04-27T06:11:54.988929269Z {"level":30,"time":1777270314988,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-78dbd548b6-mqswb","msg":"Rate limiter using PostgreSQL-backed store (multi-instance safe)"}
+2026-04-27T06:11:55.132790055Z [Sentry] express is not instrumented. Please make sure to initialize Sentry in a separate file that you `--import` when running node, see: https://docs.sentry.io/platforms/javascript/guides/express/install/esm/.
+2026-04-27T06:11:55.133976835Z {"level":30,"time":1777270315133,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-78dbd548b6-mqswb","runMode":"worker","runsApi":false,"runsWorker":true,"msg":"Process role resolved"}
+2026-04-27T06:11:55.133989365Z {"level":30,"time":1777270315133,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-78dbd548b6-mqswb","msg":"Starting in worker-only mode (no HTTP listener)"}
+2026-04-27T06:11:55.133996295Z {"level":30,"time":1777270315133,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-78dbd548b6-mqswb","objectStorage":{"provider":"aws-s3","configured":false,"bucket":"not set — uploads will use local FS only","region":"not set","publicPaths":"not set","privateDir":"not set"},"distributedCache":{"redis":"not configured","pgCache":"active (cache_entries table)","note":"PostgreSQL distributed cache active across all instances"},"hlsTranscoder":{"ffmpegPath":"system PATH","cloudUpload":"disabled (no bucket)","runsInThisProcess":true},"msg":"Infrastructure status at startup"}
+2026-04-27T06:11:55.134003516Z {"level":60,"time":1777270315133,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-78dbd548b6-mqswb","missing":["AWS_S3_BUCKET","AWS_REGION","AWS_ACCESS_KEY_ID","AWS_SECRET_ACCESS_KEY"],"msg":"Refusing to start: AWS S3 is required in production but is not configured. Uploads would be written to ephemeral disk and lost on the next deploy. Set AWS_S3_BUCKET, AWS_REGION, AWS_ACCESS_KEY_ID, and AWS_SECRET_ACCESS_KEY in the deployment environment, then redeploy."}
+2026-04-27T06:11:55.388392799Z (node:63) Warning: SECURITY WARNING: The SSL modes 'prefer', 'require', and 'verify-ca' are treated as aliases for 'verify-full'.
+2026-04-27T06:11:55.388422379Z In the next major version (pg-connection-string v3.0.0 and pg v9.0.0), these modes will adopt standard libpq semantics, which have weaker security guarantees.
+2026-04-27T06:11:55.38842645Z 
+2026-04-27T06:11:55.38843267Z To prepare for this change:
+2026-04-27T06:11:55.38843649Z - If you want the current behavior, explicitly use 'sslmode=verify-full'
+2026-04-27T06:11:55.38844083Z - If you want libpq compatibility now, use 'uselibpqcompat=true&sslmode=require'
+2026-04-27T06:11:55.38844572Z 
+2026-04-27T06:11:55.38845269Z See https://www.postgresql.org/docs/current/libpq-ssl.html for libpq SSL mode definitions.
+2026-04-27T06:11:55.38845785Z (Use `node --trace-warnings ...` to show where the warning was created)
+2026-04-27T06:11:55.388508761Z {"level":30,"time":1777270315379,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-78dbd548b6-mqswb","ffmpeg":"/usr/bin/ffmpeg","ffprobe":"/usr/bin/ffprobe","ffmpegVersion":"ffmpeg version 5.1.8-0+deb12u1 Copyright (c) 2000-2025 the FFmpeg developers","msg":"FFmpeg binaries verified"}
+2026-04-27T06:11:55.388520732Z {"level":30,"time":1777270315384,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-78dbd548b6-mqswb","msg":"FFmpeg preflight passed — transcoding pipeline active"}
+2026-04-27T06:11:55.388526072Z {"level":30,"time":1777270315385,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-78dbd548b6-mqswb","intervalMs":30000,"msg":"Transcoding retry tick started"}
+2026-04-27T06:11:55.48429573Z /opt/render/project/src/artifacts/api-server:
+2026-04-27T06:11:55.48431629Z  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/api-server@0.0.0 start: `node --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs`
+2026-04-27T06:11:55.48431984Z Exit status 1
+2026-04-27T06:16:58.868107038Z ==> Running 'pnpm --filter @workspace/api-server run start'
+2026-04-27T06:16:59.206722187Z ! Corepack is about to download https://registry.npmjs.org/pnpm/-/pnpm-10.33.2.tgz
+2026-04-27T06:17:02.358894058Z 
+2026-04-27T06:17:02.358923059Z > @workspace/api-server@0.0.0 start /opt/render/project/src/artifacts/api-server
+2026-04-27T06:17:02.358927579Z > node --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs
+2026-04-27T06:17:02.358930149Z 
+2026-04-27T06:17:05.148968864Z {"level":30,"time":1777270625147,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-78dbd548b6-mqswb","msg":"Rate limiter using PostgreSQL-backed store (multi-instance safe)"}
+2026-04-27T06:17:05.261852848Z [Sentry] express is not instrumented. Please make sure to initialize Sentry in a separate file that you `--import` when running node, see: https://docs.sentry.io/platforms/javascript/guides/express/install/esm/.
+2026-04-27T06:17:05.262547465Z {"level":30,"time":1777270625262,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-78dbd548b6-mqswb","runMode":"worker","runsApi":false,"runsWorker":true,"msg":"Process role resolved"}
+2026-04-27T06:17:05.262560375Z {"level":30,"time":1777270625262,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-78dbd548b6-mqswb","msg":"Starting in worker-only mode (no HTTP listener)"}
+2026-04-27T06:17:05.262567615Z {"level":30,"time":1777270625262,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-78dbd548b6-mqswb","objectStorage":{"provider":"aws-s3","configured":false,"bucket":"not set — uploads will use local FS only","region":"not set","publicPaths":"not set","privateDir":"not set"},"distributedCache":{"redis":"not configured","pgCache":"active (cache_entries table)","note":"PostgreSQL distributed cache active across all instances"},"hlsTranscoder":{"ffmpegPath":"system PATH","cloudUpload":"disabled (no bucket)","runsInThisProcess":true},"msg":"Infrastructure status at startup"}
+2026-04-27T06:17:05.262575676Z {"level":60,"time":1777270625262,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-78dbd548b6-mqswb","missing":["AWS_S3_BUCKET","AWS_REGION","AWS_ACCESS_KEY_ID","AWS_SECRET_ACCESS_KEY"],"msg":"Refusing to start: AWS S3 is required in production but is not configured. Uploads would be written to ephemeral disk and lost on the next deploy. Set AWS_S3_BUCKET, AWS_REGION, AWS_ACCESS_KEY_ID, and AWS_SECRET_ACCESS_KEY in the deployment environment, then redeploy."}
+2026-04-27T06:17:05.469654697Z {"level":30,"time":1777270625458,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-78dbd548b6-mqswb","ffmpeg":"/usr/bin/ffmpeg","ffprobe":"/usr/bin/ffprobe","ffmpegVersion":"ffmpeg version 5.1.8-0+deb12u1 Copyright (c) 2000-2025 the FFmpeg developers","msg":"FFmpeg binaries verified"}
+2026-04-27T06:17:05.469654717Z (node:63) Warning: SECURITY WARNING: The SSL modes 'prefer', 'require', and 'verify-ca' are treated as aliases for 'verify-full'.
+2026-04-27T06:17:05.469676497Z In the next major version (pg-connection-string v3.0.0 and pg v9.0.0), these modes will adopt standard libpq semantics, which have weaker security guarantees.
+2026-04-27T06:17:05.469681537Z 
+2026-04-27T06:17:05.469686897Z To prepare for this change:
+2026-04-27T06:17:05.469692318Z - If you want the current behavior, explicitly use 'sslmode=verify-full'
+2026-04-27T06:17:05.469697088Z - If you want libpq compatibility now, use 'uselibpqcompat=true&sslmode=require'
+2026-04-27T06:17:05.469701218Z 
+2026-04-27T06:17:05.469706668Z See https://www.postgresql.org/docs/current/libpq-ssl.html for libpq SSL mode definitions.
+2026-04-27T06:17:05.469711218Z (Use `node --trace-warnings ...` to show where the warning was created)
+2026-04-27T06:17:05.469725249Z {"level":30,"time":1777270625464,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-78dbd548b6-mqswb","msg":"FFmpeg preflight passed — transcoding pipeline active"}
+2026-04-27T06:17:05.469729998Z {"level":30,"time":1777270625465,"pid":63,"hostname":"srv-d7med7m7r5hc7385bb50-78dbd548b6-mqswb","intervalMs":30000,"msg":"Transcoding retry tick started"}
+2026-04-27T06:17:05.56366941Z /opt/render/project/src/artifacts/api-server:
+2026-04-27T06:17:05.56368864Z  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/api-server@0.0.0 start: `node --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs`
+2026-04-27T06:17:05.56369281Z Exit status 1

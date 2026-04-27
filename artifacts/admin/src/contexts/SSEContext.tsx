@@ -74,6 +74,19 @@ function summarizeEvent(event: string, data: unknown): string | null {
       return "Broadcast queue updated";
     case "override-expired":
       return "Live override expired";
+    case "youtube-quota-throttled": {
+      const context = (d.context as string | undefined) ?? "API";
+      const pct = d.percentUsed != null ? `${Number(d.percentUsed)}%` : null;
+      return pct
+        ? `YouTube API throttled (${context}) — ${pct} of daily quota used`
+        : `YouTube API throttled (${context})`;
+    }
+    case "youtube-quota-exhausted": {
+      const context = (d.context as string | undefined) ?? "API";
+      const reset = d.quotaResetAt as string | undefined;
+      const when = reset ? new Date(reset).toLocaleTimeString() : "midnight PT";
+      return `YouTube API quota exhausted (${context}) — resets ${when}`;
+    }
     default:
       return event;
   }
@@ -133,6 +146,12 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
       "heartbeat",
       "stream-health",
       "live-failure-stats",
+      // YouTube quota signals — emitted by routes/youtube.ts when the
+      // Data API hits its soft-throttle threshold or hard daily cap. Without
+      // these listeners the events were dropped on the floor and operators
+      // had no real-time visibility into quota pressure.
+      "youtube-quota-throttled",
+      "youtube-quota-exhausted",
     ];
 
     knownEvents.forEach((evt) => {

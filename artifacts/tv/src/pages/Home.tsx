@@ -41,34 +41,58 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
   const [searchButtonFocused, setSearchButtonFocused] = useState(false);
   const [broadcastCurrent, setBroadcastCurrent] = useState<BroadcastCurrent | null>(null);
 
-  // Use SSE to get real-time broadcast updates (useLiveSync handles SSE + fallback polling).
-  // When the hook signals a state change (syncedAt changes), re-fetch the full BroadcastCurrent
-  // so LiveHero gets fresh item metadata (thumbnail, nextItem, etc.) immediately.
+  // Real-time hero sync strategy:
+  //
+  // 1. `useLiveSync` already carries the *full* BroadcastCurrentPayload on every
+  //    `broadcast-current-updated` SSE message via its new `payload` field. When
+  //    SSE is healthy that payload IS the source of truth — no extra HTTP round-
+  //    trip is required for the cinematic hero to render fresh metadata, and a
+  //    transient HTTP failure can never strand the hero on stale content.
+  // 2. The HTTP `fetchBroadcastCurrent` is kept as (a) a cold-start primer so
+  //    the hero has data before SSE handshakes, and (b) a 60s safety poll for
+  //    the rare case SSE drops silently mid-session.
+  // 3. The cold-start fetch retries with bounded exponential backoff so a
+  //    one-off network blip during page mount doesn't leave the hero blank.
   const liveSync = useLiveSync();
-  const loadBroadcastRef = useRef<(() => void) | null>(null);
+
+  // Promote the SSE payload directly into the hero's local state so the
+  // cinematic hero updates within milliseconds of a queue transition or
+  // override change — no HTTP fetch required on the hot path.
+  useEffect(() => {
+    if (liveSync.payload) setBroadcastCurrent(liveSync.payload as unknown as BroadcastCurrent);
+  }, [liveSync.payload]);
 
   useEffect(() => {
     let cancelled = false;
+    let attempt = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
     const load = async () => {
       try {
         const bc = await fetchBroadcastCurrent();
-        if (!cancelled) setBroadcastCurrent(bc);
-      } catch {}
+        if (cancelled) return;
+        setBroadcastCurrent(bc);
+        attempt = 0;
+      } catch {
+        if (cancelled) return;
+        // Bounded exponential backoff for the cold-start primer. If SSE comes
+        // online first the `liveSync.payload` effect above will already have
+        // populated the hero, so these retries simply self-cancel on success.
+        if (attempt < 4) {
+          const delay = Math.min(1500 * Math.pow(2, attempt), 12_000);
+          attempt++;
+          retryTimer = setTimeout(load, delay);
+        }
+      }
     };
-    loadBroadcastRef.current = load;
 
-    // Initial load + long-interval fallback for when SSE is unavailable
     load();
     const interval = setInterval(load, 60_000);
-    return () => { cancelled = true; clearInterval(interval); loadBroadcastRef.current = null; };
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      if (retryTimer) clearTimeout(retryTimer);
+    };
   }, []);
-
-  // When useLiveSync receives a broadcast-current-updated SSE event, its syncedAt
-  // changes — trigger an immediate re-fetch of the full BroadcastCurrent payload
-  // so the LiveHero updates within seconds of a queue item transition.
-  useEffect(() => {
-    if (liveSync.syncedAt) loadBroadcastRef.current?.();
-  }, [liveSync.syncedAt]);
 
   // ── Build a unified rows array for useTVNav ───────────────────────────
   // Row 0: Live hero (always present as placeholder — count = 1 even when off-air)

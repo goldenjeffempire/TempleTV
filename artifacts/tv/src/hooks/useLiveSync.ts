@@ -52,6 +52,14 @@ export interface BroadcastSyncState {
   progressPercent: number | null;
   /** Next item metadata (title, ID). */
   nextItem: BroadcastNextItem | null;
+  /**
+   * Raw `BroadcastCurrentPayload` straight from the latest SSE message — used by
+   * `Home.tsx` so the cinematic hero can render full item metadata (thumbnail,
+   * durationSecs, activeSchedule, liveOverride) without a separate HTTP fetch.
+   * `null` until the first SSE message arrives or until a fallback poll succeeds.
+   * Consumers that only need the projected fields above should keep using them.
+   */
+  payload: Record<string, unknown> | null;
 }
 
 const INITIAL: BroadcastSyncState = {
@@ -74,6 +82,7 @@ const INITIAL: BroadcastSyncState = {
   queueLength: null,
   progressPercent: null,
   nextItem: null,
+  payload: null,
 };
 
 function apiUrl(path: string): string {
@@ -154,6 +163,7 @@ export function useLiveSync(): BroadcastSyncState {
         queueLength: typeof current.queueLength === "number" ? current.queueLength : null,
         progressPercent: typeof current.progressPercent === "number" ? current.progressPercent : null,
         nextItem,
+        payload: current,
       });
     };
 
