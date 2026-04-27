@@ -6,7 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Area, AreaChart, ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis } from "recharts";
+import { Area, AreaChart, ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis } from "@/lib/recharts-shim";
 import { Eye, Users, Clock, Video, AlertCircle, RefreshCw, Download } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
@@ -200,7 +200,7 @@ export default function Analytics() {
                           <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0}/>
                         </linearGradient>
                       </defs>
-                      <XAxis dataKey="date" stroke="#888888" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(val) => {
+                      <XAxis dataKey="date" stroke="#888888" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(val: string | number) => {
                         const d = new Date(val);
                         return Number.isNaN(d.getTime()) ? String(val ?? "") : d.toLocaleDateString(undefined, {month: 'short', day: 'numeric'});
                       }} />
@@ -209,8 +209,8 @@ export default function Analytics() {
                         contentStyle={{ backgroundColor: 'hsl(var(--card))', borderColor: 'hsl(var(--border))', borderRadius: '0.5rem' }}
                         itemStyle={{ color: 'hsl(var(--foreground))' }}
                         labelStyle={{ color: 'hsl(var(--muted-foreground))', marginBottom: '0.25rem' }}
-                        labelFormatter={(val) => {
-                          const d = new Date(val as string | number);
+                        labelFormatter={(val: string | number) => {
+                          const d = new Date(val);
                           return Number.isNaN(d.getTime()) ? String(val ?? "") : d.toLocaleDateString();
                         }}
                         formatter={(val: number) => [val.toLocaleString(), "Views"]}
