@@ -801,3 +801,15 @@ The "right" architectural answer was already encoded everywhere else: `playLive(
 **Fix:** `PersistentAudioPlayer.tsx` early-return tightened from `if (!currentSermon && !isLive) return null;` to `if (!currentSermon) return null;`. Pure-live mode never mounts this surface. Web/native behavior is now consistent and matches architectural intent. `isLive` removed from the destructure (now unused). The YoutubePlayer's `isLive` prop is hard-coded `false` (PersistentAudioPlayer is sermons-only by contract).
 
 **Trade-off accepted:** web users who navigate away from `/player` during a live stream no longer get an ambient channel embed in the background. This was never a designed feature — it was an accidental rescue from a default prop value, and it produced a different (silent) experience on native. Consistent-and-explicit beats accidentally-different. If background live audio is wanted as a real feature later, the right path is to pipe the live videoId through PlayerContext, not rely on default-prop coincidence.
+
+## §17 — LiveBroadcastSupervisor throttle staleness (Apr 27)
+
+**Real bug, traced from the §15 server fix into the mobile event flow.** `LiveBroadcastSupervisor.tsx:31` had a 10 s leading-edge throttle on `checkForLive()`. Every SSE handler (`broadcast-control-updated`, `status`, `yt-status`, `override-expired`, `broadcast-schedule-updated`) routes through that one function, so any genuine live-state change that fired within 10 s of *any* prior `checkForLive` call — including the unconditional mount-time check at line 69 — was silently dropped. The user then waited up to the next 60 s safety poll before the live state surfaced.
+
+**Worst-case timeline before fix:** App opens at T=0 → initial check at T+0.5 s returns "not live" → admin clicks Activate at T+3 s → SSE arrives at T+3.1 s → `3.1 − 0.5 = 2.6 s < 10 s` → throttled → next chance is the 60 s poll → ≈55 s stale.
+
+**Fix:** Throttle window narrowed from 10 000 ms → 1 500 ms in `LiveBroadcastSupervisor.tsx:48`. Sized as 30× the actual burst window (~50–100 ms — the gap between the 3 SSE events one admin action fires) instead of 100×, which preserves the burst-coalescing intent (one `checkLiveStatus(true)` call per admin action, important for YouTube Data API quota) while reducing post-mount staleness to <2 s.
+
+**Worst-case timeline after fix:** Same scenario above → SSE at T+3.1 s → `2.6 s ≥ 1.5 s` → check proceeds → live state surfaces in <500 ms (one YouTube API roundtrip).
+
+Did **not** add `broadcast-current-updated` to the supervisor's listener set — the existing docstring is correct that it would over-fire from the broadcast transition ticker (every ~2 s). The supervisor's existing listeners already cover all admin live mutations.

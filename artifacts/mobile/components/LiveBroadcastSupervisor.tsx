@@ -26,9 +26,23 @@ export function LiveBroadcastSupervisor() {
     let cancelled = false;
 
     const checkForLive = async () => {
-      // Throttle: don't check more than once every 10s even if SSE fires often
+      // Burst-coalesce throttle: a single admin action ("Activate live")
+      // fans out into 3 SSE events back-to-back — `broadcast-control-
+      // updated`, `status`, and (since the cinematic-hero sync fix in
+      // §15) `broadcast-current-updated` via `invalidateBroadcastCache`.
+      // All three arrive within ~50–100 ms. We want exactly ONE
+      // `checkLiveStatus(true)` call per burst (it hits the YouTube
+      // Data API, which is quota-limited).
+      //
+      // The previous 10 s window was a 100×-too-wide overshoot: any
+      // legitimate live event that fired within 10 s of ANY prior
+      // check (including the initial mount-time check at line 69) was
+      // dropped, leaving the user up to ~55 s stale until the 60 s
+      // safety poll caught up. 1.5 s is 30× the burst window — still
+      // collapses bursts, but a real state change after the initial
+      // mount check now propagates in <2 s instead of <60 s.
       const now = Date.now();
-      if (now - lastCheckRef.current < 10_000) return;
+      if (now - lastCheckRef.current < 1_500) return;
       lastCheckRef.current = now;
 
       try {
