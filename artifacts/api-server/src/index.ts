@@ -22,6 +22,10 @@ import { AWS_REGION, AWS_S3_BUCKET, isS3Configured } from "./lib/s3Storage";
 import { runS3MirrorReconciliation } from "./lib/s3MirrorReconciler";
 import { markDraining, markReady } from "./lib/lifecycle";
 import { installFatalAppender } from "./lib/fatalLogBuffer";
+import {
+  installExitReasonInstrumentation,
+  startMemoryPressureSampler,
+} from "./lib/exitReason";
 
 const REQUIRED_ENV_VARS = ["DATABASE_URL", "JWT_SECRET"] as const;
 
@@ -57,6 +61,16 @@ logger.info(
 // (acceptable: those crash the process immediately and are visible in
 // stdout/Sentry anyway, the buffer's purpose is recurring crashloops).
 installFatalAppender();
+
+// Install synchronous exit-reason instrumentation BEFORE any signal can be
+// received. Production Render logs (2026-04-27) showed the API process
+// disappearing every ~30–60 s with no shutdown log — this writes a single
+// `EXIT_REASON {…}` line to stderr (sync, bypassing pino's buffer) on
+// every catchable termination path so the next death leaves a definitive
+// cause line. SIGKILL / OOM-kill remain uncatchable by design — but the
+// ABSENCE of an EXIT_REASON line on the next death is now itself the
+// diagnostic signal ("kernel-level termination, look at Render Events").
+installExitReasonInstrumentation({ runMode: RUN_MODE, pid: process.pid });
 
 type StartupGateVerdict =
   | { kind: "ok" }
@@ -281,6 +295,22 @@ if (RUNS_API) {
     // For the API role the gate either passes or hard-exits — we never reach
     // here in the degraded-standby branch because that branch is worker-only.
     if (verdict.kind !== "ok") return;
+
+    // Memory pressure sampler: emits a structured `memory sample` line
+    // every 60 s and escalates to WARN at >=1.5 GiB RSS (75 % of the
+    // Render `standard` 2 GiB plan ceiling, configurable via
+    // MEMORY_WARN_RSS_MB). The sampler is `.unref()`'d so it never holds
+    // the event loop open during graceful shutdown. Combined with the
+    // EXIT_REASON instrumentation, this gives us the OOM-kill diagnostic
+    // chain end-to-end: `Memory pressure: RSS X >= Y` → no EXIT_REASON →
+    // process restart = OOM-kill (uncatchable SIGKILL by kernel).
+    const warnAtMb = Number(process.env.MEMORY_WARN_RSS_MB ?? 1500);
+    startMemoryPressureSampler({
+      runMode: RUN_MODE,
+      intervalMs: 60_000,
+      warnAtRssBytes: warnAtMb * 1024 * 1024,
+    });
+
     // Fire-and-forget: schedulers start synchronously, the awaited section
     // (broadcast pre-warm) runs in the background. `markReady()` inside
     // awaits the warm-up so /healthz only flips to 200 once we're hot.

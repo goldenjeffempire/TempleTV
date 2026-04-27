@@ -11,6 +11,48 @@ import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
 
+// ── /healthz DB-probe cache ──────────────────────────────────────────────────
+// Render's load balancer polls /healthz every ~5 s. The DB ping itself is
+// fast (a `SELECT 1` round-trips in 1–2 ms locally) but in production logs
+// (2026-04-27) every probe was logging `responseTime: 90–110 ms` because of
+// PG TLS negotiation overhead and the no-store cache headers. That's two
+// probes per second across the API + admin pollers, ~200 ms/s of pure
+// healthcheck DB load forever — pure waste.
+//
+// We cache the boolean DB-up result for 2 s. The cache is process-local
+// (each instance answers for itself, the LB aggregates), so rolling
+// deploys still see correct per-instance state. 2 s is a deliberate
+// trade-off: short enough that a database loss is detected within the
+// next probe cycle (Render's 30 s unhealthy threshold has plenty of
+// headroom), long enough that consecutive LB polls hit the cache.
+let dbProbeCache: { ok: boolean; expiresAtMs: number } | null = null;
+const DB_PROBE_CACHE_TTL_MS = 2_000;
+const DB_PROBE_BUDGET_MS = 1_500;
+
+async function probeDbCached(): Promise<boolean> {
+  const now = Date.now();
+  if (dbProbeCache && dbProbeCache.expiresAtMs > now) {
+    return dbProbeCache.ok;
+  }
+  let ok = false;
+  try {
+    ok = await Promise.race<boolean>([
+      db.execute(sql`select 1 as ok`).then(() => true).catch(() => false),
+      new Promise<boolean>((resolve) =>
+        setTimeout(() => resolve(false), DB_PROBE_BUDGET_MS).unref(),
+      ),
+    ]);
+  } catch (err) {
+    logger.warn({ err }, "/healthz: db probe threw unexpectedly");
+    ok = false;
+  }
+  // Cache both success AND failure: a flapping DB shouldn't have its
+  // state oscillate at LB-poll cadence either, the same 2 s smoothing
+  // applies to both directions.
+  dbProbeCache = { ok, expiresAtMs: now + DB_PROBE_CACHE_TTL_MS };
+  return ok;
+}
+
 /**
  * Liveness + readiness probe used by load balancers (Render, Replit
  * deployments) and by the admin frontend's connectivity poller.
@@ -52,23 +94,10 @@ router.get("/healthz", async (_req, res) => {
     return;
   }
 
-  // Bounded DB probe. AbortSignal isn't honored by node-postgres mid-query,
-  // so we race the ping against a timer and treat a timeout as "db_down".
-  const DB_PROBE_BUDGET_MS = 1_500;
-  let dbOk = false;
-  try {
-    dbOk = await Promise.race<boolean>([
-      db.execute(sql`select 1 as ok`).then(() => true).catch(() => false),
-      new Promise<boolean>((resolve) =>
-        setTimeout(() => resolve(false), DB_PROBE_BUDGET_MS).unref(),
-      ),
-    ]);
-  } catch (err) {
-    // Defensive: Promise.race itself shouldn't throw, but if anything in
-    // the driver stack does, log once and degrade — never let /healthz throw.
-    logger.warn({ err }, "/healthz: db probe threw unexpectedly");
-    dbOk = false;
-  }
+  // Bounded DB probe with 2 s process-local cache (see probeDbCached above).
+  // AbortSignal isn't honored by node-postgres mid-query, so the cache miss
+  // path races the ping against a timer and treats a timeout as "db_down".
+  const dbOk = await probeDbCached();
 
   if (!dbOk) {
     // We deliberately demote /healthz 503s to INFO at the request-log layer

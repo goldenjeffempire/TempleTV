@@ -108,6 +108,20 @@ async function buildAll() {
       "puppeteer",
       "puppeteer-core",
       "electron",
+      // Express MUST stay external so Sentry's auto-instrumentation can
+      // patch it at require-time. With express bundled (esbuild inlining)
+      // every production boot logged the noise line:
+      //   [Sentry] express is not instrumented. Please make sure to
+      //   initialize Sentry in a separate file that you `--import` when
+      //   running node…
+      // even though our --import ./instrument.mjs WAS being invoked. The
+      // root cause is that Sentry (and OpenTelemetry beneath it) hooks
+      // module loading via require — once express is inlined into the
+      // single dist/index.mjs bundle, there's no module-load event to
+      // intercept. Externalising express restores the require-time hook
+      // and silences the warning permanently. The runtime cost is a
+      // single extra resolve from node_modules at startup (negligible).
+      "express",
     ],
     sourcemap: "linked",
     plugins: [
