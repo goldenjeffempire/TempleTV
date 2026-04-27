@@ -26,9 +26,66 @@ interface SSEClient {
   lastWriteAt: number;
   platform: SSEPlatform;
   ip: string;
+  /**
+   * Count of consecutive `res.write()` calls that returned `false`
+   * (Node has queued bytes waiting for the kernel TCP send buffer to
+   * drain). Reset to 0 on any successful write. When this exceeds
+   * MAX_CONSECUTIVE_BACKPRESSURED_WRITES the client is treated as
+   * wedged and dropped — without this, a slow mobile/TV consumer
+   * accumulates the per-second `stream-health` frames in its
+   * user-space socket buffer until the process OOMs (the cause of
+   * the 2026-04-27 production RSS bloat).
+   */
+  consecutiveBackpressuredWrites: number;
 }
 
 const clients = new Set<SSEClient>();
+
+/**
+ * Hard cap on the user-space socket write buffer per SSE client (bytes).
+ * Once `socket.writableLength` exceeds this, the client is treated as
+ * wedged and dropped — bounded by `MAX_SSE_CLIENTS_GLOBAL` × this value
+ * gives the worst-case external-memory footprint of the SSE subsystem
+ * (5000 × 512 KiB ≈ 2.5 GiB worst case if every client is exactly at
+ * the cap, but in practice clients drop the moment they cross). The
+ * default 512 KiB comfortably absorbs a transient ~30 stream-health
+ * frames or a multi-second TCP RTT spike without false positives.
+ */
+const MAX_SOCKET_BUFFER_BYTES = Math.max(
+  64 * 1024,
+  Number(process.env.MAX_SSE_SOCKET_BUFFER_BYTES ?? String(512 * 1024)),
+);
+
+/**
+ * After this many consecutive backpressured (write→false) frames,
+ * declare the client wedged. With the stream-health emitter at 1 Hz,
+ * 8 frames is ~8 s of unrelieved buffer pressure — long enough to
+ * absorb a brief WAN hiccup, short enough that we don't accumulate
+ * many MB of buffered data per slow client.
+ */
+const MAX_CONSECUTIVE_BACKPRESSURED_WRITES = Math.max(
+  3,
+  Number(process.env.MAX_SSE_BACKPRESSURED_WRITES ?? "8"),
+);
+
+function getSocketWritableLength(client: SSEClient): number {
+  try {
+    const sock = (client.res as unknown as {
+      socket?: { writableLength?: number };
+    }).socket;
+    return sock?.writableLength ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+function destroySSEClientSocket(client: SSEClient): void {
+  try { client.res.end(); } catch {}
+  try {
+    const sock = (client.res as unknown as { socket?: { destroy?: () => void } }).socket;
+    sock?.destroy?.();
+  } catch {}
+}
 
 // Defence-in-depth caps for SSE so the per-process clients Set cannot grow
 // unbounded under a misbehaving client or low-effort DoS attempt. The per-IP
@@ -97,6 +154,7 @@ export function addSSEClient(
     lastWriteAt: Date.now(),
     platform: normalizePlatform(platform),
     ip,
+    consecutiveBackpressuredWrites: 0,
   };
   clients.add(client);
   return client;
@@ -124,16 +182,47 @@ export function broadcastLiveEvent(event: string, data: unknown): void {
   const dead: SSEClient[] = [];
   let ok = 0;
   for (const client of clients) {
+    // Pre-write backpressure check: if Node's user-space TCP write
+    // buffer for this socket already has more than MAX_SOCKET_BUFFER_BYTES
+    // queued, the client is consuming bytes slower than we're producing
+    // them. Continuing to push would just grow the buffer forever
+    // (Buffer memory shows up in `process.memoryUsage().external`,
+    // outside the V8 heap cap). Drop the client now.
+    if (getSocketWritableLength(client) > MAX_SOCKET_BUFFER_BYTES) {
+      dead.push(client);
+      continue;
+    }
     try {
-      client.res.write(payload);
+      const writeOk = client.res.write(payload);
       flushClient(client);
-      client.lastWriteAt = Date.now();
-      ok++;
+      if (writeOk) {
+        client.consecutiveBackpressuredWrites = 0;
+        client.lastWriteAt = Date.now();
+        ok++;
+      } else {
+        // write() returned false → bytes are queued waiting for drain.
+        // Keep `lastWriteAt` UNCHANGED so the 20 s heartbeat stale-check
+        // can still catch a permanently wedged socket; only update
+        // lastWriteAt on a clean write. Track a counter so a steady
+        // stream of `false` returns drops the client well before the
+        // socket buffer hits the hard cap above.
+        client.consecutiveBackpressuredWrites++;
+        if (client.consecutiveBackpressuredWrites >= MAX_CONSECUTIVE_BACKPRESSURED_WRITES) {
+          dead.push(client);
+        }
+      }
     } catch {
       dead.push(client);
     }
   }
-  for (const c of dead) clients.delete(c);
+  for (const c of dead) {
+    clients.delete(c);
+    // Tear the socket down explicitly. Without end()+destroy() Node
+    // holds the Response and its queued buffers alive until the OS
+    // TCP keepalive eventually times out (minutes), which would
+    // re-create exactly the leak this whole patch is fixing.
+    destroySSEClientSocket(c);
+  }
   // Fire observers outside the hot loop. Skip self-emitted health pings so
   // the stability metric doesn't measure itself recursively.
   if (event !== "stream-health" && (ok > 0 || dead.length > 0)) {
@@ -146,12 +235,27 @@ export function broadcastLiveEvent(event: string, data: unknown): void {
 export function writeSingleClient(client: SSEClient, event: string, data: unknown): void {
   const id = ++eventSequence;
   const payload = `id: ${id}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  if (getSocketWritableLength(client) > MAX_SOCKET_BUFFER_BYTES) {
+    clients.delete(client);
+    destroySSEClientSocket(client);
+    return;
+  }
   try {
-    client.res.write(payload);
+    const writeOk = client.res.write(payload);
     flushClient(client);
-    client.lastWriteAt = Date.now();
+    if (writeOk) {
+      client.consecutiveBackpressuredWrites = 0;
+      client.lastWriteAt = Date.now();
+    } else {
+      client.consecutiveBackpressuredWrites++;
+      if (client.consecutiveBackpressuredWrites >= MAX_CONSECUTIVE_BACKPRESSURED_WRITES) {
+        clients.delete(client);
+        destroySSEClientSocket(client);
+      }
+    }
   } catch {
     clients.delete(client);
+    destroySSEClientSocket(client);
   }
 }
 
