@@ -9,12 +9,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { fetchWithTransientRetry } from "@/services/adminApi";
-import { apiBase } from "@/lib/api-base";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { getAdminToken, setAdminToken } from "@/lib/admin-access";
+import { verifyAdminToken } from "@/lib/verify-admin-token";
 
 interface AdminKeyDialogProps {
   open: boolean;
@@ -23,58 +22,6 @@ interface AdminKeyDialogProps {
   onAuthenticated?: () => void;
   /** When true, the dialog cannot be dismissed (used for the auth gate). */
   required?: boolean;
-}
-
-async function verifyAdminToken(token: string): Promise<{ ok: true } | { ok: false; status: number; message: string }> {
-  try {
-    // Round 4l: this probe must use raw fetch (not adminGet) because adminGet
-    // reads the token from localStorage, but here we're verifying a token the
-    // operator has just typed and which has NOT been stored yet. The retry
-    // wrapper still applies, and we explicitly JSON-parse the body before
-    // accepting `res.ok` so an HTML fallback mislabelled as application/json
-    // can never be misinterpreted as a successful token verification —
-    // closing the auth-bypass gap flagged in code review.
-    const res = await fetchWithTransientRetry(() =>
-      fetch(`${apiBase()}/admin/stats`, {
-        headers: { authorization: `Bearer ${token}` },
-      }),
-    );
-    if (res.ok) {
-      // Defense-in-depth JSON validation. The endpoint always returns a JSON
-      // object on success; if the body is HTML or otherwise unparseable we
-      // treat it as a server problem rather than as a passing verification.
-      try {
-        const text = await res.text();
-        const parsed: unknown = JSON.parse(text);
-        if (parsed && typeof parsed === "object") return { ok: true };
-        return {
-          ok: false,
-          status: res.status,
-          message: "Server returned an unexpected response shape; cannot verify admin key.",
-        };
-      } catch {
-        return {
-          ok: false,
-          status: res.status,
-          message:
-            "Server returned a non-JSON response (the API server may be restarting). Try again in a moment.",
-        };
-      }
-    }
-    if (res.status === 401) {
-      return { ok: false, status: 401, message: "That admin key was rejected by the server." };
-    }
-    if (res.status === 503) {
-      return {
-        ok: false,
-        status: 503,
-        message: "The server has not been configured with an admin token yet. Set ADMIN_API_TOKEN on the API service.",
-      };
-    }
-    return { ok: false, status: res.status, message: `Verification failed (HTTP ${res.status}).` };
-  } catch {
-    return { ok: false, status: 0, message: "Could not reach the API server. Check your network and try again." };
-  }
 }
 
 export function AdminKeyDialog({ open, onOpenChange, onAuthenticated, required = false }: AdminKeyDialogProps) {

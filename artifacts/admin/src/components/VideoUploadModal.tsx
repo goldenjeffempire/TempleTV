@@ -45,6 +45,7 @@ import {
   Clock,
   Wifi,
   ShieldCheck,
+  ShieldAlert,
   Server,
   Minimize2,
   Gauge,
@@ -58,6 +59,7 @@ import {
   type CompressionOptions,
 } from "@/lib/videoCompressor";
 import { getAdminToken } from "@/lib/admin-access";
+import { verifyAdminToken } from "@/lib/verify-admin-token";
 import {
   MIN_CONCURRENCY,
   MAX_CONCURRENT_FILES,
@@ -207,6 +209,59 @@ export function VideoUploadModal({
     featured: false,
   });
   const [pendingResume, setPendingResume] = useState<StoredSession | null>(null);
+
+  // ── Admin-token precheck ───────────────────────────────────────────────────
+  // Fires GET /admin/stats once when the modal opens so an invalid or missing
+  // token is caught BEFORE the operator picks a 12 GB file. Without this, a
+  // bad token wouldn't surface until s3-multipart-init failed 401 — by which
+  // point the file is selected, the engine is initializing, and the error
+  // surfaces as a generic "init failed" instead of "your admin key is wrong."
+  //
+  // We cache the verified token so re-opening the modal in the same session
+  // doesn't re-fire the check (cheap but pointless). If the operator has
+  // rotated the key in another tab, the next verify attempt happens after a
+  // legitimate failure during upload init — the post-fix init error is now
+  // descriptive enough to point them at the right thing.
+  type TokenCheck =
+    | { state: "idle" }
+    | { state: "checking" }
+    | { state: "ok"; token: string }
+    | { state: "fail"; status: number; message: string };
+  const [tokenCheck, setTokenCheck] = useState<TokenCheck>({ state: "idle" });
+
+  const runTokenCheck = useCallback(async (signal?: AbortSignal) => {
+    const token = getAdminToken();
+    setTokenCheck({ state: "checking" });
+    const result = await verifyAdminToken(token);
+    if (signal?.aborted) return;
+    if (result.ok) {
+      setTokenCheck({ state: "ok", token });
+    } else {
+      setTokenCheck({
+        state: "fail",
+        status: result.status,
+        message: result.message,
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    // If a previous open verified the same token, don't re-fire — the result
+    // is still authoritative and re-checking adds latency to the open path.
+    const currentToken = getAdminToken();
+    if (tokenCheck.state === "ok" && tokenCheck.token === currentToken) return;
+    if (tokenCheck.state === "checking") return; // already in flight
+
+    const ctl = new AbortController();
+    void runTokenCheck(ctl.signal);
+    return () => ctl.abort();
+    // We deliberately do NOT depend on `tokenCheck` — that would re-fire on
+    // every state transition. The `open` edge is the only trigger we want.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, runTokenCheck]);
+
+  const tokenOk = tokenCheck.state === "ok";
 
   const videoInputRef = useRef<HTMLInputElement>(null);
   const thumbnailInputRef = useRef<HTMLInputElement>(null);
@@ -1535,6 +1590,61 @@ export function VideoUploadModal({
         </DialogHeader>
 
         <div className="space-y-4">
+          {/* Admin-token precheck banner ────────────────────────────────────
+              Surfaces auth state BEFORE the user picks a file. Three states:
+              checking → spinner pill, ok → compact green pill (doesn't shout),
+              fail → big red banner with the exact reason from /admin/stats
+              plus a Retry button. The dropzone below is gated on `tokenOk`
+              so an unauthenticated user can't even open the file picker. */}
+          {tokenCheck.state === "checking" && (
+            <div className="flex items-center gap-2 p-2.5 bg-muted/50 border border-border rounded-lg text-xs text-muted-foreground">
+              <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" />
+              Verifying admin access…
+            </div>
+          )}
+          {tokenCheck.state === "ok" && (
+            <div className="flex items-center gap-2 p-2 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-xs text-emerald-700 dark:text-emerald-300">
+              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+              Admin access verified — ready to upload.
+            </div>
+          )}
+          {tokenCheck.state === "fail" && (
+            <div className="p-3 bg-red-500/10 border border-red-500/40 rounded-lg text-xs text-red-700 dark:text-red-300 space-y-2">
+              <div className="flex items-start gap-2">
+                <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <div className="font-semibold mb-0.5">
+                    Admin access check failed
+                    {tokenCheck.status > 0 && (
+                      <span className="font-normal text-red-700/80 dark:text-red-300/80">
+                        {" "}
+                        (HTTP {tokenCheck.status})
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-red-700/90 dark:text-red-300/90 break-words">
+                    {tokenCheck.message}
+                  </div>
+                  <div className="text-[11px] text-red-700/70 dark:text-red-300/70 mt-1">
+                    Fix this before selecting a file — uploads will fail at
+                    initialization without a valid admin key.
+                  </div>
+                </div>
+              </div>
+              <div className="flex justify-end">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  onClick={() => void runTokenCheck()}
+                >
+                  Retry check
+                </Button>
+              </div>
+            </div>
+          )}
+
           {/* Broadcast context notice */}
           {broadcastMode && (
             <div className="flex items-center gap-2 p-2.5 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-700 dark:text-red-400">
@@ -1546,20 +1656,36 @@ export function VideoUploadModal({
           {/* Drop zone */}
           {!isAnyUploading && (
             <div
-              className={`border-2 border-dashed rounded-lg p-5 text-center cursor-pointer transition-colors ${
-                isDragging
-                  ? "border-primary bg-primary/5"
-                  : hasFiles
-                    ? "border-primary/40 bg-primary/5"
-                    : "hover:border-primary/60 hover:bg-muted/20"
+              className={`border-2 border-dashed rounded-lg p-5 text-center transition-colors ${
+                !tokenOk
+                  ? "cursor-not-allowed opacity-50 border-border"
+                  : isDragging
+                    ? "cursor-pointer border-primary bg-primary/5"
+                    : hasFiles
+                      ? "cursor-pointer border-primary/40 bg-primary/5"
+                      : "cursor-pointer hover:border-primary/60 hover:bg-muted/20"
               }`}
-              onClick={() => videoInputRef.current?.click()}
+              onClick={() => {
+                // Hard-gate the file picker on the precheck. Even if the
+                // operator manages to click before the spinner appears, the
+                // click does nothing until the token is verified.
+                if (!tokenOk) return;
+                videoInputRef.current?.click();
+              }}
               onDragOver={(e) => {
                 e.preventDefault();
+                if (!tokenOk) return;
                 setIsDragging(true);
               }}
               onDragLeave={() => setIsDragging(false)}
-              onDrop={handleDrop}
+              onDrop={(e) => {
+                if (!tokenOk) {
+                  e.preventDefault();
+                  setIsDragging(false);
+                  return;
+                }
+                handleDrop(e);
+              }}
             >
               <input
                 ref={videoInputRef}
