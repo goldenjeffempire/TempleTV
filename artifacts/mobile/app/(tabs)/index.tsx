@@ -497,6 +497,54 @@ export default function WatchScreen() {
   const teachingsSermons = useMemo(() => sermons.filter((s) => s.category === "Teachings").slice(0, 3), [sermons]);
   const specialSermons = useMemo(() => sermons.filter((s) => s.category === "Special Programs").slice(0, 3), [sermons]);
 
+  // Streaming-platform skeleton policy: only show shimmer placeholders on a
+  // genuine COLD start (no cached sermons in memory). Once the cache or the
+  // RSS fetch has populated `sermons`, a background `refresh()` (pull-to-
+  // refresh, focus revalidation) keeps `loading=true` momentarily — but
+  // re-rendering the skeletons over real content would feel like the page
+  // is "loading" every time. Per the broadcast-first spec ("show loading
+  // indicators only during real network interruptions"), we suppress the
+  // skeletons whenever stale-but-valid content is already on screen.
+  const showSkeletons = loading && sermons.length === 0;
+
+  // Skeleton policy for the cinematic hero is independent: even on cold
+  // start, if the AsyncStorage instant-paint cache hydrated a broadcast
+  // payload OR the SSE primer landed, render the real hero immediately
+  // instead of the SkeletonLiveBanner. This is the visible difference
+  // between "the app is loading" and "the broadcast is connecting" —
+  // the latter has its own NetworkBanner / cinematic-hero affordances.
+  const showHeroSkeleton = loading && !broadcastCurrent && !liveStatus.isLive;
+
+  // Subtle, hardware-accelerated hero parallax. As the user scrolls past
+  // the cinematic hero, the backdrop drifts upward at ~0.4× scroll speed
+  // (Netflix / Disney+ signature feel) and the bottom content panel
+  // softens its opacity. Driven by ScrollView onScroll into an Animated
+  // value so the transform happens on the native thread on iOS / Android.
+  const scrollY = useRef(new Animated.Value(0)).current;
+  const heroParallaxStyle = {
+    transform: [
+      {
+        translateY: scrollY.interpolate({
+          inputRange: [-heroHeight, 0, heroHeight],
+          outputRange: [-heroHeight * 0.5, 0, heroHeight * 0.4],
+          extrapolate: "clamp",
+        }),
+      },
+      {
+        scale: scrollY.interpolate({
+          inputRange: [-heroHeight, 0],
+          outputRange: [1.18, 1],
+          extrapolateRight: "clamp",
+        }),
+      },
+    ],
+  };
+  const heroOverlayOpacity = scrollY.interpolate({
+    inputRange: [0, heroHeight * 0.6],
+    outputRange: [1, 0.55],
+    extrapolate: "clamp",
+  });
+
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
       <NetworkBanner visible={!isOnline} />
@@ -514,9 +562,14 @@ export default function WatchScreen() {
         }}
       />
 
-      <ScrollView
+      <Animated.ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: 150 }}
+        scrollEventThrottle={16}
+        onScroll={Animated.event(
+          [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+          { useNativeDriver: Platform.OS !== "web" },
+        )}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -530,7 +583,7 @@ export default function WatchScreen() {
         <Animated.View style={{ opacity: fadeAnim }}>
 
           {/* ─── Cinematic Hero ───────────────────────────────────────────────── */}
-          {loading ? (
+          {showHeroSkeleton ? (
             <View style={{ paddingTop: topPad }}>
               <SkeletonLiveBanner />
             </View>
@@ -564,8 +617,14 @@ export default function WatchScreen() {
                 </View>
               )}
 
-              {/* ── Backdrop: video > thumbnail > logo ── */}
-              <View style={StyleSheet.absoluteFill}>
+              {/* ── Backdrop: video > thumbnail > logo ──
+                  Wrapped in an Animated.View so the entire backdrop
+                  (video / thumbnail / branded fallback) rides the
+                  scroll-driven parallax transform together. The
+                  cinematic gradients above are deliberately NOT
+                  parallaxed — they stay anchored so the title stays
+                  legible as the backdrop drifts. */}
+              <Animated.View style={[StyleSheet.absoluteFill, heroParallaxStyle]}>
                 {showBroadcast && broadcastItem?.localVideoUrl && HeroVideoComponent && !heroVideoFailed ? (
                   // Live broadcast surface — joins the 24/7 ON AIR timeline
                   // at the exact second currently airing rather than playing
@@ -634,30 +693,39 @@ export default function WatchScreen() {
                     <Logo style={styles.heroLogoWatermark} decorative />
                   </View>
                 )}
-              </View>
+              </Animated.View>
 
-              {/* ── Cinematic gradient overlay ── */}
-              <LinearGradient
-                colors={[
-                  "rgba(0,0,0,0.68)",   // top — header legibility
-                  "rgba(0,0,0,0.0)",    // upper-mid — let video breathe
-                  "rgba(0,0,0,0.0)",    // lower-mid — let video breathe
-                  "rgba(0,0,0,0.82)",   // bottom — content panel
-                  "rgba(0,0,0,0.96)",   // very bottom — deep black
-                ]}
-                locations={[0, 0.22, 0.48, 0.78, 1]}
-                style={StyleSheet.absoluteFill}
+              {/* ── Cinematic gradient overlay ──
+                  Fades down to 0.55 opacity as the user scrolls past the
+                  hero so the parallaxing backdrop reveals more of itself
+                  on the way out — same scroll-driven cinematic feel as
+                  Netflix / Disney+ / Apple TV+ row-rail homes. */}
+              <Animated.View
+                style={[StyleSheet.absoluteFill, { opacity: heroOverlayOpacity }]}
                 pointerEvents="none"
-              />
-              {/* Side vignette for cinematic feel */}
-              <LinearGradient
-                colors={["rgba(0,0,0,0.42)", "rgba(0,0,0,0)", "rgba(0,0,0,0.3)"]}
-                locations={[0, 0.5, 1]}
-                start={{ x: 0, y: 0.5 }}
-                end={{ x: 1, y: 0.5 }}
-                style={StyleSheet.absoluteFill}
-                pointerEvents="none"
-              />
+              >
+                <LinearGradient
+                  colors={[
+                    "rgba(0,0,0,0.68)",   // top — header legibility
+                    "rgba(0,0,0,0.0)",    // upper-mid — let video breathe
+                    "rgba(0,0,0,0.0)",    // lower-mid — let video breathe
+                    "rgba(0,0,0,0.82)",   // bottom — content panel
+                    "rgba(0,0,0,0.96)",   // very bottom — deep black
+                  ]}
+                  locations={[0, 0.22, 0.48, 0.78, 1]}
+                  style={StyleSheet.absoluteFill}
+                  pointerEvents="none"
+                />
+                {/* Side vignette for cinematic feel */}
+                <LinearGradient
+                  colors={["rgba(0,0,0,0.42)", "rgba(0,0,0,0)", "rgba(0,0,0,0.3)"]}
+                  locations={[0, 0.5, 1]}
+                  start={{ x: 0, y: 0.5 }}
+                  end={{ x: 1, y: 0.5 }}
+                  style={StyleSheet.absoluteFill}
+                  pointerEvents="none"
+                />
+              </Animated.View>
 
               {/* ── Floating Header ── */}
               <View style={[styles.heroHeader, { paddingTop: topPad + 10 }]}>
@@ -774,18 +842,37 @@ export default function WatchScreen() {
             </Pressable>
           )}
 
-          <View style={styles.section}>
+          {/* ── Hero → content gradient bridge ──
+              Without this, the cinematic hero's deep-black bottom
+              `(0,0,0,0.96)` would slam into `c.background` (off-white
+              in the day theme, near-black in midnight) creating a
+              visible seam exactly where premium streaming UIs use a
+              soft optical fade. The bridge sits *outside* the hero so
+              it does NOT scroll-parallax with the backdrop — it acts
+              as the anchored handoff between hero and the first
+              content row, identical to Disney+ / Apple TV+ rail homes.
+              `pointerEvents=none` so it never intercepts row scroll. */}
+          {!showHeroSkeleton && (
+            <LinearGradient
+              colors={["#000000", "rgba(0,0,0,0.65)", c.background]}
+              locations={[0, 0.45, 1]}
+              style={styles.heroBridge}
+              pointerEvents="none"
+            />
+          )}
+
+          <View style={[styles.section, styles.firstSection]}>
             <SectionHeader
               title="Latest Sermons"
               subtitle={isFromRss ? "From YouTube" : "Recently added"}
               onSeeAll={() => router.push("/library")}
             />
-            {loading ? (
+            {showSkeletons ? (
               <FlatList
                 horizontal
                 data={[1, 2, 3]}
                 showsHorizontalScrollIndicator={false}
-                contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
+                contentContainerStyle={styles.rowContent}
                 keyExtractor={(item) => String(item)}
                 renderItem={() => <SkeletonVerticalCard />}
               />
@@ -794,7 +881,7 @@ export default function WatchScreen() {
                 horizontal
                 data={recentSermons}
                 showsHorizontalScrollIndicator={false}
-                contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
+                contentContainerStyle={styles.rowContent}
                 keyExtractor={(item) => item.id}
                 initialNumToRender={4}
                 windowSize={5}
@@ -806,7 +893,7 @@ export default function WatchScreen() {
             )}
           </View>
 
-          {!loading && faithSermons.length > 0 && (
+          {faithSermons.length > 0 && (
             <View style={styles.section}>
               <SectionHeader title="Faith" onSeeAll={() => router.push({ pathname: "/library", params: { category: "Faith" } })} />
               <View style={styles.listContainer}>
@@ -817,7 +904,7 @@ export default function WatchScreen() {
             </View>
           )}
 
-          {!loading && healingSermons.length > 0 && (
+          {healingSermons.length > 0 && (
             <View style={styles.section}>
               <SectionHeader title="Healing & Miracles" onSeeAll={() => router.push({ pathname: "/library", params: { category: "Healing" } })} />
               <View style={styles.listContainer}>
@@ -828,7 +915,7 @@ export default function WatchScreen() {
             </View>
           )}
 
-          {!loading && deliveranceSermons.length > 0 && (
+          {deliveranceSermons.length > 0 && (
             <View style={styles.section}>
               <SectionHeader title="Deliverance" onSeeAll={() => router.push({ pathname: "/library", params: { category: "Deliverance" } })} />
               <View style={styles.listContainer}>
@@ -839,7 +926,7 @@ export default function WatchScreen() {
             </View>
           )}
 
-          {!loading && worshipSermons.length > 0 && (
+          {worshipSermons.length > 0 && (
             <View style={styles.section}>
               <SectionHeader title="Worship" onSeeAll={() => router.push({ pathname: "/library", params: { category: "Worship" } })} />
               <View style={styles.listContainer}>
@@ -850,7 +937,7 @@ export default function WatchScreen() {
             </View>
           )}
 
-          {!loading && teachingsSermons.length > 0 && (
+          {teachingsSermons.length > 0 && (
             <View style={styles.section}>
               <SectionHeader title="Teachings" onSeeAll={() => router.push({ pathname: "/library", params: { category: "Teachings" } })} />
               <View style={styles.listContainer}>
@@ -861,7 +948,7 @@ export default function WatchScreen() {
             </View>
           )}
 
-          {!loading && specialSermons.length > 0 && (
+          {specialSermons.length > 0 && (
             <View style={styles.section}>
               <SectionHeader title="Special Programs" onSeeAll={() => router.push({ pathname: "/library", params: { category: "Special" } })} />
               <View style={styles.listContainer}>
@@ -872,7 +959,7 @@ export default function WatchScreen() {
             </View>
           )}
 
-          {loading && (
+          {showSkeletons && (
             <View style={styles.section}>
               <View style={{ paddingHorizontal: 16 }}>
                 <View style={{ height: 22, width: 120, backgroundColor: c.muted, borderRadius: 6, marginBottom: 12 }} />
@@ -883,7 +970,7 @@ export default function WatchScreen() {
             </View>
           )}
         </Animated.View>
-      </ScrollView>
+      </Animated.ScrollView>
     </View>
   );
 }
@@ -1086,8 +1173,36 @@ const styles = StyleSheet.create({
   // Shared / left-overs
   subtitle: { fontSize: 12, fontFamily: "Inter_400Regular", letterSpacing: 1 },
   notifBtn: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center" },
-  section: { marginTop: 28, gap: 12 },
-  listContainer: { paddingHorizontal: 16, gap: 10 },
+
+  // Premium streaming-platform vertical rhythm:
+  //   • 36 px between rows feels like "rooms" — small enough that the
+  //     next row peeks above the fold (engagement) but large enough
+  //     that two row labels never visually collide on tall phones.
+  //   • 14 px header → cards gap is the Netflix iOS / TV+ row-rail spec.
+  //   • 14 px between horizontally-listed cards in the "category card"
+  //     stacks (vs the cramped 10 px we had) gives each card breathing
+  //     room without splitting the section visually.
+  section: { marginTop: 36, gap: 14 },
+  // The first row sits flush against the gradient bridge (the bridge
+  // *is* the visual gap between hero and the first section), so we
+  // pull its top margin to 0 — the rhythm starts at row 2 onward.
+  firstSection: { marginTop: 0, gap: 14 },
+  // Anchored hero → content optical fade. Height matched to the bridge
+  // gradient so the deep-black hero bottom dissolves into the page
+  // background over a comfortable thumb's-length of pixels rather than
+  // a hairline edge. Pulled up by negative marginTop so it overlaps
+  // the hero's last few pixels and erases any compositor seam.
+  heroBridge: {
+    width: "100%",
+    height: 60,
+    marginTop: -1,
+  },
+  // Horizontal row content padding standardized to match the 14 px
+  // section gap — same value used for left/right page padding so the
+  // first card's left edge aligns with the section header's left edge,
+  // and the inter-card 14 px equals the section-internal vertical gap.
+  rowContent: { paddingHorizontal: 16, gap: 14 },
+  listContainer: { paddingHorizontal: 16, gap: 14 },
 });
 
 /**
