@@ -4,9 +4,19 @@ import { Feather } from "@expo/vector-icons";
 
 interface NetworkBannerProps {
   visible: boolean;
+  /**
+   * Optional override for the banner copy. Defaults to the landing-page
+   * message ("No connection — showing cached content"), which is correct
+   * when the surface behind the banner is a static cache-backed list.
+   * The broadcast player surface passes a different copy ("Reconnecting…")
+   * because there's no cache to fall back to during live playback — the
+   * accurate signal is "we're aware, we're waiting", not "we substituted
+   * stale content".
+   */
+  message?: string;
 }
 
-export function NetworkBanner({ visible }: NetworkBannerProps) {
+export function NetworkBanner({ visible, message }: NetworkBannerProps) {
   const slideAnim = useRef(new Animated.Value(-52)).current;
   const colorScheme = useColorScheme();
   const isDark = colorScheme === "dark";
@@ -30,7 +40,7 @@ export function NetworkBanner({ visible }: NetworkBannerProps) {
       <View style={styles.iconWrap}>
         <Feather name="wifi-off" size={13} color="#FFA94D" />
       </View>
-      <Text style={styles.text}>No connection — showing cached content</Text>
+      <Text style={styles.text}>{message ?? "No connection — showing cached content"}</Text>
     </Animated.View>
   );
 }

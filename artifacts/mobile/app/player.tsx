@@ -39,6 +39,8 @@ import { checkBroadcastCurrent, normalizeBroadcastResult, subscribeBroadcastEven
 import { reportLiveFailure, useLiveFailureFor } from "@/services/liveFailureSignal";
 import { BROADCAST_TITLE, BROADCAST_PREACHER } from "@/lib/broadcastIdentity";
 import { ChannelBug } from "@/components/ChannelBug";
+import { NetworkBanner } from "@/components/NetworkBanner";
+import { useNetworkStatus } from "@/hooks/useNetworkStatus";
 import { BroadcastInfoStrip } from "@/components/BroadcastInfoStrip";
 import { LiveReactions } from "@/components/LiveReactions";
 import { PrayerRequestModal } from "@/components/PrayerRequestModal";
@@ -216,6 +218,14 @@ const volStyles = StyleSheet.create({
 export default function PlayerScreen() {
   const c = useColors();
   const insets = useSafeAreaInsets();
+  // Surface real-time connectivity to the broadcast player. The hook
+  // fires on web `online`/`offline` events instantly; on native it
+  // active-polls every 30s across three diversified endpoints (API
+  // health, 1.1.1.1, ubuntu-connectivity-check) so a single endpoint
+  // outage doesn't false-positive offline. Consumed by both the
+  // broken-item skip gate (`handleBroadcastError`) and the in-player
+  // NetworkBanner overlay.
+  const { isOnline } = useNetworkStatus();
   // Guest users land here directly from deep links, home hero taps, or
   // the radio screen — no auth check is performed before playback starts.
   // The optional sign-up nudge rendered inside the player (below) is
@@ -892,6 +902,16 @@ export default function PlayerScreen() {
   // window and the counter resets after every clean transition end-event.
   const consecutiveErrorsRef = useRef(0);
   const lastErrorAtRef = useRef(0);
+  // Tracks the most recent moment we observed `isOnline === false`. Used
+  // by the broken-item skip gate to grant a ~600 ms grace window after a
+  // reconnect, because the player's internal retry/stall watchdogs run
+  // on their own timers (300 ms / 1.5 s / etc.) and a queued retry from
+  // the offline period typically fires one beat after we detect online.
+  // That straggler error is not signal of a dead asset.
+  const lastOfflineAtRef = useRef(0);
+  useEffect(() => {
+    if (!isOnline) lastOfflineAtRef.current = Date.now();
+  }, [isOnline]);
   const SKIP_AFTER_ERRORS = 2;
   const ERROR_WINDOW_MS = 30_000;
 
@@ -901,7 +921,36 @@ export default function PlayerScreen() {
       recoverBroadcastPlayback();
       return;
     }
+    // ── Network-aware skip gate ──────────────────────────────────────────
+    // The 2-in-30s broken-item skip below is anti-loop protection for
+    // dead/404 assets — NOT for transient network blips. When the device
+    // is offline the player will fire `onError` for every retry attempt,
+    // and without this gate two 4G hiccups inside a 30 s window would
+    // falsely classify a perfectly healthy item as broken and skip it,
+    // exactly the failure mode the user flagged ("auto-pause on network
+    // issue, no skip or jump"). When `isOnline === false`, short-circuit:
+    // do NOT increment the broken-item counter, do NOT consider skipping,
+    // just hand off to `recoverBroadcastPlayback()` (which is the existing
+    // pause + realign-with-server path). Once connectivity returns, the
+    // SSE channel reconnects and `recoverBroadcastPlayback`'s
+    // `checkBroadcastCurrent` call will pull the correct anchored item
+    // from the server — no client-side state has been corrupted.
+    //
+    // Also skip the increment within ~600 ms of a known-offline → online
+    // edge: the first error after reconnection is almost always the
+    // queued retry from the offline period firing one beat after we
+    // detect online (the player's internal retry/stall watchdogs run on
+    // their own timers, not on our isOnline state). That straggler error
+    // is not signal of a dead asset either.
+    if (!isOnline) {
+      recoverBroadcastPlayback();
+      return;
+    }
     const now = Date.now();
+    if (now - lastOfflineAtRef.current < 600) {
+      recoverBroadcastPlayback();
+      return;
+    }
     if (now - lastErrorAtRef.current > ERROR_WINDOW_MS) {
       consecutiveErrorsRef.current = 0;
     }
@@ -935,7 +984,7 @@ export default function PlayerScreen() {
       return;
     }
     recoverBroadcastPlayback();
-  }, [isBroadcastMode, broadcastInfo, recoverBroadcastPlayback, tuneToBroadcastItem]);
+  }, [isBroadcastMode, broadcastInfo, recoverBroadcastPlayback, tuneToBroadcastItem, isOnline]);
 
   const handleVideoEnd = useCallback(async () => {
     if (isBroadcastMode) {
@@ -1125,6 +1174,22 @@ export default function PlayerScreen() {
       {/* Light safe-area spacer — keeps video below notch / Dynamic Island */}
       {Platform.OS !== "web" && insets.top > 0 && (
         <View style={{ height: insets.top, backgroundColor: LIGHT_PAGE_BG }} />
+      )}
+
+      {/* Network-state overlay for the broadcast player. The landing page
+          uses the same component but its copy ("showing cached content") is
+          inaccurate here — there's no cache to fall back to mid-stream. We
+          pass "Reconnecting…" so the user gets a precise, honest signal
+          that pairs with the network-aware skip gate in
+          `handleBroadcastError` (no skip while offline, instant resume on
+          reconnect via `recoverBroadcastPlayback`). The banner slides in
+          from the very top of the screen above the video chrome and fades
+          back out the moment connectivity returns — no manual dismiss
+          needed. Only renders for the broadcast/live surface; on-demand
+          sermon playback already pauses naturally on a flaky connection
+          and surfaces the per-player buffering spinner. */}
+      {(isBroadcastMode || isLive) && (
+        <NetworkBanner visible={!isOnline} message="Reconnecting…" />
       )}
 
       <View
