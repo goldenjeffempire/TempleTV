@@ -281,10 +281,31 @@ export async function sendOpsAlert(
   let webhook: ChannelStatus = "disabled";
 
   if (!isAlertingConfigured()) {
-    logger.info(
-      { title: input.title, severity: input.severity },
-      "Ops alert raised but no channels configured",
-    );
+    // Log proportional to the severity of the alert that was attempted.
+    // Previously this was hard-coded to INFO, which silently swallowed
+    // genuine "critical" conditions when the operator hadn't configured
+    // an outbound channel — observed in production at 2026-04-27T12:38:51Z
+    // ("YouTube Data API quota exhausted", severity: "critical") where
+    // the only trace was a single INFO line drowned among normal access
+    // logs and never surfaced to Sentry.
+    //
+    // Logging at the alert's own severity keeps the misconfiguration
+    // visible in the default log stream AND surfaces critical conditions
+    // to Sentry via the existing >=ERROR fanout — without crying wolf
+    // for low-severity alerts that legitimately don't warrant escalation.
+    const fields = {
+      title: input.title,
+      severity: input.severity,
+      hint: "set ALERT_SLACK_WEBHOOK_URL or ALERT_WEBHOOK_URL to deliver this elsewhere",
+    };
+    const msg = "Ops alert raised but no channels configured";
+    if (input.severity === "critical") {
+      logger.error(fields, msg);
+    } else if (input.severity === "warning") {
+      logger.warn(fields, msg);
+    } else {
+      logger.info(fields, msg);
+    }
   } else {
     const [s, w] = await Promise.all([
       postSlack(input),
