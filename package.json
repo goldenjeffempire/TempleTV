@@ -6,7 +6,9 @@
     "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
     "build": "pnpm run typecheck && pnpm -r --if-present run build",
     "typecheck:libs": "tsc --build",
-    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
+    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck",
+    "verify:codegen": "pnpm --filter @workspace/api-spec run codegen && (git diff --exit-code -- lib/api-zod/src/generated lib/api-client-react/src/generated || (echo '\\n[verify:codegen] FAIL: lib/api-spec/openapi.yaml is out of sync with generated clients. Run: pnpm --filter @workspace/api-spec run codegen, then commit the changes.' >&2; exit 1))",
+    "verify": "pnpm run verify:codegen && pnpm run typecheck"
   },
   "private": true,
   "devDependencies": {
