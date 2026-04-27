@@ -58,16 +58,23 @@ function registerTizenKeys(): void {
   }
 }
 
-function suppressContextMenu(): void {
-  document.addEventListener("contextmenu", (e) => e.preventDefault(), { capture: true });
+// Each register* helper now returns a teardown closure so the calling
+// useEffect can cleanly remove the listener it added. Without this, hot-
+// reload (Vite HMR) and any future code path that re-mounts the App root
+// would stack duplicate handlers on `document`, leaking handler closures
+// and double-firing every preventDefault on every keypress.
+function suppressContextMenu(): () => void {
+  const handler = (e: Event) => e.preventDefault();
+  document.addEventListener("contextmenu", handler, { capture: true });
+  return () => document.removeEventListener("contextmenu", handler, { capture: true });
 }
 
-function preventDefaultTVScrolling(): void {
-  document.addEventListener(
-    "keydown",
-    (e) => { if ([37, 38, 39, 40].includes(e.keyCode)) e.preventDefault(); },
-    { capture: true, passive: false },
-  );
+function preventDefaultTVScrolling(): () => void {
+  const handler = (e: KeyboardEvent) => {
+    if ([37, 38, 39, 40].includes(e.keyCode)) e.preventDefault();
+  };
+  document.addEventListener("keydown", handler, { capture: true, passive: false });
+  return () => document.removeEventListener("keydown", handler, { capture: true });
 }
 
 /**
@@ -123,8 +130,8 @@ function initMagicRemoteHoverFocus(): void {
 export function usePlatformInit(): void {
   useEffect(() => {
     // ── Universal ────────────────────────────────────────────────────────
-    suppressContextMenu();
-    preventDefaultTVScrolling();
+    const teardownContextMenu = suppressContextMenu();
+    const teardownTVScrolling = preventDefaultTVScrolling();
 
     // ── Tizen ────────────────────────────────────────────────────────────
     if (isTizen) {
@@ -132,14 +139,19 @@ export function usePlatformInit(): void {
     }
 
     // ── LG webOS ─────────────────────────────────────────────────────────
+    let teardownWebOSBack: (() => void) | null = null;
     if (isWebOS) {
-      // Back key → system if no more history
-      document.addEventListener("keydown", (e) => {
+      // Back key → system if no more history. Capture the handler in a named
+      // const so the cleanup can remove the exact same reference (anonymous
+      // arrow functions cannot be removed).
+      const backHandler = (e: KeyboardEvent) => {
         if (e.keyCode === 461 || e.key === "GoBack") {
           e.preventDefault();
           window.history.back();
         }
-      });
+      };
+      document.addEventListener("keydown", backHandler);
+      teardownWebOSBack = () => document.removeEventListener("keydown", backHandler);
       initMagicRemoteHoverFocus();
     }
 
@@ -151,5 +163,15 @@ export function usePlatformInit(): void {
       "data-tv",
       isTizen ? "tizen" : isWebOS ? "webos" : "generic",
     );
+
+    // Cleanup on unmount (HMR re-mount, or future App-level teardown). The
+    // Magic Remote hover→focus listeners and the lifecycle subscriber are
+    // process-lifetime by design and don't need teardown — once the TV app
+    // is running, those are always-on.
+    return () => {
+      teardownContextMenu();
+      teardownTVScrolling();
+      teardownWebOSBack?.();
+    };
   }, []);
 }

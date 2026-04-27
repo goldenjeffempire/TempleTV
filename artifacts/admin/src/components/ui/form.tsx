@@ -30,8 +30,15 @@ const FormField = <
 >({
   ...props
 }: ControllerProps<TFieldValues, TName>) => {
+  // Memoise the context value so a parent re-render (e.g. on every keystroke
+  // in any sibling field via react-hook-form) does not produce a fresh
+  // `{ name }` literal that re-renders every consumer of useFormField().
+  // `props.name` is a stable string identifier for the field, so this is a
+  // pure-identity memo that costs nothing but eliminates the form-wide
+  // re-render storm on input.
+  const ctxValue = React.useMemo(() => ({ name: props.name }), [props.name])
   return (
-    <FormFieldContext.Provider value={{ name: props.name }}>
+    <FormFieldContext.Provider value={ctxValue}>
       <Controller {...props} />
     </FormFieldContext.Provider>
   )
@@ -75,9 +82,12 @@ const FormItem = React.forwardRef<
   React.HTMLAttributes<HTMLDivElement>
 >(({ className, ...props }, ref) => {
   const id = React.useId()
+  // Same memoisation rationale as FormField — keep the context value's
+  // identity stable so children don't re-render on every parent render.
+  const ctxValue = React.useMemo(() => ({ id }), [id])
 
   return (
-    <FormItemContext.Provider value={{ id }}>
+    <FormItemContext.Provider value={ctxValue}>
       <div ref={ref} className={cn("space-y-2", className)} {...props} />
     </FormItemContext.Provider>
   )

@@ -1013,6 +1013,11 @@ export default function Broadcast() {
   const sseRef = useRef<EventSource | undefined>(undefined);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const reconnectAttempt = useRef(0);
+  // Tracks the deferred 2s "settle" reload kicked off after a video upload
+  // completes. Held in a ref so an unmount (page navigation) during the
+  // 2-second window cancels the pending callback instead of leaking a
+  // setState-after-unmount and a pointless background fetch.
+  const uploadRefreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // ── SSE-driven refresh: auto-reload when broadcast transitions ─────────────
   const loadAllRef = useRef<(() => void) | null>(null);
@@ -1173,6 +1178,9 @@ export default function Broadcast() {
     return () => {
       sseRef.current?.close();
       clearTimeout(reconnectTimer.current);
+      // Cancel any in-flight post-upload settle reload so it can't fire
+      // setState on this unmounted Broadcast page.
+      clearTimeout(uploadRefreshTimer.current);
     };
   }, [loadAll, connectSSE]);
 
@@ -1675,7 +1683,12 @@ export default function Broadcast() {
         storageKey="ttv-broadcast-upload-v1"
         onUploadsComplete={() => {
           loadAll();
-          setTimeout(loadAll, 2000);
+          // Settle reload: HLS muxing finishes a beat after the upload POST
+          // returns, so we re-fetch once more to catch the freshly-ready
+          // playlist URL. The handle is tracked so the unmount cleanup can
+          // cancel it instead of leaking a setState-after-unmount.
+          clearTimeout(uploadRefreshTimer.current);
+          uploadRefreshTimer.current = setTimeout(loadAll, 2000);
         }}
       />
 

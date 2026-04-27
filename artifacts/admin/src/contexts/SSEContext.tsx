@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -204,8 +205,21 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  // Memoise the context value so consumers only re-render when one of the
+  // four fields actually changes identity. Without this, every state setter
+  // call inside SSEProvider — heartbeats, status payloads, activity entries,
+  // even the ref-based reconnect cycles — produced a brand-new object literal
+  // and forced every `useSSE()` / `useSSEEvent()` consumer (live monitor,
+  // operations, broadcast queue, dashboard, every header indicator) to
+  // re-render. `subscribe` is already a stable useCallback ref, so the
+  // dependency list is just the three pieces of state.
+  const value = useMemo(
+    () => ({ state, subscribe, lastStatusPayload, recentActivity }),
+    [state, subscribe, lastStatusPayload, recentActivity],
+  );
+
   return (
-    <SSEContext.Provider value={{ state, subscribe, lastStatusPayload, recentActivity }}>
+    <SSEContext.Provider value={value}>
       {children}
     </SSEContext.Provider>
   );

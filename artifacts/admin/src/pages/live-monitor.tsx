@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -459,63 +459,100 @@ function RealtimeStreamHealth({
   );
 }
 
-function HealthMetric({
-  icon,
-  label,
-  value,
-  sub,
-  tone,
-  sparkline,
-  sparkColor,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  sub?: string;
-  tone?: "ok" | "warning" | "critical";
-  sparkline?: number[];
-  sparkColor?: string;
-}) {
-  const valueColor =
-    tone === "critical"
-      ? "text-red-500"
-      : tone === "warning"
-      ? "text-amber-600"
-      : tone === "ok"
-      ? "text-emerald-600"
-      : "text-foreground";
-  return (
-    <div className="rounded-md bg-background/40 border border-border/40 p-3 min-w-0">
-      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-        {icon}
-        <span className="truncate">{label}</span>
+// HealthMetric and Sparkline both render at 1Hz inside RealtimeStreamHealth
+// (one per `stream-health` SSE frame). Wrapping them in React.memo with a
+// custom comparator means a metric whose props haven't actually changed
+// between two ticks does not re-render at all — the parent still ticks, but
+// React skips the child reconciliation. The most expensive child here is
+// the Sparkline polyline string, which is rebuilt from a 60-element array
+// on every render without memoisation; with React.memo + a tail-element
+// equality check, an unchanged sparkline costs zero work.
+const HealthMetric = React.memo(
+  function HealthMetric({
+    icon,
+    label,
+    value,
+    sub,
+    tone,
+    sparkline,
+    sparkColor,
+  }: {
+    icon: React.ReactNode;
+    label: string;
+    value: string;
+    sub?: string;
+    tone?: "ok" | "warning" | "critical";
+    sparkline?: number[];
+    sparkColor?: string;
+  }) {
+    const valueColor =
+      tone === "critical"
+        ? "text-red-500"
+        : tone === "warning"
+        ? "text-amber-600"
+        : tone === "ok"
+        ? "text-emerald-600"
+        : "text-foreground";
+    return (
+      <div className="rounded-md bg-background/40 border border-border/40 p-3 min-w-0">
+        <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+          {icon}
+          <span className="truncate">{label}</span>
+        </div>
+        <div className={`text-lg font-bold font-mono leading-tight tabular-nums ${valueColor}`}>{value}</div>
+        {sub && <div className="text-[10px] text-muted-foreground mt-0.5 truncate">{sub}</div>}
+        {sparkline && sparkline.length > 1 && (
+          <Sparkline data={sparkline} color={sparkColor ?? "#3b82f6"} />
+        )}
       </div>
-      <div className={`text-lg font-bold font-mono leading-tight tabular-nums ${valueColor}`}>{value}</div>
-      {sub && <div className="text-[10px] text-muted-foreground mt-0.5 truncate">{sub}</div>}
-      {sparkline && sparkline.length > 1 && (
-        <Sparkline data={sparkline} color={sparkColor ?? "#3b82f6"} />
-      )}
-    </div>
-  );
-}
+    );
+  },
+  // Custom comparator: skip the icon node (it's a static JSX element each
+  // render anyway), and compare the sparkline by length + last sample only.
+  // The sparkline is appended to monotonically (push + slice -60), so a
+  // length-and-tail check is sufficient to know the visible curve changed.
+  (prev, next) => {
+    if (prev.label !== next.label) return false;
+    if (prev.value !== next.value) return false;
+    if (prev.sub !== next.sub) return false;
+    if (prev.tone !== next.tone) return false;
+    if (prev.sparkColor !== next.sparkColor) return false;
+    const a = prev.sparkline;
+    const b = next.sparkline;
+    if (a === b) return true;
+    if (!a || !b) return a === b;
+    if (a.length !== b.length) return false;
+    return a[a.length - 1] === b[b.length - 1];
+  },
+);
 
-function Sparkline({ data, color }: { data: number[]; color: string }) {
-  if (data.length < 2) return null;
-  const max = Math.max(...data, 1);
-  const min = Math.min(...data, 0);
-  const range = max - min || 1;
-  const w = 100;
-  const h = 22;
-  const step = w / (data.length - 1);
-  const points = data
-    .map((v, i) => `${(i * step).toFixed(1)},${(h - ((v - min) / range) * h).toFixed(1)}`)
-    .join(" ");
-  return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-5 mt-1.5" preserveAspectRatio="none">
-      <polyline points={points} fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" opacity="0.85" />
-    </svg>
-  );
-}
+const Sparkline = React.memo(
+  function Sparkline({ data, color }: { data: number[]; color: string }) {
+    if (data.length < 2) return null;
+    const max = Math.max(...data, 1);
+    const min = Math.min(...data, 0);
+    const range = max - min || 1;
+    const w = 100;
+    const h = 22;
+    const step = w / (data.length - 1);
+    const points = data
+      .map((v, i) => `${(i * step).toFixed(1)},${(h - ((v - min) / range) * h).toFixed(1)}`)
+      .join(" ");
+    return (
+      <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-5 mt-1.5" preserveAspectRatio="none">
+        <polyline points={points} fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" opacity="0.85" />
+      </svg>
+    );
+  },
+  // Same length + tail-sample comparison as HealthMetric — anything else
+  // would be lying about the polyline having changed.
+  (prev, next) => {
+    if (prev.color !== next.color) return false;
+    if (prev.data.length !== next.data.length) return false;
+    if (prev.data === next.data) return true;
+    return prev.data[prev.data.length - 1] === next.data[next.data.length - 1];
+  },
+);
 
 function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
