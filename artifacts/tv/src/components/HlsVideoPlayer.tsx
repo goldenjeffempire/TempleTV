@@ -373,6 +373,16 @@ export function HlsVideoPlayer({
 
     if (Hls.isSupported()) {
       // ── hls.js path (Chromium, Firefox, Samsung/LG/Fire TV browsers) ─
+      // Per-mode buffer budget. The preload slot only needs enough segments
+      // to decode the first GOP and survive a few seconds of post-swap
+      // playback before its promotion path (`swapToInactive`) tops the
+      // budget back up to the active 60 s. Holding 60+ s of segments per
+      // slot at all times bloats RSS to ~75 MB on a 24/7 broadcast and
+      // pressures GC; capping preload to ~12 s halves that without
+      // affecting steady-state playback. Once promoted, `swapToInactive`
+      // mutates `hls.config.maxBufferLength/maxMaxBufferLength` so the
+      // engine can refill to the full active budget transparently.
+      const isPreload = mode === "preload";
       const hls = new Hls({
         startLevel: -1,
         autoStartLoad: true,
@@ -380,9 +390,9 @@ export function HlsVideoPlayer({
         // Only seek into the future for the active slot. Preload starts at 0
         // and is repositioned on swap by the active-load logic.
         startPosition: mode === "active" && startPositionSecs > 0 ? startPositionSecs : -1,
-        maxBufferLength: 60,
-        maxMaxBufferLength: 120,
-        maxBufferSize: 60 * 1_000 * 1_000,
+        maxBufferLength: isPreload ? 12 : 60,
+        maxMaxBufferLength: isPreload ? 24 : 120,
+        maxBufferSize: isPreload ? 20 * 1_000 * 1_000 : 60 * 1_000 * 1_000,
         abrEwmaFastLive: 3,
         abrEwmaSlowLive: 9,
         manifestLoadingMaxRetry: 3,
@@ -523,6 +533,21 @@ export function HlsVideoPlayer({
     const newVideo = getVideo(newSlot);
     if (!newVideo) return;
 
+    // Promote the slot's hls.js buffer budget from preload (12 s / 20 MB)
+    // to active (60 s / 60 MB). Without this, the slot would keep its
+    // capped preload budget after promotion and start back-pressuring the
+    // network buffer ~10 s into playback, causing visible re-buffering on
+    // long items. Mutating `hls.config` is supported by hls.js and takes
+    // effect on the next buffer fill cycle.
+    const newHls = getHls(newSlot);
+    if (newHls) {
+      try {
+        newHls.config.maxBufferLength = 60;
+        newHls.config.maxMaxBufferLength = 120;
+        newHls.config.maxBufferSize = 60 * 1_000 * 1_000;
+      } catch { /* noop — older hls.js versions may surface a frozen config */ }
+    }
+
     // Resume playback on the newly-active slot.
     newVideo.muted = false;
     if (startPositionSecs > 0) {
@@ -590,10 +615,26 @@ export function HlsVideoPlayer({
     if (!hlsUrl) return;
     // Already playing this URL on the active slot — nothing to do.
     if (getLoadedUrl(activeSlotRef.current) === hlsUrl) return;
-    // Inactive slot has it preloaded — instant swap.
-    if (getLoadedUrl(otherSlot(activeSlotRef.current)) === hlsUrl) {
-      pendingPromotionUrlRef.current = null;
-      swapToInactive();
+    // Inactive slot has it preloaded AND the slot's <video> has actually
+    // decoded its first frame — instant swap. Without the readyState
+    // check, an early swap (e.g. the proactive wall-clock advance fires
+    // ~200 ms before the active video ends, but the inactive preload
+    // hasn't finished its first GOP yet because the CDN is slow) would
+    // promote a black frame to the active slot. The pending-promotion
+    // staging below handles "almost-warm" by waiting for `canplay` on
+    // the same slot — no engine teardown, no black frame, no veil.
+    const inactive = otherSlot(activeSlotRef.current);
+    if (getLoadedUrl(inactive) === hlsUrl) {
+      const inactiveVideo = getVideo(inactive);
+      if (inactiveVideo && inactiveVideo.readyState >= 2) {
+        pendingPromotionUrlRef.current = null;
+        swapToInactive();
+        return;
+      }
+      // Slot is staged but not warm — fall through to the pending-
+      // promotion path which waits for `canplay` and then swaps. We
+      // don't tear down the in-flight load.
+      pendingPromotionUrlRef.current = hlsUrl;
       return;
     }
     // Cold path. To avoid blacking out the visible slot while a fresh
@@ -616,7 +657,6 @@ export function HlsVideoPlayer({
     // we drive the staging directly. The pending-promotion effect below
     // watches for it to become ready and performs the swap.
     pendingPromotionUrlRef.current = hlsUrl;
-    const inactive = otherSlot(activeSlotRef.current);
     if (getLoadedUrl(inactive) !== hlsUrl) {
       loadIntoSlot(inactive, hlsUrl, "preload");
     }

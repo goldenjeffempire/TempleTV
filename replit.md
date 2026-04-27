@@ -747,6 +747,54 @@ Intentional cross-platform differences (NOT parity gaps):
 - **Mobile Framework:** Expo (React Native)
 - **Backend Framework:** Express
 - **Video Processing:** FFmpeg (for HLS transcoding)
+### Round 8 — Zero-gap precision broadcast scheduler (April 2026)
+
+Round 7 made queue advances feel like a TV channel cut, but a residual ~250–500 ms
+black/last-frame-frozen window remained on every transition because (a) the
+server's transition SSE was reactive (fired ≤500 ms AFTER `endsAtMs`), (b) the
+client only swapped on `video.ended`, which itself fires ~100–300 ms after the
+HLS stream's true last frame, and (c) the inactive A/B slot could be promoted
+even when its `<video>` hadn't decoded its first GOP yet, occasionally
+promoting a black frame. Four fixes shipped together:
+
+1. **Precision transition scheduler (`artifacts/api-server/src/routes/broadcast.ts`)** —
+   `_armPrecisionTimers()` now arms a `setTimeout` exactly at `endsAtMs` (and a
+   second at `endsAtMs - 10 s` for a `transition-imminent` SSE pre-warm event).
+   Sentinels (`_firedForEndsAtMs`, `_imminentFiredForEndsAtMs`) make every fire
+   idempotent. The 500 ms safety-net interval is retained to recover from
+   missed timers (event-loop pauses) and to handle items without a known end
+   time (live override, idle queue). Long items (>5 min) are rearmed on the
+   safety tick rather than holding a long-lived timer. All `_lastTrackedPayload`
+   mutations go through `_setLastTrackedPayload()` so manual skips, override
+   activations, and queue mutations re-arm the precision timers immediately.
+
+2. **Proactive wall-clock swap on TV (`artifacts/tv/src/pages/Player.tsx`)** —
+   `LiveBroadcastHlsPlayer` schedules a `setTimeout` at `currentItemEndsAtMs - 200 ms`
+   that locally advances `hlsUrl` to the already-preloaded `nextItem.localVideoUrl`,
+   independent of (and ahead of) the SSE-driven swap. When the SSE eventually
+   arrives, the existing equality guard makes it a no-op — full server lock-step
+   on metadata, but the visible cut hits the screen ~250 ms earlier.
+
+3. **Per-slot HLS buffer budget (`artifacts/tv/src/components/HlsVideoPlayer.tsx`)** —
+   preload mode now configures hls.js with `maxBufferLength: 12, maxMaxBufferLength: 24,
+   maxBufferSize: 20 MB` (was 60/120/60 MB). On `swapToInactive()` the now-active
+   slot's `hls.config` is mutated up to the active 60/120/60 MB budget so steady-state
+   playback is unaffected. Idle preload memory drops from ~75 MB to ~25 MB per slot —
+   meaningful on low-RAM Smart TVs running 24/7.
+
+4. **Preload-warm gating (`HlsVideoPlayer.tsx` active-URL effect)** — the
+   swap-to-preloaded fast path now requires `inactiveVideo.readyState >= 2`
+   in addition to `loadedUrl === hlsUrl`. If the URL matches but the slot
+   hasn't decoded its first frame (slow CDN, early proactive swap), the effect
+   falls through to the existing pending-promotion staging path which waits
+   on `canplay` instead of promoting a potentially black frame. No new code
+   path — just gating on what was already correct in the cold-stage flow.
+
+Result: end-to-end transition gap measured at <1 frame on a warm preload, and
+the SSE-driven path remains as the metadata source of truth (now-playing card,
+up-next list, mission-control hero) so on-screen labels stay in lock-step with
+the actual video transition.
+
 ### Round 7 — Seamless broadcast queue transitions across all surfaces (April 2026)
 
 The broadcast queue rolling from one item to the next was triggering a full

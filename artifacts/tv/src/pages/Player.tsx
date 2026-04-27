@@ -254,6 +254,58 @@ function LiveBroadcastHlsPlayer({
     return url;
   })();
 
+  // ── Proactive wall-clock transition (zero-gap broadcast) ───────────────
+  //
+  // The server-driven SSE arrives ≤ 50 ms after the precision timer fires
+  // at `endsAtMs` — but with WAN RTT (50–200 ms) and SSE flush latency
+  // that lands on the player ≈100–250 ms AFTER the active video has hit
+  // its last frame. The HLS spec also has a known ~100–300 ms of dead
+  // air at end-of-stream before the `ended` event fires. Together that's
+  // up to ~500 ms of black or last-frame-frozen video before the
+  // SSE-driven swap promotes the preloaded next item.
+  //
+  // We collapse that gap by performing the swap LOCALLY at exactly
+  // `endsAtMs - 200 ms`, using the next item URL the player already
+  // received (and already preloaded into the inactive A/B slot via
+  // `nextHlsUrl`). When the server's SSE eventually arrives with the
+  // post-transition payload, `sync.hlsStreamUrl` will match the local
+  // `hlsUrl` we already advanced to and the existing match-equality
+  // guard above makes it a no-op — full lock-step with the server's
+  // metadata, but the cut hits the screen ~250 ms earlier.
+  //
+  // Safety: if either `nextHlsUrl` is null (live override, YouTube live,
+  // queue of one) or the timer has already passed, we skip — the SSE
+  // path is the natural fallback. The HlsVideoPlayer's autonomous
+  // `ended` handler still acts as a final safety net.
+  useEffect(() => {
+    const endsAtMs = sync.currentItemEndsAtMs;
+    if (!endsAtMs || !nextHlsUrl) return;
+    if (nextHlsUrl === hlsUrl) return;
+    const PROACTIVE_LEAD_MS = 200;
+    const fireAt = endsAtMs - PROACTIVE_LEAD_MS;
+    const delay = fireAt - Date.now();
+    const advance = () => {
+      // Re-check guards inside the timer in case the sync state shifted
+      // between schedule and fire (override activated, queue mutated).
+      if (!nextHlsUrl) return;
+      if (nextHlsUrl === hlsUrl) return;
+      setHlsUrl(nextHlsUrl);
+      const nextTitle = sync.nextItem?.title;
+      if (nextTitle) setTitle(nextTitle);
+      // Per item-transition contract: subsequent items always start at
+      // the top (positionSecs=0 is the live edge for a freshly-cut item).
+      if (startConsumedRef.current) setStartPositionSecs(0);
+      startConsumedRef.current = true;
+    };
+    if (delay <= 0) {
+      // Boundary already passed (clock skew, mount race) — fire now.
+      advance();
+      return;
+    }
+    const t = setTimeout(advance, delay);
+    return () => clearTimeout(t);
+  }, [sync.currentItemEndsAtMs, sync.nextItem, nextHlsUrl, hlsUrl]);
+
   return (
     <HlsVideoPlayer
       hlsUrl={hlsUrl}

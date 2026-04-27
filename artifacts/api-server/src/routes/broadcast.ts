@@ -481,33 +481,174 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
 }
 
 // ---------------------------------------------------------------------------
-// Transition ticker — detects automatic queue item advances and pushes SSE
+// Transition scheduler — fires SSE precisely at item boundaries
 // ---------------------------------------------------------------------------
+//
+// Architecture (revised 2026-04-27):
+//
+// The original implementation polled every 500 ms and fired the
+// transition SSE whenever `Date.now() >= endsAtMs`. That made the SSE
+// arrive ≤500 ms LATE (plus client RTT), which translated into a
+// visible black gap on the player surfaces because their `nextItem`
+// preload was promoted only after the SSE arrived.
+//
+// The revised model uses a precision `setTimeout` armed at the exact
+// `endsAtMs` boundary, plus a 10 s pre-warm timer that emits a
+// `transition-imminent` event so clients can verify their preload
+// state before the actual cut. The 500 ms safety-net interval is
+// retained for two reasons:
+//   1. Items without a known `endsAtMs` (live override, idle queue,
+//      YouTube-driven slots) still need a periodic re-evaluation.
+//   2. Recovery: if a precision timer is missed (process pause,
+//      timer drift on a busy event loop), the safety tick catches up
+//      within 500 ms instead of leaving the broadcast frozen.
+//
+// All three timers (precision, imminent, safety) are idempotent —
+// each transition fires exactly once per `endsAtMs` boundary thanks
+// to the `_firedForEndsAtMs` / `_imminentFiredForEndsAtMs` sentinels.
 
-/** The last payload whose `currentItemEndsAtMs` the ticker is watching. */
+/** The last payload the scheduler is tracking. */
 let _lastTrackedPayload: BroadcastCurrentPayload | null = null;
+/** 500 ms safety-net interval — recovers from missed precision fires. */
 let _transitionTickHandle: ReturnType<typeof setInterval> | null = null;
+/** Precision setTimeout armed at the exact `endsAtMs` of the current item. */
+let _precisionTimer: ReturnType<typeof setTimeout> | null = null;
+/** Pre-warm setTimeout armed at `endsAtMs - 10s` of the current item. */
+let _imminentTimer: ReturnType<typeof setTimeout> | null = null;
+/** Sentinels: the `endsAtMs` value for which we already fired each event. */
+let _firedForEndsAtMs: number | null = null;
+let _imminentFiredForEndsAtMs: number | null = null;
 
+const PRE_WARM_LEAD_MS = 10_000;
+/**
+ * Cap on how far in the future a precision timer can be armed. Items
+ * longer than this (rare — most queue items are 5–60 min) get rearmed
+ * on the next safety tick rather than holding a long-lived timer.
+ */
+const PRECISION_TIMER_MAX_MS = 5 * 60_000;
 
-async function _tickTransitions() {
+function _clearPrecisionTimers(): void {
+  if (_precisionTimer) {
+    clearTimeout(_precisionTimer);
+    _precisionTimer = null;
+  }
+  if (_imminentTimer) {
+    clearTimeout(_imminentTimer);
+    _imminentTimer = null;
+  }
+}
+
+function _armPrecisionTimers(): void {
+  _clearPrecisionTimers();
+  const endsAtMs = _lastTrackedPayload?.currentItemEndsAtMs;
+  if (!endsAtMs) return;
+
+  const now = Date.now();
+
+  // ── Pre-warm timer (T-10s) ───────────────────────────────────────────
+  if (_imminentFiredForEndsAtMs !== endsAtMs) {
+    const imminentDelay = endsAtMs - PRE_WARM_LEAD_MS - now;
+    if (imminentDelay > 0 && imminentDelay <= PRECISION_TIMER_MAX_MS) {
+      _imminentTimer = setTimeout(() => {
+        _imminentTimer = null;
+        _fireImminent(endsAtMs).catch((err) => {
+          logger.warn(
+            { err: err instanceof Error ? err.message : String(err) },
+            "Broadcast transition-imminent fire failed",
+          );
+        });
+      }, imminentDelay);
+      _imminentTimer.unref?.();
+    }
+  }
+
+  // ── Precision transition timer (T-0) ─────────────────────────────────
+  if (_firedForEndsAtMs !== endsAtMs) {
+    const fireDelay = Math.max(0, endsAtMs - now);
+    if (fireDelay <= PRECISION_TIMER_MAX_MS) {
+      _precisionTimer = setTimeout(() => {
+        _precisionTimer = null;
+        _fireTransition().catch((err) => {
+          logger.warn(
+            { err: err instanceof Error ? err.message : String(err) },
+            "Broadcast precision transition fire failed",
+          );
+        });
+      }, fireDelay);
+      _precisionTimer.unref?.();
+    }
+  }
+}
+
+function _setLastTrackedPayload(p: BroadcastCurrentPayload | null): void {
+  _lastTrackedPayload = p;
+  _armPrecisionTimers();
+}
+
+async function _fireImminent(endsAtMs: number): Promise<void> {
+  // Dedupe: this exact endsAtMs already had its imminent event fired.
+  if (_imminentFiredForEndsAtMs === endsAtMs) return;
+  // The current payload may have already advanced (manual skip,
+  // override) — only fire if we're still tracking the same boundary.
+  if (_lastTrackedPayload?.currentItemEndsAtMs !== endsAtMs) return;
+  _imminentFiredForEndsAtMs = endsAtMs;
+  // Re-emit the EXISTING tracked payload with a different `reason`. The
+  // payload shape is unchanged, so older clients that don't switch on
+  // `reason` simply re-apply the same metadata harmlessly. New clients
+  // (TV proactive-swap path, mobile preload verifier) use this signal
+  // to confirm their `nextItem` preload is warm and rearm if not.
+  broadcastLiveEvent("broadcast-current-updated", {
+    reason: "transition-imminent",
+    current: _lastTrackedPayload,
+    etaMs: PRE_WARM_LEAD_MS,
+  });
+}
+
+async function _fireTransition(): Promise<void> {
+  const endsAtMs = _lastTrackedPayload?.currentItemEndsAtMs;
+  // Dedupe — both the precision timer and the safety interval can race
+  // on a hot transition; only the first wins.
+  if (endsAtMs && _firedForEndsAtMs === endsAtMs) return;
+  if (endsAtMs) _firedForEndsAtMs = endsAtMs;
+
+  await invalidateBroadcastCache();
+  const fresh = await buildBroadcastCurrentPayload(true);
+  // Update tracked payload + rearm timers for the NEW item in one step.
+  _setLastTrackedPayload(fresh);
+  broadcastLiveEvent("broadcast-current-updated", {
+    reason: "item-transition",
+    current: fresh,
+  });
+}
+
+async function _tickTransitions(): Promise<void> {
   try {
     if (!_lastTrackedPayload) {
-      _lastTrackedPayload = await buildBroadcastCurrentPayload();
+      // Cold start — fetch and arm. Subsequent ticks become no-ops.
+      const initial = await buildBroadcastCurrentPayload();
+      _setLastTrackedPayload(initial);
       return;
     }
 
     const endsAtMs = _lastTrackedPayload.currentItemEndsAtMs;
-    // No transition due yet — skip the DB round trip.
-    if (!endsAtMs || Date.now() < endsAtMs) return;
 
-    // The current item's clock has passed — rebuild from source and push.
-    await invalidateBroadcastCache();
-    const fresh = await buildBroadcastCurrentPayload(true);
-    _lastTrackedPayload = fresh;
-    broadcastLiveEvent("broadcast-current-updated", {
-      reason: "item-transition",
-      current: fresh,
-    });
+    // No known boundary (live override, YouTube live, idle queue) —
+    // periodically rebuild so we pick up newly-scheduled items.
+    if (!endsAtMs) return;
+
+    // Already past the boundary AND precision timer didn't fire (timer
+    // drift, process pause). Fall back to immediate fire.
+    if (Date.now() >= endsAtMs && _firedForEndsAtMs !== endsAtMs) {
+      await _fireTransition();
+      return;
+    }
+
+    // Boundary in the future but no precision timer armed — usually means
+    // a long-form item exceeded PRECISION_TIMER_MAX_MS at the time of
+    // arming. Try to rearm now that we're closer.
+    if (!_precisionTimer && Date.now() < endsAtMs) {
+      _armPrecisionTimers();
+    }
   } catch (err) {
     // Never crash the ticker — but DO log. A persistently-failing tick
     // (DB outage, schema drift, payload-build bug) was previously
@@ -523,16 +664,16 @@ async function _tickTransitions() {
 
 export function startBroadcastTransitionTicker(): void {
   if (_transitionTickHandle) return;
-  // Kick off an immediate initial read so the ticker knows what to watch.
+  // Kick off an immediate initial read so the scheduler arms its
+  // precision timers as early as possible.
   buildBroadcastCurrentPayload()
-    .then((p) => { _lastTrackedPayload = p; })
+    .then((p) => { _setLastTrackedPayload(p); })
     .catch(() => {});
-  // Tick at 500ms (was 2_000ms). The transition SSE tells clients to
-  // promote the next queue item; clients also auto-swap on the active
-  // video's `ended` event, but the SSE remains the source of truth for
-  // metadata (now-playing card, up-next list). A faster tick keeps the
-  // metadata in lock-step with the actual video transition so viewers
-  // never see a mismatched title or stale "currently playing" badge.
+  // 500 ms safety-net interval. The precision setTimeout in
+  // `_armPrecisionTimers` does the actual transition firing; this
+  // interval only catches edge cases (unknown endsAtMs, items longer
+  // than PRECISION_TIMER_MAX_MS, missed timers due to event-loop
+  // pauses) so the broadcast can never freeze indefinitely.
   _transitionTickHandle = setInterval(_tickTransitions, 500);
   _transitionTickHandle.unref();
 }
@@ -549,7 +690,10 @@ export function getLastTrackedBroadcastPayload(): BroadcastCurrentPayload | null
 export function emitBroadcastState(reason: string, detail: Record<string, unknown> = {}) {
   buildBroadcastCurrentPayload()
     .then((current) => {
-      _lastTrackedPayload = current; // keep ticker in sync with manual changes
+      // _setLastTrackedPayload also rearms the precision timers so a
+      // manual skip / override / queue mutation immediately picks up
+      // the new boundary and pre-warms toward the new next item.
+      _setLastTrackedPayload(current);
       broadcastLiveEvent("broadcast-current-updated", { reason, current, ...detail });
     })
     .catch(() => {});
