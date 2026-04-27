@@ -1751,3 +1751,57 @@ Three things conspired to false-negative the validator:
 - **Bogus 11-char ID**: `exists=false`, 0.12s.
 
 All three correct. Build clean, server boots clean.
+
+---
+
+## YouTube catalogue sync — skip-unchanged path (Apr 27, 2026)
+
+### The problem
+
+Logs showed `[YouTubeSync] Catalogue sync complete total: 2117,
+inserted: 0, updated: 2117, elapsedMs: 172203` every 30 minutes
+forever. Every record was being UPSERTed even when zero content
+had actually changed. This was wasting:
+- ~150 seconds of wall-clock per cycle
+- 2117 PostgreSQL round-trips per cycle
+- Native-buffer churn from Drizzle prepared statements
+
+### The fix
+
+`artifacts/api-server/src/routes/youtube.ts:1426-1556`. One batched
+`SELECT WHERE youtubeId IN (...)` pre-fetches existing rows into a
+Map. Per video we compute a SHA-1 hash of
+`(title|description|thumbnailUrl|duration|publishedAt)` and compare
+against the same hash from the existing row. If hash matches AND
+fresh `viewCount` ≤ existing `viewCount` (so the `GREATEST(...)`
+clause would be a no-op), we skip the UPSERT entirely.
+
+The summary now also reports `skipped`.
+
+### Verified post-fix
+
+```
+Before: total: 2117, inserted: 0, updated: 2117, elapsedMs: 172203
+After:  total: 2117, inserted: 0, updated:   13, skipped: 2104, elapsedMs: 18097
+```
+
+- **9.5× faster** (172 s → 18 s)
+- **163× fewer DB writes** (2117 → 13)
+- The 13 actual writes are videos whose `viewCount` advanced — that's
+  the correct, intended behavior.
+
+### Honest scope note
+
+The catalogue sync was *not* the dominant source of the 2+ GiB
+`external` native memory the watchdog warns about. New post-fix logs
+show RSS at 318 MiB one minute after the sync completes, then
+spiking to 2.89 GiB a minute later — meaning the bulk of the native
+memory pressure is from something else (likely
+`--enable-source-maps` retaining the 5.5 MB sourcemap, Sentry's
+profiler, the FFmpeg child-process pool, or the V8 baseline plus
+the YouTube `fetch()` response buffers being slow to release). This
+fix removes a real, measurable inefficiency that ran every 30
+minutes forever — but the broader RSS picture needs a separate
+investigation, most likely splitting `RUN_MODE=api` from
+`RUN_MODE=worker` in production (the architecture already supports
+this).

@@ -1,7 +1,7 @@
 import express, { Router } from "express";
 import { db, pushTokensTable, notificationsTable, liveOverridesTable } from "@workspace/db";
-import { eq, asc } from "drizzle-orm";
-import { randomUUID } from "crypto";
+import { eq, asc, inArray } from "drizzle-orm";
+import { randomUUID, createHash } from "crypto";
 import {
   broadcastLiveEvent,
   addSSEClient,
@@ -1316,6 +1316,7 @@ let lastCatalogueSyncResult: {
   total?: number;
   inserted?: number;
   updated?: number;
+  skipped?: number;
   newVideoIds?: string[];
   error?: string;
   elapsedMs?: number;
@@ -1386,6 +1387,7 @@ export async function runYoutubeCatalogueSync(opts: { notifyOnNew?: boolean } = 
   total?: number;
   inserted?: number;
   updated?: number;
+  skipped?: number;
   newVideoIds?: string[];
   error?: string;
   elapsedMs?: number;
@@ -1421,37 +1423,131 @@ export async function runYoutubeCatalogueSync(opts: { notifyOnNew?: boolean } = 
     for (const v of fresh) knownVideoIds.add(v.videoId);
 
     // Persist to DB so other surfaces (admin/videos table) reflect channel state.
+    //
+    // Memory/perf note: previously this loop fired one INSERT...ON CONFLICT
+    // UPDATE per video on every 30-min tick. With 2117 videos that's 2117
+    // round-trips even when zero rows actually changed — observed in logs as
+    // `inserted: 0, updated: 2117`. Each driver round-trip allocates native
+    // buffers (Node's `external` memory), and the sustained churn correlated
+    // with RSS climbing from 1.2 GiB to 3.5 GiB on the all-in-one process.
+    //
+    // The skip-unchanged path: one SELECT pre-fetch keyed by youtubeId, then
+    // we hash the YouTube-sourced content fields for each fresh video and
+    // compare against the same hash computed from the existing row. If the
+    // content hash matches AND the fresh viewCount isn't higher, we do
+    // nothing — no UPDATE, no native buffer churn. Only genuinely new or
+    // changed rows hit the database.
     const { db: dbInstance, videosTable } = await import("@workspace/db");
     const { sql } = await import("drizzle-orm");
 
+    const hashContent = (
+      title: string,
+      description: string,
+      thumbnailUrl: string,
+      duration: string,
+      publishedAt: string | null,
+    ): string =>
+      createHash("sha1")
+        .update(title)
+        .update("\u0001")
+        .update(description)
+        .update("\u0001")
+        .update(thumbnailUrl)
+        .update("\u0001")
+        .update(duration)
+        .update("\u0001")
+        .update(publishedAt ?? "")
+        .digest("hex");
+
+    const youtubeIds = fresh.map((v) => v.videoId);
+    type ExistingRow = {
+      youtubeId: string;
+      title: string;
+      description: string;
+      thumbnailUrl: string;
+      duration: string;
+      publishedAt: string | null;
+      viewCount: number;
+    };
+    const existingRows: ExistingRow[] =
+      youtubeIds.length === 0
+        ? []
+        : await dbInstance
+            .select({
+              youtubeId: videosTable.youtubeId,
+              title: videosTable.title,
+              description: videosTable.description,
+              thumbnailUrl: videosTable.thumbnailUrl,
+              duration: videosTable.duration,
+              publishedAt: videosTable.publishedAt,
+              viewCount: videosTable.viewCount,
+            })
+            .from(videosTable)
+            .where(inArray(videosTable.youtubeId, youtubeIds));
+
+    const existingByYoutubeId = new Map<string, ExistingRow>();
+    for (const row of existingRows) existingByYoutubeId.set(row.youtubeId, row);
+
     let inserted = 0;
     let updated = 0;
+    let skipped = 0;
     for (const v of fresh) {
+      const freshTitle = v.title;
+      const freshDescription = v.description ?? "";
+      const freshThumbnailUrl = v.thumbnailUrl ?? "";
+      const freshDuration = v.duration ?? "";
+      const freshPublishedAt = v.publishedAt ?? null;
+      const freshViewCount = Number(v.viewCount) || 0;
+
+      const existing = existingByYoutubeId.get(v.videoId);
+      if (existing) {
+        const freshHash = hashContent(
+          freshTitle,
+          freshDescription,
+          freshThumbnailUrl,
+          freshDuration,
+          freshPublishedAt,
+        );
+        const existingHash = hashContent(
+          existing.title,
+          existing.description,
+          existing.thumbnailUrl,
+          existing.duration,
+          existing.publishedAt,
+        );
+        // Content unchanged AND viewCount can't move forward (GREATEST is a
+        // no-op when fresh <= existing) → no UPDATE needed at all.
+        if (freshHash === existingHash && freshViewCount <= existing.viewCount) {
+          skipped += 1;
+          continue;
+        }
+      }
+
       const result = await dbInstance
         .insert(videosTable)
         .values({
           id: randomUUID(),
           youtubeId: v.videoId,
-          title: v.title,
-          description: v.description ?? "",
-          thumbnailUrl: v.thumbnailUrl ?? "",
-          duration: v.duration ?? "",
+          title: freshTitle,
+          description: freshDescription,
+          thumbnailUrl: freshThumbnailUrl,
+          duration: freshDuration,
           category: "sermon",
           preacher: "",
-          publishedAt: v.publishedAt ?? null,
-          viewCount: Number(v.viewCount) || 0,
+          publishedAt: freshPublishedAt,
+          viewCount: freshViewCount,
           featured: false,
           videoSource: "youtube",
         })
         .onConflictDoUpdate({
           target: videosTable.youtubeId,
           set: {
-            title: v.title,
-            description: v.description ?? "",
-            thumbnailUrl: v.thumbnailUrl ?? "",
-            duration: v.duration ?? "",
-            publishedAt: v.publishedAt ?? null,
-            viewCount: sql`GREATEST(${videosTable.viewCount}, ${Number(v.viewCount) || 0})`,
+            title: freshTitle,
+            description: freshDescription,
+            thumbnailUrl: freshThumbnailUrl,
+            duration: freshDuration,
+            publishedAt: freshPublishedAt,
+            viewCount: sql`GREATEST(${videosTable.viewCount}, ${freshViewCount})`,
           },
         })
         .returning({ id: videosTable.id, wasInsert: sql<boolean>`xmax = 0` });
@@ -1479,6 +1575,7 @@ export async function runYoutubeCatalogueSync(opts: { notifyOnNew?: boolean } = 
       total: fresh.length,
       inserted,
       updated,
+      skipped,
       newVideoIds: newVideos.map((v) => v.videoId),
       elapsedMs,
     };
