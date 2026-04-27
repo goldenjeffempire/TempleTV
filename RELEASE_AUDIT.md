@@ -854,3 +854,25 @@ Reachability analysis covers every path:
 - **AVPlay open/prepare throws:** Interval set at line 496 only *after* `prepare()` and `play()` succeed; any throw before reaching line 495 leaves no new interval to clean up.
 
 **No code change. Tally update:** verified-claim false-positive rate is now **6 out of 7** for the cross-platform-clients audit (§19 was a false positive on the literal claim with a real adjacent latent finding; §21 is a clean false positive). The methodology rule from §14 has now paid off six different times: anyone who'd trusted the audit verbatim would have spent time on cleanup code that was already correct, while missing the real adjacent latent issue §19 actually surfaced.
+
+## §22 — Verification of `admin.ts` finalize → queueTranscodingJob partial-state claim (Apr 27)
+
+**Audit's literal line range was stale (1886-1948 is the S3-mirror + DB-insert region; the actual `queueTranscodingJob` call is line 1972), but the underlying concern was real and reduced to a 1-line consistency fix.** The audit's "needs reconciliation-loop design discussion" framing was disproportionate — the actual on-the-ground impact is much smaller than that suggests:
+
+- **The video itself is playable without HLS.** `videosTable` row is committed before the 201; `localVideoUrl` points to either S3 (via `/api/videos/:id/source` redirect when mirror succeeded) or local disk (via `/api/uploads/*`). Mobile hooks fall back to MP4 by design: `useLocalVideos.ts:94` reads `v.hlsMasterUrl ?? v.localVideoUrl`.
+- **HLS variants are an optimisation**, not a correctness requirement. Failure to queue transcoding produces a video without adaptive-bitrate playback, not a broken video.
+- **The race window** between line 1972 (`res.status(201).json(...)`) and line 1975 (`queueTranscodingJob(id, ...).catch(...)`) is microseconds inside the same handler. `resumePendingJobsOnStartup()` (referenced from `index.ts:174`) is the catch-all on next boot for the process-crash window.
+
+**The actual concrete bug was an inconsistency**, not a partial-state architectural risk. Of three finalize handlers in this file:
+
+| Handler | Line | Pre-fix `queueTranscodingJob` catch behavior |
+|---|---|---|
+| Chunk-upload finalize (`/upload/:sessionId/finalize`) | 1972 | `.catch(() => {})` — **silent** ❌ |
+| S3-direct finalize (`/upload/s3-finalize`) | 2359 | `.catch((err) => logger.error(...))` ✅ |
+| S3-multipart-complete (`/upload/s3-multipart-complete`) | 2751 | `.catch((err) => logger.error(...))` ✅ |
+
+Two of three handlers correctly logged transcoding-queue failures. Only the legacy chunk-upload path was dropping them on the floor. **Fix:** brought the chunk-upload path into consistency with its two sister handlers — `.catch((err) => logger.error({err, videoId: id}, "..."))` mirroring lines 2360 and 2752. Strictly additive observability; success path unchanged; no new edge cases.
+
+The audit's heavier-hammer suggestion ("queue-inside-transaction" / new reconciliation loop) was rejected as overkill for what the actual concrete bug turned out to be (one missing `logger.error` call). Workflow restarted clean: typecheck pass, build pass, all schedulers armed, lifecycle hit ready, admin serving requests.
+
+**Tally:** 6 surgical real-bug fixes across the session (§15, §16, §17, §19, §20, §22). Verified-claim correctness rate for the cross-platform-clients audit: 1 partly-right (§19, false on literal but uncovered real adjacent), 2 confirmed false positives (§19 literal, §21), now §22 partly-right (real bug but smaller than claimed) — methodology rule has paid off **7 separate times**.

@@ -1969,7 +1969,20 @@ router.post("/admin/videos/upload/:sessionId/finalize", async (req, res) => {
       res.status(201).json({ ...video, _assemblyMs: assemblyMs, broadcastQueued });
 
       // Transcoding is a background job — does not affect queue visibility.
-      queueTranscodingJob(id, finalPath, 1).catch(() => {});
+      // Fire-and-forget AFTER the 201 because HLS variants are an optimisation
+      // (the video is already playable via direct MP4: see useLocalVideos.ts
+      // line 94 — `localVideoUrl: v.hlsMasterUrl ?? v.localVideoUrl`).
+      // Persist any failure in the logs so an operator can re-trigger the
+      // transcode — silently swallowing was the inconsistent outlier here:
+      // the s3-finalize (line 2359) and s3-multipart-complete (line 2751)
+      // handlers both `logger.error` on this same call, only the legacy
+      // chunk-upload path was dropping the error on the floor.
+      queueTranscodingJob(id, finalPath, 1).catch((err) => {
+        logger.error(
+          { err, videoId: id },
+          "queueTranscodingJob failed after chunked-upload finalize — video is playable via direct MP4 but missing HLS variants until re-triggered",
+        );
+      });
     } catch (postAssemblyErr) {
       // Hash/stat/DB-insert failed after assembly (before DB write). Delete
       // the orphan file, tear down the in-memory session, surface a 500.
