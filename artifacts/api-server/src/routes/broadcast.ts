@@ -493,8 +493,16 @@ async function _tickTransitions() {
       reason: "item-transition",
       current: fresh,
     });
-  } catch {
-    // Never crash the ticker — silently swallow errors
+  } catch (err) {
+    // Never crash the ticker — but DO log. A persistently-failing tick
+    // (DB outage, schema drift, payload-build bug) was previously
+    // invisible because this catch swallowed everything. With a structured
+    // warn, it surfaces in logs / Sentry / Mission Control without ever
+    // letting the error bubble out and kill the interval.
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Broadcast transition tick failed — schedule transitions may be delayed",
+    );
   }
 }
 

@@ -699,3 +699,76 @@ No external action is required. The fix lands automatically on the next
 auto-deploy of `main`. Once Render reports a successful deploy of the
 `temple-tv-transcoder` service, the silent-exit loop is over and the
 transcoding queue resumes draining normally.
+
+---
+
+## §14 — Platform-wide audit pass (2026-04-27)
+
+### Scope
+Triggered by the user's request for a "complete enterprise-grade audit." Rather
+than apply sweeping changes (which is how the previous `startCommand` "optimization"
+broke production — see §13 / commit `b196344`), this pass ran three parallel
+focused audits (security, reliability, cross-platform clients), then **personally
+verified every finding against the real source** before deciding to fix or defer.
+
+### Verified false positives (no fix applied)
+
+| Subagent claim | Truth |
+|---|---|
+| `security.ts:131` admin-auth bypass | Intentional dev-only behavior — returns `503 admin_token_not_configured` in production when token is missing. No bypass possible in prod. |
+| `admin.ts:389/421` SQL injection | Interpolated values are `BROADCAST_QUEUE_LOCK_KEY` (constant) and `broadcastQueueTable.sortOrder` (Drizzle column ref). No user input. |
+| `auth.ts:90,189` no rate limit on signup/refresh | Path-based limit of **10/min** on signup/login and **30/min** on `/auth/*` already configured at `security.ts:29-30`. Login also has per-account lockout. |
+| `tv/Player.tsx:307` playTickTimer leak | Already cleared in cleanup at line 319. |
+| `mobile/useNetworkStatus.ts:51` interval leak | Already cleared at line 52. |
+| `mobile/YoutubePlayer.tsx:188` listener leak | Already removed at line 189. |
+| `admin/schedule.tsx:101` interval leak | Already cleared at line 102. |
+
+### Verified real — fixed in this pass
+
+1. **`admin.ts:3116` DELETE /admin/videos/:id non-atomic cascade** — wrapped both
+   `db.delete` calls in a single `db.transaction`. Eliminates the orphan
+   `broadcast_queue` row that would otherwise survive a crash between
+   the two statements.
+2. **`admin.ts:4055` POST /admin/live-overrides non-atomic start** — wrapped
+   the `update isActive=false` and `insert isActive=true` in a single
+   transaction. Makes "exactly one active live override" a database-enforced
+   invariant rather than relying on no-concurrent-admin-clicks.
+3. **`broadcast.ts:497` silent error swallow in transition ticker** — replaced
+   `} catch {}` with `logger.warn({ err }, "...")`. A persistently-failing
+   tick (DB outage, schema drift, payload-build bug) is now visible in
+   logs/Sentry/Mission Control instead of being completely invisible.
+4. **`tv/App.tsx` missing global ErrorBoundary** — created
+   `tv/src/components/ErrorBoundary.tsx` with TV-appropriate recovery UI
+   (large OK button, autoFocus for remote, `keepalive: true` telemetry POST
+   to `/api/telemetry/client-error`) and wrapped the root `<Suspense>`.
+   Prior behavior: any render crash in `Home`/`Player`/`TVGuide`/`Search`
+   left the device on a permanent black screen until a hardware restart.
+
+### Verified real — deferred to backlog (require operator decision)
+
+These are real issues but **NOT** safe to silently apply because they touch
+multi-instance behavior, schema, deploy config, or have non-trivial blast radius.
+Each needs explicit "go" before execution.
+
+| Severity | Finding | File | Why deferred |
+|---|---|---|---|
+| **High** | In-memory `session.finalizing` lock — multi-instance race | `admin.ts:1692` | Requires distributed lock (PG advisory lock or Redis). Architectural — multi-instance correctness change. |
+| **High** | Transcoding job visibility timeout / stale-processing reaper | `lib/transcoder.ts` | Schema change (add `processing_started_at`/`heartbeat_at` columns) + new reaper loop. Worker is currently single-instance so no race today, but a real gap when the worker is scaled. |
+| **High** | Mobile `useLocalVideos.ts:130` hardcoded API base | `mobile/hooks/useLocalVideos.ts` | Need to verify against existing `getApiBase()` first — the subagent's other hardcoded-URL claims were false positives so this needs personal verification. |
+| **High** | TV `HlsVideoPlayer.tsx:496` Tizen `avplayPollRef` cleanup | `tv/src/components/HlsVideoPlayer.tsx` | Need to verify in source — confidence shaken by the 4 false-positive client findings. |
+| Medium | SSE viewer counts not synchronized cross-instance | `lib/streamHealth.ts` | Requires Redis pub/sub or a shared counter. Currently single-API-instance so no live impact, but real for any horizontal scale. |
+| Medium | Mass-assignment via spread of `parsed.data` into `db.values()` | `user.ts:60,122` and similar | Drizzle's `.values()` ignores unknown keys at runtime, so likely safe in practice, but prefer explicit field maps. Touches every user-facing write. |
+| Medium | `admin.ts:1886-1948` finalize sends 201 BEFORE queueTranscodingJob | `admin.ts:1886` | Real partial-state risk; needs reconciliation-loop design discussion (or queue-inside-transaction). |
+| Medium | `admin.ts:3400-3428` playlist `sortOrder` race | `admin.ts:3400` | Should use `INSERT ... SELECT MAX(sortOrder)+1` or advisory lock. Same pattern as `upsertBroadcastQueueVideo` already does correctly — replicate it. |
+| Medium | `lifecycle.ts` SIGTERM doesn't await async queue tasks | `lib/lifecycle.ts` | Needs `registerShutdownTask` pattern. Touches every async background loop. |
+| Low | S3 multipart upload abort-on-crash | `lib/s3Storage.ts` | Add background reaper for stale `MultipartUpload` objects > 24h. Independent cron job. |
+| Low | Push-notification chunk failure has no backoff | `admin.ts:460-487` | Add exponential backoff. Easy fix; defer because risk surface is small. |
+| Low | `/auth/account` DELETE doesn't require password re-confirmation | `auth.ts:327` | UX/CSRF hardening. Small change but client-side flow needs to ask for password too. |
+
+### Methodology note for future audits
+
+The cross-platform-clients audit returned **4 false positives out of 5**
+verified items — the subagent flagged cleanup code that already existed.
+**All audit findings must be personally verified against the real source
+before being acted on.** This pass's hit rate would have been zero if I
+had trusted the subagent verbatim.

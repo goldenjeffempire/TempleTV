@@ -1,6 +1,7 @@
 import { Suspense, lazy, useCallback, useState } from "react";
 import type { VideoItem } from "./lib/api";
 import { usePlatformInit } from "./hooks/usePlatformInit";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 const Home = lazy(() => import("./pages/Home").then((m) => ({ default: m.Home })));
 const TVGuide = lazy(() => import("./pages/TVGuide").then((m) => ({ default: m.TVGuide })));
@@ -115,6 +116,15 @@ export default function App() {
   }
 
   return (
-    <Suspense fallback={<SplashFallback />}>{content}</Suspense>
+    // ErrorBoundary wraps Suspense (not the other way around) so a render
+    // crash inside any lazy-loaded route — Home, TVGuide, Search,
+    // VideoDetails, Player — falls into the recovery UI instead of
+    // unmounting the whole tree and leaving the TV stuck on a black
+    // screen until the device is restarted. See ErrorBoundary.tsx for
+    // the rationale (TV hardware has no dev-tools / URL bar / app-kill
+    // affordances available to a viewer).
+    <ErrorBoundary>
+      <Suspense fallback={<SplashFallback />}>{content}</Suspense>
+    </ErrorBoundary>
   );
 }

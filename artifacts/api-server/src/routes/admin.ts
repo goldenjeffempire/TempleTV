@@ -3115,8 +3115,18 @@ router.delete("/admin/videos/:id", async (req, res) => {
     const { id } = DeleteAdminVideoParams.parse(req.params);
     const [video] = await db.select().from(videosTable).where(eq(videosTable.id, id)).limit(1);
 
-    await db.delete(videosTable).where(eq(videosTable.id, id));
-    await db.delete(broadcastQueueTable).where(eq(broadcastQueueTable.videoId, id));
+    // Atomic delete: the video row and its broadcast-queue row(s) must be
+    // removed together. Without a transaction, a crash or pool-exhaustion
+    // failure between the two `db.delete` calls would leave an orphaned
+    // queue row whose `videoId` references a video that no longer exists,
+    // which the broadcast ticker then trips over on every tick. Wrapping
+    // both in a single transaction guarantees they commit or roll back
+    // as a unit.
+    type AdminDbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+    await db.transaction(async (tx: AdminDbTx) => {
+      await tx.delete(videosTable).where(eq(videosTable.id, id));
+      await tx.delete(broadcastQueueTable).where(eq(broadcastQueueTable.videoId, id));
+    });
     await invalidateBroadcastCache();
     broadcastLiveEvent("broadcast-queue-updated", { videoId: id, deleted: true, queuedAt: new Date().toISOString() });
     emitBroadcastState("queue-video-deleted", { videoId: id });
@@ -4040,19 +4050,36 @@ router.post("/admin/live-overrides", async (req, res) => {
         return void res.status(400).json({ error: "endsAt must be a valid ISO date" });
       }
     }
-    await db.update(liveOverridesTable).set({ isActive: false }).where(eq(liveOverridesTable.isActive, true));
+    // Atomic live-override start: the existing-overrides deactivate and the
+    // new-override insert MUST commit together. Two concurrent admin requests
+    // (or a crash between the two statements) could otherwise leave the table
+    // with two `isActive=true` rows — at which point downstream consumers
+    // (broadcast endpoints, mobile/TV live banners) read whichever the DB
+    // happens to return first, producing a non-deterministic "which stream
+    // is live?" answer that operators cannot diagnose. Wrapping in a single
+    // transaction makes "exactly one active override" an invariant.
     const startedAt = new Date();
-    const [override] = await db.insert(liveOverridesTable).values({
-      id: randomUUID(),
-      title: title?.trim() || "Temple TV Live",
-      hlsStreamUrl: urlCheck.value,
-      youtubeVideoId,
-      rtmpIngestKey: rtmpIngestKey?.trim() || null,
-      streamNotes: streamNotes?.trim() || null,
-      startedAt,
-      endsAt: endsAtDate,
-      isActive: true,
-    }).returning();
+    type AdminDbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+    const [override] = await db.transaction(async (tx: AdminDbTx) => {
+      await tx
+        .update(liveOverridesTable)
+        .set({ isActive: false })
+        .where(eq(liveOverridesTable.isActive, true));
+      return tx
+        .insert(liveOverridesTable)
+        .values({
+          id: randomUUID(),
+          title: title?.trim() || "Temple TV Live",
+          hlsStreamUrl: urlCheck.value,
+          youtubeVideoId,
+          rtmpIngestKey: rtmpIngestKey?.trim() || null,
+          streamNotes: streamNotes?.trim() || null,
+          startedAt,
+          endsAt: endsAtDate,
+          isActive: true,
+        })
+        .returning();
+    });
 
     if (notify) {
       const tokenRows = await db.select().from(pushTokensTable);
