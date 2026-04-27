@@ -38,6 +38,7 @@ import { cache } from "../lib/cache";
 import { invalidatePublicVideoCaches, invalidatePublicPlaylistCaches } from "../lib/publicCacheInvalidation";
 import { logger } from "../lib/logger";
 import { metricsSnapshot, slowRequestsSnapshot } from "../middlewares/observability";
+import { signedUrlMetricsSnapshot } from "../lib/signedUrlMetrics";
 import { randomUUID, createHash, webcrypto } from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -875,6 +876,13 @@ router.get("/admin/ops/status", async (_req, res) => {
           cloudUploadEnabled: objectStorageConfigured,
           pendingJobs: queuedJobs,
         },
+        // Per-process counters for the signed-URL caches that sit in front of
+        // the two media-redirect middlewares. `hitRate` is `cached / hits` and
+        // is the single number to watch — anything above ~0.8 on sustained
+        // playback traffic means the cache is doing its job (i.e. a steady
+        // viewer is no longer triggering a fresh S3 SigV4 sign on every
+        // ~5s HTML5 Range request). Counters reset on every deploy.
+        signedUrlCache: signedUrlMetricsSnapshot(),
       },
       database: {
         connected: dbConnected,

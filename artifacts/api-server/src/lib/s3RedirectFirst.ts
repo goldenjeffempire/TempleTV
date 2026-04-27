@@ -1,6 +1,7 @@
 import express from "express";
 import { isS3Configured, headObject, getSignedGetUrl } from "./s3Storage";
 import { logger } from "./logger";
+import { recordSignedUrlHit } from "./signedUrlMetrics";
 
 /**
  * "S3-redirect-first" middleware for large media (full-length MP4s/audio).
@@ -198,6 +199,7 @@ export function s3RedirectFirstForLargeMedia(
     const maxAge = Math.max(60, Math.floor(signedUrlTtlSec / 2));
     res.setHeader("Cache-Control", `public, max-age=${maxAge}`);
     res.setHeader("X-Storage-Source", `s3-redirect-first;${cacheSource}`);
+    recordSignedUrlHit("s3-redirect-first", cacheSource);
     res.redirect(302, signedUrl);
     return;
   };

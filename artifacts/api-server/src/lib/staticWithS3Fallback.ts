@@ -9,6 +9,7 @@ import {
 } from "./s3Storage";
 import { sendRangedGet } from "./s3Ranged";
 import { logger } from "./logger";
+import { recordSignedUrlHit } from "./signedUrlMetrics";
 
 /**
  * Static-asset middleware with automatic S3 fallback.
@@ -233,6 +234,7 @@ export function s3FallbackMiddleware(opts: FallbackOptions): express.RequestHand
         const maxAge = Math.max(60, Math.floor(redirectFromS3.signedUrlTtlSec / 2));
         res.setHeader("Cache-Control", `public, max-age=${maxAge}`);
         res.setHeader("X-Storage-Source", `s3-redirect;${cacheSource}`);
+        recordSignedUrlHit("s3-redirect", cacheSource);
         res.redirect(302, signedUrl);
         return;
       }
