@@ -8,6 +8,7 @@
     "backfill-legacy-video-urls": "tsx ./src/backfill-legacy-video-urls.ts",
     "load-test-broadcast-current": "tsx ./src/load-test-broadcast-current.ts",
     "analyze-access-log": "tsx ./src/analyze-access-log.ts",
+    "verify-catalog-lockfile-sync": "tsx ./src/verify-catalog-lockfile-sync.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

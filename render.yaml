@@ -128,24 +128,36 @@ services:
     # ── Build & start ──────────────────────────────────────────────────────
     # `--prefer-offline` reuses Render's pnpm cache (cuts install from ~90 s
     # → ~25 s on warm builds). `--frozen-lockfile` is mandatory in CI to
-    # guarantee reproducible builds. `pnpm run verify:production` runs BEFORE
-    # the esbuild bundle so any type drift across PRODUCTION workspaces OR
-    # any drift between `lib/api-spec/openapi.yaml` and the generated zod /
-    # react-query clients fails the deploy LOUDLY at the build step — not
-    # silently at runtime after the artifact is already in front of users.
-    # `verify:production` deliberately excludes `@workspace/mockup-sandbox`
-    # (a Replit-canvas-only dev preview tool that ships in zero production
-    # services and whose typecheck failures cannot affect any deployed
-    # artifact) — gating production on it would couple deploys to a tool
-    # that isn't part of any deployed surface. The fuller `pnpm run verify`
+    # guarantee reproducible builds.
+    #
+    # `--prod=false` is THE critical flag and was the root cause of three
+    # consecutive failed deploys before being added: Render sets
+    # `NODE_ENV=production` by default during the build command, which
+    # causes `pnpm install` to skip devDependencies entirely. Every
+    # artifact's tsconfig declares `"types": ["node", "vite/client"]`, and
+    # both `@types/node` and `vite` live in `devDependencies` (correct
+    # semantically — they're build-time-only). Without this flag, those
+    # symlinks never get created on Render and tsc fails with
+    # `error TS2688: Cannot find type definition file for 'node' /
+    # 'vite/client'` — exit status 2. Locally the issue never surfaced
+    # because dev installs always include devDeps. Forcing `--prod=false`
+    # overrides Render's NODE_ENV and guarantees devDeps install regardless.
+    #
+    # `pnpm run verify:production` then runs BEFORE the esbuild bundle so
+    # any type drift across PRODUCTION workspaces OR any drift between
+    # `lib/api-spec/openapi.yaml` and the generated zod / react-query
+    # clients fails the deploy LOUDLY at the build step — not silently at
+    # runtime after the artifact is already in front of users. It excludes
+    # `@workspace/mockup-sandbox` (a Replit-canvas-only dev preview tool
+    # that ships in zero production services); the fuller `pnpm run verify`
     # (which DOES include mockup-sandbox) still runs locally via the
-    # pre-commit hook and `scripts/post-merge.sh`, so mockup-sandbox drift
-    # is still caught — just not on the Render critical path.
+    # pre-commit hook and `scripts/post-merge.sh`.
+    #
     # esbuild bundles to a single ESM file so `start` does not
     # require devDependencies on disk.
     buildCommand: |
       corepack enable && \
-      pnpm install --frozen-lockfile --prefer-offline && \
+      pnpm install --frozen-lockfile --prefer-offline --prod=false && \
       pnpm run verify:production && \
       pnpm --filter @workspace/api-server run build
     startCommand: pnpm --filter @workspace/api-server run start:prod
@@ -319,7 +331,7 @@ services:
     # `@workspace/mockup-sandbox` is excluded — it ships in zero services.)
     buildCommand: |
       corepack enable && \
-      pnpm install --frozen-lockfile --prefer-offline && \
+      pnpm install --frozen-lockfile --prefer-offline --prod=false && \
       pnpm run verify:production && \
       pnpm --filter @workspace/api-server run build
     startCommand: pnpm --filter @workspace/api-server run start
@@ -378,7 +390,7 @@ services:
     # it imports. Excludes the dev-only `@workspace/mockup-sandbox`.
     buildCommand: |
       corepack enable && \
-      pnpm install --frozen-lockfile --prefer-offline && \
+      pnpm install --frozen-lockfile --prefer-offline --prod=false && \
       pnpm run verify:production && \
       pnpm --filter @workspace/admin run build
     staticPublishPath: ./artifacts/admin/dist/public
@@ -422,7 +434,7 @@ services:
     # the API. Excludes the dev-only `@workspace/mockup-sandbox`.
     buildCommand: |
       corepack enable && \
-      pnpm install --frozen-lockfile --prefer-offline && \
+      pnpm install --frozen-lockfile --prefer-offline --prod=false && \
       pnpm run verify:production && \
       pnpm --filter @workspace/mobile run build:web
     staticPublishPath: ./artifacts/mobile/web-dist
@@ -468,7 +480,7 @@ services:
     # Excludes the dev-only `@workspace/mockup-sandbox`.
     buildCommand: |
       corepack enable && \
-      pnpm install --frozen-lockfile --prefer-offline && \
+      pnpm install --frozen-lockfile --prefer-offline --prod=false && \
       pnpm run verify:production && \
       pnpm --filter @workspace/tv run build
     staticPublishPath: ./artifacts/tv/dist/public
