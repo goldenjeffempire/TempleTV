@@ -34,6 +34,7 @@ import { checkLiveStatus, type LiveCheckResult } from "@/services/youtube";
 import { sendLiveServiceNotification } from "@/services/notifications";
 import { useWatchProgress } from "@/hooks/useWatchProgress";
 import { checkBroadcastCurrent, subscribeBroadcastEvents, type BroadcastCurrentResult } from "@/services/broadcast";
+import { readLastBroadcast, writeLastBroadcast } from "@/services/lastBroadcastCache";
 import { reportLiveFailure, useLiveFailureFor, useLiveFallbackJustTriggered } from "@/services/liveFailureSignal";
 import { useLiveCountdown } from "@/services/liveCountdown";
 import {
@@ -84,9 +85,35 @@ export default function WatchScreen() {
   const [liveBannerDismissed, setLiveBannerDismissed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [broadcastCurrent, setBroadcastCurrent] = useState<BroadcastCurrentResult | null>(null);
+  // Cold-start instant-paint cache: AsyncStorage-hydrated below in a mount
+  // effect so the cinematic hero shows the last-known on-air program in the
+  // very first render after the storage read returns (~10–50 ms typical),
+  // instead of staying on the SkeletonLiveBanner for the full ~200–500 ms
+  // network roundtrip. Cache TTL is 60 s so position drift is bounded.
+  const broadcastCurrentRef = useRef<BroadcastCurrentResult | null>(null);
+  broadcastCurrentRef.current = broadcastCurrent;
   const [heroVideoFailed, setHeroVideoFailed] = useState(false);
   const heroVideoRef = useRef<any>(null);
   const autoStartedRef = useRef(false);
+
+  // Cold-start hydration from AsyncStorage. Runs once on mount; only writes
+  // state if neither the SSE handler nor the HTTP `doLiveCheck` has populated
+  // `broadcastCurrent` yet (race-safe via the ref). The `liveStatus` is NOT
+  // hydrated from cache because a stale "isLive=true" would falsely surface
+  // the live banner — the live tier is left to the YouTube poller.
+  useEffect(() => {
+    let cancelled = false;
+    readLastBroadcast()
+      .then((cached) => {
+        if (cancelled || !cached) return;
+        if (broadcastCurrentRef.current) return;
+        setBroadcastCurrent(cached);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     Animated.timing(fadeAnim, { toValue: 1, duration: 500, useNativeDriver: Platform.OS !== "web" }).start();
@@ -131,6 +158,7 @@ export default function WatchScreen() {
         }
         setLiveStatus(merged);
         setBroadcastCurrent(broadcastRes);
+        if (broadcastRes) writeLastBroadcast(broadcastRes);
         setCheckingLive(false);
         if (merged.isLive) {
           if (!liveBannerDismissed) setShowLiveBanner(true);
@@ -208,12 +236,14 @@ export default function WatchScreen() {
     const refreshBroadcast = async (payload?: any) => {
       if (payload?.current) {
         setBroadcastCurrent(payload.current);
+        writeLastBroadcast(payload.current);
         applyOverrideFromBroadcast(payload.current);
         return;
       }
       const latest = await checkBroadcastCurrent().catch(() => null);
       if (latest) {
         setBroadcastCurrent(latest);
+        writeLastBroadcast(latest);
         applyOverrideFromBroadcast(latest);
       }
     };

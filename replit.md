@@ -795,6 +795,28 @@ the SSE-driven path remains as the metadata source of truth (now-playing card,
 up-next list, mission-control hero) so on-screen labels stay in lock-step with
 the actual video transition.
 
+**Cinematic hero — cold-start instant paint (April 2026):** Closed the last
+remaining "blank-on-landing" window. Both the TV `Home.tsx` and mobile
+`(tabs)/index.tsx` previously waited on the HTTP cold-start primer
+(`fetchBroadcastCurrent`/`checkBroadcastCurrent`) before the cinematic hero
+could render the on-air program; on slow networks this surfaced as a
+~100–500 ms off-air gradient (TV) or `SkeletonLiveBanner` (mobile) flash even
+when an item *was* on air. Added two small last-known-state caches —
+`artifacts/tv/src/lib/lastBroadcastCache.ts` (synchronous `sessionStorage`,
+read in the `useState` initializer so the very first paint hits) and
+`artifacts/mobile/services/lastBroadcastCache.ts` (`AsyncStorage`, hydrated
+in a mount effect that no-ops if SSE/HTTP have already populated state).
+Both writers fire from every state-update site (SSE payload effect,
+`broadcast-current-updated` handler, HTTP fetch success). 60-second TTL so
+position-derived math (`computeLiveBroadcastPosition`) cannot drift past the
+cached item's duration before fresh data overwrites; payload shape is
+versioned (`v: 1`) so future schema changes safely invalidate stale entries.
+`liveStatus` is deliberately NOT cached because a stale `isLive: true` would
+falsely surface the live banner — the YouTube tier remains poller-driven and
+SSE-pushed. Net effect: returning users see the correct on-air program in
+the first frame; the SSE/HTTP roundtrip then verifies and corrects within
+~200 ms (always overwrites within the 60 s TTL window).
+
 ### Round 7 — Seamless broadcast queue transitions across all surfaces (April 2026)
 
 The broadcast queue rolling from one item to the next was triggering a full

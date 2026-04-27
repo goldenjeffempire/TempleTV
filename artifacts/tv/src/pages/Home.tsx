@@ -11,6 +11,7 @@ import { fetchBroadcastCurrent } from "../lib/api";
 import type { VideoItem, BroadcastCurrent } from "../lib/api";
 import { useLiveSync } from "../hooks/useLiveSync";
 import { BROADCAST_TITLE } from "../lib/broadcastIdentity";
+import { readLastBroadcast, writeLastBroadcast } from "../lib/lastBroadcastCache";
 
 const CATEGORIES = [
   "Faith",
@@ -39,7 +40,15 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
   const scrollRef = useRef<HTMLDivElement>(null);
   const [guideButtonFocused, setGuideButtonFocused] = useState(false);
   const [searchButtonFocused, setSearchButtonFocused] = useState(false);
-  const [broadcastCurrent, setBroadcastCurrent] = useState<BroadcastCurrent | null>(null);
+  // Cold-start instant-paint: hydrate from sessionStorage (synchronous, no
+  // network) so the cinematic hero renders the last-known on-air program in
+  // the very first paint instead of flashing the off-air gradient for the
+  // ~100–500 ms it takes the SSE handshake or HTTP primer to land. Cache TTL
+  // is 60 s so position-derived math (`computeLiveBroadcastPosition`) can
+  // never drift past the item's duration before fresh data overwrites it.
+  const [broadcastCurrent, setBroadcastCurrent] = useState<BroadcastCurrent | null>(
+    () => readLastBroadcast(),
+  );
 
   // Real-time hero sync strategy:
   //
@@ -57,9 +66,14 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
 
   // Promote the SSE payload directly into the hero's local state so the
   // cinematic hero updates within milliseconds of a queue transition or
-  // override change — no HTTP fetch required on the hot path.
+  // override change — no HTTP fetch required on the hot path. Also persist
+  // to the instant-paint cache so the next cold-start lands on the truth.
   useEffect(() => {
-    if (liveSync.payload) setBroadcastCurrent(liveSync.payload as unknown as BroadcastCurrent);
+    if (liveSync.payload) {
+      const next = liveSync.payload as unknown as BroadcastCurrent;
+      setBroadcastCurrent(next);
+      writeLastBroadcast(next);
+    }
   }, [liveSync.payload]);
 
   useEffect(() => {
@@ -71,6 +85,7 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
         const bc = await fetchBroadcastCurrent();
         if (cancelled) return;
         setBroadcastCurrent(bc);
+        writeLastBroadcast(bc);
         attempt = 0;
       } catch {
         if (cancelled) return;
