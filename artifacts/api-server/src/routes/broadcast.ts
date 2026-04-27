@@ -16,6 +16,7 @@ import { BROADCAST_QUEUE_LOCK_KEY } from "../lib/broadcastQueueLock";
 import {
   addSSEClient,
   broadcastLiveEvent,
+  getSSEClientCount,
   removeSSEClient,
   SSECapacityError,
 } from "../lib/liveEvents";
@@ -100,6 +101,18 @@ type BroadcastCurrentPayload = {
   ytLive: boolean;
   ytVideoId: string | null;
   ytTitle: string | null;
+  /**
+   * Concurrent connected viewers across all SSE platforms (mobile, tv, admin),
+   * read fresh from `getSSEClientCount()` on every payload build — never
+   * served from the 5s broadcast cache, even on hot-path returns. The
+   * counter is the same one the admin live-monitor's `stream-health` SSE
+   * channel emits at `viewerCount` (streamHealth.ts:363), so the number
+   * the viewer sees on the player matches the number Mission Control sees,
+   * to the same second. Players render this in the bottom action bar to
+   * show the audience the size of the congregation watching with them —
+   * a real-TV "X watching now" affordance with no new backend.
+   */
+  viewerCount: number;
 };
 
 const CACHE_KEYS = {
@@ -211,6 +224,16 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
   // the cached branch flips it before its return.
   const __t0 = Date.now();
   let __path: BroadcastBuildPath = "cold";
+  // Snapshot the SSE viewer count once per build call so EVERY return path —
+  // hot (cached) and cold (freshly-built, all 6 branches below) — surfaces
+  // the same value within a single request. The counter is an O(1) in-memory
+  // read (liveEvents.ts:158), so re-reading per call is free; the snapshot
+  // exists only so we don't accidentally split-brain when the SSE pool
+  // changes mid-build (a viewer disconnecting between the hot-path overlay
+  // and a cold-path branch should not cause the same response to report two
+  // different counts). Always read fresh, never served from the 5s broadcast
+  // cache — see the `viewerCount` doc on `BroadcastCurrentPayload`.
+  const viewerCount = getSSEClientCount();
   const finish = <T>(value: T): T => {
     recordBroadcastBuildLatency(Date.now() - __t0, __path);
     return value;
@@ -260,6 +283,11 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
         ytLive: ytStatus.isLive,
         ytVideoId: ytStatus.videoId,
         ytTitle: ytStatus.title,
+        // Overlay fresh viewer count on top of the cached payload — `cached`
+        // contains a stale snapshot from the last cold build, but every API
+        // call should see the current-second number. Same overlay rationale
+        // as the ytStatus fields above.
+        viewerCount,
       });
     }
   }
@@ -310,6 +338,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
         youtubeVideoId: activeLiveOverride.youtubeVideoId ?? null,
       },
       ...ytFields,
+      viewerCount,
     };
     cache.setBackground(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
     return finish(result);
@@ -357,6 +386,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
         liveOverride: null,
         activeSchedule: activeScheduleMeta,
         ...ytFields,
+        viewerCount,
       };
       cache.setBackground(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
       return finish(result);
@@ -381,6 +411,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
       liveOverride: null,
       activeSchedule: activeScheduleMeta,
       ...ytFields,
+      viewerCount,
     };
     cache.setBackground(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
     return finish(result);
@@ -406,6 +437,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
           endTime: activeSchedule.endTime,
         },
         ...ytFields,
+        viewerCount,
       };
       cache.setBackground(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
       return finish(result);
@@ -437,6 +469,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
         : null,
       liveOverride: null,
       ...ytFields,
+      viewerCount,
     };
     cache.setBackground(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
     return finish(result);
@@ -475,6 +508,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
       : null,
     liveOverride: null,
     ...ytFields,
+    viewerCount,
   };
   cache.setBackground(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
   return finish(result);
