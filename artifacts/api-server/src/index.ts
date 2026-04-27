@@ -12,6 +12,7 @@ import { startNotificationScheduler } from "./lib/notification-scheduler";
 import { startLiveOverrideScheduler } from "./lib/live-override-scheduler";
 import { startSSEHeartbeat, closeAllSSEClients } from "./lib/liveEvents";
 import { startBroadcastTransitionTicker } from "./routes/broadcast";
+import { startSignedUrlCacheWatchdog } from "./lib/signedUrlCacheWatchdog";
 import { startLiveIngestHealthMonitor, stopLiveIngestHealthMonitor } from "./lib/liveIngestHealth";
 import { startStreamHealthEmitter } from "./lib/streamHealth";
 import { startYoutubeCatalogueScheduler } from "./routes/youtube";
@@ -209,6 +210,7 @@ async function startApiSchedulers() {
   startStreamHealthEmitter();
   startYoutubeCatalogueScheduler();
   startLiveIngestHealthMonitor();
+  startSignedUrlCacheWatchdog();
 
   // Log cache backend once it has had time to connect (2s warm-up).
   setTimeout(() => {
