@@ -419,6 +419,15 @@ export interface OpsStatus {
       cloudUploadEnabled: boolean;
       pendingJobs: number;
     };
+    signedUrlCache?: {
+      startedAt: string;
+      uptimeSecs: number;
+      total: { fresh: number; cached: number; hits: number; hitRate: number };
+      bySource: Record<
+        "s3-redirect-first" | "s3-redirect",
+        { fresh: number; cached: number; hits: number; hitRate: number }
+      >;
+    };
   };
   database: {
     connected: boolean;

@@ -469,6 +469,107 @@ function S3DirectUploadTelemetryCard() {
   );
 }
 
+function SignedUrlCacheCard({ data }: { data: NonNullable<OpsStatus["infrastructure"]["signedUrlCache"]> }) {
+  // Hit-rate is the headline number: cached / hits. Anything 80%+ on
+  // sustained playback traffic means the cache is doing its job (a steady
+  // viewer no longer triggers a fresh S3 SigV4 sign on every ~5s HTML5
+  // Range request). Below 50% with non-trivial traffic suggests cache
+  // thrash — TTL too short, key churn, or the cache being bypassed.
+  const totalHits = data.total.hits;
+  const hitPct = Math.round(data.total.hitRate * 100);
+  const status: CheckStatus =
+    totalHits < 20 ? "ok" : hitPct >= 80 ? "ok" : hitPct >= 50 ? "degraded" : "critical";
+
+  // The two sources should both report a hit-rate, but each one's traffic
+  // pattern is different: `s3-redirect-first` covers full-length MP4s
+  // requested through /api/uploads/<key>, `s3-redirect` is the static
+  // fallback path. Both deserve their own row so a regression on one
+  // doesn't get masked by health on the other.
+  const sourceLabels: Record<string, string> = {
+    "s3-redirect-first": "Uploads (/api/uploads/*)",
+    "s3-redirect": "Static fallback",
+  };
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-start justify-between gap-3">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <ShieldCheck className="w-4 h-4 text-primary" />
+            Signed-URL Cache
+          </CardTitle>
+          <StatusBadge status={status} />
+        </div>
+        <p className="text-xs text-muted-foreground mt-1">
+          Per-process counters from the two media-redirect middlewares. Reset on every deploy
+          ({formatUptime(data.uptimeSecs)} ago).
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-3 gap-3">
+          <div className="rounded-lg bg-muted/40 p-3">
+            <div className="text-2xl font-semibold tabular-nums">
+              {totalHits === 0 ? "—" : `${hitPct}%`}
+            </div>
+            <div className="text-xs text-muted-foreground">Hit rate</div>
+          </div>
+          <div className="rounded-lg bg-muted/40 p-3">
+            <div className="text-2xl font-semibold tabular-nums">
+              {data.total.cached.toLocaleString()}
+            </div>
+            <div className="text-xs text-muted-foreground">Cached (re-used)</div>
+          </div>
+          <div className="rounded-lg bg-muted/40 p-3">
+            <div className="text-2xl font-semibold tabular-nums">
+              {data.total.fresh.toLocaleString()}
+            </div>
+            <div className="text-xs text-muted-foreground">Fresh (S3 signed)</div>
+          </div>
+        </div>
+
+        {totalHits === 0 ? (
+          <p className="text-xs text-muted-foreground italic">
+            No video redirects served yet on this instance — counters populate as soon as a viewer
+            opens an uploaded MP4.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs text-muted-foreground border-b">
+                  <th className="pb-2 font-medium">Source</th>
+                  <th className="pb-2 font-medium text-right">Hits</th>
+                  <th className="pb-2 font-medium text-right">Cached</th>
+                  <th className="pb-2 font-medium text-right">Fresh</th>
+                  <th className="pb-2 font-medium text-right">Hit rate</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {(Object.entries(data.bySource) as Array<[
+                  "s3-redirect-first" | "s3-redirect",
+                  { fresh: number; cached: number; hits: number; hitRate: number },
+                ]>).map(([key, row]) => (
+                  <tr key={key}>
+                    <td className="py-2">{sourceLabels[key] ?? key}</td>
+                    <td className="py-2 text-right tabular-nums">{row.hits.toLocaleString()}</td>
+                    <td className="py-2 text-right tabular-nums">{row.cached.toLocaleString()}</td>
+                    <td className="py-2 text-right tabular-nums text-muted-foreground">
+                      {row.fresh.toLocaleString()}
+                    </td>
+                    <td className="py-2 text-right tabular-nums">
+                      {row.hits === 0 ? "—" : `${Math.round(row.hitRate * 100)}%`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function ActivityFeedCard() {
   const events = useRecentSSEEvents();
   const { state } = useSSE();
@@ -953,6 +1054,10 @@ export default function Operations() {
           </div>
 
           <S3DirectUploadTelemetryCard />
+
+          {status.infrastructure?.signedUrlCache && (
+            <SignedUrlCacheCard data={status.infrastructure.signedUrlCache} />
+          )}
 
           {pipeline && (
             <Card>
