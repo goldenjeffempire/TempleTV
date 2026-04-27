@@ -311,7 +311,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
       },
       ...ytFields,
     };
-    await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
+    cache.setBackground(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
     return finish(result);
   }
 
@@ -358,7 +358,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
         activeSchedule: activeScheduleMeta,
         ...ytFields,
       };
-      await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
+      cache.setBackground(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
       return finish(result);
     }
 
@@ -382,7 +382,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
       activeSchedule: activeScheduleMeta,
       ...ytFields,
     };
-    await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
+    cache.setBackground(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
     return finish(result);
   }
 
@@ -407,7 +407,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
         },
         ...ytFields,
       };
-      await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
+      cache.setBackground(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
       return finish(result);
     }
   }
@@ -438,7 +438,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
       liveOverride: null,
       ...ytFields,
     };
-    await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
+    cache.setBackground(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
     return finish(result);
   }
 
@@ -476,7 +476,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
     liveOverride: null,
     ...ytFields,
   };
-  await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
+  cache.setBackground(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
   return finish(result);
 }
 
