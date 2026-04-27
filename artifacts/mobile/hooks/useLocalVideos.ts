@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { Sermon, SermonCategory } from "@/types";
+import { getApiBase } from "@/lib/apiBase";
 
 const CACHE_KEY = "@temple_tv/local_videos_cache";
 // Cache is only used as an offline fallback — fresh data is always fetched on mount.
@@ -120,14 +121,21 @@ export function useLocalVideos() {
       // Skip the network call only when cache is fresh and we are not forcing.
       if (cacheIsFresh && !force) return;
 
-      const domain = process.env.EXPO_PUBLIC_DOMAIN;
-      if (!domain) {
+      // Use the canonical `getApiBase()` helper rather than reading
+      // `EXPO_PUBLIC_DOMAIN` directly — `getApiBase()` first honours the
+      // newer `EXPO_PUBLIC_API_URL` (the documented going-forward env, set
+      // by EAS profiles and `render.yaml`), falling back to the legacy
+      // `EXPO_PUBLIC_DOMAIN` for backwards compatibility. Reading
+      // `EXPO_PUBLIC_DOMAIN` here directly would silently break this hook
+      // on any future deploy that sets only the canonical variable.
+      const apiBase = getApiBase();
+      if (!apiBase) {
         setLoading(false);
         return;
       }
 
       // Use the public /api/videos endpoint — no admin token required.
-      const res = await fetch(`https://${domain}/api/videos?limit=500`, {
+      const res = await fetch(`${apiBase}/api/videos?limit=500`, {
         signal: AbortSignal.timeout(15000),
       });
       if (!res.ok) throw new Error(`Failed to fetch videos: ${res.status}`);
