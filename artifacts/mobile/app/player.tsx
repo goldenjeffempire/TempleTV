@@ -485,9 +485,17 @@ export default function PlayerScreen() {
       playSermon(sermon, allSermons);
       setActiveSermon(sermon);
       addToHistory(sermon);
-      const domain = process.env.EXPO_PUBLIC_DOMAIN ?? "";
-      const base = domain ? `https://${domain}` : "";
-      fetch(`${base}/api/videos/${sermon.youtubeId}/view`, { method: "POST" }).catch(() => {});
+      // Guard: only ping the view-tracking endpoint when we actually have a
+      // video identifier. Without this, an empty/undefined youtubeId produces
+      // `POST /api/videos//view` (note the double slash), which the server
+      // routes to the catch-all 404 handler. Seen as recurring 404s in the
+      // production access logs and a noisy red herring during triage.
+      const youtubeId = sermon.youtubeId?.trim();
+      if (youtubeId) {
+        const domain = process.env.EXPO_PUBLIC_DOMAIN ?? "";
+        const base = domain ? `https://${domain}` : "";
+        fetch(`${base}/api/videos/${encodeURIComponent(youtubeId)}/view`, { method: "POST" }).catch(() => {});
+      }
     }
   }, []);
 

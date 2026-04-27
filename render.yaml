@@ -1,3 +1,29 @@
+# ─── Shared environment groups ────────────────────────────────────────────────
+# Render gives every service its OWN environment-variable scope. Historically
+# this meant the operator had to set the AWS credentials on the API service
+# AND mirror them onto the worker service by hand — and a single missed mirror
+# crashloops the worker (it `Refusing to start (role=worker)` because uploads
+# would otherwise land on ephemeral disk and disappear on next deploy).
+#
+# Defining `temple-tv-aws` as an environment group means the operator sets the
+# four AWS values ONCE in the "Environment Groups" page of the Render dashboard
+# and every service that lists `fromGroup: temple-tv-aws` inherits them. The
+# per-service `key: AWS_*` entries below still take precedence when set, so
+# existing dashboard values on already-deployed services are NOT disturbed by
+# adopting this group — populating the group simply removes the failure mode
+# for any future service (including the worker today).
+envVarGroups:
+  - name: temple-tv-aws
+    envVars:
+      - key: AWS_S3_BUCKET
+        sync: false
+      - key: AWS_REGION
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+
 services:
   # Bumped from `starter` (512 MB) to `standard` (2 GB). Range-streaming
   # large MP4s on the 512 MB instance was OOM-killing this process under
@@ -22,6 +48,13 @@ services:
       mountPath: /opt/render/project/src/artifacts/api-server/uploads
       sizeGB: 10
     envVars:
+      # AWS credentials inherited from the shared env-var group above. The
+      # explicit per-service `key: AWS_*` entries further down still take
+      # precedence when populated, so the currently-set dashboard values are
+      # respected; once the operator populates the group, both the API and
+      # the worker pick the values up automatically and the per-service
+      # entries can be removed in a follow-up edit.
+      - fromGroup: temple-tv-aws
       - key: NODE_ENV
         value: production
       - key: PORT
@@ -91,6 +124,13 @@ services:
     autoDeploy: true
     numInstances: 1
     envVars:
+      # AWS credentials inherited from the shared env-var group above. This
+      # is the FIX for the historical worker crashloop where the operator
+      # had set AWS_* on the API service but forgotten to mirror them onto
+      # this worker service — the runtime guard in `index.ts` would log
+      # `Refusing to start (role=worker): AWS S3 is required…` and exit 1.
+      # Populating `temple-tv-aws` once now satisfies both services.
+      - fromGroup: temple-tv-aws
       - key: NODE_ENV
         value: production
       # PORT is required by the index.ts validator only when RUN_MODE=api.

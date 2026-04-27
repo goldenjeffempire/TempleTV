@@ -39,6 +39,23 @@ app.use(requestMetrics);
 // anything that legitimately streams long. Default 30s — overridable via
 // REQUEST_TIMEOUT_MS for slow batch admin endpoints if needed.
 app.use(requestTimeout());
+// Path patterns whose responses are long-lived streams (SSE event channels).
+// Clients on these endpoints disconnect routinely — every navigation away,
+// tab close, mobile backgrounding or transient network blip terminates the
+// stream and pino-http surfaces it as `msg: "request aborted"` at INFO. In
+// production that single class of log line dominates the access log, drowns
+// out real signal during triage, and inflates log-storage cost without any
+// operational value. We demote those specific entries to DEBUG (silent at
+// the default INFO level) while still keeping every non-streaming request
+// fully logged at INFO and every server error at ERROR.
+const SSE_PATH_PATTERN = /\/events$/;
+function isSseResponse(req: { url?: string }, res: { getHeader: (k: string) => unknown }): boolean {
+  const ct = res.getHeader("Content-Type");
+  if (typeof ct === "string" && ct.includes("text/event-stream")) return true;
+  const path = (req.url ?? "/").split("?")[0];
+  return SSE_PATH_PATTERN.test(path);
+}
+
 app.use(
   pinoHttp({
     logger,
@@ -59,6 +76,20 @@ app.use(
           statusCode: res.statusCode,
         };
       },
+    },
+    customLogLevel(req, res, err) {
+      // Surface real failures loudly.
+      if (err || res.statusCode >= 500) return "error";
+      // Silently drop "request aborted" log entries for SSE streams — the
+      // abort IS the normal end-of-life for these connections and is not a
+      // signal worth carrying at INFO. Non-aborted SSE completions (rare;
+      // server-initiated close on shutdown) still log normally.
+      const aborted = (req as unknown as { aborted?: boolean }).aborted === true;
+      if (aborted && isSseResponse(req, res)) return "debug";
+      // Preserve current production behaviour for everything else: 4xx and
+      // 2xx/3xx all log at INFO, matching the existing access-log shape that
+      // downstream observability pipelines and dashboards already key off.
+      return "info";
     },
   }),
 );
