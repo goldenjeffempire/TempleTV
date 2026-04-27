@@ -13,8 +13,13 @@ catalog:
   '@tailwindcss/vite': ^4.1.14
   '@tanstack/react-query': ^5.90.21
   '@types/node': ^25.3.3
-  '@types/react': ^19.2.0
-  '@types/react-dom': ^19.2.0
+  # Pinned to ~19.1 to match the actual `react` runtime version (19.1.0)
+  # below. Letting this drift to ^19.2.x while React stays on 19.1 caused
+  # pnpm to hoist two parallel @types/react installs (catalog vs mobile's
+  # ~19.1.10), producing TS2322 "two different types with this name exist"
+  # errors in mockup-sandbox UI components.
+  '@types/react': ~19.1.10
+  '@types/react-dom': ~19.1.10
   '@vitejs/plugin-react': ^5.0.4
   class-variance-authority: ^0.7.1
   clsx: ^2.1.1
