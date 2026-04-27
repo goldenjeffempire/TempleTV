@@ -1,0 +1,68 @@
+#!/bin/sh
+# ─────────────────────────────────────────────────────────────────────────────
+#  scripts/git-hooks/pre-commit
+#
+#  Local guardrail mirroring the production deploy gate.
+#
+#  Why this exists:
+#    `pnpm run verify` (verify:codegen + monorepo typecheck) is wired into
+#    every Render service's buildCommand and into scripts/post-merge.sh.
+#    Without a pre-commit gate, a developer can still commit a change that
+#    drifts the OpenAPI spec from generated clients or breaks types in any
+#    workspace, only to have the Render build fail 5 minutes later. This
+#    hook closes that window: verify runs locally before the commit is
+#    recorded, so problems are caught at the keyboard, not in CI.
+#
+#  Why it is conditional:
+#    Most commits don't touch contract or type-bearing files (docs, asset
+#    edits, config files unrelated to the gate). Running the full verify on
+#    every commit would punish trivial changes with a 5–15 s wait. We scan
+#    the staged paths and only run verify when at least one file matches a
+#    "verify-relevant" pattern (any TS/TSX, the OpenAPI spec, generated
+#    clients, lockfile, tsconfig, package.json, or render.yaml). Anything
+#    else passes through with a single-line skip notice.
+#
+#  Activation:
+#    Activated by `git config core.hooksPath scripts/git-hooks`, which
+#    scripts/post-merge.sh now sets after every merge so any fresh clone
+#    automatically picks up the hook on first merge or first manual run of
+#    post-merge.sh. To activate immediately on a fresh clone before any
+#    merge, run that one git config line manually.
+#
+#  Bypass (escape hatch):
+#    `git commit --no-verify` skips this hook. Use only for intentional
+#    incremental commits where verify failures are expected to be fixed in
+#    a follow-up commit before pushing.
+# ─────────────────────────────────────────────────────────────────────────────
+
+set -e
+
+# Patterns that mean "this commit could affect the verify gate".
+# Anything else is allowed through without running verify.
+RELEVANT_PATTERN='\.(ts|tsx|mts|cts)$|^lib/api-spec/openapi\.yaml$|^lib/api-zod/src/generated|^lib/api-client-react/src/generated|^pnpm-lock\.yaml$|^pnpm-workspace\.yaml$|tsconfig.*\.json$|^package\.json$|/package\.json$|^render\.yaml$'
+
+STAGED=$(git diff --cached --name-only --diff-filter=ACMR)
+
+if [ -z "$STAGED" ]; then
+  exit 0
+fi
+
+if ! echo "$STAGED" | grep -Eq "$RELEVANT_PATTERN"; then
+  echo "[pre-commit] No verify-relevant files staged — skipping verify gate."
+  exit 0
+fi
+
+echo "[pre-commit] Verify-relevant files staged — running 'pnpm run verify'…"
+echo "[pre-commit] (bypass with 'git commit --no-verify' if intentional)"
+echo
+
+if ! pnpm run verify; then
+  echo
+  echo "[pre-commit] FAIL: 'pnpm run verify' did not pass. Commit aborted."
+  echo "[pre-commit] Fix the failures above, re-stage, and commit again."
+  echo "[pre-commit] To bypass intentionally: git commit --no-verify"
+  exit 1
+fi
+
+echo
+echo "[pre-commit] OK — verify passed."
