@@ -1,0 +1,19 @@
+Perform a complete end-to-end enterprise-grade audit of the entire platform architecture, infrastructure, backend systems, frontend experience, streaming pipelines, analytics systems, storage architecture, APIs, admin dashboard, media processing workflows, authentication systems, and deployment configurations to identify and resolve all existing issues, bottlenecks, vulnerabilities, inconsistencies, and operational weaknesses.
+
+Fix all bugs, runtime errors, broken workflows, synchronization failures, playback issues, upload failures, UI inconsistencies, performance bottlenecks, memory leaks, database inefficiencies, API failures, routing problems, authentication edge cases, and cross-platform compatibility issues across web, mobile, and smart TV environments.
+
+Optimize the entire broadcasting and streaming ecosystem for enterprise-grade real-world performance including low-latency streaming, adaptive playback, buffering optimization, failover handling, media synchronization, stream recovery, concurrent viewer scalability, and uninterrupted playback reliability.
+
+Review and optimize all backend services, database structures, websocket systems, caching layers, queue systems, event handling pipelines, file processing services, analytics tracking systems, and storage management architecture for maximum scalability, reliability, security, and operational efficiency under real-world high-traffic conditions.
+
+Strengthen platform security with enterprise-grade hardening including secure authentication flows, permission validation, API protection, rate limiting, session security, upload validation, encryption strategies, vulnerability mitigation, abuse prevention, and infrastructure protection mechanisms.
+
+Ensure all admin systems, analytics dashboards, broadcast management tools, upload systems, moderation controls, notification systems, scheduling systems, and monitoring tools are fully operational, accurate, responsive, and production-ready for professional operational management.
+
+Refine the entire user experience to deliver a futuristic, seamless, cinematic, ultra-responsive, and intuitive interface with optimized navigation, accessibility improvements, intelligent loading states, responsive layouts, animation consistency, and smooth interactions across all devices and screen sizes.
+
+Implement enterprise-level monitoring, logging, alerting, diagnostics, health checks, backup systems, automated recovery mechanisms, and performance monitoring tools to ensure long-term operational stability and maintainability.
+
+Conduct full production-readiness validation including stress testing, scalability testing, load testing, security audits, database optimization, concurrency validation, device compatibility testing, browser testing, smart TV testing, and deployment verification to ensure the platform is fully hardened for large-scale real-world deployment.
+
+Apply all necessary professional improvements, architectural refinements, scalability enhancements, operational optimizations, and reliability upgrades required to transform the platform into a world-class enterprise-grade broadcasting and streaming ecosystem ready for continuous real-world production usage.
