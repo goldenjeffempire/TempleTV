@@ -10,8 +10,9 @@
     "typecheck:production": "pnpm run typecheck:libs && pnpm --filter @workspace/scripts run run-typechecks",
     "verify:codegen": "pnpm --filter @workspace/api-spec run codegen && (git diff --exit-code -- lib/api-zod/src/generated lib/api-client-react/src/generated || (echo '\\n[verify:codegen] FAIL: lib/api-spec/openapi.yaml is out of sync with generated clients. Run: pnpm --filter @workspace/api-spec run codegen, then commit the changes.' >&2; exit 1))",
     "verify:catalog": "pnpm --filter @workspace/scripts run verify-catalog-lockfile-sync",
-    "verify": "pnpm run verify:codegen && pnpm run verify:catalog && pnpm run typecheck",
-    "verify:production": "pnpm run verify:codegen && pnpm run verify:catalog && pnpm run typecheck:production"
+    "verify:recharts-shim": "pnpm --filter @workspace/scripts run verify-recharts-shim",
+    "verify": "pnpm run verify:codegen && pnpm run verify:catalog && pnpm run verify:recharts-shim && pnpm run typecheck",
+    "verify:production": "pnpm run verify:codegen && pnpm run verify:catalog && pnpm run verify:recharts-shim && pnpm run typecheck:production"
   },
   "private": true,
   "engines": {
