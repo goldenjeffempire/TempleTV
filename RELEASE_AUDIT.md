@@ -788,3 +788,16 @@ had trusted the subagent verbatim.
 | Severity | Finding | Location | Notes |
 | -------- | ------- | -------- | ----- |
 | Medium | Radio "pure-live mode" produces silent iframe | `mobile/components/PersistentAudioPlayer.tsx:32` | Sets `videoId = isLive ? undefined : currentSermon?.youtubeId` and does NOT pass `channelHandle` to `YoutubePlayer`. Per `YoutubePlayer.buildEmbedUrl()` line 72-74, no `videoId` and no `channelHandle` → empty `src=""`. When the user is in radio context with no sermon and a live broadcast becomes active, the persistent audio surface produces no audio. Need to read `PlayerContext` + radio screen to determine intended behavior (suppress in pure-live? thread the live videoId through?) before patching. **Not user-reported broken** — likely the early-return at line 29 should be tightened to `if (!currentSermon) return null;` if pure-live audio is meant to come from `/player` only. Defer until verified against PlayerContext semantics. |
+
+## §16 — Radio pure-live silent-iframe fix (Apr 27)
+
+**Real bug, verified by reading PlayerContext + LiveBroadcastSupervisor + radio.tsx + both YoutubePlayer variants.** `PersistentAudioPlayer.tsx:32` set `videoId = isLive ? undefined : currentSermon?.youtubeId` for the case `isLive=true && currentSermon=null`. Behavior diverged silently by platform:
+
+- **Web** (`YoutubePlayer.tsx:91`): default prop `channelHandle = "templetvjctm"` accidentally produced a valid `user_uploads` channel-live embed → live audio played. This was an undesigned side-effect of a default value.
+- **Native** (`YoutubePlayer.native.tsx:414`): the gate `if (Platform.OS !== "web" && YoutubeIframe && activeVideoId && !playerError)` requires `activeVideoId` — without it, the YoutubeIframe never rendered. Silent.
+
+The "right" architectural answer was already encoded everywhere else: `playLive()` in `PlayerContext.tsx:260` deliberately does NOT store a videoId (because PlayerContext doesn't track which live stream is airing — `checkLiveStatus()` does that), and `LiveBroadcastSupervisor.tsx:52-56` always navigates to `/player` immediately after calling `playLive()`. **Live broadcasts are owned exclusively by the `/player` route.** The only path to the silent-iframe state was: live detected → user navigated AWAY from `/player` without picking a sermon → PersistentAudioPlayer mounted in a state nobody designed for.
+
+**Fix:** `PersistentAudioPlayer.tsx` early-return tightened from `if (!currentSermon && !isLive) return null;` to `if (!currentSermon) return null;`. Pure-live mode never mounts this surface. Web/native behavior is now consistent and matches architectural intent. `isLive` removed from the destructure (now unused). The YoutubePlayer's `isLive` prop is hard-coded `false` (PersistentAudioPlayer is sermons-only by contract).
+
+**Trade-off accepted:** web users who navigate away from `/player` during a live stream no longer get an ambient channel embed in the background. This was never a designed feature — it was an accidental rescue from a default prop value, and it produced a different (silent) experience on native. Consistent-and-explicit beats accidentally-different. If background live audio is wanted as a real feature later, the right path is to pipe the live videoId through PlayerContext, not rely on default-prop coincidence.

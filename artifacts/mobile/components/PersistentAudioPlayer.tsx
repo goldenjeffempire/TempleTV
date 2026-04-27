@@ -19,17 +19,31 @@ import { usePlayer } from "@/context/PlayerContext";
  */
 export function PersistentAudioPlayer() {
   const pathname = usePathname();
-  const { currentSermon, isLive, isPlaying, advanceToNext } = usePlayer();
+  const { currentSermon, isPlaying, advanceToNext } = usePlayer();
 
   // The visible /player route owns its own YoutubePlayer; don't double-mount.
   const onVisibleRoute =
     pathname?.startsWith("/player") === true || pathname === "/login" || pathname === "/signup";
 
   // Nothing to play — don't render the iframe at all.
-  if (!currentSermon && !isLive) return null;
+  //
+  // Pure-live mode (`isLive=true, currentSermon=null`) is intentionally NOT
+  // handled here. Live broadcasts are owned exclusively by the `/player`
+  // route — `LiveBroadcastSupervisor` always navigates there after calling
+  // `playLive()`, and `PlayerContext` never stores the live videoId. If the
+  // user then navigated AWAY from `/player` while still in pure-live state,
+  // this surface used to mount a YoutubePlayer with `videoId=undefined`,
+  // which on native (YoutubePlayer.native.tsx:414 requires `activeVideoId`)
+  // rendered nothing at all, and on web only "worked" by coincidence — the
+  // YoutubePlayer's default `channelHandle` prop accidentally produced a
+  // channel-live embed. The cross-platform inconsistency was the actual
+  // bug. PersistentAudioPlayer is the persistent SERMON (VOD) background-
+  // audio surface; live audio is the `/player` surface's job. Consistent
+  // and explicit beats accidentally-different.
+  if (!currentSermon) return null;
   if (onVisibleRoute) return null;
 
-  const videoId = isLive ? undefined : currentSermon?.youtubeId;
+  const videoId = currentSermon.youtubeId;
 
   // Position offscreen rather than 0×0 — YouTube iframes need real dimensions
   // to initialize playback reliably across browsers.
@@ -62,11 +76,11 @@ export function PersistentAudioPlayer() {
     >
       <YoutubePlayer
         videoId={videoId}
-        isLive={isLive}
+        isLive={false}
         autoPlay={isPlaying}
-        title={currentSermon?.title}
-        preacher={currentSermon?.preacher}
-        thumbnailUrl={currentSermon?.thumbnailUrl}
+        title={currentSermon.title}
+        preacher={currentSermon.preacher}
+        thumbnailUrl={currentSermon.thumbnailUrl}
         playerHeight={Platform.OS === "web" ? 180 : 1}
         onEnd={advanceToNext}
       />
