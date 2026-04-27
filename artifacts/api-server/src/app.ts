@@ -135,6 +135,12 @@ app.use(cors({
     callback(new Error("Origin is not allowed by CORS"));
   },
   credentials: true,
+  // Cache CORS preflights for 24h so the browser stops sending an OPTIONS
+  // request before EVERY state-changing /api/admin/* call. Without this,
+  // production access logs show one OPTIONS line per real request and the
+  // admin dashboard pays a full extra round-trip on every save. 86400s is
+  // the highest value Chrome honours; Firefox caps at 24h too.
+  maxAge: 86400,
 }));
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: "2mb" }));

@@ -65,6 +65,24 @@ function logInfrastructureStatus(): StartupGateVerdict {
   const s3Configured = isS3Configured();
   const redisConfigured = Boolean(process.env.REDIS_URL?.trim());
 
+  // The Replit object-storage shim (`PUBLIC_OBJECT_SEARCH_PATHS`,
+  // `PRIVATE_OBJECT_DIR`) is an OPTIONAL alternative storage backend used
+  // only on Replit deployments. When AWS S3 is wired up directly (the
+  // production path on Render), the shim is intentionally not configured —
+  // logging "not set" for these in production was misleading operators into
+  // thinking object storage was misconfigured. We now report the shim
+  // explicitly as `disabled (direct AWS S3 active)` when S3 is configured.
+  const shimConfigured =
+    Boolean(process.env.PUBLIC_OBJECT_SEARCH_PATHS?.trim()) ||
+    Boolean(process.env.PRIVATE_OBJECT_DIR?.trim());
+  const shimStatus = s3Configured
+    ? shimConfigured
+      ? "configured (overrides direct AWS S3)"
+      : "disabled (direct AWS S3 active)"
+    : shimConfigured
+      ? "configured"
+      : "not configured";
+
   logger.info(
     {
       objectStorage: {
@@ -74,8 +92,7 @@ function logInfrastructureStatus(): StartupGateVerdict {
           ? AWS_S3_BUCKET
           : "not set — uploads will use local FS only",
         region: s3Configured ? AWS_REGION : "not set",
-        publicPaths: process.env.PUBLIC_OBJECT_SEARCH_PATHS ?? "not set",
-        privateDir: process.env.PRIVATE_OBJECT_DIR ?? "not set",
+        replitShim: shimStatus,
       },
       distributedCache: {
         redis: redisConfigured ? "configured" : "not configured",
@@ -184,7 +201,7 @@ function startTranscoderRole() {
     });
 }
 
-function startApiSchedulers() {
+async function startApiSchedulers() {
   startNotificationScheduler();
   startLiveOverrideScheduler();
   startSSEHeartbeat();
@@ -208,6 +225,26 @@ function startApiSchedulers() {
       "s3MirrorReconciler: pass crashed",
     );
   });
+
+  // Pre-warm the broadcast snapshot BEFORE flipping health to ready, so the
+  // first viewer after a deploy never sees the ~1s cold-build path observed
+  // in production logs (994ms responseTime on a freshly-rotated instance).
+  // The build path resolves in <50ms once PG warm-ups finish, and bounding
+  // the warm-up at 3s prevents a slow DB from delaying readiness indefinitely
+  // — a slow PG also surfaces immediately via the health probe rather than
+  // hiding behind a slow first request.
+  try {
+    const { buildBroadcastCurrentPayload } = await import("./routes/broadcast");
+    await Promise.race([
+      buildBroadcastCurrentPayload(true),
+      new Promise((resolve) => setTimeout(resolve, 3_000)),
+    ]);
+  } catch (err) {
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Broadcast pre-warm failed — first /broadcast/current may be slow",
+    );
+  }
 
   // All schedulers armed and the HTTP server is already listening at this
   // point — flip /healthz from `starting` (503) to `ok` (200) so load
@@ -240,7 +277,15 @@ if (RUNS_API) {
     // For the API role the gate either passes or hard-exits — we never reach
     // here in the degraded-standby branch because that branch is worker-only.
     if (verdict.kind !== "ok") return;
-    startApiSchedulers();
+    // Fire-and-forget: schedulers start synchronously, the awaited section
+    // (broadcast pre-warm) runs in the background. `markReady()` inside
+    // awaits the warm-up so /healthz only flips to 200 once we're hot.
+    startApiSchedulers().catch((err) => {
+      logger.error(
+        { err: err instanceof Error ? err.message : String(err) },
+        "startApiSchedulers crashed",
+      );
+    });
     if (RUNS_WORKER) {
       startTranscoderRole();
     }

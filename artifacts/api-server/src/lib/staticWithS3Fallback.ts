@@ -119,6 +119,20 @@ function parseRangeHeader(
 export function s3FallbackMiddleware(opts: FallbackOptions): express.RequestHandler {
   const { s3Prefix, localDir, redirectFromS3 } = opts;
 
+  // Per-key signed-URL cache for the redirect path. Without this we re-presign
+  // on every HTTP Range request (an HTML5 <video> element issues many of those
+  // per second), which both wastes CPU and makes /api/uploads/<file>.mp4 hot
+  // in the API access log even though the bytes never traverse Node. The URL
+  // is range-agnostic and was already a public asset, so sharing across
+  // viewers is safe. TTL is half the signed URL lifetime so a cached redirect
+  // can never outlive its underlying signature.
+  const signedUrlCache = redirectFromS3
+    ? new Map<string, { url: string; expiresAt: number }>()
+    : null;
+  const SIGNED_URL_CACHE_TTL_MS = redirectFromS3
+    ? Math.max(60_000, Math.floor(redirectFromS3.signedUrlTtlSec * 1000 / 2))
+    : 0;
+
   return async function s3Fallback(req, res, next) {
     if (req.method !== "GET" && req.method !== "HEAD") {
       return next();
@@ -179,8 +193,32 @@ export function s3FallbackMiddleware(opts: FallbackOptions): express.RequestHand
     // under parallel range traffic. The signed URL TTL is short; clients that
     // hold open sessions will request a fresh redirect when the URL expires.
     if (redirectFromS3) {
-      try {
-        const signedUrl = await getSignedGetUrl(key, redirectFromS3.signedUrlTtlSec);
+      const nowMs = Date.now();
+      let signedUrl: string | null = null;
+      let cacheSource: "fresh" | "cached" = "fresh";
+      const cachedSigned = signedUrlCache?.get(key);
+      if (cachedSigned && cachedSigned.expiresAt > nowMs) {
+        signedUrl = cachedSigned.url;
+        cacheSource = "cached";
+      } else {
+        if (cachedSigned) signedUrlCache?.delete(key);
+        try {
+          signedUrl = await getSignedGetUrl(key, redirectFromS3.signedUrlTtlSec);
+          signedUrlCache?.set(key, {
+            url: signedUrl,
+            expiresAt: nowMs + SIGNED_URL_CACHE_TTL_MS,
+          });
+        } catch (err) {
+          logger.error(
+            { err: err instanceof Error ? err.message : String(err), key },
+            "S3 fallback: presign failed — falling back to streaming",
+          );
+          signedUrl = null;
+          // Fall through to the streaming path so the request still succeeds
+          // even if the presigner momentarily fails.
+        }
+      }
+      if (signedUrl) {
         // Cache the redirect for less than the signed URL lifetime so a stale
         // cached redirect can never outlive the underlying URL signature.
         //
@@ -194,16 +232,9 @@ export function s3FallbackMiddleware(opts: FallbackOptions): express.RequestHand
         // (the underlying /api/uploads/<uuid> URL was already public).
         const maxAge = Math.max(60, Math.floor(redirectFromS3.signedUrlTtlSec / 2));
         res.setHeader("Cache-Control", `public, max-age=${maxAge}`);
-        res.setHeader("X-Storage-Source", "s3-redirect");
+        res.setHeader("X-Storage-Source", `s3-redirect;${cacheSource}`);
         res.redirect(302, signedUrl);
         return;
-      } catch (err) {
-        logger.error(
-          { err: err instanceof Error ? err.message : String(err), key },
-          "S3 fallback: presign failed — falling back to streaming",
-        );
-        // Fall through to the streaming path so the request still succeeds
-        // even if the presigner momentarily fails.
       }
     }
 

@@ -57,6 +57,11 @@ interface HeadErrorEntry {
   loggedAt: number;
 }
 
+interface SignedUrlCacheEntry {
+  url: string;
+  expiresAt: number;
+}
+
 export function s3RedirectFirstForLargeMedia(
   opts: S3RedirectFirstOptions,
 ): express.RequestHandler {
@@ -77,6 +82,17 @@ export function s3RedirectFirstForLargeMedia(
   const HEAD_ERROR_TTL_MS = 60 * 1000;
   const HEAD_ERROR_LOG_INTERVAL_MS = 5 * 60 * 1000;
   const headErrors = new Map<string, HeadErrorEntry>();
+
+  // Per-key signed-URL cache. The presigned URL is range-agnostic and
+  // single-tenant safe (the underlying /api/uploads/<uuid> URL was already
+  // public), so every viewer of a hot file can share the same redirect.
+  // Without this cache the API process re-presigned on EVERY HTTP Range
+  // request — and an HTML5 <video> element issues range requests every few
+  // seconds even on a single open viewer (observed: same MP4 hit every ~5s
+  // in production logs). Caching for half the URL TTL guarantees a stale
+  // cached redirect can never outlive its underlying signature.
+  const signedUrlCache = new Map<string, SignedUrlCacheEntry>();
+  const SIGNED_URL_CACHE_TTL_MS = Math.max(60_000, Math.floor(signedUrlTtlSec * 1000 / 2));
 
   return async function s3RedirectFirst(req, res, next) {
     if (req.method !== "GET" && req.method !== "HEAD") return next();
@@ -150,25 +166,39 @@ export function s3RedirectFirstForLargeMedia(
       return next();
     }
 
-    // ── Mint the presigned URL and 302 ──────────────────────────────────────
-    try {
-      const signedUrl = await getSignedGetUrl(key, signedUrlTtlSec);
-      // Cache the redirect for less than the signed URL lifetime so a stale
-      // cached redirect can never outlive its underlying signature. `public`
-      // (not `private`) is intentional: it lets a CDN edge cache the redirect
-      // lookup itself so subsequent viewers of the same asset never round-
-      // trip the API process at all.
-      const maxAge = Math.max(60, Math.floor(signedUrlTtlSec / 2));
-      res.setHeader("Cache-Control", `public, max-age=${maxAge}`);
-      res.setHeader("X-Storage-Source", "s3-redirect-first");
-      res.redirect(302, signedUrl);
-      return;
-    } catch (err) {
-      logger.error(
-        { err: err instanceof Error ? err.message : String(err), key },
-        "s3RedirectFirst: presign failed — falling through",
-      );
-      return next();
+    // ── Mint (or reuse) the presigned URL and 302 ──────────────────────────
+    let signedUrl: string;
+    let cacheSource: "fresh" | "cached" = "fresh";
+    const cachedSigned = signedUrlCache.get(key);
+    if (cachedSigned && cachedSigned.expiresAt > now) {
+      signedUrl = cachedSigned.url;
+      cacheSource = "cached";
+    } else {
+      if (cachedSigned) signedUrlCache.delete(key);
+      try {
+        signedUrl = await getSignedGetUrl(key, signedUrlTtlSec);
+        signedUrlCache.set(key, {
+          url: signedUrl,
+          expiresAt: now + SIGNED_URL_CACHE_TTL_MS,
+        });
+      } catch (err) {
+        logger.error(
+          { err: err instanceof Error ? err.message : String(err), key },
+          "s3RedirectFirst: presign failed — falling through",
+        );
+        return next();
+      }
     }
+
+    // Cache the redirect for less than the signed URL lifetime so a stale
+    // cached redirect can never outlive its underlying signature. `public`
+    // (not `private`) is intentional: it lets a CDN edge cache the redirect
+    // lookup itself so subsequent viewers of the same asset never round-
+    // trip the API process at all.
+    const maxAge = Math.max(60, Math.floor(signedUrlTtlSec / 2));
+    res.setHeader("Cache-Control", `public, max-age=${maxAge}`);
+    res.setHeader("X-Storage-Source", `s3-redirect-first;${cacheSource}`);
+    res.redirect(302, signedUrl);
+    return;
   };
 }
