@@ -21,6 +21,7 @@ import { usePlayer } from "@/context/PlayerContext";
 import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
 import {
   checkBroadcastCurrent,
+  normalizeBroadcastResult,
   subscribeBroadcastEvents,
   type BroadcastCurrentResult,
 } from "@/services/broadcast";
@@ -150,7 +151,35 @@ export default function RadioScreen() {
     const sub = subscribeBroadcastEvents({
       "broadcast-current-updated": (payload) => {
         if (cancelled) return;
-        // SSE gives us a full snapshot on update — re-fetch for latest
+        // The server attaches the full BroadcastCurrentPayload under
+        // `payload.current` on every `broadcast-current-updated` push
+        // (verified at routes/broadcast.ts: connect, item-transition,
+        // pre-warm transition-imminent, cache-invalidate; admin.ts
+        // invalidate-push). Promoting it directly is what the TV Hero,
+        // mobile landing hero, and mobile player already do — only this
+        // radio handler still re-fetched, costing one redundant
+        // `/broadcast/current` round trip per radio listener per queue
+        // transition or admin event. With many concurrent radio listeners
+        // that load adds up — and on the cold-build path, each refetch
+        // could cost up to ~70 ms (post the morning's setBackground +
+        // single-flight fix) before falling back to the warm cache.
+        //
+        // `normalizeBroadcastResult` resolves any relative localVideoUrl /
+        // thumbnailUrl paths against the API base — required because the
+        // raw SSE payload bypasses `checkBroadcastCurrent`'s normalization
+        // step, and a relative URL fed straight into the disc-image
+        // <Image source> would 404 on native (no origin context). The
+        // helper is a no-op for already-absolute URLs.
+        //
+        // Falls back to fetch only when the SSE payload is absent or
+        // missing `.current` — preserves correctness against any future
+        // server change that emits a "current-changed-but-payload-omitted"
+        // signal (e.g., a scoped delta channel).
+        if (payload?.current) {
+          applyBroadcastResult(normalizeBroadcastResult(payload.current as BroadcastCurrentResult));
+          setBroadcastConnected(true);
+          return;
+        }
         fetchCurrent();
       },
       "status": () => {

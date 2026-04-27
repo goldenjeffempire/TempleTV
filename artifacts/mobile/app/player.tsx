@@ -35,7 +35,7 @@ import { usePlayer, usePlayerProgress } from "@/context/PlayerContext";
 import { useAuth } from "@/context/AuthContext";
 import { SERMONS } from "@/data/sermons";
 import { useYouTubeChannel } from "@/hooks/useYouTubeChannel";
-import { checkBroadcastCurrent, subscribeBroadcastEvents, type BroadcastCurrentResult, type ReactionType } from "@/services/broadcast";
+import { checkBroadcastCurrent, normalizeBroadcastResult, subscribeBroadcastEvents, type BroadcastCurrentResult, type ReactionType } from "@/services/broadcast";
 import { reportLiveFailure, useLiveFailureFor } from "@/services/liveFailureSignal";
 import { BROADCAST_TITLE, BROADCAST_PREACHER } from "@/lib/broadcastIdentity";
 import { ChannelBug } from "@/components/ChannelBug";
@@ -635,7 +635,15 @@ export default function PlayerScreen() {
   useEffect(() => {
     if (!isBroadcastMode) return;
     const handleBroadcastUpdate = async (payload?: any) => {
-      const bc = (payload?.current as BroadcastCurrentResult | undefined) ?? await checkBroadcastCurrent().catch(() => null);
+      // Normalize the SSE payload's relative URLs against the API base —
+      // the raw payload bypasses `checkBroadcastCurrent`'s normalization,
+      // and on native an un-normalized localVideoUrl fed into the player's
+      // <Video> source would 404 (no origin context for relative paths).
+      // Idempotent for already-absolute URLs. The HTTP-fetch fallback is
+      // already normalized by `checkBroadcastCurrent`, so a single
+      // post-resolve normalize covers both branches uniformly.
+      const raw = (payload?.current as BroadcastCurrentResult | undefined) ?? await checkBroadcastCurrent().catch(() => null);
+      const bc = payload?.current ? normalizeBroadcastResult(raw) : raw;
       if (!bc || !isMountedRef.current) return;
       setBroadcastInfo(bc);
       if (bc.item) {
@@ -710,9 +718,15 @@ export default function PlayerScreen() {
     };
 
     const handler = async (payload?: any) => {
-      const bc =
+      // Same normalization rationale as the broadcast-update handler
+      // above — the live re-tune path also reads `current.liveOverride`
+      // (which has no URL field today, but `applyOverride` could grow
+      // one), and consistency with the other SSE consumer keeps any
+      // future field addition automatically safe.
+      const raw =
         (payload?.current as BroadcastCurrentResult | undefined) ??
         (await checkBroadcastCurrent().catch(() => null));
+      const bc = payload?.current ? normalizeBroadcastResult(raw) : raw;
       if (!bc || !isMountedRef.current) return;
       applyOverride(bc);
     };

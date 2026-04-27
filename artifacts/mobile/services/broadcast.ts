@@ -129,6 +129,39 @@ export async function fetchBroadcastGuide(): Promise<BroadcastGuideResult | null
   }
 }
 
+/**
+ * Normalize a raw `BroadcastCurrentResult` payload — converting any relative
+ * `localVideoUrl` / `thumbnailUrl` paths into absolute URLs against the API
+ * base. Idempotent: passing already-absolute URLs is a no-op.
+ *
+ * Extracted from `checkBroadcastCurrent` so SSE consumers (which receive
+ * the same payload shape under `event.data.current`) can apply the same
+ * normalization without paying for a second HTTP round trip. Without this,
+ * SSE consumers that fed the payload straight into an <Image source> would
+ * render broken thumbnails on native (where relative URLs have no origin
+ * context to resolve against), even though the same payload from the
+ * `/broadcast/current` REST endpoint rendered correctly.
+ *
+ * Returns null only when `apiBase` is unset (offline / unconfigured) — the
+ * payload itself is never rejected because that would silently strand a
+ * radio listener on stale broadcast state when the SSE channel is healthy.
+ */
+export function normalizeBroadcastResult(
+  data: BroadcastCurrentResult | null | undefined,
+): BroadcastCurrentResult | null {
+  if (!data) return null;
+  const apiBase = getApiBase();
+  if (!apiBase) return data;
+  return {
+    ...data,
+    item: normalizeItem(data.item, apiBase),
+    nextItem: normalizeItem(data.nextItem, apiBase),
+    upcomingItems: (data.upcomingItems ?? [])
+      .map((it) => normalizeItem(it, apiBase))
+      .filter((it): it is BroadcastItem => it !== null),
+  };
+}
+
 export async function checkBroadcastCurrent(): Promise<BroadcastCurrentResult | null> {
   const apiBase = getApiBase();
   if (!apiBase) return null;
@@ -138,14 +171,7 @@ export async function checkBroadcastCurrent(): Promise<BroadcastCurrentResult | 
     });
     if (!res.ok) return null;
     const data = (await res.json()) as BroadcastCurrentResult;
-    return {
-      ...data,
-      item: normalizeItem(data.item, apiBase),
-      nextItem: normalizeItem(data.nextItem, apiBase),
-      upcomingItems: (data.upcomingItems ?? [])
-        .map((it) => normalizeItem(it, apiBase))
-        .filter((it): it is BroadcastItem => it !== null),
-    };
+    return normalizeBroadcastResult(data);
   } catch {
     return null;
   }

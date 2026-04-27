@@ -33,7 +33,7 @@ import { usePlayer } from "@/context/PlayerContext";
 import { checkLiveStatus, type LiveCheckResult } from "@/services/youtube";
 import { sendLiveServiceNotification } from "@/services/notifications";
 import { useWatchProgress } from "@/hooks/useWatchProgress";
-import { checkBroadcastCurrent, subscribeBroadcastEvents, type BroadcastCurrentResult } from "@/services/broadcast";
+import { checkBroadcastCurrent, normalizeBroadcastResult, subscribeBroadcastEvents, type BroadcastCurrentResult } from "@/services/broadcast";
 import { readLastBroadcast, writeLastBroadcast } from "@/services/lastBroadcastCache";
 import { reportLiveFailure, useLiveFailureFor, useLiveFallbackJustTriggered } from "@/services/liveFailureSignal";
 import { useLiveCountdown } from "@/services/liveCountdown";
@@ -235,10 +235,22 @@ export default function WatchScreen() {
 
     const refreshBroadcast = async (payload?: any) => {
       if (payload?.current) {
-        setBroadcastCurrent(payload.current);
-        writeLastBroadcast(payload.current);
-        applyOverrideFromBroadcast(payload.current);
-        return;
+        // Normalize relative localVideoUrl / thumbnailUrl paths against the
+        // API base before writing to state. The raw SSE payload bypasses
+        // `checkBroadcastCurrent`'s normalization, and on native a relative
+        // URL fed into the cinematic hero's blurred-backdrop <Image> (or
+        // the expo-av <Video> source) would 404 silently. Idempotent for
+        // already-absolute URLs (e.g., YouTube CDN thumbnails). This makes
+        // the hero's image layer reflect the new broadcast item the same
+        // way the metadata text already does — within ~1 SSE roundtrip,
+        // no extra HTTP fetch.
+        const next = normalizeBroadcastResult(payload.current as BroadcastCurrentResult);
+        if (next) {
+          setBroadcastCurrent(next);
+          writeLastBroadcast(next);
+          applyOverrideFromBroadcast(next);
+          return;
+        }
       }
       const latest = await checkBroadcastCurrent().catch(() => null);
       if (latest) {
