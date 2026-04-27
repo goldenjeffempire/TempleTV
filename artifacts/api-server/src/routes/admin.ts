@@ -30,7 +30,7 @@ import {
   getYouTubeQuotaHistory,
   getYouTubeThrottleStatus,
 } from "./youtube";
-import { emitBroadcastState } from "./broadcast";
+import { emitBroadcastState, buildBroadcastCurrentPayload } from "./broadcast";
 import { buildLiveStatusPayload, getActiveLiveOverride } from "../lib/liveStatus";
 import { getFailureStats } from "../lib/liveFailureReports";
 import { extractYouTubeVideoId, validateYouTubeLiveStream } from "../lib/youtubeUrl";
@@ -359,6 +359,30 @@ const BROADCAST_CACHE_KEYS = ["broadcast:live_override", "broadcast:schedule_ent
 
 async function invalidateBroadcastCache(): Promise<void> {
   await Promise.all(BROADCAST_CACHE_KEYS.map((key) => cache.del(key)));
+  // After clearing the cache, push a fresh broadcast payload to all SSE
+  // subscribers so the cinematic hero (TV LiveHero, mobile WatchScreen)
+  // reflects the change in <300 ms instead of waiting up to 10 s for the
+  // client-side fallback poll. Without this push, `useLiveSync` (which
+  // ONLY listens for `broadcast-current-updated`) stays stale until the
+  // broadcast transition ticker happens to fire — and the ticker only
+  // fires when the current queue item ENDS (could be hours away). Every
+  // admin route that mutates broadcast state already calls this helper,
+  // so a single change here covers all 11 call sites — video CRUD, live-
+  // override start/stop/extend/patch, schedule changes — uniformly.
+  //
+  // Best-effort: a payload-build failure (DB outage, schema drift) must
+  // never bubble out and break the admin route — the cache invalidation
+  // itself succeeded, so clients will eventually catch up via the 10 s
+  // fallback poll. Logging surfaces the regression in Mission Control.
+  try {
+    const current = await buildBroadcastCurrentPayload(true);
+    broadcastLiveEvent("broadcast-current-updated", { current });
+  } catch (err) {
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "broadcast SSE push after invalidate failed — clients will catch up via fallback poll",
+    );
+  }
 }
 
 function parseDurationSecs(value: string | null | undefined): number {

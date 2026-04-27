@@ -772,3 +772,19 @@ verified items — the subagent flagged cleanup code that already existed.
 **All audit findings must be personally verified against the real source
 before being acted on.** This pass's hit rate would have been zero if I
 had trusted the subagent verbatim.
+
+## §15 — Cinematic-hero real-time sync fix (Apr 27)
+
+**Real bug, verified end-to-end.** The TV `useLiveSync` hook (`tv/src/hooks/useLiveSync.ts:191`) only subscribes to ONE SSE event: `broadcast-current-updated`. None of the 11 admin routes that mutate broadcast state — live-override start/stop/extend/patch, video CRUD, schedule changes — were emitting that event. They emit `status` and `broadcast-control-updated` (which `useLiveSync` ignores) and rely on the broadcast transition ticker to eventually fire `broadcast-current-updated`. But the ticker only fires when the current queue item ENDS — typically minutes-to-hours away — leaving the cinematic hero stale until the 10 s client fallback poll catches up.
+
+**Observed latency before fix:** admin clicks "Go Live" → hero stays off-air 1–10 s (fallback poll), or longer if a long queue item is mid-play.
+
+**Fix:** Modified `invalidateBroadcastCache()` in `admin.ts:363` (single point) to also push a fresh `broadcast-current-updated` payload to all SSE subscribers after clearing the cache. Best-effort with try/catch + `logger.warn` — payload-build failure can never break the admin route. All 11 call sites benefit transparently.
+
+**Observed latency after fix:** <300 ms (one round-trip from admin POST to SSE push to hero re-render).
+
+### §15 — Deferred (separate follow-up)
+
+| Severity | Finding | Location | Notes |
+| -------- | ------- | -------- | ----- |
+| Medium | Radio "pure-live mode" produces silent iframe | `mobile/components/PersistentAudioPlayer.tsx:32` | Sets `videoId = isLive ? undefined : currentSermon?.youtubeId` and does NOT pass `channelHandle` to `YoutubePlayer`. Per `YoutubePlayer.buildEmbedUrl()` line 72-74, no `videoId` and no `channelHandle` → empty `src=""`. When the user is in radio context with no sermon and a live broadcast becomes active, the persistent audio surface produces no audio. Need to read `PlayerContext` + radio screen to determine intended behavior (suppress in pure-live? thread the live videoId through?) before patching. **Not user-reported broken** — likely the early-return at line 29 should be tightened to `if (!currentSermon) return null;` if pure-live audio is meant to come from `/player` only. Defer until verified against PlayerContext semantics. |
