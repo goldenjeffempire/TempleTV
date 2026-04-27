@@ -523,6 +523,66 @@ export const processApi = {
     adminGet<ProcessStatus>("/admin/process-status", signal),
 };
 
+// ── Render deploy health ────────────────────────────────────────────────────
+// Mirrors the response shape of GET /api/admin/render-deploy-health (see
+// api-server/src/routes/admin.ts). Used by the Mission Control panel to
+// surface API + worker liveness, recent fatal log lines, and Render deploy
+// metadata so operators don't have to open Render Logs to spot a crashloop.
+export interface RenderDeployHealth {
+  api: {
+    runMode: string;
+    pid: number;
+    lifecycle: {
+      phase: "starting" | "ready" | "draining";
+      startedAt: string;
+      readyAt: string | null;
+      drainingAt: string | null;
+      uptimeSec: number;
+    };
+    healthzStatus: 200 | 503;
+    rssMb: number;
+    nodeVersion: string;
+  };
+  worker: {
+    probeKind: "heartbeat";
+    alive: boolean;
+    sameProcess: boolean;
+    heartbeat:
+      | {
+          pid: number;
+          ageSec: number;
+          runMode: string;
+          nodeVersion: string;
+          rssMb: number;
+        }
+      | null;
+  };
+  fatals: Array<{
+    ts: string;
+    ageSec: number;
+    role: string;
+    pid: number;
+    msg: string;
+    err: string | null;
+    stack: string | null;
+  }>;
+  deploy: {
+    commit: string | null;
+    commitShort: string | null;
+    branch: string | null;
+    serviceName: string | null;
+    serviceId: string | null;
+    instanceId: string | null;
+    nodeEnv: string;
+  };
+  sentry: { configured: boolean };
+}
+
+export const renderDeployHealthApi = {
+  get: (signal?: AbortSignal) =>
+    adminGet<RenderDeployHealth>("/admin/render-deploy-health", signal),
+};
+
 export interface LiveMonitorData {
   current: {
     isLive: boolean;

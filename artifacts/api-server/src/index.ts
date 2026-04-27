@@ -18,6 +18,7 @@ import { cache } from "./lib/cache";
 import { AWS_REGION, AWS_S3_BUCKET, isS3Configured } from "./lib/s3Storage";
 import { runS3MirrorReconciliation } from "./lib/s3MirrorReconciler";
 import { markDraining, markReady } from "./lib/lifecycle";
+import { installFatalAppender } from "./lib/fatalLogBuffer";
 
 const REQUIRED_ENV_VARS = ["DATABASE_URL", "JWT_SECRET"] as const;
 
@@ -45,6 +46,14 @@ logger.info(
   { runMode: RUN_MODE, runsApi: RUNS_API, runsWorker: RUNS_WORKER },
   "Process role resolved",
 );
+
+// Install the fatal-log circular buffer side-effect on `logger.fatal(...)`
+// BEFORE any production-safety gates (e.g. S3 config) can fire one. Cache
+// may not be fully ready yet — the appender swallows errors so that's safe;
+// it just means the very-first fatal during cold boot may not be persisted
+// (acceptable: those crash the process immediately and are visible in
+// stdout/Sentry anyway, the buffer's purpose is recurring crashloops).
+installFatalAppender();
 
 function logInfrastructureStatus() {
   const s3Configured = isS3Configured();

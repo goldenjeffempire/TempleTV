@@ -58,6 +58,7 @@ import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
 import { cn } from "@/lib/utils";
 import { adminGet, transcodingApi, type TranscodingQueue } from "@/services/adminApi";
+import { RenderDeployHealthPanel } from "@/components/RenderDeployHealthPanel";
 
 const QUICK_LINKS = [
   { href: "/live-control", label: "Live Control", icon: Signal, desc: "Start or stop a broadcast" },
@@ -412,6 +413,12 @@ export default function Dashboard() {
           onRetry={() => refetchStats()}
         />
       )}
+
+      {/* Render deploy health — API + worker liveness + recent fatals,
+          so crashloops surface here instead of requiring the operator to
+          open the Render dashboard. Pinned at the top of Mission Control
+          deliberately: header turns amber/red when something's wrong. */}
+      <RenderDeployHealthPanel />
 
       {/* Top row: ON AIR hero + Today's strip */}
       <div className="grid gap-4 lg:grid-cols-3">

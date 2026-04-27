@@ -11,6 +11,8 @@ import {
 import { getVapidPublicKey, sendWebPushNotifications } from "../services/web-push";
 import { eq, ilike, or, count, sql, desc, asc, and, lte, gte, inArray, isNotNull } from "drizzle-orm";
 import { queueTranscodingJob, retryTranscodingJob, TRANSCODER_HEARTBEAT_KEY } from "../lib/transcoder";
+import { readAllRoleFatals } from "../lib/fatalLogBuffer";
+import { getLifecycleState } from "../lib/lifecycle";
 import { isFfmpegReady } from "../lib/ffmpeg";
 import { broadcastLiveEvent, addSSEClient, removeSSEClient, getSSEClientCount, SSECapacityError } from "../lib/liveEvents";
 import { getClientIp } from "../middlewares/security";
@@ -4575,6 +4577,114 @@ router.get("/admin/process-status", async (_req, res) => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     logger.error({ err }, "process-status failed");
+    res.status(500).json({ error: msg });
+  }
+});
+
+// ── Render deploy health ─────────────────────────────────────────────────────
+// Mission Control needs a single panel that answers "is my deploy healthy?"
+// without anyone having to open the Render dashboard. This endpoint combines:
+//
+//   1. THIS process's /healthz state (lifecycle phase: starting/ready/draining)
+//      — same source of truth /healthz uses, so the panel and the LB agree.
+//   2. The worker's effective /healthz (heartbeat freshness from the shared
+//      cache). On Render the worker is a Background Worker with NO HTTP, so
+//      pinging a literal /healthz from another service isn't possible — the
+//      heartbeat IS the worker's liveness signal. We frame it as such in UI.
+//   3. Recent fatal log lines from BOTH roles (api + worker + all), pulled
+//      from the per-role circular buffers in cache. This is the headline
+//      feature: when the worker crashloops, the fatal line surfaces here
+//      instead of requiring an operator to open Render → Logs → Worker.
+//   4. Render deploy metadata (commit SHA, service name, instance id) so
+//      the operator can correlate "this fatal happened on THIS deploy."
+router.get("/admin/render-deploy-health", async (_req, res) => {
+  try {
+    const runMode = (process.env.RUN_MODE ?? "all").toLowerCase();
+    const memUsage = process.memoryUsage();
+    const lifecycle = getLifecycleState();
+
+    // Worker heartbeat — same key & 90s threshold as /admin/process-status
+    // so the two panels never disagree about worker liveness.
+    const beat = await cache.get<{
+      pid: number;
+      ts: number;
+      runMode: string;
+      nodeVersion: string;
+      rssMb: number;
+    }>(TRANSCODER_HEARTBEAT_KEY);
+
+    const now = Date.now();
+    const heartbeatAgeSec =
+      beat ? Math.round((now - beat.ts) / 1000) : null;
+    const workerAlive = heartbeatAgeSec !== null && heartbeatAgeSec < 90;
+    const workerSameProcess = beat?.pid === process.pid;
+
+    const fatals = await readAllRoleFatals();
+
+    res.setHeader("Cache-Control", "no-store").json({
+      api: {
+        runMode,
+        pid: process.pid,
+        lifecycle: {
+          phase: lifecycle.phase,         // "starting" | "ready" | "draining"
+          startedAt: lifecycle.startedAt,
+          readyAt: lifecycle.readyAt,
+          drainingAt: lifecycle.drainingAt,
+          uptimeSec: lifecycle.uptimeSec,
+        },
+        // The same gate /healthz uses to return 200 vs 503. The panel can
+        // mirror exactly what the load balancer is seeing right now.
+        healthzStatus: lifecycle.phase === "ready" ? 200 : 503,
+        rssMb: Math.round(memUsage.rss / 1024 / 1024),
+        nodeVersion: process.version,
+      },
+      worker: {
+        // Render Background Workers don't expose HTTP, so the literal
+        // "GET /healthz" is the heartbeat freshness check. UI labels it
+        // accordingly so operators don't expect an HTTP probe URL.
+        probeKind: "heartbeat",
+        alive: workerAlive,
+        sameProcess: workerSameProcess,
+        heartbeat: beat
+          ? {
+              pid: beat.pid,
+              ageSec: heartbeatAgeSec,
+              runMode: beat.runMode,
+              nodeVersion: beat.nodeVersion,
+              rssMb: beat.rssMb,
+            }
+          : null,
+      },
+      fatals: fatals.map((f) => ({
+        ts: new Date(f.ts).toISOString(),
+        ageSec: Math.max(0, Math.round((now - f.ts) / 1000)),
+        role: f.role,
+        pid: f.pid,
+        msg: f.msg,
+        err: f.err ?? null,
+        stack: f.stack ?? null,
+      })),
+      deploy: {
+        // Render injects these on every service. Best-effort — local dev
+        // won't have them set, in which case the UI just hides the row.
+        commit: process.env.RENDER_GIT_COMMIT ?? null,
+        commitShort: process.env.RENDER_GIT_COMMIT?.slice(0, 7) ?? null,
+        branch: process.env.RENDER_GIT_BRANCH ?? null,
+        serviceName: process.env.RENDER_SERVICE_NAME ?? null,
+        serviceId: process.env.RENDER_SERVICE_ID ?? null,
+        instanceId: process.env.RENDER_INSTANCE_ID ?? null,
+        nodeEnv: process.env.NODE_ENV ?? "development",
+      },
+      sentry: {
+        // So the operator knows whether fatals are also being mirrored to
+        // Sentry, in case the in-process buffer was lost (process restart
+        // while cache was unreachable, etc.).
+        configured: Boolean(process.env.SENTRY_DSN),
+      },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    logger.error({ err }, "render-deploy-health failed");
     res.status(500).json({ error: msg });
   }
 });
