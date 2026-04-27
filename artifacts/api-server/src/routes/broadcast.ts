@@ -23,6 +23,7 @@ import { validateStreamKey } from "../lib/liveIngestHealth";
 import { logger } from "../lib/logger";
 import { getClientIp } from "../middlewares/security";
 import { getLiveStatus } from "./youtube";
+import { recordBroadcastBuildLatency, type BroadcastBuildPath } from "../lib/broadcastLatency";
 
 const router = Router();
 
@@ -202,6 +203,19 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
   const nowMs = Date.now();
   const syncedAt = new Date(nowMs).toISOString();
 
+  // Latency instrumentation. We tag the final sample as "hot" if the cached
+  // branch served the request and "cold" otherwise (the cold-build path is
+  // the regression vector tracked by `broadcastLatencyWatchdog`). `finish`
+  // is called on every return so the buffer stays accurate even if a future
+  // edit adds another return path — `let __path` defaults to "cold" and only
+  // the cached branch flips it before its return.
+  const __t0 = Date.now();
+  let __path: BroadcastBuildPath = "cold";
+  const finish = <T>(value: T): T => {
+    recordBroadcastBuildLatency(Date.now() - __t0, __path);
+    return value;
+  };
+
   if (!skipCache) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cached = await cache.get<any>(BROADCAST_PAYLOAD_CACHE_KEY);
@@ -235,7 +249,8 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
       // ytVideoId via its own poll while the Player (which reads SSE only)
       // would still see a stale `null` until the next admin action.
       const ytStatus = getLiveStatus();
-      return {
+      __path = "hot";
+      return finish({
         ...cached,
         positionSecs: livePositionSecs,
         progressPercent: liveProgressPercent,
@@ -245,7 +260,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
         ytLive: ytStatus.isLive,
         ytVideoId: ytStatus.videoId,
         ytTitle: ytStatus.title,
-      };
+      });
     }
   }
 
@@ -297,7 +312,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
       ...ytFields,
     };
     await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
-    return result;
+    return finish(result);
   }
 
   const activeSchedule = getActiveScheduleEntry(scheduleEntries as ScheduleEntry[]);
@@ -344,7 +359,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
         ...ytFields,
       };
       await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
-      return result;
+      return finish(result);
     }
 
     // Live slot + YouTube off + queue available → use the queue as failover.
@@ -368,7 +383,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
       ...ytFields,
     };
     await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
-    return result;
+    return finish(result);
   }
 
   if (activeSchedule && (activeSchedule.contentType === "playlist" || activeSchedule.contentType === "video")) {
@@ -393,7 +408,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
         ...ytFields,
       };
       await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
-      return result;
+      return finish(result);
     }
   }
 
@@ -424,7 +439,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
       ...ytFields,
     };
     await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
-    return result;
+    return finish(result);
   }
 
   // Anchor-driven queue: preserves the currently-airing item across queue
@@ -462,7 +477,7 @@ export async function buildBroadcastCurrentPayload(skipCache = false) {
     ...ytFields,
   };
   await cache.set(BROADCAST_PAYLOAD_CACHE_KEY, result, BROADCAST_PAYLOAD_TTL_MS);
-  return result;
+  return finish(result);
 }
 
 // ---------------------------------------------------------------------------

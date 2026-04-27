@@ -39,6 +39,7 @@ import { invalidatePublicVideoCaches, invalidatePublicPlaylistCaches } from "../
 import { logger } from "../lib/logger";
 import { metricsSnapshot, slowRequestsSnapshot } from "../middlewares/observability";
 import { signedUrlMetricsSnapshot } from "../lib/signedUrlMetrics";
+import { broadcastLatencySnapshot } from "../lib/broadcastLatency";
 import { randomUUID, createHash, webcrypto } from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -883,6 +884,12 @@ router.get("/admin/ops/status", async (_req, res) => {
         // viewer is no longer triggering a fresh S3 SigV4 sign on every
         // ~5s HTML5 Range request). Counters reset on every deploy.
         signedUrlCache: signedUrlMetricsSnapshot(),
+        // Build-latency histogram for `buildBroadcastCurrentPayload`. Tracks
+        // the cold (PG re-read) and hot (cache-hit) paths separately as fixed
+        // ring buffers (last 500 samples each). The cold p95 is the regression
+        // signal — `lib/broadcastLatencyWatchdog` pages on-call when it stays
+        // ≥500ms for 5 consecutive minutes. Healthy is <100ms cold p95.
+        broadcastBuildLatency: broadcastLatencySnapshot(),
       },
       database: {
         connected: dbConnected,

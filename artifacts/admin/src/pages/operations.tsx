@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   Clock3,
   Database,
+  Gauge,
   HardDrive,
   Loader2,
   Radio,
@@ -570,6 +571,122 @@ function SignedUrlCacheCard({ data }: { data: NonNullable<OpsStatus["infrastruct
   );
 }
 
+function BroadcastBuildLatencyCard({
+  data,
+}: {
+  data: NonNullable<OpsStatus["infrastructure"]["broadcastBuildLatency"]>;
+}) {
+  // Cold p95 is the headline. Healthy is sub-100ms; the watchdog pages
+  // on-call when it stays >=500ms for 5 consecutive minutes. Anything
+  // between is degraded — workable but worth investigating before
+  // viewers feel it as SSE desync.
+  const coldSamples = data.cold.samples;
+  const coldP95 = data.cold.p95;
+  const status: CheckStatus =
+    coldSamples < 10 ? "ok" : coldP95 < 200 ? "ok" : coldP95 < 500 ? "degraded" : "critical";
+
+  // Format helper — treats <1ms as "<1ms" so the cell never reads "0ms"
+  // for the perfectly-cached hot path (which is genuinely sub-millisecond
+  // and would mislead an operator scanning for actual zero values).
+  const fmt = (n: number) => (n === 0 ? "—" : n < 1 ? "<1ms" : `${n}ms`);
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-start justify-between gap-3">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <Gauge className="w-4 h-4 text-primary" />
+            Broadcast Build Latency
+          </CardTitle>
+          <StatusBadge status={status} />
+        </div>
+        <p className="text-xs text-muted-foreground mt-1">
+          Per-call timing histogram for <code className="text-[10px]">buildBroadcastCurrentPayload</code>{" "}
+          — the function powering <code className="text-[10px]">/api/broadcast/current</code> and the
+          live-state SSE event. Last 500 samples per path. Reset every deploy
+          ({formatUptime(data.uptimeSecs)} ago).
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-3 gap-3">
+          <div className="rounded-lg bg-muted/40 p-3">
+            <div className="text-2xl font-semibold tabular-nums">
+              {coldSamples === 0 ? "—" : `${coldP95}ms`}
+            </div>
+            <div className="text-xs text-muted-foreground">Cold p95</div>
+          </div>
+          <div className="rounded-lg bg-muted/40 p-3">
+            <div className="text-2xl font-semibold tabular-nums">
+              {data.cold.total.toLocaleString()}
+            </div>
+            <div className="text-xs text-muted-foreground">Cold builds (PG)</div>
+          </div>
+          <div className="rounded-lg bg-muted/40 p-3">
+            <div className="text-2xl font-semibold tabular-nums">
+              {data.hot.total.toLocaleString()}
+            </div>
+            <div className="text-xs text-muted-foreground">Hot builds (cache)</div>
+          </div>
+        </div>
+
+        {data.cold.total + data.hot.total === 0 ? (
+          <p className="text-xs text-muted-foreground italic">
+            No payloads built yet on this instance — counters populate as soon as a viewer or the
+            transition ticker requests live state.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs text-muted-foreground border-b">
+                  <th className="pb-2 font-medium">Path</th>
+                  <th className="pb-2 font-medium text-right">Samples</th>
+                  <th className="pb-2 font-medium text-right">p50</th>
+                  <th className="pb-2 font-medium text-right">p95</th>
+                  <th className="pb-2 font-medium text-right">p99</th>
+                  <th className="pb-2 font-medium text-right">Max</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                <tr>
+                  <td className="py-2">Cold (PG re-read)</td>
+                  <td className="py-2 text-right tabular-nums">
+                    {data.cold.samples.toLocaleString()}
+                  </td>
+                  <td className="py-2 text-right tabular-nums">{fmt(data.cold.p50)}</td>
+                  <td className="py-2 text-right tabular-nums">{fmt(data.cold.p95)}</td>
+                  <td className="py-2 text-right tabular-nums">{fmt(data.cold.p99)}</td>
+                  <td className="py-2 text-right tabular-nums text-muted-foreground">
+                    {fmt(data.cold.max)}
+                  </td>
+                </tr>
+                <tr>
+                  <td className="py-2">Hot (cache hit)</td>
+                  <td className="py-2 text-right tabular-nums">
+                    {data.hot.samples.toLocaleString()}
+                  </td>
+                  <td className="py-2 text-right tabular-nums">{fmt(data.hot.p50)}</td>
+                  <td className="py-2 text-right tabular-nums">{fmt(data.hot.p95)}</td>
+                  <td className="py-2 text-right tabular-nums">{fmt(data.hot.p99)}</td>
+                  <td className="py-2 text-right tabular-nums text-muted-foreground">
+                    {fmt(data.hot.max)}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <p className="text-[11px] text-muted-foreground">
+          Healthy cold p95 is &lt;100ms. The latency watchdog pages on-call when cold p95 stays
+          ≥500ms for 5 consecutive minutes — typically a PG pool exhaustion, slow query regression,
+          or broadcast-cache invalidation thrash.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
 function ActivityFeedCard() {
   const events = useRecentSSEEvents();
   const { state } = useSSE();
@@ -1057,6 +1174,10 @@ export default function Operations() {
 
           {status.infrastructure?.signedUrlCache && (
             <SignedUrlCacheCard data={status.infrastructure.signedUrlCache} />
+          )}
+
+          {status.infrastructure?.broadcastBuildLatency && (
+            <BroadcastBuildLatencyCard data={status.infrastructure.broadcastBuildLatency} />
           )}
 
           {pipeline && (

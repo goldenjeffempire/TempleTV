@@ -428,6 +428,12 @@ export interface OpsStatus {
         { fresh: number; cached: number; hits: number; hitRate: number }
       >;
     };
+    broadcastBuildLatency?: {
+      startedAt: string;
+      uptimeSecs: number;
+      cold: { samples: number; total: number; p50: number; p95: number; p99: number; max: number };
+      hot: { samples: number; total: number; p50: number; p95: number; p99: number; max: number };
+    };
   };
   database: {
     connected: boolean;
