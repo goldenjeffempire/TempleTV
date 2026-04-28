@@ -180,6 +180,36 @@ export function MemoryDiagnosticsCard() {
   >(null);
   const samplesRef = useRef<Sample[]>([]);
   const [, forceRender] = useState(0);
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const [highlightActive, setHighlightActive] = useState(false);
+
+  /**
+   * Scroll-into-view + 3 s ring highlight when the operations URL carries
+   * a `#memory` hash. This is what an operator clicks from the Slack/webhook
+   * alert link so they don't have to hunt for the card on a page that has
+   * a dozen sub-cards. We re-arm on `hashchange` so a second click on the
+   * same link in a stale tab still re-highlights instead of doing nothing.
+   * The 3 s timer is cleared on unmount and on rapid re-trigger so we never
+   * leak a setTimeout if the operator navigates away mid-highlight.
+   */
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const tryHighlight = () => {
+      if (window.location.hash !== "#memory") return;
+      const node = cardRef.current;
+      if (!node) return;
+      node.scrollIntoView({ behavior: "smooth", block: "start" });
+      setHighlightActive(true);
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => setHighlightActive(false), 3000);
+    };
+    tryHighlight();
+    window.addEventListener("hashchange", tryHighlight);
+    return () => {
+      window.removeEventListener("hashchange", tryHighlight);
+      if (timer) clearTimeout(timer);
+    };
+  }, [snapshot]);
 
   const load = useCallback(async () => {
     try {
@@ -319,7 +349,16 @@ export function MemoryDiagnosticsCard() {
   const samples = samplesRef.current;
 
   return (
-    <Card data-testid="memory-diagnostics-card">
+    <Card
+      id="memory"
+      data-testid="memory-diagnostics-card"
+      ref={cardRef}
+      className={
+        highlightActive
+          ? "ring-2 ring-primary ring-offset-2 transition-shadow duration-500"
+          : "transition-shadow duration-500"
+      }
+    >
       <CardHeader>
         <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
           <MemoryStick className="w-4 h-4 text-primary" />

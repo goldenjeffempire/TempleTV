@@ -113,6 +113,33 @@ function fmtMb(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 }
 
+/**
+ * Return a deep link to the operations Mission Control card so an alert
+ * recipient can jump straight from the page into the diagnostics panel.
+ *
+ * Resolution order (each may be absent in any environment):
+ *   1. ADMIN_PUBLIC_URL — explicit operator override, takes precedence
+ *   2. RENDER_EXTERNAL_URL — set automatically on Render, the production env
+ *   3. REPLIT_DEV_DOMAIN — the dev workflow on Replit (HTTPS auto-added)
+ *   4. fallback to a relative URL — better than nothing, click-to-copy works
+ *      and an operator on the same machine can paste into a tab
+ *
+ * The returned URL ends with `#memory` so the operations page can scroll to
+ * and briefly highlight the matching card on load.
+ */
+function getOperationsDeepLink(): string {
+  const explicit = process.env.ADMIN_PUBLIC_URL?.trim();
+  if (explicit) return `${explicit.replace(/\/+$/, "")}/operations#memory`;
+  const render = process.env.RENDER_EXTERNAL_URL?.trim();
+  if (render) return `${render.replace(/\/+$/, "")}/operations#memory`;
+  const replit = process.env.REPLIT_DEV_DOMAIN?.trim();
+  if (replit) {
+    const proto = replit.startsWith("http") ? "" : "https://";
+    return `${proto}${replit.replace(/\/+$/, "")}/operations#memory`;
+  }
+  return "/operations#memory";
+}
+
 function pushSample(m: NodeJS.MemoryUsage): Sample {
   const sample: Sample = {
     at: Date.now(),
@@ -214,6 +241,7 @@ function tick(): void {
           { label: "Array buffers", value: fmtMb(m.arrayBuffers) },
           { label: "Alert threshold", value: fmtMb(RSS_ALERT_BYTES) },
           { label: "Sustained samples", value: String(SUSTAIN_SAMPLES) },
+          { label: "Mission Control", value: getOperationsDeepLink() },
         ],
         dedupKey: `api-memory-rss-high:${Math.floor(Date.now() / (DEDUP_TTL_SEC * 1000))}`,
         dedupTtlSec: DEDUP_TTL_SEC,
@@ -299,6 +327,7 @@ function tick(): void {
                   },
                 ]
               : []),
+            { label: "Mission Control", value: getOperationsDeepLink() },
           ],
           dedupKey: `api-memory-external-growth:${Math.floor(Date.now() / (DEDUP_TTL_SEC * 1000))}`,
           dedupTtlSec: DEDUP_TTL_SEC,
