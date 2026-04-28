@@ -11,7 +11,7 @@ import type { BroadcastEvent } from "../broadcast/queue.engine.js";
  *          the connection alive and to maintain accurate viewer counts.
  */
 export async function wsRoutes(app: FastifyInstance) {
-  app.get("/api/v1/realtime/ws", { websocket: true }, (socket, _req) => {
+  app.get("/realtime/ws", { websocket: true }, (socket, _req) => {
     bumpViewerCount(+1);
 
     const send = (e: BroadcastEvent) => {

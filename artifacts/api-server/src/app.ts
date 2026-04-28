@@ -23,6 +23,7 @@ import { sseRoutes } from "./modules/realtime/sse.gateway.js";
 import { wsRoutes } from "./modules/realtime/ws.gateway.js";
 import { chatRoutes } from "./modules/realtime/chat.routes.js";
 import { healthRoutes } from "./modules/health/health.routes.js";
+import { adminUiRoutes } from "./modules/admin-ui/admin-ui.routes.js";
 
 const API_PREFIX = "/api/v1";
 
@@ -93,9 +94,11 @@ export async function buildApp(): Promise<FastifyInstance> {
     docs: "/docs",
     openapi: "/docs/json",
     api: API_PREFIX,
+    admin: "/admin/broadcast",
   }));
 
   await app.register(healthRoutes);
+  await app.register(adminUiRoutes);
 
   await app.register(
     async (instance) => {

@@ -51,6 +51,26 @@ src/
 └── scripts/emit-openapi.ts     dump openapi.json from running app
 ```
 
+## Built-in admin console
+
+The API ships a self-contained, zero-build broadcast control panel served
+directly by Fastify so you can manage the channel without depending on
+the (currently in-migration) React admin shell.
+
+- `GET /admin` → 302 → `/admin/broadcast`
+- `GET /admin/broadcast` — Tailwind/HTML page that:
+  - subscribes to `/api/v1/realtime/sse` for live snapshot, advance,
+    preload, and viewer-count events
+  - renders the current item with a live progress bar + the upcoming
+    grid from `/api/v1/broadcast/current`
+  - lets an authenticated operator add, reorder (↑/↓), toggle active,
+    and delete queue items via the `/api/v1/broadcast/queue/*` endpoints
+  - stores the bearer token in `localStorage` only (never sent
+    elsewhere); accepts either `ADMIN_API_TOKEN` or a JWT access token
+
+This is the operator surface the broken admin shell will eventually
+match; until then it is the canonical way to drive the live channel.
+
 ## API surface
 
 All domain routes live under `/api/v1/`:
@@ -61,6 +81,7 @@ All domain routes live under `/api/v1/`:
 /readyz                          Readiness (DB + cache + storage + engine)
 /docs                            Swagger UI
 /docs/json                       OpenAPI 3.1 spec
+/admin/broadcast                 Built-in operator console (HTML)
 /api/v1/auth/{register,login,refresh,logout,me}
 /api/v1/media                    GET (list), POST (create, editor+)
 /api/v1/media/:id                GET, DELETE (admin+)
@@ -72,7 +93,7 @@ All domain routes live under `/api/v1/`:
 /api/v1/broadcast/viewers        GET (live count)
 /api/v1/chat/:channelId/history  GET
 /api/v1/chat/:channelId/messages POST (auth)
-/api/v1/realtime/sse             SSE stream for browsers
+/api/v1/realtime/sse             SSE stream for browsers (snapshot/advance/preload/viewer-count)
 /api/v1/realtime/ws              WebSocket for native clients
 ```
 

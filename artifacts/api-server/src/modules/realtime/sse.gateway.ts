@@ -13,7 +13,7 @@ import type { BroadcastEvent } from "../broadcast/queue.engine.js";
  * cleanly and reconnects automatically in browsers.
  */
 export async function sseRoutes(app: FastifyInstance) {
-  app.get("/api/v1/realtime/sse", async (req, reply) => {
+  app.get("/realtime/sse", async (req, reply) => {
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
