@@ -1,0 +1,110 @@
+You are a Senior Principal Software Architect + DevOps Engineer + Full Stack Lead.
+
+🎯 Objective
+
+Completely rebuild the Temple TV Streaming Platform from scratch, ensuring a production-grade, scalable, enterprise-level architecture for Web, Mobile, and Smart TV apps.
+
+⚠️ CRITICAL SAFETY FIRST
+
+Before any deletion:
+
+Create a full backup snapshot of the entire repository (source + configs + DB schemas if any).
+Archive it as: temple-tv-backup-YYYYMMDD.tar.gz
+Confirm backup integrity before proceeding.
+🧨 PHASE 1 — COMPLETE WIPE
+
+After backup verification:
+
+Delete ALL existing application code, modules, configs, builds, artifacts
+Remove:
+frontend/
+backend/
+mobile/
+smart-tv/
+infra/
+node_modules/
+dist/build artifacts
+CI/CD configs (except baseline pipeline setup file)
+Reset repository to a clean empty state (keep only README + .git + CI bootstrap if needed)
+🏗️ PHASE 2 — ARCHITECTURE DESIGN (FROM SCRATCH)
+
+Design a modern scalable system:
+
+Core Stack
+Frontend Web: Next.js (React, TypeScript)
+Backend: Node.js (NestJS or Fastify, modular monolith or microservices-ready)
+Mobile: React Native (Expo or bare workflow)
+Smart TV: React Native TV / Tizen/WebOS compatible build layer
+Database: PostgreSQL + Redis cache
+Storage: S3-compatible object storage
+Streaming: HLS/DASH pipeline with CDN integration
+📡 PHASE 3 — CORE SYSTEM MODULES
+
+Rebuild all modules cleanly:
+
+Backend Services
+Auth Service (JWT + OAuth)
+User Management
+Video Upload Service
+Live Streaming Service (low-latency optimized)
+Broadcast Scheduler
+Media Processing Pipeline (FFmpeg)
+Notification Service (push/email)
+Admin CMS API
+Streaming Requirements (CRITICAL)
+Near-instant video switching (target: <50ms latency)
+No buffering delay between videos
+Adaptive bitrate streaming (ABR)
+CDN-backed delivery
+📱 PHASE 4 — CLIENT APPLICATIONS
+
+Build fully synchronized apps:
+
+Web App (SEO + SSR optimized)
+Mobile App (Android/iOS production-ready)
+Smart TV App (fast navigation + remote optimized UI)
+
+Ensure:
+
+Shared API layer
+Unified state logic
+Real-time sync across all platforms
+🎛️ PHASE 5 — ADMIN DASHBOARD
+
+Rebuild a powerful admin system:
+
+Upload videos
+Schedule broadcasts
+Control live streams
+Push updates across ALL platforms instantly (web/mobile/tv)
+Analytics dashboard (viewership, engagement, uptime)
+⚙️ PHASE 6 — DEVOPS & DEPLOYMENT
+Dockerize all services
+Kubernetes-ready deployment
+CI/CD pipeline (GitHub Actions or GitLab CI)
+Auto-scaling infrastructure
+Monitoring: Prometheus + Grafana
+Logging: centralized (ELK or equivalent)
+🔄 PHASE 7 — REAL-TIME SYNC REQUIREMENT (MANDATORY)
+
+Any admin change must reflect:
+
+Web instantly
+Mobile instantly
+Smart TV instantly
+
+Use:
+
+WebSockets / MQTT / PubSub system
+🧪 PHASE 8 — QUALITY STANDARDS
+Zero critical bugs
+Production-grade error handling
+Fully typed codebase (TypeScript everywhere)
+Clean architecture principles
+Performance optimized (sub-second interactions)
+✅ FINAL OUTPUT
+Fully rebuilt monorepo
+Running production-ready system
+Deployment instructions
+Environment configuration files
+Documentation (API + architecture diagram)
