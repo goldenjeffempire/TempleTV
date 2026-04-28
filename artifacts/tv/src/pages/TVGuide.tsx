@@ -366,12 +366,20 @@ export function TVGuide({ onBack, onPlay }: TVGuideProps) {
                     border: "1px solid rgba(255,255,255,0.1)",
                     position: "relative",
                   }}>
-                    <img
-                      src={item.thumbnailUrl}
-                      alt=""
-                      style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                      onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                    />
+                    {/*
+                      Guard against undefined/empty thumbnail URLs — passing an
+                      empty string to `src` causes the browser to refetch the
+                      current document and React logs an "empty src" warning
+                      on every render.
+                    */}
+                    {item.thumbnailUrl ? (
+                      <img
+                        src={item.thumbnailUrl}
+                        alt=""
+                        style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                        onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                      />
+                    ) : null}
                     {isCurrentProgram && (
                       <div style={{
                         position: "absolute",

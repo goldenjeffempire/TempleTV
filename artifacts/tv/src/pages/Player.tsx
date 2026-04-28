@@ -666,8 +666,10 @@ function YouTubePlayer({
           so it never intercepts remote-control focus. */}
       {isLive && <BroadcastChannelBug programKey={videoId} />}
 
-      {/* YouTube embed */}
-      {!loadError && (
+      {/* YouTube embed — guarded against an empty `embedUrl` so we don't
+          mount an iframe whose src would refetch the current document and
+          emit a console warning on every render. */}
+      {!loadError && embedUrl ? (
         <iframe
           key={retryKey}
           ref={iframeRef}
@@ -691,7 +693,7 @@ function YouTubePlayer({
           }}
           style={{ width: "100%", height: "100%", border: "none", display: "block", touchAction: "manipulation" }}
         />
-      )}
+      ) : null}
 
       {/* Error state */}
       {loadError && (

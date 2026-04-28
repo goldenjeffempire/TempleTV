@@ -663,11 +663,19 @@ function LiveHeroPreviewIframe({ videoId }: { videoId: string }) {
 
   useEffect(() => {
     loadedRef.current = false;
+    if (!videoId) return;
     const watchdog = setTimeout(() => {
       if (!loadedRef.current) reportLiveFailure(videoId, "tv-hero");
     }, LIVE_HERO_LOAD_TIMEOUT_MS);
     return () => clearTimeout(watchdog);
   }, [videoId]);
+
+  // Defence in depth: callers should never render this with an empty
+  // videoId (the parent already gates on `ytLiveBroadcast && ytVideoId`),
+  // but if it ever does, refuse to mount an iframe whose src would be the
+  // bare `/embed/` path — that emits an "empty src" warning on every render
+  // and the iframe shows YouTube's generic error page.
+  if (!videoId) return null;
 
   return (
     <iframe

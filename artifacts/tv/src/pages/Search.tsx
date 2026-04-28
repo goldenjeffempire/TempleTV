@@ -70,13 +70,20 @@ function ResultCard({ video, focused, onSelect }: { video: VideoItem; focused: b
         alignItems: "center",
       }}
     >
-      <div style={{ width: 120, height: 68, borderRadius: 8, overflow: "hidden", flexShrink: 0 }}>
-        <img
-          src={video.thumbnailUrl}
-          alt=""
-          style={{ width: "100%", height: "100%", objectFit: "cover" }}
-          onError={(e) => { (e.target as HTMLImageElement).src = ""; }}
-        />
+      <div style={{ width: 120, height: 68, borderRadius: 8, overflow: "hidden", flexShrink: 0, background: "rgba(106,13,173,0.25)" }}>
+        {/*
+          Only render the <img> when we actually have a URL — passing an empty
+          string to `src` causes the browser to refetch the current document
+          and React logs a warning to the console on every render.
+        */}
+        {video.thumbnailUrl ? (
+          <img
+            src={video.thumbnailUrl}
+            alt=""
+            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+          />
+        ) : null}
       </div>
       <div style={{ flex: 1, overflow: "hidden" }}>
         <div style={{ fontSize: 16, fontWeight: 600, color: focused ? "#e9d5ff" : "#fff", lineHeight: 1.3, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
