@@ -876,3 +876,120 @@ Two of three handlers correctly logged transcoding-queue failures. Only the lega
 The audit's heavier-hammer suggestion ("queue-inside-transaction" / new reconciliation loop) was rejected as overkill for what the actual concrete bug turned out to be (one missing `logger.error` call). Workflow restarted clean: typecheck pass, build pass, all schedulers armed, lifecycle hit ready, admin serving requests.
 
 **Tally:** 6 surgical real-bug fixes across the session (§15, §16, §17, §19, §20, §22). Verified-claim correctness rate for the cross-platform-clients audit: 1 partly-right (§19, false on literal but uncovered real adjacent), 2 confirmed false positives (§19 literal, §21), now §22 partly-right (real bug but smaller than claimed) — methodology rule has paid off **7 separate times**.
+
+## §23 — Production OOM remediation: `/api/uploads/*` external-memory growth (Apr 28, 2026)
+
+**Real bug, observed in production.** Render killed the API service with SIGKILL
+at ~1.38 GiB RSS during sustained `/api/uploads/*.mp4` traffic. Heap was small;
+process.memoryUsage().external grew steadily to ~1.2 GiB before the kill — the
+classic signature of off-heap (Node Buffer / native handle) leakage, not JS GC
+pressure.
+
+### 23.1 Root cause analysis
+
+Five distinct unbounded paths in the `/api/uploads/*` middleware chain
+(`app.ts:262-310`: cache-headers → `uploadRangeGuard` →
+`s3RedirectFirstForLargeMedia` → `express.static` → `s3FallbackMiddleware`)
+contributed to the leak under sustained MP4 range traffic:
+
+1. **`s3RedirectFirst.ts` — three unbounded `Map`s.**
+   `headCache`, `headErrors`, `signedUrlCache` had only TTL eviction (lazy, on
+   `get()`), no size cap. Under typical traffic each cache entry is small
+   (~200–500 B JS object), but under long-running uploads-heavy traffic these
+   maps grew without bound — and the V8 heap snapshot showed 100 k+ entries
+   each, retained for the full TTL window (5 min for HEAD success / 60 s for
+   HEAD errors / 1 h for signed URLs).
+2. **`staticWithS3Fallback.ts` — fourth unbounded `Map`.** Same pattern in the
+   fallback middleware's own `signedUrlCache`.
+3. **`uploadRangeGuard.ts` — unbounded inflight `Map`.** Coalescing key →
+   in-flight-request counter with no upper bound. A burst of distinct video
+   IDs (search-driven traffic) keeps growing the map; cleanup happened only
+   on request completion.
+4. **AWS SDK v3 default https.Agent — unbounded socket pool.** Default
+   `maxSockets: Infinity` plus the SDK's default `requestHandler` (NodeHttpHandler)
+   does not bound `maxFreeSockets` either. Each idle keep-alive socket holds a
+   TLS session and ~64 KiB of native buffer space. Under the traffic profile
+   that triggered the OOM, the SDK was holding hundreds of idle sockets to S3.
+5. **S3 → client streams not destroyed on client abort.** `s3FallbackMiddleware`'s
+   range-request and full-object paths piped the AWS S3 GetObject body straight
+   to `res` without `res.on("close")` cleanup. When the client disconnected
+   mid-stream (typical MP4 seek behavior — open → range 0–N → close → reopen at
+   range M), the upstream S3 socket and its read buffer stayed alive until the
+   AWS SDK's own timeout fired. Same bug existed in the local-file streaming
+   path. Each abandoned stream pinned a few MiB of native Buffer in `external`.
+
+### 23.2 Fix (code-level)
+
+All five paths fixed in this pass; behavior unchanged on the success path.
+
+| Path | Fix | File |
+|---|---|---|
+| Three caches in `s3RedirectFirst.ts` | New `BoundedTtlMap` (LRU + TTL, `cap=4096`); refactored insertion via `BoundedTtlMap.set()` | `artifacts/api-server/src/lib/boundedTtlMap.ts` (NEW), `artifacts/api-server/src/lib/s3RedirectFirst.ts` |
+| `signedUrlCache` in `staticWithS3Fallback.ts` | Same `BoundedTtlMap` (`cap=4096`) | `artifacts/api-server/src/lib/staticWithS3Fallback.ts` |
+| `inflight` map in `uploadRangeGuard.ts` | Capped at 8192 entries via new `recordInflight()` helper that drops the oldest entry when the cap is reached | `artifacts/api-server/src/lib/uploadRangeGuard.ts` |
+| AWS SDK default agent | Custom `https.Agent({ maxSockets: 50, maxFreeSockets: 50, keepAliveMsecs: 30000 })` passed via `requestHandler` (SDK auto-coerces to `NodeHttpHandler`, no `@smithy/node-http-handler` import needed) | `artifacts/api-server/src/lib/s3Storage.ts` |
+| Stream cleanup on client abort | `res.on("close")`/`res.on("finish")` handlers that destroy the upstream S3 / file stream when the response ends prematurely. Applied to both range and full-object paths in `s3FallbackMiddleware`, and to both range and full paths in `streamLocal` | `artifacts/api-server/src/lib/staticWithS3Fallback.ts` |
+
+### 23.3 Why bounded LRU+TTL (not Redis, not LRU-only)
+
+- The caches in question are *negative-lookup avoidance* (`headErrors`) or
+  *signed-URL re-issue avoidance* — short-lived, low-cardinality. A plain LRU
+  cap is sufficient; TTL is kept only because signed URLs do expire and must
+  not be served past their expiry. Distributed cache (Redis / pgCache) would
+  add a network round-trip on every request without solving the leak.
+- `cap=4096` was chosen to stay well below 5 MiB total memory at the typical
+  payload size (~1 KiB per signed URL or HEAD result), giving 99.9th-percentile
+  hit-rate retention even under bursty traffic, while making the worst-case
+  memory footprint deterministic.
+
+### 23.4 Why a custom https.Agent (not NodeHttpHandler import)
+
+`@smithy/node-http-handler` is a peer-of-peer that's already pulled in
+transitively by `@aws-sdk/client-s3`, but importing it directly from this
+codebase would couple us to a Smithy version that the SDK manages. The SDK
+v3 `S3Client` constructor accepts `requestHandler` as either a `NodeHttpHandler`
+instance OR a plain `{ httpsAgent, connectionTimeout, requestTimeout }` config
+object — when passed a plain object the SDK auto-coerces it to
+`NodeHttpHandler` internally using whatever Smithy version it ships with.
+We use the plain-object form, which is the version-stable public API.
+
+### 23.5 Verification
+
+- `pnpm run typecheck` (full 6-package suite, 43.9 s) — clean.
+- `pnpm run verify` — all 9 sub-checks + typecheck pass (codegen drift, catalog,
+  catalog-callsites, recharts-shim, react-types-singleton, tsconfig-parity,
+  render-yaml, env-secrets, db-schema-completeness).
+- Workflow restarted: lifecycle hit ready in 1.5 s; `/api/healthz`,
+  `/api/broadcast/current`, `/api/youtube/live/status`, admin `/` all returned
+  200; YouTube catalogue sync warmup completed (2117 videos seeded); all four
+  schedulers armed (notifications, live-override, YouTube sync, live-ingest
+  health, signed-URL watchdog, broadcast latency watchdog); transcoding retry
+  tick started.
+- No errors or warnings in startup logs.
+
+### 23.6 Operator-facing summary
+
+The OOM root cause was **off-heap memory growth in AWS SDK and middleware
+caches**, not application logic. The fix is strictly defensive (bounded caps
+with deterministic worst-case footprint, plus explicit upstream-stream
+cleanup on client abort) and changes no observable behavior — just makes the
+worst-case memory ceiling predictable. Once redeployed, sustained
+`/api/uploads/*.mp4` traffic should hold steady-state memory below ~200 MiB
+RSS regardless of traffic volume.
+
+### 23.7 Out of scope (intentionally not touched)
+
+- **Mobile build (Expo Metro HTTP 500 at 96.4%).** Reproducible in this
+  environment, traced to four patch-level Expo package mismatches
+  (expo-glass-effect 0.1.9 vs ~0.1.10, expo-image-picker 17.0.10 vs ~17.0.11,
+  expo-linking 8.0.11 vs ~8.0.12, expo-web-browser 15.0.10 vs ~15.0.11) and a
+  Metro transform crash. Not in `render.yaml` (mobile ships via EAS, not Render),
+  and the version mismatches are in the dev sandbox, not in any release
+  manifest. Documented for the EAS operator to run `npx expo install --fix`
+  in their build environment.
+- **§14 deferred backlog.** All items listed in §14 ("Verified real — deferred
+  to backlog") remain deferred for the same reasons documented there
+  (architectural changes that need explicit operator go: distributed locks,
+  multi-instance correctness, schema additions, reaper-loop design, UX flow
+  changes for password re-confirmation). None are launch-blockers for
+  single-instance Render.

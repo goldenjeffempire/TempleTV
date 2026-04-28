@@ -55,7 +55,26 @@ const MAX_RANGE_BYTES = Math.max(
   Number(process.env.UPLOAD_RANGE_MAX_BYTES ?? String(16 * 1024 * 1024)),
 );
 
+// Per-(client, file) in-flight counter. Capped at MAX_INFLIGHT_KEYS so a
+// distinct-IP scanner cannot grow this map without bound; entries are
+// also released by the res.on("finish"/"close") handlers below, so the
+// map normally hovers at the few hundred entries actually in flight.
+// When the cap is reached we evict the oldest entry by insertion order
+// (FIFO), matching the BoundedTtlMap policy used elsewhere.
+const MAX_INFLIGHT_KEYS = 8192;
 const inflight = new Map<string, number>();
+
+function recordInflight(key: string, value: number): void {
+  // Keep MRU semantics so released slots get freed in roughly FIFO order
+  // when the cap is hit.
+  if (inflight.has(key)) inflight.delete(key);
+  inflight.set(key, value);
+  while (inflight.size > MAX_INFLIGHT_KEYS) {
+    const oldest = inflight.keys().next();
+    if (oldest.done) break;
+    inflight.delete(oldest.value);
+  }
+}
 
 function clientKey(req: express.Request): string {
   const fwd = req.headers["x-forwarded-for"];
@@ -114,7 +133,7 @@ export function uploadRangeGuard(): express.RequestHandler {
       });
       return;
     }
-    inflight.set(key, current + 1);
+    recordInflight(key, current + 1);
 
     let released = false;
     const release = () => {

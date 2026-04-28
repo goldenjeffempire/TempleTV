@@ -2,6 +2,7 @@ import express from "express";
 import { isS3Configured, headObject, getSignedGetUrl } from "./s3Storage";
 import { logger } from "./logger";
 import { recordSignedUrlHit } from "./signedUrlMetrics";
+import { BoundedTtlMap } from "./boundedTtlMap";
 
 /**
  * "S3-redirect-first" middleware for large media (full-length MP4s/audio).
@@ -48,20 +49,17 @@ interface S3RedirectFirstOptions {
   headCacheTtlMs?: number;
 }
 
-interface HeadCacheEntry {
-  exists: boolean;
-  expiresAt: number;
-}
-
 interface HeadErrorEntry {
-  expiresAt: number;
   loggedAt: number;
 }
 
-interface SignedUrlCacheEntry {
-  url: string;
-  expiresAt: number;
-}
+// Hard caps on the in-memory caches. These bounds protect the API process
+// against unbounded memory growth when traffic walks a very large or
+// adversarial keyspace (e.g. a CDN edge probing every distinct path, or
+// a scanner). All three caches store small entries (a boolean + timestamp,
+// or a presigned URL string) so 4 096 entries each is comfortably under
+// 2 MB total — but enough to hold every hot key on a real workload.
+const MAX_CACHE_ENTRIES = 4096;
 
 export function s3RedirectFirstForLargeMedia(
   opts: S3RedirectFirstOptions,
@@ -73,7 +71,7 @@ export function s3RedirectFirstForLargeMedia(
     headCacheTtlMs = 5 * 60 * 1000,
   } = opts;
   const extSet = new Set(extensions.map((e) => e.toLowerCase()));
-  const headCache = new Map<string, HeadCacheEntry>();
+  const headCache = new BoundedTtlMap<string, boolean>(MAX_CACHE_ENTRIES);
   // Negative cache for transient HEAD errors (auth blip, AWS 5xx, network):
   // without this the middleware re-issues a HEAD on EVERY viewer request,
   // re-throws, and floods the log with one warn line per request — observed
@@ -82,7 +80,7 @@ export function s3RedirectFirstForLargeMedia(
   // we log AT MOST one warn per key per error window.
   const HEAD_ERROR_TTL_MS = 60 * 1000;
   const HEAD_ERROR_LOG_INTERVAL_MS = 5 * 60 * 1000;
-  const headErrors = new Map<string, HeadErrorEntry>();
+  const headErrors = new BoundedTtlMap<string, HeadErrorEntry>(MAX_CACHE_ENTRIES);
 
   // Per-key signed-URL cache. The presigned URL is range-agnostic and
   // single-tenant safe (the underlying /api/uploads/<uuid> URL was already
@@ -92,7 +90,7 @@ export function s3RedirectFirstForLargeMedia(
   // seconds even on a single open viewer (observed: same MP4 hit every ~5s
   // in production logs). Caching for half the URL TTL guarantees a stale
   // cached redirect can never outlive its underlying signature.
-  const signedUrlCache = new Map<string, SignedUrlCacheEntry>();
+  const signedUrlCache = new BoundedTtlMap<string, string>(MAX_CACHE_ENTRIES);
   const SIGNED_URL_CACHE_TTL_MS = Math.max(60_000, Math.floor(signedUrlTtlSec * 1000 / 2));
 
   return async function s3RedirectFirst(req, res, next) {
@@ -117,35 +115,31 @@ export function s3RedirectFirstForLargeMedia(
     // key — the disk fallback or s3FallbackMiddleware will handle the
     // request, and we avoid the HEAD round-trip (which on a sustained AWS
     // outage was adding 1–2s to every single video request).
-    const errEntry = headErrors.get(key);
-    if (errEntry && errEntry.expiresAt > now) {
+    if (headErrors.get(key) !== undefined) {
       return next();
-    } else if (errEntry) {
-      headErrors.delete(key);
-    }
-
-    let cached = headCache.get(key);
-    if (cached && cached.expiresAt < now) {
-      headCache.delete(key);
-      cached = undefined;
     }
 
     let exists: boolean;
-    if (cached) {
-      exists = cached.exists;
+    const cached = headCache.get(key);
+    if (cached !== undefined) {
+      exists = cached;
     } else {
       try {
         const head = await headObject(key);
         exists = head !== null;
-        headCache.set(key, { exists, expiresAt: now + headCacheTtlMs });
+        headCache.set(key, exists, headCacheTtlMs);
       } catch (err) {
-        const prev = errEntry;
+        // The negative-cache lookup above lazily evicts expired entries on
+        // get(); a value here, if any, is the most-recent log timestamp
+        // we should rate-limit against.
+        const prev = headErrors.get(key);
         const shouldLog =
           !prev || now - prev.loggedAt >= HEAD_ERROR_LOG_INTERVAL_MS;
-        headErrors.set(key, {
-          expiresAt: now + HEAD_ERROR_TTL_MS,
-          loggedAt: shouldLog ? now : (prev?.loggedAt ?? now),
-        });
+        headErrors.set(
+          key,
+          { loggedAt: shouldLog ? now : prev?.loggedAt ?? now },
+          HEAD_ERROR_TTL_MS,
+        );
         if (shouldLog) {
           logger.warn(
             {
@@ -171,17 +165,13 @@ export function s3RedirectFirstForLargeMedia(
     let signedUrl: string;
     let cacheSource: "fresh" | "cached" = "fresh";
     const cachedSigned = signedUrlCache.get(key);
-    if (cachedSigned && cachedSigned.expiresAt > now) {
-      signedUrl = cachedSigned.url;
+    if (cachedSigned !== undefined) {
+      signedUrl = cachedSigned;
       cacheSource = "cached";
     } else {
-      if (cachedSigned) signedUrlCache.delete(key);
       try {
         signedUrl = await getSignedGetUrl(key, signedUrlTtlSec);
-        signedUrlCache.set(key, {
-          url: signedUrl,
-          expiresAt: now + SIGNED_URL_CACHE_TTL_MS,
-        });
+        signedUrlCache.set(key, signedUrl, SIGNED_URL_CACHE_TTL_MS);
       } catch (err) {
         logger.error(
           { err: err instanceof Error ? err.message : String(err), key },

@@ -5,30 +5,41 @@ import path from "path";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 import { mockupPreviewPlugin } from "./mockupPreviewPlugin";
 
+// PORT and BASE_PATH are required when starting a dev/preview server
+// (the workflow injects them) but a one-shot `vite build` produces a
+// static bundle that does not bind to a port — so we only enforce the
+// requirement in modes that actually start a server, and fall back to
+// inert defaults during build so CI / `pnpm -r build` works without
+// having to set runtime-only env vars.
+const isServerCommand = (() => {
+  const cmd = process.argv[2] ?? "";
+  return cmd === "" || cmd === "dev" || cmd === "serve" || cmd === "preview";
+})();
+
 const rawPort = process.env.PORT;
 
-if (!rawPort) {
+if (isServerCommand && !rawPort) {
   throw new Error(
     "PORT environment variable is required but was not provided.",
   );
 }
 
-const port = Number(rawPort);
+const port = rawPort ? Number(rawPort) : 0;
 
-if (Number.isNaN(port) || port <= 0) {
+if (rawPort && (Number.isNaN(port) || port <= 0)) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
 const basePath = process.env.BASE_PATH;
 
-if (!basePath) {
+if (isServerCommand && !basePath) {
   throw new Error(
     "BASE_PATH environment variable is required but was not provided.",
   );
 }
 
 export default defineConfig({
-  base: basePath,
+  base: basePath ?? "/",
   plugins: [
     mockupPreviewPlugin(),
     react(),

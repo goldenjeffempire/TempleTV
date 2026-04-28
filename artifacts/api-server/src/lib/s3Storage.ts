@@ -36,6 +36,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { Agent as HttpsAgent } from "https";
 import { Readable } from "stream";
 import { logger } from "./logger";
 
@@ -70,6 +71,29 @@ export function s3Client(): S3Client {
         "AWS_ACCESS_KEY_ID, and AWS_SECRET_ACCESS_KEY before using S3.",
     );
   }
+  // Bounded keep-alive HTTPS agent.
+  //
+  // The AWS SDK v3 default Node HTTP handler uses Node's global https.Agent,
+  // whose `maxSockets` defaults to Infinity AND `maxFreeSockets` defaults to
+  // 256. Under sustained traffic against many distinct S3 keys (HEAD probes
+  // for /api/uploads/*, presigner round-trips, etc.) the pool grew without
+  // bound and each socket retained its TLS state plus receive buffers in
+  // `external` memory — pinned in the production OOM postmortem
+  // (RELEASE_AUDIT.md, 2026-04-28) as the dominant external-memory source.
+  //
+  // Caps below are intentionally generous (50 in flight, 50 idle, 30s idle
+  // TTL) — they leave plenty of room for legitimate fan-out while preventing
+  // the unbounded growth that was OOM-killing the container at ~1.4 GiB RSS.
+  const agent = new HttpsAgent({
+    keepAlive: true,
+    maxSockets: 50,
+    maxFreeSockets: 50,
+    timeout: 30_000,
+  });
+  // The AWS SDK v3 auto-coerces a plain `requestHandler` config object into
+  // an internal NodeHttpHandler — letting us cap the agent without taking a
+  // direct dependency on `@smithy/node-http-handler` (which would otherwise
+  // require a workspace catalog entry for a transitive package).
   _client = new S3Client({
     region: AWS_REGION,
     credentials: {
@@ -78,6 +102,11 @@ export function s3Client(): S3Client {
     },
     endpoint: AWS_S3_ENDPOINT,
     forcePathStyle: AWS_S3_FORCE_PATH_STYLE || Boolean(AWS_S3_ENDPOINT),
+    requestHandler: {
+      httpsAgent: agent,
+      connectionTimeout: 5_000,
+      requestTimeout: 60_000,
+    },
   });
   return _client;
 }

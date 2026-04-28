@@ -10,6 +10,13 @@ import {
 import { sendRangedGet } from "./s3Ranged";
 import { logger } from "./logger";
 import { recordSignedUrlHit } from "./signedUrlMetrics";
+import { BoundedTtlMap } from "./boundedTtlMap";
+
+// Hard cap on the per-mount signed-URL cache. See boundedTtlMap.ts and
+// s3RedirectFirst.ts for the rationale — we want a high enough ceiling
+// to absorb all hot keys but a fixed cap so a CDN edge probing a huge
+// keyspace can't grow this map without bound.
+const SIGNED_URL_CACHE_MAX_ENTRIES = 4096;
 
 /**
  * Static-asset middleware with automatic S3 fallback.
@@ -128,7 +135,7 @@ export function s3FallbackMiddleware(opts: FallbackOptions): express.RequestHand
   // viewers is safe. TTL is half the signed URL lifetime so a cached redirect
   // can never outlive its underlying signature.
   const signedUrlCache = redirectFromS3
-    ? new Map<string, { url: string; expiresAt: number }>()
+    ? new BoundedTtlMap<string, string>(SIGNED_URL_CACHE_MAX_ENTRIES)
     : null;
   const SIGNED_URL_CACHE_TTL_MS = redirectFromS3
     ? Math.max(60_000, Math.floor(redirectFromS3.signedUrlTtlSec * 1000 / 2))
@@ -194,21 +201,16 @@ export function s3FallbackMiddleware(opts: FallbackOptions): express.RequestHand
     // under parallel range traffic. The signed URL TTL is short; clients that
     // hold open sessions will request a fresh redirect when the URL expires.
     if (redirectFromS3) {
-      const nowMs = Date.now();
       let signedUrl: string | null = null;
       let cacheSource: "fresh" | "cached" = "fresh";
       const cachedSigned = signedUrlCache?.get(key);
-      if (cachedSigned && cachedSigned.expiresAt > nowMs) {
-        signedUrl = cachedSigned.url;
+      if (cachedSigned !== undefined) {
+        signedUrl = cachedSigned;
         cacheSource = "cached";
       } else {
-        if (cachedSigned) signedUrlCache?.delete(key);
         try {
           signedUrl = await getSignedGetUrl(key, redirectFromS3.signedUrlTtlSec);
-          signedUrlCache?.set(key, {
-            url: signedUrl,
-            expiresAt: nowMs + SIGNED_URL_CACHE_TTL_MS,
-          });
+          signedUrlCache?.set(key, signedUrl, SIGNED_URL_CACHE_TTL_MS);
         } catch (err) {
           logger.error(
             { err: err instanceof Error ? err.message : String(err), key },
@@ -296,6 +298,17 @@ export function s3FallbackMiddleware(opts: FallbackOptions): express.RequestHand
           logger.warn({ err: err.message, key }, "S3 fallback: range stream errored");
           res.destroy(err);
         });
+        // Tear the upstream S3 stream down promptly when the client
+        // disconnects mid-stream — without this the AWS SDK keeps the
+        // socket draining in the background, retaining receive-buffer
+        // memory in `external` long after the response has ended. Under
+        // sustained Range traffic from a flaky client this was the
+        // single largest leak source observed in production.
+        const cleanup = () => {
+          if (!result.body.destroyed) result.body.destroy();
+        };
+        res.on("close", cleanup);
+        res.on("finish", cleanup);
         result.body.pipe(res);
       } catch (err) {
         logger.error(
@@ -316,6 +329,11 @@ export function s3FallbackMiddleware(opts: FallbackOptions): express.RequestHand
       logger.warn({ err: err.message, key }, "S3 fallback: full stream errored");
       res.destroy(err);
     });
+    const cleanup = () => {
+      if (!obj.body.destroyed) obj.body.destroy();
+    };
+    res.on("close", cleanup);
+    res.on("finish", cleanup);
     obj.body.pipe(res);
   };
 }
@@ -348,6 +366,16 @@ function streamLocal(
     if (req.method === "HEAD") return void res.end();
     const stream = createReadStream(filePath, { start, end });
     stream.on("error", (err) => res.destroy(err));
+    // Close the file descriptor as soon as the response ends — without
+    // explicit cleanup, a client that disconnects mid-stream leaves the
+    // fs.ReadStream alive (`destroyed=false`) until GC, retaining the
+    // open fd and its buffered bytes in `external` memory. Pinned in
+    // the production OOM postmortem (RELEASE_AUDIT.md, 2026-04-28).
+    const cleanup = () => {
+      if (!stream.destroyed) stream.destroy();
+    };
+    res.on("close", cleanup);
+    res.on("finish", cleanup);
     stream.pipe(res);
     return;
   }
@@ -356,5 +384,10 @@ function streamLocal(
   if (req.method === "HEAD") return void res.end();
   const stream = createReadStream(filePath);
   stream.on("error", (err) => res.destroy(err));
+  const cleanup = () => {
+    if (!stream.destroyed) stream.destroy();
+  };
+  res.on("close", cleanup);
+  res.on("finish", cleanup);
   stream.pipe(res);
 }
