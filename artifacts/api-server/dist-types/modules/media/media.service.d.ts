@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import type { CreateMediaBodySchema, ListMediaQuerySchema, SignedUploadBodySchema } from "./media.schemas.js";
+import type { CreateMediaBodySchema, ListMediaQuerySchema, SignedUploadBodySchema, UpdateMediaBodySchema } from "./media.schemas.js";
 export declare const mediaService: {
     list(query: z.infer<typeof ListMediaQuerySchema>): Promise<{
         items: {
@@ -41,6 +41,23 @@ export declare const mediaService: {
         hlsMasterUrl: string | null;
     }>;
     create(body: z.infer<typeof CreateMediaBodySchema>): Promise<{
+        id: string;
+        youtubeId: string;
+        title: string;
+        description: string;
+        thumbnailUrl: string;
+        duration: string;
+        category: string;
+        preacher: string;
+        publishedAt: string | null;
+        importedAt: string;
+        viewCount: number;
+        featured: boolean;
+        videoSource: string;
+        localVideoUrl: string | null;
+        hlsMasterUrl: string | null;
+    }>;
+    update(id: string, body: z.infer<typeof UpdateMediaBodySchema>): Promise<{
         id: string;
         youtubeId: string;
         title: string;

@@ -8,6 +8,7 @@ import {
   MediaItemSchema,
   SignedUploadBodySchema,
   SignedUploadResponseSchema,
+  UpdateMediaBodySchema,
 } from "./media.schemas.js";
 import { mediaService } from "./media.service.js";
 import { requireAuth } from "../../middleware/auth.js";
@@ -75,6 +76,22 @@ export async function mediaRoutes(app: FastifyInstance) {
       reply.code(201);
       return created;
     },
+  );
+
+  r.patch(
+    "/:id",
+    {
+      preHandler: requireAuth("editor"),
+      schema: {
+        tags: ["media"],
+        summary: "Admin: update editable fields on a media item",
+        params: z.object({ id: z.string() }),
+        body: UpdateMediaBodySchema,
+        response: { 200: MediaItemSchema },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req) => mediaService.update(req.params.id, req.body),
   );
 
   r.delete(

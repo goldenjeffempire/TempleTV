@@ -47,6 +47,19 @@ export const CreateMediaBodySchema = z.object({
   publishedAt: z.string().optional(),
 });
 
+export const UpdateMediaBodySchema = z
+  .object({
+    title: z.string().min(1).max(200).optional(),
+    description: z.string().max(5000).optional(),
+    thumbnailUrl: z.string().optional(),
+    duration: z.string().optional(),
+    category: z.string().optional(),
+    preacher: z.string().optional(),
+    featured: z.boolean().optional(),
+    publishedAt: z.string().nullable().optional(),
+  })
+  .refine((b) => Object.keys(b).length > 0, { message: "Patch body must include at least one field" });
+
 export const SignedUploadBodySchema = z.object({
   filename: z.string().min(1).max(200),
   contentType: z.string().min(1).max(120),

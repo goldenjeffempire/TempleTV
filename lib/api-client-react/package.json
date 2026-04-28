@@ -14,5 +14,13 @@
   },
   "dependencies": {
     "@workspace/api-zod": "workspace:*"
+  },
+  "peerDependencies": {
+    "@tanstack/react-query": "^5.0.0",
+    "react": ">=18"
+  },
+  "devDependencies": {
+    "@tanstack/react-query": "catalog:",
+    "@types/react": "catalog:"
   }
 }

@@ -8,6 +8,7 @@ import type {
   CreateMediaBodySchema,
   ListMediaQuerySchema,
   SignedUploadBodySchema,
+  UpdateMediaBodySchema,
 } from "./media.schemas.js";
 
 const videos = schema.videosTable;
@@ -86,6 +87,21 @@ export const mediaService = {
       })
       .returning();
     return toDto(inserted[0]!);
+  },
+
+  async update(id: string, body: z.infer<typeof UpdateMediaBodySchema>) {
+    const patch: Partial<typeof videos.$inferInsert> = {};
+    if (body.title !== undefined) patch.title = body.title;
+    if (body.description !== undefined) patch.description = body.description;
+    if (body.thumbnailUrl !== undefined) patch.thumbnailUrl = body.thumbnailUrl;
+    if (body.duration !== undefined) patch.duration = body.duration;
+    if (body.category !== undefined) patch.category = body.category;
+    if (body.preacher !== undefined) patch.preacher = body.preacher;
+    if (body.featured !== undefined) patch.featured = body.featured;
+    if (body.publishedAt !== undefined) patch.publishedAt = body.publishedAt;
+    const updated = await db.update(videos).set(patch).where(eq(videos.id, id)).returning();
+    if (updated.length === 0) throw new NotFoundError("Media item not found");
+    return toDto(updated[0]!);
   },
 
   async delete(id: string) {
