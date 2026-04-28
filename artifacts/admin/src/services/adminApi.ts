@@ -762,6 +762,17 @@ export interface SSEBusStatus {
   /** Unix ms; 0 means "never". */
   lastReceiveErrorAt: number;
   lastReceiveErrorMsg: string;
+  /**
+   * Server-maintained rolling 5-minute window of per-minute publish/receive
+   * rates, sampled every 10s by the bus module. Empty when the bus is
+   * disabled or has just started (needs >=10s of uptime before the first
+   * sample appears). Used by the SSE bus detail page sparkline so the
+   * chart is populated on first paint instead of starting empty.
+   *
+   * Optional for backward compatibility with older api-server builds (and
+   * with the catch-handler path in /admin/ops/status which doesn't set it).
+   */
+  recentRates?: Array<{ at: number; pubPerMin: number; recvPerMin: number }>;
 }
 
 export const sseBusApi = {

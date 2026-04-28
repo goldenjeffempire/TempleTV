@@ -134,6 +134,94 @@ const stats = {
 };
 
 /**
+ * Server-side rate-history ring buffer.
+ *
+ * Maintains a rolling 5-minute window of per-minute publish/receive rates,
+ * sampled every 10 s by an internal timer that runs only while the bus is
+ * started. Exposed via `BusStatsSnapshot.recentRates` so the SSE bus
+ * detail page in the admin can render a sparkline that's already populated
+ * on first paint instead of waiting ~5 minutes for the client-side polling
+ * to fill it in. Each entry is `{at, pubPerMin, recvPerMin}` — pre-computed
+ * rates rather than raw counters because (a) every consumer wants the rate
+ * (no use case for raw counters in a history), (b) it's the same wire size
+ * either way, and (c) computing on the server means a single source of
+ * truth — every browser sees the same numbers.
+ *
+ * Why a separate sampling timer rather than computing lazily on each
+ * `getBusStatsSnapshot()` call: the snapshot is queried at unpredictable
+ * intervals (admin polling, /admin/sse-bus curl, etc.) and a lazy
+ * approach would produce ragged sample spacing — bad for trend
+ * visualization. The fixed 10 s cadence guarantees evenly-spaced samples
+ * regardless of who's looking.
+ *
+ * Reset rules mirror the frontend tile's client-side rate calc, so the
+ * history stays consistent with what the tile shows: skip samples when
+ * `dtSec < 5` or `dtSec > 90` (timer drift / event-loop lag protection),
+ * and CLEAR the entire buffer on negative deltas — which only happen if
+ * `__resetForTests` was called or a counter overflowed (effectively
+ * never). Server restart is handled implicitly because the module's
+ * in-memory state is lost; the buffer simply starts empty again.
+ */
+const RATE_HISTORY_MAX = 30; // 5 min @ 10 s sampling
+const RATE_HISTORY_INTERVAL_MS = 10_000;
+
+interface RateSample {
+  at: number;
+  pubPerMin: number;
+  recvPerMin: number;
+}
+
+let rateHistory: RateSample[] = [];
+let lastRateBaseline: {
+  at: number;
+  publishesSent: number;
+  framesReceived: number;
+} | null = null;
+let rateTimer: NodeJS.Timeout | null = null;
+
+/**
+ * Take one rate sample. Called by the internal timer every 10 s while the
+ * bus is running, and once at startup to seed the baseline (the first call
+ * pushes nothing because there's no prior baseline to delta against).
+ *
+ * Idempotent in the sense that calling it multiple times in rapid
+ * succession will skip the sub-5 s ones rather than producing inflated
+ * /min readings — same protection the frontend tile applies.
+ */
+function sampleRateNow(): void {
+  const now = Date.now();
+  const prev = lastRateBaseline;
+  if (prev) {
+    const dtSec = (now - prev.at) / 1000;
+    const pubDelta = stats.publishesSent - prev.publishesSent;
+    const recvDelta = stats.framesReceived - prev.framesReceived;
+    if (pubDelta < 0 || recvDelta < 0) {
+      // Counter went backwards — only happens on test reset / overflow.
+      // Clear history so the sparkline doesn't imply continuity.
+      rateHistory = [];
+    } else if (dtSec >= 5 && dtSec <= 90) {
+      const pubPerMin = Math.round((pubDelta / dtSec) * 60);
+      const recvPerMin = Math.round((recvDelta / dtSec) * 60);
+      rateHistory.push({ at: now, pubPerMin, recvPerMin });
+      // Sliding window — drop the oldest sample once we exceed the cap.
+      // Using `slice` rather than `shift` because shift is O(n) on V8
+      // arrays under the hood; for a 30-element array the difference is
+      // immaterial but slice is clearer about the intent ("keep last N").
+      if (rateHistory.length > RATE_HISTORY_MAX) {
+        rateHistory = rateHistory.slice(-RATE_HISTORY_MAX);
+      }
+    }
+    // dtSec out of band → silently skip; baseline is still updated below
+    // so the next tick has a clean prior to compare against.
+  }
+  lastRateBaseline = {
+    at: now,
+    publishesSent: stats.publishesSent,
+    framesReceived: stats.framesReceived,
+  };
+}
+
+/**
  * Snapshot of bus state for telemetry / Mission Control.
  * Cheap to call (no I/O, no allocation beyond the returned object).
  */
@@ -154,6 +242,13 @@ export interface BusStatsSnapshot {
   lastPublishErrorMsg: string;
   lastReceiveErrorAt: number;
   lastReceiveErrorMsg: string;
+  /**
+   * Rolling 5-minute window of per-minute publish/receive rates, sampled
+   * every 10 s by the bus module. Empty when the bus is disabled or has
+   * just started (needs at least one delta pair = 10 s of uptime before
+   * the first sample appears).
+   */
+  recentRates: RateSample[];
 }
 
 export function getBusStatsSnapshot(): BusStatsSnapshot {
@@ -178,6 +273,9 @@ export function getBusStatsSnapshot(): BusStatsSnapshot {
     lastPublishErrorMsg: stats.lastPublishErrorMsg,
     lastReceiveErrorAt: stats.lastReceiveErrorAt,
     lastReceiveErrorMsg: stats.lastReceiveErrorMsg,
+    // Shallow copy so callers mutating the array (slicing, sorting for
+    // display) don't pollute the internal ring buffer.
+    recentRates: rateHistory.slice(),
   };
 }
 
@@ -374,6 +472,15 @@ export async function startLiveEventsBus(): Promise<boolean> {
   stats.startedAt = Date.now();
   isStarted = true;
 
+  // Seed the rate-history baseline immediately so the first timer-driven
+  // sample (10 s from now) has a clean prior to delta against, then start
+  // the sampling timer. `unref()` lets Node exit even if this timer is
+  // somehow the only thing keeping the loop alive — `stopLiveEventsBus()`
+  // also explicitly clears it during graceful shutdown.
+  sampleRateNow();
+  rateTimer = setInterval(sampleRateNow, RATE_HISTORY_INTERVAL_MS);
+  rateTimer.unref();
+
   logger.info(
     {
       instanceId: INSTANCE_ID,
@@ -400,6 +507,16 @@ export async function startLiveEventsBus(): Promise<boolean> {
 export async function stopLiveEventsBus(): Promise<void> {
   if (!isStarted) return;
   isStarted = false;
+
+  // Stop the rate-history sampler immediately. Clear the buffer + baseline
+  // so a subsequent restart begins with a clean slate (no stale samples
+  // from before the shutdown bleeding into the post-restart timeline).
+  if (rateTimer) {
+    clearInterval(rateTimer);
+    rateTimer = null;
+  }
+  lastRateBaseline = null;
+  rateHistory = [];
 
   setBusPublishHook(null);
 
@@ -463,5 +580,14 @@ export function __resetForTests(): void {
   stats.lastPublishErrorMsg = "";
   stats.lastReceiveErrorAt = 0;
   stats.lastReceiveErrorMsg = "";
+  // Rate-history state. The timer is normally cleared by stopLiveEventsBus
+  // before tests reset, but defensively clear here too in case a test
+  // bypassed the lifecycle and left the timer running.
+  if (rateTimer) {
+    clearInterval(rateTimer);
+    rateTimer = null;
+  }
+  lastRateBaseline = null;
+  rateHistory = [];
   setBusPublishHook(null);
 }

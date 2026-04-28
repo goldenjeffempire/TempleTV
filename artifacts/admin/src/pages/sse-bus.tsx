@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import { Link } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -44,73 +44,22 @@ export default function SseBusDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // ── Sparkline ring buffer ─────────────────────────────────────────────
-  // Same client-side delta-sampling approach as `SseBusTile`'s internal
-  // rate calc, but here we keep the FULL history (capped at 30 samples =
-  // 5 min at 15s polling) so we can render a sparkline. Deliberately NOT
-  // shared with the tile's own rate state: the two components compute
-  // their rates independently and stay self-contained. The numbers will
-  // match within rounding because both are sampling the same underlying
-  // counters at roughly the same time.
-  const prevSampleRef = useRef<{
-    publishesSent: number;
-    framesReceived: number;
-    at: number;
-  } | null>(null);
-  const [history, setHistory] = useState<
-    Array<{ at: number; pubPerMin: number; recvPerMin: number }>
-  >([]);
-
+  // The sparkline data is now sourced from `snapshot.recentRates` — a
+  // server-maintained ring buffer of per-minute rate samples taken every
+  // 10s by the bus module. This means the sparkline is populated on first
+  // paint with up to 5 minutes of pre-existing history (a huge UX win
+  // over the previous client-side delta sampling, which started empty
+  // and took a full 5 minutes to fill in). Single source of truth: every
+  // browser viewing this page sees the exact same numbers.
+  //
+  // Server restart resets the buffer naturally (in-memory state is lost),
+  // so a fresh chart after a restart correctly reflects "no history yet"
+  // without any client-side bookkeeping.
   const load = useCallback(async () => {
     try {
       const s = await sseBusApi.getStatus();
       setSnapshot(s);
       setError(null);
-
-      // Reset baseline when bus is disabled — no point sampling rates
-      // off a disabled bus, and we want the "Collecting samples…"
-      // placeholder to appear immediately if it gets re-enabled.
-      if (!s.enabled) {
-        prevSampleRef.current = null;
-        setHistory([]);
-        return;
-      }
-
-      const now = Date.now();
-      const prev = prevSampleRef.current;
-      if (prev) {
-        const dtSec = (now - prev.at) / 1000;
-        const pubDelta = s.publishesSent - prev.publishesSent;
-        const recvDelta = s.framesReceived - prev.framesReceived;
-        // Same three reset conditions as the tile's rate calc:
-        //   1. dtSec < 5  → poll fired too fast (StrictMode dev double
-        //      render, or React Query–style refetch). Floor protects
-        //      against /min extrapolation blowing up.
-        //   2. dtSec > 90 → tab was backgrounded long enough that this
-        //      delta no longer represents recent activity.
-        //   3. Negative deltas → api-server restarted; rebaseline.
-        if (dtSec >= 5 && dtSec <= 90 && pubDelta >= 0 && recvDelta >= 0) {
-          const pubPerMin = Math.round((pubDelta / dtSec) * 60);
-          const recvPerMin = Math.round((recvDelta / dtSec) * 60);
-          setHistory((prevHist) => {
-            const next = [...prevHist, { at: now, pubPerMin, recvPerMin }];
-            // Cap at 30 samples (5 min at 15s cadence). Sliding window
-            // means the sparkline always shows "the last 5 minutes" not
-            // "since I opened this page", which is what an operator
-            // actually wants.
-            return next.length > 30 ? next.slice(-30) : next;
-          });
-        } else if (pubDelta < 0 || recvDelta < 0) {
-          // Server restart — clear history so the sparkline doesn't
-          // misleadingly imply continuity across the restart boundary.
-          setHistory([]);
-        }
-      }
-      prevSampleRef.current = {
-        publishesSent: s.publishesSent,
-        framesReceived: s.framesReceived,
-        at: now,
-      };
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load bus status");
     } finally {
@@ -154,7 +103,9 @@ export default function SseBusDetailPage() {
             </CardContent>
           </Card>
 
-          {snapshot.enabled && <RateHistoryCard history={history} />}
+          {snapshot.enabled && (
+            <RateHistoryCard history={snapshot.recentRates ?? []} />
+          )}
 
           <ConfigCard snapshot={snapshot} />
         </>
@@ -169,11 +120,13 @@ export default function SseBusDetailPage() {
  * Two stacked rows (sent + received), each with a sparkline + three stats
  * (current, peak, avg). Stats are computed inline rather than memoized —
  * the history array is capped at 30 entries and only changes once every
- * 15s, so the cost is trivial.
+ * page poll, so the cost is trivial.
  *
  * When fewer than 2 samples exist, the sparkline shows a "Collecting
- * samples…" placeholder. This is normal on first load (need at least one
- * delta pair before any rate exists) and after any reset condition fires.
+ * samples…" placeholder. This appears for the first ~10s after a fresh
+ * api-server start (the server needs at least one delta pair before any
+ * rate exists), but on a long-running server the chart is populated on
+ * first paint with up to 5 minutes of pre-existing history.
  */
 function RateHistoryCard({
   history,
@@ -188,9 +141,9 @@ function RateHistoryCard({
       <CardHeader className="pb-3">
         <CardTitle className="text-base">5-minute rate history</CardTitle>
         <p className="text-xs text-muted-foreground mt-1">
-          Per-minute rates sampled every 15s on the client. Up to 20 samples
-          shown over a rolling 5-minute window. Resets if the bus is
-          disconnected or the api-server restarts.
+          Per-minute rates sampled every 10s by the api-server. Up to 30
+          samples shown over a rolling 5-minute window. Resets if the
+          api-server restarts.
         </p>
       </CardHeader>
       <CardContent className="space-y-4">
