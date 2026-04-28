@@ -861,9 +861,25 @@ export interface MemoryDiagnostics {
   watchdog: MemoryWatchdogState;
 }
 
+export interface ForceGcResult {
+  ok: true;
+  elapsedMs: number;
+  before: { rssMb: number; heapUsedMb: number; externalMb: number; arrayBuffersMb: number };
+  after: { rssMb: number; heapUsedMb: number; externalMb: number; arrayBuffersMb: number };
+  reclaimedMb: { rss: number; heapUsed: number; external: number; arrayBuffers: number };
+}
+
+/**
+ * Force a synchronous GC cycle on the server. Throws `AdminApiError` for
+ * non-2xx responses — the caller should `catch` and inspect `err.status` /
+ * `err.message`: 501 = process not started with `--expose-gc`, 429 =
+ * cooldown not yet elapsed, 5xx = the GC call itself threw.
+ */
 export const memoryDiagnosticsApi = {
   get: (signal?: AbortSignal) =>
     adminGet<MemoryDiagnostics>("/admin/diagnostics/memory", signal),
+  forceGc: (): Promise<ForceGcResult> =>
+    adminPost<ForceGcResult>("/admin/diagnostics/gc"),
 };
 
 export interface ActiveUploadSession {

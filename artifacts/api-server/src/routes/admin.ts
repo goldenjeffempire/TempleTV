@@ -1055,6 +1055,107 @@ export interface MemoryDiagnosticsResponse {
   watchdog: MemoryWatchdogState;
 }
 
+/**
+ * Force a synchronous V8 garbage collection cycle and report the memory
+ * delta. Useful during an active incident to determine whether the process
+ * is leaking JS-reachable memory (delta is small ⇒ leak is unreclaimable
+ * native/Buffer state) vs. retaining collectible garbage (delta is large
+ * ⇒ leak is JS-object retention and can be tuned by closing references).
+ *
+ * Constraints:
+ *   - Requires the process to be started with `--expose-gc`. Returns 501
+ *     when `global.gc` is not present (no quiet no-op — operators must
+ *     know they need to redeploy with the flag enabled).
+ *   - Forcing GC pauses the event loop; admin-token-gated AND rate-limited
+ *     to once every 10 s per process to prevent click-spam-induced jank
+ *     during an incident.
+ *   - POST (state-changing on the process), idempotent enough to retry but
+ *     not a candidate for caching.
+ */
+const FORCE_GC_MIN_INTERVAL_MS = 10_000;
+let lastForceGcAt = 0;
+
+router.post("/admin/diagnostics/gc", (_req, res) => {
+  const gc = (globalThis as { gc?: () => void }).gc;
+  if (typeof gc !== "function") {
+    res.status(501).json({
+      ok: false,
+      error: "gc-not-exposed",
+      message:
+        "global.gc is not available. Restart the process with --expose-gc " +
+        "(NODE_OPTIONS='--expose-gc') to enable on-demand garbage collection.",
+    });
+    return;
+  }
+  const now = Date.now();
+  const sinceLast = now - lastForceGcAt;
+  if (sinceLast < FORCE_GC_MIN_INTERVAL_MS) {
+    res.status(429).json({
+      ok: false,
+      error: "rate-limited",
+      message: `Force-GC is rate-limited to once every ${FORCE_GC_MIN_INTERVAL_MS / 1000}s. ` +
+        `Try again in ${Math.ceil((FORCE_GC_MIN_INTERVAL_MS - sinceLast) / 1000)}s.`,
+      retryAfterMs: FORCE_GC_MIN_INTERVAL_MS - sinceLast,
+    });
+    return;
+  }
+  lastForceGcAt = now;
+  const before = process.memoryUsage();
+  const t0 = process.hrtime.bigint();
+  try {
+    gc();
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: "gc-threw",
+      message: err instanceof Error ? err.message : String(err),
+    });
+    return;
+  }
+  const elapsedMs = Number(process.hrtime.bigint() - t0) / 1_000_000;
+  const after = process.memoryUsage();
+  const mb = (b: number) => Math.round(b / 1024 / 1024);
+  const delta = {
+    rss: after.rss - before.rss,
+    heapUsed: after.heapUsed - before.heapUsed,
+    external: after.external - before.external,
+    arrayBuffers: after.arrayBuffers - before.arrayBuffers,
+  };
+  logger.info(
+    {
+      elapsedMs: Math.round(elapsedMs * 10) / 10,
+      beforeRssMb: mb(before.rss),
+      afterRssMb: mb(after.rss),
+      reclaimedRssMb: mb(-delta.rss),
+      reclaimedHeapMb: mb(-delta.heapUsed),
+      reclaimedExternalMb: mb(-delta.external),
+    },
+    "Operator-triggered GC complete",
+  );
+  res.json({
+    ok: true,
+    elapsedMs: Math.round(elapsedMs * 10) / 10,
+    before: {
+      rssMb: mb(before.rss),
+      heapUsedMb: mb(before.heapUsed),
+      externalMb: mb(before.external),
+      arrayBuffersMb: mb(before.arrayBuffers),
+    },
+    after: {
+      rssMb: mb(after.rss),
+      heapUsedMb: mb(after.heapUsed),
+      externalMb: mb(after.external),
+      arrayBuffersMb: mb(after.arrayBuffers),
+    },
+    reclaimedMb: {
+      rss: mb(-delta.rss),
+      heapUsed: mb(-delta.heapUsed),
+      external: mb(-delta.external),
+      arrayBuffers: mb(-delta.arrayBuffers),
+    },
+  });
+});
+
 router.get("/admin/diagnostics/memory", (_req, res) => {
   const m = process.memoryUsage();
   res.json({

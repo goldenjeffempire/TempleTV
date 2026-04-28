@@ -19,11 +19,17 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, MemoryStick, TrendingUp } from "lucide-react";
+import { AlertTriangle, MemoryStick, Recycle, TrendingUp } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { memoryDiagnosticsApi, type MemoryDiagnostics } from "@/services/adminApi";
+import {
+  AdminApiError,
+  memoryDiagnosticsApi,
+  type ForceGcResult,
+  type MemoryDiagnostics,
+} from "@/services/adminApi";
 
 const POLL_INTERVAL_MS = 30_000;
 const MAX_SAMPLES = 60;
@@ -151,10 +157,20 @@ function Sparkline({
   );
 }
 
+interface GcOutcome {
+  at: number;
+  kind: "success" | "error";
+  message: string;
+  reclaimed?: ForceGcResult["reclaimedMb"];
+  elapsedMs?: number;
+}
+
 export function MemoryDiagnosticsCard() {
   const [snapshot, setSnapshot] = useState<MemoryDiagnostics | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [gcInFlight, setGcInFlight] = useState(false);
+  const [lastGc, setLastGc] = useState<GcOutcome | null>(null);
   const samplesRef = useRef<Sample[]>([]);
   const [, forceRender] = useState(0);
 
@@ -186,6 +202,42 @@ export function MemoryDiagnosticsCard() {
     const id = window.setInterval(load, POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
   }, [load]);
+
+  const triggerGc = useCallback(async () => {
+    if (gcInFlight) return;
+    setGcInFlight(true);
+    try {
+      const result = await memoryDiagnosticsApi.forceGc();
+      setLastGc({
+        at: Date.now(),
+        kind: "success",
+        message: `Reclaimed ${result.reclaimedMb.rss} MiB RSS in ${result.elapsedMs} ms`,
+        reclaimed: result.reclaimedMb,
+        elapsedMs: result.elapsedMs,
+      });
+      // Refresh the snapshot so the tiles + sparklines reflect post-GC state
+      // immediately — operators expect the chart to dip when they hit the
+      // button, not on the next 30 s poll.
+      void load();
+    } catch (e) {
+      let message = "Force-GC failed";
+      if (e instanceof AdminApiError) {
+        if (e.status === 501) {
+          message =
+            "GC not exposed — restart the API process with NODE_OPTIONS='--expose-gc'.";
+        } else if (e.status === 429) {
+          message = "Rate-limited — try again in a few seconds.";
+        } else {
+          message = `${e.status}: ${e.message}`;
+        }
+      } else if (e instanceof Error) {
+        message = e.message;
+      }
+      setLastGc({ at: Date.now(), kind: "error", message });
+    } finally {
+      setGcInFlight(false);
+    }
+  }, [gcInFlight, load]);
 
   if (loading && !snapshot) {
     return (
@@ -255,6 +307,19 @@ export function MemoryDiagnosticsCard() {
           >
             uptime {formatUptime(snapshot.uptimeSecs)} · {samples.length}/{MAX_SAMPLES} samples
           </Badge>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={gcInFlight}
+            onClick={triggerGc}
+            data-testid="memory-force-gc-button"
+            className="h-7 px-2 text-[11px]"
+            title="Trigger a synchronous V8 garbage collection cycle on the API process. Requires --expose-gc."
+          >
+            <Recycle className="w-3 h-3 mr-1" />
+            {gcInFlight ? "Running…" : "Force GC"}
+          </Button>
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -333,6 +398,51 @@ export function MemoryDiagnosticsCard() {
             allowNegative
           />
         </div>
+
+        {lastGc && (
+          <div
+            className={`rounded-md border p-3 text-xs ${
+              lastGc.kind === "success"
+                ? "border-emerald-600/40 bg-emerald-600/5"
+                : "border-red-600/40 bg-red-600/5"
+            }`}
+            data-testid="memory-force-gc-result"
+          >
+            <div className="flex items-center justify-between">
+              <span className="font-medium">
+                {lastGc.kind === "success" ? "Last GC" : "Last GC failed"}
+              </span>
+              <span className="font-mono text-muted-foreground">
+                {new Date(lastGc.at).toLocaleTimeString()}
+              </span>
+            </div>
+            <div className="mt-1 text-muted-foreground">{lastGc.message}</div>
+            {lastGc.kind === "success" && lastGc.reclaimed && (
+              <div className="mt-2 grid grid-cols-4 gap-2 font-mono text-[11px]">
+                <div>
+                  <span className="text-muted-foreground">RSS </span>
+                  {lastGc.reclaimed.rss >= 0 ? "−" : "+"}
+                  {Math.abs(lastGc.reclaimed.rss)} MiB
+                </div>
+                <div>
+                  <span className="text-muted-foreground">heap </span>
+                  {lastGc.reclaimed.heapUsed >= 0 ? "−" : "+"}
+                  {Math.abs(lastGc.reclaimed.heapUsed)} MiB
+                </div>
+                <div>
+                  <span className="text-muted-foreground">ext </span>
+                  {lastGc.reclaimed.external >= 0 ? "−" : "+"}
+                  {Math.abs(lastGc.reclaimed.external)} MiB
+                </div>
+                <div>
+                  <span className="text-muted-foreground">buf </span>
+                  {lastGc.reclaimed.arrayBuffers >= 0 ? "−" : "+"}
+                  {Math.abs(lastGc.reclaimed.arrayBuffers)} MiB
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         <div>
           <div className="mb-2 text-xs font-medium text-muted-foreground">
