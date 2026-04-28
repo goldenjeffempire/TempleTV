@@ -81,6 +81,12 @@ export default defineConfig({
         target: "http://localhost:8080",
         changeOrigin: true,
         secure: false,
+        // Forward WebSocket upgrades for /api/playback/ws so the TV's
+        // useLiveSync hook can connect to the playback engine through the
+        // same dev origin it uses for HTTP. Without this, the WS handshake
+        // would 404 at the dev server and useLiveSync would loop on its
+        // exponential-backoff reconnect timer.
+        ws: true,
       },
     },
     fs: {

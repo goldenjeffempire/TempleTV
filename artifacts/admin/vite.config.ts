@@ -86,6 +86,10 @@ export default defineConfig({
         target: "http://localhost:8080",
         changeOrigin: true,
         secure: false,
+        // Forward WebSocket upgrades for /api/playback/ws so the admin
+        // PlaybackClient can connect to the playback engine through the
+        // same dev origin it uses for HTTP.
+        ws: true,
       },
     },
     fs: {
