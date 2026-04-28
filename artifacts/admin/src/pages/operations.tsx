@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -129,6 +129,88 @@ function SseBusTile({ sseBus }: { sseBus: SSEBusStatus | undefined }) {
   // the badge or the metrics line tells them something is off.
   const [errorsExpanded, setErrorsExpanded] = useState(false);
 
+  // ── Live publish/receive rate (per minute) ────────────────────────────
+  // The snapshot only carries cumulative counters; to get a rate we sample
+  // the delta between two consecutive polls. This is computed entirely on
+  // the client to avoid adding any per-second sampling state to the bus
+  // module on the server (which would need its own ring buffer + ticker
+  // for what is purely a UI nicety).
+  //
+  // `prevSampleRef` holds the previous snapshot's counter values + the
+  // wall-clock time we observed them at. We use a ref (not state) for the
+  // baseline so updating it doesn't itself trigger a re-render — only the
+  // computed `rates` go into state, and only when they actually change
+  // (most ticks they will, by 1-2/min, but it's still much cheaper than
+  // re-running the rate calc inside render).
+  const prevSampleRef = useRef<{
+    publishesSent: number;
+    framesReceived: number;
+    at: number;
+  } | null>(null);
+  const [rates, setRates] = useState<{
+    pubPerMin: number;
+    recvPerMin: number;
+  } | null>(null);
+
+  useEffect(() => {
+    // Reset baseline when the bus is disabled or the field disappears
+    // (e.g. ops/status hit its catch handler). Avoids a stale rate
+    // surviving across a transient outage.
+    if (!sseBus || !sseBus.enabled) {
+      prevSampleRef.current = null;
+      setRates(null);
+      return;
+    }
+    const now = Date.now();
+    const prev = prevSampleRef.current;
+    if (prev) {
+      const dtSec = (now - prev.at) / 1000;
+      const pubDelta = sseBus.publishesSent - prev.publishesSent;
+      const recvDelta = sseBus.framesReceived - prev.framesReceived;
+      // Three reset conditions, all of which mean the prior baseline is
+      // not comparable to the current snapshot:
+      //   1. dtSec < 5  → poll fired too fast (React StrictMode double
+      //      render in dev, or React Query–style refetch immediately
+      //      after a manual refresh). A 5s floor keeps the per-minute
+      //      extrapolation from blowing up by 30× on tiny intervals.
+      //   2. dtSec > 90 → page was likely backgrounded (the parent uses
+      //      visibility-aware polling at 30s; anything >90s means we
+      //      missed at least one tick and the delta represents events
+      //      "since last visible" not "in the last 30s" — which would
+      //      be misleading to display as "/min" without context).
+      //   3. Either delta is negative → the api-server restarted (or
+      //      __resetForTests was called) and counters went backwards.
+      //      Drop this sample and rebaseline so the next pair is clean.
+      if (dtSec >= 5 && dtSec <= 90 && pubDelta >= 0 && recvDelta >= 0) {
+        const pubPerMin = Math.round((pubDelta / dtSec) * 60);
+        const recvPerMin = Math.round((recvDelta / dtSec) * 60);
+        // Only update state when the rounded values actually change to
+        // avoid a no-op re-render of the parent metrics card on every
+        // poll when the bus is idle (both rates 0).
+        setRates((prevRates) => {
+          if (
+            prevRates !== null &&
+            prevRates.pubPerMin === pubPerMin &&
+            prevRates.recvPerMin === recvPerMin
+          ) {
+            return prevRates;
+          }
+          return { pubPerMin, recvPerMin };
+        });
+      } else {
+        setRates(null);
+      }
+    }
+    // Update baseline AFTER computing the rate so the next render uses
+    // this snapshot as its prior. Storing in a ref means no follow-up
+    // re-render is triggered just from the baseline shifting.
+    prevSampleRef.current = {
+      publishesSent: sseBus.publishesSent,
+      framesReceived: sseBus.framesReceived,
+      at: now,
+    };
+  }, [sseBus]);
+
   // Treat missing field as "off" (single-instance default).
   if (!sseBus || sseBus.health === "off") {
     return (
@@ -160,6 +242,19 @@ function SseBusTile({ sseBus }: { sseBus: SSEBusStatus | undefined }) {
   if (sseBus.framesReceived > 0) metrics.push(`${sseBus.framesReceived.toLocaleString()} received`);
   if (sseBus.reconnects > 0) metrics.push(`${sseBus.reconnects.toLocaleString()} reconnects`);
   const metricsLine = metrics.length > 0 ? ` · ${metrics.join(" · ")}` : "";
+
+  // Live rate line — only rendered once we have at least one valid sample
+  // pair (i.e. starting from the second poll), AND only if at least one
+  // rate is non-zero. An idle bus showing "0/min sent · 0/min received"
+  // would just be visual noise; the cumulative metrics line above already
+  // tells operators "the bus is up but quiet". When traffic IS flowing,
+  // the rate is the most operationally useful number on the tile because
+  // it answers "is the bus busy right now?" without doing arithmetic on
+  // counters in your head.
+  const showRate = rates !== null && (rates.pubPerMin > 0 || rates.recvPerMin > 0);
+  const rateParts: string[] = [];
+  if (rates && rates.pubPerMin > 0) rateParts.push(`~${rates.pubPerMin}/min sent`);
+  if (rates && rates.recvPerMin > 0) rateParts.push(`~${rates.recvPerMin}/min received`);
 
   // Build the "recent errors" list from the snapshot. Both timestamps are
   // 0 by default (sentinel for "never"); we only render the expander row
@@ -193,6 +288,11 @@ function SseBusTile({ sseBus }: { sseBus: SSEBusStatus | undefined }) {
             {sseBus.summary}
             {metricsLine}
           </div>
+          {showRate && (
+            <div className="mt-1 text-xs font-medium text-emerald-700 dark:text-emerald-400">
+              {rateParts.join(" · ")}
+            </div>
+          )}
         </div>
         <StatusBadge status={sseBus.health === "ok" ? "ok" : "degraded"} />
       </div>
