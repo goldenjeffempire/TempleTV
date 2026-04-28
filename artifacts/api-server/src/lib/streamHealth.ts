@@ -17,7 +17,7 @@
  */
 
 import {
-  broadcastLiveEvent,
+  broadcastLiveEventLocal,
   getSSEClientCount,
   getSSEClientCountsByPlatform,
   registerSSEWriteObserver,
@@ -651,7 +651,13 @@ export function startStreamHealthEmitter(): void {
     if (getSSEClientCount() === 0) return;
     try {
       const snapshot = buildSnapshot();
-      broadcastLiveEvent("stream-health", snapshot);
+      // Per-instance pipeline-health snapshot — never publish to the
+      // cross-instance bus. The snapshot describes THIS instance's
+      // SSE-write outcomes, ffmpeg health, and HLS probe results;
+      // cross-publishing would just have every other instance receive
+      // a snapshot of the publisher's pipeline (semantically wrong) at
+      // 1 Hz × N instances (bandwidth waste).
+      broadcastLiveEventLocal("stream-health", snapshot);
     } catch {
       // Never crash the timer
     }

@@ -11,6 +11,7 @@ import { assertFfmpegAvailable } from "./lib/ffmpeg";
 import { startNotificationScheduler } from "./lib/notification-scheduler";
 import { startLiveOverrideScheduler } from "./lib/live-override-scheduler";
 import { startSSEHeartbeat, closeAllSSEClients } from "./lib/liveEvents";
+import { startLiveEventsBus, stopLiveEventsBus } from "./lib/liveEventsBus";
 import { startBroadcastTransitionTicker } from "./routes/broadcast";
 import { startSignedUrlCacheWatchdog } from "./lib/signedUrlCacheWatchdog";
 import { startBroadcastLatencyWatchdog } from "./lib/broadcastLatencyWatchdog";
@@ -227,6 +228,20 @@ async function startApiSchedulers() {
   startLiveIngestHealthMonitor();
   startSignedUrlCacheWatchdog();
   startBroadcastLatencyWatchdog();
+
+  // Cross-instance SSE bus — bridges `broadcastLiveEvent()` calls across
+  // Render instances via Redis pub/sub. No-op when REDIS_URL is unset, so
+  // single-instance deploys (today's default) are completely unaffected.
+  // Awaited so that if Redis IS configured we either succeed or log the
+  // initial-connect failure before flipping `/healthz` to ready — but we
+  // do NOT block ready on bus health, because local fanout works regardless
+  // of bus state and a healthy single-instance can still serve all traffic.
+  startLiveEventsBus().catch((err) => {
+    logger.error(
+      { err: err instanceof Error ? err.message : String(err) },
+      "startLiveEventsBus crashed (continuing — local SSE fanout unaffected)",
+    );
+  });
 
   // Log cache backend once it has had time to connect (2s warm-up).
   setTimeout(() => {
@@ -527,6 +542,17 @@ function shutdown(signal: string) {
     }
 
     if (server) {
+      // Stop the cross-instance bus BEFORE tearing down local SSE clients.
+      // Order matters: unhooking the publish callback first prevents any
+      // in-flight `broadcastLiveEvent()` call during drain from publishing
+      // on a closing connection. The `void`'d promise is bounded internally
+      // (2s per Redis quit), so it cannot block the 15s overall shutdown.
+      void stopLiveEventsBus().catch((err) => {
+        logger.warn(
+          { err: err instanceof Error ? err.message : String(err) },
+          "Error stopping live events bus (continuing shutdown)",
+        );
+      });
       closeAllSSEClients();
       server.close((err) => {
         if (err) {

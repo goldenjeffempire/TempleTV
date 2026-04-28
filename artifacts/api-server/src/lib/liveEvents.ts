@@ -176,7 +176,35 @@ export function registerSSEWriteObserver(observer: WriteObserver): () => void {
   return () => writeObservers.delete(observer);
 }
 
-export function broadcastLiveEvent(event: string, data: unknown): void {
+// ─── Cross-instance bus integration ──────────────────────────────────────
+//
+// `liveEventsBus.ts` registers itself here on startup so this module can
+// notify the bus on every (non-local-only) broadcast WITHOUT importing the
+// bus module directly (one-way imports prevent a circular dep — the bus
+// imports the local fanout function below; we only know about it via this
+// settable hook).
+//
+// When the hook is null (REDIS_URL unset, or before the bus is armed, or
+// after `stopLiveEventsBus()`), `broadcastLiveEvent` behaves identically
+// to the pre-bus implementation: local-only fanout, no Redis traffic. The
+// 36 existing call sites of `broadcastLiveEvent` need no changes — bus
+// integration is purely additive.
+type BusPublishHook = (event: string, data: unknown) => void;
+let busPublishHook: BusPublishHook | null = null;
+
+/** Called by `liveEventsBus.startLiveEventsBus()` / `stopLiveEventsBus()`. */
+export function setBusPublishHook(hook: BusPublishHook | null): void {
+  busPublishHook = hook;
+}
+
+/**
+ * Local fanout — deliver an event to all SSE clients connected to THIS
+ * process only. Public so `liveEventsBus.ts` can call it on inbound
+ * cross-instance frames without re-publishing them (which would loop
+ * forever). Most code should call `broadcastLiveEvent` (cross-instance)
+ * or `broadcastLiveEventLocal` (explicit local-only) instead.
+ */
+export function localBroadcastLiveEvent(event: string, data: unknown): void {
   const id = ++eventSequence;
   const payload = `id: ${id}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   const dead: SSEClient[] = [];
@@ -230,6 +258,58 @@ export function broadcastLiveEvent(event: string, data: unknown): void {
       try { obs(ok, dead.length); } catch {}
     }
   }
+}
+
+/**
+ * Broadcast an SSE event to all clients across ALL instances.
+ *
+ * Behavior:
+ *   1. Always fans out to local SSE clients first (synchronous, fast path).
+ *   2. If the cross-instance bus is armed (REDIS_URL set + bus started),
+ *      ALSO publishes to the bus so other instances deliver it to their
+ *      local clients. Fire-and-forget — bus failures never throw here
+ *      and never delay the local fanout.
+ *
+ * This is the function 36 call sites across the codebase already use.
+ * It keeps the same name and signature as the pre-bus implementation —
+ * the cross-instance behavior is added transparently when REDIS_URL is
+ * set in the deploy environment.
+ *
+ * For events that should NOT propagate cross-instance (per-instance
+ * heartbeats, per-instance pipeline health), use `broadcastLiveEventLocal`
+ * instead.
+ */
+export function broadcastLiveEvent(event: string, data: unknown): void {
+  localBroadcastLiveEvent(event, data);
+  // Notify the cross-instance bus AFTER local delivery so a slow Redis
+  // can never delay an admin-action's user-visible feedback. The hook
+  // is null when the bus is disabled — zero overhead in single-instance
+  // deployments.
+  if (busPublishHook) {
+    try {
+      busPublishHook(event, data);
+    } catch {
+      // The hook implementation is itself fire-and-forget (returns void,
+      // catches its own promise rejections); reaching this catch means
+      // a synchronous throw inside the hook setter — should not happen
+      // but we swallow it to guarantee local fanout is never disturbed
+      // by bus errors.
+    }
+  }
+}
+
+/**
+ * Broadcast an SSE event to local clients ONLY. Never published to the
+ * cross-instance bus.
+ *
+ * Use this for events that describe per-instance state (e.g. heartbeats
+ * carrying per-instance client counts, per-instance pipeline-health
+ * snapshots). Cross-publishing those would just have every other instance
+ * receive a snapshot of THIS instance's state, which is at best useless
+ * and at worst misleading on the receiver's dashboards.
+ */
+export function broadcastLiveEventLocal(event: string, data: unknown): void {
+  localBroadcastLiveEvent(event, data);
 }
 
 export function writeSingleClient(client: SSEClient, event: string, data: unknown): void {
@@ -314,7 +394,11 @@ export function startSSEHeartbeat(): void {
       } catch {}
     }
 
-    broadcastLiveEvent("heartbeat", { ts: now, clients: clients.size });
+    // Heartbeat is per-instance state (carries this instance's local
+    // client count). Cross-publishing it would have every other instance
+    // receive a heartbeat with a count that doesn't describe their own
+    // clients, polluting telemetry and wasting bus bandwidth.
+    broadcastLiveEventLocal("heartbeat", { ts: now, clients: clients.size });
   }, 20_000);
 
   heartbeatTimer.unref();

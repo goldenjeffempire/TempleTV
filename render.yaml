@@ -114,16 +114,24 @@ services:
     pullRequestPreviewsEnabled: false   # PR previews would clone all 5
                                         # services per PR — we manage staging
                                         # manually instead.
-    numInstances: 1                     # Single instance is intentional —
-                                        # SSE clients (broadcast lifecycle,
-                                        # transition-imminent, ops events)
-                                        # need session affinity that Render's
-                                        # LB doesn't guarantee across pods.
-                                        # Multi-instance requires Redis
-                                        # pub/sub fanout (REDIS_URL groundwork
-                                        # exists but the SSE bridge is not
-                                        # wired yet — that's the next
-                                        # horizontal-scale milestone).
+    numInstances: 1                     # Cross-instance SSE fanout via Redis
+                                        # pub/sub IS now wired (see
+                                        # lib/liveEventsBus.ts) — bumping this
+                                        # to 2+ is technically safe AS LONG AS
+                                        # REDIS_URL is set on the service so
+                                        # broadcast-lifecycle / queue-update /
+                                        # ops-alert events fanout across pods.
+                                        # Heartbeat + per-instance stream-health
+                                        # snapshots stay correctly local-only
+                                        # (see broadcastLiveEventLocal in
+                                        # liveEvents.ts). Kept at 1 here
+                                        # pending an explicit ops-driven
+                                        # capacity bump, since current load is
+                                        # nowhere near the standard plan
+                                        # ceiling and adding instances increases
+                                        # cost linearly. Telemetry exposed via
+                                        # getBusStatsSnapshot() lets ops verify
+                                        # the bus is healthy before scaling.
 
     # ── Build & start ──────────────────────────────────────────────────────
     # `--prefer-offline` reuses Render's pnpm cache (cuts install from ~90 s
