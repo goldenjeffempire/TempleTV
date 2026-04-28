@@ -37,6 +37,7 @@ import { usePollingWhenVisible } from "@/hooks/usePollingWhenVisible";
 import { ErrorAlert } from "@/components/shared/error-alert";
 import { MetricCard } from "@/components/shared/metric-card";
 import { SseBusTile } from "@/components/operations/sse-bus-tile";
+import { MemoryDiagnosticsCard } from "@/components/operations/memory-diagnostics-card";
 import { StatusBadge, StatusIcon, type CheckStatus } from "@/components/operations/status-badge";
 import { useRecentSSEEvents, useSSE } from "@/contexts/SSEContext";
 
@@ -1266,6 +1267,8 @@ export default function Operations() {
               </CardContent>
             </Card>
           )}
+
+          <MemoryDiagnosticsCard />
 
           <SlowRequestsCard />
         </>

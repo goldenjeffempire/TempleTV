@@ -1035,6 +1035,24 @@ router.get("/admin/ops/slow-requests", (_req, res) => {
  * `/api/admin/*` — see middlewares/security.ts). No body, no side effects,
  * safe to poll at any cadence.
  */
+export interface MemoryDiagnosticsResponse {
+  generatedAt: string;
+  uptimeSecs: number;
+  memory: {
+    rss: number;
+    heapUsed: number;
+    heapTotal: number;
+    external: number;
+    arrayBuffers: number;
+    rssMb: number;
+    heapUsedMb: number;
+    heapTotalMb: number;
+    externalMb: number;
+    arrayBuffersMb: number;
+  };
+  caches: { name: string; size: number }[];
+}
+
 router.get("/admin/diagnostics/memory", (_req, res) => {
   const m = process.memoryUsage();
   res.json({

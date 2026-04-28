@@ -820,6 +820,29 @@ export const slowRequestsApi = {
     adminGet<SlowRequestsSnapshot>("/admin/ops/slow-requests", signal),
 };
 
+export interface MemoryDiagnostics {
+  generatedAt: string;
+  uptimeSecs: number;
+  memory: {
+    rss: number;
+    heapUsed: number;
+    heapTotal: number;
+    external: number;
+    arrayBuffers: number;
+    rssMb: number;
+    heapUsedMb: number;
+    heapTotalMb: number;
+    externalMb: number;
+    arrayBuffersMb: number;
+  };
+  caches: { name: string; size: number }[];
+}
+
+export const memoryDiagnosticsApi = {
+  get: (signal?: AbortSignal) =>
+    adminGet<MemoryDiagnostics>("/admin/diagnostics/memory", signal),
+};
+
 export interface ActiveUploadSession {
   sessionId: string;
   title: string;
