@@ -423,7 +423,7 @@ importers:
         specifier: ^1.6.16
         version: 1.6.16
       react:
-        specifier: 19.1.0
+        specifier: 'catalog:'
         version: 19.1.0
       react-native:
         specifier: 0.81.5

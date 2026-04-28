@@ -16,8 +16,9 @@
     "verify:render-yaml": "pnpm --filter @workspace/scripts run verify-render-yaml",
     "verify:env-secrets": "pnpm --filter @workspace/scripts run verify-env-secrets",
     "verify:db-schema-completeness": "pnpm --filter @workspace/scripts run verify-db-schema-completeness",
-    "verify": "pnpm run verify:codegen && pnpm run verify:catalog && pnpm run verify:recharts-shim && pnpm run verify:react-types-singleton && pnpm run verify:tsconfig-parity && pnpm run verify:render-yaml && pnpm run verify:env-secrets && pnpm run verify:db-schema-completeness && pnpm run typecheck",
-    "verify:production": "pnpm run verify:codegen && pnpm run verify:catalog && pnpm run verify:recharts-shim && pnpm run verify:react-types-singleton && pnpm run verify:tsconfig-parity && pnpm run verify:render-yaml && pnpm run verify:env-secrets && pnpm run verify:db-schema-completeness && pnpm run typecheck:production"
+    "verify:catalog-callsites": "pnpm --filter @workspace/scripts run verify-catalog-callsites",
+    "verify": "pnpm run verify:codegen && pnpm run verify:catalog && pnpm run verify:catalog-callsites && pnpm run verify:recharts-shim && pnpm run verify:react-types-singleton && pnpm run verify:tsconfig-parity && pnpm run verify:render-yaml && pnpm run verify:env-secrets && pnpm run verify:db-schema-completeness && pnpm run typecheck",
+    "verify:production": "pnpm run verify:codegen && pnpm run verify:catalog && pnpm run verify:catalog-callsites && pnpm run verify:recharts-shim && pnpm run verify:react-types-singleton && pnpm run verify:tsconfig-parity && pnpm run verify:render-yaml && pnpm run verify:env-secrets && pnpm run verify:db-schema-completeness && pnpm run typecheck:production"
   },
   "private": true,
   "engines": {
