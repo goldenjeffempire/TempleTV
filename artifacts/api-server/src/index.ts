@@ -15,6 +15,7 @@ import { startLiveEventsBus, stopLiveEventsBus } from "./lib/liveEventsBus";
 import { startBroadcastTransitionTicker } from "./routes/broadcast";
 import { startSignedUrlCacheWatchdog } from "./lib/signedUrlCacheWatchdog";
 import { startBroadcastLatencyWatchdog } from "./lib/broadcastLatencyWatchdog";
+import { startMemoryWatchdog } from "./lib/memoryWatchdog";
 import { startLiveIngestHealthMonitor, stopLiveIngestHealthMonitor } from "./lib/liveIngestHealth";
 import { startStreamHealthEmitter } from "./lib/streamHealth";
 import { startYoutubeCatalogueScheduler } from "./routes/youtube";
@@ -228,6 +229,7 @@ async function startApiSchedulers() {
   startLiveIngestHealthMonitor();
   startSignedUrlCacheWatchdog();
   startBroadcastLatencyWatchdog();
+  startMemoryWatchdog();
 
   // Cross-instance SSE bus — bridges `broadcastLiveEvent()` calls across
   // Render instances via Redis pub/sub. No-op when REDIS_URL is unset, so
