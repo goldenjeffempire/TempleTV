@@ -1,0 +1,91 @@
+Stabilize, optimize, and production-harden the entire Temple TV platform (Web, Mobile App, Smart TV, Backend, Admin Panel) to enterprise-grade standards. Ensure zero critical bugs, instant playback switching, consistent data sync, and successful Play Store deployment readiness.
+
+🧠 Scope of Fixes
+1. 🎬 Broadcast Player (CRITICAL)
+Ensure zero delay (≤1ms perceived switch) between videos
+Eliminate buffering gaps, blank frames, or UI freeze
+Preload next stream while current is playing (double-buffer pipeline)
+Implement continuous queue-based playback engine
+Sync behavior across:
+Hero section player
+Dedicated broadcast page
+Mobile app player
+Smart TV player
+2. 🔄 Real-Time Sync System (CRITICAL)
+Any upload via admin panel must reflect instantly across:
+Web platform
+Mobile app (Android/iOS)
+Smart TV app
+Implement:
+WebSocket or real-time pub/sub layer
+Cache invalidation strategy (no stale content)
+Global state synchronization
+3. ⚙️ Backend Stability & Performance
+Fix all unstable API endpoints causing:
+Timeouts
+Slow responses
+Failed requests
+Optimize:
+Database queries (indexing + query reduction)
+Response payload sizes
+API caching layer (Redis or equivalent)
+Add graceful error handling + retry logic
+Ensure 99.9% uptime behavior under load
+4. 📦 Build & Dependency System (CRITICAL)
+Fix pnpm / npm install failures
+Resolve:
+Dependency conflicts
+Lockfile corruption
+Network timeout issues
+Enforce:
+Clean install pipeline
+Deterministic builds
+Reduce concurrency safely for CI/CD stability
+5. 🔀 Git & Source Control
+Resolve all merge conflicts cleanly
+Ensure:
+Single source of truth on main
+No unmerged files
+Enforce safe pull strategy:
+Rebase OR merge consistency (standardize)
+Add pre-commit validation if missing
+6. 📱 Mobile App (Android/iOS)
+Ensure:
+Smooth navigation (no lag between screens)
+Instant content updates from backend
+Stable video playback engine
+Fix:
+Crash points
+Memory leaks
+Background playback issues
+7. 📺 Smart TV App
+Optimize:
+Remote navigation latency
+Video buffering strategy
+UI rendering performance
+Ensure identical content sync with web/mobile
+8. 🚀 Deployment Readiness (Play Store)
+Generate production-ready AAB build
+Validate:
+Signing config
+Versioning consistency
+ProGuard/R8 optimization
+Ensure:
+No debug logs
+No exposed dev endpoints
+Fully enterprise-grade release
+🧪 Acceptance Criteria (NON-NEGOTIABLE)
+✅ Video switch latency: near-instant (imperceptible delay)
+✅ Zero broken sync across platforms
+✅ Admin upload reflects everywhere in real-time
+✅ No build failures (CI/CD clean run)
+✅ No unresolved git conflicts
+✅ Backend handles concurrent load without degradation
+✅ App ready for Play Store production release
+🧱 Engineering Principle
+Prefer streaming, preloading, caching, and event-driven architecture
+Eliminate blocking operations in UI or playback layers
+Treat all platforms as a single synchronized ecosystem
+🚀 Final Outcome
+
+A fully stable, real-world broadcast-grade digital TV platform operating seamlessly across all devices with enterprise-level performance and deployment readiness.

@@ -3,6 +3,7 @@ import { keyEventToAction } from "../lib/tvKeys";
 import { HlsVideoPlayer } from "../components/HlsVideoPlayer";
 import { BroadcastChannelBug } from "../components/BroadcastChannelBug";
 import { BroadcastLiveCompanion } from "../components/BroadcastLiveCompanion";
+import ChatOverlay from "../components/ChatOverlay";
 import { useLiveSync } from "../hooks/useLiveSync";
 import { reportLiveFailure, useLiveFailureFor } from "../lib/liveFailureSignal";
 
@@ -876,6 +877,13 @@ function YouTubePlayer({
           </div>
         </div>
       )}
+      {/*
+        Live broadcast chat overlay. Mounted on the player so viewers can
+        join the conversation while watching a live or scheduled segment.
+        Compact mode keeps it collapsed by default on the player so it
+        doesn't obscure the video; viewers expand with a single tap.
+      */}
+      {isLive ? <ChatOverlay compact /> : null}
     </div>
   );
 }

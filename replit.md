@@ -1,5 +1,116 @@
 # Temple TV (JCTM) Broadcasting Platform
 
+## Phase 4.4 — Real-time Live Chat (April 28 2026, Round 5)
+
+A broadcast-aware live-chat system was added so viewers can converse during
+the Temple TV broadcast and moderators can manage the room in real time.
+The architecture mirrors the **playback engine** exactly: an in-process
+event bus with a Redis-adapter stub for future horizontal scale, REST
+snapshot endpoints for cold start, and a WebSocket gateway for steady-
+state push. There is **no polling** anywhere in the chat stack.
+
+### Server (`artifacts/api-server/src/chat/`)
+
+- `types.ts` — wire contract: `ChatMessage`, `ChatServerEvent` union
+  (`state | message | delete | moderate | presence | ack | error | ping`),
+  `ChatClientFrame` union (`send | pong`).
+- `eventBus.ts` — in-process pub/sub `Map<channelId, Set<listener>>`
+  with a `redisAdapter` stub that logs `REDIS_URL not configured` and
+  no-ops, identical to `liveEventsBus` in the playback module.
+- `moderation.ts` — token-bucket rate limit (5 messages / 10 s per
+  session), profanity masker, 500-char body cap, 3-second duplicate
+  guard, mute/ban TTL cache populated from `chat_moderation`.
+- `presence.ts` — `Map<channelId, Set<sessionId>>` driving
+  `viewers` counts; presence frames are debounced to 200 ms.
+- `chatStore.ts` — drizzle ops: `insertMessage`, `recentMessages`
+  (channel-id + created-at desc, limit ≤ 200), `softDelete`,
+  `applyModeration`, `lookupActiveModeration`.
+- `wsGateway.ts` — `/api/chat/ws` upgrade. Auth precedence:
+  1. `?token=<ADMIN_API_TOKEN>` → `Moderator` identity, bypasses rate
+     limit and dup guard.
+  2. `?token=<JWT>` → authenticated user, display name from claims.
+  3. No token → anonymous `Viewer-XXXX` (4-hex of session id).
+  Heartbeat: 25 s ping, drops sockets that miss two pongs. Hard cap
+  `MAX_CHAT_WS_CLIENTS=5000` (env-overridable). IP stored as
+  `sha256(ip).slice(0, 16)` in `chat_messages.ip_hash`.
+
+### Database (`lib/db/src/schema/chat.ts`)
+
+- `chat_messages` — `(id uuid pk, channel_id, user_id nullable,
+  display_name, body, broadcast_item_id nullable, created_at,
+  deleted_at nullable, deleted_by nullable, ip_hash)` with
+  `(channel_id, created_at desc)` index for history.
+- `chat_moderation` — `(id, subject_kind enum user|ip, subject_id,
+  action enum mute|ban, reason nullable, expires_at nullable,
+  created_at, created_by)` with `(subject_kind, subject_id, action)`
+  index for hot-path lookups.
+
+### REST routes (`artifacts/api-server/src/routes/chat.ts`)
+
+- `GET /api/chat/history?channelId=&limit=` — initial paint and
+  reconnect catch-up only. Listed in `lib/api-spec/openapi.yaml` under
+  the `chat` tag.
+- `GET /api/chat/diagnostics` — connected-socket count, viewers per
+  channel, buffered-messages per channel.
+- `POST /api/admin/chat/messages/:id/delete` — soft-delete; emits a
+  `delete` frame on the bus.
+- `POST /api/admin/chat/moderate` — mute/ban with optional
+  `durationSecs`. Mounted under `/api/admin/*` and gated by the
+  global `adminAccessControl` middleware.
+
+The two admin routes are intentionally **not** in the public OpenAPI
+spec, mirroring how every other `/api/admin/*` route is excluded.
+
+### Server entry wiring
+
+`artifacts/api-server/src/index.ts` calls `attachChatWs(server)` next
+to `attachPlaybackWs(server)` so both share the single HTTP-upgrade
+event handler and `httpServer.listen()` call.
+
+### Frontend — admin (`artifacts/admin/src/chat/` + `pages/chat.tsx`)
+
+- `ChatClient` — persistent WS, capped exponential backoff
+  (`250 ms → 8 s` with 30 % jitter), optimistic-send via
+  `clientMsgId`, snapshot **cached** (mutation-invalidated) so
+  `useSyncExternalStore` does not loop.
+- `useChat()` — single `useSyncExternalStore` subscription; (channel,
+  token, bufferSize) tuple is the client-instance key.
+- `pages/chat.tsx` — 60 vh scrollback (cap 500), per-message
+  `Delete / Mute 10 min / Permanent ban` actions, viewer count,
+  connection pill, send box gated on `state === "open"`. Routed at
+  `/chat` in `App.tsx`, sidebar entry under **Audience**.
+
+### Frontend — TV (`artifacts/tv/src/chat/` + `components/ChatOverlay.tsx`)
+
+- Mirror copy of `ChatClient` and `useChat` (cap 60 messages). The
+  TV bundle ships its own copy rather than importing a shared lib —
+  the smart-TV browser is bandwidth-sensitive and per-package
+  duplication is cheaper than another import edge.
+- `ChatOverlay` — bottom-right glass panel, collapsed by default in
+  `compact` mode (used on Player + Home). Wired into `Home.tsx`
+  always and into `Player.tsx` only when `isLive`.
+
+### Verification
+
+- `pnpm run typecheck:libs`, `api-server typecheck`, admin and TV
+  `tsc --noEmit` — all pass.
+- WS smoke test: anonymous `Viewer-XXXX` and `Moderator` both connect,
+  receive `state` + `presence`, moderator `send` round-trips a
+  `message` frame to all subscribers and an `ack` to the sender, with
+  `broadcastItemId` + `broadcastItemTitle` correctly snapshotted from
+  the live playback state.
+- `GET /api/chat/history` returns the persisted message; diagnostics
+  shows live presence counts.
+
+### Notes for future scale-out
+
+- `eventBus.ts` has the Redis-adapter contract written; flipping
+  `REDIS_URL` on will make it publish/subscribe per-channel and
+  fan-out across every API instance with no other code changes.
+- `presence.ts` is currently authoritative locally; with Redis it
+  should be replaced by `PFADD`/`PFCOUNT` (HyperLogLog) keyed on
+  `chat:presence:<channelId>` with a 60 s TTL.
+
 ## Phase 4.3 — Prayer-request SSE channel (April 28 2026, Round 4)
 
 Added a real-time SSE channel for the prayer-request lifecycle so the admin

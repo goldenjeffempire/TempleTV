@@ -25,6 +25,8 @@ tags:
     description: Live stream management
   - name: playback
     description: Public broadcast playback engine (snapshot + push)
+  - name: chat
+    description: Live broadcast chat — REST snapshot endpoints; live updates over /api/chat/ws
 paths:
   /healthz:
     get:
@@ -552,6 +554,53 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PlaybackState"
+
+  /chat/history:
+    get:
+      operationId: getChatHistory
+      tags: [chat]
+      summary: Recent chat messages for a channel
+      description: |
+        Returns the most recent (non-deleted) chat messages for the given
+        channel, in chronological order. Used ONLY for initial paint and for
+        reconnect catch-up — live messages are pushed over the WebSocket
+        gateway at `/api/chat/ws`. Polling this endpoint is forbidden by the
+        chat contract.
+      parameters:
+        - in: query
+          name: channelId
+          required: false
+          schema:
+            type: string
+            default: temple-tv-live
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: Chat history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatHistoryResponse"
+
+  /chat/diagnostics:
+    get:
+      operationId: getChatDiagnostics
+      tags: [chat]
+      summary: Diagnostics for the live-chat gateway
+      responses:
+        "200":
+          description: Connected counts and per-channel viewer counts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatDiagnostics"
 
 components:
   schemas:
@@ -1190,3 +1239,60 @@ components:
           type: string
           enum: [override, schedule, queue, empty]
       required: [serverTimeMs, current, next, nextNext, liveOverride, source]
+
+    ChatMessage:
+      type: object
+      description: A single chat message rendered to viewers.
+      properties:
+        id:
+          type: string
+          description: Server-assigned canonical id (uuid).
+        channelId:
+          type: string
+        userId:
+          type: string
+          nullable: true
+          description: Authenticated user id, or null for anonymous viewers.
+        displayName:
+          type: string
+        body:
+          type: string
+        createdAtMs:
+          type: integer
+          format: int64
+        broadcastItemId:
+          type: string
+          nullable: true
+          description: Playback item that was airing when this message was sent (broadcast-aware history).
+        broadcastItemTitle:
+          type: string
+          nullable: true
+      required: [id, channelId, userId, displayName, body, createdAtMs, broadcastItemId, broadcastItemTitle]
+
+    ChatHistoryResponse:
+      type: object
+      properties:
+        channelId:
+          type: string
+        messages:
+          type: array
+          items: { $ref: "#/components/schemas/ChatMessage" }
+      required: [channelId, messages]
+
+    ChatDiagnostics:
+      type: object
+      properties:
+        connectedSockets:
+          type: integer
+          description: Total currently-open WebSocket connections to /api/chat/ws.
+        viewersByChannel:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Live viewer count per channel id.
+        bufferedMessagesByChannel:
+          type: object
+          additionalProperties:
+            type: integer
+          description: In-memory message buffer size per channel.
+      required: [connectedSockets, viewersByChannel, bufferedMessagesByChannel]

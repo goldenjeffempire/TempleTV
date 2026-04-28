@@ -28,6 +28,7 @@ import {
   Siren,
   Youtube,
   PlayCircle,
+  MessageCircle,
 } from "lucide-react";
 import {
   applyAutoTheme,
@@ -230,6 +231,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         { href: "/users", label: "Registered Users", icon: Users },
         { href: "/notifications", label: "Notifications", icon: BellRing },
         { href: "/prayers", label: "Prayer Requests", icon: HandHeart },
+        { href: "/chat", label: "Live Chat", icon: MessageCircle },
       ],
     },
     {

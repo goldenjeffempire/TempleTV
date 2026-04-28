@@ -33,6 +33,7 @@ const LiveIngest = lazy(() => import("@/pages/live-ingest"));
 const YouTubeQuota = lazy(() => import("@/pages/youtube-quota"));
 const AlertsHistory = lazy(() => import("@/pages/alerts"));
 const Prayers = lazy(() => import("@/pages/prayers"));
+const Chat = lazy(() => import("@/pages/chat"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
 const queryClient = new QueryClient({
@@ -87,6 +88,7 @@ function RoutedContent() {
           <Route path="/youtube-quota" component={YouTubeQuota} />
           <Route path="/alerts" component={AlertsHistory} />
           <Route path="/prayers" component={Prayers} />
+          <Route path="/chat" component={Chat} />
           <Route component={NotFound} />
         </Switch>
       </Suspense>

@@ -14,6 +14,7 @@ import { startSSEHeartbeat, closeAllSSEClients } from "./lib/liveEvents";
 import { startLiveEventsBus, stopLiveEventsBus } from "./lib/liveEventsBus";
 import { startBroadcastTransitionTicker } from "./routes/broadcast";
 import { attachPlaybackWs } from "./playback/wsGateway";
+import { attachChatWs } from "./chat/wsGateway";
 import { startPlaybackScheduler } from "./playback/scheduler";
 import { startSignedUrlCacheWatchdog } from "./lib/signedUrlCacheWatchdog";
 import { startBroadcastLatencyWatchdog } from "./lib/broadcastLatencyWatchdog";
@@ -318,6 +319,11 @@ if (RUNS_API) {
   // here so /api/playback/ws shares port, CORS, mTLS and proxy rules with
   // the REST API. See `src/playback/wsGateway.ts` for the upgrade handler.
   attachPlaybackWs(server);
+  // Mount the chat WebSocket gateway on the same HTTP server. Same pattern
+  // as the playback gateway — `noServer: true` inside the gateway, single
+  // shared `upgrade` handler dispatches by path so /api/chat/ws inherits
+  // the API's CORS, mTLS, and proxy wiring with no extra configuration.
+  attachChatWs(server);
   // ── HTTP keep-alive tuning for HLS segment delivery ──────────────────────
   // Node's defaults (`keepAliveTimeout: 5_000`, `headersTimeout: 60_000`) are
   // tuned for short request/response APIs, not the 6-second HLS segment

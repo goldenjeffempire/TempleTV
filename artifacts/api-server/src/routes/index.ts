@@ -4,6 +4,7 @@ import youtubeRouter from "./youtube";
 import adminRouter from "./admin";
 import broadcastRouter from "./broadcast";
 import playbackRouter from "./playback";
+import chatRouter from "./chat";
 import authRouter from "./auth";
 import deviceLinkRouter from "./device-link";
 import userRouter from "./user";
@@ -19,6 +20,7 @@ router.use(youtubeRouter);
 router.use(adminRouter);
 router.use(broadcastRouter);
 router.use(playbackRouter);
+router.use(chatRouter);
 router.use(clientErrorsRouter);
 
 export default router;

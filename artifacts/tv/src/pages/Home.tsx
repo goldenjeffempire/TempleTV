@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LiveHero } from "../components/LiveHero";
 import { BroadcastOnAirStrip } from "../components/BroadcastOnAirStrip";
 import { TempleTvLogo } from "../components/TempleTvLogo";
+import ChatOverlay from "../components/ChatOverlay";
 import { SermonRow } from "../components/SermonRow";
 import { Clock } from "../components/Clock";
 import { useTVNav } from "../hooks/useTVNav";
@@ -348,6 +349,9 @@ export function Home({ onNavigateGuide, onNavigateSearch, onPlay, onDetails }: H
             ↑ ↓ Navigate rows &nbsp;·&nbsp; ← → Select &nbsp;·&nbsp; ENTER Open &nbsp;·&nbsp; G Guide &nbsp;·&nbsp; S Search
           </p>
         </div>
+        {/* Always-on chat overlay, collapsed by default so it doesn't compete
+            with the home grid; one tap expands. */}
+        <ChatOverlay compact />
       </div>
     </div>
   );
