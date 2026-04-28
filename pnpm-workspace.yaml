@@ -13,13 +13,21 @@ catalog:
   '@tailwindcss/vite': ^4.1.14
   '@tanstack/react-query': ^5.90.21
   '@types/node': ^25.3.3
-  # Pinned to ~19.1 to match the actual `react` runtime version (19.1.0)
-  # below. Letting this drift to ^19.2.x while React stays on 19.1 caused
-  # pnpm to hoist two parallel @types/react installs (catalog vs mobile's
-  # ~19.1.10), producing TS2322 "two different types with this name exist"
-  # errors in mockup-sandbox UI components.
-  '@types/react': ~19.1.10
-  '@types/react-dom': ~19.1.10
+  # Bumped to ~19.2.x (April 28 2026) after a Render build caught a second
+  # parallel install at 19.2.14 alongside the catalog's 19.1.17 — some
+  # transitive dep declares a peerDependency on `@types/react: ^19.2.0`
+  # that 19.1.x cannot satisfy, so pnpm hoists a second copy in violation
+  # of the singleton invariant. The fix is two-part:
+  #   (1) catalog is now exact-pinned at 19.2.14 / 19.2.3 (no `~` or `^`)
+  #   (2) `pnpm.overrides` in root package.json forces every transitive
+  #       resolution to the same exact version regardless of any peer range
+  # Together this makes a duplicate install structurally impossible.
+  # @types/react@19.2.x is forward-compatible with react@19.1.0 (types are
+  # additive across minor versions), so the runtime is unaffected.
+  # `pnpm run verify:react-types-singleton` fails the deploy if this ever
+  # regresses; `pnpm run verify:catalog` fails it if catalog/lockfile drift.
+  '@types/react': 19.2.14
+  '@types/react-dom': 19.2.3
   '@vitejs/plugin-react': ^5.0.4
   class-variance-authority: ^0.7.1
   clsx: ^2.1.1

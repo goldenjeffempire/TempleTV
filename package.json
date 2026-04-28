@@ -28,6 +28,8 @@
   },
   "pnpm": {
     "overrides": {
+      "@types/react": "19.2.14",
+      "@types/react-dom": "19.2.3",
       "@xmldom/xmldom": ">=0.8.13",
       "brace-expansion": ">=2.0.3",
       "drizzle-orm": ">=0.45.2",
