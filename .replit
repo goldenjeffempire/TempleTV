@@ -31,7 +31,7 @@ outputType = "webview"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "pnpm run typecheck:libs && pnpm --filter @workspace/api-server run build && (PORT=8080 node --enable-source-maps --import ./artifacts/api-server/dist/instrument.mjs ./artifacts/api-server/dist/index.mjs &) && sleep 3 && PORT=5000 pnpm --filter @workspace/admin run dev"
+args = "pnpm --filter @workspace/api-server run build && PORT=5000 node --enable-source-maps --import ./artifacts/api-server/dist/instrument.mjs ./artifacts/api-server/dist/index.mjs"
 waitForPort = 5000
 
 [agent]
@@ -46,10 +46,6 @@ timeoutMs = 20000
 [[ports]]
 localPort = 5000
 externalPort = 80
-
-[[ports]]
-localPort = 5001
-externalPort = 5173
 
 [[ports]]
 localPort = 5173
@@ -104,3 +100,7 @@ channel = "stable-25_05"
 NODE_ENV = "development"
 PUBLIC_OBJECT_SEARCH_PATHS = "public/"
 PRIVATE_OBJECT_DIR = ".private/"
+JWT_ACCESS_SECRET = "507d830d4283180de024c0969ebe6c58aee65004300a1cec692c5e5511cff33b141cdc482e699bfef95ed6820161129f"
+JWT_REFRESH_SECRET = "91bac457e67c295dda57ddb7df6e02d8b92c3a67d4a58b2fff5888c48cc04bc88465f034d9c36c7125a117b4276b8e05"
+LOG_LEVEL = "info"
+BROADCAST_PRELOAD_LEAD_MS = "15000"

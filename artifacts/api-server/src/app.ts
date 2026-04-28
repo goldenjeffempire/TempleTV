@@ -1,449 +1,113 @@
-import express, { type Express } from "express";
-import * as Sentry from "@sentry/node";
-import cors from "cors";
-import compression from "compression";
-import pinoHttp from "pino-http";
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
-import router from "./routes";
-import legalRouter from "./routes/legal";
-import sitemapRouter from "./routes/sitemap";
-import { logger } from "./lib/logger";
-import { s3FallbackMiddleware } from "./lib/staticWithS3Fallback";
-import { s3RedirectFirstForLargeMedia } from "./lib/s3RedirectFirst";
-import { uploadRangeGuard } from "./lib/uploadRangeGuard";
-import { adminAccessControl, rateLimit, requestId, securityHeaders } from "./middlewares/security";
-import { requestMetrics } from "./middlewares/observability";
-import { requestTimeout } from "./middlewares/requestTimeout";
+import Fastify, { type FastifyInstance } from "fastify";
+import sensible from "@fastify/sensible";
+import cors from "@fastify/cors";
+import helmet from "@fastify/helmet";
+import cookie from "@fastify/cookie";
+import rateLimit from "@fastify/rate-limit";
+import websocket from "@fastify/websocket";
+import swagger from "@fastify/swagger";
+import swaggerUI from "@fastify/swagger-ui";
+import {
+  jsonSchemaTransform,
+  serializerCompiler,
+  validatorCompiler,
+} from "fastify-type-provider-zod";
+import { env } from "./config/env.js";
+import { logger } from "./infrastructure/logger.js";
+import { registerErrorHandler } from "./middleware/error-handler.js";
+import { attachPrincipal } from "./middleware/auth.js";
+import { authRoutes } from "./modules/auth/auth.routes.js";
+import { mediaRoutes } from "./modules/media/media.routes.js";
+import { broadcastRoutes } from "./modules/broadcast/broadcast.routes.js";
+import { sseRoutes } from "./modules/realtime/sse.gateway.js";
+import { wsRoutes } from "./modules/realtime/ws.gateway.js";
+import { chatRoutes } from "./modules/realtime/chat.routes.js";
+import { healthRoutes } from "./modules/health/health.routes.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const API_PREFIX = "/api/v1";
 
-const app: Express = express();
+export async function buildApp(): Promise<FastifyInstance> {
+  const app = Fastify({
+    loggerInstance: logger,
+    disableRequestLogging: false,
+    bodyLimit: 50 * 1024 * 1024,
+    trustProxy: true,
+    genReqId: () => crypto.randomUUID(),
+  });
 
-app.set("trust proxy", 1);
-// Skip compression for SSE (text/event-stream) — compressed chunked encoding
-// causes the data to be buffered until the compressor's internal buffer fills,
-// which prevents event frames from reaching clients in real time.
-app.use(compression({
-  threshold: 1024,
-  filter: (req, res) => {
-    if (res.getHeader("Content-Type") === "text/event-stream") return false;
-    return compression.filter(req, res);
-  },
-}));
-app.use(requestId);
-app.use(securityHeaders);
-app.use(rateLimit);
-app.use(requestMetrics);
-// Per-request wall-clock timeout safety net. Skips SSE, uploads, HLS and
-// anything that legitimately streams long. Default 30s — overridable via
-// REQUEST_TIMEOUT_MS for slow batch admin endpoints if needed.
-app.use(requestTimeout());
-// Path patterns whose responses are long-lived streams (SSE event channels).
-// Clients on these endpoints disconnect routinely — every navigation away,
-// tab close, mobile backgrounding or transient network blip terminates the
-// stream and pino-http surfaces it as `msg: "request aborted"` at INFO. In
-// production that single class of log line dominates the access log, drowns
-// out real signal during triage, and inflates log-storage cost without any
-// operational value. We demote those specific entries to DEBUG (silent at
-// the default INFO level) while still keeping every non-streaming request
-// fully logged at INFO and every server error at ERROR.
-const SSE_PATH_PATTERN = /\/events$/;
-function isSseResponse(req: { url?: string }, res: { getHeader: (k: string) => unknown }): boolean {
-  const ct = res.getHeader("Content-Type");
-  if (typeof ct === "string" && ct.includes("text/event-stream")) return true;
-  const path = (req.url ?? "/").split("?")[0];
-  return SSE_PATH_PATTERN.test(path);
-}
+  app.setValidatorCompiler(validatorCompiler);
+  app.setSerializerCompiler(serializerCompiler);
 
-// Lifecycle / readiness probe path — `/healthz` is mounted under the API
-// router as `/api/healthz`. The endpoint legitimately returns 503 in three
-// distinct cases (`starting` during boot warm-up, `draining` after SIGTERM,
-// `db_down` if the DB is unreachable), and the LB depends on those 503s to
-// route traffic correctly. The first two are NORMAL, expected, frequent
-// (every deploy a new instance returns dozens of 503s before markReady()
-// flips the gate; every shutdown returns 503s during the drain window).
-// Treating them as ERROR-level pollutes Sentry with one false alert per
-// deploy per instance and trains operators to ignore real failures.
-//
-// We demote ALL /healthz 503s to INFO at the request-log layer; the genuine
-// `db_down` case is loudly surfaced by a dedicated `logger.warn` inside
-// `routes/health.ts` itself, so the real signal stays loud while the
-// lifecycle-routing chatter stays quiet.
-const HEALTHZ_PATH_PATTERN = /^(?:\/api)?\/healthz(?:\/|$)/;
-function isHealthzRequest(req: { url?: string }): boolean {
-  const path = (req.url ?? "/").split("?")[0];
-  return HEALTHZ_PATH_PATTERN.test(path);
-}
+  await app.register(sensible);
+  await app.register(cookie);
+  await app.register(helmet, { contentSecurityPolicy: false });
+  await app.register(cors, {
+    origin: env.CORS_ORIGINS === "*" ? true : env.CORS_ORIGINS.split(",").map((s) => s.trim()),
+    credentials: true,
+  });
+  await app.register(rateLimit, {
+    global: false,
+    max: env.RATE_LIMIT_DEFAULT_PER_MINUTE,
+    timeWindow: "1 minute",
+  });
+  await app.register(websocket);
 
-// Large-media S3 redirect paths — both `/api/uploads/<uuid>.<ext>` (the
-// disk-fast-path endpoint, see `lib/s3RedirectFirst.ts`) and
-// `/api/videos/<uuid>/source` (the admin-side cleaner redirect, see
-// `routes/admin.ts`) issue 302s to short-lived presigned S3 URLs.
-// HTML5 <video> elements do not cache 302 redirects, so EVERY HTTP Range
-// request a viewer's browser issues during playback round-trips one of
-// these endpoints (observed in production at 2026-04-27T12:08–12:09Z:
-// same `.mp4` URL hit ~20 times in 60s for /api/uploads, and at
-// 2026-04-27T12:39:01–06Z: same `/source` UUID hit ~5 times in 6s).
-// Both routes now serve the redirect from a per-key in-memory cache
-// (BoundedTtlMap, TTL = half the signed-URL lifetime) so a Range probe
-// costs a Map lookup + 302 — no DB hit, no AWS SDK presign, no S3
-// round-trip. The redirect is doing its job — but logging every Range
-// probe at INFO drowns the access log under a single asset and inflates
-// log-storage cost with zero operational value. We demote ONLY successful
-// 302/304 redirects on these specific media-redirect routes; any 4xx/5xx
-// (auth failure, presign error, missing file) still logs at its normal
-// level so real failures stay loud.
-const MEDIA_REDIRECT_PATH_PATTERN =
-  /^\/api\/(?:uploads\/[^/]+\.(?:mp4|m4v|mov|webm|mkv|m4a|mp3)|videos\/[^/]+\/source)$/i;
-function isMediaRedirect(
-  req: { url?: string },
-  res: { statusCode: number },
-): boolean {
-  if (res.statusCode !== 302 && res.statusCode !== 304) return false;
-  const path = (req.url ?? "/").split("?")[0];
-  return MEDIA_REDIRECT_PATH_PATTERN.test(path);
-}
-
-app.use(
-  pinoHttp({
-    logger,
-    serializers: {
-      req(req) {
-        // Strip the query string entirely from the access log. We rely on
-        // structured fields elsewhere for query parameters that matter, and
-        // this guarantees no credential ever leaks through `?adminToken=…`,
-        // `?token=…`, signed-URL signatures, or future query secrets.
-        return {
-          id: req.id,
-          method: req.method,
-          url: req.url?.split("?")[0],
-        };
+  await app.register(swagger, {
+    openapi: {
+      openapi: "3.1.0",
+      info: {
+        title: "Temple TV API",
+        description:
+          "Production-grade backend powering Web, Mobile, Smart TV, and Admin Dashboard.",
+        version: "1.0.0",
       },
-      res(res) {
-        // `bytes` mirrors the Content-Length header the response will send
-        // out (set by express for buffered writes; absent for streamed /
-        // chunked / SSE responses, in which case we omit the field rather
-        // than emit `null` and pollute the structured-log schema).
-        // Why this exists: production triage on 2026-04-27 traced a flood
-        // of identical 223158-byte responses in Render's edge access log
-        // (which records `responseBytes` but NOT the URL or status). The
-        // pino access log is the only place that ties URL + statusCode to
-        // a request, so without `bytes` here we could not correlate
-        // "huge response served per request" to a route, only to a clock
-        // time — making any RCA guesswork. With this field, a single grep
-        // (`bytes >= 100000`) over an hour of logs pinpoints the route.
-        //
-        // Note on the `res` shape: pino-std-serializers v7 hands us a
-        // *snapshot* object (NOT the raw http.ServerResponse), so methods
-        // like `res.getHeader()` are undefined here — the previous attempt
-        // crashed with "res.getHeader is not a function" for that reason.
-        // We must read from the snapshot's `headers` map instead, which
-        // already contains the lowercased final response headers. Both
-        // string and number values are tolerated to stay forward-compatible
-        // with future pino-std-serializers versions.
-        const headers =
-          (res as unknown as { headers?: Record<string, string | number | string[]> }).headers ??
-          {};
-        const raw = headers["content-length"];
-        const lenStr = Array.isArray(raw) ? raw[0] : raw;
-        const bytes =
-          typeof lenStr === "number"
-            ? lenStr
-            : typeof lenStr === "string"
-              ? Number(lenStr)
-              : undefined;
-        return {
-          statusCode: res.statusCode,
-          ...(typeof bytes === "number" && Number.isFinite(bytes) ? { bytes } : {}),
-        };
+      servers: [
+        { url: "/", description: "Current host" },
+      ],
+      components: {
+        securitySchemes: {
+          bearerAuth: { type: "http", scheme: "bearer", bearerFormat: "JWT" },
+        },
       },
+      tags: [
+        { name: "auth", description: "Sign-in, sign-up, refresh, profile" },
+        { name: "broadcast", description: "Live channel + queue management" },
+        { name: "media", description: "On-demand catalog + uploads" },
+        { name: "chat", description: "Live broadcast chat" },
+        { name: "health", description: "Liveness + readiness" },
+      ],
     },
-    customLogLevel(req, res, err) {
-      // /healthz 503s are intentional lifecycle/readiness signaling, not a
-      // process error — see the HEALTHZ_PATH_PATTERN comment block above for
-      // the full rationale. Demote BEFORE the >=500 check so they never trip
-      // the error branch and never fan out to Sentry.
-      if (res.statusCode === 503 && isHealthzRequest(req)) return "info";
-      // Surface real failures loudly.
-      if (err || res.statusCode >= 500) return "error";
-      // Silently drop "request aborted" log entries for SSE streams — the
-      // abort IS the normal end-of-life for these connections and is not a
-      // signal worth carrying at INFO. Non-aborted SSE completions (rare;
-      // server-initiated close on shutdown) still log normally.
-      const aborted = (req as unknown as { aborted?: boolean }).aborted === true;
-      if (aborted && isSseResponse(req, res)) return "debug";
-      // Successful LB liveness probe and large-media S3-redirect chatter —
-      // see MEDIA_REDIRECT_PATH_PATTERN comment block above for the upload
-      // case rationale, and HEALTHZ_PATH_PATTERN for the /healthz one. Both
-      // are pure infrastructure noise at INFO; failures (5xx for healthz,
-      // any non-302/304 for uploads) still surface at their normal levels.
-      if (res.statusCode === 200 && isHealthzRequest(req)) return "debug";
-      if (isMediaRedirect(req, res)) return "debug";
-      // Preserve current production behaviour for everything else: 4xx and
-      // 2xx/3xx all log at INFO, matching the existing access-log shape that
-      // downstream observability pipelines and dashboards already key off.
-      return "info";
+    transform: jsonSchemaTransform,
+  });
+  await app.register(swaggerUI, {
+    routePrefix: "/docs",
+    uiConfig: { docExpansion: "list", deepLinking: true },
+  });
+
+  app.addHook("preHandler", attachPrincipal());
+  registerErrorHandler(app);
+
+  app.get("/", async () => ({
+    service: "temple-tv-api",
+    version: "1.0.0",
+    docs: "/docs",
+    openapi: "/docs/json",
+    api: API_PREFIX,
+  }));
+
+  await app.register(healthRoutes);
+
+  await app.register(
+    async (instance) => {
+      await instance.register(authRoutes, { prefix: "/auth" });
+      await instance.register(mediaRoutes, { prefix: "/media" });
+      await instance.register(broadcastRoutes, { prefix: "/broadcast" });
+      await instance.register(chatRoutes, { prefix: "/chat" });
+      await instance.register(sseRoutes);
+      await instance.register(wsRoutes);
     },
-  }),
-);
-const PRODUCTION_ALLOWED_ORIGINS = [
-  "https://templetv.org.ng",
-  "https://www.templetv.org.ng",
-  "https://temple-tv-web.onrender.com",
-  "https://temple-tv-admin.onrender.com",
-  "https://temple-tv-tv.onrender.com",
-  "https://admin.templetv.org.ng",
-  "https://tv.templetv.org.ng",
-  "https://api.templetv.org.ng",
-];
-
-app.use(cors({
-  origin(origin, callback) {
-    const configured = process.env.ALLOWED_ORIGINS?.split(",").map((value) => value.trim()).filter(Boolean) ?? [];
-    const allowList = [...PRODUCTION_ALLOWED_ORIGINS, ...configured];
-    const isProd = process.env.NODE_ENV === "production";
-
-    // Always allow same-origin / non-browser callers (no Origin header) and explicitly listed origins
-    if (!origin || allowList.includes(origin)) {
-      callback(null, true);
-      return;
-    }
-
-    if (isProd) {
-      callback(new Error("Origin is not allowed by CORS"));
-      return;
-    }
-
-    // In development, allow Replit dev hosts and localhost only — not arbitrary origins
-    const replitDevDomain = process.env.REPLIT_DEV_DOMAIN;
-    const isReplitOrigin = Boolean(replitDevDomain) && origin.includes(replitDevDomain!);
-    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/i.test(origin);
-    const isReplitWorkspace = /\.replit\.dev(:\d+)?$/i.test(origin) || /\.repl\.co(:\d+)?$/i.test(origin);
-
-    if (isReplitOrigin || isLocalhost || isReplitWorkspace) {
-      callback(null, true);
-      return;
-    }
-
-    callback(new Error("Origin is not allowed by CORS"));
-  },
-  credentials: true,
-  // Cache CORS preflights for 24h so the browser stops sending an OPTIONS
-  // request before EVERY state-changing /api/admin/* call. Without this,
-  // production access logs show one OPTIONS line per real request and the
-  // admin dashboard pays a full extra round-trip on every save. 86400s is
-  // the highest value Chrome honours; Firefox caps at 24h too.
-  maxAge: 86400,
-}));
-app.use(express.json({ limit: "2mb" }));
-app.use(express.urlencoded({ extended: true, limit: "2mb" }));
-app.use(adminAccessControl);
-
-// ── Static media serving with S3 fallback ────────────────────────────────────
-// Render's filesystem is ephemeral — every deploy/restart wipes the local
-// `uploads/` directory.  The transcoder writes HLS variants to local disk and
-// also copies them to S3 (see `uploadHlsToS3` in transcoder.ts).  Without a
-// fallback, every restart breaks all transcoded broadcasts because the DB
-// still points at /api/hls/<id>/master.m3u8 but the local files are gone.
-// `s3FallbackMiddleware` checks local disk first (fast path), then transparently
-// streams from S3 with full HTTP Range support so video seek bars keep working.
-const UPLOADS_DIR = path.join(__dirname, "..", "uploads");
-const HLS_DIR = path.join(UPLOADS_DIR, "hls");
-
-// /api/uploads serves the original full-size source media (typically large
-// MP4s, 100s of MB each). On Render's small instances, streaming those bytes
-// through the API process under parallel HTTP Range traffic was OOM-killing
-// the container — so for anything that has already mirrored to S3 we issue a
-// 302 to a short-lived presigned URL and let clients fetch directly from S3.
-// The local-disk fast path (express.static) is preserved for the brief window
-// after a fresh upload before it mirrors to the bucket. The range guard caps
-// per-client concurrency and per-request range size as defence-in-depth for
-// the disk fast-path window and the rare presigner-failure fallback.
-app.use(
-  "/api/uploads",
-  (req, res, next) => {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    // CDN-scale delivery: every video served from /api/uploads has a content-
-    // unique UUID filename (videos table mints a fresh uuid per upload), so
-    // the bytes behind any given URL never change. That makes them safe to
-    // cache `immutable` for the full canonical year a CDN will accept.
-    //
-    // Without this header the disk fast-path served videos with no
-    // Cache-Control at all, forcing every browser and edge cache to
-    // revalidate on every load — a measurable TTFF cost on repeat plays
-    // and a hard blocker on any CDN edge actually caching the bytes. The
-    // 302-redirect path below sets its own (shorter) cache header tied
-    // to the signed URL TTL and overrides this one.
-    const p = req.path.toLowerCase();
-    if (
-      p.endsWith(".mp4") || p.endsWith(".m4v") || p.endsWith(".mov") ||
-      p.endsWith(".webm") || p.endsWith(".mkv") || p.endsWith(".m4a") ||
-      p.endsWith(".mp3")
-    ) {
-      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-    }
-    next();
-  },
-  uploadRangeGuard(),
-  // ── S3-redirect-first for large media ────────────────────────────────────
-  // Critical: this runs BEFORE express.static, so videos/audio that already
-  // exist in the S3 mirror always 302 to a presigned URL — even when the
-  // file ALSO exists on Render's ephemeral disk. Without this, the disk
-  // fast-path streams hundreds of megabytes through the API process per
-  // viewer, hits the per-client concurrency cap, and 429s real users
-  // (observed in production logs at 2026-04-26T06:24Z). The disk copy is
-  // only useful for the few-seconds window after a fresh upload before the
-  // S3 mirror completes — that case still works, because this middleware
-  // falls through when S3 has no copy yet, and `express.static` below
-  // serves from disk.
-  s3RedirectFirstForLargeMedia({
-    s3Prefix: "videos/",
-    signedUrlTtlSec: 3600,
-    extensions: [".mp4", ".m4v", ".mov", ".webm", ".mkv", ".m4a", ".mp3"],
-  }),
-  express.static(UPLOADS_DIR, { fallthrough: true, acceptRanges: true }),
-  s3FallbackMiddleware({
-    s3Prefix: "videos/",
-    localDir: UPLOADS_DIR,
-    redirectFromS3: { signedUrlTtlSec: 3600 },
-  }),
-);
-
-app.use(
-  "/api/hls",
-  (req, res, next) => {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    if (req.path.endsWith(".m3u8")) {
-      res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-      res.setHeader("Cache-Control", "public, max-age=30");
-    } else if (req.path.endsWith(".ts")) {
-      res.setHeader("Content-Type", "video/mp2t");
-      res.setHeader("Cache-Control", "public, max-age=3600, immutable");
-    } else {
-      res.setHeader("Cache-Control", "public, max-age=3600");
-    }
-    next();
-  },
-  express.static(HLS_DIR, { fallthrough: true, acceptRanges: true }),
-  s3FallbackMiddleware({ s3Prefix: "hls/", localDir: HLS_DIR }),
-);
-
-app.use(legalRouter);
-app.use(sitemapRouter);
-app.use("/api", router);
-
-// ── Admin SPA static serving ─────────────────────────────────────────────────
-// In production the admin Vite bundle is built once during `[deployment.build]`
-// (→ artifacts/admin/dist/public/) and served by THIS Node process on the
-// same port the API listens on. Co-locating the admin and API on a single
-// process is the canonical 2 GiB autoscale fit:
-//
-//   • Vite's dev server (which the previous deploy ran via `vite dev`) keeps
-//     the entire module graph + source maps + HMR clients in RAM and
-//     routinely sits at 400–600 MB of RSS on its own — that's a third of
-//     the autoscale memory budget burned on a build tool, which has no
-//     business running in production at all.
-//   • express.static streams files from disk with O(1) memory per request,
-//     so even thousands of concurrent admin SPA loads add a negligible
-//     amount of resident memory beyond the small Node baseline.
-//
-// We probe for the bundle ONCE at module load (cheap fs.existsSync — runs
-// before the HTTP server starts accepting traffic) instead of on every
-// wildcard request. This gives a clean dev/prod split:
-//   • prod (bundle present)  → admin SPA at /, hashed assets cached 1y,
-//                              client-side router fallback for deep links
-//   • dev  (bundle absent)   → workspace developers still hit the admin
-//                              via the Vite dev server on port 5000, and
-//                              the legacy JSON service banner answers `/`
-//                              on port 8080 for any monitoring probe that
-//                              expects it (preserves prior contract).
-const ADMIN_DIST = path.resolve(__dirname, "../../admin/dist/public");
-const ADMIN_INDEX = path.join(ADMIN_DIST, "index.html");
-const HAS_ADMIN_BUNDLE = fs.existsSync(ADMIN_INDEX);
-
-logger.info(
-  { adminDist: ADMIN_DIST, hasAdminBundle: HAS_ADMIN_BUNDLE },
-  HAS_ADMIN_BUNDLE
-    ? "Admin SPA bundle detected — serving static assets + SPA fallback from API"
-    : "Admin SPA bundle not built — `/` will return JSON service banner",
-);
-
-if (HAS_ADMIN_BUNDLE) {
-  app.use(
-    express.static(ADMIN_DIST, {
-      fallthrough: true,
-      // Hashed JS/CSS chunks are safe to cache for a year; `index.html`
-      // gets a no-store override below so SPA redeploys land instantly.
-      maxAge: "1y",
-      immutable: true,
-      setHeaders: (res, filePath) => {
-        if (filePath.endsWith("index.html")) {
-          res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-        }
-      },
-    }),
+    { prefix: API_PREFIX },
   );
 
-  // SPA client-side routing fallback. Any GET that DIDN'T match a route
-  // above (admin static asset, /api/*, /uploads/*, /hls/*, /legal/*,
-  // /sitemap.xml, /robots.txt) and looks like an HTML page request gets
-  // the admin index.html so React Router can take over. The
-  // `Accept: text/html` gate ensures /api/* 404s, JSON requests, and
-  // asset 404s still surface as proper errors rather than being shadowed
-  // by a 200 + index.html (which would silently break every API client,
-  // including the mobile + TV apps).
-  // Note: Express 5 + path-to-regexp v8 reject the legacy `"*"` wildcard
-  // ("Missing parameter name" boot error). Use a regex pattern instead.
-  app.get(/.*/, (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    if (req.path.startsWith("/api/")) return next();
-    if (req.path.startsWith("/uploads/")) return next();
-    if (req.path.startsWith("/hls/")) return next();
-    if (req.path.startsWith("/legal/")) return next();
-    if (req.path === "/sitemap.xml" || req.path === "/robots.txt") return next();
-    const accept = req.headers.accept ?? "";
-    if (!accept.includes("text/html")) return next();
-    res.sendFile(ADMIN_INDEX, (err) => {
-      if (err) next();
-    });
-  });
-} else {
-  // Dev fallback: the original JSON service banner answers at `/` so any
-  // health-check or monitoring probe that pre-dates the SPA serving
-  // continues to get the same shape it always did.
-  app.get("/", (_req: express.Request, res: express.Response) => {
-    res.status(200).json({
-      service: "Temple TV API",
-      status: "ok",
-      documentation: "https://templetv.org.ng",
-      endpoints: {
-        health: "/api/healthz",
-        api: "/api",
-        legal: "/legal/privacy, /legal/terms",
-      },
-      version: process.env.npm_package_version ?? "1.0.0",
-    });
-  });
+  return app;
 }
-
-app.use((_req: express.Request, res: express.Response) => {
-  res.status(404).json({ error: "not_found", message: "The requested endpoint does not exist." });
-});
-
-Sentry.setupExpressErrorHandler(app);
-
-app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  logger.error({ err }, "Unhandled request error");
-  const isProd = process.env.NODE_ENV === "production";
-  const message = isProd
-    ? "An internal server error occurred"
-    : err instanceof Error ? err.message : "An unexpected error occurred";
-  const status =
-    err instanceof Error && "status" in err && typeof err.status === "number"
-      ? err.status
-      : 500;
-  res.status(status).json({ error: "internal_error", message });
-});
-
-export default app;

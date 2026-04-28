@@ -1,0 +1,82 @@
+import { z } from "zod";
+/**
+ * Strongly-typed, validated environment. All env access in the
+ * application MUST flow through `env`. New variables go here.
+ */
+declare const Env: z.ZodObject<{
+    NODE_ENV: z.ZodDefault<z.ZodEnum<["development", "test", "production"]>>;
+    PORT: z.ZodDefault<z.ZodNumber>;
+    LOG_LEVEL: z.ZodDefault<z.ZodEnum<["fatal", "error", "warn", "info", "debug", "trace", "silent"]>>;
+    DATABASE_URL: z.ZodString;
+    JWT_ACCESS_SECRET: z.ZodString;
+    JWT_REFRESH_SECRET: z.ZodString;
+    JWT_ACCESS_TTL_SECONDS: z.ZodDefault<z.ZodNumber>;
+    JWT_REFRESH_TTL_SECONDS: z.ZodDefault<z.ZodNumber>;
+    ADMIN_API_TOKEN: z.ZodOptional<z.ZodString>;
+    CORS_ORIGINS: z.ZodDefault<z.ZodString>;
+    REDIS_URL: z.ZodOptional<z.ZodString>;
+    S3_BUCKET: z.ZodOptional<z.ZodString>;
+    S3_REGION: z.ZodDefault<z.ZodString>;
+    S3_ENDPOINT: z.ZodOptional<z.ZodString>;
+    S3_FORCE_PATH_STYLE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
+    S3_PUBLIC_URL_BASE: z.ZodOptional<z.ZodString>;
+    AWS_ACCESS_KEY_ID: z.ZodOptional<z.ZodString>;
+    AWS_SECRET_ACCESS_KEY: z.ZodOptional<z.ZodString>;
+    BROADCAST_PRELOAD_LEAD_MS: z.ZodDefault<z.ZodNumber>;
+    BROADCAST_FAILOVER_HLS_URL: z.ZodOptional<z.ZodString>;
+    RATE_LIMIT_DEFAULT_PER_MINUTE: z.ZodDefault<z.ZodNumber>;
+    RATE_LIMIT_AUTH_PER_MINUTE: z.ZodDefault<z.ZodNumber>;
+    SENTRY_DSN: z.ZodOptional<z.ZodString>;
+}, "strip", z.ZodTypeAny, {
+    NODE_ENV: "development" | "test" | "production";
+    PORT: number;
+    LOG_LEVEL: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
+    DATABASE_URL: string;
+    JWT_ACCESS_SECRET: string;
+    JWT_REFRESH_SECRET: string;
+    JWT_ACCESS_TTL_SECONDS: number;
+    JWT_REFRESH_TTL_SECONDS: number;
+    CORS_ORIGINS: string;
+    S3_REGION: string;
+    S3_FORCE_PATH_STYLE: boolean;
+    BROADCAST_PRELOAD_LEAD_MS: number;
+    RATE_LIMIT_DEFAULT_PER_MINUTE: number;
+    RATE_LIMIT_AUTH_PER_MINUTE: number;
+    ADMIN_API_TOKEN?: string | undefined;
+    REDIS_URL?: string | undefined;
+    S3_BUCKET?: string | undefined;
+    S3_ENDPOINT?: string | undefined;
+    S3_PUBLIC_URL_BASE?: string | undefined;
+    AWS_ACCESS_KEY_ID?: string | undefined;
+    AWS_SECRET_ACCESS_KEY?: string | undefined;
+    BROADCAST_FAILOVER_HLS_URL?: string | undefined;
+    SENTRY_DSN?: string | undefined;
+}, {
+    DATABASE_URL: string;
+    JWT_ACCESS_SECRET: string;
+    JWT_REFRESH_SECRET: string;
+    NODE_ENV?: "development" | "test" | "production" | undefined;
+    PORT?: number | undefined;
+    LOG_LEVEL?: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent" | undefined;
+    JWT_ACCESS_TTL_SECONDS?: number | undefined;
+    JWT_REFRESH_TTL_SECONDS?: number | undefined;
+    ADMIN_API_TOKEN?: string | undefined;
+    CORS_ORIGINS?: string | undefined;
+    REDIS_URL?: string | undefined;
+    S3_BUCKET?: string | undefined;
+    S3_REGION?: string | undefined;
+    S3_ENDPOINT?: string | undefined;
+    S3_FORCE_PATH_STYLE?: string | boolean | undefined;
+    S3_PUBLIC_URL_BASE?: string | undefined;
+    AWS_ACCESS_KEY_ID?: string | undefined;
+    AWS_SECRET_ACCESS_KEY?: string | undefined;
+    BROADCAST_PRELOAD_LEAD_MS?: number | undefined;
+    BROADCAST_FAILOVER_HLS_URL?: string | undefined;
+    RATE_LIMIT_DEFAULT_PER_MINUTE?: number | undefined;
+    RATE_LIMIT_AUTH_PER_MINUTE?: number | undefined;
+    SENTRY_DSN?: string | undefined;
+}>;
+export type AppEnv = z.infer<typeof Env>;
+export declare const env: AppEnv;
+export declare function isProd(): boolean;
+export {};

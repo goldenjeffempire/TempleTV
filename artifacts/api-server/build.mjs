@@ -1,148 +1,88 @@
-import { createRequire } from "node:module";
+import { build } from "esbuild";
+import { rmSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { build as esbuild } from "esbuild";
-import esbuildPluginPino from "esbuild-plugin-pino";
-import { rm } from "node:fs/promises";
 
-// Plugins (e.g. 'esbuild-plugin-pino') may use `require` to resolve dependencies
-globalThis.require = createRequire(import.meta.url);
+/**
+ * Build pipeline.
+ *
+ * Why externalize so much?
+ *   - `pg-native`, `bufferutil`, `utf-8-validate` are optional native peer
+ *     deps that pull in fragile node-gyp builds when bundled.
+ *   - `pino` + `pino-pretty` + `thread-stream` use `worker_threads` and
+ *     resolve transport modules at runtime via `require.resolve`. Bundling
+ *     them breaks worker-spawn paths. We ship them via node_modules instead.
+ *   - `@aws-sdk/*` is huge; bundling triples cold start. Externalizing
+ *     keeps the dist artifact small and lets npm dedupe across deploys.
+ *   - `@sentry/node` is an optional peer; instrument.mjs imports it
+ *     dynamically and tolerates absence.
+ */
+const root = path.resolve(".");
+const out = path.resolve("./dist");
 
-const artifactDir = path.dirname(fileURLToPath(import.meta.url));
+rmSync(out, { recursive: true, force: true });
+mkdirSync(out, { recursive: true });
 
-async function buildAll() {
-  const distDir = path.resolve(artifactDir, "dist");
-  await rm(distDir, { recursive: true, force: true });
+const shared = {
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  target: "node22",
+  sourcemap: true,
+  minify: false,
+  logLevel: "info",
+  banner: {
+    js: [
+      "import { createRequire as __cjsRequire } from 'node:module';",
+      "const require = __cjsRequire(import.meta.url);",
+      "import { fileURLToPath as __fileURLToPath } from 'node:url';",
+      "import { dirname as __dirname_fn } from 'node:path';",
+      "const __filename = __fileURLToPath(import.meta.url);",
+      "const __dirname = __dirname_fn(__filename);",
+    ].join("\n"),
+  },
+  external: [
+    "pg-native",
+    "bufferutil",
+    "utf-8-validate",
+    "pino",
+    "pino-pretty",
+    "pino-abstract-transport",
+    "thread-stream",
+    "@aws-sdk/client-s3",
+    "@aws-sdk/s3-request-presigner",
+    "@sentry/node",
+    // Externalize @fastify/swagger-ui so it can resolve its bundled
+    // static assets (HTML/CSS/JS/SVG) from its own package directory.
+    // Bundling breaks the runtime `__dirname/static/...` lookups.
+    "@fastify/swagger-ui",
+    "@fastify/swagger",
+  ],
+};
 
-  await esbuild({
-    entryPoints: [
-      path.resolve(artifactDir, "src/index.ts"),
-      path.resolve(artifactDir, "src/instrument.ts"),
-      // One-shot operational scripts that share the api-server runtime
-      // (S3 client, logger, env validation). Compiled to dist/scripts/*.mjs
-      // and runnable via the `backfill-uploads` package script.
-      path.resolve(artifactDir, "src/scripts/backfill-uploads-to-s3.ts"),
-    ],
-    platform: "node",
-    bundle: true,
-    format: "esm",
-    outdir: distDir,
-    outExtension: { ".js": ".mjs" },
-    logLevel: "info",
-    // Some packages may not be bundleable, so we externalize them, we can add more here as needed.
-    // Some of the packages below may not be imported or installed, but we're adding them in case they are in the future.
-    // Examples of unbundleable packages:
-    // - uses native modules and loads them dynamically (e.g. sharp)
-    // - use path traversal to read files (e.g. @google-cloud/secret-manager loads sibling .proto files)
-    external: [
-      "*.node",
-      "sharp",
-      "better-sqlite3",
-      "sqlite3",
-      "canvas",
-      "bcrypt",
-      "argon2",
-      "fsevents",
-      "re2",
-      "farmhash",
-      "xxhash-addon",
-      "bufferutil",
-      "utf-8-validate",
-      "ssh2",
-      "cpu-features",
-      "dtrace-provider",
-      "isolated-vm",
-      "lightningcss",
-      "pg-native",
-      "oracledb",
-      "mongodb-client-encryption",
-      "nodemailer",
-      "handlebars",
-      "knex",
-      "typeorm",
-      "protobufjs",
-      "onnxruntime-node",
-      "@tensorflow/*",
-      "@prisma/client",
-      "@mikro-orm/*",
-      "@grpc/*",
-      "@swc/*",
-      "@aws-sdk/*",
-      "@azure/*",
-      "@opentelemetry/*",
-      "@sentry/*",
-      "@google-cloud/*",
-      "@google/*",
-      "googleapis",
-      "firebase-admin",
-      "@parcel/watcher",
-      "@sentry/profiling-node",
-      "@tree-sitter/*",
-      "aws-sdk",
-      "classic-level",
-      "dd-trace",
-      "ffi-napi",
-      "grpc",
-      "hiredis",
-      "kerberos",
-      "leveldown",
-      "miniflare",
-      "mysql2",
-      "newrelic",
-      "odbc",
-      "piscina",
-      "realm",
-      "ref-napi",
-      "rocksdb",
-      "sass-embedded",
-      "sequelize",
-      "serialport",
-      "snappy",
-      "tinypool",
-      "usb",
-      "workerd",
-      "wrangler",
-      "zeromq",
-      "zeromq-prebuilt",
-      "playwright",
-      "puppeteer",
-      "puppeteer-core",
-      "electron",
-      // Express MUST stay external so Sentry's auto-instrumentation can
-      // patch it at require-time. With express bundled (esbuild inlining)
-      // every production boot logged the noise line:
-      //   [Sentry] express is not instrumented. Please make sure to
-      //   initialize Sentry in a separate file that you `--import` when
-      //   running node…
-      // even though our --import ./instrument.mjs WAS being invoked. The
-      // root cause is that Sentry (and OpenTelemetry beneath it) hooks
-      // module loading via require — once express is inlined into the
-      // single dist/index.mjs bundle, there's no module-load event to
-      // intercept. Externalising express restores the require-time hook
-      // and silences the warning permanently. The runtime cost is a
-      // single extra resolve from node_modules at startup (negligible).
-      "express",
-    ],
-    sourcemap: "linked",
-    plugins: [
-      // pino relies on workers to handle logging, instead of externalizing it we use a plugin to handle it
-      esbuildPluginPino({ transports: ["pino-pretty"] })
-    ],
-    // Make sure packages that are cjs only (e.g. express) but are bundled continue to work in our esm output file
-    banner: {
-      js: `import { createRequire as __bannerCrReq } from 'node:module';
-import __bannerPath from 'node:path';
-import __bannerUrl from 'node:url';
-
-globalThis.require = __bannerCrReq(import.meta.url);
-globalThis.__filename = __bannerUrl.fileURLToPath(import.meta.url);
-globalThis.__dirname = __bannerPath.dirname(globalThis.__filename);
-    `,
-    },
-  });
-}
-
-buildAll().catch((err) => {
-  console.error(err);
-  process.exit(1);
+await build({
+  ...shared,
+  entryPoints: { index: "src/main.ts" },
+  outdir: out,
+  outExtension: { ".js": ".mjs" },
 });
+
+await build({
+  ...shared,
+  entryPoints: { instrument: "src/instrument.ts" },
+  outdir: out,
+  outExtension: { ".js": ".mjs" },
+});
+
+await build({
+  ...shared,
+  entryPoints: { openapi: "src/scripts/emit-openapi.ts" },
+  outdir: out,
+  outExtension: { ".js": ".mjs" },
+});
+
+writeFileSync(
+  path.join(out, "package.json"),
+  JSON.stringify({ type: "module" }, null, 2),
+);
+
+console.log("✓ Build complete →", path.relative(root, out));

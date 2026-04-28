@@ -1,202 +1,157 @@
-# `@workspace/api-server` — Temple TV API
+# Temple TV API
 
-Express 5 API server that powers all Temple TV clients (mobile, web, Smart TV,
-admin). Owns the broadcast state machine, video transcoding pipeline, push
-fan-out, authentication, and YouTube channel pagination.
+Production-grade Fastify backend powering the Web app, Mobile app,
+Smart-TV app, and Admin dashboard from a single OpenAPI 3.1 contract.
 
-> Production: `https://api.templetv.org.ng`
-> Dev: `http://localhost:$PORT` (port assigned by Replit per artifact)
-
----
-
-## 1. Architecture
+## Architecture
 
 ```
-       ┌─────────────────────────── Express 5 ───────────────────────────┐
-       │                                                                 │
-HTTPS──┤  requestId → securityHeaders → rateLimit → CORS → adminAccess  ├──▶ routes/
-       │                                                                 │
-       │  ▲                                                              │
-       │  │ /api/broadcast/events (SSE)                                  │
-       │  │ /api/live/events       (SSE)                                 │
-       │  └── pino structured logs                                       │
-       └─────────────────────────────────────────────────────────────────┘
-                  │                  │                       │
-                  ▼                  ▼                       ▼
-         ┌────────────────┐  ┌──────────────┐      ┌──────────────────┐
-         │ Drizzle / Neon │  │ FFmpeg HLS   │      │ Expo Push API    │
-         │ (Postgres)     │  │ transcoder   │      │ (APNs + FCM)     │
-         └────────────────┘  └──────────────┘      └──────────────────┘
+src/
+├── main.ts                     entry — boots Fastify, broadcast engine, signals
+├── app.ts                      composition root — registers plugins, modules, OpenAPI
+├── instrument.ts               --import hook (Sentry + source-maps)
+├── config/
+│   └── env.ts                  zod-validated environment, single source of truth
+├── infrastructure/             cross-cutting clients (no business logic)
+│   ├── db.ts                   pg pool + drizzle
+│   ├── cache.ts                Redis-or-memory abstraction
+│   ├── redis.ts                ioredis client (optional)
+│   ├── storage.ts              S3-compatible object storage
+│   └── logger.ts               pino + redaction
+├── middleware/
+│   ├── auth.ts                 attachPrincipal + requireAuth(role)
+│   └── error-handler.ts        RFC 7807 problem+json responses
+├── modules/                    domain-driven slices, one folder per bounded context
+│   ├── auth/                   JWT pair + refresh rotation + RBAC
+│   ├── users/
+│   ├── media/                  catalog + presigned-PUT direct-to-S3 uploads
+│   ├── broadcast/              continuous channel + zero-delay queue engine
+│   ├── realtime/               SSE + WebSocket gateways + chat
+│   └── health/                 liveness + readiness
+├── shared/
+│   ├── errors.ts               AppError taxonomy
+│   └── types.ts                Role union, principal shape
+└── scripts/
+    └── emit-openapi.ts         dump openapi.json from running app
 ```
 
----
+## Versioning
 
-## 2. Routes
+Every domain route lives under `/api/v1/<resource>`. The version is a path
+prefix, never a header — that keeps CDN caching, log analysis, and SDK
+generation predictable.
 
-| Method & path | Auth | Purpose |
-|---|---|---|
-| `GET /api/healthz` | public | Liveness probe |
-| `GET /api/youtube/videos` | public | Full uploads playlist (paginated, all 2,114 videos) |
-| `GET /api/youtube/rss` | public | RSS fallback (~15 most recent) |
-| `GET /api/youtube/live/status` | public | Current YouTube live state |
-| `GET /api/broadcast/current` | public | Unified broadcast snapshot — includes sync fields `serverTimeMs`, `positionSecs`, `currentItemEndsAtMs`, `itemStartEpochSecs` so every client can join the live timeline at the exact same second |
-| `GET /api/broadcast/events` | public | SSE stream of broadcast state changes |
-| `GET /api/live/events` | public | SSE stream of live override events |
-| `POST /api/auth/signup` | public | Create account → access + refresh JWT |
-| `POST /api/auth/login` | public | Sign in → access + refresh JWT |
-| `POST /api/auth/refresh` | public | Exchange refresh token for new access token |
-| `POST /api/auth/logout` | bearer | Revoke (single device or `everywhere`) |
-| `GET /api/auth/me` | bearer | Current user |
-| `PATCH /api/auth/profile` | bearer | Update display name |
-| `PATCH /api/auth/password` | bearer | Change password |
-| `GET /api/user/favorites` `POST` `DELETE :id` | bearer | Cloud-synced favorites |
-| `GET /api/user/history` `POST` `DELETE` | bearer | Cloud-synced watch history |
-| `POST /api/push-tokens` | public | Register a device push token |
-| `POST /api/videos/:youtubeId/view` | public | Increment view count |
-| `POST /api/client-errors` | public | First-party crash / error sink |
-| `GET /api/subscriptions/tiers` | public | Public tier list |
-| `GET /api/me/subscription` | bearer | Active subscription for current user |
-| `GET /api/admin/stats` | admin | Dashboard summary |
-| `GET /api/admin/users` | admin | Paginated user list |
-| `GET/POST /api/admin/videos` ... | admin | Video library CRUD + import + upload |
-| `POST /api/admin/videos/upload` | admin | Single-shot upload (≤ 5 GB, magic-byte verified) |
-| `POST /api/admin/videos/upload/start \| chunk \| complete` | admin | Chunked upload (8 MB chunks, SHA-256 verified) |
-| `GET/POST/PATCH/DELETE /api/admin/playlists` ... | admin | Playlist CRUD + reorder |
-| `GET/POST/PATCH/DELETE /api/admin/schedule` ... | admin | Schedule entries |
-| `POST /api/admin/notifications/send` | admin | Push to all registered devices |
-| `GET/POST/PATCH /api/admin/live-overrides` ... | admin | Manual “Go Live” control |
-| `GET /api/admin/transcoding/jobs` | admin | HLS pipeline status |
-| `GET /api/admin/ops/status` | admin | Health + metrics for Operations page |
-| `GET /api/admin/launch/readiness` | admin | Pre-launch self-check |
-| `/api/hls/:videoId/master.m3u8` `:variant.m3u8` `:segment.ts` | public | HLS streaming |
+## Authentication
 
-The full Zod request/response schemas live in
-[`@workspace/api-zod`](../../lib/api-zod/README.md), and matching React Query
-hooks in [`@workspace/api-client-react`](../../lib/api-client-react/README.md).
+JWT access (15 min) + JWT refresh (30 days, rotated on every use).
+Refresh tokens are persisted to `refresh_tokens` keyed by `jti`, with
+`tokenHash = sha256(refreshToken)` so a stolen-from-the-DB refresh token
+cannot be replayed without the original raw value.
 
----
+The legacy `ADMIN_API_TOKEN` bearer is also accepted as the `system` role
+during the migration window — operator scripts continue to work.
 
-## 3. Source layout
+## RBAC
 
-```
-artifacts/api-server/src/
-├── app.ts                  ← Express factory (CORS, security, routes wiring)
-├── index.ts                ← server entry (HTTP listener)
-├── instrument.ts           ← Sentry + pino bootstrap (loaded with --import)
-│
-├── routes/
-│   ├── index.ts            ← mounts every router
-│   ├── health.ts           ← /api/healthz
-│   ├── auth.ts             ← signup, login, refresh, logout, me, password
-│   ├── user.ts             ← favorites + history
-│   ├── youtube.ts          ← videos, rss, live status
-│   ├── broadcast.ts        ← unified broadcast state + SSE
-│   ├── admin.ts            ← all /api/admin/* (large — videos, uploads, ops)
-│   ├── subscriptions.ts    ← public + admin subscription tiers
-│   ├── client-errors.ts    ← /api/client-errors (Zod-validated, optional sink)
-│   └── legal.ts            ← /legal/privacy, /legal/terms
-│
-├── middlewares/
-│   ├── security.ts         ← requestId, securityHeaders, rateLimit, adminAccess
-│   └── observability.ts    ← request metrics for /admin/ops/status
-│
-└── lib/
-    ├── logger.ts           ← pino instance (used everywhere)
-    ├── cache.ts            ← in-memory + optional Redis cache
-    ├── rateStore.ts        ← rate-limit token bucket
-    ├── transcoder.ts       ← FFmpeg HLS pipeline (5 ladders)
-    ├── liveEvents.ts       ← SSE client registry
-    ├── fileValidation.ts   ← magic-byte (content sniff) check on uploads
-    ├── objectStorage.ts    ← Replit Object Storage (GCS) client
-    └── objectAcl.ts        ← signed-URL helpers for private objects
-```
+Role hierarchy (numerical rank — higher passes lower):
 
----
+| Role     | Rank | Typical use                            |
+|----------|------|----------------------------------------|
+| `user`   |   1  | Authenticated viewers                  |
+| `editor` |   2  | Programming + queue management         |
+| `admin`  |   3  | Full control                           |
+| `system` |   4  | Machine-to-machine, never human-issued |
 
-## 4. Security
+Use `requireAuth("editor")` etc. in route definitions.
 
-| Header / control | Detail |
-|---|---|
-| HSTS | `max-age=63072000; includeSubDomains; preload` (prod only) |
-| CSP | `default-src 'none'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'` |
-| `X-Content-Type-Options` | `nosniff` |
-| `X-Frame-Options` | `SAMEORIGIN` |
-| `Referrer-Policy` | `strict-origin-when-cross-origin` |
-| `Permissions-Policy` | `camera=(), microphone=(), geolocation=()` |
-| CORS | Strict allowlist; production rejects unknown origins; dev allows only localhost / Replit dev hosts |
-| Rate limits | Per-IP, per-route bucket: signup/login = 10 / min, auth = 30 / min, admin = 240 / min, youtube = 120 / min, default = 600 / min |
-| Admin gate | `ADMIN_API_TOKEN` constant-time check on every `/api/admin/*` |
-| Upload validation | Magic-byte sniff (MIME-spoof safe) for video & image uploads |
-| Auth | bcrypt-hashed passwords, JWT access (short TTL) + refresh (long TTL) |
-| Errors | Sanitised in production (`internal_error`); full message in dev |
+## Broadcast engine
 
----
+`src/modules/broadcast/queue.engine.ts` is the heart of the system.
 
-## 5. Local development
+- Treats `broadcast_queue` as a circular buffer of programs ordered by
+  `(is_active, sort_order)`.
+- Maintains a wall-clock view: a phone tuning in at second 1782 of a
+  30-minute sermon joins at second 1782, not the beginning.
+- Emits `preload` events `BROADCAST_PRELOAD_LEAD_MS` (default 15s)
+  before the current item ends, so every connected client warms an A/B
+  inactive video element with the next item's source.
+- Emits `advance` events at the moment of transition.
+- Carries a `failoverHlsUrl` in every snapshot for clients to swap to
+  when their primary playback errors.
 
-```bash
-pnpm --filter @workspace/api-server run dev    # build + start
-pnpm --filter @workspace/api-server run typecheck
-```
+Events are fanned out via:
 
-The dev script does `esbuild` → `node`, so reloads require a workflow restart.
-For pure type-checking during refactors, use `typecheck`.
+- `GET /api/v1/realtime/sse` — Server-Sent Events (default for browsers)
+- `GET /api/v1/realtime/ws` — WebSocket (default for native clients)
 
-### Required env
+Both expose the same `BroadcastEvent` union.
 
-```env
-PORT=8080
-DATABASE_URL=postgres://...
-JWT_SECRET=$(openssl rand -hex 64)
-ADMIN_API_TOKEN=$(openssl rand -hex 32)
-YOUTUBE_API_KEY=...                # google cloud → APIs & Services
-NODE_ENV=development               # production turns on HSTS + strict CORS
-```
-
-### Optional env
-
-```env
-SENTRY_DSN=...                     # server error reporting
-CLIENT_ERROR_SINK_URL=...          # forward /api/client-errors elsewhere
-CLIENT_ERROR_SINK_TOKEN=...        # bearer for the sink
-ALLOWED_ORIGINS=https://foo.com,https://bar.com  # extra CORS origins
-REDIS_URL=redis://...              # promotes the in-memory cache to Redis
-```
-
----
-
-## 6. Deployment
-
-Defined in `render.yaml` at the project root. Render runs:
+## Real-time fan-out
 
 ```
-pnpm install --frozen-lockfile
-pnpm --filter @workspace/db run push     # only on schema change
+broadcastEngine ─► EventEmitter ─► SSE clients
+                                └► WebSocket clients (also bumps viewer count)
+```
+
+For multi-instance fan-out, set `REDIS_URL` and the cache layer flips
+to Redis automatically. (A future enhancement will mirror the event
+bus through Redis pub/sub for true horizontal scaling — today the
+broadcast engine assumes one writer.)
+
+## Media uploads (admin → instant on every client)
+
+1. Admin calls `POST /api/v1/media/uploads/signed-url`
+   → server returns a presigned-PUT URL valid for 15 minutes.
+2. Admin uploads bytes directly to S3 (the API never proxies).
+3. Admin calls `POST /api/v1/media` with the resulting `key` to
+   register the new media item.
+4. Optionally `POST /api/v1/broadcast/queue` to enqueue it.
+5. Every connected SSE/WS client receives the new snapshot in the next
+   tick — Web, Mobile, and TV refresh in real time.
+
+## Storage abstraction
+
+`src/infrastructure/storage.ts` wraps the AWS SDK behind an interface.
+Switching providers is one env var:
+
+| Provider           | `S3_ENDPOINT`                                   |
+|--------------------|-------------------------------------------------|
+| AWS S3             | (leave blank)                                   |
+| Cloudflare R2      | `https://<account>.r2.cloudflarestorage.com`    |
+| MinIO              | `http://minio:9000` + `S3_FORCE_PATH_STYLE=true`|
+| Backblaze B2       | `https://s3.<region>.backblazeb2.com`           |
+| DigitalOcean Spaces| `https://<region>.digitaloceanspaces.com`       |
+
+## OpenAPI / Swagger
+
+- Served live at `/docs` (Swagger UI).
+- Spec served as JSON at `/docs/json`.
+- Dump the static spec for client generation: `pnpm run openapi`.
+
+## Local development
+
+```sh
+pnpm install
+cp artifacts/api-server/.env.example artifacts/api-server/.env
+pnpm --filter @workspace/db run push        # apply schema to local DB
 pnpm --filter @workspace/api-server run build
 pnpm --filter @workspace/api-server run start
 ```
 
-Health-check path: `/api/healthz`. Trust proxy is on (`app.set('trust proxy', 1)`).
+## Tests
 
----
+```sh
+pnpm --filter @workspace/api-server run test
+```
 
-## 7. Operations
+Unit tests cover JWT, RBAC, and broadcast snapshot shape. Integration
+tests use Fastify's `inject()` so no real port is bound.
 
-Visit `/api/admin/ops/status` (admin token required) for a JSON snapshot:
+## Observability
 
-- DB / cache / transcoder health
-- Counts of videos, playlists, schedule entries, registered devices
-- Broadcast queue status & connected admin SSE clients
-- Transcoding pipeline (queued / processing / done / failed / cancelled)
-- Upload session status
-
-The admin app surfaces this on the **Operations** page.
-
----
-
-## 8. Related
-
-- [`@workspace/api-spec`](../../lib/api-spec/README.md) — OpenAPI source-of-truth
-- [`@workspace/api-zod`](../../lib/api-zod/README.md) — request/response Zod schemas
-- [`@workspace/db`](../../lib/db/README.md) — Drizzle schema
-- Project root [README](../../README.md), audit report [`RELEASE_AUDIT.md`](../../RELEASE_AUDIT.md)
+- Structured pino logs (JSON in prod, pretty in dev), with credential
+  redaction (`authorization`, `cookie`, `password`, `*token`).
+- Sentry initialized via `--import ./dist/instrument.mjs` if
+  `SENTRY_DSN` is set. Tracing sample rate is 5% by default.
+- Health probes: `/healthz` (liveness, cheap) and `/readyz` (DB + cache
+  + storage + engine state).
