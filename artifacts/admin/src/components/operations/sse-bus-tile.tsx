@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle } from "lucide-react";
+import { Link } from "wouter";
 import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/operations/status-badge";
 import type { SSEBusStatus } from "@/services/adminApi";
@@ -65,8 +66,22 @@ function formatTimeAgo(unixMs: number): string {
  * polling — safe to drop into any container that has access to the
  * `infrastructure.sseBus` field on `OpsStatus` (or the bare result of
  * `sseBusApi.getStatus()`).
+ *
+ * **`detailHref` (optional):** when provided, renders a small "Details →"
+ * link in the bottom-right of the tile, used by the operations page to
+ * link through to the dedicated `/sse-bus` detail route. Omitted when the
+ * tile IS that detail page (linking to itself would be silly) or when the
+ * caller is a context that has no detail surface to offer. The link
+ * renders even in the "Disabled" state because the detail page also
+ * surfaces useful configuration / instance info regardless of bus state.
  */
-export function SseBusTile({ sseBus }: { sseBus: SSEBusStatus | undefined }) {
+export function SseBusTile({
+  sseBus,
+  detailHref,
+}: {
+  sseBus: SSEBusStatus | undefined;
+  detailHref?: string;
+}) {
   // Local UI state for the "recent errors" expander. Defaults to collapsed
   // because the tile is in a busy infrastructure card and most of the time
   // the errors panel is just "for reference" — operators only open it when
@@ -158,20 +173,23 @@ export function SseBusTile({ sseBus }: { sseBus: SSEBusStatus | undefined }) {
   // Treat missing field as "off" (single-instance default).
   if (!sseBus || sseBus.health === "off") {
     return (
-      <div className="flex items-center justify-between rounded-lg border p-3">
-        <div>
-          <div className="font-medium text-sm">Cross-instance SSE bus</div>
-          <div className="text-xs text-muted-foreground">
-            {sseBus?.summary ??
-              "Disabled — single-instance fanout only. Set REDIS_URL on the api service to enable cross-instance SSE."}
+      <div className="rounded-lg border p-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="font-medium text-sm">Cross-instance SSE bus</div>
+            <div className="text-xs text-muted-foreground">
+              {sseBus?.summary ??
+                "Disabled — single-instance fanout only. Set REDIS_URL on the api service to enable cross-instance SSE."}
+            </div>
           </div>
+          <Badge
+            variant="outline"
+            className="bg-muted text-muted-foreground border-muted-foreground/30"
+          >
+            Disabled
+          </Badge>
         </div>
-        <Badge
-          variant="outline"
-          className="bg-muted text-muted-foreground border-muted-foreground/30"
-        >
-          Disabled
-        </Badge>
+        {detailHref && <DetailLink href={detailHref} />}
       </div>
     );
   }
@@ -285,6 +303,31 @@ export function SseBusTile({ sseBus }: { sseBus: SSEBusStatus | undefined }) {
           )}
         </>
       )}
+
+      {detailHref && <DetailLink href={detailHref} />}
+    </div>
+  );
+}
+
+/**
+ * Bottom-right "Details →" link rendered when `detailHref` is provided.
+ *
+ * Kept as a tiny dedicated component (rather than inlined twice) so the
+ * disabled and enabled branches of `SseBusTile` render identical link
+ * markup — important because the link is the operator's entry point to
+ * the detail page from BOTH states. A divider line above visually
+ * separates it from the rest of the tile content so it doesn't look like
+ * it's part of the metrics or errors panel above.
+ */
+function DetailLink({ href }: { href: string }) {
+  return (
+    <div className="mt-2 pt-2 border-t flex justify-end">
+      <Link
+        href={href}
+        className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+      >
+        Details →
+      </Link>
     </div>
   );
 }

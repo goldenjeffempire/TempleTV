@@ -22,6 +22,7 @@ const Analytics = lazy(() => import("@/pages/analytics"));
 const Broadcast = lazy(() => import("@/pages/broadcast"));
 const Transcoding = lazy(() => import("@/pages/transcoding"));
 const Operations = lazy(() => import("@/pages/operations"));
+const SseBusDetail = lazy(() => import("@/pages/sse-bus"));
 const LiveMonitor = lazy(() => import("@/pages/live-monitor"));
 const LaunchReadiness = lazy(() => import("@/pages/launch-readiness"));
 const UsersPage = lazy(() => import("@/pages/users"));
@@ -74,6 +75,7 @@ function RoutedContent() {
           <Route path="/analytics" component={Analytics} />
           <Route path="/transcoding" component={Transcoding} />
           <Route path="/operations" component={Operations} />
+          <Route path="/sse-bus" component={SseBusDetail} />
           <Route path="/live-monitor" component={LiveMonitor} />
           <Route path="/users" component={UsersPage} />
           <Route path="/launch-readiness" component={LaunchReadiness} />

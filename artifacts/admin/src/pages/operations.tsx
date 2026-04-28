@@ -1116,7 +1116,7 @@ export default function Operations() {
                     render it as a neutral badge, not amber/red. The
                     StatusBadge component only knows ok/degraded/critical
                     so we render the disabled-state badge inline here. */}
-                <SseBusTile sseBus={status.infrastructure?.sseBus} />
+                <SseBusTile sseBus={status.infrastructure?.sseBus} detailHref="/sse-bus" />
                 {/* AWS Cloud storage */}
                 <div className="flex items-center justify-between rounded-lg border p-3">
                   <div>
