@@ -85,14 +85,16 @@ function isHealthzRequest(req: { url?: string }): boolean {
 // request a viewer's browser issues during playback round-trips one of
 // these endpoints (observed in production at 2026-04-27T12:08–12:09Z:
 // same `.mp4` URL hit ~20 times in 60s for /api/uploads, and at
-// 2026-04-27T12:39:01–06Z: same `/source` UUID hit ~5 times in 6s, all
-// served in single-digit ms from the in-memory signed-URL cache, no S3
-// round-trip, no presign). The redirect is doing its job — but logging
-// every Range probe at INFO drowns the access log under a single asset
-// and inflates log-storage cost with zero operational value. We demote
-// ONLY successful 302/304 redirects on these specific media-redirect
-// routes; any 4xx/5xx (auth failure, presign error, missing file) still
-// logs at its normal level so real failures stay loud.
+// 2026-04-27T12:39:01–06Z: same `/source` UUID hit ~5 times in 6s).
+// Both routes now serve the redirect from a per-key in-memory cache
+// (BoundedTtlMap, TTL = half the signed-URL lifetime) so a Range probe
+// costs a Map lookup + 302 — no DB hit, no AWS SDK presign, no S3
+// round-trip. The redirect is doing its job — but logging every Range
+// probe at INFO drowns the access log under a single asset and inflates
+// log-storage cost with zero operational value. We demote ONLY successful
+// 302/304 redirects on these specific media-redirect routes; any 4xx/5xx
+// (auth failure, presign error, missing file) still logs at its normal
+// level so real failures stay loud.
 const MEDIA_REDIRECT_PATH_PATTERN =
   /^\/api\/(?:uploads\/[^/]+\.(?:mp4|m4v|mov|webm|mkv|m4a|mp3)|videos\/[^/]+\/source)$/i;
 function isMediaRedirect(

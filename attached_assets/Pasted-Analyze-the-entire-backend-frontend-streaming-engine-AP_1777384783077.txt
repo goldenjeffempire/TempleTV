@@ -1,0 +1,158 @@
+Analyze the entire backend, frontend, streaming engine, API layer, caching layer, database queries, websocket/polling architecture, video delivery pipeline, memory management, and broadcast synchronization system of the platform and completely fix all issues, warnings, bottlenecks, race conditions, redundant API calls, memory leaks, excessive polling, and performance degradation as a senior enterprise-grade streaming platform engineer.
+
+Critical issues found from logs that must be fixed completely:
+
+* Extremely excessive repeated polling requests hitting:
+
+  * `/api/videos/:id/source`
+  * `/api/broadcast/current`
+  * `/api/youtube/live/status`
+  * `/api/admin/live`
+  * `/api/admin/broadcast`
+
+* Requests are firing repeatedly every 1–5 seconds causing:
+
+  * unnecessary server load
+  * high bandwidth usage
+  * memory pressure
+  * CPU spikes
+  * redundant database reads
+  * duplicated video source resolution
+  * broadcast lag
+  * scaling instability
+
+* Fix the architecture so the frontend does NOT continuously poll aggressively.
+  Replace unnecessary polling with:
+
+  * websocket subscriptions
+  * server-sent events (SSE)
+  * intelligent event-driven updates
+  * cache invalidation triggers
+  * stale-while-revalidate strategy
+  * adaptive polling fallback only when websocket disconnects
+
+* Ensure `/api/videos/:id/source` is aggressively optimized:
+
+  * add Redis caching
+  * signed URL caching
+  * request deduplication
+  * in-flight request collapsing
+  * CDN optimization
+  * prevent duplicate redirect generations
+  * cache repeated source resolutions
+  * eliminate unnecessary 302 regeneration loops
+
+* Investigate why the same video source endpoints are repeatedly requested for the same IDs:
+
+  * `0c4a1c22-22bc-49de-b498-b4070b9512f3`
+  * `81217f06-79b8-447c-ac8c-d91dbd005711`
+
+* Prevent frontend re-render loops and duplicated fetch triggers:
+
+  * fix React effect dependency issues
+  * eliminate unnecessary component remounting
+  * stop duplicate state refresh cycles
+  * debounce refetching
+  * use memoization properly
+  * optimize player lifecycle management
+
+* Memory issue detected:
+
+  * RSS memory reached ~1.31GiB
+  * external memory ~346MB
+  * arrayBuffers ~336MB
+
+* Perform deep memory leak investigation:
+
+  * streaming buffers
+  * unresolved promises
+  * unreleased blobs
+  * unclosed streams
+  * websocket leaks
+  * caching leaks
+  * ffmpeg process leaks
+  * object retention
+  * event listener leaks
+  * media source buffer accumulation
+
+* Add automatic memory protection:
+
+  * heap monitoring
+  * circuit breakers
+  * auto cleanup workers
+  * stream disposal logic
+  * GC-friendly buffer handling
+  * resource timeout cleanup
+
+* Optimize all API response times to enterprise-grade low latency performance.
+
+* Ensure broadcast switching is instant with near-zero delay between videos.
+  The next broadcast media should preload before current media ends.
+  Implement:
+
+  * predictive preloading
+  * stream warmup
+  * transition buffering
+  * seamless playlist transitions
+  * zero-black-screen switching
+  * immediate playback handoff
+
+* Ensure the entire broadcasting engine behaves like a real-world professional TV station system.
+
+* Add production-grade observability:
+
+  * structured logs
+  * tracing
+  * metrics
+  * memory dashboards
+  * request correlation IDs
+  * slow query monitoring
+  * alerting for abnormal polling spikes
+
+* Add enterprise-grade protections:
+
+  * API rate limiting
+  * request batching
+  * deduplicated concurrent requests
+  * retry backoff strategy
+  * graceful degradation
+  * overload protection
+
+* Optimize database access:
+
+  * eliminate N+1 queries
+  * add indexing where needed
+  * cache repeated reads
+  * reduce unnecessary joins
+  * optimize broadcast lookup queries
+
+* Ensure all fixes work consistently across:
+
+  * web platform
+  * Android app
+  * iOS app
+  * smart TV apps
+  * admin dashboard
+  * broadcasting system
+
+* Refactor any unstable architecture causing repeated network storms or unnecessary refresh cycles.
+
+* After all fixes:
+
+  * verify memory stability under load
+  * verify no duplicate polling loops remain
+  * verify broadcast transitions are instant
+  * verify scaling stability under heavy concurrent viewers
+  * verify production readiness
+  * verify enterprise-grade streaming reliability
+
+* Finally:
+
+  * remove dead code
+  * remove unused listeners
+  * remove redundant API calls
+  * remove unstable retry loops
+  * remove unnecessary renders
+  * remove duplicated state synchronization logic
+
+Deliver the platform as a fully optimized, scalable, enterprise-grade live TV broadcasting and streaming system ready for real-world production deployment with maximum performance, stability, reliability, scalability, and ultra-fast playback transitions.

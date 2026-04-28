@@ -36,7 +36,8 @@ import { buildLiveStatusPayload, getActiveLiveOverride } from "../lib/liveStatus
 import { getFailureStats } from "../lib/liveFailureReports";
 import { extractYouTubeVideoId, validateYouTubeLiveStream } from "../lib/youtubeUrl";
 import { cache } from "../lib/cache";
-import { snapshotCacheStats } from "../lib/cacheStats";
+import { registerCacheStats, snapshotCacheStats } from "../lib/cacheStats";
+import { BoundedTtlMap } from "../lib/boundedTtlMap";
 import { getMemoryWatchdogState, type MemoryWatchdogState } from "../lib/memoryWatchdog";
 import { invalidatePublicVideoCaches, invalidatePublicPlaylistCaches, registerTrendingCacheKey } from "../lib/publicCacheInvalidation";
 import { logger } from "../lib/logger";
@@ -3408,9 +3409,50 @@ router.get("/admin/uploads/s3-telemetry/summary", async (req, res) => {
 // short-lived presigned GET URL so the bytes are served straight from S3
 // (Range requests, parallel connections, etc. are handled by S3) without
 // requiring the client to know how to mint presigned URLs.
+//
+// Per-id cache: HTML5 <video> elements do NOT cache 302 redirects, so every
+// HTTP Range request a viewer's browser issues during playback round-trips
+// this endpoint. Without an in-memory cache here we'd pay (a) a DB lookup
+// for `objectPath` and (b) a fresh AWS SDK presign (HMAC-SHA256 + JSON
+// allocation) on every Range probe — observed in production as the same
+// `/source` UUID hit ~5 times in 6s for a single open viewer, scaling
+// linearly with concurrent viewers.
+//
+// The cache keys on `videoId` and stores both the resolved `objectPath`
+// (sidesteps the DB) and the presigned `url` (sidesteps the SDK call).
+// TTL is half the signed URL lifetime so a cached redirect can never
+// outlive its underlying signature. This mirrors the pattern in
+// `lib/s3RedirectFirst.ts` for the `/api/uploads/<uuid>.<ext>` endpoint
+// (which had the same flood symptom and was fixed the same way).
+//
+// Cache-Control on the 302 itself remains `private, max-age=…` so well-
+// behaved clients (HLS.js, native players that DO honor redirect caching)
+// can collapse the round-trip entirely; the in-memory cache is the safety
+// net for HTML5 <video>, which doesn't.
+const SOURCE_REDIRECT_CACHE_MAX_ENTRIES = 4096;
+const SOURCE_REDIRECT_CACHE_TTL_MS = Math.max(
+  60_000,
+  Math.floor((S3_GET_REDIRECT_TTL_SEC * 1000) / 2),
+);
+type SourceRedirectCacheEntry = { objectPath: string; signedUrl: string };
+const sourceRedirectCache = new BoundedTtlMap<string, SourceRedirectCacheEntry>(
+  SOURCE_REDIRECT_CACHE_MAX_ENTRIES,
+);
+registerCacheStats("admin.sourceRedirectCache", () => sourceRedirectCache.size);
+
 router.get("/videos/:id/source", async (req, res) => {
   try {
     const { id } = req.params as { id: string };
+
+    const cached = sourceRedirectCache.get(id);
+    if (cached !== undefined) {
+      res.setHeader(
+        "Cache-Control",
+        `private, max-age=${Math.floor(S3_GET_REDIRECT_TTL_SEC / 2)}`,
+      );
+      return void res.redirect(302, cached.signedUrl);
+    }
+
     const rows = await db
       .select({ objectPath: videosTable.objectPath })
       .from(videosTable)
@@ -3424,6 +3466,11 @@ router.get("/videos/:id/source", async (req, res) => {
       return void res.status(503).json({ error: "S3 not configured" });
     }
     const url = await s3GetSignedGetUrl(objectPath, S3_GET_REDIRECT_TTL_SEC);
+    sourceRedirectCache.set(
+      id,
+      { objectPath, signedUrl: url },
+      SOURCE_REDIRECT_CACHE_TTL_MS,
+    );
     // Cache the redirect for less than the URL TTL so clients don't hold a
     // stale signature past expiry.
     res.setHeader("Cache-Control", `private, max-age=${Math.floor(S3_GET_REDIRECT_TTL_SEC / 2)}`);
@@ -3593,6 +3640,11 @@ router.delete("/admin/videos/:id", async (req, res) => {
       await tx.delete(videosTable).where(eq(videosTable.id, id));
       await tx.delete(broadcastQueueTable).where(eq(broadcastQueueTable.videoId, id));
     });
+    // Drop the cached presigned redirect for this id so a subsequent re-add
+    // (same id is impossible for new videos, but defensive against any
+    // future re-import flow) cannot serve a stale URL pointing at an
+    // already-deleted S3 object.
+    sourceRedirectCache.delete(id);
     await invalidateBroadcastCache();
     broadcastLiveEvent("broadcast-queue-updated", { videoId: id, deleted: true, queuedAt: new Date().toISOString() });
     emitBroadcastState("queue-video-deleted", { videoId: id });
