@@ -20,10 +20,13 @@ import type {
   AddVideoToPlaylistBody,
   AdminStats,
   Analytics,
+  ChatDiagnostics,
+  ChatHistoryResponse,
   CreatePlaylistBody,
   CreateScheduleEntryBody,
   DeleteResult,
   GetAnalyticsParams,
+  GetChatHistoryParams,
   HealthStatus,
   ImportVideoBody,
   ListAdminUsers200,
@@ -2235,6 +2238,181 @@ export function useGetPlaybackState<
   request?: SecondParameter<typeof customFetch>;
 }): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getGetPlaybackStateQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Returns the most recent (non-deleted) chat messages for the given
+channel, in chronological order. Used ONLY for initial paint and for
+reconnect catch-up — live messages are pushed over the WebSocket
+gateway at `/api/chat/ws`. Polling this endpoint is forbidden by the
+chat contract.
+
+ * @summary Recent chat messages for a channel
+ */
+export const getGetChatHistoryUrl = (params?: GetChatHistoryParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/chat/history?${stringifiedParams}`
+    : `/api/chat/history`;
+};
+
+export const getChatHistory = async (
+  params?: GetChatHistoryParams,
+  options?: RequestInit,
+): Promise<ChatHistoryResponse> => {
+  return customFetch<ChatHistoryResponse>(getGetChatHistoryUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetChatHistoryQueryKey = (params?: GetChatHistoryParams) => {
+  return [`/api/chat/history`, ...(params ? [params] : [])] as const;
+};
+
+export const getGetChatHistoryQueryOptions = <
+  TData = Awaited<ReturnType<typeof getChatHistory>>,
+  TError = ErrorType<unknown>,
+>(
+  params?: GetChatHistoryParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getChatHistory>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetChatHistoryQueryKey(params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getChatHistory>>> = ({
+    signal,
+  }) => getChatHistory(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getChatHistory>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetChatHistoryQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getChatHistory>>
+>;
+export type GetChatHistoryQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Recent chat messages for a channel
+ */
+
+export function useGetChatHistory<
+  TData = Awaited<ReturnType<typeof getChatHistory>>,
+  TError = ErrorType<unknown>,
+>(
+  params?: GetChatHistoryParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getChatHistory>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetChatHistoryQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Diagnostics for the live-chat gateway
+ */
+export const getGetChatDiagnosticsUrl = () => {
+  return `/api/chat/diagnostics`;
+};
+
+export const getChatDiagnostics = async (
+  options?: RequestInit,
+): Promise<ChatDiagnostics> => {
+  return customFetch<ChatDiagnostics>(getGetChatDiagnosticsUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetChatDiagnosticsQueryKey = () => {
+  return [`/api/chat/diagnostics`] as const;
+};
+
+export const getGetChatDiagnosticsQueryOptions = <
+  TData = Awaited<ReturnType<typeof getChatDiagnostics>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getChatDiagnostics>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetChatDiagnosticsQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getChatDiagnostics>>
+  > = ({ signal }) => getChatDiagnostics({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getChatDiagnostics>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetChatDiagnosticsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getChatDiagnostics>>
+>;
+export type GetChatDiagnosticsQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Diagnostics for the live-chat gateway
+ */
+
+export function useGetChatDiagnostics<
+  TData = Awaited<ReturnType<typeof getChatDiagnostics>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getChatDiagnostics>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetChatDiagnosticsQueryOptions(options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

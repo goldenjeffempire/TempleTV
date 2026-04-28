@@ -713,3 +713,66 @@ export const GetPlaybackStateResponse = zod.object({
     .nullable(),
   source: zod.enum(["override", "schedule", "queue", "empty"]),
 });
+
+/**
+ * Returns the most recent (non-deleted) chat messages for the given
+channel, in chronological order. Used ONLY for initial paint and for
+reconnect catch-up — live messages are pushed over the WebSocket
+gateway at `/api/chat/ws`. Polling this endpoint is forbidden by the
+chat contract.
+
+ * @summary Recent chat messages for a channel
+ */
+export const getChatHistoryQueryChannelIdDefault = `temple-tv-live`;
+export const getChatHistoryQueryLimitDefault = 50;
+export const getChatHistoryQueryLimitMax = 200;
+
+export const GetChatHistoryQueryParams = zod.object({
+  channelId: zod.coerce.string().default(getChatHistoryQueryChannelIdDefault),
+  limit: zod.coerce
+    .number()
+    .min(1)
+    .max(getChatHistoryQueryLimitMax)
+    .default(getChatHistoryQueryLimitDefault),
+});
+
+export const GetChatHistoryResponse = zod.object({
+  channelId: zod.string(),
+  messages: zod.array(
+    zod
+      .object({
+        id: zod.string().describe("Server-assigned canonical id (uuid)."),
+        channelId: zod.string(),
+        userId: zod
+          .string()
+          .nullable()
+          .describe("Authenticated user id, or null for anonymous viewers."),
+        displayName: zod.string(),
+        body: zod.string(),
+        createdAtMs: zod.number(),
+        broadcastItemId: zod
+          .string()
+          .nullable()
+          .describe(
+            "Playback item that was airing when this message was sent (broadcast-aware history).",
+          ),
+        broadcastItemTitle: zod.string().nullable(),
+      })
+      .describe("A single chat message rendered to viewers."),
+  ),
+});
+
+/**
+ * @summary Diagnostics for the live-chat gateway
+ */
+export const GetChatDiagnosticsResponse = zod.object({
+  connectedSockets: zod
+    .number()
+    .describe("Total currently-open WebSocket connections to \/api\/chat\/ws."),
+  viewersByChannel: zod
+    .record(zod.string(), zod.number())
+    .describe("Live viewer count per channel id."),
+  bufferedMessagesByChannel: zod
+    .record(zod.string(), zod.number())
+    .describe("In-memory message buffer size per channel."),
+});

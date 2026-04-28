@@ -417,6 +417,49 @@ export interface PlaybackState {
   source: PlaybackStateSource;
 }
 
+/**
+ * A single chat message rendered to viewers.
+ */
+export interface ChatMessage {
+  /** Server-assigned canonical id (uuid). */
+  id: string;
+  channelId: string;
+  /** Authenticated user id, or null for anonymous viewers. */
+  userId: string | null;
+  displayName: string;
+  body: string;
+  createdAtMs: number;
+  /** Playback item that was airing when this message was sent (broadcast-aware history). */
+  broadcastItemId: string | null;
+  broadcastItemTitle: string | null;
+}
+
+export interface ChatHistoryResponse {
+  channelId: string;
+  messages: ChatMessage[];
+}
+
+/**
+ * Live viewer count per channel id.
+ */
+export type ChatDiagnosticsViewersByChannel = { [key: string]: number };
+
+/**
+ * In-memory message buffer size per channel.
+ */
+export type ChatDiagnosticsBufferedMessagesByChannel = {
+  [key: string]: number;
+};
+
+export interface ChatDiagnostics {
+  /** Total currently-open WebSocket connections to /api/chat/ws. */
+  connectedSockets: number;
+  /** Live viewer count per channel id. */
+  viewersByChannel: ChatDiagnosticsViewersByChannel;
+  /** In-memory message buffer size per channel. */
+  bufferedMessagesByChannel: ChatDiagnosticsBufferedMessagesByChannel;
+}
+
 export type ListAdminUsersParams = {
   search?: string;
   page?: number;
@@ -458,4 +501,13 @@ export type StartLiveOverrideBody = {
    */
   durationMinutes?: number;
   notify?: boolean;
+};
+
+export type GetChatHistoryParams = {
+  channelId?: string;
+  /**
+   * @minimum 1
+   * @maximum 200
+   */
+  limit?: number;
 };
