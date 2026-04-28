@@ -27,6 +27,7 @@ import {
   Gauge,
   Siren,
   Youtube,
+  PlayCircle,
 } from "lucide-react";
 import {
   applyAutoTheme,
@@ -208,6 +209,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         { href: "/live-ingest", label: "Live Ingest", icon: Radio },
         { href: "/broadcast", label: "Broadcast Queue", icon: Tv2 },
         { href: "/live-monitor", label: "Live Monitor", icon: MonitorPlay },
+        { href: "/playback", label: "Playback Engine", icon: PlayCircle },
         { href: "/schedule", label: "Schedule", icon: Calendar },
         { href: "/youtube-quota", label: "YouTube Quota", icon: Gauge },
         { href: "/alerts", label: "Ops Alerts", icon: Siren },

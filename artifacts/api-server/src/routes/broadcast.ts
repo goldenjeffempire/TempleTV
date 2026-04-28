@@ -25,6 +25,10 @@ import { logger } from "../lib/logger";
 import { getClientIp } from "../middlewares/security";
 import { getLiveStatus } from "./youtube";
 import { recordBroadcastBuildLatency, type BroadcastBuildPath } from "../lib/broadcastLatency";
+import { getPlaybackBus } from "../playback/eventBus";
+import { buildPlaybackState, invalidatePlaybackState } from "../playback/playbackEngine";
+import { rearm as rearmPlaybackScheduler } from "../playback/scheduler";
+import type { PlaybackEvent } from "../playback/types";
 
 const router = Router();
 
@@ -731,6 +735,37 @@ export function emitBroadcastState(reason: string, detail: Record<string, unknow
       broadcastLiveEvent("broadcast-current-updated", { reason, current, ...detail });
     })
     .catch(() => {});
+
+  // Bridge into the new playback engine: invalidate the resolved-state cache
+  // so the next /api/playback/state read rebuilds with the freshest URLs,
+  // publish a `state` event over the WS bus, and re-arm the transition
+  // scheduler so its T-15/T-10/T-5 preload hints re-anchor on the new
+  // current.endsAtMs. All errors are swallowed so a transient signed-URL
+  // failure can never break the legacy SSE path above.
+  (async () => {
+    try {
+      invalidatePlaybackState();
+      const state = await buildPlaybackState(true);
+      const playbackReason: PlaybackEvent extends infer T
+        ? T extends { type: "state"; reason: infer R }
+          ? R
+          : never
+        : never =
+        reason.startsWith("queue") || reason === "queue-video-upserted" || reason === "queue-video-deleted"
+          ? "queue-updated"
+          : reason.startsWith("schedule")
+            ? "schedule-updated"
+            : reason === "live-started" || reason === "live-updated"
+              ? "override-started"
+              : reason === "live-stopped" || reason === "live-override-expired"
+                ? "override-stopped"
+                : "transition";
+      getPlaybackBus().publish({ type: "state", reason: playbackReason, state });
+      await rearmPlaybackScheduler();
+    } catch {
+      /* noop */
+    }
+  })();
 }
 
 function parseTimeToMinutes(value: string | null): number | null {
@@ -1088,82 +1123,17 @@ router.get("/broadcast/guide", async (_req, res) => {
   }
 });
 
-router.get("/broadcast/current", async (_req, res) => {
-  try {
-    // Live broadcast state — must stay fresh, but a tiny shared-cache window
-    // with stale-while-revalidate dramatically smooths the cold-rebuild path
-    // (observed at 994ms once on a freshly-booted Render instance) without
-    // ever serving stale state for more than a few seconds. The hot path
-    // through `buildBroadcastCurrentPayload` is < 5ms because it reads from
-    // the in-memory + PG distributed cache; the SWR header lets a CDN /
-    // Render edge / shared cache absorb fan-out bursts after a deploy.
-    //
-    // Browsers are intentionally NOT given a private cache (max-age=0,
-    // s-maxage=2 only) — only shared caches benefit. This avoids the
-    // "I'm 30s behind everyone else" desync that this endpoint exists to
-    // prevent on the per-viewer hot path; SSE remains the source of truth
-    // for live updates.
-    res
-      .setHeader(
-        "Cache-Control",
-        "public, max-age=0, s-maxage=2, stale-while-revalidate=10",
-      )
-      .json(await buildBroadcastCurrentPayload());
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "Unknown error";
-    res.status(500).json({ error: msg });
-  }
-});
-
-router.get("/broadcast/events", async (req, res) => {
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache, no-transform");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
-  res.setHeader("Access-Control-Allow-Origin", "*");
-
-  // Disable Nagle buffering so each SSE frame is sent immediately
-  req.socket?.setNoDelay(true);
-
-  res.flushHeaders();
-
-  const flushRes = () => {
-    const r = res as unknown as { flush?: () => void };
-    if (typeof r.flush === "function") r.flush();
-  };
-
-  // Tell clients to retry connection after a JITTERED interval on disconnect.
-  // A fixed 5s value across all clients caused a thundering herd on every
-  // process restart: thousands of TVs/mobiles/admins reconnecting at the same
-  // 5s mark could blow past MAX_SSE_CLIENTS_GLOBAL and surface as a wave of
-  // 503s to legitimate users. Per-connection jitter (3–8s) spreads the
-  // reconnect wave across a 5-second window, smoothing the load curve.
-  const retryMs = 3000 + Math.floor(Math.random() * 5000);
-  res.write(`retry: ${retryMs}\n\n`);
-  flushRes();
-
-  let client;
-  try {
-    client = addSSEClient(res, req.query.platform, getClientIp(req));
-  } catch (e) {
-    if (e instanceof SSECapacityError) {
-      res.setHeader("Retry-After", String(e.retryAfterSecs));
-      try { res.end(); } catch {}
-      return;
-    }
-    throw e;
-  }
-
-  try {
-    const current = await buildBroadcastCurrentPayload();
-    res.write(`event: broadcast-current-updated\ndata: ${JSON.stringify({ reason: "connected", current })}\n\n`);
-    flushRes();
-  } catch (err) {
-    logger.error({ err }, "[SSE /broadcast/events] initial write failed");
-  }
-
-  req.on("close", () => removeSSEClient(client));
-});
+// ── REMOVED: GET /broadcast/current and GET /broadcast/events ─────────────
+// The polling-current snapshot and the per-platform SSE channel have been
+// replaced by the WebSocket-first playback engine at:
+//
+//   GET /api/playback/state   — initial paint + reconnect snapshot
+//   WS  /api/playback/ws      — push-only steady state
+//
+// The new contract resolves direct signed S3 URLs inline (no 302 hop), ships
+// `current + next + nextNext` for the dual-buffer engine, and routes every
+// transition / queue / override event through a single typed bus
+// (`src/playback/eventBus.ts`). See `src/playback/` and `src/routes/playback.ts`.
 
 // Tiny endpoint for player clients to report decoded/dropped frame deltas from
 // HTMLVideoElement.getVideoPlaybackQuality(). Players are expected to POST a

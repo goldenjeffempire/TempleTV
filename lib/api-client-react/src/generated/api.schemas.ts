@@ -358,6 +358,65 @@ export interface DeleteResult {
   message: string;
 }
 
+export type PlaybackSourceKind =
+  (typeof PlaybackSourceKind)[keyof typeof PlaybackSourceKind];
+
+export const PlaybackSourceKind = {
+  hls: "hls",
+  mp4: "mp4",
+  youtube: "youtube",
+} as const;
+
+/**
+ * Direct, ready-to-play source descriptor. No 302 redirect.
+ */
+export interface PlaybackSource {
+  kind: PlaybackSourceKind;
+  /** For `hls`/`mp4` this is a fully-resolved URL (signed S3 GET for
+mp4, master.m3u8 for hls). For `youtube` this is the 11-character
+videoId, used by the YouTube embed player.
+ */
+  url: string;
+  /** Epoch ms after which `url` may stop working. Null for youtube. */
+  expiresAtMs: number | null;
+}
+
+export interface PlaybackItem {
+  id: string;
+  title: string;
+  thumbnailUrl: string | null;
+  durationSecs: number;
+  source: PlaybackSource;
+  startsAtMs: number;
+  endsAtMs: number;
+}
+
+export interface PlaybackLiveOverride {
+  title: string;
+  startedAtMs: number;
+  endsAtMs: number | null;
+}
+
+export type PlaybackStateSource =
+  (typeof PlaybackStateSource)[keyof typeof PlaybackStateSource];
+
+export const PlaybackStateSource = {
+  override: "override",
+  schedule: "schedule",
+  queue: "queue",
+  empty: "empty",
+} as const;
+
+export interface PlaybackState {
+  /** Server's authoritative wall clock for skew correction. */
+  serverTimeMs: number;
+  current: PlaybackItem | null;
+  next: PlaybackItem | null;
+  nextNext: PlaybackItem | null;
+  liveOverride: PlaybackLiveOverride | null;
+  source: PlaybackStateSource;
+}
+
 export type ListAdminUsersParams = {
   search?: string;
   page?: number;

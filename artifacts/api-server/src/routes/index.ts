@@ -3,6 +3,7 @@ import healthRouter from "./health";
 import youtubeRouter from "./youtube";
 import adminRouter from "./admin";
 import broadcastRouter from "./broadcast";
+import playbackRouter from "./playback";
 import authRouter from "./auth";
 import deviceLinkRouter from "./device-link";
 import userRouter from "./user";
@@ -17,6 +18,7 @@ router.use(healthRouter);
 router.use(youtubeRouter);
 router.use(adminRouter);
 router.use(broadcastRouter);
+router.use(playbackRouter);
 router.use(clientErrorsRouter);
 
 export default router;

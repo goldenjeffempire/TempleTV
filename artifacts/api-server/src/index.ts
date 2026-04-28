@@ -13,6 +13,8 @@ import { startLiveOverrideScheduler } from "./lib/live-override-scheduler";
 import { startSSEHeartbeat, closeAllSSEClients } from "./lib/liveEvents";
 import { startLiveEventsBus, stopLiveEventsBus } from "./lib/liveEventsBus";
 import { startBroadcastTransitionTicker } from "./routes/broadcast";
+import { attachPlaybackWs } from "./playback/wsGateway";
+import { startPlaybackScheduler } from "./playback/scheduler";
 import { startSignedUrlCacheWatchdog } from "./lib/signedUrlCacheWatchdog";
 import { startBroadcastLatencyWatchdog } from "./lib/broadcastLatencyWatchdog";
 import { startMemoryWatchdog } from "./lib/memoryWatchdog";
@@ -224,6 +226,11 @@ async function startApiSchedulers() {
   startLiveOverrideScheduler();
   startSSEHeartbeat();
   startBroadcastTransitionTicker();
+  // Push-first transition emitter for the dual-buffer client engine.
+  // Arms T-15s / T-10s / T-5s preload hints and fires the T-0 swap event
+  // off the resolved current.endsAtMs anchor. Safe to call from any role
+  // that mounts the broadcast resolver (api here; worker doesn't need it).
+  startPlaybackScheduler();
   startStreamHealthEmitter();
   startYoutubeCatalogueScheduler();
   startLiveIngestHealthMonitor();
@@ -306,6 +313,11 @@ if (RUNS_API) {
   }
 
   server = http.createServer(app);
+  // Mount the playback WebSocket gateway on the same HTTP server. We use
+  // `noServer: true` inside the gateway and listen for the `upgrade` event
+  // here so /api/playback/ws shares port, CORS, mTLS and proxy rules with
+  // the REST API. See `src/playback/wsGateway.ts` for the upgrade handler.
+  attachPlaybackWs(server);
   // ── HTTP keep-alive tuning for HLS segment delivery ──────────────────────
   // Node's defaults (`keepAliveTimeout: 5_000`, `headersTimeout: 60_000`) are
   // tuned for short request/response APIs, not the 6-second HLS segment

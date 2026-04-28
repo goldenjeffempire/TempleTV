@@ -33,6 +33,7 @@ import type {
   LiveStatus,
   ManagedVideo,
   NotificationResult,
+  PlaybackState,
   Playlist,
   PlaylistWithVideos,
   ReorderPlaylistBody,
@@ -2160,3 +2161,84 @@ export const useStopLiveOverride = <
 > => {
   return useMutation(getStopLiveOverrideMutationOptions(options));
 };
+
+/**
+ * Returns the authoritative `current` / `next` / `nextNext` items with
+ready-to-play source URLs (signed S3 GET URLs for MP4, master.m3u8
+for HLS, raw videoId for YouTube). Intended for the **initial paint**
+and for **reconnect resync** only — steady-state updates flow over
+the WebSocket gateway at `/api/playback/ws`. Do not poll.
+
+ * @summary Snapshot of the live broadcast playback state
+ */
+export const getGetPlaybackStateUrl = () => {
+  return `/api/playback/state`;
+};
+
+export const getPlaybackState = async (
+  options?: RequestInit,
+): Promise<PlaybackState> => {
+  return customFetch<PlaybackState>(getGetPlaybackStateUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetPlaybackStateQueryKey = () => {
+  return [`/api/playback/state`] as const;
+};
+
+export const getGetPlaybackStateQueryOptions = <
+  TData = Awaited<ReturnType<typeof getPlaybackState>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getPlaybackState>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetPlaybackStateQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getPlaybackState>>
+  > = ({ signal }) => getPlaybackState({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getPlaybackState>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetPlaybackStateQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getPlaybackState>>
+>;
+export type GetPlaybackStateQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Snapshot of the live broadcast playback state
+ */
+
+export function useGetPlaybackState<
+  TData = Awaited<ReturnType<typeof getPlaybackState>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getPlaybackState>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetPlaybackStateQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}

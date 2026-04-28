@@ -23,6 +23,8 @@ tags:
     description: Analytics data
   - name: admin-live
     description: Live stream management
+  - name: playback
+    description: Public broadcast playback engine (snapshot + push)
 paths:
   /healthz:
     get:
@@ -531,6 +533,25 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DeleteResult"
+
+  /playback/state:
+    get:
+      operationId: getPlaybackState
+      tags: [playback]
+      summary: Snapshot of the live broadcast playback state
+      description: |
+        Returns the authoritative `current` / `next` / `nextNext` items with
+        ready-to-play source URLs (signed S3 GET URLs for MP4, master.m3u8
+        for HLS, raw videoId for YouTube). Intended for the **initial paint**
+        and for **reconnect resync** only — steady-state updates flow over
+        the WebSocket gateway at `/api/playback/ws`. Do not poll.
+      responses:
+        "200":
+          description: Resolved playback state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlaybackState"
 
 components:
   schemas:
@@ -1089,3 +1110,83 @@ components:
         message:
           type: string
       required: [success, message]
+
+    PlaybackSource:
+      type: object
+      description: Direct, ready-to-play source descriptor. No 302 redirect.
+      properties:
+        kind:
+          type: string
+          enum: [hls, mp4, youtube]
+        url:
+          type: string
+          description: |
+            For `hls`/`mp4` this is a fully-resolved URL (signed S3 GET for
+            mp4, master.m3u8 for hls). For `youtube` this is the 11-character
+            videoId, used by the YouTube embed player.
+        expiresAtMs:
+          type: integer
+          format: int64
+          nullable: true
+          description: Epoch ms after which `url` may stop working. Null for youtube.
+      required: [kind, url, expiresAtMs]
+
+    PlaybackItem:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        thumbnailUrl:
+          type: string
+          nullable: true
+        durationSecs:
+          type: integer
+        source:
+          $ref: "#/components/schemas/PlaybackSource"
+        startsAtMs:
+          type: integer
+          format: int64
+        endsAtMs:
+          type: integer
+          format: int64
+      required: [id, title, thumbnailUrl, durationSecs, source, startsAtMs, endsAtMs]
+
+    PlaybackLiveOverride:
+      type: object
+      properties:
+        title:
+          type: string
+        startedAtMs:
+          type: integer
+          format: int64
+        endsAtMs:
+          type: integer
+          format: int64
+          nullable: true
+      required: [title, startedAtMs, endsAtMs]
+
+    PlaybackState:
+      type: object
+      properties:
+        serverTimeMs:
+          type: integer
+          format: int64
+          description: Server's authoritative wall clock for skew correction.
+        current:
+          allOf: [{ $ref: "#/components/schemas/PlaybackItem" }]
+          nullable: true
+        next:
+          allOf: [{ $ref: "#/components/schemas/PlaybackItem" }]
+          nullable: true
+        nextNext:
+          allOf: [{ $ref: "#/components/schemas/PlaybackItem" }]
+          nullable: true
+        liveOverride:
+          allOf: [{ $ref: "#/components/schemas/PlaybackLiveOverride" }]
+          nullable: true
+        source:
+          type: string
+          enum: [override, schedule, queue, empty]
+      required: [serverTimeMs, current, next, nextNext, liveOverride, source]

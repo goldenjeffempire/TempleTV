@@ -612,3 +612,104 @@ export const StopLiveOverrideResponse = zod.object({
   success: zod.boolean(),
   message: zod.string(),
 });
+
+/**
+ * Returns the authoritative `current` / `next` / `nextNext` items with
+ready-to-play source URLs (signed S3 GET URLs for MP4, master.m3u8
+for HLS, raw videoId for YouTube). Intended for the **initial paint**
+and for **reconnect resync** only — steady-state updates flow over
+the WebSocket gateway at `/api/playback/ws`. Do not poll.
+
+ * @summary Snapshot of the live broadcast playback state
+ */
+export const GetPlaybackStateResponse = zod.object({
+  serverTimeMs: zod
+    .number()
+    .describe("Server's authoritative wall clock for skew correction."),
+  current: zod
+    .object({
+      id: zod.string(),
+      title: zod.string(),
+      thumbnailUrl: zod.string().nullable(),
+      durationSecs: zod.number(),
+      source: zod
+        .object({
+          kind: zod.enum(["hls", "mp4", "youtube"]),
+          url: zod
+            .string()
+            .describe(
+              "For `hls`\/`mp4` this is a fully-resolved URL (signed S3 GET for\nmp4, master.m3u8 for hls). For `youtube` this is the 11-character\nvideoId, used by the YouTube embed player.\n",
+            ),
+          expiresAtMs: zod
+            .number()
+            .nullable()
+            .describe(
+              "Epoch ms after which `url` may stop working. Null for youtube.",
+            ),
+        })
+        .describe("Direct, ready-to-play source descriptor. No 302 redirect."),
+      startsAtMs: zod.number(),
+      endsAtMs: zod.number(),
+    })
+    .nullable(),
+  next: zod
+    .object({
+      id: zod.string(),
+      title: zod.string(),
+      thumbnailUrl: zod.string().nullable(),
+      durationSecs: zod.number(),
+      source: zod
+        .object({
+          kind: zod.enum(["hls", "mp4", "youtube"]),
+          url: zod
+            .string()
+            .describe(
+              "For `hls`\/`mp4` this is a fully-resolved URL (signed S3 GET for\nmp4, master.m3u8 for hls). For `youtube` this is the 11-character\nvideoId, used by the YouTube embed player.\n",
+            ),
+          expiresAtMs: zod
+            .number()
+            .nullable()
+            .describe(
+              "Epoch ms after which `url` may stop working. Null for youtube.",
+            ),
+        })
+        .describe("Direct, ready-to-play source descriptor. No 302 redirect."),
+      startsAtMs: zod.number(),
+      endsAtMs: zod.number(),
+    })
+    .nullable(),
+  nextNext: zod
+    .object({
+      id: zod.string(),
+      title: zod.string(),
+      thumbnailUrl: zod.string().nullable(),
+      durationSecs: zod.number(),
+      source: zod
+        .object({
+          kind: zod.enum(["hls", "mp4", "youtube"]),
+          url: zod
+            .string()
+            .describe(
+              "For `hls`\/`mp4` this is a fully-resolved URL (signed S3 GET for\nmp4, master.m3u8 for hls). For `youtube` this is the 11-character\nvideoId, used by the YouTube embed player.\n",
+            ),
+          expiresAtMs: zod
+            .number()
+            .nullable()
+            .describe(
+              "Epoch ms after which `url` may stop working. Null for youtube.",
+            ),
+        })
+        .describe("Direct, ready-to-play source descriptor. No 302 redirect."),
+      startsAtMs: zod.number(),
+      endsAtMs: zod.number(),
+    })
+    .nullable(),
+  liveOverride: zod
+    .object({
+      title: zod.string(),
+      startedAtMs: zod.number(),
+      endsAtMs: zod.number().nullable(),
+    })
+    .nullable(),
+  source: zod.enum(["override", "schedule", "queue", "empty"]),
+});
