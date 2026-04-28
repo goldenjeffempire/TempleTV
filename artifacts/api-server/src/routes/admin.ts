@@ -36,6 +36,7 @@ import { buildLiveStatusPayload, getActiveLiveOverride } from "../lib/liveStatus
 import { getFailureStats } from "../lib/liveFailureReports";
 import { extractYouTubeVideoId, validateYouTubeLiveStream } from "../lib/youtubeUrl";
 import { cache } from "../lib/cache";
+import { snapshotCacheStats } from "../lib/cacheStats";
 import { invalidatePublicVideoCaches, invalidatePublicPlaylistCaches, registerTrendingCacheKey } from "../lib/publicCacheInvalidation";
 import { logger } from "../lib/logger";
 import { metricsSnapshot, slowRequestsSnapshot } from "../middlewares/observability";
@@ -1020,6 +1021,39 @@ router.get("/admin/ops/status", async (_req, res) => {
  */
 router.get("/admin/ops/slow-requests", (_req, res) => {
   res.json(slowRequestsSnapshot());
+});
+
+/**
+ * Live process memory + middleware-cache snapshot.
+ *
+ * Complements the periodic `memoryWatchdog` log by giving an operator the
+ * ability to pull `process.memoryUsage()` and the BoundedTtlMap entry counts
+ * on demand from Mission Control — useful when investigating an active
+ * memory incident and waiting for the next 60s sample window isn't acceptable.
+ *
+ * Admin-token-gated by `adminAccessControl` middleware (path prefix
+ * `/api/admin/*` — see middlewares/security.ts). No body, no side effects,
+ * safe to poll at any cadence.
+ */
+router.get("/admin/diagnostics/memory", (_req, res) => {
+  const m = process.memoryUsage();
+  res.json({
+    generatedAt: new Date().toISOString(),
+    uptimeSecs: Math.round(process.uptime()),
+    memory: {
+      rss: m.rss,
+      heapUsed: m.heapUsed,
+      heapTotal: m.heapTotal,
+      external: m.external,
+      arrayBuffers: m.arrayBuffers,
+      rssMb: Math.round(m.rss / 1024 / 1024),
+      heapUsedMb: Math.round(m.heapUsed / 1024 / 1024),
+      heapTotalMb: Math.round(m.heapTotal / 1024 / 1024),
+      externalMb: Math.round(m.external / 1024 / 1024),
+      arrayBuffersMb: Math.round(m.arrayBuffers / 1024 / 1024),
+    },
+    caches: snapshotCacheStats(),
+  });
 });
 
 type LaunchCheckStatus = "ready" | "warning" | "blocked";

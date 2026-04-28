@@ -11,6 +11,7 @@ import { sendRangedGet } from "./s3Ranged";
 import { logger } from "./logger";
 import { recordSignedUrlHit } from "./signedUrlMetrics";
 import { BoundedTtlMap } from "./boundedTtlMap";
+import { registerCacheStats } from "./cacheStats";
 
 // Hard cap on the per-mount signed-URL cache. See boundedTtlMap.ts and
 // s3RedirectFirst.ts for the rationale — we want a high enough ceiling
@@ -137,6 +138,9 @@ export function s3FallbackMiddleware(opts: FallbackOptions): express.RequestHand
   const signedUrlCache = redirectFromS3
     ? new BoundedTtlMap<string, string>(SIGNED_URL_CACHE_MAX_ENTRIES)
     : null;
+  if (signedUrlCache) {
+    registerCacheStats("staticWithS3Fallback.signedUrlCache", () => signedUrlCache.size);
+  }
   const SIGNED_URL_CACHE_TTL_MS = redirectFromS3
     ? Math.max(60_000, Math.floor(redirectFromS3.signedUrlTtlSec * 1000 / 2))
     : 0;

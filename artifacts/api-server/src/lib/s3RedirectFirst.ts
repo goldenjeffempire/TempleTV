@@ -3,6 +3,7 @@ import { isS3Configured, headObject, getSignedGetUrl } from "./s3Storage";
 import { logger } from "./logger";
 import { recordSignedUrlHit } from "./signedUrlMetrics";
 import { BoundedTtlMap } from "./boundedTtlMap";
+import { registerCacheStats } from "./cacheStats";
 
 /**
  * "S3-redirect-first" middleware for large media (full-length MP4s/audio).
@@ -72,6 +73,7 @@ export function s3RedirectFirstForLargeMedia(
   } = opts;
   const extSet = new Set(extensions.map((e) => e.toLowerCase()));
   const headCache = new BoundedTtlMap<string, boolean>(MAX_CACHE_ENTRIES);
+  registerCacheStats("s3RedirectFirst.headCache", () => headCache.size);
   // Negative cache for transient HEAD errors (auth blip, AWS 5xx, network):
   // without this the middleware re-issues a HEAD on EVERY viewer request,
   // re-throws, and floods the log with one warn line per request — observed
@@ -81,6 +83,7 @@ export function s3RedirectFirstForLargeMedia(
   const HEAD_ERROR_TTL_MS = 60 * 1000;
   const HEAD_ERROR_LOG_INTERVAL_MS = 5 * 60 * 1000;
   const headErrors = new BoundedTtlMap<string, HeadErrorEntry>(MAX_CACHE_ENTRIES);
+  registerCacheStats("s3RedirectFirst.headErrors", () => headErrors.size);
 
   // Per-key signed-URL cache. The presigned URL is range-agnostic and
   // single-tenant safe (the underlying /api/uploads/<uuid> URL was already
@@ -91,6 +94,7 @@ export function s3RedirectFirstForLargeMedia(
   // in production logs). Caching for half the URL TTL guarantees a stale
   // cached redirect can never outlive its underlying signature.
   const signedUrlCache = new BoundedTtlMap<string, string>(MAX_CACHE_ENTRIES);
+  registerCacheStats("s3RedirectFirst.signedUrlCache", () => signedUrlCache.size);
   const SIGNED_URL_CACHE_TTL_MS = Math.max(60_000, Math.floor(signedUrlTtlSec * 1000 / 2));
 
   return async function s3RedirectFirst(req, res, next) {

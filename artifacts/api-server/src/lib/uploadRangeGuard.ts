@@ -1,5 +1,6 @@
 import express from "express";
 import { logger } from "./logger";
+import { registerCacheStats } from "./cacheStats";
 
 /**
  * Per-client concurrency + range-size guard for `/api/uploads/*`.
@@ -63,6 +64,7 @@ const MAX_RANGE_BYTES = Math.max(
 // (FIFO), matching the BoundedTtlMap policy used elsewhere.
 const MAX_INFLIGHT_KEYS = 8192;
 const inflight = new Map<string, number>();
+registerCacheStats("uploadRangeGuard.inflight", () => inflight.size);
 
 function recordInflight(key: string, value: number): void {
   // Keep MRU semantics so released slots get freed in roughly FIFO order
