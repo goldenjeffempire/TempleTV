@@ -156,8 +156,7 @@ services:
     # esbuild bundles to a single ESM file so `start` does not
     # require devDependencies on disk.
     buildCommand: |
-      corepack enable && \
-      pnpm install --frozen-lockfile --prefer-offline --prod=false && \
+      bash ./scripts/render-install.sh && \
       pnpm run verify:production && \
       pnpm --filter @workspace/api-server run build
     startCommand: pnpm --filter @workspace/api-server run start:prod
@@ -330,8 +329,7 @@ services:
     # before the transcoder ever pulls a job off the queue. (The dev-only
     # `@workspace/mockup-sandbox` is excluded — it ships in zero services.)
     buildCommand: |
-      corepack enable && \
-      pnpm install --frozen-lockfile --prefer-offline --prod=false && \
+      bash ./scripts/render-install.sh && \
       pnpm run verify:production && \
       pnpm --filter @workspace/api-server run build
     # `start:prod` (NOT `start`) — same reasoning as temple-tv-api above:
@@ -397,8 +395,7 @@ services:
     # openapi.yaml, nor a UI whose TS doesn't typecheck against the libs
     # it imports. Excludes the dev-only `@workspace/mockup-sandbox`.
     buildCommand: |
-      corepack enable && \
-      pnpm install --frozen-lockfile --prefer-offline --prod=false && \
+      bash ./scripts/render-install.sh && \
       pnpm run verify:production && \
       pnpm --filter @workspace/admin run build
     staticPublishPath: ./artifacts/admin/dist/public
@@ -465,8 +462,7 @@ services:
     # against the same openapi-generated client + cross-workspace types as
     # the API. Excludes the dev-only `@workspace/mockup-sandbox`.
     buildCommand: |
-      corepack enable && \
-      pnpm install --frozen-lockfile --prefer-offline --prod=false && \
+      bash ./scripts/render-install.sh && \
       pnpm run verify:production && \
       pnpm --filter @workspace/mobile run build:web
     staticPublishPath: ./artifacts/mobile/web-dist
@@ -527,8 +523,7 @@ services:
     # the same openapi-generated client + cross-workspace types as the API.
     # Excludes the dev-only `@workspace/mockup-sandbox`.
     buildCommand: |
-      corepack enable && \
-      pnpm install --frozen-lockfile --prefer-offline --prod=false && \
+      bash ./scripts/render-install.sh && \
       pnpm run verify:production && \
       pnpm --filter @workspace/tv run build
     staticPublishPath: ./artifacts/tv/dist/public

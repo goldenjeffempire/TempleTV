@@ -229,10 +229,17 @@ for (const spa of STATIC_SPAS) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Invariant 2: every build command must include `--frozen-lockfile` AND
-// `pnpm run verify:production`. Either omission would let a deploy ship
-// with drift the guardrails are designed to catch.
+// Invariant 2: every build command must call the shared install wrapper
+// (`bash ./scripts/render-install.sh`) AND `pnpm run verify:production`.
+// The wrapper is the single source of truth for install flags + the
+// stale-`node_modules`-pruning step that defeats Render's build-cache
+// orphan-package pollution (the `@types/react@19.1.17` ghost that survived
+// across deploys after the catalog bump on 2026-04-28). The wrapper itself
+// is verified separately to contain `--frozen-lockfile` and `--prod=false`.
+// Either omission of the wrapper or the verify gate would let a deploy
+// ship with drift the guardrails are designed to catch.
 // ────────────────────────────────────────────────────────────────────────────
+const WRAPPER_INVOCATION = /\bbash\s+\.\/scripts\/render-install\.sh\b/;
 for (const svc of services.filter((s) => /^temple-tv-(api|transcoder|admin|web|tv)$/.test(s.name))) {
   const buildBlock = svc.body.match(/buildCommand:\s*\|([\s\S]*?)(?=\n    \w|\n  - type:|$)/);
   if (!buildBlock) {
@@ -240,14 +247,32 @@ for (const svc of services.filter((s) => /^temple-tv-(api|transcoder|admin|web|t
     continue;
   }
   const cmd = buildBlock[1];
-  if (!/--frozen-lockfile/.test(cmd)) {
-    fail(`[${svc.name}] buildCommand missing \`--frozen-lockfile\` (lockfile would be re-resolved → duplicate-package risk)`);
-  }
-  if (!/--prod=false/.test(cmd)) {
-    fail(`[${svc.name}] buildCommand missing \`--prod=false\` (devDependencies like @types/* needed at build time would be skipped)`);
+  if (!WRAPPER_INVOCATION.test(cmd)) {
+    fail(`[${svc.name}] buildCommand must call \`bash ./scripts/render-install.sh\` (single source of truth for install flags + stale-node_modules pruning that defeats Render-cache orphan-package pollution — see scripts/render-install.sh header for the full failure-mode history).`);
   }
   if (!/pnpm run verify:production/.test(cmd)) {
     fail(`[${svc.name}] buildCommand missing \`pnpm run verify:production\` (deploy would skip catalog/recharts/types/tsconfig guardrails + typecheck)`);
+  }
+}
+
+// Verify the wrapper script itself contains the install flags. This makes
+// the wrapper-based indirection safe: the per-service check above asserts
+// "you must use the wrapper", and this check asserts "the wrapper must
+// contain the right flags" — together they cover the same surface area as
+// the previous per-service flag checks.
+const WRAPPER_PATH = join(ROOT, "scripts", "render-install.sh");
+if (!existsSync(WRAPPER_PATH)) {
+  fail(`shared install wrapper missing at ${WRAPPER_PATH} — every service's buildCommand calls it; without it every deploy would fail.`);
+} else {
+  const wrapperSrc = readFileSync(WRAPPER_PATH, "utf8");
+  if (!/--frozen-lockfile/.test(wrapperSrc)) {
+    fail(`scripts/render-install.sh missing \`--frozen-lockfile\` (lockfile would be re-resolved → duplicate-package risk)`);
+  }
+  if (!/--prod=false/.test(wrapperSrc)) {
+    fail(`scripts/render-install.sh missing \`--prod=false\` (Render sets NODE_ENV=production by default, so devDependencies like @types/node and vite would be skipped → tsc fails with TS2688)`);
+  }
+  if (!/rm\s+-rf[\s\S]*?node_modules/.test(wrapperSrc)) {
+    fail(`scripts/render-install.sh missing the stale-node_modules pruning step (the whole point of the wrapper — without it, Render's build cache reintroduces orphan packages from previous deploys and the verify:react-types-singleton guardrail trips even though the lockfile is clean)`);
   }
 }
 
@@ -380,5 +405,5 @@ if (failures.length > 0) {
 }
 
 console.log(
-  `[verify:render-yaml] OK — ${services.length} services validated; ${STATIC_SPAS.length}-way SPA security-header parity confirmed; build commands include verify:production + --frozen-lockfile + --prod=false; HSTS lifetimes >= 1 year on every SPA.`,
+  `[verify:render-yaml] OK — ${services.length} services validated; ${STATIC_SPAS.length}-way SPA security-header parity confirmed; every build command calls scripts/render-install.sh + verify:production; wrapper script includes --frozen-lockfile + --prod=false + stale-node_modules pruning; HSTS lifetimes >= 1 year on every SPA.`,
 );
