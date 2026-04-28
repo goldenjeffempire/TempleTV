@@ -1,0 +1,50 @@
+2026-04-27T18:04:14.136738248Z       Type 'LinearGradient' is missing the following properties from type 'Component<any, any, any>': context, setState, forceUpdate, props, state
+2026-04-27T18:04:14.13702576Z app/signup.tsx(287,19): error TS2607: JSX element class does not support attributes because it does not have a 'props' property.
+2026-04-27T18:04:14.13703733Z app/signup.tsx(287,20): error TS2786: 'LinearGradient' cannot be used as a JSX component.
+2026-04-27T18:04:14.1370411Z   Its type 'typeof LinearGradient' is not a valid JSX element type.
+2026-04-27T18:04:14.13704462Z     Type 'typeof LinearGradient' is not assignable to type 'new (props: any, context: any) => Component<any, any, any>'.
+2026-04-27T18:04:14.13704831Z       Type 'LinearGradient' is missing the following properties from type 'Component<any, any, any>': context, setState, forceUpdate, props, state
+2026-04-27T18:04:14.13705242Z components/AuthGateModal.tsx(129,13): error TS2607: JSX element class does not support attributes because it does not have a 'props' property.
+2026-04-27T18:04:14.1370637Z components/AuthGateModal.tsx(129,14): error TS2786: 'LinearGradient' cannot be used as a JSX component.
+2026-04-27T18:04:14.13706736Z   Its type 'typeof LinearGradient' is not a valid JSX element type.
+2026-04-27T18:04:14.13707087Z     Type 'typeof LinearGradient' is not assignable to type 'new (props: any, context: any) => Component<any, any, any>'.
+2026-04-27T18:04:14.13707425Z       Type 'LinearGradient' is missing the following properties from type 'Component<any, any, any>': context, setState, forceUpdate, props, state
+2026-04-27T18:04:14.13707773Z components/BroadcastInfoStrip.tsx(44,7): error TS2607: JSX element class does not support attributes because it does not have a 'props' property.
+2026-04-27T18:04:14.13708328Z components/BroadcastInfoStrip.tsx(44,8): error TS2786: 'LinearGradient' cannot be used as a JSX component.
+2026-04-27T18:04:14.13708695Z   Its type 'typeof LinearGradient' is not a valid JSX element type.
+2026-04-27T18:04:14.13709041Z     Type 'typeof LinearGradient' is not assignable to type 'new (props: any, context: any) => Component<any, any, any>'.
+2026-04-27T18:04:14.13709345Z       Type 'LinearGradient' is missing the following properties from type 'Component<any, any, any>': context, setState, forceUpdate, props, state
+2026-04-27T18:04:14.13709661Z components/MiniPlayer.tsx(124,7): error TS2607: JSX element class does not support attributes because it does not have a 'props' property.
+2026-04-27T18:04:14.1370998Z components/MiniPlayer.tsx(124,8): error TS2786: 'BlurView' cannot be used as a JSX component.
+2026-04-27T18:04:14.13710294Z   Its type 'typeof BlurView' is not a valid JSX element type.
+2026-04-27T18:04:14.13710595Z     Type 'typeof BlurView' is not assignable to type 'new (props: any, context: any) => Component<any, any, any>'.
+2026-04-27T18:04:14.13710908Z       Type 'BlurView' is missing the following properties from type 'Component<any, any, any>': context, setState, forceUpdate, props, state
+2026-04-27T18:04:14.13711215Z components/PrayerRequestModal.tsx(103,11): error TS2607: JSX element class does not support attributes because it does not have a 'props' property.
+2026-04-27T18:04:14.1371152Z components/PrayerRequestModal.tsx(103,12): error TS2786: 'LinearGradient' cannot be used as a JSX component.
+2026-04-27T18:04:14.13711836Z   Its type 'typeof LinearGradient' is not a valid JSX element type.
+2026-04-27T18:04:14.13712137Z     Type 'typeof LinearGradient' is not assignable to type 'new (props: any, context: any) => Component<any, any, any>'.
+2026-04-27T18:04:14.13712465Z       Type 'LinearGradient' is missing the following properties from type 'Component<any, any, any>': context, setState, forceUpdate, props, state
+2026-04-27T18:04:14.13712819Z components/SermonCard.tsx(21,5): error TS2607: JSX element class does not support attributes because it does not have a 'props' property.
+2026-04-27T18:04:14.13713137Z components/SermonCard.tsx(21,6): error TS2786: 'ExpoImage' cannot be used as a JSX component.
+2026-04-27T18:04:14.13713437Z   Its type 'typeof Image' is not a valid JSX element type.
+2026-04-27T18:04:14.13713745Z     Types of construct signatures are incompatible.
+2026-04-27T18:04:14.13714061Z       Type 'new (props: ImageProps) => Image' is not assignable to type 'new (props: any, context: any) => Component<any, any, any>'.
+2026-04-27T18:04:14.13714368Z         Type 'Image' is missing the following properties from type 'Component<any, any, any>': context, setState, forceUpdate, props, state
+2026-04-27T18:04:14.24106197Z /opt/render/project/src/artifacts/mobile:
+2026-04-27T18:04:14.241091891Z  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/mobile@0.0.0 typecheck: `tsc -p tsconfig.json --noEmit`
+2026-04-27T18:04:14.241111471Z Exit status 2
+2026-04-27T18:04:14.274684685Z 
+2026-04-27T18:04:14.274711876Z ==> [run-typechecks] @workspace/mobile typecheck — FAILED (exit 2, 9.5s)
+2026-04-27T18:04:14.275361109Z 
+2026-04-27T18:04:14.275376839Z ==> [run-typechecks] FAIL — @workspace/mobile typecheck failed after 39.9s total.
+2026-04-27T18:04:14.275382589Z ==> [run-typechecks] Per-package log captured (9772 bytes): /opt/render/project/src/dist/typecheck-logs/mobile.log
+2026-04-27T18:04:14.275386869Z ==> [run-typechecks] All package logs: /opt/render/project/src/dist/typecheck-logs
+2026-04-27T18:04:14.275391529Z ==> [run-typechecks] Failure marker: /opt/render/project/src/dist/last-failure.txt (JSON; downstream steps can read .logPath/.pkg/.exitCode without grep)
+2026-04-27T18:04:14.275395909Z ==> [run-typechecks] If the streamed output above was truncated, cat the failing log file for the complete TypeScript error text.
+2026-04-27T18:04:14.316774962Z /opt/render/project/src/scripts:
+2026-04-27T18:04:14.316799622Z  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/scripts@0.0.0 run-typechecks: `tsx ./src/run-typechecks.ts`
+2026-04-27T18:04:14.316802882Z Exit status 2
+2026-04-27T18:04:14.367153699Z  ELIFECYCLE  Command failed with exit code 2.
+2026-04-27T18:04:14.416584742Z  ELIFECYCLE  Command failed with exit code 2.
+2026-04-27T18:04:14.505289248Z ==> Build failed 😞
+2026-04-27T18:04:14.505328098Z ==> Common ways to troubleshoot your deploy: https://render.com/docs/troubleshooting-deploys
