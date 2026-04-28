@@ -12,7 +12,7 @@
     "package:tizen": "pnpm build:tizen && bash tizen/build.sh",
     "package:lg": "pnpm build:lg && bash lg/build.sh",
     "serve": "vite preview --config vite.config.ts --host 0.0.0.0",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "NODE_OPTIONS='--max-old-space-size=4096' tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
     "@hookform/resolvers": "^3.10.0",

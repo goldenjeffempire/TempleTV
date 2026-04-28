@@ -1,0 +1,50 @@
+2026-04-28T07:55:59.713432366Z > tsx ./src/run-typechecks.ts
+2026-04-28T07:55:59.713437946Z 
+2026-04-28T07:56:00.240394335Z 
+2026-04-28T07:56:00.240429495Z ==> [run-typechecks] @workspace/api-server typecheck — start (log: /opt/render/project/src/dist/typecheck-logs/api-server.log)
+2026-04-28T07:56:01.105335917Z 
+2026-04-28T07:56:01.105367437Z > @workspace/api-server@0.0.0 typecheck /opt/render/project/src/artifacts/api-server
+2026-04-28T07:56:01.105375327Z > tsc -p tsconfig.json --noEmit
+2026-04-28T07:56:01.105381047Z 
+2026-04-28T07:56:10.834368701Z ==> [run-typechecks] @workspace/api-server typecheck — ok (10.6s)
+2026-04-28T07:56:10.834394651Z 
+2026-04-28T07:56:10.834401931Z ==> [run-typechecks] @workspace/admin typecheck — start (log: /opt/render/project/src/dist/typecheck-logs/admin.log)
+2026-04-28T07:56:11.640607999Z 
+2026-04-28T07:56:11.640640089Z > @workspace/admin@0.0.0 typecheck /opt/render/project/src/artifacts/admin
+2026-04-28T07:56:11.640647959Z > tsc -p tsconfig.json --noEmit
+2026-04-28T07:56:11.640653899Z 
+2026-04-28T07:56:30.449916139Z 
+2026-04-28T07:56:30.44996563Z <--- Last few GCs --->
+2026-04-28T07:56:30.44997128Z 
+2026-04-28T07:56:30.44997743Z [810:0x34084000]    18582 ms: Mark-Compact (reduce) 318.1 (324.0) -> 317.5 (321.0) MB, pooled: 0 MB, 226.96 / 0.00 ms  (+ 0.2 ms in 28 steps since start of marking, biggest step 0.0 ms, walltime since start of marking 249 ms) (average mu = 0.174, current [810:0x34084000]    18778 ms: Mark-Compact (reduce) 317.9 (321.0) -> 316.3 (321.0) MB, pooled: 0 MB, 188.32 / 0.00 ms  (+ 1.3 ms in 1 steps since start of marking, biggest step 1.3 ms, walltime since start of marking 192 ms) (average mu = 0.107, current m
+2026-04-28T07:56:30.4500028Z FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory
+2026-04-28T07:56:30.45000732Z ----- Native stack trace -----
+2026-04-28T07:56:30.45001025Z 
+2026-04-28T07:56:30.450719027Z  1: 0x72dece node::OOMErrorHandler(char const*, v8::OOMDetails const&) [node]
+2026-04-28T07:56:30.451397725Z  2: 0xba1b20  [node]
+2026-04-28T07:56:30.452005121Z  3: 0xba1c0f  [node]
+2026-04-28T07:56:30.452593297Z  4: 0xe3a745  [node]
+2026-04-28T07:56:30.453112142Z  5: 0xe3a772  [node]
+2026-04-28T07:56:30.453740239Z  6: 0xe3aa6a  [node]
+2026-04-28T07:56:30.454378086Z  7: 0xe4af8a  [node]
+2026-04-28T07:56:30.454893841Z  8: 0xe4f330  [node]
+2026-04-28T07:56:30.455455927Z  9: 0x18e22f1  [node]
+2026-04-28T07:56:30.736383744Z Aborted (core dumped)
+2026-04-28T07:56:30.758522085Z /opt/render/project/src/artifacts/admin:
+2026-04-28T07:56:30.758557416Z  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/admin@0.0.0 typecheck: `tsc -p tsconfig.json --noEmit`
+2026-04-28T07:56:30.758563016Z Exit status 134
+2026-04-28T07:56:30.790398909Z 
+2026-04-28T07:56:30.790432819Z ==> [run-typechecks] @workspace/admin typecheck — FAILED (exit 134, 20.0s)
+2026-04-28T07:56:30.790978335Z 
+2026-04-28T07:56:30.790992585Z ==> [run-typechecks] FAIL — @workspace/admin typecheck failed after 30.6s total.
+2026-04-28T07:56:30.790999735Z ==> [run-typechecks] Per-package log captured (1214 bytes): /opt/render/project/src/dist/typecheck-logs/admin.log
+2026-04-28T07:56:30.791004795Z ==> [run-typechecks] All package logs: /opt/render/project/src/dist/typecheck-logs
+2026-04-28T07:56:30.791010855Z ==> [run-typechecks] Failure marker: /opt/render/project/src/dist/last-failure.txt (JSON; downstream steps can read .logPath/.pkg/.exitCode without grep)
+2026-04-28T07:56:30.791017155Z ==> [run-typechecks] If the streamed output above was truncated, cat the failing log file for the complete TypeScript error text.
+2026-04-28T07:56:30.834816593Z /opt/render/project/src/scripts:
+2026-04-28T07:56:30.834846013Z  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/scripts@0.0.0 run-typechecks: `tsx ./src/run-typechecks.ts`
+2026-04-28T07:56:30.834852183Z Exit status 134
+2026-04-28T07:56:30.887894498Z  ELIFECYCLE  Command failed with exit code 134.
+2026-04-28T07:56:30.944002524Z  ELIFECYCLE  Command failed with exit code 134.
+2026-04-28T07:56:31.037043927Z ==> Build failed 😞
+2026-04-28T07:56:31.037068497Z ==> Common ways to troubleshoot your deploy: https://render.com/docs/troubleshooting-deploys
