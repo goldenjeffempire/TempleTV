@@ -1165,11 +1165,21 @@ export default function Broadcast() {
     return () => clearInterval(tickerRef.current);
   }, []);
 
-  // ── polling fallback (30s) ─────────────────────────────────────────────────
+  // ── polling fallback ───────────────────────────────────────────────────────
+  // When SSE is connected the server already pushes every relevant state
+  // change (broadcast-current-updated, broadcast-queue-updated,
+  // broadcast-control-updated, status, override-expired, plus a fresh
+  // loadAll() on every (re)connect via the `open` handler), so a tight
+  // poll here is pure redundant work. Lengthen to 120s while SSE is up,
+  // keep the 30s safety-net cadence only when SSE is disconnected. Same
+  // pattern already in use on live-control, live-youtube, and prayers.
+  // Cuts /api/admin/broadcast + /api/broadcast/current + /api/admin/live
+  // request volume on this page by 4x during normal operation.
   useEffect(() => {
-    pollRef.current = setInterval(loadAll, 30_000);
+    const pollMs = sseState === "connected" ? 120_000 : 30_000;
+    pollRef.current = setInterval(loadAll, pollMs);
     return () => clearInterval(pollRef.current);
-  }, [loadAll]);
+  }, [loadAll, sseState]);
 
   // ── initial load + SSE ─────────────────────────────────────────────────────
   useEffect(() => {
