@@ -1,6 +1,20 @@
 #!/bin/bash
 set -e
-pnpm install --frozen-lockfile
+
+# Use the same install wrapper Render uses (scripts/render-install.sh) so a
+# locally-merged task agent branch picks up the same node_modules-pruning
+# hygiene as a production deploy. Without this, a merge that includes a
+# catalog bump or pnpm.overrides change can leave orphan packages in
+# node_modules/.pnpm/ from the pre-merge resolved layout — which then trips
+# the `verify:react-types-singleton` (and other future) guardrails during
+# the `pnpm run verify` step below, surfacing as a confusing "guardrail
+# fails locally even though origin/main passed CI" experience. The wrapper
+# wipes node_modules and reinstalls from the (preserved) pnpm store —
+# typically ~25-45s on a warm store, the same speed as the previous
+# `pnpm install --frozen-lockfile` line. See scripts/render-install.sh for
+# the full failure-mode history.
+bash ./scripts/render-install.sh
+
 pnpm --filter db push
 pnpm --filter @workspace/scripts run backfill-legacy-video-urls
 
