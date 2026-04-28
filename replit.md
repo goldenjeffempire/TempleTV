@@ -1,5 +1,47 @@
 # Temple TV (JCTM) Broadcasting Platform
 
+## Phase 4.3 — Prayer-request SSE channel (April 28 2026, Round 4)
+
+Added a real-time SSE channel for the prayer-request lifecycle so the admin
+Prayers page no longer relies on a 30s poll to discover new submissions or
+multi-operator state changes.
+
+**Server-side emit sites:**
+- `routes/broadcast.ts` `POST /broadcast/prayer` — emits `prayer-received`
+  after a successful insert. Payload omits the message body for privacy
+  (defence-in-depth — even if a non-admin SSE client somehow dispatched
+  the event, no PII would leak). Fields: `{ id, hasName, createdAt }`.
+- `routes/admin.ts` `PATCH /admin/prayers/:id/read` — emits `prayer-updated`
+  with `{ id, isRead }`. Enables multi-admin sync: operator A's read action
+  propagates to operator B's tab in <500ms.
+- `routes/admin.ts` `DELETE /admin/prayers/:id` — emits `prayer-deleted`
+  with `{ id }`. Same multi-admin rationale.
+- All three emits are wrapped in try/catch — SSE fanout failures must never
+  affect the user-facing HTTP response.
+
+**Admin client:**
+- `contexts/SSEContext.tsx` — added `prayer-received`, `prayer-updated`,
+  `prayer-deleted` to the `knownEvents` whitelist (otherwise EventSource
+  silently drops them).
+- `contexts/SSEContext.tsx` — `summarizeEvent` shows `prayer-received`
+  arrivals in the header activity feed (neutral wording — never the name
+  or message body). `prayer-updated` and `prayer-deleted` are intentionally
+  silent in the feed to avoid bulk-mark spam; query invalidation still fires.
+- `pages/prayers.tsx` — wired `useSSEEvent` for all three events to invalidate
+  the `["prayers"]` query. Polling lengthened from `30_000` to
+  `sseState === "connected" ? 120_000 : 30_000`. Cuts admin → /admin/prayers
+  request volume by 4x while keeping the safety-net behaviour during SSE
+  outages.
+
+**Why this is safe:**
+- The SSE bus already has exponential-backoff reconnection (`SSEContext.tsx`),
+  so even if SSE temporarily drops, the safety-net poll catches it within
+  30s.
+- The PATCH/DELETE handlers already invalidate the local React Query cache
+  via `onSuccess` — the SSE event is an additive multi-tab sync, not a
+  primary update path on the originating tab.
+- No schema or contract changes — pure additive.
+
 ## Phase 4.2 — Polling-to-SSE migration (April 28 2026, Round 3)
 
 Lengthened safety-net polling intervals on three high-volume client surfaces

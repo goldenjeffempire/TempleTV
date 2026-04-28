@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { getAdminToken } from "@/lib/admin-access";
+import { useSSE, useSSEEvent } from "@/contexts/SSEContext";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -98,16 +99,27 @@ export default function PrayersPage() {
   const [pendingDelete, setPendingDelete] = useState<PrayerRequest | null>(null);
   const { toast } = useToast();
   const qc = useQueryClient();
+  const { state: sseState } = useSSE();
 
   const unreadOnly = filter === "unread";
 
+  // SSE-driven invalidation: routes/broadcast.ts emits `prayer-received`
+  // when a viewer submits a new prayer; routes/admin.ts emits
+  // `prayer-updated` / `prayer-deleted` when any operator changes state.
+  // With these wired, polling drops from a primary update mechanism to a
+  // safety net for SSE outages — extend interval from 30s to 120s when
+  // the SSE channel is healthy, fall back to 30s otherwise.
   const { data, isLoading, error } = useQuery({
     queryKey: ["prayers", page, unreadOnly],
     queryFn: () => fetchPrayers(page, unreadOnly),
-    refetchInterval: 30_000,
+    refetchInterval: sseState === "connected" ? 120_000 : 30_000,
   });
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["prayers"] });
+
+  useSSEEvent("prayer-received", invalidate);
+  useSSEEvent("prayer-updated", invalidate);
+  useSSEEvent("prayer-deleted", invalidate);
 
   const readMut = useMutation({
     mutationFn: ({ id, isRead }: { id: string; isRead: boolean }) => markRead(id, isRead),

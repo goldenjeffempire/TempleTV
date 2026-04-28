@@ -5387,6 +5387,16 @@ router.patch("/admin/prayers/:id/read", async (req, res) => {
       .where(eq(prayerRequestsTable.id, id))
       .returning();
     if (!updated) return void res.status(404).json({ error: "Prayer request not found" });
+
+    // Multi-admin sync: when one operator marks a prayer read, push the
+    // state change to every other admin SSE client so their Prayers page
+    // updates immediately instead of waiting for the safety-net poll.
+    try {
+      broadcastLiveEvent("prayer-updated", { id: updated.id, isRead: updated.isRead });
+    } catch {
+      // SSE fanout failures must not affect the user-facing response.
+    }
+
     res.json(updated);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -5402,6 +5412,16 @@ router.delete("/admin/prayers/:id", async (req, res) => {
       .where(eq(prayerRequestsTable.id, id))
       .returning();
     if (!deleted) return void res.status(404).json({ error: "Prayer request not found" });
+
+    // Multi-admin sync — same rationale as the patch handler above. Without
+    // this, a delete on admin A's tab would silently linger on admin B's
+    // tab until B's next 30s poll completes.
+    try {
+      broadcastLiveEvent("prayer-deleted", { id: deleted.id });
+    } catch {
+      // SSE fanout failures must not affect the user-facing response.
+    }
+
     res.json({ ok: true });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";

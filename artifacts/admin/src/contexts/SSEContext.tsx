@@ -88,6 +88,21 @@ function summarizeEvent(event: string, data: unknown): string | null {
       const when = reset ? new Date(reset).toLocaleTimeString() : "midnight PT";
       return `YouTube API quota exhausted (${context}) — resets ${when}`;
     }
+    case "prayer-received":
+      // Names and message bodies are intentionally omitted from the SSE
+      // payload (defence-in-depth — see routes/broadcast.ts comment).
+      // Activity feed shows a neutral arrival ping; operators get full
+      // context when they open the Prayers page (the SSE handler
+      // simultaneously invalidates the prayers query so it's already
+      // fresh when they navigate).
+      return d.hasName ? "New prayer request submitted" : "Anonymous prayer request submitted";
+    case "prayer-updated":
+      // Quiet to avoid flooding the activity feed when an operator
+      // bulk-marks prayers read. The query invalidation still fires —
+      // we just don't surface a per-row entry.
+      return null;
+    case "prayer-deleted":
+      return null;
     default:
       return event;
   }
@@ -195,6 +210,15 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
       // had no real-time visibility into quota pressure.
       "youtube-quota-throttled",
       "youtube-quota-exhausted",
+      // Prayer request lifecycle — emitted by routes/broadcast.ts on insert
+      // (`prayer-received`) and routes/admin.ts on read-state change
+      // (`prayer-updated`) / delete (`prayer-deleted`). The Prayers page
+      // subscribes to all three so a viewer's prayer arrival or another
+      // operator's read/delete action propagates instantly across every
+      // open admin tab without waiting for the safety-net poll.
+      "prayer-received",
+      "prayer-updated",
+      "prayer-deleted",
     ];
 
     knownEvents.forEach((evt) => {

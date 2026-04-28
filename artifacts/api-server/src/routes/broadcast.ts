@@ -1603,6 +1603,24 @@ router.post("/broadcast/prayer", async (req, res) => {
         message: message.trim(),
       })
       .returning();
+
+    // Real-time notification for the admin Prayers page. Payload deliberately
+    // omits the message body — admin clients will refetch the list to pick
+    // up the full content. This keeps the SSE frame small and avoids
+    // broadcasting potentially sensitive prayer text across every connected
+    // SSE client (currently only admin-platform clients receive the
+    // `prayer-received` event because the whitelist in SSEContext.tsx scopes
+    // it to the admin, but defence-in-depth still applies).
+    try {
+      broadcastLiveEvent("prayer-received", {
+        id: inserted.id,
+        hasName: !!inserted.name,
+        createdAt: inserted.createdAt,
+      });
+    } catch {
+      // SSE fanout failures must not affect the user-facing response.
+    }
+
     res.json({ ok: true, id: inserted.id });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
