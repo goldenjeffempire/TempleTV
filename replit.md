@@ -1,5 +1,49 @@
 # Temple TV (JCTM) Broadcasting Platform
 
+## Phase 4.2 — Polling-to-SSE migration (April 28 2026, Round 3)
+
+Lengthened safety-net polling intervals on three high-volume client surfaces
+where SSE invalidation already covers real-time updates. Drops `/broadcast/current`
+and `/admin/live/status` request volume by ~4x without sacrificing
+responsiveness — the SSE channel still pushes every state change in <500ms p95;
+polling now exists only as a fallback for SSE outages.
+
+**Changes:**
+- `artifacts/mobile/app/player.tsx`: broadcast-state safety-net poll
+  `setInterval(syncBroadcast, 15000)` → `60_000`. The existing SSE handler
+  (next useEffect, line 671) already subscribes to every broadcast-state
+  mutation event, so 15s polling was redundant work. Comment in-place
+  documents why and points at the roadmap.
+- `artifacts/admin/src/pages/live-control.tsx`: `admin-live-status` query
+  `refetchInterval: 15_000` → `sseState === "connected" ? 60_000 : 15_000`.
+  Reuses the existing `useSSE()` hook already imported on line 138.
+- `artifacts/admin/src/pages/live-youtube.tsx`: same pattern. Imports `useSSE`
+  alongside `useSSEEvent`.
+
+**Why this is safe:**
+- Both admin pages already invalidate `admin-live-status` on
+  `broadcast-control-updated` + `status` SSE events, plus
+  `live-failure-stats` on live-control. SSE has its own exponential-backoff
+  reconnect (`SSEContext.tsx:214`) so the fallback window is bounded.
+- Mobile player has the same pattern: SSE handler in `player.tsx:671`
+  invalidates on `broadcast-current-updated`, `broadcast-queue-updated`,
+  `broadcast-schedule-updated`, `broadcast-control-updated`,
+  `override-expired`, and `status` — covering every server-side broadcast
+  state change.
+- Worst-case fallback latency if SSE is permanently unreachable on a client:
+  60s instead of 15s. Acceptable for a degraded fallback.
+
+**Not changed (intentional):**
+- `live-control.tsx:185` — `admin-scheduled-overrides` poll stays at 30s.
+  No SSE event invalidates this query, so polling is the primary update
+  mechanism, not a safety net.
+- `prayers.tsx:107` — 30s poll stays. No `prayer-received` SSE event exists
+  yet; adding one is a separate task (would need server-side wiring in
+  routes/prayers.ts).
+- `analytics.tsx:62` — 60s poll already gated on `autoRefresh` flag.
+- `useLocalVideos.ts`, `LiveBroadcastSupervisor.tsx`, `(tabs)/index.tsx` —
+  these subscribe to SSE without separate polling.
+
 ## Production OOM Mitigation Round 2 (April 28 2026, post-import)
 
 After Round 1 (the YouTube `boundedText` fix in commit `0b6901b`) production

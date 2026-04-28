@@ -58,7 +58,7 @@ import {
   Info,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { useSSEEvent } from "@/contexts/SSEContext";
+import { useSSE, useSSEEvent } from "@/contexts/SSEContext";
 import { liveApi, type LiveOverride, type YouTubePreviewResult } from "@/services/adminApi";
 import { PageHeader } from "@/components/shared/page-header";
 import { YouTubeQuotaBanner } from "@/components/youtube-quota-banner";
@@ -92,15 +92,18 @@ function youtubeWatchUrl(videoId: string): string {
 export default function LiveYouTube() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const { state: sseState } = useSSE();
 
   // ── Live status (poll + SSE-invalidated) ─────────────────────────────
   const { data: liveStatus, isLoading: statusLoading } = useQuery({
     queryKey: ["admin-live-status"],
     queryFn: ({ signal }) => liveApi.getStatus(signal),
-    // 15s poll is the safety net; the SSE handlers below invalidate
-    // immediately on any state change so the UI stays current within a
-    // few hundred ms of the server-side switch.
-    refetchInterval: 15_000,
+    // The SSE handlers below (`broadcast-control-updated`, `status`)
+    // invalidate immediately on any state change, so polling is just a
+    // fallback for SSE outages. 60s when SSE is connected cuts request
+    // volume by 4x; drops back to 15s when SSE is reconnecting/offline
+    // to preserve responsiveness during the fallback window.
+    refetchInterval: sseState === "connected" ? 60_000 : 15_000,
   });
 
   const activeOverride: LiveOverride | null = liveStatus?.liveOverride ?? null;

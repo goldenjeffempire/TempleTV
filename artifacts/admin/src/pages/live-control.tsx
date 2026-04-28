@@ -137,10 +137,16 @@ export default function LiveControl() {
   const { toast } = useToast();
   const { state: sseState } = useSSE();
 
+  // SSE-aware safety-net polling. The status query is invalidated in real
+  // time by the `broadcast-control-updated`, `status`, `override-expired`,
+  // and `live-failure-stats` SSE events wired below — so when SSE is up,
+  // the poll only needs to catch missed pushes (rare). 60s when connected
+  // cuts admin → /admin/live/status request volume by 4x; 15s when SSE is
+  // reconnecting/offline keeps the original responsiveness as a fallback.
   const { data: liveStatus, isLoading } = useQuery({
     queryKey: ["admin-live-status"],
     queryFn: ({ signal }) => liveApi.getStatus(signal),
-    refetchInterval: 15_000,
+    refetchInterval: sseState === "connected" ? 60_000 : 15_000,
   });
 
   const activeOverride: LiveOverride | null = liveStatus?.liveOverride ?? null;

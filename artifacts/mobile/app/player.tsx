@@ -648,7 +648,17 @@ export default function PlayerScreen() {
         }
       } catch {}
     };
-    const interval = setInterval(syncBroadcast, 15000);
+    // Safety-net poll. The SSE handler in the next useEffect catches every
+    // broadcast-state mutation in real time (broadcast-current-updated,
+    // broadcast-queue-updated, broadcast-schedule-updated,
+    // broadcast-control-updated, override-expired, status). This timer only
+    // exists to recover after a sustained SSE outage (e.g., proxy strips
+    // text/event-stream, NAT idle-timeout drops the connection, RN
+    // polyfill missing). 60s is the same cadence the radio tab uses in
+    // the SSE-up branch and matches Phase 4 of docs/streaming-platform-roadmap.md
+    // — cuts /broadcast/current request volume from this client by 4x while
+    // keeping the worst-case update latency bounded if SSE is unreachable.
+    const interval = setInterval(syncBroadcast, 60_000);
     return () => {
       cancelled = true;
       clearInterval(interval);
