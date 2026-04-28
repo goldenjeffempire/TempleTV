@@ -1,0 +1,384 @@
+#!/usr/bin/env tsx
+/**
+ * verify:render-yaml
+ *
+ * Asserts cross-service invariants on `render.yaml` so that a copy-paste
+ * mistake on any single service can never cause a security-header gap or a
+ * deploy-config drift in production.
+ *
+ * Why this is worth a guardrail (history):
+ *   - Round 6 of the deploy hardening sweep manually added HSTS + Permissions-
+ *     Policy + COOP to the 3 static SPAs because they had drifted apart over
+ *     time — admin had headers web/tv didn't, and vice versa. There was no
+ *     mechanism to prevent the same drift from happening again the next time
+ *     someone edits the file.
+ *   - Static services (`runtime: static`) had a stale `PORT` envVar that did
+ *     nothing on Render's CDN-served static layer but suggested an incorrect
+ *     mental model. We removed it, and we want it to stay removed.
+ *   - The 3 SPAs share a deliberate hardening posture — same HSTS lifetime,
+ *     same Referrer-Policy, same Permissions-Policy, same X-Content-Type-
+ *     Options. A drift on any one of these means one SPA gets weaker
+ *     browser-side hardening than the other two.
+ *
+ * What's deliberately NOT enforced:
+ *   - X-Frame-Options legitimately differs (admin=DENY, web=SAMEORIGIN for
+ *     the Expo PWA preview embedding, tv=SAMEORIGIN for Tizen/webOS WebView
+ *     shells). Both are valid hardening choices — the bug would be ABSENCE
+ *     of any value, not value drift. So we check presence only.
+ *   - COOP is admin-only by design (only admin needs process-level isolation
+ *     for its session). We don't enforce parity, just sanity (if admin has
+ *     COOP, value must be `same-origin`).
+ *
+ * Failure modes covered:
+ *   - PORT envVar regression on a static service
+ *   - Missing HSTS / X-Content-Type-Options / Referrer-Policy / Permissions-
+ *     Policy on any SPA
+ *   - Drift in HSTS lifetime / Referrer-Policy / Permissions-Policy / X-
+ *     Content-Type-Options across SPAs
+ *   - Build command no longer runs `verify:production` (would let bad code ship)
+ *   - api-server health check path missing
+ *   - Frozen lockfile flag missing from any install command
+ */
+import { readFileSync, existsSync } from "node:fs";
+import { resolve, join } from "node:path";
+
+const ROOT = resolve(import.meta.dirname, "..", "..");
+const RENDER_YAML_PATH = join(ROOT, "render.yaml");
+
+if (!existsSync(RENDER_YAML_PATH)) {
+  console.error(`[verify:render-yaml] FAIL — render.yaml not found at ${RENDER_YAML_PATH}`);
+  process.exit(1);
+}
+
+const src = readFileSync(RENDER_YAML_PATH, "utf8");
+
+// ────────────────────────────────────────────────────────────────────────────
+// Slice the document into per-service blocks. A service block starts at
+// `  - type: web` or `  - type: worker` (2-space indent) and runs until the
+// next 2-space `  - type:` or end-of-file.
+// ────────────────────────────────────────────────────────────────────────────
+interface ServiceBlock {
+  type: string;
+  name: string;
+  runtime: string;
+  body: string;
+  startLine: number;
+}
+
+function sliceServices(text: string): ServiceBlock[] {
+  const lines = text.split("\n");
+  const services: ServiceBlock[] = [];
+  let current: { startIdx: number; lines: string[] } | null = null;
+
+  const flush = () => {
+    if (!current) return;
+    const body = current.lines.join("\n");
+    const typeMatch = body.match(/^\s*- type:\s*(\S+)/m);
+    const nameMatch = body.match(/^\s{4}name:\s*(\S+)/m);
+    const runtimeMatch = body.match(/^\s{4}runtime:\s*(\S+)/m);
+    if (typeMatch && nameMatch) {
+      services.push({
+        type: typeMatch[1],
+        name: nameMatch[1],
+        runtime: runtimeMatch?.[1] ?? "",
+        body,
+        startLine: current.startIdx + 1,
+      });
+    }
+    current = null;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^  - type:\s/.test(line)) {
+      flush();
+      current = { startIdx: i, lines: [line] };
+    } else if (current) {
+      // continuation: as long as the line is indented OR blank OR is a
+      // comment line, it belongs to the current service
+      if (line === "" || /^\s/.test(line) || line.startsWith("#")) {
+        current.lines.push(line);
+      } else {
+        flush();
+      }
+    }
+  }
+  flush();
+  return services;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Within a service body, extract the `headers:` block as an array of
+// `{path, name, value}` items. Returns [] if no headers block exists.
+// ────────────────────────────────────────────────────────────────────────────
+interface HeaderEntry {
+  path: string;
+  name: string;
+  value: string;
+}
+
+function extractHeaders(body: string): HeaderEntry[] {
+  const lines = body.split("\n");
+  let inHeaders = false;
+  const headers: HeaderEntry[] = [];
+  let current: Partial<HeaderEntry> = {};
+
+  const flushCurrent = () => {
+    if (current.path && current.name && current.value !== undefined) {
+      headers.push({
+        path: current.path,
+        name: current.name,
+        value: current.value,
+      });
+    }
+    current = {};
+  };
+
+  for (const line of lines) {
+    if (/^\s{4}headers:\s*$/.test(line)) {
+      inHeaders = true;
+      continue;
+    }
+    if (!inHeaders) continue;
+
+    // headers ends when we see a sibling key at the same 4-space indent
+    // (e.g. `    routes:`) — but NOT if the line is indented deeper (still
+    // inside a header item).
+    if (/^\s{4}\w/.test(line) && !/^\s{4}headers:/.test(line)) {
+      flushCurrent();
+      inHeaders = false;
+      continue;
+    }
+
+    // start of a new header item: `      - path: /*`
+    const pathStart = line.match(/^\s{6}- path:\s*(.+?)\s*$/);
+    if (pathStart) {
+      flushCurrent();
+      current.path = pathStart[1];
+      continue;
+    }
+
+    // continuation field of the current header item
+    const nameMatch = line.match(/^\s{8}name:\s*(.+?)\s*$/);
+    if (nameMatch) {
+      current.name = nameMatch[1];
+      continue;
+    }
+    const valueMatch = line.match(/^\s{8}value:\s*(.+?)\s*$/);
+    if (valueMatch) {
+      // strip surrounding quotes if present
+      let v = valueMatch[1];
+      if (
+        (v.startsWith('"') && v.endsWith('"')) ||
+        (v.startsWith("'") && v.endsWith("'"))
+      ) {
+        v = v.slice(1, -1);
+      }
+      current.value = v;
+      continue;
+    }
+  }
+  flushCurrent();
+  return headers;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Collect failures
+// ────────────────────────────────────────────────────────────────────────────
+const failures: string[] = [];
+const fail = (msg: string) => failures.push(msg);
+
+const services = sliceServices(src);
+
+// Sanity: expect 5 services (api, transcoder, admin, web, tv)
+const EXPECTED_SERVICES = [
+  "temple-tv-api",
+  "temple-tv-transcoder",
+  "temple-tv-admin",
+  "temple-tv-web",
+  "temple-tv-tv",
+] as const;
+
+for (const expected of EXPECTED_SERVICES) {
+  if (!services.find((s) => s.name === expected)) {
+    fail(`missing service "${expected}" in render.yaml`);
+  }
+}
+
+const STATIC_SPAS = services.filter(
+  (s) => s.runtime === "static" && EXPECTED_SERVICES.includes(s.name as never),
+);
+const NODE_SERVICES = services.filter(
+  (s) => s.runtime === "node" && EXPECTED_SERVICES.includes(s.name as never),
+);
+
+if (STATIC_SPAS.length !== 3) {
+  fail(
+    `expected exactly 3 static SPAs (admin/web/tv), found ${STATIC_SPAS.length}: ${STATIC_SPAS.map((s) => s.name).join(", ") || "(none)"}`,
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Invariant 1: no static SPA may declare a PORT envVar (Render's CDN serves
+// static files; PORT is dead config and misleads the next operator).
+// ────────────────────────────────────────────────────────────────────────────
+for (const spa of STATIC_SPAS) {
+  if (/^\s+- key:\s*PORT\s*$/m.test(spa.body)) {
+    fail(`[${spa.name}] static service declares PORT envVar — must be removed (CDN-served, no port to bind)`);
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Invariant 2: every build command must include `--frozen-lockfile` AND
+// `pnpm run verify:production`. Either omission would let a deploy ship
+// with drift the guardrails are designed to catch.
+// ────────────────────────────────────────────────────────────────────────────
+for (const svc of services.filter((s) => /^temple-tv-(api|transcoder|admin|web|tv)$/.test(s.name))) {
+  const buildBlock = svc.body.match(/buildCommand:\s*\|([\s\S]*?)(?=\n    \w|\n  - type:|$)/);
+  if (!buildBlock) {
+    fail(`[${svc.name}] no buildCommand block found`);
+    continue;
+  }
+  const cmd = buildBlock[1];
+  if (!/--frozen-lockfile/.test(cmd)) {
+    fail(`[${svc.name}] buildCommand missing \`--frozen-lockfile\` (lockfile would be re-resolved → duplicate-package risk)`);
+  }
+  if (!/--prod=false/.test(cmd)) {
+    fail(`[${svc.name}] buildCommand missing \`--prod=false\` (devDependencies like @types/* needed at build time would be skipped)`);
+  }
+  if (!/pnpm run verify:production/.test(cmd)) {
+    fail(`[${svc.name}] buildCommand missing \`pnpm run verify:production\` (deploy would skip catalog/recharts/types/tsconfig guardrails + typecheck)`);
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Invariant 3: api-server must declare a healthCheckPath. Without it
+// Render's LB cannot rotate dead pods out, leading to the "502 from one of
+// the rotation members" incident class.
+// ────────────────────────────────────────────────────────────────────────────
+{
+  const api = services.find((s) => s.name === "temple-tv-api");
+  if (api && !/^\s+healthCheckPath:\s*\/api\/healthz/m.test(api.body)) {
+    fail(`[temple-tv-api] healthCheckPath must be set to /api/healthz`);
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Invariant 4: each static SPA MUST declare each of these headers (presence-
+// only — values may legitimately differ for X-Frame-Options).
+// ────────────────────────────────────────────────────────────────────────────
+const REQUIRED_HEADERS = [
+  "Strict-Transport-Security",
+  "X-Content-Type-Options",
+  "X-Frame-Options",
+  "Referrer-Policy",
+  "Permissions-Policy",
+] as const;
+
+const spaHeaders = new Map<string, HeaderEntry[]>();
+for (const spa of STATIC_SPAS) {
+  spaHeaders.set(spa.name, extractHeaders(spa.body));
+}
+
+for (const spa of STATIC_SPAS) {
+  const hdrs = spaHeaders.get(spa.name) ?? [];
+  for (const required of REQUIRED_HEADERS) {
+    if (!hdrs.find((h) => h.name === required)) {
+      fail(`[${spa.name}] missing required security header "${required}"`);
+    }
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Invariant 5: HSTS, X-Content-Type-Options, Referrer-Policy, Permissions-
+// Policy values MUST be identical across all 3 SPAs. Drift means one SPA
+// gets weaker hardening than the other two.
+//
+// X-Frame-Options is intentionally excluded — admin=DENY vs web/tv=SAMEORIGIN
+// is a deliberate posture difference (admin must never be embedded; web/tv
+// have legitimate embedding contexts).
+// ────────────────────────────────────────────────────────────────────────────
+const PARITY_HEADERS = [
+  "Strict-Transport-Security",
+  "X-Content-Type-Options",
+  "Referrer-Policy",
+  "Permissions-Policy",
+] as const;
+
+for (const headerName of PARITY_HEADERS) {
+  const valuesPerSpa: Array<{ spa: string; value: string }> = [];
+  for (const spa of STATIC_SPAS) {
+    const h = (spaHeaders.get(spa.name) ?? []).find(
+      (e) => e.name === headerName,
+    );
+    if (h) valuesPerSpa.push({ spa: spa.name, value: h.value });
+  }
+  const distinct = new Set(valuesPerSpa.map((v) => v.value));
+  if (distinct.size > 1) {
+    const breakdown = valuesPerSpa
+      .map((v) => `${v.spa}="${v.value}"`)
+      .join(", ");
+    fail(`[SPA-header-parity] "${headerName}" drifts across SPAs: ${breakdown}`);
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Invariant 6: HSTS lifetime must be >= 1 year (RFC 6797 + browser preload-
+// list submission requirements). 63072000 = 2 years, our chosen value.
+// ────────────────────────────────────────────────────────────────────────────
+for (const spa of STATIC_SPAS) {
+  const hsts = (spaHeaders.get(spa.name) ?? []).find(
+    (h) => h.name === "Strict-Transport-Security",
+  );
+  if (!hsts) continue; // already flagged by invariant 4
+  const maxAgeMatch = hsts.value.match(/max-age=(\d+)/);
+  if (!maxAgeMatch) {
+    fail(`[${spa.name}] HSTS value missing max-age directive: "${hsts.value}"`);
+    continue;
+  }
+  const seconds = parseInt(maxAgeMatch[1], 10);
+  const ONE_YEAR = 31536000;
+  if (seconds < ONE_YEAR) {
+    fail(`[${spa.name}] HSTS max-age=${seconds} is below 1 year (${ONE_YEAR}) — preload-list submission requires >= 1 year`);
+  }
+  if (!/includeSubDomains/i.test(hsts.value)) {
+    fail(`[${spa.name}] HSTS missing includeSubDomains directive`);
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Invariant 7: if COOP is set on any SPA, value must be `same-origin`
+// (the only setting that gives full process-level isolation).
+// ────────────────────────────────────────────────────────────────────────────
+for (const spa of STATIC_SPAS) {
+  const coop = (spaHeaders.get(spa.name) ?? []).find(
+    (h) => h.name === "Cross-Origin-Opener-Policy",
+  );
+  if (coop && coop.value !== "same-origin") {
+    fail(`[${spa.name}] Cross-Origin-Opener-Policy must be "same-origin" if set (got "${coop.value}")`);
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Report
+// ────────────────────────────────────────────────────────────────────────────
+if (failures.length > 0) {
+  console.error("[verify:render-yaml] FAIL — render.yaml invariant violations:");
+  for (const f of failures) console.error(`  - ${f}`);
+  console.error(
+    `\nWhy this matters: render.yaml drives every production deploy. A copy-paste\n` +
+      `mistake or stale envVar on any one service can ship a real security gap (missing\n` +
+      `HSTS, weaker Referrer-Policy on one SPA than the others) or a build-config gap\n` +
+      `(missing --frozen-lockfile would let pnpm re-resolve and reintroduce duplicate\n` +
+      `package installs, undoing the override fix from Round 9). The 3 static SPAs\n` +
+      `(admin, web, tv) MUST agree on Strict-Transport-Security, X-Content-Type-Options,\n` +
+      `Referrer-Policy, and Permissions-Policy values. X-Frame-Options legitimately\n` +
+      `differs (admin=DENY, web/tv=SAMEORIGIN) but every SPA must declare some value.\n` +
+      `Every Node-runtime service must include the full guardrail chain in its build.`,
+  );
+  process.exit(1);
+}
+
+console.log(
+  `[verify:render-yaml] OK — ${services.length} services validated; ${STATIC_SPAS.length}-way SPA security-header parity confirmed; build commands include verify:production + --frozen-lockfile + --prod=false; HSTS lifetimes >= 1 year on every SPA.`,
+);
