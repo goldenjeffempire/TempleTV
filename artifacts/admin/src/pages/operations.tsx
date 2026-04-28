@@ -133,9 +133,14 @@ function ActiveUploadsCard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState<Record<string, boolean>>({});
-  // Tick every 5s to refresh server data + every 1s to keep relative times
-  // crisp without re-fetching.
+  // Tick every 1s to keep relative times crisp without re-fetching.
   const [, setTick] = useState(0);
+  // Track whether any uploads are currently active so we can adapt poll
+  // cadence: 5s while uploads are in flight (operator wants near-live
+  // progress), 30s when idle (operator just wants to know when something
+  // shows up). Cuts polling traffic ~6x on the operations page during the
+  // 99% of the time when no uploads are active.
+  const hasActive = sessions.length > 0;
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -154,14 +159,15 @@ function ActiveUploadsCard() {
   useEffect(() => {
     const ctl = new AbortController();
     load(ctl.signal);
-    const poll = window.setInterval(() => load(), 5_000);
+    const pollMs = hasActive ? 5_000 : 30_000;
+    const poll = window.setInterval(() => load(), pollMs);
     const tick = window.setInterval(() => setTick((t) => t + 1), 1_000);
     return () => {
       ctl.abort();
       window.clearInterval(poll);
       window.clearInterval(tick);
     };
-  }, [load]);
+  }, [load, hasActive]);
 
   const handleCancel = useCallback(async (sessionId: string) => {
     if (!window.confirm("Cancel this upload? Any uploaded chunks will be discarded.")) return;

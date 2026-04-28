@@ -1,0 +1,167 @@
+Act as a world-class senior distributed systems engineer, streaming infrastructure architect, DevOps engineer, performance engineer, and full stack platform engineer. Audit and fully fix the entire Temple TV platform production infrastructure, backend, frontend, broadcasting engine, caching layer, streaming delivery pipeline, admin panel delivery system, and realtime synchronization architecture to enterprise-grade production quality for massive real-world scale deployment across web, Android, iOS, Smart TV, and TV broadcasting environments.
+
+Completely fix ALL detected issues, warnings, bottlenecks, architectural weaknesses, scaling limitations, performance regressions, deployment issues, memory risks, caching inefficiencies, request storms, and frontend/backend synchronization problems.
+
+CRITICAL ISSUES TO FIX IMMEDIATELY:
+
+1. FIX ADMIN PANEL BUILD FAILURE
+- Fix the missing admin SPA production bundle issue.
+- Ensure the admin frontend always builds during deployment.
+- Ensure artifacts/admin/dist/public is generated correctly.
+- Ensure production root route serves the actual frontend app instead of JSON fallback.
+- Add build validation checks that fail deployment if admin bundle is missing.
+- Ensure proper static asset serving in production.
+- Ensure all frontend assets are cached efficiently.
+
+2. FIX MASSIVE REQUEST STORM / POLLING LOOP
+- Detect and eliminate all infinite frontend polling loops.
+- Audit all React useEffect hooks for missing dependency arrays.
+- Prevent duplicate API requests caused by rerenders.
+- Eliminate recursive polling loops.
+- Replace aggressive polling with optimized realtime subscriptions or throttled polling.
+- Implement intelligent polling intervals.
+- Ensure broadcast pages, hero sections, live status components, and video synchronization systems do not spam APIs.
+- Prevent duplicate websocket reconnect storms.
+- Add frontend request deduplication.
+- Add request coalescing and debounce mechanisms.
+- Add stale-while-revalidate caching patterns.
+- Ensure no component creates uncontrolled intervals or timers.
+- Prevent memory leaks from intervals and subscriptions.
+
+3. FIX SLOW API REQUESTS (8-10s LATENCY)
+- Deeply profile all slow endpoints.
+- Optimize /api/broadcast/current
+- Optimize /api/videos/:id/source
+- Optimize signed URL generation.
+- Optimize database queries.
+- Eliminate N+1 query problems.
+- Add query indexing optimization.
+- Add efficient caching layers.
+- Reduce S3 latency impact.
+- Add signed URL caching.
+- Add async parallelization where possible.
+- Eliminate blocking synchronous operations.
+- Add request timeout protection.
+- Ensure all critical APIs consistently respond under 100ms.
+- Add performance tracing instrumentation.
+
+4. ADD REDIS DISTRIBUTED INFRASTRUCTURE
+- Configure Redis for production-grade distributed caching.
+- Implement Redis pub/sub for live broadcasting events.
+- Add distributed websocket synchronization.
+- Add cross-instance realtime event propagation.
+- Add Redis caching for broadcast state.
+- Add Redis cache invalidation strategy.
+- Add Redis-backed rate limiting.
+- Add distributed locking where needed.
+- Ensure horizontal scaling compatibility.
+
+5. FIX RESTART / PROCESS STABILITY ISSUES
+- Investigate unexpected server restarts.
+- Prevent memory crashes.
+- Prevent deployment instability.
+- Add graceful shutdown handling.
+- Add startup health verification.
+- Add self-healing monitoring.
+- Prevent infinite crash loops.
+- Add resilience and recovery systems.
+
+6. OPTIMIZE LARGE RESPONSE PAYLOADS
+- Reduce oversized payloads.
+- Compress all API responses using gzip/brotli.
+- Optimize JSON serialization.
+- Remove unnecessary response fields.
+- Add pagination where necessary.
+- Add selective field loading.
+- Optimize frontend bundle sizes.
+- Add lazy loading everywhere appropriate.
+
+7. IMPLEMENT ENTERPRISE CACHING ARCHITECTURE
+- Add multi-layer caching strategy.
+- Implement CDN-ready cache headers.
+- Add ETag support.
+- Add immutable asset caching.
+- Add edge caching support.
+- Add server-side response caching.
+- Optimize cache hit ratio.
+- Add cache warming strategies.
+
+8. OPTIMIZE BROADCASTING ENGINE
+- Ensure near-instant transition between broadcast videos.
+- Eliminate playback gaps between media.
+- Preload upcoming media assets.
+- Add seamless HLS switching.
+- Add adaptive buffering strategies.
+- Prevent stream interruptions.
+- Optimize live stream failover handling.
+- Ensure synchronization across web, mobile apps, and smart TV apps.
+- Ensure all updates instantly propagate across all platforms.
+
+9. IMPROVE OBSERVABILITY
+- Add structured logging.
+- Add request tracing.
+- Add latency monitoring.
+- Add error aggregation.
+- Add distributed tracing.
+- Add metrics dashboards.
+- Add memory monitoring.
+- Add CPU monitoring.
+- Add alert systems for failures and slowdowns.
+- Add realtime diagnostics.
+
+10. HARDEN SECURITY & STABILITY
+- Add API abuse protection.
+- Add request throttling.
+- Add bot protection.
+- Add input validation.
+- Add rate limiting protections.
+- Prevent unauthorized admin access.
+- Secure signed URLs properly.
+- Harden streaming endpoints.
+
+11. OPTIMIZE FRONTEND PERFORMANCE
+- Reduce rerenders.
+- Add memoization where appropriate.
+- Optimize state management.
+- Add route-based code splitting.
+- Add image optimization.
+- Improve initial load performance.
+- Improve hydration efficiency.
+- Ensure smooth UI performance on low-end devices.
+
+12. ENSURE FULL CROSS-PLATFORM CONSISTENCY
+- Ensure anything uploaded from admin instantly reflects across:
+  - web apps
+  - Android apps
+  - iOS apps
+  - Smart TV apps
+  - broadcasting systems
+- Ensure distributed synchronization consistency.
+- Prevent stale data issues across platforms.
+
+13. IMPLEMENT ENTERPRISE DEPLOYMENT QUALITY
+- Add deployment validation checks.
+- Add health checks.
+- Add readiness probes.
+- Add rollback safety.
+- Add environment validation.
+- Ensure zero-downtime deployment compatibility.
+
+14. FINAL REQUIREMENTS
+- Fully refactor weak architecture where necessary.
+- Remove technical debt.
+- Optimize for high concurrency.
+- Optimize for scalability under massive traffic.
+- Ensure production-grade reliability.
+- Ensure clean maintainable architecture.
+- Ensure no warnings/errors remain.
+- Ensure the entire platform becomes enterprise-grade and real-world production ready.
+
+At the end:
+- provide a detailed report of all fixes applied
+- provide performance improvements achieved
+- provide scalability improvements achieved
+- provide security improvements achieved
+- provide architecture improvements achieved
+- provide remaining risks if any
+- ensure all systems are fully production-ready
