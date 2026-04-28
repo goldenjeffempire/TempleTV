@@ -51,24 +51,13 @@ export function BroadcastLiveCompanion({ isLive, viewerCount }: Props) {
   // each reaction, which keeps the player's render budget clean.
   const [floats, setFloats] = useState<Array<{ id: number; emoji: string }>>([]);
 
-  useEffect(() => {
-    if (typeof EventSource === "undefined") return;
-    const url = `${window.location.origin}/api/broadcast/events?platform=tv-companion`;
-    const es = new EventSource(url);
-    es.addEventListener("live-reaction", (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data) as { type?: string };
-        const emoji = data.type ? REACTION_EMOJI[data.type] : null;
-        if (!emoji) return;
-        const id = Date.now() + Math.random();
-        setFloats((prev) => [...prev.slice(-4), { id, emoji }]);
-        // Auto-prune after the float-up animation finishes (2600ms) so the
-        // array doesn't grow unbounded if the channel is hot.
-        setTimeout(() => setFloats((prev) => prev.filter((f) => f.id !== id)), 2600);
-      } catch {}
-    });
-    return () => es.close();
-  }, []);
+  // Live-reaction events used to ride on the now-deleted broadcast SSE
+  // channel. The new playback WebSocket is intentionally playback-only —
+  // reactions will move to a dedicated channel in a follow-up. Until then
+  // the chip still renders the LIVE indicator and viewer count, just
+  // without the floating emoji bursts. `setFloats` is referenced below to
+  // keep the lint clean and to make the future re-wire trivial.
+  void setFloats;
 
   return (
     <div

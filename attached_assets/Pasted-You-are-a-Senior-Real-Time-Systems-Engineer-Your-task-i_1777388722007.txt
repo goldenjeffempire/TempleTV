@@ -1,0 +1,154 @@
+You are a Senior Real-Time Systems Engineer.
+
+Your task is to design and implement a scalable, real-time live chat system for Temple TV that works like YouTube Live / Twitch chat, fully synchronized with broadcast playback.
+
+This must be production-grade, low-latency, and globally scalable.
+
+🧠 CORE OBJECTIVE
+
+Build a real-time live chat system integrated into the Temple TV broadcast platform with:
+
+Sub-100ms message delivery
+Multi-device synchronization (Web, Android, iOS, Smart TV)
+Broadcast-aware chat (chat tied to live video stream)
+Moderation + anti-spam system
+Redis-backed scaling for concurrent users
+🏗️ ARCHITECTURE REQUIREMENTS
+1. Real-Time Transport Layer (MANDATORY)
+
+Implement:
+
+WebSocket-based chat gateway (primary)
+Redis Pub/Sub for horizontal scaling
+Optional fallback: SSE (Server-Sent Events)
+2. Chat Channel Binding (CRITICAL)
+
+Chat MUST be tied to:
+
+Current broadcast stream ID
+Live playlist session ID
+Global “channel room” concept (Temple TV channel)
+
+Example:
+
+channel_id = "temple-tv-live"
+3. Message Flow Pipeline
+Incoming message flow:
+Client sends message via WebSocket
+Backend validates + sanitizes message
+Rate limiting + spam filtering applied
+Message stored (optional persistence layer)
+Redis Pub/Sub broadcasts message
+All connected clients receive instantly
+4. Low Latency Requirement
+End-to-end latency: <100ms target
+No polling allowed
+No REST-based chat sending for live messages
+5. Chat Features (CORE)
+
+Implement:
+
+💬 Messaging
+Real-time chat messages
+User display name + avatar
+Timestamped messages
+🔥 Broadcast Context Awareness
+Messages tied to current video/live segment
+Optional “timestamp syncing” with playback
+👮 Moderation System
+Auto filter profanity
+Spam detection (rate limiting per IP/user)
+Admin moderation commands:
+delete message
+mute user
+ban user
+6. Redis Scaling Layer (CRITICAL)
+
+Use Redis as:
+
+Pub/Sub event bus
+Chat fanout system
+Rate limiting store
+Presence tracking (online users)
+
+Environment:
+
+REDIS_URL=redis://...
+7. Presence System (ONLINE USERS)
+
+Track:
+
+Active users per channel
+Join/leave events
+Live viewer count updates
+
+Events:
+
+USER_JOINED
+USER_LEFT
+VIEWER_COUNT_UPDATE
+8. Frontend Requirements
+
+Implement:
+
+Persistent WebSocket connection
+Auto-reconnect on disconnect
+Smooth message rendering (no UI lag)
+Virtualized chat list for performance
+Optimistic UI updates
+9. Smart TV Optimization
+Lightweight chat overlay mode
+Reduced animation overhead
+Batch message rendering
+Minimal memory usage
+10. Security Requirements
+Rate limit per user/IP
+Message sanitization (XSS protection)
+WebSocket authentication token required
+Prevent message injection attacks
+Anti-spam throttling
+11. Performance Targets
+Metric	Target
+Message latency	<100ms
+Concurrent users	100k+ scalable
+Reconnect time	<1s
+Message delivery reliability	99.9%
+🔄 SYSTEM BEHAVIOR
+
+Chat MUST behave like:
+
+YouTube Live chat
+Twitch chat system
+Real-time TV broadcast companion layer
+
+NOT:
+
+traditional web comment system
+🚨 STRICT RULES
+
+DO NOT:
+
+use polling for chat updates
+rely on REST APIs for real-time messaging
+break chat sync with broadcast channel
+allow unmoderated spam flood
+recreate non-scalable single-server chat
+🏁 SUCCESS CRITERIA
+
+System is only valid if:
+
+Messages appear instantly across all devices
+Chat stays synced with live broadcast
+No message duplication or delay spikes
+System scales horizontally via Redis
+Chat remains stable during high traffic spikes
+🚀 FINAL OUTPUT
+
+Deliver:
+
+Full WebSocket chat server
+Redis Pub/Sub scaling layer
+Frontend chat UI integration
+Broadcast-linked chat channel system
+Moderation + anti-spam system
+Production-ready folder architecture

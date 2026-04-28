@@ -160,12 +160,81 @@ export async function fetchLiveStatus(): Promise<LiveStatus> {
   return res.json() as Promise<LiveStatus>;
 }
 
+/**
+ * Fetch the current broadcast snapshot from the new playback engine
+ * (`/api/playback/state`) and project it into the legacy `BroadcastCurrent`
+ * shape so existing callers (`useGuide`, `Home.tsx`'s cold-start hero) keep
+ * working without changes.
+ *
+ * The new state ships direct, signed URLs — no 302 hop, no separate resolve
+ * call — and includes a `nextNext` preload candidate which we surface via
+ * `upcomingItems` for forward-compat with a future triple-buffer player.
+ */
 export async function fetchBroadcastCurrent(): Promise<BroadcastCurrent> {
-  const res = await fetch(apiUrl("/broadcast/current"), {
+  const res = await fetch(apiUrl("/playback/state"), {
     signal: AbortSignal.timeout(8000),
   });
   if (!res.ok) throw new Error("Failed to fetch broadcast");
-  return res.json() as Promise<BroadcastCurrent>;
+  type WireSource = { kind: "hls" | "mp4" | "youtube"; url: string };
+  type WireItem = {
+    id: string;
+    title: string;
+    thumbnailUrl: string | null;
+    durationSecs: number;
+    source: WireSource;
+    startsAtMs: number;
+    endsAtMs: number;
+  };
+  type WireState = {
+    serverTimeMs: number;
+    current: WireItem | null;
+    next: WireItem | null;
+    nextNext: WireItem | null;
+    liveOverride: { title: string; startedAtMs: number; endsAtMs: number | null } | null;
+    source: "override" | "schedule" | "queue" | "empty";
+  };
+  const wire = (await res.json()) as WireState;
+  const toBroadcastItem = (it: WireItem | null): BroadcastItem | null => {
+    if (!it) return null;
+    const isYoutube = it.source.kind === "youtube";
+    return {
+      id: it.id,
+      videoId: it.id,
+      youtubeId: isYoutube ? it.source.url : undefined,
+      title: it.title,
+      thumbnailUrl: it.thumbnailUrl ?? undefined,
+      durationSecs: it.durationSecs,
+      videoSource: isYoutube ? "youtube" : "local",
+      localVideoUrl: isYoutube ? null : it.source.url,
+      startedAt: new Date(it.startsAtMs).toISOString(),
+    };
+  };
+  const item = toBroadcastItem(wire.current);
+  const nextItem = toBroadcastItem(wire.next);
+  const positionSecs = wire.current
+    ? Math.max(0, (wire.serverTimeMs - wire.current.startsAtMs) / 1000)
+    : 0;
+  const totalSecs = wire.current?.durationSecs ?? 0;
+  return {
+    item,
+    nextItem,
+    positionSecs,
+    totalSecs,
+    progressPercent: totalSecs > 0 ? Math.min(100, (positionSecs / totalSecs) * 100) : 0,
+    queueLength: 0,
+    syncedAt: new Date(wire.serverTimeMs).toISOString(),
+    serverTimeMs: wire.serverTimeMs,
+    currentItemEndsAtMs: wire.current?.endsAtMs ?? null,
+    itemStartEpochSecs: wire.current ? Math.floor(wire.current.startsAtMs / 1000) : null,
+    activeSchedule: null,
+    liveOverride: wire.liveOverride
+      ? {
+          title: wire.liveOverride.title,
+          hlsStreamUrl: wire.current?.source.kind === "hls" ? wire.current.source.url : null,
+          youtubeVideoId: wire.current?.source.kind === "youtube" ? wire.current.source.url : null,
+        }
+      : null,
+  };
 }
 
 export async function fetchGuide(): Promise<GuideResponse> {

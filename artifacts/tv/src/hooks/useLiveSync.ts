@@ -1,6 +1,35 @@
+/**
+ * useLiveSync — TV broadcast sync, rebuilt on the new playback WebSocket.
+ *
+ * The old implementation talked to two now-deleted endpoints:
+ *   - GET  /api/broadcast/current   (snapshot)
+ *   - SSE  /api/broadcast/events    (push channel)
+ *
+ * Both have been replaced by a single TV-grade engine:
+ *   - GET  /api/playback/state      (snapshot, signed URLs, no 302)
+ *   - WS   /api/playback/ws         (push channel, dual-buffer preload hints)
+ *
+ * The exported `BroadcastSyncState` shape is preserved so every existing
+ * consumer (LiveHero, Player, BroadcastChannelBug, useUnifiedLive, etc.)
+ * keeps working without changes — this hook acts purely as an adapter
+ * between the new wire protocol and the legacy projected shape.
+ *
+ * The new state additionally exposes a `nextNextItem` slot so a future
+ * triple-buffer player can warm three slots simultaneously; existing
+ * dual-buffer consumers ignore it harmlessly.
+ *
+ * Library / schedule revision counters (`libraryRevision`,
+ * `scheduleRevision`) and viewer-count are no longer carried on this
+ * channel — the new WS is intentionally playback-only. The fields are
+ * kept on the type for compatibility but stay at their initial values;
+ * consumers that need fresh counts fall back to their own polling
+ * cadence (already in place in `useSermons`, `useGuide`, etc.).
+ */
+
 import { useEffect, useRef, useState } from "react";
 
 export interface BroadcastNextItem {
+  id?: string;
   youtubeId?: string;
   title?: string;
   localVideoUrl?: string | null;
@@ -18,75 +47,27 @@ export interface BroadcastSyncState {
     id: string;
     title: string;
     hlsStreamUrl?: string | null;
-    /** YouTube live video ID set by the admin via "paste a URL" Live Control. */
     youtubeVideoId?: string | null;
   } | null;
-  /**
-   * YouTube channel auto-detect signal, surfaced through the SAME broadcast
-   * SSE channel that carries `liveOverride`. This is the missing piece that
-   * keeps the TV Player and the TV Hero in lock-step: when the channel goes
-   * live organically (no admin override), every surface that reads
-   * `useLiveSync` now sees the same `ytVideoId` and resolves to the SAME
-   * stream, eliminating the prior bug where the Hero advertised the
-   * organic-live video but the Player pivoted to the queue item.
-   */
   ytLive: boolean;
   ytVideoId: string | null;
   ytTitle: string | null;
   syncedAt: string | null;
   serverTimeMs: number | null;
   connected: boolean;
-  /** How far into the current item playback is (seconds). Already corrected for cache age. */
   positionSecs: number | null;
-  /** Epoch ms when the current item is expected to end. Use for client-side transition timer. */
   currentItemEndsAtMs: number | null;
-  /** Epoch seconds when the current item started — lets the player self-correct position. */
   itemStartEpochSecs: number | null;
-  /** 0-based index of the current item in the queue. */
   index: number | null;
-  /** Total queue duration in seconds. */
   totalSecs: number | null;
-  /** Total number of items in the queue. */
   queueLength: number | null;
-  /** Progress through the current item (0–100). */
   progressPercent: number | null;
-  /** Next item metadata (title, ID). */
   nextItem: BroadcastNextItem | null;
-  /**
-   * Live viewer count from the same SSE channel (`stream-health` event).
-   * `null` until the first health frame arrives. The TV broadcast companion
-   * chip in `Player.tsx` consumes this — no other surface uses it yet.
-   * Adding it here (vs. a second EventSource) avoids opening a duplicate
-   * connection per page load.
-   */
+  /** Triple-buffer slot — the item after `nextItem`. New on the playback WS. */
+  nextNextItem: BroadcastNextItem | null;
   viewerCount: number | null;
-  /**
-   * Raw `BroadcastCurrentPayload` straight from the latest SSE message — used by
-   * `Home.tsx` so the cinematic hero can render full item metadata (thumbnail,
-   * durationSecs, activeSchedule, liveOverride) without a separate HTTP fetch.
-   * `null` until the first SSE message arrives or until a fallback poll succeeds.
-   * Consumers that only need the projected fields above should keep using them.
-   */
   payload: Record<string, unknown> | null;
-  /**
-   * Monotonically increasing counter incremented every time the API
-   * broadcasts a `videos-library-updated` SSE event (admin upload finalize,
-   * edit, delete, transcoding completion, YouTube sync). Library list
-   * consumers (`useSermons`, `useSearch`) watch this and refetch
-   * `/api/videos` whenever it changes — making admin uploads visible on TV
-   * within a few hundred ms instead of waiting on the 5-minute poll.
-   * Piggybacks on the same EventSource so we don't open a second SSE
-   * connection per page load.
-   */
   libraryRevision: number;
-  /**
-   * Sibling counter to `libraryRevision` but bumped on `broadcast-schedule-updated`
-   * — the API fires that event when an admin creates, edits, or deletes a
-   * schedule entry. The TV Guide page subscribes via `useLiveSync` and
-   * refetches `/api/broadcast/schedule` whenever this counter changes, so an
-   * admin schedule edit reflects on every connected TV within ~one event
-   * round-trip (no 30s polling lag, no manual refresh).
-   */
   scheduleRevision: number;
 }
 
@@ -110,185 +91,269 @@ const INITIAL: BroadcastSyncState = {
   queueLength: null,
   progressPercent: null,
   nextItem: null,
+  nextNextItem: null,
   viewerCount: null,
   payload: null,
   libraryRevision: 0,
   scheduleRevision: 0,
 };
 
-function apiUrl(path: string): string {
-  return `${window.location.origin}/api${path}`;
+// ── Wire types: must match `artifacts/api-server/src/playback/types.ts` ──
+// Duplicated here (rather than imported) because the TV bundle is shipped
+// to Smart-TV runtimes that can't resolve workspace packages at runtime;
+// the shapes are stable and minimal so drift is unlikely.
+type PlaybackSourceKind = "hls" | "mp4" | "youtube";
+interface WirePlaybackSource {
+  kind: PlaybackSourceKind;
+  url: string;
+  expiresAtMs: number | null;
+}
+interface WirePlaybackItem {
+  id: string;
+  title: string;
+  thumbnailUrl: string | null;
+  durationSecs: number;
+  source: WirePlaybackSource;
+  startsAtMs: number;
+  endsAtMs: number;
+}
+interface WirePlaybackState {
+  serverTimeMs: number;
+  current: WirePlaybackItem | null;
+  next: WirePlaybackItem | null;
+  nextNext: WirePlaybackItem | null;
+  liveOverride: {
+    title: string;
+    startedAtMs: number;
+    endsAtMs: number | null;
+  } | null;
+  source: "override" | "schedule" | "queue" | "empty";
+}
+type WirePlaybackEvent =
+  | { type: "state"; reason: string; state: WirePlaybackState }
+  | { type: "preload"; leadMs: number; state: WirePlaybackState }
+  | { type: "ping"; serverTimeMs: number };
+
+function projectItem(item: WirePlaybackItem | null): BroadcastNextItem | null {
+  if (!item) return null;
+  const isYoutube = item.source.kind === "youtube";
+  return {
+    id: item.id,
+    youtubeId: isYoutube ? item.source.url : undefined,
+    title: item.title,
+    thumbnailUrl: item.thumbnailUrl,
+    durationSecs: item.durationSecs,
+    videoSource: isYoutube ? "youtube" : "local",
+    // For mp4/hls the URL is the direct, signed source. The TV's
+    // `LiveBroadcastVideo` and `HlsVideoPlayer` consume it as-is — they
+    // already detect HLS by the `.m3u8` suffix and route accordingly.
+    localVideoUrl: isYoutube ? null : item.source.url,
+  };
 }
 
-// Reconnection backoff aligned with mobile (`artifacts/mobile/services/broadcast.ts`)
-// so both clients exhibit identical reliability characteristics under sustained
-// API outages. Pattern: exponential 2x with 0–30% jitter, 2s floor, 60s ceiling,
-// reset on the EventSource `open` event AND on any successful message.
-const SSE_MIN_RETRY_MS = 2_000;
-const SSE_MAX_RETRY_MS = 60_000;
+function projectState(
+  wire: WirePlaybackState,
+  prev: BroadcastSyncState,
+): BroadcastSyncState {
+  const current = wire.current;
+  const liveOverride = wire.liveOverride;
+
+  // `liveOverride` from the new state is a thin metadata window; the
+  // original SSE payload carried richer fields (id, hlsStreamUrl,
+  // youtubeVideoId). We synthesize equivalents from `current` so the
+  // legacy resolver in `useUnifiedLive` keeps working: when the source
+  // is "override" and `current.source.kind === "youtube"` the URL is the
+  // 11-char videoId; for HLS overrides we surface the direct stream URL.
+  const isOverride = wire.source === "override" && !!liveOverride;
+  const overrideYoutubeId =
+    isOverride && current?.source.kind === "youtube" ? current.source.url : null;
+  const overrideHlsUrl =
+    isOverride && current?.source.kind === "hls" ? current.source.url : null;
+
+  // Position into the current item: derived from `startsAtMs` against the
+  // server's wall clock. The cinematic hero's drift loop will keep things
+  // tight from there.
+  const positionSecs = current
+    ? Math.max(0, (wire.serverTimeMs - current.startsAtMs) / 1000)
+    : null;
+  const itemStartEpochSecs = current
+    ? Math.floor(current.startsAtMs / 1000)
+    : null;
+  const currentItemEndsAtMs = current ? current.endsAtMs : null;
+  const totalSecs = current ? current.durationSecs : null;
+  const progressPercent =
+    current && current.durationSecs > 0
+      ? Math.min(100, (positionSecs! / current.durationSecs) * 100)
+      : null;
+
+  const projectedCurrent = projectItem(current);
+  const projectedNext = projectItem(wire.next);
+  const projectedNextNext = projectItem(wire.nextNext);
+
+  // Project to the legacy `payload` shape so `useLiveSync` consumers that
+  // read `payload.item` / `payload.nextItem` directly (Home.tsx) keep
+  // rendering correctly.
+  const payload: Record<string, unknown> = {
+    item: projectedCurrent,
+    nextItem: projectedNext,
+    upcomingItems: projectedNextNext ? [projectedNext, projectedNextNext] : projectedNext ? [projectedNext] : [],
+    positionSecs,
+    serverTimeMs: wire.serverTimeMs,
+    currentItemEndsAtMs,
+    itemStartEpochSecs,
+    queueLength: 0,
+    totalSecs,
+    progressPercent,
+    liveOverride: liveOverride
+      ? {
+          id: "override",
+          title: liveOverride.title,
+          startedAt: new Date(liveOverride.startedAtMs).toISOString(),
+          endsAt: liveOverride.endsAtMs ? new Date(liveOverride.endsAtMs).toISOString() : null,
+          hlsStreamUrl: overrideHlsUrl,
+          youtubeVideoId: overrideYoutubeId,
+        }
+      : null,
+  };
+
+  return {
+    viewerCount: prev.viewerCount,
+    libraryRevision: prev.libraryRevision,
+    scheduleRevision: prev.scheduleRevision,
+    isLive: !!current || isOverride,
+    title: liveOverride?.title ?? current?.title ?? null,
+    videoId: overrideYoutubeId ?? (current?.source.kind === "youtube" ? current.source.url : null),
+    hlsStreamUrl: overrideHlsUrl ?? (current?.source.kind === "hls" ? current.source.url : null),
+    liveOverride: liveOverride
+      ? {
+          id: "override",
+          title: liveOverride.title,
+          hlsStreamUrl: overrideHlsUrl,
+          youtubeVideoId: overrideYoutubeId,
+        }
+      : null,
+    // Channel auto-detect is folded into `liveOverride` on the new server.
+    // Without a separate signal we surface `false` here; `useUnifiedLive`
+    // already falls back to the 30s `/api/youtube/live/status` poll, so
+    // organic-channel-live still resolves — just on the slower path.
+    ytLive: false,
+    ytVideoId: null,
+    ytTitle: null,
+    syncedAt: new Date(wire.serverTimeMs).toISOString(),
+    serverTimeMs: wire.serverTimeMs,
+    connected: true,
+    positionSecs,
+    currentItemEndsAtMs,
+    itemStartEpochSecs,
+    index: null,
+    totalSecs,
+    queueLength: null,
+    progressPercent,
+    nextItem: projectedNext,
+    nextNextItem: projectedNextNext,
+    payload,
+  };
+}
+
+function wsUrl(): string {
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${window.location.host}/api/playback/ws`;
+}
+
+function stateUrl(): string {
+  return `${window.location.origin}/api/playback/state`;
+}
+
+const MIN_RETRY_MS = 2_000;
+const MAX_RETRY_MS = 60_000;
+const FALLBACK_POLL_MS = 30_000;
 
 export function useLiveSync(): BroadcastSyncState {
   const [state, setState] = useState<BroadcastSyncState>(INITIAL);
-  const esRef = useRef<EventSource | null>(null);
-  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const reconnectDelayRef = useRef(SSE_MIN_RETRY_MS);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectDelayRef = useRef(MIN_RETRY_MS);
 
   useEffect(() => {
     let destroyed = false;
 
-    const applyPayload = (current: Record<string, unknown>) => {
-      const liveOverride = current.liveOverride as null | {
-        id: string;
-        title: string;
-        hlsStreamUrl?: string | null;
-        youtubeVideoId?: string | null;
-      };
-      const item = current.item as null | {
-        youtubeId?: string;
-        title?: string;
-        localVideoUrl?: string | null;
-        videoSource?: string;
-      };
-      const nextItem = current.nextItem as BroadcastNextItem | null ?? null;
-      const ytLive = current.ytLive === true;
-      const ytVideoId = (current.ytVideoId as string | null | undefined) ?? null;
-      const ytTitle = (current.ytTitle as string | null | undefined) ?? null;
-
-      // Use the functional setter so we preserve `viewerCount` across
-      // broadcast-current-updated frames — otherwise an item-rotation event
-      // would clobber the most recent viewer count (which arrives on the
-      // separate `stream-health` channel) until the next health frame.
-      // Also preserve `libraryRevision` and `scheduleRevision` for the same
-      // reason: they're bumped by the `videos-library-updated` and
-      // `broadcast-schedule-updated` handlers below and would otherwise be
-      // reset on every broadcast frame.
-      setState((prev) => ({
-        viewerCount: prev.viewerCount,
-        libraryRevision: prev.libraryRevision,
-        scheduleRevision: prev.scheduleRevision,
-        // `isLive` reflects "something live-class is airing right now."
-        // Promoting `ytLive` here means a Hero/Player consumer that just
-        // checks `sync.isLive` will treat an organic YouTube live the same
-        // as an admin override or a queue item — the unified resolver above
-        // (override → ytVideoId → queue) decides which video to actually
-        // load.
-        isLive: !!liveOverride || !!item || ytLive,
-        title: liveOverride?.title ?? ytTitle ?? item?.title ?? null,
-        // Resolution priority (matches `useUnifiedLive`, `LiveYouTubePlayer`,
-        // and the mobile player):
-        //   1. Admin override's YouTube videoId  (Live Control selection)
-        //   2. Channel auto-detect ytVideoId     (organic live)
-        //   3. Broadcast queue item              (fallback content)
-        // Without step 2, the Player would silently skip an organic live
-        // stream that the Hero was advertising.
-        videoId: liveOverride?.youtubeVideoId ?? ytVideoId ?? item?.youtubeId ?? null,
-        hlsStreamUrl:
-          liveOverride?.hlsStreamUrl ??
-          (item?.videoSource === "local" ? (item.localVideoUrl ?? null) : null),
-        liveOverride: liveOverride ?? null,
-        ytLive,
-        ytVideoId,
-        ytTitle,
-        syncedAt: (current.syncedAt as string) ?? null,
-        serverTimeMs: (current.serverTimeMs as number) ?? null,
-        connected: true,
-        positionSecs: typeof current.positionSecs === "number" ? current.positionSecs : null,
-        currentItemEndsAtMs: typeof current.currentItemEndsAtMs === "number"
-          ? current.currentItemEndsAtMs
-          : null,
-        itemStartEpochSecs: typeof current.itemStartEpochSecs === "number"
-          ? current.itemStartEpochSecs
-          : null,
-        index: typeof current.index === "number" ? current.index : null,
-        totalSecs: typeof current.totalSecs === "number" ? current.totalSecs : null,
-        queueLength: typeof current.queueLength === "number" ? current.queueLength : null,
-        progressPercent: typeof current.progressPercent === "number" ? current.progressPercent : null,
-        nextItem,
-        payload: current,
-      }));
+    const apply = (wire: WirePlaybackState) => {
+      if (destroyed) return;
+      setState((prev) => projectState(wire, prev));
     };
 
     const fallbackPoll = async () => {
       if (destroyed) return;
       try {
-        const res = await fetch(apiUrl("/broadcast/current"), { signal: AbortSignal.timeout(8000) });
-        if (!res.ok) throw new Error("poll failed");
-        const data = await res.json() as Record<string, unknown>;
-        if (!destroyed) applyPayload(data);
-      } catch {}
-      if (!destroyed) pollRef.current = setTimeout(fallbackPoll, 10_000);
+        const res = await fetch(stateUrl(), {
+          signal: AbortSignal.timeout(8000),
+        });
+        if (res.ok) {
+          const wire = (await res.json()) as WirePlaybackState;
+          apply(wire);
+        }
+      } catch {
+        // Swallow — next interval will retry.
+      }
+      if (!destroyed) {
+        pollTimerRef.current = setTimeout(fallbackPoll, FALLBACK_POLL_MS);
+      }
     };
 
     const connect = () => {
       if (destroyed) return;
+      let ws: WebSocket;
       try {
-        const es = new EventSource(apiUrl("/broadcast/events?platform=tv"));
-        esRef.current = es;
-
-        es.addEventListener("open", () => {
-          reconnectDelayRef.current = SSE_MIN_RETRY_MS;
-        });
-
-        es.addEventListener("broadcast-current-updated", (e: MessageEvent) => {
-          if (destroyed) return;
-          try {
-            const { current } = JSON.parse(e.data) as { current: Record<string, unknown> };
-            reconnectDelayRef.current = SSE_MIN_RETRY_MS;
-            applyPayload(current);
-          } catch {}
-        });
-
-        // Library-mutation signal. The API fires this whenever a video is
-        // added, edited, deleted, or finishes transcoding. Consumers like
-        // `useSermons` and `useSearch` watch the resulting `libraryRevision`
-        // counter and refetch — making admin uploads visible on TV within
-        // a few hundred ms.
-        es.addEventListener("videos-library-updated", () => {
-          if (destroyed) return;
-          setState((prev) => ({ ...prev, libraryRevision: prev.libraryRevision + 1 }));
-        });
-
-        // Schedule-mutation signal. The API fires this whenever an admin
-        // creates, edits, or deletes a `broadcast_schedules` entry. The TV
-        // Guide hook (`useGuide` / `TVGuide.tsx`) reads `scheduleRevision`
-        // off this state and refetches `/api/broadcast/schedule` on change
-        // — same propagation pattern as `libraryRevision`, just for the
-        // separate schedule endpoint.
-        es.addEventListener("broadcast-schedule-updated", () => {
-          if (destroyed) return;
-          setState((prev) => ({ ...prev, scheduleRevision: prev.scheduleRevision + 1 }));
-        });
-
-        // Stream-health frames carry the live viewer count; we just lift
-        // that single field into state. The full payload (bitrate, dropped
-        // frames, encoder uptime) is consumed by the admin Live Monitor on
-        // a separate code path and not relevant on TV.
-        es.addEventListener("stream-health", (e: MessageEvent) => {
-          if (destroyed) return;
-          try {
-            const data = JSON.parse(e.data) as { viewerCount?: number };
-            if (typeof data.viewerCount === "number" && Number.isFinite(data.viewerCount)) {
-              setState((prev) => (prev.viewerCount === data.viewerCount ? prev : { ...prev, viewerCount: data.viewerCount! }));
-            }
-          } catch {}
-        });
-
-        es.addEventListener("error", () => {
-          es.close();
-          esRef.current = null;
-          if (destroyed) return;
-          const base = reconnectDelayRef.current;
-          const jitter = Math.random() * 0.3 * base;
-          reconnectTimerRef.current = setTimeout(connect, base + jitter);
-          reconnectDelayRef.current = Math.min(base * 2, SSE_MAX_RETRY_MS);
-        });
+        ws = new WebSocket(wsUrl());
       } catch {
+        // Browser refused to construct (e.g. mixed-content). Fall back
+        // to polling — UI still works, just without live transitions.
         fallbackPoll();
+        return;
       }
+      wsRef.current = ws;
+
+      ws.addEventListener("open", () => {
+        reconnectDelayRef.current = MIN_RETRY_MS;
+        if (pollTimerRef.current) {
+          clearTimeout(pollTimerRef.current);
+          pollTimerRef.current = null;
+        }
+      });
+
+      ws.addEventListener("message", (e: MessageEvent) => {
+        if (destroyed) return;
+        try {
+          const event = JSON.parse(e.data as string) as WirePlaybackEvent;
+          if (event.type === "state" || event.type === "preload") {
+            apply(event.state);
+          }
+          // ping: ignore — the browser already replies via the pong frame.
+        } catch {
+          // Malformed frame — drop and keep the connection.
+        }
+      });
+
+      ws.addEventListener("close", () => {
+        wsRef.current = null;
+        if (destroyed) return;
+        setState((prev) => ({ ...prev, connected: false }));
+        const base = reconnectDelayRef.current;
+        const jitter = Math.random() * 0.3 * base;
+        reconnectTimerRef.current = setTimeout(connect, base + jitter);
+        reconnectDelayRef.current = Math.min(base * 2, MAX_RETRY_MS);
+        // While the WS is down, keep the UI fresh on a slow poll loop.
+        if (!pollTimerRef.current) fallbackPoll();
+      });
+
+      ws.addEventListener("error", () => {
+        // The `close` handler will run right after — let it own retry.
+        try { ws.close(); } catch { /* noop */ }
+      });
     };
 
-    if (typeof EventSource !== "undefined") {
+    if (typeof WebSocket !== "undefined") {
       connect();
     } else {
       fallbackPoll();
@@ -296,10 +361,10 @@ export function useLiveSync(): BroadcastSyncState {
 
     return () => {
       destroyed = true;
-      esRef.current?.close();
-      esRef.current = null;
+      try { wsRef.current?.close(); } catch { /* noop */ }
+      wsRef.current = null;
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
-      if (pollRef.current) clearTimeout(pollRef.current);
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
     };
   }, []);
 
