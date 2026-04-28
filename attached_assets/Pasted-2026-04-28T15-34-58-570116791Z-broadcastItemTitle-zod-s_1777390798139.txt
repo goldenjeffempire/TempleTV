@@ -1,0 +1,50 @@
+2026-04-28T15:34:58.570116791Z +        broadcastItemTitle: zod.string().nullable(),
+2026-04-28T15:34:58.570119721Z +      })
+2026-04-28T15:34:58.570122631Z +      .describe("A single chat message rendered to viewers."),
+2026-04-28T15:34:58.570125511Z +  ),
+2026-04-28T15:34:58.570128461Z +});
+2026-04-28T15:34:58.570131421Z +
+2026-04-28T15:34:58.570134541Z +/**
+2026-04-28T15:34:58.570137681Z + * @summary Diagnostics for the live-chat gateway
+2026-04-28T15:34:58.570140871Z + */
+2026-04-28T15:34:58.570143931Z +export const GetChatDiagnosticsResponse = zod.object({
+2026-04-28T15:34:58.570146821Z +  connectedSockets: zod
+2026-04-28T15:34:58.570149761Z +    .number()
+2026-04-28T15:34:58.570152781Z +    .describe("Total currently-open WebSocket connections to \/api\/chat\/ws."),
+2026-04-28T15:34:58.570155781Z +  viewersByChannel: zod
+2026-04-28T15:34:58.570158751Z +    .record(zod.string(), zod.number())
+2026-04-28T15:34:58.570161671Z +    .describe("Live viewer count per channel id."),
+2026-04-28T15:34:58.570164591Z +  bufferedMessagesByChannel: zod
+2026-04-28T15:34:58.570167491Z +    .record(zod.string(), zod.number())
+2026-04-28T15:34:58.570170422Z +    .describe("In-memory message buffer size per channel."),
+2026-04-28T15:34:58.570173332Z +});
+2026-04-28T15:34:58.570176302Z diff --git a/lib/api-zod/src/generated/types/index.ts b/lib/api-zod/src/generated/types/index.ts
+2026-04-28T15:34:58.570179252Z index 4a466ff..5676e59 100644
+2026-04-28T15:34:58.570182152Z --- a/lib/api-zod/src/generated/types/index.ts
+2026-04-28T15:34:58.570185062Z +++ b/lib/api-zod/src/generated/types/index.ts
+2026-04-28T15:34:58.570188032Z @@ -12,6 +12,11 @@ export * from "./adminStatsLiveSource";
+2026-04-28T15:34:58.570191012Z  export * from "./adminUser";
+2026-04-28T15:34:58.570193992Z  export * from "./analytics";
+2026-04-28T15:34:58.570196922Z  export * from "./categoryStat";
+2026-04-28T15:34:58.570199782Z +export * from "./chatDiagnostics";
+2026-04-28T15:34:58.570202742Z +export * from "./chatDiagnosticsBufferedMessagesByChannel";
+2026-04-28T15:34:58.570205612Z +export * from "./chatDiagnosticsViewersByChannel";
+2026-04-28T15:34:58.570208562Z +export * from "./chatHistoryResponse";
+2026-04-28T15:34:58.570214892Z +export * from "./chatMessage";
+2026-04-28T15:34:58.570218392Z  export * from "./createPlaylistBody";
+2026-04-28T15:34:58.570221302Z  export * from "./createPlaylistBodyLoopMode";
+2026-04-28T15:34:58.570224192Z  export * from "./createScheduleEntryBody";
+2026-04-28T15:34:58.570227172Z @@ -20,6 +25,7 @@ export * from "./dailyViewStat";
+2026-04-28T15:34:58.570230072Z  export * from "./deleteResult";
+2026-04-28T15:34:58.570238152Z  export * from "./getAnalyticsParams";
+2026-04-28T15:34:58.570241152Z  export * from "./getAnalyticsPeriod";
+2026-04-28T15:34:58.570244072Z +export * from "./getChatHistoryParams";
+2026-04-28T15:34:58.570246962Z  export * from "./healthStatus";
+2026-04-28T15:34:58.570250043Z  export * from "./importVideoBody";
+2026-04-28T15:34:58.570253023Z  export * from "./listAdminUsers200";
+2026-04-28T15:34:58.652440823Z 
+2026-04-28T15:34:58.652473053Z [verify:codegen] FAIL: lib/api-spec/openapi.yaml is out of sync with generated clients. Run: pnpm --filter @workspace/api-spec run codegen, then commit the changes.
+2026-04-28T15:34:58.672843559Z  ELIFECYCLE  Command failed with exit code 1.
+2026-04-28T15:34:58.728196753Z  ELIFECYCLE  Command failed with exit code 1.
+2026-04-28T15:34:58.823219544Z ==> Build failed 😞
+2026-04-28T15:34:58.823255885Z ==> Common ways to troubleshoot your deploy: https://render.com/docs/troubleshooting-deploys
