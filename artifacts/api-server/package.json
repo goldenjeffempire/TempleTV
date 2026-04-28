@@ -8,7 +8,7 @@
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs",
     "start:prod": "node --import ./dist/instrument.mjs ./dist/index.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "NODE_OPTIONS='--max-old-space-size=4096' tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "openapi": "node --enable-source-maps --import ./dist/instrument.mjs ./dist/openapi.mjs"
@@ -46,6 +46,6 @@
     "esbuild": "^0.27.3",
     "esbuild-plugin-pino": "^2.3.3",
     "tsx": "catalog:",
-    "vitest": "^2.1.9"
+    "vitest": "^3.2.4"
   }
 }

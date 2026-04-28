@@ -16,10 +16,10 @@ export declare const MediaItemSchema: z.ZodObject<{
     localVideoUrl: z.ZodNullable<z.ZodString>;
     hlsMasterUrl: z.ZodNullable<z.ZodString>;
 }, "strip", z.ZodTypeAny, {
-    id: string;
-    youtubeId: string;
     title: string;
     description: string;
+    id: string;
+    youtubeId: string;
     thumbnailUrl: string;
     duration: string;
     category: string;
@@ -32,10 +32,10 @@ export declare const MediaItemSchema: z.ZodObject<{
     localVideoUrl: string | null;
     hlsMasterUrl: string | null;
 }, {
-    id: string;
-    youtubeId: string;
     title: string;
     description: string;
+    id: string;
+    youtubeId: string;
     thumbnailUrl: string;
     duration: string;
     category: string;
@@ -85,10 +85,10 @@ export declare const ListMediaResponseSchema: z.ZodObject<{
         localVideoUrl: z.ZodNullable<z.ZodString>;
         hlsMasterUrl: z.ZodNullable<z.ZodString>;
     }, "strip", z.ZodTypeAny, {
-        id: string;
-        youtubeId: string;
         title: string;
         description: string;
+        id: string;
+        youtubeId: string;
         thumbnailUrl: string;
         duration: string;
         category: string;
@@ -101,10 +101,10 @@ export declare const ListMediaResponseSchema: z.ZodObject<{
         localVideoUrl: string | null;
         hlsMasterUrl: string | null;
     }, {
-        id: string;
-        youtubeId: string;
         title: string;
         description: string;
+        id: string;
+        youtubeId: string;
         thumbnailUrl: string;
         duration: string;
         category: string;
@@ -124,10 +124,10 @@ export declare const ListMediaResponseSchema: z.ZodObject<{
     limit: number;
     offset: number;
     items: {
-        id: string;
-        youtubeId: string;
         title: string;
         description: string;
+        id: string;
+        youtubeId: string;
         thumbnailUrl: string;
         duration: string;
         category: string;
@@ -145,10 +145,10 @@ export declare const ListMediaResponseSchema: z.ZodObject<{
     limit: number;
     offset: number;
     items: {
-        id: string;
-        youtubeId: string;
         title: string;
         description: string;
+        id: string;
+        youtubeId: string;
         thumbnailUrl: string;
         duration: string;
         category: string;
@@ -176,9 +176,9 @@ export declare const CreateMediaBodySchema: z.ZodObject<{
     featured: z.ZodDefault<z.ZodBoolean>;
     publishedAt: z.ZodOptional<z.ZodString>;
 }, "strip", z.ZodTypeAny, {
-    youtubeId: string;
     title: string;
     description: string;
+    youtubeId: string;
     thumbnailUrl: string;
     duration: string;
     category: string;
@@ -188,8 +188,8 @@ export declare const CreateMediaBodySchema: z.ZodObject<{
     publishedAt?: string | undefined;
     localVideoUrl?: string | null | undefined;
 }, {
-    youtubeId: string;
     title: string;
+    youtubeId: string;
     description?: string | undefined;
     thumbnailUrl?: string | undefined;
     duration?: string | undefined;
@@ -218,11 +218,11 @@ export declare const SignedUploadResponseSchema: z.ZodObject<{
     url: z.ZodString;
     expiresIn: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
-    key: string;
     url: string;
     expiresIn: number;
+    key: string;
 }, {
-    key: string;
     url: string;
     expiresIn: number;
+    key: string;
 }>;

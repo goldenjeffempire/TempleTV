@@ -199,9 +199,9 @@ export declare const broadcastService: {
     snapshot(): import("./queue.engine.js").BroadcastSnapshot;
     listQueue(): Promise<(typeof queueTable.$inferSelect)[]>;
     addToQueue(item: z.infer<typeof AddQueueItemSchema>): Promise<{
+        title: string;
         id: string;
         youtubeId: string;
-        title: string;
         thumbnailUrl: string;
         videoSource: string;
         localVideoUrl: string | null;
@@ -212,9 +212,9 @@ export declare const broadcastService: {
         durationSecs: number;
     }>;
     removeFromQueue(id: string): Promise<{
+        title: string;
         id: string;
         youtubeId: string;
-        title: string;
         thumbnailUrl: string;
         videoSource: string;
         localVideoUrl: string | null;

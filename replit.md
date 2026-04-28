@@ -11,6 +11,51 @@ source of truth**; the front-end packages (admin / mobile / tv) are now
 running against compatibility stubs and will be re-integrated against
 the new contract over the coming weeks.
 
+## April 28 2026 — Production-readiness hardening pass (Replit env)
+
+The April rebuild API is up and serving on Replit Autoscale. This pass
+closed the remaining production / deploy blockers:
+
+1. **Replit Object Storage wired in.** `S3_BUCKET` and `S3_REGION`
+   shared env vars now point at the bucket the
+   `javascript_object_storage` integration provisions
+   (`temple-tv-media-storage` in `eu-north-1`). `/readyz` reports
+   `dependencies.storage = "ok"` instead of `"disabled"`, so the
+   presigned-PUT upload route at `POST /api/v1/media/uploads/signed-url`
+   returns real S3 URLs in dev and prod.
+2. **Test suite resurrected.** Vitest was pinned at `^2.1.9` and
+   produced `__vite_ssr_exportName__ is not defined` against the
+   catalog's vite 8.x. Bumped `@workspace/api-server` devDep to
+   `vitest@^3.2.4`. Loosened `env.PORT` from `.positive()` to
+   `.nonnegative()` so the test setup's `PORT=0` (Fastify `inject()`
+   never calls `listen`) passes env validation. **All 9 tests now pass**
+   (`pnpm --filter @workspace/api-server run test`).
+3. **`pnpm run typecheck:libs` extended to cover all libs.** Added
+   `tsconfig.json` (composite, declaration-only) to `lib/api-zod` and
+   `lib/api-client-react`; both are now project-references off the root
+   `tsconfig.json`, so a fresh clone or post-merge produces the
+   `.d.ts` outputs that `artifacts/api-server`'s tsc consumes (was
+   failing with `TS6305 Output file ... has not been built from source`).
+4. **API-server typecheck script gets the heap flag** required by
+   `pnpm run verify` (`NODE_OPTIONS='--max-old-space-size=4096' tsc -p
+   tsconfig.json --noEmit`). Without it Render's standard build
+   container OOMs the api-server tsc run during `verify:production`.
+5. **`@workspace/api-client-react` stub now exports the named members**
+   the in-flight admin migration imports
+   (`useListSchedule`, `useListPlaylists`, `useImportVideo`, ~30 more).
+   The Proxy-on-default approach satisfied tsc via the ambient module
+   shim but rolldown/vite's static export analysis rejected
+   `import { foo }` with `MISSING_EXPORT`, blocking the admin's vite
+   build (which runs as part of the .replit deploy build). Each named
+   export delegates to the same Proxy stub so the runtime failure mode
+   ("legacy client is removed, migrate this call site") is unchanged.
+
+**Deploy checklist (verified green on this pass):**
+- `pnpm run typecheck:libs && pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/admin run build` → ok
+- `pnpm run verify` → ok (codegen + catalog + recharts-shim + react-types-singleton + tsconfig-parity + render-yaml + env-secrets + db-schema-completeness + 6-package typecheck)
+- `pnpm --filter @workspace/api-server run test` → 9/9 passing
+- `/healthz`, `/readyz`, `/api/v1/broadcast/current`, `/api/v1/media`, `/docs/json`, `/admin/broadcast` — all responding cleanly with `dependencies: { database: ok, cache: ok, storage: ok }`.
+
 ## Stack
 
 | Concern              | Choice                                                                 |

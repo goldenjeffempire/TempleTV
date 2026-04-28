@@ -6,7 +6,7 @@ import { z } from "zod";
  */
 const Env = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
-  PORT: z.coerce.number().int().positive().default(8080),
+  PORT: z.coerce.number().int().nonnegative().default(8080),
   LOG_LEVEL: z
     .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
     .default("info"),

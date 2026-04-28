@@ -44,37 +44,37 @@ export declare const AuthTokensSchema: z.ZodObject<{
         displayName: z.ZodString;
     }, "strip", z.ZodTypeAny, {
         email: string;
-        displayName: string;
+        role: "admin" | "editor" | "user" | "system";
         id: string;
-        role: "user" | "admin" | "editor" | "system";
+        displayName: string;
     }, {
         email: string;
-        displayName: string;
+        role: "admin" | "editor" | "user" | "system";
         id: string;
-        role: "user" | "admin" | "editor" | "system";
+        displayName: string;
     }>;
 }, "strip", z.ZodTypeAny, {
-    accessToken: string;
-    refreshToken: string;
-    accessTokenExpiresIn: number;
-    refreshTokenExpiresIn: number;
     user: {
         email: string;
-        displayName: string;
+        role: "admin" | "editor" | "user" | "system";
         id: string;
-        role: "user" | "admin" | "editor" | "system";
+        displayName: string;
     };
+    refreshToken: string;
+    accessToken: string;
+    accessTokenExpiresIn: number;
+    refreshTokenExpiresIn: number;
 }, {
-    accessToken: string;
-    refreshToken: string;
-    accessTokenExpiresIn: number;
-    refreshTokenExpiresIn: number;
     user: {
         email: string;
-        displayName: string;
+        role: "admin" | "editor" | "user" | "system";
         id: string;
-        role: "user" | "admin" | "editor" | "system";
+        displayName: string;
     };
+    refreshToken: string;
+    accessToken: string;
+    accessTokenExpiresIn: number;
+    refreshTokenExpiresIn: number;
 }>;
 export type AuthTokens = z.infer<typeof AuthTokensSchema>;
 export declare const MeResponseSchema: z.ZodObject<{
@@ -85,14 +85,14 @@ export declare const MeResponseSchema: z.ZodObject<{
     createdAt: z.ZodString;
 }, "strip", z.ZodTypeAny, {
     email: string;
-    displayName: string;
+    role: "admin" | "editor" | "user" | "system";
     id: string;
-    role: "user" | "admin" | "editor" | "system";
+    displayName: string;
     createdAt: string;
 }, {
     email: string;
-    displayName: string;
+    role: "admin" | "editor" | "user" | "system";
     id: string;
-    role: "user" | "admin" | "editor" | "system";
+    displayName: string;
     createdAt: string;
 }>;

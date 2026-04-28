@@ -1,0 +1,50 @@
+2026-04-28T16:40:16.430523581Z 
+2026-04-28T16:40:16.430586891Z > @workspace/scripts@0.0.0 verify-env-secrets /opt/render/project/src/scripts
+2026-04-28T16:40:16.430591611Z > tsx ./src/verify-env-secrets.ts
+2026-04-28T16:40:16.430594881Z 
+2026-04-28T16:40:16.886805684Z [verify:env-secrets] OK — 5 service(s), 2 envVarGroup(s), 33 direct envVar(s), 4 fromGroup reference(s); every group is referenced, every reference resolves, no secret-shaped key is committed in plaintext or exposed to a static SPA bundle.
+2026-04-28T16:40:17.538903964Z 
+2026-04-28T16:40:17.538932974Z > workspace@0.0.0 verify:db-schema-completeness /opt/render/project/src
+2026-04-28T16:40:17.538936734Z > pnpm --filter @workspace/scripts run verify-db-schema-completeness
+2026-04-28T16:40:17.538939844Z 
+2026-04-28T16:40:18.244609917Z 
+2026-04-28T16:40:18.244639957Z > @workspace/scripts@0.0.0 verify-db-schema-completeness /opt/render/project/src/scripts
+2026-04-28T16:40:18.244646407Z > tsx ./src/verify-db-schema-completeness.ts
+2026-04-28T16:40:18.244651377Z 
+2026-04-28T16:40:18.685451591Z [verify:db-schema-completeness] OK — 22 schema file(s), 22 barrel re-export(s) all resolved, 24 unique pgTable(...) declaration(s); every schema file is reachable by `drizzle-kit push`.
+2026-04-28T16:40:19.354537228Z 
+2026-04-28T16:40:19.354575528Z > workspace@0.0.0 typecheck:production /opt/render/project/src
+2026-04-28T16:40:19.354581908Z > pnpm run typecheck:libs && pnpm --filter @workspace/scripts run run-typechecks
+2026-04-28T16:40:19.354587018Z 
+2026-04-28T16:40:19.929635806Z 
+2026-04-28T16:40:19.929666606Z > workspace@0.0.0 typecheck:libs /opt/render/project/src
+2026-04-28T16:40:19.929672426Z > tsc --build
+2026-04-28T16:40:19.929678196Z 
+2026-04-28T16:40:28.70056888Z 
+2026-04-28T16:40:28.70060424Z > @workspace/scripts@0.0.0 run-typechecks /opt/render/project/src/scripts
+2026-04-28T16:40:28.70061113Z > tsx ./src/run-typechecks.ts
+2026-04-28T16:40:28.70061616Z 
+2026-04-28T16:40:29.122264597Z 
+2026-04-28T16:40:29.122305857Z ==> [run-typechecks] PRE-FLIGHT FAIL — typecheck script(s) missing the --max-old-space-size heap-flag prefix.
+2026-04-28T16:40:29.122311877Z 
+2026-04-28T16:40:29.122318017Z   ✗ @workspace/api-server (artifacts/api-server/package.json)
+2026-04-28T16:40:29.122323627Z       current:  "tsc -p tsconfig.json --noEmit"
+2026-04-28T16:40:29.122329047Z       required: must start with NODE_OPTIONS='--max-old-space-size=4096' (or larger)
+2026-04-28T16:40:29.122334127Z 
+2026-04-28T16:40:29.122339817Z Why this matters: pnpm strips NODE_OPTIONS injected at the spawn-env layer when
+2026-04-28T16:40:29.122344877Z spawning per-script children. The flag must be declared in the package.json script
+2026-04-28T16:40:29.122349797Z itself so the shell sets it in the env of the tsc invocation directly. Without the
+2026-04-28T16:40:29.122354787Z prefix, tsc OOMs at ~318 MiB on Render's standard build container during the admin/tv
+2026-04-28T16:40:29.122359767Z typecheck (`FATAL ERROR: Ineffective mark-compacts near heap limit`), failing every
+2026-04-28T16:40:29.122364688Z service deploy that runs verify:production. Fix by editing the script(s) above to:
+2026-04-28T16:40:29.122369368Z 
+2026-04-28T16:40:29.122374248Z   "typecheck": "NODE_OPTIONS='--max-old-space-size=4096' tsc -p tsconfig.json --noEmit"
+2026-04-28T16:40:29.122378888Z 
+2026-04-28T16:40:29.122383928Z See replit.md Round 16 entry for the full failure-mode history.
+2026-04-28T16:40:29.164698783Z /opt/render/project/src/scripts:
+2026-04-28T16:40:29.164729643Z  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/scripts@0.0.0 run-typechecks: `tsx ./src/run-typechecks.ts`
+2026-04-28T16:40:29.164735173Z Exit status 1
+2026-04-28T16:40:29.21722814Z  ELIFECYCLE  Command failed with exit code 1.
+2026-04-28T16:40:29.269437956Z  ELIFECYCLE  Command failed with exit code 1.
+2026-04-28T16:40:29.35846357Z ==> Build failed 😞
+2026-04-28T16:40:29.35849749Z ==> Common ways to troubleshoot your deploy: https://render.com/docs/troubleshooting-deploys
