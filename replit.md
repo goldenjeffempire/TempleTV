@@ -1,5 +1,51 @@
 # Temple TV (JCTM) Broadcasting Platform
 
+## Production OOM Mitigation Round 2 (April 28 2026, post-import)
+
+After Round 1 (the YouTube `boundedText` fix in commit `0b6901b`) production
+was still OOM-killing every 1-2 minutes. Root-cause analysis pointed at two
+remaining leak vectors in `lib/cache.ts`:
+
+1. **`MemoryCache` (L1) was an unbounded `Map`.** Code paths that synthesised
+   per-request keys silently accumulated entries between the 60s GC ticks. The
+   GC only reclaimed EXPIRED entries, so anything with a long TTL (10 min
+   `youtube:videos`, 2 min `admin:stats:v1`) hung around for many GC cycles.
+   Worst case was unbounded growth over hours of uptime — matched the slow
+   ~30 MiB/min RSS climb observed in production before the 2 GiB cgroup
+   ceiling triggered SIGKILL.
+2. **`PgCache.set` called `JSON.stringify(value)` TWICE per write** (once for
+   the INSERT values clause, once for the ON CONFLICT DO UPDATE set clause).
+   For the broadcast snapshot key (~218 KiB at a 5s TTL) this added ~52 MiB/min
+   of pure short-lived heap allocation churn for no functional reason.
+
+**Fixes (this round):**
+- `MemoryCache` now caps at `MEMORY_CACHE_MAX_ENTRIES` (default 1024,
+  env-overridable). Eviction policy is "expired-first, then oldest by
+  insertion order" — O(1) per eviction using Map's insertion-order iteration.
+- `PgCache.set` now stringifies the payload exactly once and reuses the
+  serialised string for both the insert and the conflict-update branches.
+- Added `MemoryCache.size()` accessor for future Mission Control surface.
+
+**Deliberately NOT changed:**
+- `MEMORY_RESTART_RSS_MB` stays at `0` in `render.yaml`. The previous setting
+  (1650) caused the 2026-04-27 LB-race restart loop — graceful self-restart
+  closed the listening socket during the LB's drain window, producing
+  mid-request TCP resets. Linux's OOM-killer is uncatchable but INSTANT — no
+  socket window for the LB to race against, faster recovery overall.
+- `hasAdminBundle: false` in the API boot log is BY DESIGN. The admin SPA is
+  served by the separate `temple-tv-admin` Render static service at
+  `admin.templetv.org.ng` — the API server never bundled it.
+
+**Operator status (verified in latest boot log):**
+- `runMode: "api"` confirmed (the dashboard `RUN_MODE=all` override has been
+  removed; the manifest value is now in effect).
+
+**Roadmap for the larger architectural items** (Redis pub/sub bus enablement,
+multi-instance horizontal scaling, broadcast latency optimisation, dual-player
+prebuffer, CDN cutover, observability foundation, real-time-replaces-polling):
+see `docs/streaming-platform-roadmap.md`. Each phase has dependency ordering,
+effort estimates, and explicit exit criteria — no vague promises.
+
 ## Production OOM Mitigation (April 28 2026, post-import)
 
 Production `temple-tv-api` was being SIGKILL'd by the OOM killer every ~5 min:

@@ -7,6 +7,33 @@ interface CacheEntry<T> {
   expiresAt: number;
 }
 
+/**
+ * Hard cap on the number of entries the in-memory L1 cache can hold.
+ *
+ * Why a cap exists at all (production incident 2026-04-28): the previous
+ * implementation was an UNBOUNDED `Map<string, CacheEntry>`. Code paths
+ * that synthesise unique keys per request (signed-URL helpers, per-user
+ * admin lookups, transient scrape results) silently accumulated entries
+ * that the 60 s GC could only reclaim once they had EXPIRED — between
+ * GC ticks the Map could grow without bound, and entries with long TTLs
+ * (10 min `youtube:videos`, 2 min `admin:stats:v1`) hung around for many
+ * GC cycles. Combined with the broadcast payload (~218 KiB) being cached
+ * 12×/min under a single key, the worst-case footprint was unbounded
+ * over hours of uptime — matched exactly the slow ~30 MiB/min RSS climb
+ * observed in production before the 2 GiB cgroup ceiling SIGKILL'd.
+ *
+ * 1024 is generous: every named CACHE_KEYS constant + the broadcast +
+ * the schedule + the queue + ~1000 transient keys would still fit. The
+ * eviction policy is "expired-first, then oldest-insertion" — Map's
+ * iteration order is insertion order in JS, so dropping the head is O(1)
+ * per eviction and cheap. The cap is overridable via env so a future
+ * scaling event can lift it without a code change.
+ */
+const MEMORY_CACHE_MAX_ENTRIES = Math.max(
+  64,
+  Number(process.env.MEMORY_CACHE_MAX_ENTRIES ?? "1024"),
+);
+
 class MemoryCache {
   private store = new Map<string, CacheEntry<unknown>>();
   private gcInterval: ReturnType<typeof setInterval>;
@@ -23,6 +50,25 @@ class MemoryCache {
     }
   }
 
+  /**
+   * Evict the oldest expired entry first; if none are expired, evict the
+   * oldest by insertion order. Called from `set()` whenever the store is
+   * at the cap so the Map can never grow past `MEMORY_CACHE_MAX_ENTRIES`.
+   */
+  private evictOne(): void {
+    const now = Date.now();
+    for (const [key, entry] of this.store.entries()) {
+      if (entry.expiresAt <= now) {
+        this.store.delete(key);
+        return;
+      }
+    }
+    // No expired entries — drop the oldest live one (Map iteration order
+    // is insertion order, so the first key is the oldest).
+    const firstKey = this.store.keys().next().value;
+    if (firstKey !== undefined) this.store.delete(firstKey);
+  }
+
   get<T>(key: string): T | null {
     const entry = this.store.get(key) as CacheEntry<T> | undefined;
     if (!entry) return null;
@@ -34,6 +80,9 @@ class MemoryCache {
   }
 
   set<T>(key: string, value: T, ttlMs: number): void {
+    if (!this.store.has(key) && this.store.size >= MEMORY_CACHE_MAX_ENTRIES) {
+      this.evictOne();
+    }
     this.store.set(key, { value, expiresAt: Date.now() + ttlMs });
   }
 
@@ -43,6 +92,10 @@ class MemoryCache {
 
   flush(): void {
     this.store.clear();
+  }
+
+  size(): number {
+    return this.store.size;
   }
 }
 
@@ -107,14 +160,20 @@ class PgCache {
   async set<T>(key: string, value: T, ttlMs: number): Promise<void> {
     if (!this.ready) return;
     try {
+      // Serialise ONCE — the previous implementation called JSON.stringify
+      // twice (insert values + onConflictDoUpdate set), wasting a full
+      // payload-sized allocation per write. The broadcast snapshot alone
+      // is ~218 KiB at a 5 s TTL; the duplicate stringify added ~52 MiB/min
+      // of short-lived heap allocation purely for that key.
+      const serialised = JSON.stringify(value);
       const expiresAt = new Date(Date.now() + ttlMs);
       await db
         .insert(cacheEntriesTable)
-        .values({ key, value: JSON.stringify(value), expiresAt })
+        .values({ key, value: serialised, expiresAt })
         .onConflictDoUpdate({
           target: cacheEntriesTable.key,
           set: {
-            value: JSON.stringify(value),
+            value: serialised,
             expiresAt,
             updatedAt: new Date(),
           },
