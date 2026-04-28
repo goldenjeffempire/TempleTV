@@ -56,6 +56,7 @@ import {
   mkdirSync,
   createWriteStream,
   existsSync,
+  readFileSync,
   statSync,
   writeFileSync,
   unlinkSync,
@@ -173,7 +174,97 @@ function runOne(pkg: string): Promise<PackageResult> {
   });
 }
 
+// Pre-flight regression guard for the Round 16 fix (April 28 2026).
+//
+// Each artifact's package.json `typecheck` script must declare
+// `NODE_OPTIONS='--max-old-space-size=N'` (or equivalent quoted form) at
+// the script-prefix layer — NOT just rely on env-var inheritance through
+// the run-typechecks parent process. Without the prefix, pnpm's
+// `pnpm --filter X run typecheck` indirection silently strips/overrides
+// NODE_OPTIONS before reaching the tsc child, so V8 falls back to the
+// host-detected default heap (~318 MiB on Render's standard build
+// container) and the admin/tv tsc graphs OOM with `Ineffective
+// mark-compacts near heap limit`. This was exactly Round 15's failure
+// mode — the parent injected NODE_OPTIONS=--max-old-space-size=4096 via
+// spawn env and the child still OOM'd at the same 318 MiB ceiling,
+// proving the inheritance path is unreliable. Round 16 moved the flag
+// to the closest possible layer (the script prefix) so the shell sets
+// it directly in the env of the tsc invocation, where pnpm cannot
+// touch it.
+//
+// This guard fails the run BEFORE any spawn if any artifact's typecheck
+// script has drifted away from that pattern. Cheap O(N) check, runs in
+// <10 ms, error message tells the operator exactly which file to fix and
+// what to put in it. Catches: a developer regenerating package.json from
+// scratch, a copy-paste from a stale snippet, a future refactor that
+// "cleans up" the script and removes the prefix, etc.
+function validateTypecheckScripts(packages: readonly string[]): void {
+  const violations: string[] = [];
+  // Match `NODE_OPTIONS=...--max-old-space-size=<digits>...` in any quoting
+  // style (single, double, or unquoted). Tolerant of additional flags.
+  const heapFlagPattern =
+    /NODE_OPTIONS\s*=\s*['"]?[^'"]*--max-old-space-size=\d+/;
+
+  for (const pkg of packages) {
+    // "@workspace/api-server" → "artifacts/api-server"
+    // "@workspace/scripts" → "scripts"
+    const subdir = pkg.replace(/^@workspace\//, "");
+    const candidatePaths = [
+      join(REPO_ROOT, "artifacts", subdir, "package.json"),
+      join(REPO_ROOT, subdir, "package.json"),
+    ];
+    const pkgJsonPath = candidatePaths.find((p) => existsSync(p));
+    if (!pkgJsonPath) {
+      // Package not on disk — leave to the spawn step to fail with its
+      // own clearer error. Don't false-positive here.
+      continue;
+    }
+
+    let parsed: { scripts?: Record<string, string> };
+    try {
+      parsed = JSON.parse(readFileSync(pkgJsonPath, "utf8")) as {
+        scripts?: Record<string, string>;
+      };
+    } catch (err) {
+      violations.push(
+        `  ✗ ${pkg}: failed to parse ${pkgJsonPath} — ${err instanceof Error ? err.message : String(err)}`,
+      );
+      continue;
+    }
+
+    const script = parsed.scripts?.typecheck;
+    if (typeof script !== "string") {
+      // No typecheck script declared. Spawn will skip via --if-present.
+      continue;
+    }
+
+    if (!heapFlagPattern.test(script)) {
+      violations.push(
+        `  ✗ ${pkg} (${pkgJsonPath.replace(REPO_ROOT + "/", "")})\n      current:  "${script}"\n      required: must start with NODE_OPTIONS='--max-old-space-size=4096' (or larger)`,
+      );
+    }
+  }
+
+  if (violations.length > 0) {
+    process.stderr.write(
+      "\n==> [run-typechecks] PRE-FLIGHT FAIL — typecheck script(s) missing the --max-old-space-size heap-flag prefix.\n\n" +
+        violations.join("\n") +
+        "\n\nWhy this matters: pnpm strips NODE_OPTIONS injected at the spawn-env layer when\n" +
+        "spawning per-script children. The flag must be declared in the package.json script\n" +
+        "itself so the shell sets it in the env of the tsc invocation directly. Without the\n" +
+        "prefix, tsc OOMs at ~318 MiB on Render's standard build container during the admin/tv\n" +
+        'typecheck (`FATAL ERROR: Ineffective mark-compacts near heap limit`), failing every\n' +
+        "service deploy that runs verify:production. Fix by editing the script(s) above to:\n\n" +
+        '  "typecheck": "NODE_OPTIONS=\'--max-old-space-size=4096\' tsc -p tsconfig.json --noEmit"\n\n' +
+        "See replit.md Round 16 entry for the full failure-mode history.\n",
+    );
+    process.exit(1);
+  }
+}
+
 async function main() {
+  validateTypecheckScripts(ARTIFACTS);
+
   const totalStart = Date.now();
   let failed: PackageResult | null = null;
   const completed: PackageResult[] = [];
