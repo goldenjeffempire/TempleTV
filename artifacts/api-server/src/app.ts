@@ -437,9 +437,10 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
   const message = isProd
     ? "An internal server error occurred"
     : err instanceof Error ? err.message : "An unexpected error occurred";
-  const status = err instanceof Error && "status" in err && typeof (err as any).status === "number"
-    ? (err as any).status as number
-    : 500;
+  const status =
+    err instanceof Error && "status" in err && typeof err.status === "number"
+      ? err.status
+      : 500;
   res.status(status).json({ error: "internal_error", message });
 });
 

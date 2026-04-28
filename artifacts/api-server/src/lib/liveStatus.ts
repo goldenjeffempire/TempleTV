@@ -38,10 +38,15 @@ export async function getActiveLiveOverride(): Promise<LiveOverrideRow | null> {
 }
 
 /**
- * Canonical "live status" payload broadcast to viewers via SSE and
- * served by `/api/live/status`. Combines admin override state with
- * the YouTube poller's most recent observation so a single payload
- * tells every client surface everything it needs to render.
+ * Canonical "live status" payload for admin Mission Control surfaces.
+ * Returned synchronously by `GET /api/admin/live` (admin-protected) and
+ * pushed over the `/api/admin/live/events` SSE stream to all connected
+ * admin clients whenever a state-changing event fires (admin override
+ * start/stop/schedule, YouTube poller transition, scheduled override
+ * boundary). Combines admin override state with the YouTube poller's
+ * most recent observation so a single payload tells every admin
+ * surface everything it needs to render. Not exposed to public
+ * TV/mobile clients — those have their own dedicated read paths.
  */
 export async function buildLiveStatusPayload() {
   const liveOverride = await getActiveLiveOverride().catch(() => null);
@@ -50,7 +55,7 @@ export async function buildLiveStatusPayload() {
     .select({ count: count() })
     .from(pushTokensTable)
     .catch(() => [{ count: 0 }]);
-  const deviceCount = Number((deviceCountResult as any)?.count ?? 0);
+  const deviceCount = Number(deviceCountResult?.count ?? 0);
   const now = Date.now();
   const concurrentViewers = getSSEClientCount();
   const ytLiveViewerCount = ytStatus.isLive ? getLiveViewerCount() : null;
