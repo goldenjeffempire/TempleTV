@@ -109,6 +109,29 @@ interface PackageResult {
   logPath: string;
 }
 
+// Compose the child environment for a typecheck spawn. We force a generous
+// V8 old-space ceiling on every child because Render's build containers
+// expose ~512MB to Node by default, and `tsc` on the admin SPA (recharts +
+// react-query + React 19 type graph) reproducibly OOMs at ~318MB heap with
+// `FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed`,
+// failing the entire `verify:production` chain (and therefore every Render
+// service deploy that runs the chain) with exit 134. The fix is structural:
+// raise the heap ceiling to 4096MB for every typecheck child uniformly,
+// regardless of the host's perceived total memory. NODE_OPTIONS propagates
+// to all nested Node processes (pnpm → tsx → tsc), so this single setting
+// covers the entire spawn tree. We APPEND to any operator-set NODE_OPTIONS
+// rather than replacing — so operators can still pass extra flags like
+// `--enable-source-maps` via their own NODE_OPTIONS, AND we only inject
+// `--max-old-space-size` if they haven't already set it (their value wins).
+function buildChildEnv(): NodeJS.ProcessEnv {
+  const existing = process.env.NODE_OPTIONS ?? "";
+  const hasMaxOldSpace = /(^|\s)--max-old-space-size(=|\s)/.test(existing);
+  const merged = hasMaxOldSpace
+    ? existing
+    : `${existing} --max-old-space-size=4096`.trim();
+  return { ...process.env, NODE_OPTIONS: merged };
+}
+
 function runOne(pkg: string): Promise<PackageResult> {
   const logPath = logFilePathFor(pkg);
   const fileStream = createWriteStream(logPath, { flags: "w" });
@@ -118,7 +141,7 @@ function runOne(pkg: string): Promise<PackageResult> {
     const child = spawn(
       "pnpm",
       ["--filter", pkg, "--if-present", "run", "typecheck"],
-      { stdio: ["inherit", "pipe", "pipe"], env: process.env },
+      { stdio: ["inherit", "pipe", "pipe"], env: buildChildEnv() },
     );
 
     let spawnError: Error | null = null;

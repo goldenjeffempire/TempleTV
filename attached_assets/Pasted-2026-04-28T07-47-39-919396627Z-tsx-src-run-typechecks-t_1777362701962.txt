@@ -1,0 +1,50 @@
+2026-04-28T07:47:39.919396627Z > tsx ./src/run-typechecks.ts
+2026-04-28T07:47:39.919402898Z 
+2026-04-28T07:47:40.525680125Z 
+2026-04-28T07:47:40.525721666Z ==> [run-typechecks] @workspace/api-server typecheck — start (log: /opt/render/project/src/dist/typecheck-logs/api-server.log)
+2026-04-28T07:47:41.487324607Z 
+2026-04-28T07:47:41.487373367Z > @workspace/api-server@0.0.0 typecheck /opt/render/project/src/artifacts/api-server
+2026-04-28T07:47:41.487383147Z > tsc -p tsconfig.json --noEmit
+2026-04-28T07:47:41.487389447Z 
+2026-04-28T07:47:51.212419038Z ==> [run-typechecks] @workspace/api-server typecheck — ok (10.7s)
+2026-04-28T07:47:51.212448738Z 
+2026-04-28T07:47:51.212454928Z ==> [run-typechecks] @workspace/admin typecheck — start (log: /opt/render/project/src/dist/typecheck-logs/admin.log)
+2026-04-28T07:47:51.975215854Z 
+2026-04-28T07:47:51.975284245Z > @workspace/admin@0.0.0 typecheck /opt/render/project/src/artifacts/admin
+2026-04-28T07:47:51.975292585Z > tsc -p tsconfig.json --noEmit
+2026-04-28T07:47:51.975298335Z 
+2026-04-28T07:48:12.24471885Z 
+2026-04-28T07:48:12.24477427Z <--- Last few GCs --->
+2026-04-28T07:48:12.24478172Z 
+2026-04-28T07:48:12.24478888Z [807:0xd7a0000]    20240 ms: Mark-Compact (reduce) 318.2 (323.5) -> 317.2 (320.5) MB, pooled: 0 MB, 137.19 / 0.00 ms  (+ 0.3 ms in 23 steps since start of marking, biggest step 0.0 ms, walltime since start of marking 166 ms) (average mu = 0.184, current m
+2026-04-28T07:48:12.244817581Z FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory
+2026-04-28T07:48:12.244822781Z ----- Native stack trace -----
+2026-04-28T07:48:12.244827261Z 
+2026-04-28T07:48:12.245394327Z  1: 0x72dece node::OOMErrorHandler(char const*, v8::OOMDetails const&) [node]
+2026-04-28T07:48:12.245881112Z  2: 0xba1b20  [node]
+2026-04-28T07:48:12.246484798Z  3: 0xba1c0f  [node]
+2026-04-28T07:48:12.247078044Z  4: 0xe3a745  [node]
+2026-04-28T07:48:12.248348757Z  5: 0xe3a772  [node]
+2026-04-28T07:48:12.248517599Z  6: 0xe3aa6a  [node]
+2026-04-28T07:48:12.248950864Z  7: 0xe4af8a  [node]
+2026-04-28T07:48:12.24954706Z  8: 0xe4f330  [node]
+2026-04-28T07:48:12.250081255Z  9: 0x18e22f1  [node]
+2026-04-28T07:48:12.61908046Z Aborted (core dumped)
+2026-04-28T07:48:12.640029447Z /opt/render/project/src/artifacts/admin:
+2026-04-28T07:48:12.640066667Z  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/admin@0.0.0 typecheck: `tsc -p tsconfig.json --noEmit`
+2026-04-28T07:48:12.640070737Z Exit status 134
+2026-04-28T07:48:12.676885708Z 
+2026-04-28T07:48:12.676916578Z ==> [run-typechecks] @workspace/admin typecheck — FAILED (exit 134, 21.5s)
+2026-04-28T07:48:12.677517545Z 
+2026-04-28T07:48:12.677531545Z ==> [run-typechecks] FAIL — @workspace/admin typecheck failed after 32.2s total.
+2026-04-28T07:48:12.677535695Z ==> [run-typechecks] Per-package log captured (959 bytes): /opt/render/project/src/dist/typecheck-logs/admin.log
+2026-04-28T07:48:12.677538775Z ==> [run-typechecks] All package logs: /opt/render/project/src/dist/typecheck-logs
+2026-04-28T07:48:12.677542985Z ==> [run-typechecks] Failure marker: /opt/render/project/src/dist/last-failure.txt (JSON; downstream steps can read .logPath/.pkg/.exitCode without grep)
+2026-04-28T07:48:12.677547385Z ==> [run-typechecks] If the streamed output above was truncated, cat the failing log file for the complete TypeScript error text.
+2026-04-28T07:48:12.724155437Z /opt/render/project/src/scripts:
+2026-04-28T07:48:12.724186107Z  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/scripts@0.0.0 run-typechecks: `tsx ./src/run-typechecks.ts`
+2026-04-28T07:48:12.724189377Z Exit status 134
+2026-04-28T07:48:12.784857194Z  ELIFECYCLE  Command failed with exit code 134.
+2026-04-28T07:48:12.842663532Z  ELIFECYCLE  Command failed with exit code 134.
+2026-04-28T07:48:12.945592516Z ==> Build failed 😞
+2026-04-28T07:48:12.945625537Z ==> Common ways to troubleshoot your deploy: https://render.com/docs/troubleshooting-deploys
