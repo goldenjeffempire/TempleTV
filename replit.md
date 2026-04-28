@@ -56,6 +56,37 @@ closed the remaining production / deploy blockers:
 - `pnpm --filter @workspace/api-server run test` → 9/9 passing
 - `/healthz`, `/readyz`, `/api/v1/broadcast/current`, `/api/v1/media`, `/docs/json`, `/admin/broadcast` — all responding cleanly with `dependencies: { database: ok, cache: ok, storage: ok }`.
 
+## April 28 2026 (afternoon) — Feature-complete API surface
+
+The April rebuild only shipped 5 of the 10 modules the front-ends need.
+This pass closed the remaining 5 by exposing the schemas that already
+existed in `lib/db/src/schema/` through fully-implemented Fastify routes.
+Every new endpoint uses Drizzle queries against the live tables, Zod
+validation on body/query/params, RFC-7807 errors, OpenAPI tags, and the
+existing RBAC middleware. **No new schema migrations were required.**
+
+New modules under `artifacts/api-server/src/modules/`:
+
+| Module | Routes | Notes |
+| --- | --- | --- |
+| `playlists/` | GET/POST/PATCH/DELETE `/api/v1/playlists`, plus add / remove / reorder of videos | Joins `playlists` ↔ `playlist_videos`; reorder is transactional with sortOrder rewrites. |
+| `schedule/` | GET/POST/PATCH/DELETE `/api/v1/schedule` | Sorted by `(dayOfWeek, startTime)` to use the existing composite index. Validates HH:MM time format. |
+| `notifications/` | GET `/api/v1/notifications/history`, POST `/api/v1/notifications/send` | Send queues to push-worker out-of-process; counts `push_tokens` + `web_push_subscriptions` to size the audience. |
+| `live-overrides/` | GET `/api/v1/live/status` (public), GET `/recent`, POST `/start`, POST `/stop` | `start` parses `youtubeUrl` to an 11-char id, deactivates any prior live row in the same write so `/status` is unambiguous. |
+| `admin/` | GET `/api/v1/admin/stats`, `/analytics`, `/users`, PATCH `/users/:id/role` | Aggregate counts run as 12 parallel `count()`s. Top-10 by view count served from the existing `idx_managed_videos_view_count` index. |
+
+After this pass the OpenAPI surface is **38 documented routes** (up from 27).
+Spot-checked with the operator `ADMIN_API_TOKEN`:
+- `/admin/stats` returns `{ videos: { total: 2125, bySource: { local: 8, youtube: 2117 } }, users: 6, schedule: { total: 7, active: 7 }, broadcast: { queueDepth: 6 }, ... }`.
+- `POST /playlists` round-trips a real row with `videoCount: 0`.
+- `/admin/analytics` returns the top-10 videos by view count (top: 49,832 views).
+
+The `lib/api-client-react` Proxy stub still throws fail-loud on call —
+the front-end packages need to migrate their imports from the legacy
+hook names to fetch calls against these new endpoints. That migration
+is out of scope of the API-readiness work and is what the README's
+"compatibility stubs" line refers to.
+
 ## Stack
 
 | Concern              | Choice                                                                 |

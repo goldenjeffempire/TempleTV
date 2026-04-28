@@ -24,6 +24,11 @@ import { wsRoutes } from "./modules/realtime/ws.gateway.js";
 import { chatRoutes } from "./modules/realtime/chat.routes.js";
 import { healthRoutes } from "./modules/health/health.routes.js";
 import { adminUiRoutes } from "./modules/admin-ui/admin-ui.routes.js";
+import { playlistsRoutes } from "./modules/playlists/playlists.routes.js";
+import { scheduleRoutes } from "./modules/schedule/schedule.routes.js";
+import { notificationsRoutes } from "./modules/notifications/notifications.routes.js";
+import { liveOverridesRoutes } from "./modules/live-overrides/live-overrides.routes.js";
+import { adminRoutes } from "./modules/admin/admin.routes.js";
 
 const API_PREFIX = "/api/v1";
 
@@ -74,6 +79,11 @@ export async function buildApp(): Promise<FastifyInstance> {
         { name: "auth", description: "Sign-in, sign-up, refresh, profile" },
         { name: "broadcast", description: "Live channel + queue management" },
         { name: "media", description: "On-demand catalog + uploads" },
+        { name: "playlists", description: "Curated video playlists" },
+        { name: "schedule", description: "Weekly broadcast programming schedule" },
+        { name: "live", description: "Live overrides (HLS / YouTube / RTMP)" },
+        { name: "notifications", description: "Push notifications + history" },
+        { name: "admin", description: "Admin dashboard: stats, users, analytics" },
         { name: "chat", description: "Live broadcast chat" },
         { name: "health", description: "Liveness + readiness" },
       ],
@@ -105,6 +115,11 @@ export async function buildApp(): Promise<FastifyInstance> {
       await instance.register(authRoutes, { prefix: "/auth" });
       await instance.register(mediaRoutes, { prefix: "/media" });
       await instance.register(broadcastRoutes, { prefix: "/broadcast" });
+      await instance.register(playlistsRoutes, { prefix: "/playlists" });
+      await instance.register(scheduleRoutes, { prefix: "/schedule" });
+      await instance.register(notificationsRoutes, { prefix: "/notifications" });
+      await instance.register(liveOverridesRoutes, { prefix: "/live" });
+      await instance.register(adminRoutes, { prefix: "/admin" });
       await instance.register(chatRoutes, { prefix: "/chat" });
       await instance.register(sseRoutes);
       await instance.register(wsRoutes);
