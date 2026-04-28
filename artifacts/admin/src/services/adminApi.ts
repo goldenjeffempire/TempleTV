@@ -434,6 +434,17 @@ export interface OpsStatus {
       cold: { samples: number; total: number; p50: number; p95: number; p99: number; max: number };
       hot: { samples: number; total: number; p50: number; p95: number; p99: number; max: number };
     };
+    /**
+     * Cross-instance SSE bus (Redis pub/sub bridge) health. `health` is:
+     *   - "off"      → REDIS_URL not set; single-instance fanout only.
+     *                  This is the supported default, NOT an error.
+     *   - "ok"       → bus enabled and both Redis clients are ready.
+     *   - "degraded" → bus enabled but mid-(re)connect; local fanout
+     *                  unaffected, self-heals when Redis comes back.
+     * Optional because older deployments of the api-server (pre-Round 18)
+     * don't include this field; the UI must treat absence as "off".
+     */
+    sseBus?: SSEBusStatus;
   };
   database: {
     connected: boolean;
@@ -718,6 +729,44 @@ export interface LiveFailureStats {
 
 export const opsApi = {
   getStatus: (signal?: AbortSignal) => adminGet<OpsStatus>("/admin/ops/status", signal),
+};
+
+/**
+ * Cross-instance SSE bus (Redis pub/sub bridge) status. Returned both by
+ * the dedicated `/admin/sse-bus` endpoint AND inlined into `OpsStatus
+ * .infrastructure.sseBus` so the operations page renders a single tile
+ * without a second polling cycle. The dedicated endpoint exists for direct
+ * curl/debug access and to leave room for a future detail page.
+ *
+ * `health: "off"` is a NORMAL state (single-instance deploys without
+ * REDIS_URL) — render it as a neutral badge, NOT amber/red.
+ */
+export interface SSEBusStatus {
+  health: "off" | "ok" | "degraded";
+  summary: string;
+  enabled: boolean;
+  connected: boolean;
+  channel: string;
+  instanceId: string;
+  uptimeSec: number;
+  publishesSent: number;
+  publishesFailed: number;
+  publishesSkippedDisconnected: number;
+  framesReceived: number;
+  framesDroppedSelf: number;
+  framesDroppedMalformed: number;
+  reconnects: number;
+  /** Unix ms; 0 means "never". */
+  lastPublishErrorAt: number;
+  lastPublishErrorMsg: string;
+  /** Unix ms; 0 means "never". */
+  lastReceiveErrorAt: number;
+  lastReceiveErrorMsg: string;
+}
+
+export const sseBusApi = {
+  getStatus: (signal?: AbortSignal) =>
+    adminGet<SSEBusStatus>("/admin/sse-bus", signal),
 };
 
 export interface SlowRequestEntry {

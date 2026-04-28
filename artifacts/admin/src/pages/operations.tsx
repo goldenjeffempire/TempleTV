@@ -34,6 +34,7 @@ import {
   type OpsStatus,
   type S3TelemetrySummary,
   type SlowRequestsSnapshot,
+  type SSEBusStatus,
 } from "@/services/adminApi";
 import { PageHeader } from "@/components/shared/page-header";
 import { usePollingWhenVisible } from "@/hooks/usePollingWhenVisible";
@@ -78,6 +79,67 @@ function StatusIcon({ status }: { status: CheckStatus }) {
   if (status === "ok") return <CheckCircle2 className="w-4 h-4 text-emerald-600" />;
   if (status === "degraded") return <AlertTriangle className="w-4 h-4 text-amber-600" />;
   return <XCircle className="w-4 h-4 text-red-600" />;
+}
+
+/**
+ * Cross-instance SSE bus tile for the Infrastructure card. Three states:
+ *   - undefined / health="off" → neutral grey "Disabled" badge with helpful
+ *     copy. This is the supported default for single-instance deploys; it
+ *     is NOT an error and must NOT be styled like one.
+ *   - "ok"       → emerald "Connected" badge, summary copy from server.
+ *   - "degraded" → amber "Reconnecting" badge, summary copy from server.
+ *
+ * `undefined` covers two real cases:
+ *   1. The api-server is older than Round 18 (field doesn't exist yet).
+ *   2. The api-server returned an error from /admin/ops/status before the
+ *      sseBus block was built (the catch handler in the route).
+ * Both are treated as "off" — better than rendering a confusing dash.
+ */
+function SseBusTile({ sseBus }: { sseBus: SSEBusStatus | undefined }) {
+  // Treat missing field as "off" (single-instance default).
+  if (!sseBus || sseBus.health === "off") {
+    return (
+      <div className="flex items-center justify-between rounded-lg border p-3">
+        <div>
+          <div className="font-medium text-sm">Cross-instance SSE bus</div>
+          <div className="text-xs text-muted-foreground">
+            {sseBus?.summary ??
+              "Disabled — single-instance fanout only. Set REDIS_URL on the api service to enable cross-instance SSE."}
+          </div>
+        </div>
+        <Badge
+          variant="outline"
+          className="bg-muted text-muted-foreground border-muted-foreground/30"
+        >
+          Disabled
+        </Badge>
+      </div>
+    );
+  }
+
+  // Bus enabled — render the label + (optionally) a compact metrics line so
+  // operators can see at a glance whether the bus is actually doing work.
+  // `framesReceived` is the most useful signal: if it's >0 we KNOW another
+  // instance is publishing AND we're receiving. `publishesSent` is local
+  // and confirms our outbound side is healthy.
+  const metrics: string[] = [];
+  if (sseBus.publishesSent > 0) metrics.push(`${sseBus.publishesSent.toLocaleString()} sent`);
+  if (sseBus.framesReceived > 0) metrics.push(`${sseBus.framesReceived.toLocaleString()} received`);
+  if (sseBus.reconnects > 0) metrics.push(`${sseBus.reconnects.toLocaleString()} reconnects`);
+  const metricsLine = metrics.length > 0 ? ` · ${metrics.join(" · ")}` : "";
+
+  return (
+    <div className="flex items-center justify-between rounded-lg border p-3">
+      <div className="min-w-0 flex-1">
+        <div className="font-medium text-sm">Cross-instance SSE bus</div>
+        <div className="text-xs text-muted-foreground truncate">
+          {sseBus.summary}
+          {metricsLine}
+        </div>
+      </div>
+      <StatusBadge status={sseBus.health === "ok" ? "ok" : "degraded"} />
+    </div>
+  );
 }
 
 function OverallStatusCard({ status }: { status: OpsStatus }) {
@@ -1130,6 +1192,12 @@ export default function Operations() {
                     }
                   />
                 </div>
+                {/* Cross-instance SSE bus (Redis pub/sub bridge).
+                    "off" is a NORMAL state for single-instance deploys —
+                    render it as a neutral badge, not amber/red. The
+                    StatusBadge component only knows ok/degraded/critical
+                    so we render the disabled-state badge inline here. */}
+                <SseBusTile sseBus={status.infrastructure?.sseBus} />
                 {/* AWS Cloud storage */}
                 <div className="flex items-center justify-between rounded-lg border p-3">
                   <div>

@@ -15,6 +15,7 @@ import { readAllRoleFatals } from "../lib/fatalLogBuffer";
 import { getLifecycleState } from "../lib/lifecycle";
 import { isFfmpegReady } from "../lib/ffmpeg";
 import { broadcastLiveEvent, addSSEClient, removeSSEClient, getSSEClientCount, SSECapacityError } from "../lib/liveEvents";
+import { getBusStatsSnapshot, type BusStatsSnapshot } from "../lib/liveEventsBus";
 import { getClientIp } from "../middlewares/security";
 import {
   sendOpsAlert,
@@ -774,6 +775,59 @@ router.get("/admin/youtube/quota/history", async (_req, res) => {
   }
 });
 
+/**
+ * Cross-instance SSE bus health report.
+ *
+ * Wraps `getBusStatsSnapshot()` from lib/liveEventsBus and decorates it with
+ * a derived `health` ("off" | "ok" | "degraded") and a human-readable
+ * `summary` so Mission Control can render a single tile without re-deriving
+ * the same logic on the frontend (and so curl/operators get a useful answer
+ * out of the box). Distinguishes three states explicitly:
+ *   - "off"      → REDIS_URL not set on this service. NOT an error condition,
+ *                  it's the supported default for single-instance deploys.
+ *                  The badge shown for this state is neutral, not amber/red.
+ *   - "ok"       → bus enabled AND both Redis clients (publisher, subscriber)
+ *                  report ready. Cross-instance fanout is fully active.
+ *   - "degraded" → bus enabled but one or both clients are not ready (e.g.
+ *                  initial connect still in progress, or mid-reconnect after
+ *                  a transient Redis blip). Local fanout is unaffected so
+ *                  user-facing SSE keeps working — this state is INFORMATIONAL
+ *                  (amber, not red) and self-heals when Redis comes back.
+ *
+ * Cheap to call: in-memory atomic counters only, no I/O. Safe to poll at
+ * the same cadence as `/admin/ops/status` (currently 30s, visibility-gated).
+ */
+function buildSseBusReport(): {
+  health: "off" | "ok" | "degraded";
+  summary: string;
+} & BusStatsSnapshot {
+  const snapshot = getBusStatsSnapshot();
+  let health: "off" | "ok" | "degraded";
+  let summary: string;
+  if (!snapshot.enabled) {
+    health = "off";
+    summary =
+      "Disabled — REDIS_URL not set. Single-instance fanout only. Set REDIS_URL on this service to enable cross-instance SSE.";
+  } else if (snapshot.connected) {
+    health = "ok";
+    summary = `Connected — cross-instance fanout active on channel "${snapshot.channel}" (instance ${snapshot.instanceId}).`;
+  } else {
+    health = "degraded";
+    summary =
+      "Reconnecting to Redis — local SSE fanout still working. This usually self-heals within seconds; if it persists for minutes, check the Redis service.";
+  }
+  return { health, summary, ...snapshot };
+}
+
+router.get("/admin/sse-bus", async (_req, res) => {
+  try {
+    res.json(buildSseBusReport());
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: msg });
+  }
+});
+
 router.get("/admin/ops/status", async (_req, res) => {
   const generatedAt = new Date();
   const uploadsDir = path.join(__dirname, "..", "uploads");
@@ -906,6 +960,12 @@ router.get("/admin/ops/status", async (_req, res) => {
         // signal — `lib/broadcastLatencyWatchdog` pages on-call when it stays
         // ≥500ms for 5 consecutive minutes. Healthy is <100ms cold p95.
         broadcastBuildLatency: broadcastLatencySnapshot(),
+        // Cross-instance SSE bus health (Redis pub/sub bridge). Same shape
+        // as `/admin/sse-bus` so the operations page can render the tile
+        // without a second polling cycle. When REDIS_URL is unset on this
+        // service, `health` is "off" — that's the supported single-instance
+        // default, NOT an error.
+        sseBus: buildSseBusReport(),
       },
       database: {
         connected: dbConnected,
