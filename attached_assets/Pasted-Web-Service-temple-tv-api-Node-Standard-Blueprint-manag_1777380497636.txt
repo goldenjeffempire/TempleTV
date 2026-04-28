@@ -1,0 +1,2407 @@
+Web Service
+temple-tv-api
+Node
+Standard
+Blueprint managed
+
+Connect
+
+Manual Deploy
+Service ID:
+srv-d7o88i1o3t8c73f4ogqg
+
+goldenjeffempire / TempleTV
+main
+
+api.templetv.org.ng
+Internal Address
+temple-tv-api:8080
+
+HTTP
+
+Filter events31
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 1:46 PM
+Instance failed: qql8m
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 1:46 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 1:44 PM
+Instance failed: qql8m
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 1:44 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 1:43 PM
+Instance failed: qql8m
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 1:43 PM
+
+Debug
+Deploy live for da1dbe8: Add deep links to alerts that navigate to specific operations cards Add a helper function to generate deep links for alerts, prioritizing environment variables like ADMIN_PUBLIC_URL, RENDER_EXTERNAL_URL, and REPLIT_DEV_DOMAIN. Implement scroll-and-highlight functionality on the operations page to automatically scroll to and highlight the memory diagnostics card when a deep link with a "#memory" hash is accessed. This enhances user experience by providing direct navigation to relevant diagnostic information from alerts. Replit-Commit-Author: Agent Replit-Commit-Session-Id: 45776efa-dbf8-4e0b-8d2c-bbdb42efea1b Replit-Commit-Checkpoint-Type: full_checkpoint Replit-Commit-Event-Id: 187f9db5-5c5c-4099-8161-c4c2b689ddb7 Replit-Commit-Screenshot-Url: https://storage.googleapis.com/screenshot-production-us-central1/677b791c-d556-4e65-b9f8-aa3d6afc7d1b/45776efa-dbf8-4e0b-8d2c-bbdb42efea1b/QFQQFj0
+April 28, 2026 at 1:42 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 1:41 PM
+Instance failed: vjvlb
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 1:40 PM
+
+Debug
+Deploy canceled for 7b67b2a: Add functionality to capture and download heap snapshots Adds a new API endpoint and frontend components to capture and download V8 heap snapshots for debugging memory leaks, including progress reporting and rate limiting. Replit-Commit-Author: Agent Replit-Commit-Session-Id: 45776efa-dbf8-4e0b-8d2c-bbdb42efea1b Replit-Commit-Checkpoint-Type: full_checkpoint Replit-Commit-Event-Id: 3303dc1c-188a-41b0-a76c-a0a7d91cfdda Replit-Commit-Screenshot-Url: https://storage.googleapis.com/screenshot-production-us-central1/677b791c-d556-4e65-b9f8-aa3d6afc7d1b/45776efa-dbf8-4e0b-8d2c-bbdb42efea1b/QFQQFj0
+Another deploy started . To avoid canceling active deploys when new ones are triggered, adjust your overlapping deploy policy.
+April 28, 2026 at 1:39 PM
+Deploy started for da1dbe8: Add deep links to alerts that navigate to specific operations cards Add a helper function to generate deep links for alerts, prioritizing environment variables like ADMIN_PUBLIC_URL, RENDER_EXTERNAL_URL, and REPLIT_DEV_DOMAIN. Implement scroll-and-highlight functionality on the operations page to automatically scroll to and highlight the memory diagnostics card when a deep link with a "#memory" hash is accessed. This enhances user experience by providing direct navigation to relevant diagnostic information from alerts. Replit-Commit-Author: Agent Replit-Commit-Session-Id: 45776efa-dbf8-4e0b-8d2c-bbdb42efea1b Replit-Commit-Checkpoint-Type: full_checkpoint Replit-Commit-Event-Id: 187f9db5-5c5c-4099-8161-c4c2b689ddb7 Replit-Commit-Screenshot-Url: https://storage.googleapis.com/screenshot-production-us-central1/677b791c-d556-4e65-b9f8-aa3d6afc7d1b/45776efa-dbf8-4e0b-8d2c-bbdb42efea1b/QFQQFj0
+New commit via Auto-Deploy
+April 28, 2026 at 1:39 PM
+Deploy started for 7b67b2a: Add functionality to capture and download heap snapshots Adds a new API endpoint and frontend components to capture and download V8 heap snapshots for debugging memory leaks, including progress reporting and rate limiting. Replit-Commit-Author: Agent Replit-Commit-Session-Id: 45776efa-dbf8-4e0b-8d2c-bbdb42efea1b Replit-Commit-Checkpoint-Type: full_checkpoint Replit-Commit-Event-Id: 3303dc1c-188a-41b0-a76c-a0a7d91cfdda Replit-Commit-Screenshot-Url: https://storage.googleapis.com/screenshot-production-us-central1/677b791c-d556-4e65-b9f8-aa3d6afc7d1b/45776efa-dbf8-4e0b-8d2c-bbdb42efea1b/QFQQFj0
+New commit via Auto-Deploy
+April 28, 2026 at 1:38 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 1:37 PM
+Instance failed: vjvlb
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 1:37 PM
+
+Debug
+Deploy live for a40d11f: Add functionality to trigger garbage collection and view memory usage Implement a new API endpoint and UI button to manually trigger garbage collection, alongside detailed memory usage reporting and error handling. Replit-Commit-Author: Agent Replit-Commit-Session-Id: 45776efa-dbf8-4e0b-8d2c-bbdb42efea1b Replit-Commit-Checkpoint-Type: full_checkpoint Replit-Commit-Event-Id: af93c48d-c49c-4a2d-9d91-529846ae31df Replit-Commit-Screenshot-Url: https://storage.googleapis.com/screenshot-production-us-central1/677b791c-d556-4e65-b9f8-aa3d6afc7d1b/45776efa-dbf8-4e0b-8d2c-bbdb42efea1b/QFQQFj0
+April 28, 2026 at 1:34 PM
+Deploy started for a40d11f: Add functionality to trigger garbage collection and view memory usage Implement a new API endpoint and UI button to manually trigger garbage collection, alongside detailed memory usage reporting and error handling. Replit-Commit-Author: Agent Replit-Commit-Session-Id: 45776efa-dbf8-4e0b-8d2c-bbdb42efea1b Replit-Commit-Checkpoint-Type: full_checkpoint Replit-Commit-Event-Id: af93c48d-c49c-4a2d-9d91-529846ae31df Replit-Commit-Screenshot-Url: https://storage.googleapis.com/screenshot-production-us-central1/677b791c-d556-4e65-b9f8-aa3d6afc7d1b/45776efa-dbf8-4e0b-8d2c-bbdb42efea1b/QFQQFj0
+New commit via Auto-Deploy
+April 28, 2026 at 1:31 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 1:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 1:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 1:16 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 1:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 1:10 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 1:05 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 1:04 PM
+Instance failed: fc4gz
+HTTP health check failed (timed out after 5 seconds) while running your code.
+April 28, 2026 at 1:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 1:04 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:59 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:58 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:53 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:53 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:47 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:47 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:42 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:41 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:36 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:35 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:30 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:28 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:23 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:21 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:16 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:15 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:10 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:09 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 12:04 PM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 12:02 PM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:57 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:56 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:51 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:49 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:46 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:45 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:44 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:43 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:42 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:42 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:41 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:39 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:39 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:38 AM
+Instance failed: fc4gz
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:38 AM
+
+Debug
+Deploy live for b6a01bb: Update documentation and improve error handling for live status Correctly reference the admin-only live status endpoint and update type assertions for device count and error handling. Replit-Commit-Author: Agent Replit-Commit-Session-Id: 35d19753-62d9-4f3e-b331-5e2c0b5ff580 Replit-Commit-Checkpoint-Type: full_checkpoint Replit-Commit-Event-Id: 83a13f50-88f9-4b1b-bf91-aa8c7c41a21b Replit-Commit-Screenshot-Url: https://storage.googleapis.com/screenshot-production-us-central1/c6cc424f-d737-4b03-887b-b43b3c795dd5/35d19753-62d9-4f3e-b331-5e2c0b5ff580/SG5ibgT
+April 28, 2026 at 11:22 AM
+Rollback
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:22 AM
+Instance failed: t5tb4
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:20 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:19 AM
+Deploy started for b6a01bb: Update documentation and improve error handling for live status Correctly reference the admin-only live status endpoint and update type assertions for device count and error handling. Replit-Commit-Author: Agent Replit-Commit-Session-Id: 35d19753-62d9-4f3e-b331-5e2c0b5ff580 Replit-Commit-Checkpoint-Type: full_checkpoint Replit-Commit-Event-Id: 83a13f50-88f9-4b1b-bf91-aa8c7c41a21b Replit-Commit-Screenshot-Url: https://storage.googleapis.com/screenshot-production-us-central1/c6cc424f-d737-4b03-887b-b43b3c795dd5/35d19753-62d9-4f3e-b331-5e2c0b5ff580/SG5ibgT
+New commit via Auto-Deploy
+April 28, 2026 at 11:18 AM
+Instance failed: t5tb4
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:16 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:16 AM
+Instance failed: t5tb4
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:15 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:14 AM
+Instance failed: t5tb4
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:13 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:13 AM
+Instance failed: t5tb4
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:12 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:12 AM
+Instance failed: t5tb4
+Get "http://10.199.161.43:8080/api/healthz": read tcp 10.231.21.132:47688->10.199.161.43:8080: read: connection reset by peer while running your code.
+April 28, 2026 at 11:12 AM
+
+Debug
+Service recovered
+Recently failed instances are now reporting healthy.
+April 28, 2026 at 11:11 AM
+Instance failed: t5tb4
+Ran out of memory (used over 2GB) while running your code.
+April 28, 2026 at 11:11 AM
+
+Debug
+Deploy live for e167926: Add a pre-flight check to ensure typecheck scripts have sufficient memory Add a pre-flight validation to scripts/src/run-typechecks.ts to ensure all artifact package.json files include the `NODE_OPTIONS='--max-old-space-size=4096'` prefix in their typecheck scripts, preventing OOM errors. The scripts/package.json typecheck script was also updated to include this prefix. Replit-Commit-Author: Agent Replit-Commit-Session-Id: 35d19753-62d9-4f3e-b331-5e2c0b5ff580 Replit-Commit-Checkpoint-Type: full_checkpoint Replit-Commit-Event-Id: 3f3165f8-d893-4416-9429-a097c9f55a5d Replit-Commit-Screenshot-Url: https://storage.googleapis.com/screenshot-production-us-central1/c6cc424f-d737-4b03-887b-b43b3c795dd5/35d19753-62d9-4f3e-b331-5e2c0b5ff580/uSRAmKI
+April 28, 2026 at 11:00 AM
+Rollback
+Deploy canceled for e167926: Add a pre-flight check to ensure typecheck scripts have sufficient memory Add a pre-flight validation to scripts/src/run-typechecks.ts to ensure all artifact package.json files include the `NODE_OPTIONS='--max-old-space-size=4096'` prefix in their typecheck scripts, preventing OOM errors. The scripts/package.json typecheck script was also updated to include this prefix. Replit-Commit-Author: Agent Replit-Commit-Session-Id: 35d19753-62d9-4f3e-b331-5e2c0b5ff580 Replit-Commit-Checkpoint-Type: full_checkpoint Replit-Commit-Event-Id: 3f3165f8-d893-4416-9429-a097c9f55a5d Replit-Commit-Screenshot-Url: https://storage.googleapis.com/screenshot-production-us-central1/c6cc424f-d737-4b03-887b-b43b3c795dd5/35d19753-62d9-4f3e-b331-5e2c0b5ff580/uSRAmKI
+Another deploy started . To avoid canceling active deploys when new ones are triggered, adjust your overlapping deploy policy.
+April 28, 2026 at 10:57 AM
+Deploy started for e167926: Add a pre-flight check to ensure typecheck scripts have sufficient memory Add a pre-flight validation to scripts/src/run-typechecks.ts to ensure all artifact package.json files include the `NODE_OPTIONS='--max-old-space-size=4096'` prefix in their typecheck scripts, preventing OOM errors. The scripts/package.json typecheck script was also updated to include this prefix. Replit-Commit-Author: Agent Replit-Commit-Session-Id: 35d19753-62d9-4f3e-b331-5e2c0b5ff580 Replit-Commit-Checkpoint-Type: full_checkpoint Replit-Commit-Event-Id: 3f3165f8-d893-4416-9429-a097c9f55a5d Replit-Commit-Screenshot-Url: https://storage.googleapis.com/screenshot-production-us-central1/c6cc424f-d737-4b03-887b-b43b3c795dd5/35d19753-62d9-4f3e-b331-5e2c0b5ff580/uSRAmKI
+Environment updated
+April 28, 2026 at 10:57 AM
+First deploy started for e167926: Add a pre-flight check to ensure typecheck scripts have sufficient memory Add a pre-flight validation to scripts/src/run-typechecks.ts to ensure all artifact package.json files include the `NODE_OPTIONS='--max-old-space-size=4096'` prefix in their typecheck scripts, preventing OOM errors. The scripts/package.json typecheck script was also updated to include this prefix. Replit-Commit-Author: Agent Replit-Commit-Session-Id: 35d19753-62d9-4f3e-b331-5e2c0b5ff580 Replit-Commit-Checkpoint-Type: full_checkpoint Replit-Commit-Event-Id: 3f3165f8-d893-4416-9429-a097c9f55a5d Replit-Commit-Screenshot-Url: https://storage.googleapis.com/screenshot-production-us-central1/c6cc424f-d737-4b03-887b-b43b3c795dd5/35d19753-62d9-4f3e-b331-5e2c0b5ff580/uSRAmKI
+April 28, 2026 at 10:56 AM
