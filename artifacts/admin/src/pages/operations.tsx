@@ -65,6 +65,33 @@ function formatUptime(secs: number): string {
   return `${m}m`;
 }
 
+/**
+ * Compact relative-time formatter for "X ago" style timestamps.
+ *
+ * Returns "never" when given 0 (the sentinel value used by `BusStatsSnapshot
+ * .lastPublishErrorAt` / `lastReceiveErrorAt` for "no error has ever
+ * occurred"). Returns "just now" inside a 5s window so a brand-new error
+ * doesn't immediately read as a stale "0s ago".
+ *
+ * Note: only re-renders when the parent poll fires (currently 30s on the
+ * Operations page) — that's intentional. Per-second updates would require a
+ * separate ticker and add no operational value when reading historical
+ * errors. The poll cadence sets the granularity of how fresh "just now"
+ * really is, which is fine for "last error" displays.
+ */
+function formatTimeAgo(unixMs: number): string {
+  if (!unixMs) return "never";
+  const diffSec = Math.max(0, Math.floor((Date.now() - unixMs) / 1000));
+  if (diffSec < 5) return "just now";
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  return `${diffDay}d ago`;
+}
+
 function StatusBadge({ status }: { status: CheckStatus }) {
   if (status === "ok") {
     return <Badge className="bg-emerald-500/15 text-emerald-700 border-emerald-500/30 dark:text-emerald-400">Healthy</Badge>;
@@ -96,6 +123,12 @@ function StatusIcon({ status }: { status: CheckStatus }) {
  * Both are treated as "off" — better than rendering a confusing dash.
  */
 function SseBusTile({ sseBus }: { sseBus: SSEBusStatus | undefined }) {
+  // Local UI state for the "recent errors" expander. Defaults to collapsed
+  // because the tile is in a busy infrastructure card and most of the time
+  // the errors panel is just "for reference" — operators only open it when
+  // the badge or the metrics line tells them something is off.
+  const [errorsExpanded, setErrorsExpanded] = useState(false);
+
   // Treat missing field as "off" (single-instance default).
   if (!sseBus || sseBus.health === "off") {
     return (
@@ -128,16 +161,86 @@ function SseBusTile({ sseBus }: { sseBus: SSEBusStatus | undefined }) {
   if (sseBus.reconnects > 0) metrics.push(`${sseBus.reconnects.toLocaleString()} reconnects`);
   const metricsLine = metrics.length > 0 ? ` · ${metrics.join(" · ")}` : "";
 
+  // Build the "recent errors" list from the snapshot. Both timestamps are
+  // 0 by default (sentinel for "never"); we only render the expander row
+  // when at least one is non-zero. This keeps the tile clean during normal
+  // healthy operation and surfaces the error history precisely when it's
+  // useful for debugging — without making operators tail logs to find out
+  // why the bus reconnected last Tuesday.
+  const errors: Array<{ kind: "publish" | "receive"; at: number; msg: string }> = [];
+  if (sseBus.lastPublishErrorAt > 0) {
+    errors.push({
+      kind: "publish",
+      at: sseBus.lastPublishErrorAt,
+      msg: sseBus.lastPublishErrorMsg,
+    });
+  }
+  if (sseBus.lastReceiveErrorAt > 0) {
+    errors.push({
+      kind: "receive",
+      at: sseBus.lastReceiveErrorAt,
+      msg: sseBus.lastReceiveErrorMsg,
+    });
+  }
+  const hasErrors = errors.length > 0;
+
   return (
-    <div className="flex items-center justify-between rounded-lg border p-3">
-      <div className="min-w-0 flex-1">
-        <div className="font-medium text-sm">Cross-instance SSE bus</div>
-        <div className="text-xs text-muted-foreground truncate">
-          {sseBus.summary}
-          {metricsLine}
+    <div className="rounded-lg border p-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="font-medium text-sm">Cross-instance SSE bus</div>
+          <div className="text-xs text-muted-foreground truncate">
+            {sseBus.summary}
+            {metricsLine}
+          </div>
         </div>
+        <StatusBadge status={sseBus.health === "ok" ? "ok" : "degraded"} />
       </div>
-      <StatusBadge status={sseBus.health === "ok" ? "ok" : "degraded"} />
+
+      {hasErrors && (
+        <>
+          {/* Expander button — text-only chevron keeps the dependency
+              footprint at zero (no new icon imports). The amber warning
+              icon makes the row recognisable at a glance even when the
+              overall bus health is "ok" (i.e. errors that happened in the
+              past but the bus has since recovered, which is the most
+              common state for this row). */}
+          <button
+            type="button"
+            onClick={() => setErrorsExpanded((v) => !v)}
+            className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+            aria-expanded={errorsExpanded}
+          >
+            <AlertTriangle className="w-3 h-3 text-amber-600" aria-hidden="true" />
+            <span>
+              {errors.length === 1
+                ? "1 recent error"
+                : `${errors.length} recent errors`}
+            </span>
+            <span className="ml-0.5" aria-hidden="true">
+              {errorsExpanded ? "▾" : "▸"}
+            </span>
+          </button>
+          {errorsExpanded && (
+            <div className="mt-2 space-y-2 rounded-md bg-muted/40 p-2.5">
+              {errors.map((e) => (
+                <div key={e.kind} className="text-xs">
+                  <div className="font-medium text-foreground">
+                    Last {e.kind} error
+                    <span className="font-normal text-muted-foreground">
+                      {" · "}
+                      {formatTimeAgo(e.at)}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 text-muted-foreground break-words">
+                    {e.msg || "(no message captured)"}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
