@@ -342,6 +342,61 @@ export function startMemoryWatchdog(): void {
   );
 }
 
+/**
+ * Snapshot of the watchdog's current internal state — exposed so admin
+ * diagnostics can show operators the same signal the pager sees, without
+ * leaving the Mission Control panel. All fields are pre-computed by the
+ * watchdog itself so the UI does not have to duplicate the slope math.
+ */
+export interface MemoryWatchdogState {
+  enabled: boolean;
+  sampleIntervalMs: number;
+  thresholds: {
+    rssAlertMb: number;
+    rssRecoveryMb: number;
+    externalGrowthAlertMbPerMin: number;
+    externalGrowthRecoveryMbPerMin: number;
+    sustainSamples: number;
+    slopeWindowSamples: number;
+  };
+  current: {
+    externalGrowthMbPerMin: number | null;
+    consecutiveRssOver: number;
+    consecutiveSlopeOver: number;
+  };
+  alerts: {
+    rssAlertActive: boolean;
+    slopeAlertActive: boolean;
+  };
+}
+
+export function getMemoryWatchdogState(): MemoryWatchdogState {
+  return {
+    enabled: started,
+    sampleIntervalMs: SAMPLE_INTERVAL_MS,
+    thresholds: {
+      rssAlertMb: Math.round(RSS_ALERT_BYTES / 1024 / 1024),
+      rssRecoveryMb: Math.round(RSS_RECOVERY_BYTES / 1024 / 1024),
+      externalGrowthAlertMbPerMin: EXTERNAL_GROWTH_ALERT_MBPM,
+      externalGrowthRecoveryMbPerMin: EXTERNAL_GROWTH_RECOVERY_MBPM,
+      sustainSamples: SUSTAIN_SAMPLES,
+      slopeWindowSamples: SLOPE_WINDOW_SAMPLES,
+    },
+    current: {
+      externalGrowthMbPerMin: (() => {
+        const slope = externalGrowthMbPerMin();
+        return slope === null ? null : Math.round(slope * 10) / 10;
+      })(),
+      consecutiveRssOver,
+      consecutiveSlopeOver,
+    },
+    alerts: {
+      rssAlertActive,
+      slopeAlertActive,
+    },
+  };
+}
+
 export function stopMemoryWatchdog(): void {
   if (timer) {
     clearInterval(timer);

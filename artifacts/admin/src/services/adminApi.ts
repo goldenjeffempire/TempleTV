@@ -820,6 +820,28 @@ export const slowRequestsApi = {
     adminGet<SlowRequestsSnapshot>("/admin/ops/slow-requests", signal),
 };
 
+export interface MemoryWatchdogState {
+  enabled: boolean;
+  sampleIntervalMs: number;
+  thresholds: {
+    rssAlertMb: number;
+    rssRecoveryMb: number;
+    externalGrowthAlertMbPerMin: number;
+    externalGrowthRecoveryMbPerMin: number;
+    sustainSamples: number;
+    slopeWindowSamples: number;
+  };
+  current: {
+    externalGrowthMbPerMin: number | null;
+    consecutiveRssOver: number;
+    consecutiveSlopeOver: number;
+  };
+  alerts: {
+    rssAlertActive: boolean;
+    slopeAlertActive: boolean;
+  };
+}
+
 export interface MemoryDiagnostics {
   generatedAt: string;
   uptimeSecs: number;
@@ -836,6 +858,7 @@ export interface MemoryDiagnostics {
     arrayBuffersMb: number;
   };
   caches: { name: string; size: number }[];
+  watchdog: MemoryWatchdogState;
 }
 
 export const memoryDiagnosticsApi = {

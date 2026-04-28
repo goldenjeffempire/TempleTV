@@ -19,7 +19,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { MemoryStick } from "lucide-react";
+import { AlertTriangle, MemoryStick, TrendingUp } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -35,6 +35,7 @@ interface Sample {
   rssMb: number;
   heapUsedMb: number;
   externalMb: number;
+  externalGrowthMbPerMin: number | null;
 }
 
 function formatUptime(secs: number): string {
@@ -47,45 +48,97 @@ function formatUptime(secs: number): string {
 
 interface SparklineProps {
   samples: Sample[];
-  field: "rssMb" | "heapUsedMb" | "externalMb";
+  field: "rssMb" | "heapUsedMb" | "externalMb" | "externalGrowthMbPerMin";
   colorClass: string;
   label: string;
-  current: number;
+  current: number | null;
+  unit: string;
+  /**
+   * If provided, draw a horizontal threshold line at this value (same units
+   * as the samples). Used to surface the watchdog's alert threshold so the
+   * sparkline visually shows headroom against the pager.
+   */
+  threshold?: number;
+  /** Allow negative values (e.g. growth-rate sparkline can dip below zero). */
+  allowNegative?: boolean;
 }
 
-function Sparkline({ samples, field, colorClass, label, current }: SparklineProps) {
-  if (samples.length < 2) {
+function Sparkline({
+  samples,
+  field,
+  colorClass,
+  label,
+  current,
+  unit,
+  threshold,
+  allowNegative,
+}: SparklineProps) {
+  const valid = samples.filter((s): s is Sample & Record<typeof field, number> => {
+    const v = s[field];
+    return typeof v === "number" && Number.isFinite(v);
+  });
+  if (valid.length < 2) {
     return (
-      <div className="flex h-[80px] items-center justify-center rounded-md border border-dashed bg-muted/10 text-xs text-muted-foreground">
-        Collecting samples ({samples.length}/2)…
+      <div>
+        <div className="mb-1 flex items-center justify-between text-xs">
+          <span className="text-muted-foreground">{label}</span>
+          <span className="tabular-nums font-mono text-muted-foreground">
+            {current === null ? "—" : `${current} ${unit}`}
+          </span>
+        </div>
+        <div className="flex h-[60px] items-center justify-center rounded-md border border-dashed bg-muted/10 text-[11px] text-muted-foreground">
+          Collecting samples ({valid.length}/2)…
+        </div>
       </div>
     );
   }
-  const values = samples.map((s) => s[field]);
-  const max = Math.max(...values, 1);
-  const min = 0;
-  const range = max - min || 1;
+  const values = valid.map((s) => s[field] as number);
+  const peak = Math.max(...values, threshold ?? -Infinity, 1);
+  const trough = allowNegative ? Math.min(...values, 0) : 0;
+  const range = peak - trough || 1;
+  const yFor = (v: number) => SPARKLINE_HEIGHT - ((v - trough) / range) * SPARKLINE_HEIGHT;
   const points = values
-    .map((v, i) => {
-      const x = (i / (values.length - 1)) * SPARKLINE_WIDTH;
-      const y = SPARKLINE_HEIGHT - ((v - min) / range) * SPARKLINE_HEIGHT;
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    })
+    .map((v, i) => `${((i / (values.length - 1)) * SPARKLINE_WIDTH).toFixed(1)},${yFor(v).toFixed(1)}`)
     .join(" ");
+  const thresholdY = threshold !== undefined ? yFor(threshold) : null;
   return (
     <div>
       <div className="mb-1 flex items-center justify-between text-xs">
         <span className="text-muted-foreground">{label}</span>
         <span className="tabular-nums font-mono">
-          {current} MiB <span className="text-muted-foreground">(peak {Math.round(max)})</span>
+          {current === null ? "—" : `${current} ${unit}`}{" "}
+          <span className="text-muted-foreground">(peak {Math.round(peak)})</span>
         </span>
       </div>
       <svg
         viewBox={`0 0 ${SPARKLINE_WIDTH} ${SPARKLINE_HEIGHT}`}
         preserveAspectRatio="none"
         className="h-[60px] w-full rounded-md border bg-muted/5"
-        aria-label={`${label} over the last ${samples.length} samples`}
+        aria-label={`${label} over the last ${valid.length} samples`}
       >
+        {thresholdY !== null && (
+          <line
+            x1="0"
+            y1={thresholdY}
+            x2={SPARKLINE_WIDTH}
+            y2={thresholdY}
+            strokeWidth="1"
+            strokeDasharray="3 3"
+            className="text-red-500/50"
+            stroke="currentColor"
+          />
+        )}
+        {allowNegative && (
+          <line
+            x1="0"
+            y1={yFor(0)}
+            x2={SPARKLINE_WIDTH}
+            y2={yFor(0)}
+            strokeWidth="0.5"
+            className="text-muted-foreground/30"
+            stroke="currentColor"
+          />
+        )}
         <polyline
           points={points}
           fill="none"
@@ -117,6 +170,7 @@ export function MemoryDiagnosticsCard() {
           rssMb: data.memory.rssMb,
           heapUsedMb: data.memory.heapUsedMb,
           externalMb: data.memory.externalMb,
+          externalGrowthMbPerMin: data.watchdog.current.externalGrowthMbPerMin,
         },
       ].slice(-MAX_SAMPLES);
       forceRender((n) => n + 1);
@@ -172,9 +226,29 @@ export function MemoryDiagnosticsCard() {
   return (
     <Card data-testid="memory-diagnostics-card">
       <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-sm">
+        <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
           <MemoryStick className="w-4 h-4 text-primary" />
           Process Memory
+          {snapshot.watchdog.alerts.rssAlertActive && (
+            <Badge
+              variant="destructive"
+              className="text-[10px] font-mono"
+              data-testid="memory-rss-alert-badge"
+            >
+              <AlertTriangle className="w-3 h-3 mr-1" />
+              RSS alert active
+            </Badge>
+          )}
+          {snapshot.watchdog.alerts.slopeAlertActive && (
+            <Badge
+              variant="destructive"
+              className="text-[10px] font-mono bg-amber-600 hover:bg-amber-600"
+              data-testid="memory-slope-alert-badge"
+            >
+              <TrendingUp className="w-3 h-3 mr-1" />
+              Growth-rate alert active
+            </Badge>
+          )}
           <Badge
             variant="outline"
             className="ml-auto text-[10px] font-mono border-muted text-muted-foreground"
@@ -227,8 +301,10 @@ export function MemoryDiagnosticsCard() {
             samples={samples}
             field="rssMb"
             colorClass="text-primary"
-            label="RSS (resident set size)"
+            label={`RSS (resident set size, alert ≥ ${snapshot.watchdog.thresholds.rssAlertMb} MiB)`}
             current={snapshot.memory.rssMb}
+            unit="MiB"
+            threshold={snapshot.watchdog.thresholds.rssAlertMb}
           />
           <Sparkline
             samples={samples}
@@ -236,6 +312,7 @@ export function MemoryDiagnosticsCard() {
             colorClass="text-emerald-600 dark:text-emerald-400"
             label="Heap used"
             current={snapshot.memory.heapUsedMb}
+            unit="MiB"
           />
           <Sparkline
             samples={samples}
@@ -243,6 +320,17 @@ export function MemoryDiagnosticsCard() {
             colorClass="text-amber-600 dark:text-amber-400"
             label="External (off-heap Buffers / native)"
             current={snapshot.memory.externalMb}
+            unit="MiB"
+          />
+          <Sparkline
+            samples={samples}
+            field="externalGrowthMbPerMin"
+            colorClass="text-rose-600 dark:text-rose-400"
+            label={`External growth rate (alert ≥ ${snapshot.watchdog.thresholds.externalGrowthAlertMbPerMin} MiB/min)`}
+            current={snapshot.watchdog.current.externalGrowthMbPerMin}
+            unit="MiB/min"
+            threshold={snapshot.watchdog.thresholds.externalGrowthAlertMbPerMin}
+            allowNegative
           />
         </div>
 

@@ -37,6 +37,7 @@ import { getFailureStats } from "../lib/liveFailureReports";
 import { extractYouTubeVideoId, validateYouTubeLiveStream } from "../lib/youtubeUrl";
 import { cache } from "../lib/cache";
 import { snapshotCacheStats } from "../lib/cacheStats";
+import { getMemoryWatchdogState, type MemoryWatchdogState } from "../lib/memoryWatchdog";
 import { invalidatePublicVideoCaches, invalidatePublicPlaylistCaches, registerTrendingCacheKey } from "../lib/publicCacheInvalidation";
 import { logger } from "../lib/logger";
 import { metricsSnapshot, slowRequestsSnapshot } from "../middlewares/observability";
@@ -1051,6 +1052,7 @@ export interface MemoryDiagnosticsResponse {
     arrayBuffersMb: number;
   };
   caches: { name: string; size: number }[];
+  watchdog: MemoryWatchdogState;
 }
 
 router.get("/admin/diagnostics/memory", (_req, res) => {
@@ -1071,6 +1073,7 @@ router.get("/admin/diagnostics/memory", (_req, res) => {
       arrayBuffersMb: Math.round(m.arrayBuffers / 1024 / 1024),
     },
     caches: snapshotCacheStats(),
+    watchdog: getMemoryWatchdogState(),
   });
 });
 
