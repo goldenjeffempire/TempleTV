@@ -1,0 +1,96 @@
+Fix the broadcast player blackout issue completely. Right now after one video finishes playing, the screen goes blank/black before the next video starts. This is unacceptable for a professional TV-channel-grade streaming platform.
+
+The broadcast stream must behave exactly like a real-world live TV station where content transitions continuously with zero interruption.
+
+Critical fixes required:
+
+* Eliminate ALL black screens, blank states, loading flashes, player teardown gaps, and playback interruptions between videos.
+* The next video must start immediately the millisecond the current video ends.
+* Playback must be continuous and seamless across:
+
+  * web
+  * Android
+  * iOS
+  * smart TV apps
+  * broadcast page
+  * hero live player
+
+Implement a professional broadcast-grade seamless transition system:
+
+* Preload the next video before the current video ends.
+* Maintain dual-buffer or hidden preloaded player architecture.
+* Use predictive queue loading.
+* Keep next media decoded and ready before transition.
+* Do NOT destroy/recreate the video player between playlist items.
+* Reuse the same player instance when possible.
+* Prevent React component unmount/remount during transitions.
+* Prevent source reset flickers.
+* Maintain persistent playback surface.
+
+Implement seamless playback pipeline:
+
+* preload next stream at 70–90% completion of current video
+* instant source swap
+* transition with no buffering gap
+* preserve decoder warm state
+* prefetch metadata and stream manifests
+* warm CDN connections ahead of transition
+* cache next video source before current playback ends
+
+Fix all causes of blank playback:
+
+* race conditions during source switching
+* async loading delays
+* player state resets
+* media detach/attach flicker
+* video element re-rendering
+* stalled buffering states
+* duplicate fetch requests
+* stream initialization lag
+* source resolution delays
+
+If using HLS/DASH:
+
+* enable low-latency playback optimization
+* preload upcoming segments
+* use seamless media source extension transitions
+* optimize buffer management
+
+If using HTML5 video:
+
+* implement hidden secondary video element
+* swap opacity/layers instantly
+* maintain synchronized playback readiness
+
+Ensure:
+
+* no spinner appears between videos
+* no blank canvas appears
+* no black frame appears
+* no playback pause occurs
+* audio transitions remain continuous
+* next video begins instantly
+
+Also:
+
+* optimize playlist scheduler
+* ensure queue synchronization is accurate
+* fix timing drift issues
+* ensure autoplay continuation always works
+* ensure mobile browsers do not block autoplay transitions
+
+Add fallback resilience:
+
+* if next video fails, instantly switch to backup queued content
+* prevent dead-air situations
+* auto-recover failed stream transitions
+
+Add monitoring:
+
+* detect transition latency
+* log frame-drop events
+* track playback gaps
+* alert if transition exceeds 50ms
+
+Final expected result:
+The platform must behave like a real television broadcast station with uninterrupted 24/7 continuous playback where viewers never see a blank screen between videos and transitions happen instantly and seamlessly.
