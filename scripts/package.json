@@ -14,6 +14,7 @@
     "verify-tsconfig-parity": "tsx ./src/verify-tsconfig-parity.ts",
     "verify-render-yaml": "tsx ./src/verify-render-yaml.ts",
     "verify-env-secrets": "tsx ./src/verify-env-secrets.ts",
+    "verify-db-schema-completeness": "tsx ./src/verify-db-schema-completeness.ts",
     "run-typechecks": "tsx ./src/run-typechecks.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
