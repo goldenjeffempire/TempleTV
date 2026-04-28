@@ -49,7 +49,7 @@ function ConnectionPill({ state }: { state: string }) {
   );
 }
 
-export default function ChatPage(): JSX.Element {
+export default function ChatPage() {
   const adminToken = getAdminToken() ?? null;
   const channelId = TEMPLE_TV_LIVE_CHANNEL;
   const { toast } = useToast();
