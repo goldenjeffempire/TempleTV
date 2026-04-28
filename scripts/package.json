@@ -11,6 +11,7 @@
     "verify-catalog-lockfile-sync": "tsx ./src/verify-catalog-lockfile-sync.ts",
     "verify-recharts-shim": "tsx ./src/verify-recharts-shim.ts",
     "verify-react-types-singleton": "tsx ./src/verify-react-types-singleton.ts",
+    "verify-tsconfig-parity": "tsx ./src/verify-tsconfig-parity.ts",
     "run-typechecks": "tsx ./src/run-typechecks.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

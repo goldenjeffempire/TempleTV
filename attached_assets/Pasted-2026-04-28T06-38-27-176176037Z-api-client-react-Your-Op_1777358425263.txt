@@ -1,0 +1,50 @@
+2026-04-28T06:38:27.176176037Z 🎉 api-client-react - Your OpenAPI spec has been converted into ready to use orval!
+2026-04-28T06:38:27.194535237Z zod Cleaning output folder
+2026-04-28T06:38:27.815390376Z 🎉 zod - Your OpenAPI spec has been converted into ready to use orval!
+2026-04-28T06:38:27.926762233Z [postcodegen] normalized lib/api-zod/src/index.ts
+2026-04-28T06:38:28.643685392Z 
+2026-04-28T06:38:28.643720392Z > workspace@0.0.0 verify:catalog /opt/render/project/src
+2026-04-28T06:38:28.643726842Z > pnpm --filter @workspace/scripts run verify-catalog-lockfile-sync
+2026-04-28T06:38:28.643732022Z 
+2026-04-28T06:38:29.283472133Z 
+2026-04-28T06:38:29.283509464Z > @workspace/scripts@0.0.0 verify-catalog-lockfile-sync /opt/render/project/src/scripts
+2026-04-28T06:38:29.283517244Z > tsx ./src/verify-catalog-lockfile-sync.ts
+2026-04-28T06:38:29.283522694Z 
+2026-04-28T06:38:29.721437171Z [verify:catalog] OK — 21 catalog entries, all in sync with lockfile.
+2026-04-28T06:38:30.355019335Z 
+2026-04-28T06:38:30.355057465Z > workspace@0.0.0 verify:recharts-shim /opt/render/project/src
+2026-04-28T06:38:30.355063075Z > pnpm --filter @workspace/scripts run verify-recharts-shim
+2026-04-28T06:38:30.355067925Z 
+2026-04-28T06:38:30.984975123Z 
+2026-04-28T06:38:30.985012343Z > @workspace/scripts@0.0.0 verify-recharts-shim /opt/render/project/src/scripts
+2026-04-28T06:38:30.985041223Z > tsx ./src/verify-recharts-shim.ts
+2026-04-28T06:38:30.985046023Z 
+2026-04-28T06:38:31.432827544Z [verify:recharts-shim] OK — no direct recharts imports in artifacts/admin/src/ (only artifacts/admin/src/lib/recharts-shim.ts may import recharts directly).
+2026-04-28T06:38:32.081201882Z 
+2026-04-28T06:38:32.081231573Z > workspace@0.0.0 verify:react-types-singleton /opt/render/project/src
+2026-04-28T06:38:32.081235243Z > pnpm --filter @workspace/scripts run verify-react-types-singleton
+2026-04-28T06:38:32.081238523Z 
+2026-04-28T06:38:32.715107158Z 
+2026-04-28T06:38:32.715145338Z > @workspace/scripts@0.0.0 verify-react-types-singleton /opt/render/project/src/scripts
+2026-04-28T06:38:32.715149648Z > tsx ./src/verify-react-types-singleton.ts
+2026-04-28T06:38:32.715152658Z 
+2026-04-28T06:38:33.146663687Z   - Found 2 @types/react versions: @types+react@19.1.17, @types+react@19.2.14
+2026-04-28T06:38:33.147036989Z   - Found 2 @types/react-dom versions: @types+react-dom@19.1.11_@types+react@19.1.17, @types+react-dom@19.2.3_@types+react@19.2.14
+2026-04-28T06:38:33.147067739Z [verify:react-types-singleton] FAIL — multiple React type copies resolved (see above)
+2026-04-28T06:38:33.147099059Z 
+2026-04-28T06:38:33.147136129Z Why this matters: when two parallel @types/react copies land in node_modules,
+2026-04-28T06:38:33.147142159Z the JSX runtime uses one copy while third-party packages (expo-linear-gradient,
+2026-04-28T06:38:33.14714801Z expo-blur, expo-image, recharts, etc.) are typed against the other. tsc then sees
+2026-04-28T06:38:33.14715342Z their classes as incompatible and emits TS2786 / TS2607 / TS2322 errors that look
+2026-04-28T06:38:33.14715943Z like "<X> cannot be used as a JSX component" — which fails the Render deploy.
+2026-04-28T06:38:33.14716432Z 
+2026-04-28T06:38:33.14716936Z Fix: ensure every artifact references @types/react and @types/react-dom from the
+2026-04-28T06:38:33.14717435Z pnpm catalog (in pnpm-workspace.yaml). Hard-pinning a different range in any one
+2026-04-28T06:38:33.14717923Z package.json (e.g. "~19.1.17" while the catalog is "~19.1.10") is the trigger.
+2026-04-28T06:38:33.190916821Z /opt/render/project/src/scripts:
+2026-04-28T06:38:33.190941981Z  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/scripts@0.0.0 verify-react-types-singleton: `tsx ./src/verify-react-types-singleton.ts`
+2026-04-28T06:38:33.190948691Z Exit status 1
+2026-04-28T06:38:33.247991171Z  ELIFECYCLE  Command failed with exit code 1.
+2026-04-28T06:38:33.303168323Z  ELIFECYCLE  Command failed with exit code 1.
+2026-04-28T06:38:33.397872447Z ==> Build failed 😞
+2026-04-28T06:38:33.397900327Z ==> Common ways to troubleshoot your deploy: https://render.com/docs/troubleshooting-deploys
