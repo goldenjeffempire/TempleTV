@@ -19,7 +19,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, MemoryStick, Recycle, TrendingUp } from "lucide-react";
+import { AlertTriangle, Camera, MemoryStick, Recycle, TrendingUp } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -171,6 +171,13 @@ export function MemoryDiagnosticsCard() {
   const [err, setErr] = useState<string | null>(null);
   const [gcInFlight, setGcInFlight] = useState(false);
   const [lastGc, setLastGc] = useState<GcOutcome | null>(null);
+  const [snapshotInFlight, setSnapshotInFlight] = useState(false);
+  const [snapshotProgressBytes, setSnapshotProgressBytes] = useState(0);
+  const [lastSnapshot, setLastSnapshot] = useState<
+    | { at: number; kind: "success"; filename: string; bytes: number; elapsedMs: number }
+    | { at: number; kind: "error"; message: string }
+    | null
+  >(null);
   const samplesRef = useRef<Sample[]>([]);
   const [, forceRender] = useState(0);
 
@@ -238,6 +245,42 @@ export function MemoryDiagnosticsCard() {
       setGcInFlight(false);
     }
   }, [gcInFlight, load]);
+
+  const triggerHeapSnapshot = useCallback(async () => {
+    if (snapshotInFlight) return;
+    setSnapshotInFlight(true);
+    setSnapshotProgressBytes(0);
+    try {
+      const result = await memoryDiagnosticsApi.downloadHeapSnapshot((bytes) =>
+        setSnapshotProgressBytes(bytes),
+      );
+      setLastSnapshot({
+        at: Date.now(),
+        kind: "success",
+        filename: result.filename,
+        bytes: result.bytes,
+        elapsedMs: result.elapsedMs,
+      });
+      // Generating a snapshot triggers a full GC inside V8, so the post-snapshot
+      // memory profile is meaningfully different from the pre-snapshot one —
+      // refresh the panel so the operator sees the change.
+      void load();
+    } catch (e) {
+      let message = "Heap snapshot failed";
+      if (e instanceof AdminApiError) {
+        if (e.status === 429) {
+          message = "Rate-limited — heap snapshots are limited to once per minute.";
+        } else {
+          message = `${e.status}: ${e.message}`;
+        }
+      } else if (e instanceof Error) {
+        message = e.message;
+      }
+      setLastSnapshot({ at: Date.now(), kind: "error", message });
+    } finally {
+      setSnapshotInFlight(false);
+    }
+  }, [snapshotInFlight, load]);
 
   if (loading && !snapshot) {
     return (
@@ -320,6 +363,23 @@ export function MemoryDiagnosticsCard() {
             <Recycle className="w-3 h-3 mr-1" />
             {gcInFlight ? "Running…" : "Force GC"}
           </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={snapshotInFlight}
+            onClick={triggerHeapSnapshot}
+            data-testid="memory-heap-snapshot-button"
+            className="h-7 px-2 text-[11px]"
+            title="Capture a V8 heap snapshot and download as .heapsnapshot. Open in Chrome DevTools → Memory tab to inspect retainers. Pauses the event loop for several seconds; rate-limited to once per minute."
+          >
+            <Camera className="w-3 h-3 mr-1" />
+            {snapshotInFlight
+              ? snapshotProgressBytes > 0
+                ? `Downloading ${Math.round(snapshotProgressBytes / 1024 / 1024)} MiB…`
+                : "Capturing…"
+              : "Heap snapshot"}
+          </Button>
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -398,6 +458,35 @@ export function MemoryDiagnosticsCard() {
             allowNegative
           />
         </div>
+
+        {lastSnapshot && (
+          <div
+            className={`rounded-md border p-3 text-xs ${
+              lastSnapshot.kind === "success"
+                ? "border-emerald-600/40 bg-emerald-600/5"
+                : "border-red-600/40 bg-red-600/5"
+            }`}
+            data-testid="memory-heap-snapshot-result"
+          >
+            <div className="flex items-center justify-between">
+              <span className="font-medium">
+                {lastSnapshot.kind === "success" ? "Heap snapshot saved" : "Heap snapshot failed"}
+              </span>
+              <span className="font-mono text-muted-foreground">
+                {new Date(lastSnapshot.at).toLocaleTimeString()}
+              </span>
+            </div>
+            {lastSnapshot.kind === "success" ? (
+              <div className="mt-1 text-muted-foreground">
+                <span className="font-mono break-all">{lastSnapshot.filename}</span> ·{" "}
+                {Math.round(lastSnapshot.bytes / 1024 / 1024)} MiB · {lastSnapshot.elapsedMs} ms ·
+                open in Chrome DevTools → Memory tab to inspect retainers.
+              </div>
+            ) : (
+              <div className="mt-1 text-muted-foreground">{lastSnapshot.message}</div>
+            )}
+          </div>
+        )}
 
         {lastGc && (
           <div

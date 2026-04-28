@@ -1156,6 +1156,117 @@ router.post("/admin/diagnostics/gc", (_req, res) => {
   });
 });
 
+/**
+ * Stream a V8 heap snapshot for offline analysis in Chrome DevTools.
+ *
+ * When the watchdog flags a JS-retention leak (force-GC reclaims very little
+ * RSS, suggesting the references are still reachable), the next step is to
+ * see WHICH objects are being retained. A heap snapshot loaded into Chrome
+ * DevTools' Memory tab gives the dominator tree, retainer paths, and
+ * constructor-grouped object counts that point straight at the leaking
+ * structure (e.g. an unbounded array, a long-lived closure, an EventEmitter
+ * with thousands of listeners).
+ *
+ * Constraints:
+ *   - Generating a snapshot pauses the event loop while V8 walks the heap;
+ *     for a 1 GiB process this can take 5–20 s. Rate-limited to once per
+ *     60 s per process to prevent accidentally taking the API offline by
+ *     double-clicking the button.
+ *   - Snapshots can be hundreds of MiB. We stream `v8.getHeapSnapshot()`
+ *     directly to `res` so the API process never holds the snapshot in
+ *     memory — that would be self-defeating during a memory-pressure
+ *     incident.
+ *   - POST (state-changing on the process: it triggers a full GC as part
+ *     of the snapshot, which is observable via the memory diagnostics
+ *     endpoint after the request completes).
+ */
+const HEAP_SNAPSHOT_MIN_INTERVAL_MS = 60_000;
+let lastHeapSnapshotAt = 0;
+
+router.post("/admin/diagnostics/heap-snapshot", async (_req, res) => {
+  const now = Date.now();
+  const sinceLast = now - lastHeapSnapshotAt;
+  if (sinceLast < HEAP_SNAPSHOT_MIN_INTERVAL_MS) {
+    res.status(429).json({
+      ok: false,
+      error: "rate-limited",
+      message:
+        `Heap-snapshot is rate-limited to once every ${HEAP_SNAPSHOT_MIN_INTERVAL_MS / 1000}s. ` +
+        `Try again in ${Math.ceil((HEAP_SNAPSHOT_MIN_INTERVAL_MS - sinceLast) / 1000)}s.`,
+      retryAfterMs: HEAP_SNAPSHOT_MIN_INTERVAL_MS - sinceLast,
+    });
+    return;
+  }
+  lastHeapSnapshotAt = now;
+
+  // Lazy-import so the watchdog/diagnostics path doesn't pay for the v8
+  // module on every cold start. This route is operator-only and rare.
+  const v8 = await import("node:v8");
+  const filename = `heap-${new Date().toISOString().replace(/[:.]/g, "-")}.heapsnapshot`;
+  const t0 = process.hrtime.bigint();
+
+  res.setHeader("Content-Type", "application/octet-stream");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  res.setHeader("X-Snapshot-Filename", filename);
+  // Generation pauses the event loop in chunks; tell any proxy not to buffer.
+  res.setHeader("X-Accel-Buffering", "no");
+  res.setHeader("Cache-Control", "no-store");
+
+  let bytesStreamed = 0;
+  let aborted = false;
+  try {
+    const snapshot = v8.getHeapSnapshot();
+    snapshot.on("data", (chunk: Buffer) => {
+      bytesStreamed += chunk.length;
+    });
+    snapshot.on("error", (err) => {
+      logger.warn(
+        { err: err.message, bytesStreamed, filename },
+        "Heap snapshot stream errored",
+      );
+      if (!res.headersSent) res.status(500);
+      res.destroy(err);
+    });
+    res.on("close", () => {
+      // Client aborted before we finished writing — destroy upstream so V8
+      // can stop walking the heap. Without this the snapshot generation
+      // continues to consume CPU until completion.
+      if (!res.writableEnded) {
+        aborted = true;
+        snapshot.destroy();
+      }
+    });
+    snapshot.pipe(res);
+    res.on("finish", () => {
+      const elapsedMs = Number(process.hrtime.bigint() - t0) / 1_000_000;
+      logger.info(
+        {
+          filename,
+          bytesStreamed,
+          mbStreamed: Math.round(bytesStreamed / 1024 / 1024),
+          elapsedMs: Math.round(elapsedMs),
+          aborted,
+        },
+        "Heap snapshot streamed to operator",
+      );
+    });
+  } catch (err) {
+    logger.error(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Heap snapshot generation failed",
+    );
+    if (!res.headersSent) {
+      res.status(500).json({
+        ok: false,
+        error: "snapshot-failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    } else {
+      res.destroy(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+});
+
 router.get("/admin/diagnostics/memory", (_req, res) => {
   const m = process.memoryUsage();
   res.json({

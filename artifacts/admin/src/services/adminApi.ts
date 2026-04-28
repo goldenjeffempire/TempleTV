@@ -875,11 +875,92 @@ export interface ForceGcResult {
  * `err.message`: 501 = process not started with `--expose-gc`, 429 =
  * cooldown not yet elapsed, 5xx = the GC call itself threw.
  */
+export interface HeapSnapshotResult {
+  filename: string;
+  bytes: number;
+  elapsedMs: number;
+}
+
+/**
+ * Download a heap snapshot to disk. Uses streaming `Blob` so even
+ * hundred-MiB snapshots from a leaking process don't OOM the browser tab,
+ * and triggers a same-origin synthetic-anchor download with a meaningful
+ * filename so the operator can drag it straight into Chrome DevTools'
+ * Memory tab. Throws `AdminApiError` on non-2xx (rate-limit etc.).
+ */
+async function downloadHeapSnapshot(
+  onProgress?: (bytes: number) => void,
+): Promise<HeapSnapshotResult> {
+  const t0 = performance.now();
+  const token = getAdminToken();
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(`${BASE}/admin/diagnostics/heap-snapshot`, {
+    method: "POST",
+    headers,
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    let message = res.statusText || `HTTP ${res.status}`;
+    try {
+      const parsed = (await res.json()) as { message?: string; error?: string };
+      message = parsed.message || parsed.error || message;
+    } catch {
+      // body wasn't JSON; surface the status text
+    }
+    throw new AdminApiError(res.status, message);
+  }
+  const filename =
+    res.headers.get("X-Snapshot-Filename") ??
+    `heap-${new Date().toISOString().replace(/[:.]/g, "-")}.heapsnapshot`;
+
+  // Stream into chunks so we can report progress and also so the browser
+  // never has the snapshot in two places at once (Blob + memory).
+  if (!res.body) throw new AdminApiError(0, "Response body missing");
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (value) {
+      chunks.push(value);
+      bytes += value.byteLength;
+      onProgress?.(bytes);
+    }
+  }
+  // Use a plain array to allow Blob constructor to do its own copy; safer
+  // than juggling ArrayBuffer offsets across chunks of varying sizes. The
+  // explicit `BlobPart[]` cast satisfies the strict TS types — fetch's
+  // ReadableStream typings declare `Uint8Array<ArrayBufferLike>` (which
+  // could in theory be a SharedArrayBuffer), but in practice every browser
+  // returns plain ArrayBuffer-backed chunks here and Blob accepts them.
+  const blob = new Blob(chunks as unknown as BlobPart[], {
+    type: "application/octet-stream",
+  });
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    // Object URL keeps the blob alive in browser memory until revoked —
+    // critical to release for a hundred-MiB snapshot. Defer one tick so
+    // the synthetic click has a chance to start the download dialog.
+    setTimeout(() => URL.revokeObjectURL(url), 1_000);
+  }
+  return { filename, bytes, elapsedMs: Math.round(performance.now() - t0) };
+}
+
 export const memoryDiagnosticsApi = {
   get: (signal?: AbortSignal) =>
     adminGet<MemoryDiagnostics>("/admin/diagnostics/memory", signal),
   forceGc: (): Promise<ForceGcResult> =>
     adminPost<ForceGcResult>("/admin/diagnostics/gc"),
+  downloadHeapSnapshot,
 };
 
 export interface ActiveUploadSession {
