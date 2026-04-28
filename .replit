@@ -3,7 +3,7 @@ modules = ["nodejs-24", "postgresql-16"]
 [deployment]
 router = "application"
 deploymentTarget = "autoscale"
-run = ["sh", "-c", "MALLOC_ARENA_MAX=2 RUN_MODE=api NODE_ENV=production MEMORY_WARN_RSS_MB=1500 node --max-old-space-size=1280 --import ./artifacts/api-server/dist/instrument.mjs ./artifacts/api-server/dist/index.mjs"]
+run = ["sh", "-c", "MALLOC_ARENA_MAX=2 PORT=8080 RUN_MODE=all NODE_ENV=production MEMORY_WARN_RSS_MB=1500 HTTP_KEEPALIVE_MS=75000 HTTP_HEADERS_TIMEOUT_MS=80000 SHUTDOWN_DRAIN_MS=10000 node --max-old-space-size=1280 --import ./artifacts/api-server/dist/instrument.mjs ./artifacts/api-server/dist/index.mjs"]
 build = ["sh", "-c", "pnpm run typecheck:libs && pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/admin run build"]
 
 [deployment.postBuild]

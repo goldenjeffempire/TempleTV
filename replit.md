@@ -162,12 +162,29 @@ the same process, which amplifies any leak by 100-300 MiB external memory
 per active transcode).
 
 **Replit Deployments alternative:** `.replit` is now configured for an
-`autoscale` deployment of the API role with the same hardening flags as
-Render (`MALLOC_ARENA_MAX=2`, `--max-old-space-size=1280`,
-`MEMORY_WARN_RSS_MB=1500`, `RUN_MODE=api`). Click **Publish** in Replit and
-choose the 2 vCPU / 2 GiB autoscale tier. Keep the existing Render
-`temple-tv-transcoder` worker for HLS transcoding (Replit autoscale is
-stateless-HTTP-only). Full diagnosis: `docs/oom-diagnosis-2026-04-28.md`.
+`autoscale` deployment with `RUN_MODE=all` (single-process: API + transcoder
+worker share one Node process), with the same hardening flags as Render
+(`MALLOC_ARENA_MAX=2`, `--max-old-space-size=1280`, `MEMORY_WARN_RSS_MB=1500`,
+`PORT=8080`, `HTTP_KEEPALIVE_MS=75000`, `HTTP_HEADERS_TIMEOUT_MS=80000`,
+`SHUTDOWN_DRAIN_MS=10000`). Click **Publish** in Replit and choose the
+2 vCPU / 2 GiB autoscale tier. **Why `RUN_MODE=all` and not `RUN_MODE=api`:**
+Replit deploys are single-service, so there is no separate worker service to
+run transcoding. With `RUN_MODE=api` the `startTranscoderRole()` block at
+`index.ts:374` never fires, every uploaded video gets a `transcoding_jobs`
+row inserted, and nothing ever processes it — videos play as direct MP4
+(S3-redirect) but HLS variants never generate. `RUN_MODE=all` runs both
+roles in one process. The 1280 MiB heap cap + 700 MiB external headroom
+(layered with `MALLOC_ARENA_MAX=2`) keeps the combined API + ffmpeg
+footprint under the 2 GiB autoscale ceiling even during peak transcodes.
+**For the Render two-service split** (`temple-tv-api` + `temple-tv-transcoder`)
+keep `render.yaml` as-is (`RUN_MODE=api` and `RUN_MODE=worker` respectively)
+— that path is unchanged. Full diagnosis: `docs/oom-diagnosis-2026-04-28.md`.
+
+**Important deployment note:** `index.ts:297-301` REQUIRES `PORT` env var
+to be set when `RUNS_API` is true and throws on boot otherwise. Replit
+autoscale does inject PORT automatically, but we set it explicitly to 8080
+in the deploy run command to match the `[[ports]]` mapping in `.replit`
+(local 8080 → external 80) and remove all ambiguity.
 
 **Files changed:** `artifacts/api-server/src/lib/boundedFetch.ts` (new, 100
 lines), `artifacts/api-server/src/routes/youtube.ts` (+import, 4 patched call
