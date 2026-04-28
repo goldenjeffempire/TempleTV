@@ -1,0 +1,84 @@
+2026-04-28T07:18:27.469791293Z ==> Downloading cache...
+2026-04-28T07:18:27.536911527Z ==> Cloning from https://github.com/goldenjeffempire/TempleTV
+2026-04-28T07:18:31.657337885Z ==> Checking out commit 21aa3bb47c5855039f02bf5a07ec4d4704698629 in branch main
+2026-04-28T07:19:02.520627559Z ==> Downloaded 288MB in 3s. Extraction took 30s.
+2026-04-28T07:19:04.800757156Z ==> Using Node.js version 24.13.0 via /opt/render/project/src/.nvmrc
+2026-04-28T07:19:04.847036258Z ==> Docs on specifying a Node.js version: https://render.com/docs/node-version
+2026-04-28T07:19:05.062063582Z ==> Running build command 'corepack enable && \
+2026-04-28T07:19:05.062088882Z pnpm install --frozen-lockfile --prefer-offline --prod=false && \
+2026-04-28T07:19:05.062094222Z pnpm run verify:production && \
+2026-04-28T07:19:05.062099912Z pnpm --filter @workspace/api-server run build
+2026-04-28T07:19:05.062104052Z '...
+2026-04-28T07:19:09.731187268Z 
+2026-04-28T07:19:09.731225768Z > workspace@0.0.0 verify:production /opt/render/project/src
+2026-04-28T07:19:09.731233748Z > pnpm run verify:codegen && pnpm run verify:catalog && pnpm run verify:catalog-callsites && pnpm run verify:recharts-shim && pnpm run verify:react-types-singleton && pnpm run verify:tsconfig-parity && pnpm run verify:render-yaml && pnpm run verify:env-secrets && pnpm run verify:db-schema-completeness && pnpm run typecheck:production
+2026-04-28T07:19:09.731241958Z 
+2026-04-28T07:19:10.320638601Z 
+2026-04-28T07:19:10.320673651Z > workspace@0.0.0 verify:codegen /opt/render/project/src
+2026-04-28T07:19:10.320680651Z > pnpm --filter @workspace/api-spec run codegen && (git diff --exit-code -- lib/api-zod/src/generated lib/api-client-react/src/generated || (echo '\n[verify:codegen] FAIL: lib/api-spec/openapi.yaml is out of sync with generated clients. Run: pnpm --filter @workspace/api-spec run codegen, then commit the changes.' >&2; exit 1))
+2026-04-28T07:19:10.320685661Z 
+2026-04-28T07:19:10.950442675Z 
+2026-04-28T07:19:10.950476745Z > @workspace/api-spec@0.0.0 codegen /opt/render/project/src/lib/api-spec
+2026-04-28T07:19:10.950483275Z > orval --config ./orval.config.ts && node ./postcodegen.mjs
+2026-04-28T07:19:10.950488675Z 
+2026-04-28T07:19:11.66068106Z 🍻 orval v8.5.3 - A swagger client generator for typescript
+2026-04-28T07:19:12.005275875Z api-client-react Cleaning output folder
+2026-04-28T07:19:13.434675056Z 🎉 api-client-react - Your OpenAPI spec has been converted into ready to use orval!
+2026-04-28T07:19:13.447109103Z zod Cleaning output folder
+2026-04-28T07:19:14.0605136Z 🎉 zod - Your OpenAPI spec has been converted into ready to use orval!
+2026-04-28T07:19:14.181427753Z [postcodegen] normalized lib/api-zod/src/index.ts
+2026-04-28T07:19:14.835461345Z 
+2026-04-28T07:19:14.835491185Z > workspace@0.0.0 verify:catalog /opt/render/project/src
+2026-04-28T07:19:14.835498065Z > pnpm --filter @workspace/scripts run verify-catalog-lockfile-sync
+2026-04-28T07:19:14.835503045Z 
+2026-04-28T07:19:15.497824342Z 
+2026-04-28T07:19:15.497857752Z > @workspace/scripts@0.0.0 verify-catalog-lockfile-sync /opt/render/project/src/scripts
+2026-04-28T07:19:15.497864132Z > tsx ./src/verify-catalog-lockfile-sync.ts
+2026-04-28T07:19:15.497868932Z 
+2026-04-28T07:19:15.969258011Z [verify:catalog] OK — 21 catalog entries, all in sync with lockfile.
+2026-04-28T07:19:16.612572973Z 
+2026-04-28T07:19:16.612610284Z > workspace@0.0.0 verify:catalog-callsites /opt/render/project/src
+2026-04-28T07:19:16.612616624Z > pnpm --filter @workspace/scripts run verify-catalog-callsites
+2026-04-28T07:19:16.612635924Z 
+2026-04-28T07:19:17.291976514Z 
+2026-04-28T07:19:17.292004314Z > @workspace/scripts@0.0.0 verify-catalog-callsites /opt/render/project/src/scripts
+2026-04-28T07:19:17.292008324Z > tsx ./src/verify-catalog-callsites.ts
+2026-04-28T07:19:17.292011294Z 
+2026-04-28T07:19:17.75727348Z [verify:catalog-callsites] OK — 21 catalog entries, 11 workspace package.json file(s), 73 catalog reference(s) across the monorepo; every catalog-managed package is referenced via the literal "catalog:" token in every consuming package.json, and every catalog entry is consumed by at least one workspace package.
+2026-04-28T07:19:18.427678169Z 
+2026-04-28T07:19:18.4277095Z > workspace@0.0.0 verify:recharts-shim /opt/render/project/src
+2026-04-28T07:19:18.4277136Z > pnpm --filter @workspace/scripts run verify-recharts-shim
+2026-04-28T07:19:18.42771674Z 
+2026-04-28T07:19:19.064836149Z 
+2026-04-28T07:19:19.064870109Z > @workspace/scripts@0.0.0 verify-recharts-shim /opt/render/project/src/scripts
+2026-04-28T07:19:19.064876349Z > tsx ./src/verify-recharts-shim.ts
+2026-04-28T07:19:19.064879939Z 
+2026-04-28T07:19:19.526938043Z [verify:recharts-shim] OK — no direct recharts imports in artifacts/admin/src/ (only artifacts/admin/src/lib/recharts-shim.ts may import recharts directly).
+2026-04-28T07:19:20.174981744Z 
+2026-04-28T07:19:20.175683971Z > workspace@0.0.0 verify:react-types-singleton /opt/render/project/src
+2026-04-28T07:19:20.175694651Z > pnpm --filter @workspace/scripts run verify-react-types-singleton
+2026-04-28T07:19:20.175699881Z 
+2026-04-28T07:19:20.814831201Z 
+2026-04-28T07:19:20.814875902Z > @workspace/scripts@0.0.0 verify-react-types-singleton /opt/render/project/src/scripts
+2026-04-28T07:19:20.814883212Z > tsx ./src/verify-react-types-singleton.ts
+2026-04-28T07:19:20.814888212Z 
+2026-04-28T07:19:21.245621526Z   - Found 2 @types/react versions: @types+react@19.1.17, @types+react@19.2.14
+2026-04-28T07:19:21.245912589Z   - Found 2 @types/react-dom versions: @types+react-dom@19.1.11_@types+react@19.1.17, @types+react-dom@19.2.3_@types+react@19.2.14
+2026-04-28T07:19:21.24598847Z [verify:react-types-singleton] FAIL — multiple React type copies resolved (see above)
+2026-04-28T07:19:21.2459985Z 
+2026-04-28T07:19:21.24600469Z Why this matters: when two parallel @types/react copies land in node_modules,
+2026-04-28T07:19:21.24600997Z the JSX runtime uses one copy while third-party packages (expo-linear-gradient,
+2026-04-28T07:19:21.2460149Z expo-blur, expo-image, recharts, etc.) are typed against the other. tsc then sees
+2026-04-28T07:19:21.24601975Z their classes as incompatible and emits TS2786 / TS2607 / TS2322 errors that look
+2026-04-28T07:19:21.24602456Z like "<X> cannot be used as a JSX component" — which fails the Render deploy.
+2026-04-28T07:19:21.24602928Z 
+2026-04-28T07:19:21.24603437Z Fix: ensure every artifact references @types/react and @types/react-dom from the
+2026-04-28T07:19:21.24603945Z pnpm catalog (in pnpm-workspace.yaml). Hard-pinning a different range in any one
+2026-04-28T07:19:21.24604429Z package.json (e.g. "~19.1.17" while the catalog is "~19.1.10") is the trigger.
+2026-04-28T07:19:21.291065229Z /opt/render/project/src/scripts:
+2026-04-28T07:19:21.2910946Z  ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/scripts@0.0.0 verify-react-types-singleton: `tsx ./src/verify-react-types-singleton.ts`
+2026-04-28T07:19:21.29110013Z Exit status 1
+2026-04-28T07:19:21.343931579Z  ELIFECYCLE  Command failed with exit code 1.
+2026-04-28T07:19:21.396194502Z  ELIFECYCLE  Command failed with exit code 1.
+2026-04-28T07:19:21.488568734Z ==> Build failed 😞
+2026-04-28T07:19:21.488613485Z ==> Common ways to troubleshoot your deploy: https://render.com/docs/troubleshooting-deploys
