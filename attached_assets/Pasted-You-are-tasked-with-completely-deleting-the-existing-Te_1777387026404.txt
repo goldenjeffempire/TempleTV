@@ -1,0 +1,143 @@
+You are tasked with completely deleting the existing Temple TV broadcast playback implementation and rebuilding it from scratch as a world-class 24/7 television-grade streaming system.
+
+This is a full architectural reset, not a patch.
+
+🧨 PHASE 1 — FULL WIPE (MANDATORY)
+
+You MUST:
+
+Delete all existing playback-related code
+Remove all legacy video player implementations
+Remove all polling logic:
+/api/broadcast/current
+/api/videos/*
+Remove all redirect-based streaming logic (302 handling)
+Remove all unstable or duplicated player components
+Remove any existing HLS initialization layers
+Remove any ad-hoc playback state management
+Clear all caching layers tied to old playback system
+
+⚠️ DO NOT preserve compatibility with old architecture.
+
+🏗️ PHASE 2 — REBUILD FROM SCRATCH (ENTERPRISE BROADCAST SYSTEM)
+
+Rebuild the system as a broadcast television engine, not a video app.
+
+🎯 CORE ARCHITECTURE
+
+Implement:
+
+1. Dual-Buffer Playback Engine (MANDATORY)
+ACTIVE_PLAYER (playing video)
+PRELOAD_PLAYER (next video fully buffered)
+NEVER destroy video elements
+Swap via instant opacity + reference switch (<50ms)
+2. Continuous Playback Pipeline
+
+Implement deterministic flow:
+
+T-15s → fetch next content
+T-10s → preload next HLS stream
+T-5s → confirm buffer readiness
+T-0ms → instant swap (zero black frame)
+3. Event-Driven Architecture (NO POLLING)
+
+Replace all polling with:
+
+WebSocket broadcast channel
+Redis Pub/Sub event system (REDIS_URL required)
+
+Events:
+
+PLAYLIST_UPDATE
+NEXT_VIDEO_READY
+SYNC_STATE
+FORCE_SWITCH
+4. Direct CDN Streaming (CRITICAL FIX)
+REMOVE ALL 302 redirects
+Use direct signed CDN/HLS URLs only
+Ensure instant stream resolution with no backend hops
+5. Continuous HLS Streaming Layer
+
+Implement one of:
+
+Virtual continuous HLS playlist (preferred)
+OR
+Seamless client-side queue stitching
+
+Goal: behave like a real TV channel stream.
+
+6. Zero-Black-Screen Transition System
+Maintain persistent DOM video surfaces
+Never clear video node during swap
+Use preloaded buffer swap instead of reload
+Ensure frame-perfect continuity
+7. Resilient Preloading System
+Maintain 2-level preload queue:
+next video
+next-next video
+Auto-retry failed preload sources
+Fallback CDN sources supported
+8. Distributed Sync Layer
+Use Redis as global state source
+Synchronize all devices:
+Web
+Android
+iOS
+Smart TV
+
+Ensure deterministic playback alignment across all clients.
+
+9. Player Lifecycle Rules
+Single persistent playback manager
+No reinitialization per video
+No DOM remounting of player
+No memory duplication of streams
+⚡ PERFORMANCE TARGETS
+
+System MUST achieve:
+
+0ms black screen transitions
+<50ms video swap latency
+99.99% continuous playback uptime behavior
+Zero polling requests
+Stable playback under weak networks
+🧠 ENGINEERING STANDARD
+
+Treat this as building:
+
+A Netflix-grade playback engine + IPTV broadcast headend + YouTube Live streaming core
+
+NOT:
+
+a typical web video player
+
+🚀 OUTPUT REQUIREMENTS
+
+You MUST deliver:
+
+Clean rebuilt codebase (no legacy reuse)
+Dual-buffer playback engine
+WebSocket + Redis event system
+CDN/HLS direct streaming integration
+Continuous playback scheduler
+Cross-platform playback consistency layer
+Production-ready architecture structure
+❌ STRICT PROHIBITIONS
+
+Do NOT:
+
+reuse old playback logic
+reintroduce polling
+use redirect-based streaming
+recreate single-player architecture
+allow black frame transitions
+🏁 SUCCESS CRITERIA
+
+The system is only correct if:
+
+It behaves like a 24/7 TV channel
+Playback never stops or flashes black
+Next video is always preloaded before current ends
+All updates are event-driven
+All platforms behave identically
