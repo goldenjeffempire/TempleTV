@@ -1,5 +1,51 @@
 # Temple TV (JCTM) Broadcasting Platform
 
+## Production OOM Mitigation (April 28 2026, post-import)
+
+Production `temple-tv-api` was being SIGKILL'd by the OOM killer every ~5 min:
+RSS climbed to 2 GiB while `heapUsed` stayed ~50 MiB — the leak was in
+`arrayBuffers` (peaked at 462 MiB). Root cause: YouTube live-page scrapers in
+`routes/youtube.ts` and `lib/youtubeUrl.ts` were doing `await response.text()`
+on 500 KB-1 MB HTML pages, and V8 substring-sharing on retained `match[1]`
+results was pinning the entire page backing buffer indefinitely (the 11-char
+`videoId` stored in module-level `cachedLiveStatus` kept the whole 1 MB HTML
+alive for GC).
+
+**Fix:** new `lib/boundedFetch.ts` module exporting `boundedText(response,
+maxBytes=256KB)` (caps body via ReadableStream reader + cancels socket early)
+and `freshString(s)` (Buffer-materializes a fresh SeqString to defeat
+substring-sharing). All five YouTube `await response.text()` call sites now
+use `boundedText()`; all extracted `videoId`/`title` values that flow into
+long-lived state are wrapped in `freshString()` / `Buffer.from(...).toString()`.
+No API contract changes. 256 KiB cap chosen because every regex marker
+(`isLiveNow`, `videoId`, `hlsManifestUrl`, `concurrentViewers`, `<meta
+name="title">`) lives in the inlined `ytInitialPlayerResponse` JSON in the
+first ~150 KiB of every YouTube page.
+
+**Operational follow-up:** production process is logging `runMode: "all"`
+despite `render.yaml` declaring `RUN_MODE=api` for the `temple-tv-api`
+service — the dashboard env-var override needs to be removed so the manifest
+takes effect (otherwise the API is still bundling the ffmpeg transcoder in
+the same process, which amplifies any leak by 100-300 MiB external memory
+per active transcode).
+
+**Replit Deployments alternative:** `.replit` is now configured for an
+`autoscale` deployment of the API role with the same hardening flags as
+Render (`MALLOC_ARENA_MAX=2`, `--max-old-space-size=1280`,
+`MEMORY_WARN_RSS_MB=1500`, `RUN_MODE=api`). Click **Publish** in Replit and
+choose the 2 vCPU / 2 GiB autoscale tier. Keep the existing Render
+`temple-tv-transcoder` worker for HLS transcoding (Replit autoscale is
+stateless-HTTP-only). Full diagnosis: `docs/oom-diagnosis-2026-04-28.md`.
+
+**Files changed:** `artifacts/api-server/src/lib/boundedFetch.ts` (new, 100
+lines), `artifacts/api-server/src/routes/youtube.ts` (+import, 4 patched call
+sites), `artifacts/api-server/src/lib/youtubeUrl.ts` (+import, 3 patched call
+sites), `.replit` (deployment run-cmd hardening), `docs/oom-diagnosis-2026-04-28.md`
+(new).
+
+**Validation:** `pnpm --filter @workspace/api-server run typecheck` clean;
+workflow restarts clean; idle baseline `arrayBuffersMb: 4`, `rssMb: 237`.
+
 ## Overview
 
 **SSE Bus Surfaced in Mission Control (April 28 2026, Round 19):** Wired the bus stats into Mission Control so operators can see at a glance whether cross-instance fanout is healthy without tailing logs or running curl. Two surfaces: (1) **dedicated endpoint** `GET /api/admin/sse-bus` returning the `BusStatsSnapshot` decorated with a derived `health` ("off" / "ok" / "degraded") and a human-readable `summary` — exists for direct curl/debug access and to leave room for a future detail page; (2) **inlined into `/admin/ops/status`** under `infrastructure.sseBus` so the existing operations-page polling cycle (visibility-gated, 30s) feeds the new tile without a second polling loop. Frontend: added `SSEBusStatus` type + `sseBusApi` to `services/adminApi.ts` and a new `SseBusTile` component in `pages/operations.tsx`, placed right after the Distributed cache tile in the Infrastructure card. **Crucial UX detail:** the "off" state (REDIS_URL not set on this service — the supported single-instance default) is rendered as a NEUTRAL grey "Disabled" badge with helpful copy ("Set REDIS_URL on the api service to enable cross-instance SSE"), NOT amber/red — because it's not an error condition. "ok" → emerald "Healthy" badge using the existing StatusBadge component. "degraded" → amber "Degraded" — informational, since local fanout works regardless. When enabled, the tile also renders a compact metrics line showing `publishesSent · framesReceived · reconnects` (each suppressed when zero) so operators can verify the bus is actually doing work, not just connected. Defensive: missing `sseBus` field (older api-server, or ops/status catch-handler path) is treated as "off" — better than rendering a confusing dash. The helper `buildSseBusReport()` in admin.ts is the single source of truth for both the dedicated endpoint and the inlined block, so they can never drift. **Files modified:** `artifacts/api-server/src/routes/admin.ts` (import + helper + new route + sseBus injection into ops/status), `artifacts/admin/src/services/adminApi.ts` (`SSEBusStatus` interface + `sseBusApi` + `OpsStatus.infrastructure.sseBus?` field), `artifacts/admin/src/pages/operations.tsx` (`SseBusTile` component + use in Infrastructure card). **Validation:** full repo type-check CLEAN (47.8s, all 5 artifacts); workflow restarted clean; new endpoint responded in 2ms with the expected 401 admin-auth challenge (boot log shows `request completed url: "/api/admin/sse-bus" statusCode: 401`); bus continues to log DISABLED state on boot with same instanceId as Round 18.

@@ -16,6 +16,7 @@ import { logger } from "../lib/logger";
 import { sendOpsAlert } from "../lib/alerts";
 import { getClientIp } from "../middlewares/security";
 import { recordFailureReport, type LiveFailureSurface } from "../lib/liveFailureReports";
+import { boundedText, freshString } from "../lib/boundedFetch";
 
 const router = Router();
 
@@ -559,17 +560,20 @@ async function checkViaYouTubeLivePage(): Promise<{ isLive: boolean; videoId: st
     },
   });
   if (!response.ok) return { isLive: false, videoId: null, title: null };
-  const html = await response.text();
+  // 256 KiB cap + Buffer-materialized SeqString — see lib/boundedFetch.ts.
+  const html = await boundedText(response);
 
   const isLiveMatch = html.match(/"isLiveNow"\s*:\s*true/);
   const videoIdMatch = html.match(/"videoId"\s*:\s*"([A-Za-z0-9_-]{11})"/);
   const titleMatch = html.match(/"title"\s*:\s*\{\s*"runs"\s*:\s*\[\s*\{\s*"text"\s*:\s*"([^"]+)"/);
 
   if (isLiveMatch && videoIdMatch) {
+    // freshString() defeats V8 substring-sharing — without it, the 256 KiB
+    // backing buffer would be pinned by `lastSnapshot` retaining videoId.
     return {
       isLive: true,
-      videoId: videoIdMatch[1] ?? null,
-      title: titleMatch?.[1] ?? "Live Stream",
+      videoId: freshString(videoIdMatch[1]),
+      title: freshString(titleMatch?.[1] ?? "Live Stream"),
     };
   }
   return { isLive: false, videoId: null, title: null };
@@ -583,7 +587,10 @@ async function scrapeViewerCount(videoId: string): Promise<number | null> {
       headers: { ...BROWSER_HEADERS, Accept: "text/html,application/xhtml+xml" },
     });
     if (!response.ok) return null;
-    const html = await response.text();
+    // 256 KiB cap — see lib/boundedFetch.ts. The viewer-count markers all
+    // live in the inlined ytInitialPlayerResponse JSON near the top of the
+    // page; reading the whole 1 MB+ body wasted memory and pinned arrayBuffers.
+    const html = await boundedText(response);
 
     const patterns = [
       /"concurrentViewers"\s*:\s*"(\d+)"/,
@@ -938,7 +945,11 @@ async function fetchDirect(url: string): Promise<string | null> {
       headers: BROWSER_HEADERS,
     });
     if (!response.ok) return null;
-    const text = await response.text();
+    // RSS feeds for a YouTube channel cap at 15 entries × ~3 KiB each plus
+    // headers — well under 128 KiB. Capping at 256 KiB leaves headroom for
+    // a future feed-size bump while still cutting the 1 MB+ pages YouTube
+    // sometimes returns when CDN gzip is bypassed.
+    const text = await boundedText(response);
     return text.includes("<entry>") ? text : null;
   } catch {
     return null;

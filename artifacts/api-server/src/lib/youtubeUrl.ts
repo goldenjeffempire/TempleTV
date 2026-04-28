@@ -15,6 +15,8 @@
  * ID shape — mismatches are rejected before they reach the DB.
  */
 
+import { boundedText } from "./boundedFetch";
+
 const YT_ID_REGEX = /^[A-Za-z0-9_-]{11}$/;
 
 const HOST_ALLOWLIST = new Set([
@@ -209,7 +211,10 @@ export async function validateYouTubeLiveStream(
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
     if (!pageRes.ok) return null;
-    return pageRes.text();
+    // 256 KiB cap — see lib/boundedFetch.ts. Every marker we test for
+    // (isLiveNow, hlsManifestUrl, isLiveContent, liveBroadcastDetails) lives
+    // in the inlined ytInitialPlayerResponse JSON near the top of the page.
+    return boundedText(pageRes);
   };
 
   try {
@@ -244,7 +249,10 @@ export async function validateYouTubeLiveStream(
 
       if (!title) {
         const titleMatch = html.match(/<meta\s+name="title"\s+content="([^"]+)"/i);
-        if (titleMatch) title = titleMatch[1];
+        // Buffer.from(...).toString() materializes a fresh SeqString so the
+        // title doesn't pin the 256 KiB HTML backing buffer when it propagates
+        // up through validateLiveStream() into long-lived schedule state.
+        if (titleMatch) title = Buffer.from(titleMatch[1], "utf8").toString("utf8");
       }
     }
   } catch {
@@ -270,7 +278,8 @@ export async function validateYouTubeLiveStream(
         signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
       });
       if (pageRes.ok) {
-        const html = await pageRes.text();
+        // 256 KiB cap — see lib/boundedFetch.ts.
+        const html = await boundedText(pageRes);
         const hasLiveNow = /"isLiveNow"\s*:\s*true/.test(html);
         const hasHlsManifest = /"hlsManifestUrl"\s*:\s*"[^"]+/.test(html);
         if (hasLiveNow || hasHlsManifest) {
