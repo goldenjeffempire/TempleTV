@@ -14,8 +14,9 @@
     "verify:react-types-singleton": "pnpm --filter @workspace/scripts run verify-react-types-singleton",
     "verify:tsconfig-parity": "pnpm --filter @workspace/scripts run verify-tsconfig-parity",
     "verify:render-yaml": "pnpm --filter @workspace/scripts run verify-render-yaml",
-    "verify": "pnpm run verify:codegen && pnpm run verify:catalog && pnpm run verify:recharts-shim && pnpm run verify:react-types-singleton && pnpm run verify:tsconfig-parity && pnpm run verify:render-yaml && pnpm run typecheck",
-    "verify:production": "pnpm run verify:codegen && pnpm run verify:catalog && pnpm run verify:recharts-shim && pnpm run verify:react-types-singleton && pnpm run verify:tsconfig-parity && pnpm run verify:render-yaml && pnpm run typecheck:production"
+    "verify:env-secrets": "pnpm --filter @workspace/scripts run verify-env-secrets",
+    "verify": "pnpm run verify:codegen && pnpm run verify:catalog && pnpm run verify:recharts-shim && pnpm run verify:react-types-singleton && pnpm run verify:tsconfig-parity && pnpm run verify:render-yaml && pnpm run verify:env-secrets && pnpm run typecheck",
+    "verify:production": "pnpm run verify:codegen && pnpm run verify:catalog && pnpm run verify:recharts-shim && pnpm run verify:react-types-singleton && pnpm run verify:tsconfig-parity && pnpm run verify:render-yaml && pnpm run verify:env-secrets && pnpm run typecheck:production"
   },
   "private": true,
   "engines": {

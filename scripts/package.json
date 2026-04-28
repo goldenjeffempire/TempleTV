@@ -13,6 +13,7 @@
     "verify-react-types-singleton": "tsx ./src/verify-react-types-singleton.ts",
     "verify-tsconfig-parity": "tsx ./src/verify-tsconfig-parity.ts",
     "verify-render-yaml": "tsx ./src/verify-render-yaml.ts",
+    "verify-env-secrets": "tsx ./src/verify-env-secrets.ts",
     "run-typechecks": "tsx ./src/run-typechecks.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
