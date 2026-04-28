@@ -36,6 +36,38 @@ function formatTimeAgo(unixMs: number): string {
 }
 
 /**
+ * Format one side (sent / received) of the live rate line, returning
+ * null when there's nothing meaningful to display so the caller can
+ * `.filter()` it out.
+ *
+ * Decision matrix (current = client-side delta-sampled "now" rate,
+ * peak = max value in the server-side 5-minute ring buffer):
+ *
+ *   current  peak    →  output
+ *   -------  ------     --------------------------------
+ *      0       0     →  null                (idle bus, nothing to say)
+ *      0      >0     →  "5m peak N/min L"   (recent burst, now quiet)
+ *     >0      =cur   →  "~N/min L"          (peak suffix would be noise)
+ *     >0      >cur   →  "~N/min L (peak P)" (current vs typical)
+ *
+ * The "peak <= current" case includes both peak == current (we're at the
+ * peak right now) and peak < current (which can happen briefly when the
+ * client-side average over 30s catches a burst that the server-side 10s
+ * sampler hasn't yet recorded a full window for). Either way, showing
+ * the peak adds no information.
+ */
+function formatRateForSide(
+  label: string,
+  current: number,
+  peak: number,
+): string | null {
+  if (current === 0 && peak === 0) return null;
+  if (current === 0) return `5m peak ${peak}/min ${label}`;
+  if (peak > current) return `~${current}/min ${label} (peak ${peak})`;
+  return `~${current}/min ${label}`;
+}
+
+/**
  * Cross-instance SSE bus tile for the Infrastructure card on the Operations
  * page. Three rendered states map to the server-side `health` field:
  *
@@ -54,9 +86,14 @@ function formatTimeAgo(unixMs: number): string {
  * Three add-ons render conditionally:
  *   1. **Cumulative metrics line** — `X sent · Y received · Z reconnects`,
  *      each suppressed when zero. Shown whenever the bus is enabled.
- *   2. **Live rate line** — `~X/min sent · ~Y/min received`, computed
- *      client-side as deltas between consecutive polls. Hidden until we
- *      have a valid sample pair AND at least one rate is non-zero.
+ *   2. **Live rate line** — `~X/min sent (peak P) · ~Y/min received (peak Q)`,
+ *      with the "current" value computed client-side as deltas between
+ *      consecutive polls and the "5m peak" sourced from the server-side
+ *      ring buffer (`sseBus.recentRates`). Hidden when the bus is fully
+ *      idle. See `formatRateForSide` for the per-side rendering rules
+ *      (the parenthetical "(peak P)" is suppressed when peak ≤ current
+ *      to avoid noise; switches to "5m peak P/min sent" when current is
+ *      zero but a recent burst is still in the buffer).
  *   3. **Recent-errors expander** — collapsed-by-default detail panel that
  *      surfaces `lastPublishErrorMsg` / `lastReceiveErrorMsg` with relative
  *      timestamps. Only renders when at least one error timestamp is
@@ -205,18 +242,42 @@ export function SseBusTile({
   if (sseBus.reconnects > 0) metrics.push(`${sseBus.reconnects.toLocaleString()} reconnects`);
   const metricsLine = metrics.length > 0 ? ` · ${metrics.join(" · ")}` : "";
 
-  // Live rate line — only rendered once we have at least one valid sample
-  // pair (i.e. starting from the second poll), AND only if at least one
-  // rate is non-zero. An idle bus showing "0/min sent · 0/min received"
-  // would just be visual noise; the cumulative metrics line above already
-  // tells operators "the bus is up but quiet". When traffic IS flowing,
-  // the rate is the most operationally useful number on the tile because
-  // it answers "is the bus busy right now?" without doing arithmetic on
-  // counters in your head.
-  const showRate = rates !== null && (rates.pubPerMin > 0 || rates.recvPerMin > 0);
-  const rateParts: string[] = [];
-  if (rates && rates.pubPerMin > 0) rateParts.push(`~${rates.pubPerMin}/min sent`);
-  if (rates && rates.recvPerMin > 0) rateParts.push(`~${rates.recvPerMin}/min received`);
+  // Live rate line — combines two data sources for a "current vs recent
+  // peak" comparison, the most operationally useful single line on the
+  // tile because it answers BOTH "is the bus busy right now?" AND "is
+  // this normal or unusually busy/quiet?" without scrolling to the detail
+  // page.
+  //
+  //   • CURRENT rate comes from the tile's own client-side delta sampling
+  //     (the `rates` state above) — smoother than the server-side 10s
+  //     samples because it averages over the longer 30s polling window,
+  //     and works as a fallback even on older api-server builds that
+  //     don't yet expose `recentRates`.
+  //
+  //   • 5-MINUTE PEAK comes from `sseBus.recentRates` — the server-side
+  //     ring buffer added in the same milestone. We use it ONLY for the
+  //     peak (not for current) so the two numbers come from independent
+  //     sources and won't drift surprisingly when one is stale.
+  //
+  // Per-side rendering (sent / received) handled by `formatRateForSide`
+  // so the same three-case logic doesn't get duplicated:
+  //   1. current > 0, peak > current   → "~12/min sent (peak 24)"
+  //   2. current > 0, peak <= current  → "~12/min sent" (no peak suffix
+  //      — would just say "(peak 12)" which is noise)
+  //   3. current = 0, peak > 0         → "5m peak 24/min sent" — bus is
+  //      idle now but had recent traffic, useful "not broken, just quiet
+  //      since the burst" signal
+  //   4. current = 0, peak = 0         → null — the cumulative metrics
+  //      line above already tells operators "the bus is up but quiet"
+  const recentRates = sseBus.recentRates ?? [];
+  const pub5mPeak =
+    recentRates.length > 0 ? Math.max(...recentRates.map((r) => r.pubPerMin)) : 0;
+  const recv5mPeak =
+    recentRates.length > 0 ? Math.max(...recentRates.map((r) => r.recvPerMin)) : 0;
+  const sentPart = formatRateForSide("sent", rates?.pubPerMin ?? 0, pub5mPeak);
+  const recvPart = formatRateForSide("received", rates?.recvPerMin ?? 0, recv5mPeak);
+  const rateParts = [sentPart, recvPart].filter((x): x is string => x !== null);
+  const showRate = rateParts.length > 0;
 
   // Build the "recent errors" list from the snapshot. Both timestamps are
   // 0 by default (sentinel for "never"); we only render the expander row
