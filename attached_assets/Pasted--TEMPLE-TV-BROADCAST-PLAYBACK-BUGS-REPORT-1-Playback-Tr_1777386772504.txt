@@ -1,0 +1,119 @@
+🐛 TEMPLE TV — BROADCAST PLAYBACK BUGS REPORT
+🔴 1. Playback Transition Black Screen Bug (CRITICAL)
+Root Cause
+Video element is being destroyed or reinitialized on every switch
+HLS/DASH player reboots between sources
+Symptom
+Black screen between videos
+Visible flicker or frame drop during transitions
+Impact
+Breaks “TV channel continuity”
+Most severe UX failure
+🟠 2. No Dual-Buffer Architecture (ARCHITECTURAL BUG)
+Root Cause
+Single-player design instead of ACTIVE + PRELOAD system
+Symptom
+Next video only loads after current ends
+No overlap buffering
+Impact
+Causes playback gap and startup latency per video
+🔴 3. Polling Overload Bug (PERFORMANCE + SCALABILITY)
+Root Cause
+Repeated calls to:
+/api/broadcast/current
+/api/videos/*/source
+Symptom
+Network congestion
+Delayed playback sync
+Battery + CPU drain on mobile/TV
+Impact
+System behaves like a web app, not a broadcast system
+🔴 4. 302 Redirect Streaming Bug (CRITICAL MEDIA FAILURE)
+Root Cause
+Video URLs resolve via redirect chains instead of direct CDN links
+Symptom
+Delay before playback starts
+Random buffering gaps
+Unstable streaming across networks
+Impact
+Adds unpredictable latency + broken preload reliability
+🟠 5. Missing Preload Window Bug
+Root Cause
+Next video not loaded 10–15 seconds before end
+Symptom
+Player waits until last moment to fetch next stream
+Impact
+Guaranteed playback gap under network variance
+🔴 6. Player Reinitialization Bug
+Root Cause
+Player instance recreated per video
+Symptom
+HLS rebuffering every transition
+DOM re-render delays
+Impact
+Breaks continuous playback model completely
+🟠 7. Buffer Underflow Bug (NETWORK SENSITIVITY)
+Root Cause
+Insufficient buffering strategy (no multi-level prebuffer queue)
+Symptom
+Playback stalls on weak networks
+Mid-video freezing
+Impact
+Unreliable streaming in real-world conditions
+🔴 8. Lack of Event-Driven Sync (ARCHITECTURE BUG)
+Root Cause
+No WebSocket / Redis pub-sub event system
+Symptom
+Clients out of sync
+Delayed playlist updates
+Inconsistent broadcast state
+Impact
+Multi-device drift (Web ≠ Mobile ≠ TV)
+🟠 9. Missing Continuous HLS Pipeline
+Root Cause
+Videos treated as isolated assets instead of a continuous stream
+Symptom
+Start/stop behavior instead of linear TV flow
+Impact
+Not a “channel”, just a playlist player
+🔴 10. Frame Transition Flash Bug
+Root Cause
+DOM clears video surface before next frame is ready
+Symptom
+Flash of black or empty frame between swaps
+Impact
+Visually breaks broadcast immersion
+🟠 11. Memory Leak / Player Accumulation Bug
+Root Cause
+Old video instances not properly reused or cleaned
+Symptom
+Increasing RAM usage over time
+Slowdowns after long playback sessions
+Impact
+Critical for Smart TVs and long-running streams
+🔴 12. Multi-Device Desync Bug
+Root Cause
+No centralized playback state synchronization (Redis missing or unused)
+Symptom
+Different devices show different videos at same time
+Impact
+Broadcast inconsistency across platforms
+⚠️ SUMMARY (SYSTEM LEVEL FAILURE)
+
+Your system currently behaves like:
+
+❌ “playlist-based web video app”
+
+Instead of:
+
+✅ “linear 24/7 television broadcast engine”
+
+🎯 PRIORITY FIX ORDER
+Dual-buffer playback engine
+Remove polling → WebSocket + Redis
+Replace 302 redirects with direct CDN/HLS URLs
+Add 10s+ preload pipeline
+Stop player reinitialization
+Implement continuous HLS streaming model
+Fix transition black frame issue
+Add distributed sync layer
