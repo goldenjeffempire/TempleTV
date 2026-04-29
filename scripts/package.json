@@ -17,7 +17,8 @@
     "verify-db-schema-completeness": "tsx ./src/verify-db-schema-completeness.ts",
     "verify-catalog-callsites": "tsx ./src/verify-catalog-callsites.ts",
     "run-typechecks": "tsx ./src/run-typechecks.ts",
-    "typecheck": "NODE_OPTIONS='--max-old-space-size=4096' tsc -p tsconfig.json --noEmit"
+    "typecheck": "NODE_OPTIONS='--max-old-space-size=4096' tsc -p tsconfig.json --noEmit",
+    "verify-production-readiness": "tsx ./src/verify-production-readiness.ts"
   },
   "dependencies": {
     "@workspace/db": "workspace:*",
