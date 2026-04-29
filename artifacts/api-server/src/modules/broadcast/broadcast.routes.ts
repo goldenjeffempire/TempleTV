@@ -112,4 +112,109 @@ export async function broadcastRoutes(app: FastifyInstance) {
     },
     async () => ({ channelId: broadcastEngine.channelId, count: broadcastEngine.getViewerCount() }),
   );
+
+  // ── Guide / EPG ─────────────────────────────────────────────────────────
+  // Lightweight EPG projection of the broadcast snapshot — what the TV
+  // bundle's `useGuide()` polls to populate the channel guide overlay.
+  // We use the engine's existing `upcoming` projection (already 5 items
+  // forward) and stitch `current` onto the front, so the wire shape is
+  // a flat list of programs with absolute start/end timestamps the
+  // client can sort and group by hour.
+
+  const GuideEntrySchema = z.object({
+    id: z.string(),
+    title: z.string(),
+    thumbnailUrl: z.string(),
+    durationSecs: z.number().int().positive(),
+    startsAt: z.string(),
+    endsAt: z.string(),
+    isCurrent: z.boolean(),
+  });
+  const GuideResponseSchema = z.object({
+    channelId: z.string(),
+    generatedAt: z.string(),
+    entries: z.array(GuideEntrySchema),
+  });
+
+  r.get(
+    "/guide",
+    {
+      schema: {
+        tags: ["broadcast"],
+        summary: "Channel guide — current + upcoming programs",
+        response: { 200: GuideResponseSchema },
+      },
+    },
+    async () => {
+      const snap = broadcastService.snapshot();
+      const entries: z.infer<typeof GuideEntrySchema>[] = [];
+      if (snap.current) {
+        entries.push({
+          id: snap.current.id,
+          title: snap.current.title,
+          thumbnailUrl: snap.current.thumbnailUrl,
+          durationSecs: snap.current.durationSecs,
+          startsAt: snap.current.startsAt,
+          endsAt: snap.current.endsAt,
+          isCurrent: true,
+        });
+      }
+      for (const it of snap.upcoming) {
+        entries.push({
+          id: it.id,
+          title: it.title,
+          thumbnailUrl: it.thumbnailUrl,
+          durationSecs: it.durationSecs,
+          startsAt: it.startsAt,
+          endsAt: it.endsAt,
+          isCurrent: false,
+        });
+      }
+      return {
+        channelId: snap.channelId,
+        generatedAt: snap.generatedAt,
+        entries,
+      };
+    },
+  );
+
+  // ── Playback-quality telemetry ──────────────────────────────────────────
+  // The TV's `HlsVideoPlayer` POSTs periodic playback-health samples
+  // (buffer level, dropped frames, bitrate, stalls) to this endpoint.
+  // We log them through the request logger — same firehose pattern as
+  // `/client-errors` — and ack 202. No DB write; aggregates can be
+  // computed by tailing the structured logs.
+
+  const PlaybackTelemetrySchema = z
+    .object({
+      videoId: z.string().max(256).optional(),
+      sessionId: z.string().max(128).optional(),
+      platform: z.string().max(32).optional(),
+      bufferedSecs: z.number().nonnegative().optional(),
+      droppedFrames: z.number().int().nonnegative().optional(),
+      bitrateKbps: z.number().nonnegative().optional(),
+      stalls: z.number().int().nonnegative().optional(),
+      currentTimeSecs: z.number().nonnegative().optional(),
+      occurredAt: z.string().datetime().optional(),
+    })
+    .passthrough();
+
+  r.post(
+    "/playback-telemetry",
+    {
+      schema: {
+        tags: ["broadcast"],
+        summary: "Ingest a playback-quality sample from a TV/mobile client",
+        body: PlaybackTelemetrySchema,
+        response: {
+          202: z.object({ ok: z.literal(true), receivedAt: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      req.log.info({ playbackTelemetry: req.body }, "[playback-telemetry]");
+      reply.code(202);
+      return { ok: true as const, receivedAt: new Date().toISOString() };
+    },
+  );
 }

@@ -30,6 +30,9 @@ import { notificationsRoutes } from "./modules/notifications/notifications.route
 import { liveOverridesRoutes } from "./modules/live-overrides/live-overrides.routes.js";
 import { adminRoutes } from "./modules/admin/admin.routes.js";
 import { adminOpsRoutes } from "./modules/admin-ops/admin-ops.routes.js";
+import { telemetryRoutes } from "./modules/telemetry/telemetry.routes.js";
+import { playbackRoutes } from "./modules/playback/playback.routes.js";
+import { youtubeLiveRoutes } from "./modules/youtube-live/youtube-live.routes.js";
 
 const API_PREFIX = "/api/v1";
 
@@ -136,6 +139,15 @@ export async function buildApp(): Promise<FastifyInstance> {
     // disjoint by design (see admin-ops.routes.ts header).
     await instance.register(adminOpsRoutes, { prefix: "/admin" });
     await instance.register(chatRoutes, { prefix: "/chat" });
+    // Phase-2 ingest + push gateways for the new dual-buffer player and
+    // crash-report firehose. `playbackRoutes` registers HTTP `/state` and
+    // WebSocket `/ws`; `youtubeLiveRoutes` provides the SSE channel the
+    // admin Live Monitor subscribes to (poller currently disabled, so the
+    // gateway emits a single `state: disabled` event and keeps alive);
+    // `telemetryRoutes` ingests `/client-errors` from every surface.
+    await instance.register(playbackRoutes, { prefix: "/playback" });
+    await instance.register(youtubeLiveRoutes, { prefix: "/youtube/live" });
+    await instance.register(telemetryRoutes);
     await instance.register(sseRoutes);
     await instance.register(wsRoutes);
   };

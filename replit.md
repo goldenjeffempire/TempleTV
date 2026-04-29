@@ -108,6 +108,55 @@ Verified: the 18 GET endpoints return 200, `POST /alerts/test`,
 octet-stream body with the expected `content-disposition` header. The
 seven Phase-1 core endpoints continue to return 200.
 
+## April 29 2026 — Phase 2 cont'd: ingest + push gateways
+
+Added the remaining endpoints the admin/TV/mobile bundles call but
+that didn't exist on the new server, in three small modules + two
+additions to `broadcast.routes.ts`:
+
+- **`modules/telemetry/telemetry.routes.ts`** — `POST /client-errors`
+  (no prefix). Validates the cross-platform `ClientErrorSchema`
+  (platform, errorName, errorMessage, stack, componentStack, context,
+  occurredAt) all four error boundaries POST to, logs the report
+  through the request logger (so it flows to pino → Sentry breadcrumbs
+  via `instrument.mjs`) and acks 202. No DB write — these are
+  firehose events.
+
+- **`modules/playback/playback.routes.ts`** — mounted at `/playback`.
+  - `GET /state` projects `broadcastEngine.snapshot()` into the
+    `WirePlaybackState` shape the new dual-buffer player and TV's
+    `useLiveSync` consume (`current` / `next` / `nextNext` items with
+    `source: { kind, url, expiresAtMs }` and `startsAtMs/endsAtMs`).
+    Source-kind classification: `videoSource === "youtube"` → bare
+    11-char videoId; `.m3u8` URL or `videoSource === "hls"` → HLS;
+    everything else → mp4.
+  - `WS /ws` mirrors the broadcast engine's event stream
+    (`snapshot|advance|preload|viewer-count`) into the new
+    `state | preload | ping` envelope with a 25-s heartbeat. Verified
+    101 Switching Protocols + initial `state: initial` envelope.
+
+- **`modules/youtube-live/youtube-live.routes.ts`** — mounted at
+  `/youtube/live`. `GET /events` is the SSE channel the admin Live
+  Monitor subscribes to. The YT poller is in a skipped phase, so the
+  gateway emits a single `state: { enabled: false, reason:
+  "youtube-live-poller-disabled-in-build" }` event on connect, then
+  holds the connection open with `: ping` heartbeats every 25 s. The
+  admin renders a clean "poller off" badge instead of churning
+  EventSource reconnects.
+
+- **`broadcast.routes.ts` additions:** `GET /guide` (EPG projection of
+  current + 5 upcoming items for `useGuide()`), `POST
+  /playback-telemetry` (TV's HLS player periodically POSTs
+  buffer/dropped-frames/bitrate/stalls samples; we log + ack 202).
+
+Verified end-to-end: `GET /api/v1/playback/state` → 200, `GET
+/api/v1/broadcast/guide` → 200, `POST /api/v1/client-errors` → 202,
+`POST /api/v1/broadcast/playback-telemetry` → 202, SSE
+`/api/v1/youtube/live/events` emits the expected disabled-state event,
+WS `/api/v1/playback/ws` completes the upgrade handshake and pushes
+the initial state envelope. All Phase-1 routes and the Phase-2 admin
+ops endpoints continue to return 200.
+
 ## April 28 2026 — Production-readiness hardening pass (Replit env)
 
 The April rebuild API is up and serving on Replit Autoscale. This pass
