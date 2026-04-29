@@ -1528,4 +1528,151 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       viewerCount: broadcastEngine.getViewerCount(),
     }),
   );
+
+  // ── /admin/live/health ──────────────────────────────────────────────────
+  // Lightweight summary the Live Control page polls for its top-of-page
+  // status pill. Computed inline (no DB) so it stays cheap to poll on a
+  // 5-second interval. Anything that requires a row scan should live in
+  // the dedicated `/admin/live-ingest/*` endpoints, which are slower
+  // but correct for the deeper diagnostics view.
+  r.get(
+    "/live/health",
+    {
+      preHandler: requireAuth("editor"),
+      schema: {
+        tags: ["admin-ops"],
+        summary: "Cheap live-pipeline health summary for the admin status pill",
+        response: {
+          200: z.object({
+            status: z.enum(["healthy", "degraded", "unknown"]),
+            viewerCount: z.number().int().nonnegative(),
+            queueDepth: z.number().int().nonnegative(),
+            currentItemId: z.string().nullable(),
+            checkedAt: z.string(),
+          }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async () => {
+      const snap = broadcastEngine.snapshot();
+      const queueDepth = snap.upcoming.length + (snap.next ? 1 : 0) + (snap.current ? 1 : 0);
+      // Status semantics:
+      //   healthy  — at least a current item AND a next item queued
+      //   degraded — current playing but nothing queued behind it (about to repeat)
+      //   unknown  — no current item at all (engine empty / cold-start)
+      const status: "healthy" | "degraded" | "unknown" =
+        snap.current && snap.next
+          ? "healthy"
+          : snap.current
+            ? "degraded"
+            : "unknown";
+      return {
+        status,
+        viewerCount: broadcastEngine.getViewerCount(),
+        queueDepth,
+        currentItemId: snap.current?.id ?? null,
+        checkedAt: new Date().toISOString(),
+      };
+    },
+  );
+
+  // ── /admin/live/events (SSE) ────────────────────────────────────────────
+  // Server-Sent Events stream for the admin Live Control page. Bridges
+  // the in-process `broadcastEngine` event bus directly to the browser
+  // so editors see queue advances / preload windows / viewer-count
+  // ticks in real time without polling.
+  //
+  // Why not reuse `/realtime/sse`? That endpoint is unauthenticated
+  // (anyone — including embedded TV clients — can subscribe to
+  // public broadcast snapshots). The admin variant requires editor auth
+  // and may grow to emit privileged events (moderation actions, ingest
+  // health changes, etc.) that we do NOT want to leak to viewers.
+  //
+  // Auth note: EventSource cannot send custom headers in browsers, so
+  // the admin SPA passes the bearer either as `Authorization` (when
+  // proxying through fetch) or as `?token=` (when using the native
+  // EventSource API). Both flows are accepted below.
+  app.get<{ Querystring: { platform?: string; token?: string } }>(
+    "/live/events",
+    async (req, reply) => {
+      // Inline auth check that supports the `?token=` query param. We
+      // can't put this behind `requireAuth()` because that helper only
+      // looks at the Authorization header.
+      const headerToken = (() => {
+        const h = req.headers.authorization;
+        const m = h && /^Bearer\s+(.+)$/i.exec(h);
+        return m?.[1] ?? null;
+      })();
+      const queryToken = typeof req.query?.token === "string" ? req.query.token : null;
+      const token = headerToken ?? queryToken;
+      if (!token) {
+        reply.code(401).send({ error: "missing bearer token" });
+        return;
+      }
+      // Reuse the same verification path as `requireAuth` — accept the
+      // legacy ADMIN_API_TOKEN OR a JWT issued to an editor+ user.
+      const { env } = await import("../../config/env.js");
+      const { verifyAccessToken } = await import("../auth/jwt.js");
+      const { requireRole } = await import("../auth/rbac.js");
+      try {
+        if (env.ADMIN_API_TOKEN && token === env.ADMIN_API_TOKEN) {
+          // system token — always permitted
+        } else {
+          const decoded = verifyAccessToken(token);
+          requireRole(decoded.role, "editor");
+        }
+      } catch {
+        reply.code(401).send({ error: "invalid token" });
+        return;
+      }
+
+      reply.raw.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+
+      const send = (event: string, data: unknown) => {
+        try {
+          reply.raw.write(`event: ${event}\n`);
+          reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+        } catch {
+          /* socket gone — close handler will clean up */
+        }
+      };
+
+      // Initial snapshot so the client UI can render immediately
+      // without waiting for the first engine event.
+      send("snapshot", broadcastEngine.snapshot());
+      send("viewer-count", { count: broadcastEngine.getViewerCount() });
+
+      const onEvent = (e: { type: string; data: unknown }) => {
+        send(e.type, e.data);
+      };
+      broadcastEngine.on("event", onEvent);
+
+      const heartbeat = setInterval(() => {
+        try {
+          reply.raw.write(`: ping\n\n`);
+        } catch {
+          /* ignore — close handler will clean up */
+        }
+      }, 25_000);
+
+      const cleanup = () => {
+        clearInterval(heartbeat);
+        broadcastEngine.off("event", onEvent);
+        try {
+          reply.raw.end();
+        } catch {
+          /* ignore */
+        }
+      };
+
+      req.raw.on("close", cleanup);
+      req.raw.on("error", cleanup);
+    },
+  );
 }

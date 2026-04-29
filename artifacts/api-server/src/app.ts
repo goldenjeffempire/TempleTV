@@ -34,6 +34,13 @@ import { telemetryRoutes } from "./modules/telemetry/telemetry.routes.js";
 import { playbackRoutes } from "./modules/playback/playback.routes.js";
 import { youtubeLiveRoutes } from "./modules/youtube-live/youtube-live.routes.js";
 import { mediaUploadsRoutes } from "./modules/media-uploads/media-uploads.routes.js";
+import { adminBroadcastRoutes } from "./modules/admin-broadcast/admin-broadcast.routes.js";
+import { adminVideosRoutes } from "./modules/admin-videos/admin-videos.routes.js";
+import { liveIngestRoutes } from "./modules/live-ingest/live-ingest.routes.js";
+import { prayersAdminRoutes } from "./modules/prayers/prayers.routes.js";
+import { scheduledNotificationsRoutes } from "./modules/scheduled-notifications/scheduled-notifications.routes.js";
+import { launchReadinessRoutes } from "./modules/launch-readiness/launch-readiness.routes.js";
+import { adminChatRoutes } from "./modules/admin-chat/admin-chat.routes.js";
 
 const API_PREFIX = "/api/v1";
 
@@ -143,6 +150,20 @@ export async function buildApp(): Promise<FastifyInstance> {
     // Same `/admin` prefix as adminRoutes / adminOpsRoutes — route paths
     // are disjoint (`/videos/upload/s3-multipart-*`).
     await instance.register(mediaUploadsRoutes, { prefix: "/admin" });
+    // Admin SPA legacy aliases + new specialised admin surfaces. Each of
+    // these mounts under `/admin` and their route paths are mutually
+    // disjoint (broadcast/, videos, prayers/, notifications/{scheduled,
+    // schedule}, launch/readiness, live-ingest/, chat/{messages,moderate}).
+    // Keeping them as separate plugins (rather than appending to
+    // adminRoutes / adminOpsRoutes) makes ownership obvious and lets each
+    // feature be deleted in one `git rm` if/when the SPA migrates off it.
+    await instance.register(adminBroadcastRoutes, { prefix: "/admin" });
+    await instance.register(adminVideosRoutes, { prefix: "/admin" });
+    await instance.register(liveIngestRoutes, { prefix: "/admin" });
+    await instance.register(prayersAdminRoutes, { prefix: "/admin" });
+    await instance.register(scheduledNotificationsRoutes, { prefix: "/admin" });
+    await instance.register(launchReadinessRoutes, { prefix: "/admin" });
+    await instance.register(adminChatRoutes, { prefix: "/admin" });
     await instance.register(chatRoutes, { prefix: "/chat" });
     // Phase-2 ingest + push gateways for the new dual-buffer player and
     // crash-report firehose. `playbackRoutes` registers HTTP `/state` and

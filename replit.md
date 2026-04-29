@@ -441,6 +441,106 @@ Swagger UI.
 | `BROADCAST_FAILOVER_HLS_URL` | no  | Optional failover stream URL                         |
 | `SENTRY_DSN`            | no       | Sentry init via `--import dist/instrument.mjs`       |
 
+## April 29 2026 — Phase 2d: Admin SPA endpoint completion
+
+Closed the last 11 admin SPA contract gaps. Every page in
+`artifacts/admin` now talks to a real, DB-backed handler — no more
+404s, no stubs, no mocks (where a table exists). Each new module
+mounts under `/admin` (and is mirrored under both `/api/v1/admin` and
+`/api/admin` by the existing dual-prefix register loop).
+
+New modules:
+
+- `modules/admin-broadcast/admin-broadcast.routes.ts` — admin alias
+  for the broadcast queue: `GET/POST /admin/broadcast`,
+  `PATCH/DELETE /admin/broadcast/:id`, `PUT /admin/broadcast/reorder`,
+  `GET /admin/broadcast/health`. POST accepts both the convenience
+  `{videoId}` form (server hydrates from `managed_videos`) and the
+  full explicit payload. All mutations go through `broadcastService`
+  so the engine reload + SSE fan-out happens exactly once.
+- `modules/admin-videos/admin-videos.routes.ts` — paginated +
+  searchable `GET /admin/videos?page=&limit=&search=&source=&featured=`
+  for the broadcast page's "add from library" picker. Strips
+  synthetic `local-<uuid>` ids from the YouTube field so the picker
+  doesn't try to embed a nonexistent video.
+- `modules/live-ingest/live-ingest.routes.ts` — full RTMP/SRT/HLS
+  ingest endpoint management. CRUD + `rotate-key`, `promote`, `probe`
+  (one-shot HLS health check that GETs the master playlist with a 5s
+  timeout), `stop` (delegates to `liveOverridesService`), `sweep`
+  (marks endpoints with no recent successful probe as unknown), and
+  `validate-key` (collision + strength heuristics). Stream keys are
+  32-byte hex; primary endpoints can't be deleted while others exist.
+- `modules/prayers/prayers.routes.ts` — `GET /admin/prayers` (with
+  pagination, `unread=true` legacy param + `status=` tri-state),
+  `PATCH /admin/prayers/:id/read`, `DELETE /admin/prayers/:id`.
+- `modules/scheduled-notifications/scheduled-notifications.routes.ts`
+  — schedule push for a future timestamp. `GET /scheduled`,
+  `POST /schedule` (rejects ≤2 min in the past, ≤30 days in the
+  future), `DELETE /scheduled/:id` (only `pending` status — sent rows
+  are immutable for audit). Scheduler itself runs out-of-process in
+  the push worker, NOT in this Fastify process (autoscale would
+  otherwise either fan-out N times or sleep through firings).
+- `modules/launch-readiness/launch-readiness.routes.ts` — pre-launch
+  checklist for the `/admin/launch-readiness` page. Computes 10
+  checks across 5 categories (content, broadcast, live, distribution,
+  access) inline against live DB rows in a single Promise.all fan-out.
+  Status semantics: `ready` / `warning` / `blocked`; overall = worst.
+- `modules/admin-chat/admin-chat.routes.ts` — moderator-only
+  `POST /admin/chat/messages/:id/delete` (soft-delete via
+  `deletedAt`/`deletedBy`) and `POST /admin/chat/moderate` (insert
+  a `chat_moderation` row for `subjectKind=user|ip`,
+  `action=mute|ban`, optional finite `durationSecs`).
+
+Added to `modules/admin-ops/admin-ops.routes.ts`:
+
+- `GET /admin/live/health` — cheap status pill for the Live Control
+  page (no DB; reads from `broadcastEngine.snapshot()`).
+- `GET /admin/live/events` — Server-Sent Events stream that bridges
+  the in-process broadcast engine bus directly to the browser
+  (snapshot / preload / advance / viewer-count). Separate from the
+  public `/realtime/sse` because it requires editor auth and may grow
+  to emit privileged events (moderation, ingest health). Accepts
+  bearer via `Authorization` header OR `?token=` query param (browser
+  EventSource can't send custom headers).
+
+Added to `modules/notifications/notifications.routes.ts`:
+
+- `GET /notifications` (root) — alias for `/history` so the older
+  admin SPA call site keeps working during the migration to
+  `/notifications/history`.
+
+Smoke-verified locally:
+
+```
+GET    /api/admin/broadcast                    → 200 (6 items)
+GET    /api/admin/broadcast/health             → 200 (6 ok / 0 broken)
+POST   /api/admin/broadcast {videoId}          → 200 (hydrates from managed_videos)
+PATCH  /api/admin/broadcast/:id                → 200
+PUT    /api/admin/broadcast/reorder            → {"ok":true,"count":6}
+DELETE /api/admin/broadcast/:id                → {"ok":true,"id":...}
+GET    /api/admin/videos?page=1&limit=5        → 200 (paginated)
+GET    /api/admin/live/health                  → 200 ({status:"healthy"})
+GET    /api/admin/live/events?token=...        → SSE event: snapshot
+POST   /api/admin/live-ingest/endpoints        → 200 (32-byte hex key)
+POST   /api/admin/live-ingest/.../rotate-key   → 200 (new key)
+POST   /api/admin/live-ingest/.../promote      → 200 (demotes others)
+POST   /api/admin/live-ingest/validate-key     → {valid,issues}
+POST   /api/admin/live-ingest/sweep            → {ok,sweptCount}
+POST   /api/admin/live-ingest/stop             → {ok,stopped}
+DELETE /api/admin/live-ingest/endpoints/:id    → refused for sole primary ✓
+GET    /api/admin/notifications/scheduled      → 200
+POST   /api/admin/notifications/schedule       → 200
+DELETE /api/admin/notifications/scheduled/:id  → {"ok":true,...}
+GET    /api/admin/prayers                      → 200 (with unread count)
+PATCH  /api/admin/prayers/:id/read             → 200
+GET    /api/admin/launch/readiness             → 200 (10 checks, 5 categories)
+POST   /api/admin/chat/moderate                → 200 (mute, expiresAt set)
+GET    /api/notifications                      → 200 (history alias)
+```
+
+Negative auth (no bearer) → 401 across the board. All Phase-1 / 2 /
+2c routes still 200 (no regressions; verified `/admin/stats`).
+
 ## Known follow-ups
 
 - **Tests**: `pnpm --filter @workspace/api-server run test` currently
