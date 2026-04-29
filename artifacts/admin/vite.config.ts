@@ -74,24 +74,38 @@ export default defineConfig({
     port,
     host: "0.0.0.0",
     allowedHosts: true,
-    proxy: {
-      "/api/admin/videos/upload": {
-        target: "http://localhost:8080",
-        changeOrigin: true,
-        secure: false,
-        timeout: 300_000,
-        proxyTimeout: 300_000,
-      },
-      "/api": {
-        target: "http://localhost:8080",
-        changeOrigin: true,
-        secure: false,
-        // Forward WebSocket upgrades for /api/playback/ws so the admin
-        // PlaybackClient can connect to the playback engine through the
-        // same dev origin it uses for HTTP.
-        ws: true,
-      },
-    },
+    proxy: (() => {
+      // The dev API server listens on whatever port `Start application` was
+      // launched with. The Replit workflow uses `PORT=5000`; the prior Render
+      // local-dev convention used 8080. Honor an explicit override
+      // (`API_DEV_PORT`) and otherwise default to the Replit workflow port so
+      // the admin SPA's `/api/...` calls resolve out-of-the-box.
+      const apiDevPort = process.env.API_DEV_PORT ?? "5000";
+      const target = `http://localhost:${apiDevPort}`;
+      return {
+        "/api/admin/videos/upload": {
+          target,
+          changeOrigin: true,
+          secure: false,
+          timeout: 300_000,
+          proxyTimeout: 300_000,
+        },
+        "/api": {
+          target,
+          changeOrigin: true,
+          secure: false,
+          // Forward WebSocket upgrades for /api/playback/ws so the admin
+          // PlaybackClient can connect to the playback engine through the
+          // same dev origin it uses for HTTP.
+          ws: true,
+        },
+        // Health probes are served at the root (`/healthz`, `/readyz`) by
+        // the Fastify server; the SPA hits `/healthz` directly through the
+        // global ApiHealthContext, so route it to the same backend.
+        "/healthz": { target, changeOrigin: true, secure: false },
+        "/readyz": { target, changeOrigin: true, secure: false },
+      };
+    })(),
     fs: {
       strict: true,
       deny: ["**/.*"],

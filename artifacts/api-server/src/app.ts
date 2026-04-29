@@ -108,24 +108,34 @@ export async function buildApp(): Promise<FastifyInstance> {
   }));
 
   await app.register(healthRoutes);
+  // Health probe alias under /api so the admin SPA's `apiUrl("/healthz")`
+  // — which prefixes /api in dev — resolves correctly without the SPA
+  // having to special-case the unversioned root path.
+  await app.register(healthRoutes, { prefix: "/api" });
   await app.register(adminUiRoutes);
 
-  await app.register(
-    async (instance) => {
-      await instance.register(authRoutes, { prefix: "/auth" });
-      await instance.register(mediaRoutes, { prefix: "/media" });
-      await instance.register(broadcastRoutes, { prefix: "/broadcast" });
-      await instance.register(playlistsRoutes, { prefix: "/playlists" });
-      await instance.register(scheduleRoutes, { prefix: "/schedule" });
-      await instance.register(notificationsRoutes, { prefix: "/notifications" });
-      await instance.register(liveOverridesRoutes, { prefix: "/live" });
-      await instance.register(adminRoutes, { prefix: "/admin" });
-      await instance.register(chatRoutes, { prefix: "/chat" });
-      await instance.register(sseRoutes);
-      await instance.register(wsRoutes);
-    },
-    { prefix: API_PREFIX },
-  );
+  // Domain modules. Registered under both `/api/v1` (the canonical, versioned
+  // path used by typed clients and OpenAPI) and `/api` (versionless legacy
+  // path that the in-tree admin SPA was originally written against). Routing
+  // both prefixes to the same handlers lets the SPA migration land
+  // incrementally without breaking existing call sites or duplicating route
+  // logic. New external consumers should use /api/v1 only.
+  const registerDomainRoutes = async (instance: FastifyInstance) => {
+    await instance.register(authRoutes, { prefix: "/auth" });
+    await instance.register(mediaRoutes, { prefix: "/media" });
+    await instance.register(broadcastRoutes, { prefix: "/broadcast" });
+    await instance.register(playlistsRoutes, { prefix: "/playlists" });
+    await instance.register(scheduleRoutes, { prefix: "/schedule" });
+    await instance.register(notificationsRoutes, { prefix: "/notifications" });
+    await instance.register(liveOverridesRoutes, { prefix: "/live" });
+    await instance.register(adminRoutes, { prefix: "/admin" });
+    await instance.register(chatRoutes, { prefix: "/chat" });
+    await instance.register(sseRoutes);
+    await instance.register(wsRoutes);
+  };
+
+  await app.register(registerDomainRoutes, { prefix: API_PREFIX });
+  await app.register(registerDomainRoutes, { prefix: "/api" });
 
   return app;
 }

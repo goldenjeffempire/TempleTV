@@ -11,6 +11,51 @@ source of truth**; the front-end packages (admin / mobile / tv) are now
 running against compatibility stubs and will be re-integrated against
 the new contract over the coming weeks.
 
+## April 29 2026 — Phase 1: Front-end migration to /api/v1 (Replit)
+
+The Replit dev environment now has the admin SPA, the TV SPA, and the
+core mobile broadcast endpoints fully wired through to the new API
+server. Three coordinated changes closed the loop:
+
+1. **Dual-prefix route registration** in `artifacts/api-server/src/app.ts`.
+   Extracted the per-module `register()` calls into a
+   `registerDomainRoutes()` plugin and mounted it twice — once at the
+   canonical `/api/v1` prefix (the OpenAPI contract) and once at `/api`
+   (legacy). `healthRoutes` is also registered under `/api` so
+   `/api/healthz` works alongside `/healthz`. The legacy prefix lets the
+   existing admin / mobile / tv code (which still calls bare `/api/...`
+   paths via the shared `lib/api-client-react` and per-app services)
+   resolve without rewriting every call-site.
+2. **Vite dev-proxy targets fixed** in `artifacts/admin/vite.config.ts`
+   and `artifacts/tv/vite.config.ts`. Both were hard-coded to
+   `http://localhost:8080` (the Render local-dev convention) but the
+   Replit `Start application` workflow runs the API on `PORT=5000`. The
+   proxy now reads `API_DEV_PORT` (default `5000`), so the admin/tv
+   `/api/...` (and `/healthz`, `/readyz`) calls land on the running
+   Fastify server instead of returning 502.
+3. **Verified end-to-end** through the artifact preview ports:
+   - Admin (port 3002): `/api/v1/admin/{stats,analytics,users}`,
+     `/api/v1/{media,playlists,schedule,notifications/history,
+     live/status,live/recent}` — all 200. The AuthGate prompt now
+     renders correctly instead of looping on "Verifying admin access".
+   - TV (port 4200): `/tv/`, `/api/healthz`,
+     `/api/v1/broadcast/current`, `/api/v1/schedule` — all 200.
+   - Mobile: not booted (Expo workflow stays cold by default), but the
+     core `/api/broadcast/current` path the bundle reads through
+     `getApiBase()` returns 200 against the same server. Auth-flow
+     paths (`/api/auth/*`, `/api/user/favorites|history`) are out of
+     scope for this phase per product direction (no auth/AI/login).
+
+Operational/observability admin pages (`/admin/diagnostics/*`,
+`/admin/alerts/*`, `/admin/sse-bus`, `/admin/transcoding/queue`,
+`/admin/uploads/active`, `/admin/youtube/quota*`, chunked + S3
+multipart upload routes, `/playback/state`, `/youtube/live/events`,
+`/client-errors`) call endpoints that don't exist on the new server
+yet. Those tabs are expected to render their empty / "service
+unavailable" fallbacks; the seven core React-Query-backed pages
+(dashboard, videos, users, notifications, analytics, schedule,
+playlists) are the green path.
+
 ## April 28 2026 — Production-readiness hardening pass (Replit env)
 
 The April rebuild API is up and serving on Replit Autoscale. This pass

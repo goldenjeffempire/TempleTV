@@ -76,19 +76,30 @@ export default defineConfig({
     port,
     host: "0.0.0.0",
     allowedHosts: true,
-    proxy: {
-      "/api": {
-        target: "http://localhost:8080",
-        changeOrigin: true,
-        secure: false,
-        // Forward WebSocket upgrades for /api/playback/ws so the TV's
-        // useLiveSync hook can connect to the playback engine through the
-        // same dev origin it uses for HTTP. Without this, the WS handshake
-        // would 404 at the dev server and useLiveSync would loop on its
-        // exponential-backoff reconnect timer.
-        ws: true,
-      },
-    },
+    proxy: (() => {
+      // Honor `API_DEV_PORT` and otherwise default to the Replit `Start
+      // application` workflow port (5000) so the TV SPA's `/api/...` calls
+      // proxy to the running Fastify server in dev. Falls back to 8080 only
+      // if the operator explicitly sets that override (the prior Render
+      // local-dev convention).
+      const apiDevPort = process.env.API_DEV_PORT ?? "5000";
+      const target = `http://localhost:${apiDevPort}`;
+      return {
+        "/api": {
+          target,
+          changeOrigin: true,
+          secure: false,
+          // Forward WebSocket upgrades for /api/playback/ws so the TV's
+          // useLiveSync hook can connect to the playback engine through the
+          // same dev origin it uses for HTTP. Without this, the WS handshake
+          // would 404 at the dev server and useLiveSync would loop on its
+          // exponential-backoff reconnect timer.
+          ws: true,
+        },
+        "/healthz": { target, changeOrigin: true, secure: false },
+        "/readyz": { target, changeOrigin: true, secure: false },
+      };
+    })(),
     fs: {
       strict: true,
       deny: ["**/.*"],
