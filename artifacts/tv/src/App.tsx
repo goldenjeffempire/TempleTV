@@ -3,6 +3,7 @@ import type { VideoItem } from "./lib/api";
 import { usePlatformInit } from "./hooks/usePlatformInit";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { TempleTvLogo } from "./components/TempleTvLogo";
+import { ConnectivityBanner } from "./components/ConnectivityBanner";
 
 const Home = lazy(() => import("./pages/Home").then((m) => ({ default: m.Home })));
 const TVGuide = lazy(() => import("./pages/TVGuide").then((m) => ({ default: m.TVGuide })));
@@ -136,6 +137,7 @@ export default function App() {
     // the rationale (TV hardware has no dev-tools / URL bar / app-kill
     // affordances available to a viewer).
     <ErrorBoundary>
+      <ConnectivityBanner />
       <Suspense fallback={<SplashFallback />}>{content}</Suspense>
     </ErrorBoundary>
   );
