@@ -1,0 +1,336 @@
+You are a Principal Software Architect, Senior Full Stack Engineer, OTT Streaming Systems Engineer, Mobile Engineer, Smart TV Engineer, and DevOps Lead.
+
+Objective:
+Upgrade and transform the existing Temple TV platform into a complete enterprise-grade OTT streaming, live broadcasting, and radio streaming ecosystem across web, mobile, smart TV, and admin systems without rebuilding from scratch.
+
+Analyze the entire existing codebase, architecture, infrastructure, APIs, media pipeline, streaming services, mobile apps, smart TV apps, and admin panel first before making changes.
+
+Implement all features professionally with production-grade architecture, scalability, maintainability, performance optimization, and real-world enterprise standards.
+
+---
+
+## CORE REQUIREMENTS
+
+Implement and fully integrate:
+
+* Live TV broadcasting system
+* 24/7 continuous broadcasting
+* Video-on-demand system
+* Radio/audio streaming system
+* Automatic video-to-audio conversion pipeline
+* Mobile streaming ecosystem
+* Smart TV ecosystem
+* Cast-to-TV functionality
+* Enterprise admin panel
+* Streaming infrastructure optimization
+* Cross-platform synchronization
+
+Do NOT add:
+
+* AI integrations/features
+* User authentication systems
+* Login/signup systems
+
+The platform must remain open-access for viewers.
+
+---
+
+## LIVE TV BROADCASTING SYSTEM
+
+Implement:
+
+* Ultra-low latency streaming
+* HLS streaming delivery
+* DASH streaming support
+* RTMP ingest support
+* Adaptive bitrate streaming
+* Auto quality switching
+* Stream failover protection
+* Auto reconnect handling
+* Live transcoding pipeline
+* Global CDN-ready architecture
+* Broadcast health monitoring
+
+Enhance live playback:
+
+* Near-zero buffering
+* Instant next-video transitions
+* Continuous autoplay broadcasting
+* Replay live streams
+* DVR rewind support
+
+Implement professional broadcast automation:
+
+* Scheduled broadcasting
+* Playlist-based broadcasting
+* Emergency stream override
+* Multi-source stream switching
+* Countdown timers
+* Broadcast overlays
+
+---
+
+## VIDEO ON DEMAND SYSTEM
+
+Implement:
+
+* Sermons library
+* Worship videos
+* Conference videos
+* Bible teaching archives
+* Shorts/Reels support
+* Podcast video support
+
+Add:
+
+* Continue watching
+* Watch history
+* Favorites/bookmarks
+* Related videos
+* Playlist system
+* Auto next playback
+* Offline downloads
+
+---
+
+## RADIO / AUDIO STREAMING SYSTEM
+
+Implement full radio streaming infrastructure.
+
+Add:
+
+* 24/7 radio streaming
+* Audio-only streaming mode
+* Worship radio streams
+* Podcast audio playback
+* Audio sermon streaming
+
+---
+
+## AUTOMATIC VIDEO → AUDIO CONVERSION
+
+CRITICAL FEATURE:
+
+Every uploaded video must automatically generate audio-only versions.
+
+Build automated media processing pipeline:
+
+Uploaded video
+→ extract audio automatically
+→ generate MP3/AAC/HLS audio streams
+→ store optimized audio assets
+→ link audio stream to original video
+
+Implement using FFmpeg-based processing services.
+
+Radio mode requirements:
+
+When user activates Radio Mode:
+
+* instantly switch from video playback to audio playback
+* preserve playback timestamp
+* disable video rendering
+* continue playback seamlessly
+* reduce bandwidth usage
+
+Support live stream audio extraction:
+
+Live video stream
+→ real-time audio extraction
+→ live radio stream generation
+
+---
+
+## MOBILE APPLICATION FEATURES
+
+Enhance Android/iOS apps with:
+
+* enterprise streaming architecture
+* optimized mobile UI/UX
+* background playback
+* picture-in-picture mode
+* offline downloads
+* gesture controls
+* fullscreen playback
+* adaptive streaming
+* low bandwidth optimization
+
+Implement radio mode:
+
+* background audio playback
+* lockscreen controls
+* Bluetooth controls
+* mini player
+* sleep timer
+
+---
+
+## SMART TV APPLICATIONS
+
+Enhance smart TV apps:
+
+* Android TV
+* Fire TV
+* Apple TV architecture support
+* Samsung TV compatibility architecture
+* LG webOS compatibility architecture
+
+Implement:
+
+* remote navigation optimization
+* TV-focused UI
+* instant playback
+* continue watching
+* fast navigation system
+
+---
+
+## CAST TO TV SYSTEM
+
+Implement:
+
+* Chromecast support
+* AirPlay support
+* Smart TV casting support
+* playback synchronization
+
+Enable:
+
+mobile playback
+→ cast to TV instantly
+→ continue synchronized playback
+
+---
+
+## ADMIN PANEL / CMS
+
+Upgrade admin panel into enterprise media management system.
+
+Implement:
+
+* video uploads
+* audio uploads
+* drag-and-drop uploads
+* bulk uploads
+* media scheduling
+* playlist management
+* live broadcast scheduling
+
+Add media processing management:
+
+* transcoding monitoring
+* audio extraction monitoring
+* subtitle management
+* thumbnail generation
+
+Implement broadcast controls:
+
+* start/stop streams
+* monitor live streams
+* stream analytics
+* emergency override system
+
+---
+
+## SYNC ACROSS ALL PLATFORMS
+
+Ensure all uploaded or updated content instantly synchronizes across:
+
+* web platform
+* mobile apps
+* smart TV apps
+* radio mode
+* live broadcast systems
+
+Changes must reflect globally in real time.
+
+---
+
+## NOTIFICATION SYSTEM
+
+Implement:
+
+* live stream notifications
+* scheduled broadcast reminders
+* announcements
+* push notifications for mobile
+
+---
+
+## SEARCH & CONTENT DISCOVERY
+
+Implement:
+
+* instant search
+* category filtering
+* trending content
+* recently added sections
+* content organization
+
+---
+
+## COMMUNITY FEATURES
+
+Implement:
+
+* live chat during broadcasts
+* comments system
+* prayer request system
+
+---
+
+## STREAMING PERFORMANCE OPTIMIZATION
+
+Optimize entire platform for:
+
+* ultra-fast playback startup
+* reduced buffering
+* adaptive bitrate optimization
+* edge caching readiness
+* CDN optimization
+
+---
+
+## INFRASTRUCTURE & DEVOPS
+
+Implement production-grade infrastructure:
+
+* scalable streaming architecture
+* containerized services
+* monitoring systems
+* auto-recovery services
+* backup systems
+* CI/CD readiness
+
+---
+
+## CODE QUALITY REQUIREMENTS
+
+Requirements:
+
+* modular architecture
+* scalable architecture
+* clean codebase
+* enterprise folder structure
+* strict typing
+* reusable components
+* production-ready APIs
+* optimized database queries
+* security best practices
+* fault-tolerant streaming architecture
+
+---
+
+## FINAL REQUIREMENT
+
+After implementation:
+
+* fix all existing issues
+* remove dead code
+* optimize performance
+* ensure platform stability
+* ensure all features work across all platforms
+* ensure production readiness
+* ensure deployment readiness
+
+Deliver the platform as a fully operational enterprise-grade global streaming and broadcasting ecosystem suitable for real-world production deployment.
