@@ -29,6 +29,7 @@ import { scheduleRoutes } from "./modules/schedule/schedule.routes.js";
 import { notificationsRoutes } from "./modules/notifications/notifications.routes.js";
 import { liveOverridesRoutes } from "./modules/live-overrides/live-overrides.routes.js";
 import { adminRoutes } from "./modules/admin/admin.routes.js";
+import { adminOpsRoutes } from "./modules/admin-ops/admin-ops.routes.js";
 
 const API_PREFIX = "/api/v1";
 
@@ -129,6 +130,11 @@ export async function buildApp(): Promise<FastifyInstance> {
     await instance.register(notificationsRoutes, { prefix: "/notifications" });
     await instance.register(liveOverridesRoutes, { prefix: "/live" });
     await instance.register(adminRoutes, { prefix: "/admin" });
+    // Operations / observability endpoints the admin SPA depends on.
+    // Sharing the `/admin` prefix with adminRoutes is fine — Fastify only
+    // collides on identical method+path tuples and the route sets are
+    // disjoint by design (see admin-ops.routes.ts header).
+    await instance.register(adminOpsRoutes, { prefix: "/admin" });
     await instance.register(chatRoutes, { prefix: "/chat" });
     await instance.register(sseRoutes);
     await instance.register(wsRoutes);

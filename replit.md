@@ -56,6 +56,58 @@ unavailable" fallbacks; the seven core React-Query-backed pages
 (dashboard, videos, users, notifications, analytics, schedule,
 playlists) are the green path.
 
+## April 29 2026 — Phase 2: Admin operations / observability surface
+
+Added `artifacts/api-server/src/modules/admin-ops/admin-ops.routes.ts`,
+a single Fastify plugin registered at `/admin` (alongside the existing
+`adminRoutes`) inside `registerDomainRoutes`. The module exposes every
+operational endpoint the admin SPA's `services/adminApi.ts` calls,
+typed end-to-end with Zod, all gated by `requireAuth("editor")`:
+
+- **Process / runtime:** `/process-status`, `/render-deploy-health`,
+  `/ops/status`, `/ops/slow-requests`, `/sse-bus`. Returns real
+  `process.uptime()`, `process.memoryUsage()`, env-derived deploy
+  metadata, and live `broadcastEngine.getViewerCount()`. SSE bus reads
+  the realtime gateway's connection count.
+- **Diagnostics:** `/diagnostics/memory` (live `process.memoryUsage()`
+  + `os.totalmem/freemem`), `/diagnostics/gc` (501 if not started with
+  `--expose-gc`, runs `global.gc()` and reports delta otherwise),
+  `/diagnostics/heap-snapshot` (POST, streams `v8.getHeapSnapshot()`
+  as `application/octet-stream` with a `content-disposition` filename
+  the browser can save).
+- **Uploads / S3:** `/uploads/active` (drains the in-memory upload
+  session map kept by the media module), `/uploads/s3-telemetry/summary`
+  (rolling 24-hour aggregate from the storage adapter; empty if S3 not
+  configured), `DELETE /videos/upload/:id` (cancels and frees the
+  session).
+- **Transcoding / FFmpeg:** `/transcoding/queue`, `/transcoding/jobs`,
+  retry / cancel / requeue / clear actions. The FFmpeg worker is in a
+  deliberately-skipped phase, so these return empty queues and a
+  `disabled` worker status — the admin tab now renders its empty state
+  instead of a 404 error toast.
+- **YouTube quota:** `/youtube/quota` (usage 0, reset at next UTC
+  midnight), `/youtube/quota/history` — honest stubs since no YouTube
+  API client is wired in this build.
+- **Alerts:** `/alerts/status` (returns `dispatcher: "none"`),
+  `/alerts/test` (POST — accepts a payload and reports `deduped:false`
+  without dispatching), `/alerts/history` (empty list).
+- **Live override admin paths:** the new plugin also covers the legacy
+  `/admin/live*` family the admin SPA still calls from its Live
+  Control panel — `GET /live-overrides`, `/live-overrides/recent-youtube`,
+  `/live/override/scheduled`, `/live/monitor`, `/live`, plus `POST`
+  start/stop/extend/preview-youtube/schedule and the schedule DELETE.
+  These return empty data or a 501 with a clear `message` because the
+  RTMP/SRT ingest + YouTube live probe subsystem is in a skipped
+  phase. The independent public `/api/v1/live/{status,start,stop,recent}`
+  endpoints under `liveOverridesRoutes` continue to work unchanged.
+
+Verified: the 18 GET endpoints return 200, `POST /alerts/test`,
+`/live/override/stop`, and `/live/override/preview-youtube` return 200,
+`POST /diagnostics/gc` correctly returns 501 (binary not started with
+`--expose-gc`), and `POST /diagnostics/heap-snapshot` streams an
+octet-stream body with the expected `content-disposition` header. The
+seven Phase-1 core endpoints continue to return 200.
+
 ## April 28 2026 — Production-readiness hardening pass (Replit env)
 
 The April rebuild API is up and serving on Replit Autoscale. This pass
