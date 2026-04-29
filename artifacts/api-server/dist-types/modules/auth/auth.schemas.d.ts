@@ -43,36 +43,36 @@ export declare const AuthTokensSchema: z.ZodObject<{
         role: z.ZodEnum<["admin", "editor", "user", "system"]>;
         displayName: z.ZodString;
     }, "strip", z.ZodTypeAny, {
-        email: string;
-        role: "admin" | "editor" | "user" | "system";
         id: string;
+        email: string;
         displayName: string;
+        role: "admin" | "editor" | "user" | "system";
     }, {
-        email: string;
-        role: "admin" | "editor" | "user" | "system";
         id: string;
+        email: string;
         displayName: string;
+        role: "admin" | "editor" | "user" | "system";
     }>;
 }, "strip", z.ZodTypeAny, {
     user: {
-        email: string;
-        role: "admin" | "editor" | "user" | "system";
         id: string;
+        email: string;
         displayName: string;
+        role: "admin" | "editor" | "user" | "system";
     };
-    refreshToken: string;
     accessToken: string;
+    refreshToken: string;
     accessTokenExpiresIn: number;
     refreshTokenExpiresIn: number;
 }, {
     user: {
-        email: string;
-        role: "admin" | "editor" | "user" | "system";
         id: string;
+        email: string;
         displayName: string;
+        role: "admin" | "editor" | "user" | "system";
     };
-    refreshToken: string;
     accessToken: string;
+    refreshToken: string;
     accessTokenExpiresIn: number;
     refreshTokenExpiresIn: number;
 }>;
@@ -84,15 +84,15 @@ export declare const MeResponseSchema: z.ZodObject<{
     displayName: z.ZodString;
     createdAt: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    email: string;
-    role: "admin" | "editor" | "user" | "system";
     id: string;
-    displayName: string;
     createdAt: string;
+    email: string;
+    displayName: string;
+    role: "admin" | "editor" | "user" | "system";
 }, {
-    email: string;
-    role: "admin" | "editor" | "user" | "system";
     id: string;
-    displayName: string;
     createdAt: string;
+    email: string;
+    displayName: string;
+    role: "admin" | "editor" | "user" | "system";
 }>;

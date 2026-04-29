@@ -8,9 +8,14 @@
  * disabled-but-callable mode that logs a clear error rather than
  * crashing the process. Production deploys MUST provide S3 credentials.
  */
+export interface MultipartPart {
+    partNumber: number;
+    etag: string;
+}
 export interface ObjectStorage {
     readonly enabled: boolean;
     readonly bucket: string | null;
+    readonly region: string | null;
     putObject(args: {
         key: string;
         body: Buffer | Uint8Array;
@@ -35,5 +40,30 @@ export interface ObjectStorage {
         contentType?: string;
     }>;
     publicUrl(key: string): string | null;
+    createMultipartUpload(args: {
+        key: string;
+        contentType?: string;
+    }): Promise<{
+        uploadId: string;
+    }>;
+    signUploadPart(args: {
+        key: string;
+        uploadId: string;
+        partNumber: number;
+        ttlSeconds?: number;
+    }): Promise<string>;
+    completeMultipartUpload(args: {
+        key: string;
+        uploadId: string;
+        parts: MultipartPart[];
+    }): Promise<{
+        key: string;
+        etag: string | null;
+        location: string | null;
+    }>;
+    abortMultipartUpload(args: {
+        key: string;
+        uploadId: string;
+    }): Promise<void>;
 }
 export declare function storage(): ObjectStorage;

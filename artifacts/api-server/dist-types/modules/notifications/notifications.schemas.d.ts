@@ -8,18 +8,18 @@ export declare const NotificationSchema: z.ZodObject<{
     sentAt: z.ZodString;
     sentCount: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
+    id: string;
+    title: string;
     type: string;
     body: string;
-    title: string;
-    id: string;
     videoId: string | null;
     sentAt: string;
     sentCount: number;
 }, {
+    id: string;
+    title: string;
     type: string;
     body: string;
-    title: string;
-    id: string;
     videoId: string | null;
     sentAt: string;
     sentCount: number;
@@ -44,18 +44,18 @@ export declare const ListNotificationsResponseSchema: z.ZodObject<{
         sentAt: z.ZodString;
         sentCount: z.ZodNumber;
     }, "strip", z.ZodTypeAny, {
+        id: string;
+        title: string;
         type: string;
         body: string;
-        title: string;
-        id: string;
         videoId: string | null;
         sentAt: string;
         sentCount: number;
     }, {
+        id: string;
+        title: string;
         type: string;
         body: string;
-        title: string;
-        id: string;
         videoId: string | null;
         sentAt: string;
         sentCount: number;
@@ -66,29 +66,29 @@ export declare const ListNotificationsResponseSchema: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     limit: number;
     offset: number;
+    total: number;
     items: {
+        id: string;
+        title: string;
         type: string;
         body: string;
-        title: string;
-        id: string;
         videoId: string | null;
         sentAt: string;
         sentCount: number;
     }[];
-    total: number;
 }, {
     limit: number;
     offset: number;
+    total: number;
     items: {
+        id: string;
+        title: string;
         type: string;
         body: string;
-        title: string;
-        id: string;
         videoId: string | null;
         sentAt: string;
         sentCount: number;
     }[];
-    total: number;
 }>;
 export declare const SendPushBodySchema: z.ZodObject<{
     title: z.ZodString;
@@ -96,13 +96,13 @@ export declare const SendPushBodySchema: z.ZodObject<{
     type: z.ZodDefault<z.ZodEnum<["live", "new_video", "announcement", "test"]>>;
     videoId: z.ZodOptional<z.ZodNullable<z.ZodString>>;
 }, "strip", z.ZodTypeAny, {
+    title: string;
     type: "test" | "live" | "new_video" | "announcement";
     body: string;
-    title: string;
     videoId?: string | null | undefined;
 }, {
-    body: string;
     title: string;
+    body: string;
     type?: "test" | "live" | "new_video" | "announcement" | undefined;
     videoId?: string | null | undefined;
 }>;
@@ -118,20 +118,20 @@ export declare const SendPushResponseSchema: z.ZodObject<{
     recipients: z.ZodNumber;
     delivered: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
+    id: string;
+    title: string;
     type: string;
     body: string;
-    title: string;
-    id: string;
     videoId: string | null;
     sentAt: string;
     sentCount: number;
     recipients: number;
     delivered: number;
 }, {
+    id: string;
+    title: string;
     type: string;
     body: string;
-    title: string;
-    id: string;
     videoId: string | null;
     sentAt: string;
     sentCount: number;

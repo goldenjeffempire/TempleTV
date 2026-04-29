@@ -40,6 +40,8 @@ import { storage } from "../../infrastructure/storage.js";
 import { uploadSessions } from "../media-uploads/upload-sessions.js";
 import { cache } from "../../infrastructure/cache.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
+import { verifyAccessToken } from "../auth/jwt.js";
+import { requireRole } from "../auth/rbac.js";
 
 const startedAtMs = Date.now();
 const instanceId = `inst-${Math.random().toString(36).slice(2, 10)}`;
@@ -1612,9 +1614,6 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       }
       // Reuse the same verification path as `requireAuth` — accept the
       // legacy ADMIN_API_TOKEN OR a JWT issued to an editor+ user.
-      const { env } = await import("../../config/env.js");
-      const { verifyAccessToken } = await import("../auth/jwt.js");
-      const { requireRole } = await import("../auth/rbac.js");
       try {
         if (env.ADMIN_API_TOKEN && token === env.ADMIN_API_TOKEN) {
           // system token — always permitted

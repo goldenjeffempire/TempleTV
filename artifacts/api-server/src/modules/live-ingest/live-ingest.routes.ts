@@ -435,7 +435,7 @@ export async function liveIngestRoutes(app: FastifyInstance) {
     async () => {
       const status = await liveOverridesService.getStatus();
       if (!status.active) return { ok: true as const, stopped: false };
-      await liveOverridesService.stop(status.active.id);
+      await liveOverridesService.stop();
       return { ok: true as const, stopped: true };
     },
   );

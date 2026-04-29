@@ -11,25 +11,25 @@ export declare const BroadcastItemSchema: z.ZodObject<{
     startsAt: z.ZodString;
     endsAt: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    title: string;
     id: string;
     youtubeId: string;
+    title: string;
     thumbnailUrl: string;
     videoSource: string;
     localVideoUrl: string | null;
-    videoId: string | null;
     durationSecs: number;
+    videoId: string | null;
     endsAt: string;
     startsAt: string;
 }, {
-    title: string;
     id: string;
     youtubeId: string;
+    title: string;
     thumbnailUrl: string;
     videoSource: string;
     localVideoUrl: string | null;
-    videoId: string | null;
     durationSecs: number;
+    videoId: string | null;
     endsAt: string;
     startsAt: string;
 }>;
@@ -48,25 +48,25 @@ export declare const BroadcastSnapshotSchema: z.ZodObject<{
         startsAt: z.ZodString;
         endsAt: z.ZodString;
     }, "strip", z.ZodTypeAny, {
-        title: string;
         id: string;
         youtubeId: string;
+        title: string;
         thumbnailUrl: string;
         videoSource: string;
         localVideoUrl: string | null;
-        videoId: string | null;
         durationSecs: number;
+        videoId: string | null;
         endsAt: string;
         startsAt: string;
     }, {
-        title: string;
         id: string;
         youtubeId: string;
+        title: string;
         thumbnailUrl: string;
         videoSource: string;
         localVideoUrl: string | null;
-        videoId: string | null;
         durationSecs: number;
+        videoId: string | null;
         endsAt: string;
         startsAt: string;
     }>>;
@@ -82,25 +82,25 @@ export declare const BroadcastSnapshotSchema: z.ZodObject<{
         startsAt: z.ZodString;
         endsAt: z.ZodString;
     }, "strip", z.ZodTypeAny, {
-        title: string;
         id: string;
         youtubeId: string;
+        title: string;
         thumbnailUrl: string;
         videoSource: string;
         localVideoUrl: string | null;
-        videoId: string | null;
         durationSecs: number;
+        videoId: string | null;
         endsAt: string;
         startsAt: string;
     }, {
-        title: string;
         id: string;
         youtubeId: string;
+        title: string;
         thumbnailUrl: string;
         videoSource: string;
         localVideoUrl: string | null;
-        videoId: string | null;
         durationSecs: number;
+        videoId: string | null;
         endsAt: string;
         startsAt: string;
     }>>;
@@ -116,25 +116,25 @@ export declare const BroadcastSnapshotSchema: z.ZodObject<{
         startsAt: z.ZodString;
         endsAt: z.ZodString;
     }, "strip", z.ZodTypeAny, {
-        title: string;
         id: string;
         youtubeId: string;
+        title: string;
         thumbnailUrl: string;
         videoSource: string;
         localVideoUrl: string | null;
-        videoId: string | null;
         durationSecs: number;
+        videoId: string | null;
         endsAt: string;
         startsAt: string;
     }, {
-        title: string;
         id: string;
         youtubeId: string;
+        title: string;
         thumbnailUrl: string;
         videoSource: string;
         localVideoUrl: string | null;
-        videoId: string | null;
         durationSecs: number;
+        videoId: string | null;
         endsAt: string;
         startsAt: string;
     }>, "many">;
@@ -144,38 +144,38 @@ export declare const BroadcastSnapshotSchema: z.ZodObject<{
     channelId: string;
     generatedAt: string;
     current: {
-        title: string;
         id: string;
         youtubeId: string;
+        title: string;
         thumbnailUrl: string;
         videoSource: string;
         localVideoUrl: string | null;
-        videoId: string | null;
         durationSecs: number;
+        videoId: string | null;
         endsAt: string;
         startsAt: string;
     } | null;
     next: {
-        title: string;
         id: string;
         youtubeId: string;
+        title: string;
         thumbnailUrl: string;
         videoSource: string;
         localVideoUrl: string | null;
-        videoId: string | null;
         durationSecs: number;
+        videoId: string | null;
         endsAt: string;
         startsAt: string;
     } | null;
     upcoming: {
-        title: string;
         id: string;
         youtubeId: string;
+        title: string;
         thumbnailUrl: string;
         videoSource: string;
         localVideoUrl: string | null;
-        videoId: string | null;
         durationSecs: number;
+        videoId: string | null;
         endsAt: string;
         startsAt: string;
     }[];
@@ -185,38 +185,38 @@ export declare const BroadcastSnapshotSchema: z.ZodObject<{
     channelId: string;
     generatedAt: string;
     current: {
-        title: string;
         id: string;
         youtubeId: string;
+        title: string;
         thumbnailUrl: string;
         videoSource: string;
         localVideoUrl: string | null;
-        videoId: string | null;
         durationSecs: number;
+        videoId: string | null;
         endsAt: string;
         startsAt: string;
     } | null;
     next: {
-        title: string;
         id: string;
         youtubeId: string;
+        title: string;
         thumbnailUrl: string;
         videoSource: string;
         localVideoUrl: string | null;
-        videoId: string | null;
         durationSecs: number;
+        videoId: string | null;
         endsAt: string;
         startsAt: string;
     } | null;
     upcoming: {
-        title: string;
         id: string;
         youtubeId: string;
+        title: string;
         thumbnailUrl: string;
         videoSource: string;
         localVideoUrl: string | null;
-        videoId: string | null;
         durationSecs: number;
+        videoId: string | null;
         endsAt: string;
         startsAt: string;
     }[];
@@ -233,23 +233,23 @@ export declare const AddQueueItemSchema: z.ZodObject<{
     videoSource: z.ZodDefault<z.ZodEnum<["youtube", "local", "hls"]>>;
     sortOrder: z.ZodOptional<z.ZodNumber>;
 }, "strip", z.ZodTypeAny, {
-    title: string;
     youtubeId: string;
+    title: string;
     thumbnailUrl: string;
-    videoSource: "youtube" | "local" | "hls";
+    videoSource: "local" | "youtube" | "hls";
     durationSecs: number;
     localVideoUrl?: string | null | undefined;
     videoId?: string | null | undefined;
     sortOrder?: number | undefined;
 }, {
-    title: string;
     youtubeId: string;
+    title: string;
     thumbnailUrl?: string | undefined;
-    videoSource?: "youtube" | "local" | "hls" | undefined;
+    videoSource?: "local" | "youtube" | "hls" | undefined;
     localVideoUrl?: string | null | undefined;
+    durationSecs?: number | undefined;
     videoId?: string | null | undefined;
     sortOrder?: number | undefined;
-    durationSecs?: number | undefined;
 }>;
 export declare const ReorderQueueSchema: z.ZodObject<{
     itemIds: z.ZodArray<z.ZodString, "many">;

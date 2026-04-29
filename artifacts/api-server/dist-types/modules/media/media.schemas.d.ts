@@ -63,9 +63,9 @@ export declare const ListMediaQuerySchema: z.ZodObject<{
 }, {
     category?: string | undefined;
     featured?: boolean | undefined;
+    search?: string | undefined;
     limit?: number | undefined;
     offset?: number | undefined;
-    search?: string | undefined;
 }>;
 export declare const ListMediaResponseSchema: z.ZodObject<{
     items: z.ZodArray<z.ZodObject<{
@@ -123,6 +123,7 @@ export declare const ListMediaResponseSchema: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     limit: number;
     offset: number;
+    total: number;
     items: {
         id: string;
         youtubeId: string;
@@ -140,10 +141,10 @@ export declare const ListMediaResponseSchema: z.ZodObject<{
         localVideoUrl: string | null;
         hlsMasterUrl: string | null;
     }[];
-    total: number;
 }, {
     limit: number;
     offset: number;
+    total: number;
     items: {
         id: string;
         youtubeId: string;
@@ -161,7 +162,6 @@ export declare const ListMediaResponseSchema: z.ZodObject<{
         localVideoUrl: string | null;
         hlsMasterUrl: string | null;
     }[];
-    total: number;
 }>;
 export declare const CreateMediaBodySchema: z.ZodObject<{
     youtubeId: z.ZodString;
@@ -184,7 +184,7 @@ export declare const CreateMediaBodySchema: z.ZodObject<{
     category: string;
     preacher: string;
     featured: boolean;
-    videoSource: "youtube" | "local" | "hls";
+    videoSource: "local" | "youtube" | "hls";
     publishedAt?: string | undefined;
     localVideoUrl?: string | null | undefined;
 }, {
@@ -197,7 +197,7 @@ export declare const CreateMediaBodySchema: z.ZodObject<{
     preacher?: string | undefined;
     publishedAt?: string | undefined;
     featured?: boolean | undefined;
-    videoSource?: "youtube" | "local" | "hls" | undefined;
+    videoSource?: "local" | "youtube" | "hls" | undefined;
     localVideoUrl?: string | null | undefined;
 }>;
 export declare const UpdateMediaBodySchema: z.ZodEffects<z.ZodObject<{
@@ -251,24 +251,24 @@ export declare const SignedUploadBodySchema: z.ZodObject<{
     contentType: z.ZodString;
     sizeBytes: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
-    filename: string;
-    contentType: string;
     sizeBytes: number;
+    contentType: string;
+    filename: string;
 }, {
-    filename: string;
-    contentType: string;
     sizeBytes: number;
+    contentType: string;
+    filename: string;
 }>;
 export declare const SignedUploadResponseSchema: z.ZodObject<{
     key: z.ZodString;
     url: z.ZodString;
     expiresIn: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
-    key: string;
     url: string;
+    key: string;
     expiresIn: number;
 }, {
-    key: string;
     url: string;
+    key: string;
     expiresIn: number;
 }>;
