@@ -1,9 +1,22 @@
+import { Buffer } from "node:buffer";
+import { timingSafeEqual } from "node:crypto";
 import type { FastifyReply, FastifyRequest, preHandlerHookHandler } from "fastify";
 import { verifyAccessToken } from "../modules/auth/jwt.js";
 import { requireRole } from "../modules/auth/rbac.js";
 import type { Role } from "../shared/types.js";
 import { env } from "../config/env.js";
 import { UnauthorizedError } from "../shared/errors.js";
+
+/**
+ * Constant-time string comparison. Length difference is leaked
+ * (unavoidable without padding) but byte content is not.
+ */
+function safeStringEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a, "utf8");
+  const bb = Buffer.from(b, "utf8");
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -50,7 +63,7 @@ export function requireAuth(minRole: Role = "user"): preHandlerHookHandler {
     const token = extractBearer(req);
     if (!token) throw new UnauthorizedError();
 
-    if (env.ADMIN_API_TOKEN && token === env.ADMIN_API_TOKEN) {
+    if (env.ADMIN_API_TOKEN && safeStringEqual(token, env.ADMIN_API_TOKEN)) {
       req.principal = { id: "system:admin-token", email: "system@temple.tv", role: "system" };
     } else {
       const decoded = verifyAccessToken(token);

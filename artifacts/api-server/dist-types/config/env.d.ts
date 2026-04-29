@@ -30,7 +30,7 @@ declare const Env: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     NODE_ENV: "development" | "test" | "production";
     PORT: number;
-    LOG_LEVEL: "trace" | "info" | "error" | "debug" | "fatal" | "warn" | "silent";
+    LOG_LEVEL: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
     DATABASE_URL: string;
     JWT_ACCESS_SECRET: string;
     JWT_REFRESH_SECRET: string;
@@ -57,7 +57,7 @@ declare const Env: z.ZodObject<{
     JWT_REFRESH_SECRET: string;
     NODE_ENV?: "development" | "test" | "production" | undefined;
     PORT?: number | undefined;
-    LOG_LEVEL?: "trace" | "info" | "error" | "debug" | "fatal" | "warn" | "silent" | undefined;
+    LOG_LEVEL?: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent" | undefined;
     JWT_ACCESS_TTL_SECONDS?: number | undefined;
     JWT_REFRESH_TTL_SECONDS?: number | undefined;
     ADMIN_API_TOKEN?: string | undefined;

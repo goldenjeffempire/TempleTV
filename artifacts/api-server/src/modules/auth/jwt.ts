@@ -32,7 +32,9 @@ export function signRefreshToken(p: Omit<RefreshTokenPayload, "type">): string {
 
 export function verifyAccessToken(token: string): AccessTokenPayload {
   try {
-    const decoded = jwt.verify(token, env.JWT_ACCESS_SECRET) as AccessTokenPayload;
+    const decoded = jwt.verify(token, env.JWT_ACCESS_SECRET, {
+      algorithms: ["HS256"],
+    }) as AccessTokenPayload;
     if (decoded.type !== "access") throw new UnauthorizedError("Wrong token type");
     return decoded;
   } catch (err) {
@@ -43,7 +45,9 @@ export function verifyAccessToken(token: string): AccessTokenPayload {
 
 export function verifyRefreshToken(token: string): RefreshTokenPayload {
   try {
-    const decoded = jwt.verify(token, env.JWT_REFRESH_SECRET) as RefreshTokenPayload;
+    const decoded = jwt.verify(token, env.JWT_REFRESH_SECRET, {
+      algorithms: ["HS256"],
+    }) as RefreshTokenPayload;
     if (decoded.type !== "refresh") throw new UnauthorizedError("Wrong token type");
     return decoded;
   } catch {

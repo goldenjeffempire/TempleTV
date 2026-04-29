@@ -12,7 +12,7 @@ import {
   serializerCompiler,
   validatorCompiler,
 } from "fastify-type-provider-zod";
-import { env } from "./config/env.js";
+import { env, isProd } from "./config/env.js";
 import { logger } from "./infrastructure/logger.js";
 import { registerErrorHandler } from "./middleware/error-handler.js";
 import { attachPrincipal } from "./middleware/auth.js";
@@ -59,9 +59,25 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(sensible);
   await app.register(cookie);
   await app.register(helmet, { contentSecurityPolicy: false });
+
+  // CORS hardening: a wildcard origin combined with `credentials: true` is
+  // an exploitable misconfiguration — every site on the public internet
+  // could make credentialed (cookie/Authorization-bearing) requests on a
+  // user's behalf. Browsers refuse the literal `*` + credentials combo,
+  // but `@fastify/cors` with `origin: true` reflects the *request* origin,
+  // which silently sidesteps that browser guard. Refuse to start in
+  // production with that combination so the misconfiguration is loud.
+  const wildcardOrigin = env.CORS_ORIGINS === "*";
+  if (wildcardOrigin && isProd()) {
+    throw new Error(
+      "CORS_ORIGINS='*' is not permitted in production — set an explicit comma-separated allowlist of origins.",
+    );
+  }
   await app.register(cors, {
-    origin: env.CORS_ORIGINS === "*" ? true : env.CORS_ORIGINS.split(",").map((s) => s.trim()),
-    credentials: true,
+    origin: wildcardOrigin
+      ? true
+      : env.CORS_ORIGINS.split(",").map((s) => s.trim()).filter(Boolean),
+    credentials: !wildcardOrigin,
   });
   await app.register(rateLimit, {
     global: false,

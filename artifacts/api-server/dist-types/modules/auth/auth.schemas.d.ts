@@ -43,36 +43,36 @@ export declare const AuthTokensSchema: z.ZodObject<{
         role: z.ZodEnum<["admin", "editor", "user", "system"]>;
         displayName: z.ZodString;
     }, "strip", z.ZodTypeAny, {
-        id: string;
         email: string;
-        displayName: string;
         role: "admin" | "editor" | "user" | "system";
+        id: string;
+        displayName: string;
     }, {
-        id: string;
         email: string;
-        displayName: string;
         role: "admin" | "editor" | "user" | "system";
+        id: string;
+        displayName: string;
     }>;
 }, "strip", z.ZodTypeAny, {
     user: {
-        id: string;
         email: string;
-        displayName: string;
         role: "admin" | "editor" | "user" | "system";
+        id: string;
+        displayName: string;
     };
-    accessToken: string;
     refreshToken: string;
+    accessToken: string;
     accessTokenExpiresIn: number;
     refreshTokenExpiresIn: number;
 }, {
     user: {
-        id: string;
         email: string;
-        displayName: string;
         role: "admin" | "editor" | "user" | "system";
+        id: string;
+        displayName: string;
     };
-    accessToken: string;
     refreshToken: string;
+    accessToken: string;
     accessTokenExpiresIn: number;
     refreshTokenExpiresIn: number;
 }>;
@@ -84,15 +84,15 @@ export declare const MeResponseSchema: z.ZodObject<{
     displayName: z.ZodString;
     createdAt: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    id: string;
-    createdAt: string;
     email: string;
-    displayName: string;
     role: "admin" | "editor" | "user" | "system";
+    id: string;
+    displayName: string;
+    createdAt: string;
 }, {
-    id: string;
-    createdAt: string;
     email: string;
-    displayName: string;
     role: "admin" | "editor" | "user" | "system";
+    id: string;
+    displayName: string;
+    createdAt: string;
 }>;

@@ -25,6 +25,23 @@ describe("jwt", () => {
     const token = signRefreshToken({ sub: "u-1", jti: "abc" });
     expect(() => verifyAccessToken(token)).toThrow(/Invalid|Wrong/);
   });
+
+  it("rejects a token signed with `none` algorithm (alg-confusion guard)", async () => {
+    const jwt = (await import("jsonwebtoken")).default;
+    const { verifyAccessToken } = await import("../../src/modules/auth/jwt.js");
+    // jsonwebtoken refuses to sign `none` with a secret, so build the token
+    // manually: header.payload. (signature empty for `alg: none`).
+    const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" }))
+      .toString("base64url");
+    const payload = Buffer.from(
+      JSON.stringify({ sub: "u-1", email: "a@b.com", role: "admin", type: "access" }),
+    ).toString("base64url");
+    const forged = `${header}.${payload}.`;
+    expect(() => verifyAccessToken(forged)).toThrow(/Invalid|expired/);
+    // Sanity check: jsonwebtoken decodes the header, but verifyAccessToken
+    // rejects it because we restricted `algorithms: ["HS256"]`.
+    expect(jwt.decode(forged, { complete: true })?.header.alg).toBe("none");
+  });
 });
 
 describe("rbac", () => {
