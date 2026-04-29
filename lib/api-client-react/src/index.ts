@@ -81,13 +81,57 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Default per-request timeout. A hung backend (TCP black-hole, broken
+ * Cloudflare tunnel, frozen Smart-TV proxy) would otherwise leave every
+ * `useQuery` permanently pending — React Query's `retry` only fires on
+ * settled rejections, not in-flight hangs. 30 s is generous enough for
+ * cold-start cases (cold Lambda, OpenAPI build, large catalog page) yet
+ * tight enough that the UI's loading spinner doesn't outlive a user's
+ * patience. Override per call via `opts.timeoutMs` (e.g. uploads).
+ */
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * Combine a caller-supplied AbortSignal with a timeout signal without
+ * relying on `AbortSignal.any()` (Chromium 116+ / Node 20+) — older
+ * Smart-TV runtimes (Tizen 5, webOS 5) ship Chromium 76/79 and would
+ * silently bypass the timeout if we used the modern API.
+ */
+function combineSignals(
+  external: AbortSignal | undefined,
+  timeoutMs: number,
+): { signal: AbortSignal; cleanup: () => void } {
+  const ctrl = new AbortController();
+  const onExternal = () => ctrl.abort(external?.reason);
+  if (external) {
+    if (external.aborted) ctrl.abort(external.reason);
+    else external.addEventListener("abort", onExternal, { once: true });
+  }
+  const timer = setTimeout(() => {
+    ctrl.abort(new DOMException(`Request timed out after ${timeoutMs}ms`, "TimeoutError"));
+  }, timeoutMs);
+  return {
+    signal: ctrl.signal,
+    cleanup: () => {
+      clearTimeout(timer);
+      external?.removeEventListener("abort", onExternal);
+    },
+  };
+}
+
 async function request<T>(
   method: string,
   path: string,
-  opts: { body?: unknown; query?: Record<string, unknown>; signal?: AbortSignal } = {},
+  opts: {
+    body?: unknown;
+    query?: Record<string, unknown>;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  } = {},
 ): Promise<T> {
   const url = new URL(
-    BASE_URL.startsWith("http") ? `${BASE_URL}${path}` : `${BASE_URL}${path}`,
+    `${BASE_URL}${path}`,
     typeof window !== "undefined" ? window.location.href : "http://localhost/",
   );
   if (opts.query) {
@@ -107,13 +151,34 @@ async function request<T>(
   // Use a relative URL when same-origin so the browser doesn't expand it to
   // include the absolute origin (avoids surprises behind reverse proxies).
   const finalUrl = BASE_URL.startsWith("http") ? url.toString() : `${url.pathname}${url.search}`;
-  const res = await fetch(finalUrl, {
-    method,
-    headers,
-    body,
-    signal: opts.signal,
-    cache: "no-store",
-  });
+
+  const { signal, cleanup } = combineSignals(opts.signal, opts.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(finalUrl, {
+      method,
+      headers,
+      body,
+      signal,
+      cache: "no-store",
+    });
+  } catch (err) {
+    cleanup();
+    // Re-raise caller-driven aborts unchanged so React Query treats them
+    // as cancellations rather than failures (no retry, no error toast).
+    if (opts.signal?.aborted) throw err;
+    // Normalize network failures + timeouts to ApiError(0, …) so every
+    // caller can `instanceof ApiError` without special-casing TypeError.
+    const isTimeout = err instanceof DOMException && err.name === "TimeoutError";
+    const message = isTimeout
+      ? `Request timed out after ${opts.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS}ms`
+      : err instanceof Error
+        ? `Network error: ${err.message}`
+        : "Network error";
+    throw new ApiError(0, message, { cause: err instanceof Error ? err.message : String(err) });
+  }
+  cleanup();
+
   // 204 / empty responses
   if (res.status === 204) return undefined as T;
   const text = await res.text();
