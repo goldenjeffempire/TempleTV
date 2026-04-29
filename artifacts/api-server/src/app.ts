@@ -33,6 +33,7 @@ import { adminOpsRoutes } from "./modules/admin-ops/admin-ops.routes.js";
 import { telemetryRoutes } from "./modules/telemetry/telemetry.routes.js";
 import { playbackRoutes } from "./modules/playback/playback.routes.js";
 import { youtubeLiveRoutes } from "./modules/youtube-live/youtube-live.routes.js";
+import { mediaUploadsRoutes } from "./modules/media-uploads/media-uploads.routes.js";
 
 const API_PREFIX = "/api/v1";
 
@@ -138,6 +139,10 @@ export async function buildApp(): Promise<FastifyInstance> {
     // collides on identical method+path tuples and the route sets are
     // disjoint by design (see admin-ops.routes.ts header).
     await instance.register(adminOpsRoutes, { prefix: "/admin" });
+    // S3 multipart upload gateway (init/sign/complete/abort + CORS probe).
+    // Same `/admin` prefix as adminRoutes / adminOpsRoutes — route paths
+    // are disjoint (`/videos/upload/s3-multipart-*`).
+    await instance.register(mediaUploadsRoutes, { prefix: "/admin" });
     await instance.register(chatRoutes, { prefix: "/chat" });
     // Phase-2 ingest + push gateways for the new dual-buffer player and
     // crash-report firehose. `playbackRoutes` registers HTTP `/state` and

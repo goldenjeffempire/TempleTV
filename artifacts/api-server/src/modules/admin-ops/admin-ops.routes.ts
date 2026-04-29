@@ -37,6 +37,7 @@ import { requireAuth } from "../../middleware/auth.js";
 import { env } from "../../config/env.js";
 import { db } from "../../infrastructure/db.js";
 import { storage } from "../../infrastructure/storage.js";
+import { uploadSessions } from "../media-uploads/upload-sessions.js";
 import { cache } from "../../infrastructure/cache.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 
@@ -947,35 +948,83 @@ export async function adminOpsRoutes(app: FastifyInstance) {
   );
 
   // ── Active uploads ────────────────────────────────────────────────────────
+  // Reads from the same in-memory registry that the multipart-upload
+  // gateway (`modules/media-uploads`) writes into when `s3-multipart-init`
+  // succeeds. Surfaces every in-flight session for the admin Operations
+  // tab. Per-part progress isn't tracked server-side (the browser PUTs
+  // each part directly to S3), so we report 0 received chunks until the
+  // session is removed on `s3-multipart-complete` / `-abort`.
   r.get(
     "/uploads/active",
     {
       preHandler: requireAuth("editor"),
       schema: {
         tags: ["admin-ops"],
-        summary: "Active chunked-upload sessions (empty: chunked upload not enabled)",
+        summary: "Active S3 multipart upload sessions",
         response: { 200: ActiveUploadsResponseSchema },
         security: [{ bearerAuth: [] }],
       },
     },
-    async () => ({ count: 0, sessions: [] }),
+    async () => {
+      const now = Date.now();
+      const list = uploadSessions.list();
+      return {
+        count: list.length,
+        sessions: list.map((s) => {
+          const ageSecs = Math.max(0, Math.floor((now - s.startedAt) / 1000));
+          return {
+            sessionId: s.sessionId,
+            title: s.title,
+            originalFilename: null,
+            category: "",
+            totalBytes: s.sizeBytes,
+            receivedBytes: 0,
+            totalChunks: s.totalParts,
+            uploadedChunks: 0,
+            progressPercent: 0,
+            ageSecs,
+            idleSecs: ageSecs,
+            finalizing: !!s.completedVideoId,
+            createdAt: new Date(s.startedAt).toISOString(),
+            lastActivity: new Date(s.startedAt).toISOString(),
+          };
+        }),
+      };
+    },
   );
 
   // Cancel an upload session — accepts the URL the admin SPA uses
-  // (`DELETE /admin/videos/upload/:sessionId`).
+  // (`DELETE /admin/videos/upload/:sessionId`). Aborts the underlying
+  // S3 multipart upload (best-effort) and drops the session.
   r.delete(
     "/videos/upload/:sessionId",
     {
       preHandler: requireAuth("editor"),
       schema: {
         tags: ["admin-ops"],
-        summary: "Cancel a chunked upload session (no-op: feature disabled)",
+        summary: "Cancel an active multipart upload session",
         params: z.object({ sessionId: z.string().min(1) }),
-        response: { 200: z.object({ ok: z.literal(true) }) },
+        response: { 200: z.object({ ok: z.literal(true), aborted: z.boolean() }) },
         security: [{ bearerAuth: [] }],
       },
     },
-    async () => ({ ok: true as const }),
+    async (req) => {
+      const { sessionId } = req.params as { sessionId: string };
+      const session = uploadSessions.remove(sessionId);
+      if (!session) return { ok: true as const, aborted: false };
+      try {
+        await storage().abortMultipartUpload({
+          key: session.objectKey,
+          uploadId: session.uploadId,
+        });
+      } catch (err) {
+        req.log.warn(
+          { err, sessionId, objectKey: session.objectKey },
+          "[admin-ops] abort during DELETE failed",
+        );
+      }
+      return { ok: true as const, aborted: true };
+    },
   );
 
   r.get(

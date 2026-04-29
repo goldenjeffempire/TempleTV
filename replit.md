@@ -157,6 +157,51 @@ WS `/api/v1/playback/ws` completes the upgrade handshake and pushes
 the initial state envelope. All Phase-1 routes and the Phase-2 admin
 ops endpoints continue to return 200.
 
+## April 29 2026 — Phase 2c: S3 multipart upload gateway
+
+The admin VideoUploadModal needed real chunked uploads (single PUT
+breaks past ~5 GB on residential uplinks and S3 caps single PUTs at
+5 GB anyway). Built the server side of the browser-direct multipart
+flow on top of `infrastructure/storage.ts`'s new multipart primitives
+(`createMultipartUpload`, `signUploadPart`, `completeMultipartUpload`,
+`abortMultipartUpload`).
+
+New module `modules/media-uploads/`:
+
+- `upload-sessions.ts` — in-memory session registry (UUID → session
+  metadata). Single-process for now; will move behind Redis once we
+  scale the API past one replica.
+- `media-uploads.routes.ts` — six endpoints under `/admin`:
+  - `POST /videos/upload/s3-multipart-init` — opens an S3 multipart
+    upload, registers the session, returns
+    `{sessionId,uploadId,objectKey,partSize,totalParts,contentType}`.
+    Object key is `uploads/YYYY/MM/DD/<uuid>.<ext>` for browsability +
+    lifecycle expiry.
+  - `POST /videos/upload/s3-multipart-sign` — presigns up to 1000 part
+    URLs per call (TTL 1 hour). Browser PUTs each part directly.
+  - `POST /videos/upload/s3-multipart-complete` — CompleteMultipartUpload
+    + HEAD-verify object exists + size sanity check + insert
+    `videosTable` row (`videoSource: "local"`, fabricated
+    `youtubeId: "local-<uuid>"` to satisfy NOT NULL). Idempotent: a
+    retried complete returns the same row instead of erroring.
+  - `POST /videos/upload/s3-multipart-abort` — best-effort
+    AbortMultipartUpload (lifecycle reaps orphans).
+  - `POST /videos/upload/s3-init` — single presigned PUT for small
+    files / smoke tests.
+  - `POST /videos/upload/s3-cors-test` — 1-byte presigned PUT for the
+    admin S3CorsTestButton (returns
+    `{presignedUrl,objectKey,bucket,region}` as the SPA expects).
+
+`admin-ops.routes.ts` rewired to read from the same `uploadSessions`
+registry — `GET /admin/uploads/active` now lists every in-flight
+multipart session, and `DELETE /admin/videos/upload/:sessionId`
+aborts the underlying S3 multipart upload + drops the session.
+
+Verified end-to-end against the live `temple-tv-media-storage`
+bucket in `eu-north-1`: init opens a real S3 multipart upload, sign
+returns 661-char SigV4 PUT URLs, the active list reflects sessions
+in real time, and DELETE successfully aborts.
+
 ## April 28 2026 — Production-readiness hardening pass (Replit env)
 
 The April rebuild API is up and serving on Replit Autoscale. This pass

@@ -1,4 +1,14 @@
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  DeleteObjectCommand,
+  HeadObjectCommand,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand,
+} from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { env } from "../config/env.js";
 import { logger } from "./logger.js";
@@ -13,20 +23,34 @@ import { logger } from "./logger.js";
  * disabled-but-callable mode that logs a clear error rather than
  * crashing the process. Production deploys MUST provide S3 credentials.
  */
+export interface MultipartPart {
+  partNumber: number;
+  etag: string;
+}
+
 export interface ObjectStorage {
   readonly enabled: boolean;
   readonly bucket: string | null;
+  readonly region: string | null;
   putObject(args: { key: string; body: Buffer | Uint8Array; contentType?: string }): Promise<{ key: string; url: string }>;
   signedDownloadUrl(key: string, ttlSeconds?: number): Promise<string>;
   signedUploadUrl(args: { key: string; contentType?: string; ttlSeconds?: number }): Promise<{ url: string; key: string }>;
   deleteObject(key: string): Promise<void>;
   headObject(key: string): Promise<{ exists: boolean; contentLength?: number; contentType?: string }>;
   publicUrl(key: string): string | null;
+  // Multipart upload primitives — used by the admin chunked uploader for
+  // large videos (>5 MiB). Browser PUTs each part directly to a presigned
+  // URL, then the server completes assembly in one S3 round-trip.
+  createMultipartUpload(args: { key: string; contentType?: string }): Promise<{ uploadId: string }>;
+  signUploadPart(args: { key: string; uploadId: string; partNumber: number; ttlSeconds?: number }): Promise<string>;
+  completeMultipartUpload(args: { key: string; uploadId: string; parts: MultipartPart[] }): Promise<{ key: string; etag: string | null; location: string | null }>;
+  abortMultipartUpload(args: { key: string; uploadId: string }): Promise<void>;
 }
 
 class DisabledStorage implements ObjectStorage {
   readonly enabled = false;
   readonly bucket = null;
+  readonly region = null;
   private err(): never {
     throw new Error("Object storage not configured (set S3_BUCKET + AWS credentials)");
   }
@@ -48,15 +72,29 @@ class DisabledStorage implements ObjectStorage {
   publicUrl() {
     return null;
   }
+  async createMultipartUpload() {
+    return this.err();
+  }
+  async signUploadPart() {
+    return this.err();
+  }
+  async completeMultipartUpload() {
+    return this.err();
+  }
+  async abortMultipartUpload() {
+    return this.err();
+  }
 }
 
 class S3Storage implements ObjectStorage {
   readonly enabled = true;
   readonly bucket: string;
+  readonly region: string;
   private client: S3Client;
 
   constructor(bucket: string) {
     this.bucket = bucket;
+    this.region = env.S3_REGION;
     this.client = new S3Client({
       region: env.S3_REGION,
       endpoint: env.S3_ENDPOINT || undefined,
@@ -117,6 +155,75 @@ class S3Storage implements ObjectStorage {
       if (e?.$metadata?.httpStatusCode === 404) return { exists: false };
       throw err;
     }
+  }
+
+  async createMultipartUpload({ key, contentType }: { key: string; contentType?: string }) {
+    const r = await this.client.send(
+      new CreateMultipartUploadCommand({
+        Bucket: this.bucket,
+        Key: key,
+        ContentType: contentType,
+      }),
+    );
+    if (!r.UploadId) throw new Error("S3 CreateMultipartUpload returned no UploadId");
+    return { uploadId: r.UploadId };
+  }
+
+  async signUploadPart({
+    key,
+    uploadId,
+    partNumber,
+    ttlSeconds = 3600,
+  }: { key: string; uploadId: string; partNumber: number; ttlSeconds?: number }) {
+    return getSignedUrl(
+      this.client,
+      new UploadPartCommand({
+        Bucket: this.bucket,
+        Key: key,
+        UploadId: uploadId,
+        PartNumber: partNumber,
+      }),
+      { expiresIn: ttlSeconds },
+    );
+  }
+
+  async completeMultipartUpload({
+    key,
+    uploadId,
+    parts,
+  }: { key: string; uploadId: string; parts: MultipartPart[] }) {
+    // S3 requires parts to be sorted ascending by PartNumber and each ETag
+    // to be wrapped in double quotes. Some clients strip the quotes when
+    // reading the header — be lenient and re-add them if missing.
+    const normalized = [...parts]
+      .sort((a, b) => a.partNumber - b.partNumber)
+      .map((p) => ({
+        PartNumber: p.partNumber,
+        ETag: p.etag.startsWith("\"") ? p.etag : `"${p.etag}"`,
+      }));
+    const r = await this.client.send(
+      new CompleteMultipartUploadCommand({
+        Bucket: this.bucket,
+        Key: key,
+        UploadId: uploadId,
+        MultipartUpload: { Parts: normalized },
+      }),
+    );
+    return {
+      key,
+      etag: r.ETag ?? null,
+      location: r.Location ?? this.publicUrl(key),
+    };
+  }
+
+  async abortMultipartUpload({ key, uploadId }: { key: string; uploadId: string }) {
+    await this.client.send(
+      new AbortMultipartUploadCommand({
+        Bucket: this.bucket,
+        Key: key,
+        UploadId: uploadId,
+      }),
+    );
   }
 }
 
