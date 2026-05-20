@@ -330,85 +330,42 @@ export default function ChannelsTab() {
   const { channels, loading, error, isRetrying, refetch } = useChannels();
   const [tuningId, setTuningId] = useState<string | null>(null);
 
-  const handleChannelPress = useCallback(async (channel: ApiChannel) => {
+  const handleChannelPress = useCallback((channel: ApiChannel) => {
     if (tuningId) return;
+
+    // If the server already told us the channel is offline (isRunning=false),
+    // show the alert immediately — no network round-trip needed.
+    if (!channel.isRunning) {
+      Alert.alert(
+        `${channel.name} is Offline`,
+        "This channel is not currently broadcasting. Check back later.",
+        [{ text: "OK" }],
+      );
+      return;
+    }
+
+    // Navigate directly to the V2 broadcast engine. V2 owns its own transport
+    // and fetches real-time state from /api/broadcast-v2/state — it does not
+    // use any hlsUrl passed here. Navigating immediately (instead of pre-fetching
+    // /channels/{slug}/current first) eliminates a 0–12 s spinner before the
+    // player appears and avoids a v1/v2 mismatch where the v1 snapshot could
+    // show "offline" even while v2 has content queued.
+    // V2 will display its own "tuning-in" → "off-air" states if needed.
     setTuningId(channel.id);
-    try {
-      const apiBase = getApiBase();
-      const res = await fetch(`${apiBase}/api/channels/${channel.slug}/current`, {
-        signal: AbortSignal.timeout(12_000),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const snap = await res.json() as {
-        item: {
-          title: string; youtubeId: string;
-          localVideoUrl: string | null; hlsMasterUrl: string | null;
-          thumbnailUrl: string; duration: string;
-          preacher: string; category: string; description: string;
-        } | null;
-        liveOverride: {
-          title: string;
-          hlsStreamUrl: string | null;
-          youtubeVideoId: string | null;
-        } | null;
-        ytLive: boolean;
-        ytVideoId: string | null;
-        ytTitle: string | null;
-        failoverHlsUrl: string | null;
-        positionSecs: number;
-      };
-
-      // STRICT BROADCAST POLICY: a "Live Channel" tap may only resolve
-      // to an uploaded / local platform stream (HLS or MP4). YouTube
-      // sources are library-only and must NEVER drive the live channel
-      // navigation. We collect HLS-only candidates here and ignore any
-      // YouTube id present on the snapshot.
-      let hlsUrl = "";
-      let title = channel.name;
-      let thumbnailUrl = "";
-      let positionSecs = 0;
-
-      if (snap.liveOverride && snap.liveOverride.hlsStreamUrl) {
-        title = snap.liveOverride.title || channel.name;
-        hlsUrl = snap.liveOverride.hlsStreamUrl;
-      } else if (snap.item && (snap.item.hlsMasterUrl || snap.item.localVideoUrl)) {
-        title = snap.item.title;
-        hlsUrl = snap.item.hlsMasterUrl ?? snap.item.localVideoUrl ?? "";
-        thumbnailUrl = snap.item.thumbnailUrl ?? "";
-        positionSecs = snap.positionSecs ?? 0;
-      } else if (snap.failoverHlsUrl) {
-        hlsUrl = snap.failoverHlsUrl;
-      }
-
-      if (!hlsUrl) {
-        // No uploaded stream is live on this channel right now.
-        // Per policy we do NOT fall back to a YouTube live id, even
-        // if one is present on the snapshot.
-        Alert.alert(
-          `${channel.name} is Offline`,
-          "This channel is not currently broadcasting an uploaded stream. Check back later.",
-          [{ text: "OK" }],
-        );
-        return;
-      }
-
+    // Small tick so the tuning spinner renders before the navigation fires.
+    requestAnimationFrame(() => {
       router.push({
         pathname: "/player",
         params: {
           id: "live",
-          title,
-          hlsUrl,
-          // youtubeId intentionally omitted — Live Channel never opens YouTube.
-          thumbnailUrl,
+          title: channel.name,
           isLive: "true",
-          startPositionSecs: String(Math.max(0, Math.round(positionSecs))),
+          // No hlsUrl — V2 ignores it and uses its own WS/SSE transport.
+          // No youtubeId — Live Channel never opens YouTube.
         },
       });
-    } catch {
-      Alert.alert("Connection Error", "Could not load the channel stream. Please try again.");
-    } finally {
       setTuningId(null);
-    }
+    });
   }, [tuningId]);
 
   // ── Channels section content ───────────────────────────────────────────────

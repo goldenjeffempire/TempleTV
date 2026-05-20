@@ -49,6 +49,7 @@ async function attemptRefresh(): Promise<string | null> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refreshToken, deviceName: getDeviceName() }),
+      signal: AbortSignal.timeout(12_000),
     });
     if (!res.ok) {
       // Only treat a genuine 401 as a permanently invalid token — that means
@@ -95,13 +96,16 @@ async function authFetch(path: string, options: RequestInit = {}): Promise<Respo
     return h;
   };
   const url = `${getApiBase()}${path}`;
-  const initial = await fetch(url, { ...options, headers: buildHeaders(token) });
+  // 12-second timeout on every auth fetch — prevents indefinite hangs on bad
+  // network conditions (tunnel timeouts, captive portals, etc.).
+  const signal = options.signal ?? AbortSignal.timeout(12_000);
+  const initial = await fetch(url, { ...options, signal, headers: buildHeaders(token) });
   // Auto-refresh on 401 for any authenticated route except the auth endpoints
   // themselves (where 401 means bad credentials, not an expired access token).
   if (initial.status !== 401 || path.startsWith("/api/auth/")) return initial;
   const newToken = await refreshAccessToken();
   if (!newToken) return initial;
-  return fetch(url, { ...options, headers: buildHeaders(newToken) });
+  return fetch(url, { ...options, signal: AbortSignal.timeout(12_000), headers: buildHeaders(newToken) });
 }
 
 async function persistAuthResponse(data: AuthResponse): Promise<void> {
@@ -122,6 +126,7 @@ export async function apiSignup(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password, displayName, deviceName: getDeviceName() }),
+    signal: AbortSignal.timeout(12_000),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? "Signup failed");
@@ -137,6 +142,7 @@ export async function apiLogin(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password, deviceName: getDeviceName() }),
+    signal: AbortSignal.timeout(12_000),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? "Login failed");

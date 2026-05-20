@@ -317,9 +317,14 @@ export default function PlayerScreen() {
     Audio.setAudioModeAsync({
       playsInSilentModeIOS: true,
       staysActiveInBackground: true,
-      interruptionModeIOS: InterruptionModeIOS.DuckOthers,
-      interruptionModeAndroid: InterruptionModeAndroid.DuckOthers,
-      shouldDuckAndroid: true,
+      // DoNotMix (not DuckOthers): Temple TV audio takes exclusive focus.
+      // DuckOthers would let phone calls, Spotify, etc. lower our volume
+      // and eventually reclaim focus — unacceptable during a live service.
+      // This re-asserts the same policy set in _layout.tsx's setupAudioSession
+      // which iOS/Android may have revoked while another app held focus.
+      interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+      interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+      shouldDuckAndroid: false,
       playThroughEarpieceAndroid: false,
     }).catch(() => {});
   }, []);
