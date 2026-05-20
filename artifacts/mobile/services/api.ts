@@ -306,3 +306,63 @@ export async function changePassword(
     throw new Error(err.error ?? "Failed to change password");
   }
 }
+
+// ─── Playlists ────────────────────────────────────────────────────────────────
+
+export interface ApiPlaylist {
+  id: string;
+  title: string;
+  description: string;
+  thumbnailUrl: string;
+  videoCount: number;
+  category: string;
+  createdAt: string;
+}
+
+export interface ApiPlaylistDetail extends ApiPlaylist {
+  videos: ApiVideo[];
+}
+
+/** Fetch all published playlists. */
+export async function fetchPlaylists(limit = 100): Promise<ApiPlaylist[]> {
+  const res = await publicFetch(`/api/playlists?limit=${limit}`, {
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) throw new Error(`Failed to fetch playlists (${res.status})`);
+  const data = await res.json() as { playlists?: ApiPlaylist[]; data?: ApiPlaylist[] };
+  return data.playlists ?? data.data ?? [];
+}
+
+/** Fetch a single playlist with its ordered videos. */
+export async function fetchPlaylistById(id: string): Promise<ApiPlaylistDetail> {
+  const res = await publicFetch(`/api/playlists/${id}`, {
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) throw new Error(`Playlist not found (${res.status})`);
+  const data = await res.json() as { playlist?: ApiPlaylistDetail } | ApiPlaylistDetail;
+  return ("playlist" in data && data.playlist) ? data.playlist : (data as ApiPlaylistDetail);
+}
+
+// ─── Series list ─────────────────────────────────────────────────────────────
+
+export interface ApiSeries {
+  id: string;
+  title: string;
+  slug: string;
+  description: string;
+  thumbnailUrl: string;
+  preacher: string | null;
+  category: string;
+  isOngoing: boolean;
+  episodeCount: number;
+}
+
+/** Fetch all published sermon series. */
+export async function fetchSeriesList(limit = 50): Promise<ApiSeries[]> {
+  const res = await publicFetch(`/api/series?limit=${limit}`, {
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) throw new Error(`Failed to fetch series (${res.status})`);
+  const data = await res.json() as { series?: ApiSeries[]; data?: ApiSeries[] };
+  return data.series ?? data.data ?? [];
+}

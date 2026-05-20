@@ -179,7 +179,21 @@ export declare const BroadcastSnapshotSchema: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     channelId: string;
     failoverHlsUrl: string | null;
+    generatedAt: string;
     current: {
+        title: string;
+        id: string;
+        youtubeId: string;
+        thumbnailUrl: string;
+        videoSource: string;
+        localVideoUrl: string | null;
+        videoId: string | null;
+        durationSecs: number;
+        endsAt: string;
+        startsAt: string;
+        hlsMasterUrl?: string | null | undefined;
+    } | null;
+    next: {
         title: string;
         id: string;
         youtubeId: string;
@@ -205,25 +219,25 @@ export declare const BroadcastSnapshotSchema: z.ZodObject<{
         startsAt: string;
         hlsMasterUrl?: string | null | undefined;
     }[];
-    generatedAt: string;
-    next: {
-        title: string;
-        id: string;
-        youtubeId: string;
-        thumbnailUrl: string;
-        videoSource: string;
-        localVideoUrl: string | null;
-        videoId: string | null;
-        durationSecs: number;
-        endsAt: string;
-        startsAt: string;
-        hlsMasterUrl?: string | null | undefined;
-    } | null;
     preloadAt: string | null;
 }, {
     channelId: string;
     failoverHlsUrl: string | null;
+    generatedAt: string;
     current: {
+        title: string;
+        id: string;
+        youtubeId: string;
+        thumbnailUrl: string;
+        videoSource: string;
+        localVideoUrl: string | null;
+        videoId: string | null;
+        durationSecs: number;
+        endsAt: string;
+        startsAt: string;
+        hlsMasterUrl?: string | null | undefined;
+    } | null;
+    next: {
         title: string;
         id: string;
         youtubeId: string;
@@ -249,20 +263,6 @@ export declare const BroadcastSnapshotSchema: z.ZodObject<{
         startsAt: string;
         hlsMasterUrl?: string | null | undefined;
     }[];
-    generatedAt: string;
-    next: {
-        title: string;
-        id: string;
-        youtubeId: string;
-        thumbnailUrl: string;
-        videoSource: string;
-        localVideoUrl: string | null;
-        videoId: string | null;
-        durationSecs: number;
-        endsAt: string;
-        startsAt: string;
-        hlsMasterUrl?: string | null | undefined;
-    } | null;
     preloadAt: string | null;
 }>;
 export declare const AddQueueItemSchema: z.ZodEffects<z.ZodObject<{
@@ -277,7 +277,7 @@ export declare const AddQueueItemSchema: z.ZodEffects<z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     title: string;
     thumbnailUrl: string;
-    videoSource: "youtube" | "local" | "hls";
+    videoSource: "youtube" | "hls" | "local";
     durationSecs: number;
     youtubeId?: string | null | undefined;
     localVideoUrl?: string | null | undefined;
@@ -287,7 +287,7 @@ export declare const AddQueueItemSchema: z.ZodEffects<z.ZodObject<{
     title: string;
     youtubeId?: string | null | undefined;
     thumbnailUrl?: string | undefined;
-    videoSource?: "youtube" | "local" | "hls" | undefined;
+    videoSource?: "youtube" | "hls" | "local" | undefined;
     localVideoUrl?: string | null | undefined;
     videoId?: string | null | undefined;
     sortOrder?: number | undefined;
@@ -295,7 +295,7 @@ export declare const AddQueueItemSchema: z.ZodEffects<z.ZodObject<{
 }>, {
     title: string;
     thumbnailUrl: string;
-    videoSource: "youtube" | "local" | "hls";
+    videoSource: "youtube" | "hls" | "local";
     durationSecs: number;
     youtubeId?: string | null | undefined;
     localVideoUrl?: string | null | undefined;
@@ -305,7 +305,7 @@ export declare const AddQueueItemSchema: z.ZodEffects<z.ZodObject<{
     title: string;
     youtubeId?: string | null | undefined;
     thumbnailUrl?: string | undefined;
-    videoSource?: "youtube" | "local" | "hls" | undefined;
+    videoSource?: "youtube" | "hls" | "local" | undefined;
     localVideoUrl?: string | null | undefined;
     videoId?: string | null | undefined;
     sortOrder?: number | undefined;
@@ -498,7 +498,6 @@ export declare const BroadcastCurrentResultSchema: z.ZodObject<{
     ytTitle: z.ZodOptional<z.ZodNullable<z.ZodString>>;
 }, "strip", z.ZodTypeAny, {
     positionSecs: number;
-    totalSecs: number;
     item: {
         title: string;
         id: string;
@@ -526,19 +525,9 @@ export declare const BroadcastCurrentResultSchema: z.ZodObject<{
         hlsMasterUrl?: string | null | undefined;
     } | null;
     index: number;
+    totalSecs: number;
     queueLength: number;
     failoverHlsUrl?: string | null | undefined;
-    progressPercent?: number | undefined;
-    ytLive?: boolean | undefined;
-    liveOverride?: {
-        title: string;
-        id: string;
-        startedAt: string;
-        endsAt: string | null;
-        hlsStreamUrl?: string | null | undefined;
-        youtubeVideoId?: string | null | undefined;
-    } | null | undefined;
-    serverTimeMs?: number | undefined;
     upcomingItems?: {
         title: string;
         id: string;
@@ -552,16 +541,26 @@ export declare const BroadcastCurrentResultSchema: z.ZodObject<{
         startsAt: string;
         hlsMasterUrl?: string | null | undefined;
     }[] | undefined;
+    progressPercent?: number | undefined;
     syncedAt?: string | undefined;
+    serverTimeMs?: number | undefined;
     currentItemEndsAtMs?: number | null | undefined;
     itemStartEpochSecs?: number | null | undefined;
     failoverReason?: string | null | undefined;
     activeSchedule?: null | undefined;
+    liveOverride?: {
+        title: string;
+        id: string;
+        startedAt: string;
+        endsAt: string | null;
+        hlsStreamUrl?: string | null | undefined;
+        youtubeVideoId?: string | null | undefined;
+    } | null | undefined;
+    ytLive?: boolean | undefined;
     ytVideoId?: string | null | undefined;
     ytTitle?: string | null | undefined;
 }, {
     positionSecs: number;
-    totalSecs: number;
     item: {
         title: string;
         id: string;
@@ -589,19 +588,9 @@ export declare const BroadcastCurrentResultSchema: z.ZodObject<{
         hlsMasterUrl?: string | null | undefined;
     } | null;
     index: number;
+    totalSecs: number;
     queueLength: number;
     failoverHlsUrl?: string | null | undefined;
-    progressPercent?: number | undefined;
-    ytLive?: boolean | undefined;
-    liveOverride?: {
-        title: string;
-        id: string;
-        startedAt: string;
-        endsAt: string | null;
-        hlsStreamUrl?: string | null | undefined;
-        youtubeVideoId?: string | null | undefined;
-    } | null | undefined;
-    serverTimeMs?: number | undefined;
     upcomingItems?: {
         title: string;
         id: string;
@@ -615,11 +604,22 @@ export declare const BroadcastCurrentResultSchema: z.ZodObject<{
         startsAt: string;
         hlsMasterUrl?: string | null | undefined;
     }[] | undefined;
+    progressPercent?: number | undefined;
     syncedAt?: string | undefined;
+    serverTimeMs?: number | undefined;
     currentItemEndsAtMs?: number | null | undefined;
     itemStartEpochSecs?: number | null | undefined;
     failoverReason?: string | null | undefined;
     activeSchedule?: null | undefined;
+    liveOverride?: {
+        title: string;
+        id: string;
+        startedAt: string;
+        endsAt: string | null;
+        hlsStreamUrl?: string | null | undefined;
+        youtubeVideoId?: string | null | undefined;
+    } | null | undefined;
+    ytLive?: boolean | undefined;
     ytVideoId?: string | null | undefined;
     ytTitle?: string | null | undefined;
 }>;

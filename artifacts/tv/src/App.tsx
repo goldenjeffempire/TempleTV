@@ -26,8 +26,9 @@ const SeriesDetail = lazy(() =>
 );
 const Player = lazy(() => import("./pages/Player").then((m) => ({ default: m.Player })));
 const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })));
+const Playlists = lazy(() => import("./pages/Playlists").then((m) => ({ default: m.Playlists })));
 
-type Screen = "home" | "search" | "history" | "settings";
+type Screen = "home" | "search" | "history" | "settings" | "playlists";
 
 function getInitialScreen(): Screen {
   if (typeof window === "undefined") return "home";
@@ -36,7 +37,8 @@ function getInitialScreen(): Screen {
   if (
     requested === "search" ||
     requested === "history" ||
-    requested === "settings"
+    requested === "settings" ||
+    requested === "playlists"
   )
     {return requested;}
   return "home";
@@ -226,12 +228,22 @@ export default function App() {
         onPlay={(videoId, title, hlsUrl, startSecs) => play(videoId, title, hlsUrl, startSecs)}
       />
     );
+  } else if (screen === "playlists") {
+    content = (
+      <Playlists
+        onBack={() => setScreen("home")}
+        onPlay={(videoId, title, hlsUrl, startSecs, isLive, thumbnailUrl) =>
+          play(videoId, title, hlsUrl, startSecs, isLive, thumbnailUrl)
+        }
+      />
+    );
   } else {
     content = (
       <Home
         onNavigateSearch={() => setScreen("search")}
         onNavigateHistory={() => setScreen("history")}
         onNavigateSettings={() => setScreen("settings")}
+        onNavigatePlaylists={() => setScreen("playlists")}
         onPlay={(videoId, title, hlsUrl, startPositionSecs, isLive) => play(videoId, title, hlsUrl, startPositionSecs, isLive)}
         onDetails={(video, related) => setDetailsVideo({ video, related })}
         onSeriesDetail={(s) => setSeriesDetail(s)}

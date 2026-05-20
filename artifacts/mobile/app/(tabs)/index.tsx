@@ -346,8 +346,9 @@ export default function WatchScreen() {
       <AppHeader
         right={
           <Pressable
-            onPress={() => router.push("/(tabs)/library")}
+            onPress={() => router.push("/search")}
             accessibilityLabel="Search"
+            accessibilityRole="button"
             hitSlop={8}
           >
             <Feather name="search" size={22} color={c.foreground} />

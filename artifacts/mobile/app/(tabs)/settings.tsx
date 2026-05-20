@@ -219,7 +219,12 @@ export default function SettingsScreen() {
       <GlassCard style={styles.card}>
         {isLoggedIn && user ? (
           <>
-            <View style={styles.profileRow}>
+            <Pressable
+              onPress={() => router.push("/account")}
+              style={({ pressed }) => [styles.profileRow, pressed && { opacity: 0.75 }]}
+              accessibilityRole="button"
+              accessibilityLabel="Edit profile"
+            >
               <View style={[styles.avatar, { backgroundColor: c.primary }]}>
                 <Text style={styles.avatarText}>
                   {(user.displayName ?? user.email)?.[0]?.toUpperCase() ?? "U"}
@@ -233,7 +238,14 @@ export default function SettingsScreen() {
                   {user.email}
                 </Text>
               </View>
-            </View>
+              <Feather name="chevron-right" size={16} color={c.mutedForeground} />
+            </Pressable>
+            <Row
+              icon="user"
+              label="Edit Profile"
+              description="Update your display name"
+              onPress={() => router.push("/account")}
+            />
             <Row
               icon="lock"
               label="Change Password"
@@ -460,8 +472,15 @@ export default function SettingsScreen() {
           onPress={() => router.push("/favorites")}
         />
         <Row
+          icon="list"
+          label="Playlists"
+          description="Browse curated sermon playlists"
+          onPress={() => router.push("/playlists")}
+        />
+        <Row
           icon="book-open"
-          label="Browse Library"
+          label="Sermon Series"
+          description="Multi-part teaching series"
           onPress={() => router.push("/(tabs)/library")}
         />
       </GlassCard>

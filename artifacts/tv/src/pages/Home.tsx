@@ -36,12 +36,13 @@ interface HomeProps {
   onNavigateSearch: () => void;
   onNavigateHistory: () => void;
   onNavigateSettings: () => void;
+  onNavigatePlaylists?: () => void;
   onPlay: (videoId: string, title: string, hlsUrl?: string, startPositionSecs?: number, isLive?: boolean) => void;
   onDetails: (video: VideoItem, related: VideoItem[]) => void;
   onSeriesDetail: (series: SeriesItem) => void;
 }
 
-export function Home({ onNavigateSearch, onNavigateHistory, onNavigateSettings, onPlay, onDetails, onSeriesDetail }: HomeProps) {
+export function Home({ onNavigateSearch, onNavigateHistory, onNavigateSettings, onNavigatePlaylists, onPlay, onDetails, onSeriesDetail }: HomeProps) {
   const { byCategory, sermons, loading, error } = useSermons();
   const { series } = useSeries();
   const { entries: continueWatching, refresh: refreshContinueWatching, remove: removeContinueWatching } = useWatchProgress(5);

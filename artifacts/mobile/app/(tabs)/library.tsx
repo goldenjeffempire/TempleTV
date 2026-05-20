@@ -353,7 +353,7 @@ export default function LibraryScreen() {
   // Support deep-linking from the Channels tab: `router.navigate({ pathname: "/(tabs)/library", params: { category: "Prayers" } })`
   const { category: categoryParam } = useLocalSearchParams<{ category?: string }>();
 
-  const [mode, setMode] = useState<"videos" | "series">("videos");
+  const [mode, setMode] = useState<"videos" | "series" | "playlists">("videos");
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState<SermonCategory>(() => {
     if (categoryParam && CATEGORIES.some((c) => c.value === categoryParam)) {
@@ -444,6 +444,12 @@ export default function LibraryScreen() {
           icon="book-open"
           active={mode === "series"}
           onPress={() => setMode("series")}
+        />
+        <ModePill
+          label="Playlists"
+          icon="list"
+          active={mode === "playlists"}
+          onPress={() => router.push("/playlists")}
         />
       </View>
 
