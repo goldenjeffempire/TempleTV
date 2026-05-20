@@ -492,7 +492,20 @@ export const queueRepo = {
             or(
               sql`${v.id} IS NULL`,
               isNotNull(v.hlsMasterUrl),
-              inArray(v.transcodingStatus, ["none", "queued", "encoding", "ready", "hls_ready"]),
+              // 'ready' and 'hls_ready' are always safe: faststart/HLS is complete.
+              inArray(v.transcodingStatus, ["ready", "hls_ready"]),
+              // 'none', 'queued', 'encoding': only admit when faststart has
+              // relocated the moov atom to byte 0. Raw uploads (faststartApplied=false)
+              // have the moov atom at EOF — the browser must download the entire file
+              // before it can parse metadata, causing player timeouts and infinite
+              // SKIP_PENDING dead-air loops on large MP4 uploads.
+              // Videos are auto-added to the queue by faststart.service.ts AFTER
+              // faststartApplied=true, so the window here is only for items manually
+              // added via the admin queue page while faststart is still running.
+              and(
+                inArray(v.transcodingStatus, ["none", "queued", "encoding"]),
+                eq(v.faststartApplied, true),
+              ),
               // 'failed': admit only when the moov atom is confirmed at byte-0.
               and(
                 eq(v.transcodingStatus, "failed"),

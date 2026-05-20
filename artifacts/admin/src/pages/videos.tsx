@@ -27,9 +27,9 @@ import {
 import { toast } from "sonner";
 import {
   Video, Search, MoreVertical, Pencil, Trash2,
-  RefreshCw, Star, StarOff, ChevronLeft, ChevronRight, Film, Eye,
+  RefreshCw, Star, StarOff, ChevronLeft, ChevronRight, Film, Eye, EyeOff,
   UploadCloud, X, FileVideo, Layers, Lock, LockOpen, Youtube, HardDrive,
-  ArrowUpDown, SlidersHorizontal, Zap, Clapperboard,
+  ArrowUpDown, SlidersHorizontal, Zap, Clapperboard, Globe,
 } from "lucide-react";
 import { uploadQueue, useUploadQueue, formatBytes, titleFromFilename } from "@/lib/upload-queue";
 
@@ -48,6 +48,7 @@ interface AdminVideo {
   preacher: string | null;
   featured: boolean;
   metadataLocked: boolean;
+  broadcastOnly: boolean;
   transcodingStatus: string;
   videoSource: string;
   importedAt: string;
@@ -72,6 +73,7 @@ interface EditForm {
   preacher: string;
   featured: boolean;
   metadataLocked: boolean;
+  broadcastOnly: boolean;
 }
 
 // Server-enforced limits — keep client in sync with PatchBodySchema in
@@ -90,6 +92,7 @@ function snapshotForCompare(f: EditForm): string {
     preacher: f.preacher.trim(),
     featured: f.featured,
     metadataLocked: f.metadataLocked,
+    broadcastOnly: f.broadcastOnly,
   });
 }
 
@@ -106,6 +109,7 @@ function buildEditDelta(original: EditForm, current: EditForm): Partial<EditForm
   if (tPreacher !== original.preacher.trim()) delta.preacher = tPreacher;
   if (current.featured !== original.featured) delta.featured = current.featured;
   if (current.metadataLocked !== original.metadataLocked) delta.metadataLocked = current.metadataLocked;
+  if (current.broadcastOnly !== original.broadcastOnly) delta.broadcastOnly = current.broadcastOnly;
   return delta;
 }
 
@@ -166,7 +170,7 @@ export default function VideosPage() {
   const [editVideo, setEditVideo] = useState<AdminVideo | null>(null);
   const [deleteVideo, setDeleteVideo] = useState<AdminVideo | null>(null);
   const [editForm, setEditForm] = useState<EditForm>({
-    title: "", description: "", category: "", preacher: "", featured: false, metadataLocked: false,
+    title: "", description: "", category: "", preacher: "", featured: false, metadataLocked: false, broadcastOnly: false,
   });
   // Original form values captured when the dialog opened — used to compute
   // a delta payload and to enable/disable the Save button.
@@ -286,6 +290,16 @@ export default function VideosPage() {
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed"),
   });
 
+  const publishMutation = useMutation({
+    mutationFn: ({ id, broadcastOnly }: { id: string; broadcastOnly: boolean }) =>
+      api.patch(`/admin/videos/${id}`, { broadcastOnly }),
+    onSuccess: (_, { broadcastOnly }) => {
+      toast.success(broadcastOnly ? "Hidden from public library" : "Published to public library");
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+    },
+    onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed"),
+  });
+
   const transcodeMutation = useMutation({
     mutationFn: (id: string) =>
       api.post<{ jobId: string; reused: boolean }>(`/admin/videos/${id}/transcode`),
@@ -314,6 +328,7 @@ export default function VideosPage() {
       preacher: v.preacher ?? "",
       featured: v.featured,
       metadataLocked: v.metadataLocked,
+      broadcastOnly: v.broadcastOnly,
     };
     setEditForm(initial);
     setEditOriginal(initial);
@@ -609,6 +624,11 @@ export default function VideosPage() {
                           <Lock size={10} className="text-blue-500 flex-shrink-0" />
                         </span>
                       )}
+                      {v.broadcastOnly && (
+                        <span title="Broadcast only — hidden from public library. Click ⋮ → Publish to library to make it visible.">
+                          <Badge variant="outline" className="text-[9px] px-1 py-0 h-4 border-orange-400 text-orange-500">Broadcast only</Badge>
+                        </span>
+                      )}
                     </div>
                     <div className="flex items-center gap-3 mt-0.5 flex-wrap">
                       {v.videoSource === "youtube"
@@ -683,6 +703,15 @@ export default function VideosPage() {
                           Re-apply faststart
                         </DropdownMenuItem>
                       )}
+                      <DropdownMenuItem
+                        onClick={() => publishMutation.mutate({ id: v.id, broadcastOnly: !v.broadcastOnly })}
+                        disabled={publishMutation.isPending}
+                        title={v.broadcastOnly ? "Make this video visible in the public library" : "Hide from public library (still available in broadcast queue)"}
+                      >
+                        {v.broadcastOnly
+                          ? <><Globe size={13} className="mr-2 text-green-600" /> Publish to library</>
+                          : <><EyeOff size={13} className="mr-2 text-orange-500" /> Hide from library</>}
+                      </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
                         className="text-red-600 focus:text-red-600"
@@ -1087,6 +1116,29 @@ export default function VideosPage() {
                       onCheckedChange={(v) => setEditForm(f => ({ ...f, featured: v }))}
                     />
                   </div>
+
+                  {/* Library visibility — only relevant for locally-uploaded videos */}
+                  {editVideo?.videoSource === "local" && (
+                    <div className="flex items-center justify-between rounded-lg border p-3 bg-orange-50 dark:bg-orange-950/20 border-orange-200 dark:border-orange-800">
+                      <div className="flex items-start gap-2">
+                        {editForm.broadcastOnly
+                          ? <EyeOff size={15} className="text-orange-500 mt-0.5 flex-shrink-0" />
+                          : <Globe size={15} className="text-green-600 mt-0.5 flex-shrink-0" />}
+                        <div>
+                          <Label className="text-sm font-medium">Broadcast only</Label>
+                          <p className="text-xs text-muted-foreground mt-0.5">
+                            {editForm.broadcastOnly
+                              ? "Hidden from the public library. Toggle off to publish it for viewers to browse."
+                              : "Visible in the public library. Toggle on to hide it from browsing (still airs in broadcasts)."}
+                          </p>
+                        </div>
+                      </div>
+                      <Switch
+                        checked={editForm.broadcastOnly}
+                        onCheckedChange={(v) => setEditForm(f => ({ ...f, broadcastOnly: v }))}
+                      />
+                    </div>
+                  )}
 
                   {/* Metadata lock — only meaningful for YouTube-sourced rows */}
                   {editVideo?.videoSource === "youtube" && (

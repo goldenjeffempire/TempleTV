@@ -38,6 +38,7 @@ const VideoRowSchema = z.object({
   viewCount: z.number().int().nonnegative(),
   featured: z.boolean(),
   metadataLocked: z.boolean(),
+  broadcastOnly: z.boolean(),
   videoSource: z.string(),
   localVideoUrl: z.string().nullable(),
   hlsMasterUrl: z.string().nullable(),
@@ -80,6 +81,7 @@ const PatchBodySchema = z.object({
   preacher: z.string().max(255).optional(),
   featured: z.boolean().optional(),
   metadataLocked: z.boolean().optional(),
+  broadcastOnly: z.boolean().optional(),
 }).strict();
 
 function toDto(row: typeof videos.$inferSelect): z.infer<typeof VideoRowSchema> {
@@ -98,6 +100,7 @@ function toDto(row: typeof videos.$inferSelect): z.infer<typeof VideoRowSchema> 
     viewCount: row.viewCount,
     featured: row.featured,
     metadataLocked: row.metadataLocked,
+    broadcastOnly: row.broadcastOnly,
     videoSource: row.videoSource,
     localVideoUrl: row.localVideoUrl,
     hlsMasterUrl: row.hlsMasterUrl,
@@ -287,6 +290,7 @@ export async function adminVideosRoutes(app: FastifyInstance) {
         ...(body.preacher !== undefined    ? { preacher: body.preacher }       : {}),
         ...(body.featured !== undefined    ? { featured: body.featured }       : {}),
         ...(body.metadataLocked !== undefined ? { metadataLocked: body.metadataLocked } : {}),
+        ...(body.broadcastOnly !== undefined  ? { broadcastOnly: body.broadcastOnly }   : {}),
       };
 
       let updated: VideoRow[];
@@ -299,8 +303,9 @@ export async function adminVideosRoutes(app: FastifyInstance) {
           .returning();
       } catch (err: unknown) {
         if (!isUndefinedColumnError(err)) throw err;
-        // Fallback: drop metadataLocked from SET (column absent) and use safe RETURNING.
-        const { metadataLocked: _skip, ...safeSet } = baseSet as typeof baseSet & { metadataLocked?: boolean };
+        // Fallback: drop late-added columns from SET (absent on pre-migration DBs)
+        // and use the safe RETURNING projection that substitutes false for them.
+        const { metadataLocked: _m, broadcastOnly: _b, ...safeSet } = baseSet as typeof baseSet & { metadataLocked?: boolean; broadcastOnly?: boolean };
         updated = await db
           .update(videos)
           .set(safeSet)

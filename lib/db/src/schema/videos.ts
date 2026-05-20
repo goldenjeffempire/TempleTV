@@ -62,6 +62,11 @@ export const videosTable = pgTable("managed_videos", {
   //       faststart itself failed → raw upload, moov at EOF → NOT seekable
   //       → must NOT enter the live broadcast rotation.
   faststartApplied: boolean("faststart_applied").notNull().default(false),
+  // When true, this video was uploaded for internal broadcast use only and
+  // will NOT appear in the public library (TV, mobile, web catalogue).
+  // Set automatically to true for all new uploads. Admin can set to false
+  // to publish the video to the public library.
+  broadcastOnly: boolean("broadcast_only").notNull().default(false),
 }, (table) => [
   index("idx_managed_videos_imported_at").on(table.importedAt),
   index("idx_managed_videos_category").on(table.category),

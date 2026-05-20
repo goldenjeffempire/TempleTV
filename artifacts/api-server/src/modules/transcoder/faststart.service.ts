@@ -28,6 +28,7 @@ import { storage } from "../../infrastructure/storage.js";
 import { logger as rootLogger } from "../../infrastructure/logger.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
+import { broadcastService } from "../broadcast/broadcast.service.js";
 
 const videos = schema.videosTable;
 
@@ -225,6 +226,46 @@ export async function runFaststart(
     // entered SKIP_PENDING while the file was being re-uploaded are
     // unblocked and promoted to LIVE without operator intervention.
     adminEventBus.push("broadcast-queue-updated", { reason: "faststart-complete", videoId });
+
+    // Auto-add to broadcast queue if not already there.
+    // Videos are only enqueued AFTER faststart so the player always receives
+    // a moov-at-byte-0 (seekable) MP4 — never a raw upload with moov at EOF
+    // that causes player timeouts and infinite SKIP_PENDING dead-air loops.
+    try {
+      const existing = await db
+        .select({ id: schema.broadcastQueueTable.id })
+        .from(schema.broadcastQueueTable)
+        .where(eq(schema.broadcastQueueTable.videoId, videoId))
+        .limit(1);
+
+      if (existing.length === 0) {
+        const [videoRow] = await db
+          .select({
+            title: videos.title,
+            thumbnailUrl: videos.thumbnailUrl,
+            duration: videos.duration,
+            localVideoUrl: videos.localVideoUrl,
+          })
+          .from(videos)
+          .where(eq(videos.id, videoId))
+          .limit(1);
+
+        if (videoRow) {
+          const durationSecs = Math.round(parseFloat(videoRow.duration ?? "0")) || 1800;
+          await broadcastService.addToQueue({
+            videoId,
+            title: videoRow.title,
+            thumbnailUrl: videoRow.thumbnailUrl ?? "",
+            durationSecs,
+            localVideoUrl: videoRow.localVideoUrl ?? null,
+            videoSource: "local",
+          });
+          log.info({ videoId, durationSecs }, "faststart: auto-added video to broadcast queue");
+        }
+      }
+    } catch (autoQueueErr) {
+      log.warn({ err: autoQueueErr, videoId }, "faststart: auto-add to broadcast queue failed (non-fatal)");
+    }
 
     const elapsedMs = Date.now() - startMs;
     log.info({ elapsedMs, outputSizeBytes, durationSecs }, "faststart: complete");

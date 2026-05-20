@@ -44,7 +44,6 @@ import { runFaststart } from "../transcoder/faststart.service.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { env } from "../../config/env.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
-import { broadcastService } from "../broadcast/broadcast.service.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { ServiceUnavailableError } from "../../shared/errors.js";
 
@@ -905,6 +904,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             objectPath: objectKey,
             uploadedBy: session.uploadedBy ?? null,
             s3MirroredAt: null, // set after background assembly confirms blob exists
+            broadcastOnly: true, // hidden from public library until admin publishes
           })
           .returning();
 
@@ -923,24 +923,10 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           .set({ completedVideoId: videoId, updatedAt: new Date() })
           .where(eq(sessions.sessionId, sessionId));
 
-        // Auto-add to broadcast queue — slot reserved, video won't air until
-        // faststart/transcoding completes and broadcast-queue-updated fires.
-        // NOTE: broadcast-queue-updated is NOT pushed here (same as before).
-        try {
-          await broadcastService.addToQueue({
-            videoId: row.id,
-            title: session.title,
-            thumbnailUrl: "",
-            durationSecs,
-            localVideoUrl,
-            videoSource: "local",
-          });
-        } catch (err) {
-          req.log.warn(
-            { err, videoId: row.id },
-            "[finalize] auto-add to broadcast queue failed (non-fatal)",
-          );
-        }
+        // NOTE: The video is NOT added to the broadcast queue here.
+        // faststart.service.ts auto-adds it AFTER relocating the moov atom
+        // (faststartApplied=true), ensuring the player always receives a
+        // seekable MP4 rather than a raw upload with moov at EOF.
 
         // Notify connected clients that the library has a new entry.
         void invalidateVideosCatalogCache();
@@ -1153,6 +1139,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           objectPath: finalObjectKey ?? null,
           uploadedBy: session.uploadedBy ?? null,
           s3MirroredAt: finalStorageBackend === "db" ? new Date() : null,
+          broadcastOnly: true, // hidden from public library until admin publishes
         })
         .returning();
 
@@ -1176,22 +1163,10 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           req.log.warn({ err, sessionId }, "[finalize] chunk row cleanup failed (non-fatal)");
         });
 
-      try {
-        const durationSecs =
-          session.durationSecs && session.durationSecs > 0
-            ? Math.round(session.durationSecs)
-            : 1800;
-        await broadcastService.addToQueue({
-          videoId: row.id,
-          title: session.title,
-          thumbnailUrl: "",
-          durationSecs,
-          localVideoUrl,
-          videoSource: "local",
-        });
-      } catch (err) {
-        req.log.warn({ err, videoId: row.id }, "[finalize] auto-add to broadcast queue failed (non-fatal)");
-      }
+      // NOTE: The video is NOT added to the broadcast queue here.
+      // faststart.service.ts auto-adds it AFTER relocating the moov atom
+      // (faststartApplied=true), ensuring the player always receives a
+      // seekable MP4 rather than a raw upload with moov at EOF.
 
       void invalidateVideosCatalogCache();
       try { broadcastEngine.pushSnapshot(); } catch { /* non-fatal */ }

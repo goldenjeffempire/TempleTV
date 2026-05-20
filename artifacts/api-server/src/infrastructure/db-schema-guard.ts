@@ -84,4 +84,5 @@ export const SAFE_VIDEO_COLS = {
   // in the SQL until the migration adds them (next Render deploy via push-force).
   metadataLocked:   sql<boolean>`false`,
   faststartApplied: sql<boolean>`false`,
+  broadcastOnly:    sql<boolean>`false`,
 } as const;

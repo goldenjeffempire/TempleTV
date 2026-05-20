@@ -167,6 +167,10 @@ function buildWhere(search: string | undefined, category: string | undefined): S
   // YouTube rows whose published_at is NULL are kept as a safety net.
   const clauses: SQL[] = [
     sql`(${videos.videoSource} != 'youtube' OR ${videos.publishedAt} IS NULL OR ${videos.publishedAt}::timestamptz >= NOW() - INTERVAL '2 years')`,
+    // Exclude upload-only broadcast content from the public library.
+    // broadcast_only=true means the video was uploaded for internal broadcast
+    // and the admin has not yet published it to the public library.
+    sql`(${videos.broadcastOnly} IS NULL OR ${videos.broadcastOnly} = false)`,
   ];
 
   if (search?.trim()) {
