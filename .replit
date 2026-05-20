@@ -1,4 +1,4 @@
-modules = ["bash", "web", "nodejs-24", "python-3.11"]
+modules = ["bash", "web", "nodejs-24"]
 
 [deployment]
 router = "application"
@@ -26,10 +26,6 @@ args = "Start application"
 task = "workflow.run"
 args = "Start admin"
 
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "Mobile (Expo)"
-
 [[workflows.workflow]]
 name = "Start application"
 author = "agent"
@@ -51,19 +47,8 @@ outputType = "console"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 pnpm install --ignore-scripts && PORT=3000 pnpm --filter @workspace/admin run dev"
+args = "PORT=3000 pnpm --filter @workspace/admin run dev"
 waitForPort = 3000
-
-[[workflows.workflow]]
-name = "Mobile (Expo)"
-author = "agent"
-
-[workflows.workflow.metadata]
-outputType = "console"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 pnpm install --ignore-scripts && pnpm --filter @workspace/mobile run dev"
 
 [agent]
 stack = "BEST_EFFORT_FALLBACK"
@@ -76,15 +61,7 @@ timeoutMs = 180000
 
 [[ports]]
 localPort = 3000
-externalPort = 5173
-
-[[ports]]
-localPort = 3001
-externalPort = 6000
-
-[[ports]]
-localPort = 4000
-externalPort = 9000
+externalPort = 3000
 
 [[ports]]
 localPort = 5000
