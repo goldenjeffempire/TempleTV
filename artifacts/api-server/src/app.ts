@@ -232,6 +232,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   // different `*.expo.spock.replit.dev` origin and therefore can't piggy-back
   // on a same-origin Vite proxy) can reach the API in development without the
   // operator having to maintain a separate CORS_ORIGINS_EXTRA entry per Repl.
+  // Also allow localhost:5000 and localhost:3000 — when the mobile web preview
+  // is loaded through the /mobile/* dev proxy (served on port 5000), the
+  // browser origin is http://localhost:5000, which must be permitted so the
+  // Expo web bundle can make API calls back to the same API server.
   // Production deployments never hit this branch — REPLIT_DEV_DOMAIN /
   // REPLIT_EXPO_DEV_DOMAIN are only set inside the Replit dev container.
   if (!wildcardOrigin) {
@@ -246,6 +250,10 @@ export async function buildApp(): Promise<FastifyInstance> {
         { replitOrigins },
         "cors: auto-allowed Replit dev/preview domains",
       );
+    }
+    if (env.NODE_ENV !== "production") {
+      parsedOrigins.push("http://localhost:5000", "http://localhost:3000");
+      app.log.info("cors: auto-allowed localhost origins for dev proxy (mobile/admin web previews)");
     }
   }
   await app.register(cors, {
@@ -282,6 +290,12 @@ export async function buildApp(): Promise<FastifyInstance> {
       const url = req.url ?? "";
       // Dev TV proxy
       if (url.startsWith("/tv/")) return true;
+      // Dev Mobile (Expo web) proxy + Expo HMR WebSocket paths
+      if (url.startsWith("/mobile/") || url.startsWith("/mobile?")) return true;
+      if (url.startsWith("/artifacts/mobile/")) return true;
+      if (url === "/hot" || url.startsWith("/hot?")) return true;
+      if (url === "/message" || url.startsWith("/message?")) return true;
+      if (url.startsWith("/assets/") || url.startsWith("/assets?")) return true;
       // Broadcast v2 real-time paths
       if (url.includes("/broadcast-v2/state")) return true;
       if (url.includes("/broadcast-v2/health")) return true;
@@ -630,41 +644,90 @@ export async function buildApp(): Promise<FastifyInstance> {
     const TV_DEV_PORT = Number(process.env.TV_DEV_PORT ?? "23876");
     const http = await import("node:http");
 
-    const tvProxy = async (req: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply) => {
-      // Hijack the reply so Fastify's onSend hooks (helmet CSP, etc.) do not
-      // touch the headers — the TV Vite dev server provides its own headers
-      // which are more appropriate for a dev HMR environment.
-      reply.hijack();
-      await new Promise<void>((resolve) => {
-        const proxyReq = http.request(
-          {
-            hostname: "127.0.0.1",
-            port: TV_DEV_PORT,
-            path: req.url,
-            method: req.method,
-            headers: { ...req.headers, host: `localhost:${TV_DEV_PORT}` },
-          },
-          (proxyRes) => {
-            reply.raw.writeHead(proxyRes.statusCode ?? 200, proxyRes.headers);
-            proxyRes.pipe(reply.raw, { end: true });
-            proxyRes.on("end", resolve);
-            proxyRes.on("error", () => resolve());
-          },
-        );
-        proxyReq.on("error", (err) => {
-          if (!reply.raw.headersSent) {
-            reply.raw.writeHead(502);
-            reply.raw.end(`TV dev server unavailable on port ${TV_DEV_PORT}: ${err.message}`);
-          }
-          resolve();
+    function makeDevProxy(port: number, label: string, stripPrefix?: string) {
+      return async (req: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply) => {
+        // Hijack the reply so Fastify's onSend hooks (helmet CSP, etc.) do not
+        // touch the headers — the dev server provides its own headers.
+        reply.hijack();
+        // Optionally strip a path prefix before forwarding (e.g. /mobile → /)
+        // so the downstream dev server sees root-relative paths it expects.
+        let forwardPath = req.url;
+        if (stripPrefix && forwardPath.startsWith(stripPrefix)) {
+          forwardPath = forwardPath.slice(stripPrefix.length) || "/";
+        }
+        await new Promise<void>((resolve) => {
+          const proxyReq = http.request(
+            {
+              hostname: "127.0.0.1",
+              port,
+              path: forwardPath,
+              method: req.method,
+              headers: { ...req.headers, host: `localhost:${port}` },
+            },
+            (proxyRes) => {
+              reply.raw.writeHead(proxyRes.statusCode ?? 200, proxyRes.headers);
+              proxyRes.pipe(reply.raw, { end: true });
+              proxyRes.on("end", resolve);
+              proxyRes.on("error", () => resolve());
+            },
+          );
+          proxyReq.on("error", (err) => {
+            if (!reply.raw.headersSent) {
+              reply.raw.writeHead(502);
+              reply.raw.end(`${label} dev server unavailable on port ${port}: ${err.message}`);
+            }
+            resolve();
+          });
+          proxyReq.end();
         });
-        proxyReq.end();
-      });
-    };
+      };
+    }
 
+    const tvProxy = makeDevProxy(TV_DEV_PORT, "TV");
     app.get("/tv", tvProxy as Parameters<typeof app.get>[1]);
     app.get("/tv/*", tvProxy as Parameters<typeof app.get>[1]);
     logger.info({ port: TV_DEV_PORT }, "dev TV proxy registered at /tv/*");
+
+    // ── Dev-only Mobile (Expo web) proxy ─────────────────────────────────────
+    // The Expo Metro dev server runs its web target on port 18115 and always
+    // expects root-relative paths (e.g. /). The Replit mobile artifact preview
+    // hits the API at /mobile/, so we strip the /mobile prefix before forwarding
+    // so Expo Router sees "/" and renders the index route correctly.
+    // /artifacts/mobile/* are the Metro bundle/asset paths (NOT stripped — Metro
+    // serves them at that same absolute path). /hot and /message are Expo HMR
+    // WebSocket upgrade paths that originate from the loaded Expo web page.
+    const MOBILE_DEV_PORT = Number(process.env.MOBILE_DEV_PORT ?? "18115");
+    const mobileProxy = makeDevProxy(MOBILE_DEV_PORT, "Mobile", "/mobile");
+    const mobileAssetProxy = makeDevProxy(MOBILE_DEV_PORT, "Mobile");
+    app.get("/mobile", mobileProxy as Parameters<typeof app.get>[1]);
+    app.get("/mobile/*", mobileProxy as Parameters<typeof app.get>[1]);
+    // Metro bundle + asset paths — no prefix stripping needed.
+    app.get("/artifacts/mobile/*", mobileAssetProxy as Parameters<typeof app.get>[1]);
+    // Expo Metro also serves font/image assets at /assets/* (unstable_path query).
+    app.get("/assets", mobileAssetProxy as Parameters<typeof app.get>[1]);
+    app.get("/assets/*", mobileAssetProxy as Parameters<typeof app.get>[1]);
+    // Expo HMR WebSocket upgrade paths. Fastify handles GET for the initial
+    // HTTP-to-WS upgrade handshake; we hijack and pipe the raw socket.
+    const wsProxy = (req: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply) => {
+      const net = require("node:net") as typeof import("node:net");
+      reply.hijack();
+      const socket = req.raw.socket;
+      const upstream = net.connect(MOBILE_DEV_PORT, "127.0.0.1", () => {
+        // Re-send the original HTTP upgrade request to the upstream server.
+        const reqLine = `${req.method} ${req.url} HTTP/1.1\r\n`;
+        const headers = Object.entries({ ...req.headers, host: `localhost:${MOBILE_DEV_PORT}` })
+          .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v ?? ""}`)
+          .join("\r\n");
+        upstream.write(`${reqLine}${headers}\r\n\r\n`);
+        upstream.pipe(socket, { end: true });
+        socket.pipe(upstream, { end: true });
+      });
+      upstream.on("error", () => socket.destroy());
+      socket.on("error", () => upstream.destroy());
+    };
+    app.get("/hot", wsProxy as Parameters<typeof app.get>[1]);
+    app.get("/message", wsProxy as Parameters<typeof app.get>[1]);
+    logger.info({ port: MOBILE_DEV_PORT }, "dev Mobile proxy registered at /mobile/*, /artifacts/mobile/*, /hot, /message");
   }
 
   // Subscribe to YouTube's PubSubHubbub hub once the server is fully ready

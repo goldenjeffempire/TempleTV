@@ -147,6 +147,22 @@ export default function Root({ children }: PropsWithChildren) {
 
         <ScrollViewStyleReset />
 
+        {/*
+          Replit dev proxy: the mobile web preview is mounted at /mobile/ by the
+          API server proxy. Expo Router's stripBaseUrl() reads
+          process.env.EXPO_BASE_URL, which babel-preset-expo inlines at bundle
+          time from the Metro transform caller's `baseUrl` field. In Replit's
+          dev environment that inlining may yield an empty string, so we also
+          rewrite window.location synchronously here (before the deferred bundle
+          script) as a belt-and-suspenders fix.  Once URL is rewritten to /,
+          Expo Router sees the index route and all in-app navigation works.
+        */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var b='/mobile';var p=location.pathname;if(p===b||p.startsWith(b+'/')){var np=p.slice(b.length)||'/';history.replaceState(null,'',np+location.search+location.hash);}}catch(e){}})();`,
+          }}
+        />
+
         <style
           dangerouslySetInnerHTML={{
             __html: `
