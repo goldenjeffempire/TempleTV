@@ -215,18 +215,41 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
   // status="uploading" so the client's retry logic can re-attempt finalize.
   app.addHook("onReady", async () => {
     try {
+      // Select completedVideoId too — the async-finalize path pre-commits a video
+      // row and stores its id in completedVideoId BEFORE starting background assembly.
+      // If the server restarted mid-assembly those rows are orphaned (blob partial).
       const stuckRows = await db
-        .select({ sessionId: sessions.sessionId })
+        .select({ sessionId: sessions.sessionId, completedVideoId: sessions.completedVideoId })
         .from(sessions)
         .where(inArray(sessions.status, ["assembling"]));
       if (stuckRows.length > 0) {
+        const orphanedVideoIds = stuckRows
+          .filter((r) => r.completedVideoId)
+          .map((r) => r.completedVideoId as string);
+
+        if (orphanedVideoIds.length > 0) {
+          // Remove broadcast_queue slots (were added optimistically at pre-commit time)
+          await db
+            .delete(schema.broadcastQueueTable)
+            .where(inArray(schema.broadcastQueueTable.videoId, orphanedVideoIds))
+            .catch(() => {});
+          // Remove the orphaned video rows so retry creates a clean new row
+          await db
+            .delete(videos)
+            .where(inArray(videos.id, orphanedVideoIds))
+            .catch(() => {});
+        }
+
+        // Reset session state: clear completedVideoId so the idempotency check
+        // doesn't incorrectly fast-path on the next /finalize call.
         await db
           .update(sessions)
-          .set({ status: "uploading", updatedAt: new Date() })
+          .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
           .where(inArray(sessions.status, ["assembling"]));
+
         app.log.warn(
-          { count: stuckRows.length, ids: stuckRows.map((r) => r.sessionId) },
-          "[upload] reset stuck assembling sessions to uploading on startup",
+          { count: stuckRows.length, orphanedVideoIds, ids: stuckRows.map((r) => r.sessionId) },
+          "[upload] reset stuck assembling sessions — orphaned pre-commit rows cleaned up",
         );
       }
     } catch (err) {
@@ -667,6 +690,31 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           new Error(`Upload session not found: ${sessionId}`),
           { statusCode: 404 },
         );
+      }
+
+      // Belt-and-suspenders: If the session has a completedVideoId but status is
+      // neither "assembling" nor "completed", the server restarted during background
+      // assembly and the onReady cleanup either failed or hasn't run yet. Delete the
+      // orphaned rows here so this finalize attempt produces a clean result.
+      if (
+        session.completedVideoId &&
+        session.status !== "assembling" &&
+        session.status !== "completed"
+      ) {
+        req.log.warn(
+          { sessionId, completedVideoId: session.completedVideoId, status: session.status },
+          "[finalize] belt-and-suspenders: cleaning up orphaned pre-commit rows (server-restart recovery)",
+        );
+        await Promise.allSettled([
+          db
+            .delete(schema.broadcastQueueTable)
+            .where(eq(schema.broadcastQueueTable.videoId, session.completedVideoId)),
+          db.delete(videos).where(eq(videos.id, session.completedVideoId)),
+          db
+            .update(sessions)
+            .set({ completedVideoId: null })
+            .where(eq(sessions.sessionId, sessionId)),
+        ]);
       }
 
       // Idempotency: already completed OR pre-committed (background assembly running).

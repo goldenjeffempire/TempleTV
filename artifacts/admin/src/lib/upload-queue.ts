@@ -184,7 +184,9 @@ async function pollFinalizeStatus(
   base: string,
   signal: AbortSignal,
 ): Promise<string | null> {
-  const POLL_INTERVAL_MS = 5_000;
+  // 2-second interval: snappy feedback when finalize-status transitions to
+  // "completed" without burning too many requests on long assemblies.
+  const POLL_INTERVAL_MS = 2_000;
   while (!signal.aborted) {
     // Wait for the next poll tick, aborting early if the signal fires.
     await new Promise<void>((resolve) => {
