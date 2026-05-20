@@ -669,8 +669,10 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         );
       }
 
-      // Idempotency: already finalized
-      if (session.status === "completed" && session.completedVideoId) {
+      // Idempotency: already completed OR pre-committed (background assembly running).
+      // The new async-finalize path sets status="assembling" + completedVideoId before
+      // responding, so both states should return the already-created video row.
+      if ((session.status === "completed" || session.status === "assembling") && session.completedVideoId) {
         const existingRow = await db
           .select()
           .from(videos)
@@ -715,8 +717,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           .limit(1)
           .then((r) => r[0]);
 
-        // If the concurrent finalize finished while we were racing, return its result.
-        if (refreshed?.status === "completed" && refreshed.completedVideoId) {
+        // If already completed OR pre-committed (background assembly in flight),
+        // return the video row immediately — no need for the client to poll.
+        if (
+          (refreshed?.status === "completed" || refreshed?.status === "assembling") &&
+          refreshed.completedVideoId
+        ) {
           const existingRow = await db
             .select()
             .from(videos)
@@ -732,7 +738,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           }
         }
 
-        // Still assembling (or an unexpected state) — tell the client to poll.
+        // Truly still assembling via the old sync path — tell the client to poll.
         throw Object.assign(
           new Error(
             "Assembly already in progress for this session. " +
@@ -784,23 +790,267 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         );
       }
 
+      // ── Path A: "db" backend — pre-commit video row and respond immediately ──
+      //
+      // For db sessions the object key is fixed at init time, so the storage URL
+      // is fully deterministic before assembly runs. We insert the video row,
+      // return the HTTP 200 immediately (eliminating the 99% hang for all file
+      // sizes), and run completeMultipartUpload in a background async task.
+      //
+      // The assembly is the O(n²) iterative bytea-concat loop which can take
+      // several minutes for large files (1 GB+ = 128+ chunks ≈ 65 GB total DB
+      // I/O). Running it synchronously in the request thread blocks the HTTP
+      // response for that entire duration, causing the 99%-forever stall.
+      //
+      // Failure recovery: if background assembly throws, the video row is marked
+      // transcodingStatus='failed' and the session is reset to 'uploading' so
+      // the operator can retry from the upload queue panel.
+      if (session.storageBackend !== "db_fallback" && session.uploadId && session.objectKey) {
+        // Validate etags now (synchronous check; must happen before we commit
+        // the video row since a corrupt assembly would leave an unplayable blob).
+        const missingEtags = allChunks.filter((c) => !c.s3Etag);
+        if (missingEtags.length > 0) {
+          await resetLock();
+          throw Object.assign(
+            new Error(
+              `${missingEtags.length} chunk(s) are missing storage etags — ` +
+                `re-upload the session to recover: indices ${missingEtags.slice(0, 10).map((c) => c.chunkIndex).join(", ")}`,
+            ),
+            { statusCode: 422 },
+          );
+        }
+
+        const videoId = randomUUID();
+        const objectKey = session.objectKey;
+        const uploadId = session.uploadId;
+        const localVideoUrl = storage().publicUrl(objectKey);
+        const durationSecs =
+          session.durationSecs && session.durationSecs > 0
+            ? Math.round(session.durationSecs)
+            : 1800;
+
+        req.log.info(
+          { sessionId, objectKey, chunks: allChunks.length, sizeBytes: session.sizeBytes },
+          "[finalize] pre-commit started",
+        );
+
+        // Pre-insert the video row with the deterministic storage URL.
+        // transcodingStatus is null until enqueueTranscode runs after assembly.
+        const inserted = await db
+          .insert(videos)
+          .values({
+            id: videoId,
+            youtubeId: null,
+            title: session.title,
+            description: session.description ?? "",
+            thumbnailUrl: "",
+            duration: String(durationSecs),
+            category: session.category ?? "sermon",
+            preacher: session.preacher ?? "",
+            publishedAt: null,
+            videoSource: "local",
+            localVideoUrl,
+            featured: session.featured,
+            originalFilename: session.originalFilename ?? null,
+            mimeType: session.mimeType ?? null,
+            sizeBytes: session.sizeBytes,
+            objectPath: objectKey,
+            uploadedBy: session.uploadedBy ?? null,
+            s3MirroredAt: null, // set after background assembly confirms blob exists
+          })
+          .returning();
+
+        const row = inserted[0];
+        if (!row) {
+          await resetLock();
+          throw new Error("videos insert returned no rows");
+        }
+
+        // Store the pre-committed videoId on the session so that:
+        //   • Idempotent /finalize retries return the video row immediately.
+        //   • GET /finalize-status returns the videoId while assembling.
+        // Session status stays "assembling" until background assembly completes.
+        await db
+          .update(sessions)
+          .set({ completedVideoId: videoId, updatedAt: new Date() })
+          .where(eq(sessions.sessionId, sessionId));
+
+        // Auto-add to broadcast queue — slot reserved, video won't air until
+        // faststart/transcoding completes and broadcast-queue-updated fires.
+        // NOTE: broadcast-queue-updated is NOT pushed here (same as before).
+        try {
+          await broadcastService.addToQueue({
+            videoId: row.id,
+            title: session.title,
+            thumbnailUrl: "",
+            durationSecs,
+            localVideoUrl,
+            videoSource: "local",
+          });
+        } catch (err) {
+          req.log.warn(
+            { err, videoId: row.id },
+            "[finalize] auto-add to broadcast queue failed (non-fatal)",
+          );
+        }
+
+        // Notify connected clients that the library has a new entry.
+        void invalidateVideosCatalogCache();
+        try { broadcastEngine.pushSnapshot(); } catch { /* non-fatal */ }
+        adminEventBus.push("videos-library-updated", { videoId: row.id, reason: "upload-precommitted" });
+
+        req.log.info(
+          { sessionId, videoId: row.id, chunks: allChunks.length },
+          "[finalize] pre-committed ok — background assembly starting",
+        );
+
+        // ── Background assembly + all post-processing ───────────────────────
+        // Capture references before the handler returns (req may be GC'd).
+        const capturedLog = req.log;
+        const partsForAssembly = allChunks.map((c) => ({
+          partNumber: c.chunkIndex + 1,
+          etag: c.s3Etag as string,
+        }));
+        const assemblyStartMs = Date.now();
+
+        void (async () => {
+          try {
+            capturedLog.info(
+              { sessionId, videoId, parts: partsForAssembly.length },
+              "[finalize:bg] completeMultipartUpload started",
+            );
+
+            await storage().completeMultipartUpload({
+              key: objectKey,
+              uploadId,
+              parts: partsForAssembly,
+            });
+
+            const assemblyMs = Date.now() - assemblyStartMs;
+            capturedLog.info(
+              { sessionId, videoId, assemblyMs, parts: partsForAssembly.length },
+              "[finalize:bg] completeMultipartUpload done",
+            );
+
+            // Mark session completed and confirm the blob is fully assembled.
+            await Promise.all([
+              db
+                .update(sessions)
+                .set({ status: "completed", storageBackend: "db", updatedAt: new Date() })
+                .where(eq(sessions.sessionId, sessionId))
+                .catch((err: unknown) =>
+                  capturedLog.warn({ err, sessionId }, "[finalize:bg] session completed update failed (non-fatal)"),
+                ),
+              db
+                .update(videos)
+                .set({ s3MirroredAt: new Date() })
+                .where(eq(videos.id, videoId))
+                .catch(() => {}),
+            ]);
+
+            // Reclaim chunk metadata rows (db-mode rows hold no BYTEA data).
+            void db
+              .delete(chunks)
+              .where(eq(chunks.sessionId, sessionId))
+              .catch((err: unknown) =>
+                capturedLog.warn({ err, sessionId }, "[finalize:bg] chunk cleanup failed (non-fatal)"),
+              );
+
+            // Enqueue HLS transcoding now that the source blob is confirmed to exist.
+            try {
+              await enqueueTranscode({ videoId, videoPath: objectKey });
+              capturedLog.info({ sessionId, videoId }, "[finalize:bg] HLS transcode job queued");
+            } catch (err) {
+              capturedLog.warn(
+                { err, videoId },
+                "[finalize:bg] enqueueTranscode failed (non-fatal) — video saved, re-queue manually",
+              );
+            }
+
+            // Post-upload probes: thumbnail extraction + duration probe.
+            // Must run BEFORE faststart because faststart replaces the blob.
+            const clientDuration = Number(row.duration ?? "0");
+            try {
+              const [thumbUrl, probedSecs] = await Promise.all([
+                generateQuickThumbnail(objectKey, videoId),
+                clientDuration > 0 ? Promise.resolve(null) : probeUploadedDuration(objectKey),
+              ]);
+              const patch: Partial<typeof videos.$inferInsert> = {};
+              if (thumbUrl) patch.thumbnailUrl = thumbUrl;
+              if (probedSecs != null) patch.duration = String(Math.round(probedSecs));
+              if (Object.keys(patch).length > 0) {
+                await db.update(videos).set(patch).where(eq(videos.id, videoId));
+                void invalidateVideosCatalogCache();
+                adminEventBus.push("videos-library-updated", { videoId, reason: "thumbnail-generated" });
+              }
+              if (probedSecs != null && probedSecs > 10) {
+                const roundedSecs = Math.round(probedSecs);
+                await db
+                  .update(schema.broadcastQueueTable)
+                  .set({ durationSecs: roundedSecs })
+                  .where(eq(schema.broadcastQueueTable.videoId, videoId))
+                  .catch(() => {});
+              }
+            } catch (err) {
+              capturedLog.warn({ err, videoId }, "[finalize:bg] post-upload probes failed (non-fatal)");
+            }
+
+            // MP4 faststart — moov atom relocation for instant byte-0 playback.
+            try {
+              await runFaststart(videoId, objectKey, { skipStatusUpdate: !env.TRANSCODER_DISABLE });
+              capturedLog.info({ sessionId, videoId }, "[finalize:bg] faststart done");
+            } catch (err) {
+              capturedLog.warn({ err, videoId }, "[finalize:bg] faststart failed (non-fatal)");
+              if (env.TRANSCODER_DISABLE) {
+                adminEventBus.push("broadcast-queue-updated", { reason: "faststart-failed-fallback", videoId });
+              }
+            }
+
+            capturedLog.info(
+              { sessionId, videoId, totalMs: Date.now() - assemblyStartMs },
+              "[finalize:bg] all post-processing complete",
+            );
+          } catch (err) {
+            // Assembly failed — mark the video as failed and reset the session
+            // to "uploading" so the operator can retry from the upload queue.
+            capturedLog.error(
+              { err, sessionId, videoId, assemblyMs: Date.now() - assemblyStartMs },
+              "[finalize:bg] ASSEMBLY FAILED — resetting session, marking video failed",
+            );
+            await Promise.allSettled([
+              db.update(videos).set({ transcodingStatus: "failed" }).where(eq(videos.id, videoId)),
+              db
+                .update(sessions)
+                .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
+                .where(eq(sessions.sessionId, sessionId)),
+            ]);
+            adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-failed" });
+          }
+        })();
+
+        return {
+          ...projectRow(row),
+          storageBackend: "db" as const,
+          transcodingWarning: null,
+        };
+      }
+
+      // ── Path B: "db_fallback" backend — synchronous assembly (rare path) ───
+      //
+      // db_fallback is only active when the init's createMultipartUpload failed.
+      // We keep this path synchronous to preserve the existing error semantics
+      // (assembly errors propagate as HTTP errors the client can retry).
       let localVideoUrl: string | null = null;
       let finalObjectKey: string | null = session.objectKey;
       let finalStorageBackend = session.storageBackend;
 
-      // ── Assembly with server-side deadline ───────────────────────────────────
-      // The batch-hex assembly algorithm is ~5× faster than the old per-part
-      // approach, but we still impose an 8-minute hard deadline so that a
-      // severe DB performance regression never hangs the HTTP response forever.
-      // On timeout the session is reset to "uploading" so the client can retry.
-      const ASSEMBLY_TIMEOUT_MS = 8 * 60 * 1000; // 8 minutes
-
+      const ASSEMBLY_TIMEOUT_MS = 8 * 60 * 1000;
       let assemblyTimedOut = false;
       const assemblyTimer = setTimeout(async () => {
         assemblyTimedOut = true;
         req.log.error(
           { sessionId, totalChunks: allChunks.length },
-          "[finalize] assembly timeout — resetting session to uploading for retry",
+          "[finalize] db_fallback assembly timeout — resetting session to uploading for retry",
         );
         await db
           .update(sessions)
@@ -810,58 +1060,18 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       }, ASSEMBLY_TIMEOUT_MS);
 
       try {
-        // "db" sessions used the multipart API via DatabaseObjectStorage (primary path).
-        // "db_fallback" sessions stored raw BYTEA in upload_chunks and need assembly.
-        if (session.storageBackend !== "db_fallback" && session.uploadId && session.objectKey) {
-          // Build parts list — validate that every chunk has an etag before calling
-          // completeMultipartUpload (a missing etag means a chunk was stored without
-          // one, which would corrupt the assembly).
-          const missingEtags = allChunks.filter((c) => !c.s3Etag);
-          if (missingEtags.length > 0) {
-            throw Object.assign(
-              new Error(
-                `${missingEtags.length} chunk(s) are missing storage etags — ` +
-                  `re-upload the session to recover: indices ${missingEtags.slice(0, 10).map((c) => c.chunkIndex).join(", ")}`,
-              ),
-              { statusCode: 422 },
-            );
-          }
-          const parts = allChunks.map((c) => ({
-            partNumber: c.chunkIndex + 1,
-            etag: c.s3Etag as string,
-          }));
-
-          const completed = await storage().completeMultipartUpload({
-            key: session.objectKey,
-            uploadId: session.uploadId,
-            parts,
-          });
-
-          localVideoUrl = completed.location || storage().publicUrl(session.objectKey);
-          finalObjectKey = session.objectKey;
-          finalStorageBackend = "db";
-        } else {
-          // db_fallback: reassemble from BYTEA in upload_chunks into database storage
-          const result = await finalizeFromDbFallback(session, allChunks, req.log);
-          localVideoUrl = result.localVideoUrl;
-          finalObjectKey = result.objectKey;
-          finalStorageBackend = result.storageBackend;
-        }
+        const result = await finalizeFromDbFallback(session, allChunks, req.log);
+        localVideoUrl = result.localVideoUrl;
+        finalObjectKey = result.objectKey;
+        finalStorageBackend = result.storageBackend;
       } catch (assemblyErr) {
         clearTimeout(assemblyTimer);
-        // Reset session to uploading so the client can retry finalization.
-        await db
-          .update(sessions)
-          .set({ status: "uploading", updatedAt: new Date() })
-          .where(eq(sessions.sessionId, sessionId))
-          .catch(() => {});
+        await resetLock();
         throw assemblyErr;
       }
 
       clearTimeout(assemblyTimer);
 
-      // If the deadline fired while assembly was running, return 408 now — the
-      // session has been reset to "uploading" so the client can retry finalize.
       if (assemblyTimedOut) {
         throw Object.assign(
           new Error(
@@ -872,7 +1082,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         );
       }
 
-      // Insert managed_videos row
+      // Insert managed_videos row (db_fallback path)
       const videoId = randomUUID();
       const inserted = await db
         .insert(videos)
@@ -901,7 +1111,6 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       const row = inserted[0];
       if (!row) throw new Error("videos insert returned no rows");
 
-      // Mark session complete
       await db
         .update(sessions)
         .set({
@@ -912,11 +1121,6 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         })
         .where(eq(sessions.sessionId, sessionId));
 
-      // Reclaim storage by deleting raw chunk rows now that the file has been
-      // assembled. For "db" sessions the chunks table only holds small metadata
-      // rows (no BYTEA); for "db_fallback" sessions this frees potentially
-      // gigabytes of raw video data. Non-fatal — run in the background so
-      // finalize returns quickly even if the delete is slow.
       void db
         .delete(chunks)
         .where(eq(chunks.sessionId, sessionId))
@@ -924,31 +1128,11 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           req.log.warn({ err, sessionId }, "[finalize] chunk row cleanup failed (non-fatal)");
         });
 
-      // Auto-add the uploaded video to the broadcast queue so it is ready to
-      // air once processing completes. The item is inserted with isActive=true.
-      //
-      // Orchestrator admission: loadActive() allows statuses 'queued', 'encoding',
-      // 'ready', and 'hls_ready' — only 'processing' is temporarily blocked to
-      // prevent 404s while faststart is deleting and re-uploading the file during
-      // moov atom relocation.
-      //
-      // We intentionally do NOT push broadcast-queue-updated here. The orchestrator
-      // only reloads on that event, so the new item isn't visible to it until:
-      //   • faststart completes → pushes broadcast-queue-updated. At this point the
-      //     item is safe to stream (moov atom at byte 0). Status is 'ready' when
-      //     TRANSCODER_DISABLE=true, or remains 'queued' when the HLS transcoder
-      //     is also active (faststart skips status ownership in that case).
-      //   • HLS transcoding completes → sets status='hls_ready' + hlsMasterUrl →
-      //     pushes broadcast-queue-updated (transcoder.dispatcher.ts). Orchestrator
-      //     switches from the raw MP4 fallback to the adaptive HLS stream.
-      // This prevents the orchestrator from serving the raw un-faststarted blob
-      // whose moov atom sits at EOF — which caused SKIP_PENDING "Source unavailable"
-      // loops immediately after upload before faststart moved the atom to byte 0.
-      // Non-fatal — if the queue insert fails the video is still saved.
       try {
-        const durationSecs = session.durationSecs && session.durationSecs > 0
-          ? Math.round(session.durationSecs)
-          : 1800; // default 30 min placeholder until transcoder probes the real duration
+        const durationSecs =
+          session.durationSecs && session.durationSecs > 0
+            ? Math.round(session.durationSecs)
+            : 1800;
         await broadcastService.addToQueue({
           videoId: row.id,
           title: session.title,
@@ -957,32 +1141,14 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           localVideoUrl,
           videoSource: "local",
         });
-        // NOTE: broadcast-queue-updated is NOT pushed here.
-        // The faststart service (faststart.service.ts) and the HLS transcoder
-        // dispatcher (transcoder.dispatcher.ts) each push it after the asset
-        // is confirmed streamable. This enforces the strict
-        // upload → processing → ready → queue active pipeline.
       } catch (err) {
-        req.log.warn(
-          { err, videoId: row.id },
-          "[finalize] auto-add to broadcast queue failed (non-fatal) — video saved, add manually",
-        );
+        req.log.warn({ err, videoId: row.id }, "[finalize] auto-add to broadcast queue failed (non-fatal)");
       }
 
-      // Bust catalog cache and push SSE broadcast snapshot
       void invalidateVideosCatalogCache();
-      try {
-        broadcastEngine.pushSnapshot();
-      } catch {
-        /* non-fatal */
-      }
-
-      // Notify all connected clients (SSE + WebSocket) that the video
-      // library has a new entry. TV/web clients bump libraryRevision via
-      // the SSE sidecar; mobile clients receive a WS library-updated frame.
+      try { broadcastEngine.pushSnapshot(); } catch { /* non-fatal */ }
       adminEventBus.push("videos-library-updated", { videoId: row.id, reason: "upload-finalized" });
 
-      // Enqueue HLS transcoding
       let transcodingWarning: string | null = null;
       try {
         await enqueueTranscode({
@@ -994,34 +1160,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           err instanceof Error
             ? err.message
             : "Transcoding job could not be queued — re-enqueue from the Operations tab.";
-        // Do NOT set transcodingStatus='failed' here: the video uploaded
-        // successfully — only the job-queue insert failed (e.g. a transient
-        // DB error). Marking it 'failed' would make the video appear broken
-        // in the library immediately after a successful upload.
-        // The video stays at its default status ('none') and can be manually
-        // re-queued via Videos → Convert to HLS, or the Operations tab.
-        req.log.warn(
-          { err, videoId: row.id, errorMessage: err instanceof Error ? err.message : String(err) },
-          "[finalize] enqueueTranscode failed — video saved, transcode can be re-queued manually",
-        );
+        req.log.warn({ err, videoId: row.id }, "[finalize] enqueueTranscode failed (non-fatal)");
       }
 
-      // Fire quick thumbnail extraction + duration probe + MP4 faststart
-      // sequentially in a single background IIFE so they don't race on the
-      // storage object key. All steps are non-fatal: failure is logged but
-      // does not affect the already-returned finalize response.
-      //
-      // Order is important:
-      //   1. Thumbnail + duration probe — reads the original stored blob
-      //      (must run before faststart deletes and replaces the key).
-      //   2. MP4 faststart — relocates the moov atom to the beginning via
-      //      `ffmpeg -c copy -movflags +faststart`. After this step the
-      //      video plays from byte 0 without HTTP Range support, and the
-      //      player can parse metadata instantly even for 300 MB files.
       if (finalObjectKey) {
         const _clientDuration = Number(row.duration ?? "0");
         void (async () => {
-          // Step 1: thumbnail + initial duration probe
           try {
             const [thumbUrl, probedSecs] = await Promise.all([
               generateQuickThumbnail(finalObjectKey!, row.id),
@@ -1031,91 +1175,35 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             if (thumbUrl) patch.thumbnailUrl = thumbUrl;
             if (probedSecs != null) patch.duration = String(Math.round(probedSecs));
             if (Object.keys(patch).length > 0) {
-              await db
-                .update(videos)
-                .set(patch)
-                .where(eq(videos.id, row.id));
+              await db.update(videos).set(patch).where(eq(videos.id, row.id));
               void invalidateVideosCatalogCache();
-              // Push SSE so the admin UI immediately shows the thumbnail
-              // and corrected duration without waiting for faststart to
-              // complete (which can take 30–90 s on large files).
-              adminEventBus.push("videos-library-updated", {
-                videoId: row.id,
-                reason: "thumbnail-generated",
-              });
+              adminEventBus.push("videos-library-updated", { videoId: row.id, reason: "thumbnail-generated" });
             }
-            // Sync the probed duration to any broadcast_queue rows that already
-            // reference this video (auto-enqueued at finalize time with the
-            // 1800-second placeholder). This corrects the slot timing before the
-            // HLS transcoder fires, so the orchestrator uses the real length for
-            // any playback that happens in the raw-MP4 window.
             if (probedSecs != null && probedSecs > 10) {
               const roundedSecs = Math.round(probedSecs);
               await db
                 .update(schema.broadcastQueueTable)
                 .set({ durationSecs: roundedSecs })
                 .where(eq(schema.broadcastQueueTable.videoId, row.id))
-                .catch((err) => {
-                  req.log.warn(
-                    { err, videoId: row.id, durationSecs: roundedSecs },
-                    "[finalize] broadcast_queue duration sync failed (non-fatal)",
-                  );
-                });
+                .catch(() => {});
             }
           } catch (err) {
             req.log.warn({ err, videoId: row.id }, "[finalize] post-upload probes failed (non-fatal)");
           }
-
-          // Step 2: MP4 faststart — moov atom relocation for instant playback.
-          // Always runs so the video is streamable from byte 0 immediately
-          // after upload — this eliminates the HTTP Range moov-dance that
-          // caused browsers to time out on large files before the HLS
-          // transcode completed (the window where the broadcast queue plays
-          // the raw MP4 fallback).
-          //
-          // When the HLS transcoder is also active (TRANSCODER_DISABLE=false)
-          // we pass skipStatusUpdate=true so faststart never touches
-          // transcodingStatus — the transcoder owns that field and we must not
-          // overwrite its "encoding" / "hls_ready" lifecycle.
-          //
-          // Ordering: this step runs AFTER thumbnail + duration probe (Step 1)
-          // which reads the original blob. Faststart then deletes and
-          // re-uploads under the same key. The transcoder already queued its
-          // job and will download the source independently; it receives either
-          // the original or the faststart version — both transcode identically.
           try {
-            await runFaststart(row.id, finalObjectKey!, {
-              skipStatusUpdate: !env.TRANSCODER_DISABLE,
-            });
+            await runFaststart(row.id, finalObjectKey!, { skipStatusUpdate: !env.TRANSCODER_DISABLE });
           } catch (err) {
             req.log.warn({ err, videoId: row.id }, "[finalize] faststart failed (non-fatal)");
-            // When the HLS transcoder is disabled, runFaststart is the ONLY
-            // pipeline step that fires broadcast-queue-updated (it does so on
-            // success in faststart.service.ts). If faststart throws, the
-            // orchestrator never learns about the new queue item and the video
-            // will never air — even though the raw MP4 blob is perfectly intact
-            // and the broadcast_queue row was written at finalize time.
-            // Push the event here so the orchestrator reloads and the video
-            // becomes active (the original blob is still playable, just with
-            // moov potentially at EOF on some strict players).
             if (env.TRANSCODER_DISABLE) {
-              adminEventBus.push("broadcast-queue-updated", {
-                reason: "faststart-failed-fallback",
-                videoId: row.id,
-              });
+              adminEventBus.push("broadcast-queue-updated", { reason: "faststart-failed-fallback", videoId: row.id });
             }
           }
         })();
       }
 
       req.log.info(
-        {
-          sessionId,
-          videoId: row.id,
-          storageBackend: finalStorageBackend,
-          totalChunks: allChunks.length,
-        },
-        "[finalize] ok",
+        { sessionId, videoId: row.id, storageBackend: finalStorageBackend, totalChunks: allChunks.length },
+        "[finalize] ok (db_fallback)",
       );
 
       return {
@@ -1168,7 +1256,11 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         return { status: "completed" as const, videoId: session.completedVideoId ?? null };
       }
       if (st === "assembling") {
-        return { status: "assembling" as const, videoId: null };
+        // Return completedVideoId even during assembly — the async-finalize path
+        // pre-commits the video row and stores its id before background assembly
+        // starts, so the client can obtain the video id without waiting for the
+        // full assembly to finish.
+        return { status: "assembling" as const, videoId: session.completedVideoId ?? null };
       }
       return { status: "uploading" as const, videoId: null };
     },

@@ -520,6 +520,11 @@ class DatabaseObjectStorage implements ObjectStorage {
     `);
 
     // ── Append remaining parts one at a time ───────────────────────────────────
+    // O(n²) in total PostgreSQL I/O — each UPDATE reads the growing dest blob
+    // plus the 8 MiB source part. For a 1 GB file (128 parts) this is ~65 GB of
+    // DB I/O total. The operation is therefore run in the background task started
+    // by the finalize endpoint so it never blocks an HTTP response.
+    const assemblyStart = Date.now();
     for (let i = 1; i < sorted.length; i++) {
       const partKey = `${partPrefix}${String(sorted[i]!.partNumber).padStart(6, "0")}`;
       const appended = await db.execute(sql`
@@ -540,6 +545,15 @@ class DatabaseObjectStorage implements ObjectStorage {
             `Re-upload the missing chunk and re-finalize to retry.`,
           ),
           { statusCode: 409 },
+        );
+      }
+      // Log progress every 25 parts so operators can monitor large-file assembly.
+      if (i % 25 === 0 || i === sorted.length - 1) {
+        const pct = Math.round(((i + 1) / sorted.length) * 100);
+        const elapsedMs = Date.now() - assemblyStart;
+        // eslint-disable-next-line no-console
+        console.info(
+          `[storage:assembly] key=${key} part=${i + 1}/${sorted.length} (${pct}%) elapsed=${elapsedMs}ms`,
         );
       }
     }
