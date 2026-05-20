@@ -1,7 +1,4 @@
-const path = require("path");
-const { withAndroidManifest } = require(
-  path.resolve(__dirname, "../node_modules/@expo/config-plugins")
-);
+const { withAndroidManifest } = require("@expo/config-plugins");
 
 /**
  * Expo Config Plugin — Android 14+ Foreground Service Type Compliance

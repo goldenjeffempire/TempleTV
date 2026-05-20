@@ -1,11 +1,6 @@
-const path = require("path");
+const { withGradleProperties } = require("@expo/config-plugins");
 
 const KOTLIN_VERSION = "2.1.20";
-
-const configPlugins = require(
-  path.resolve(__dirname, "../node_modules/@expo/config-plugins")
-);
-const { withGradleProperties } = configPlugins;
 
 module.exports = function withKotlinVersion(config) {
   return withGradleProperties(config, (mod) => {
