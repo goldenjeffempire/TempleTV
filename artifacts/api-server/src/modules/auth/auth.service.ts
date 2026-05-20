@@ -319,6 +319,7 @@ export const authService = {
         role: "system" as Role,
         displayName: "System",
         createdAt: new Date(0).toISOString(),
+        mfaEnabled: false,
       };
     }
     const rows = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
@@ -330,6 +331,7 @@ export const authService = {
       role: coerceRole(user.role),
       displayName: user.displayName,
       createdAt: user.createdAt.toISOString(),
+      mfaEnabled: user.totpEnabled,
     };
   },
 
@@ -359,7 +361,7 @@ export const authService = {
    * Update the authenticated user's profile fields.
    * Only displayName is currently mutable via this endpoint.
    */
-  async updateProfile(userId: string, body: { displayName?: string }): Promise<{ id: string; email: string; role: Role; displayName: string; createdAt: string }> {
+  async updateProfile(userId: string, body: { displayName?: string }): Promise<{ id: string; email: string; role: Role; displayName: string; createdAt: string; mfaEnabled: boolean }> {
     const update: Record<string, unknown> = { updatedAt: new Date() };
     if (body.displayName) update.displayName = body.displayName;
     const updated = await db.update(usersTable).set(update).where(eq(usersTable.id, userId)).returning();
@@ -371,6 +373,7 @@ export const authService = {
       role: coerceRole(user.role),
       displayName: user.displayName,
       createdAt: user.createdAt.toISOString(),
+      mfaEnabled: user.totpEnabled,
     };
   },
 
