@@ -938,7 +938,7 @@ function renderNowAiring() {
   if (ov) {
     const thumb = ov.youtubeVideoId
       ? '<img class="thumb-lg" src="https://img.youtube.com/vi/' + esc(ov.youtubeVideoId) +
-        '/mqdefault.jpg" alt="" onerror="this.classList.add(\'thumb-ph\');this.src=\'\'" />'
+        '/mqdefault.jpg" alt="" onerror="this.classList.add(\\'thumb-ph\\');this.src=\\'\\'" />'
       : '<div class="thumb-lg thumb-ph">No Thumb</div>';
     card.innerHTML =
       '<div class="now-inner">' +
@@ -973,7 +973,7 @@ function renderNowAiring() {
 
   const thumb = c.thumbnailUrl
     ? '<img class="thumb-lg" src="' + esc(c.thumbnailUrl) +
-      '" alt="" onerror="this.style.display=\'none\'" />'
+      '" alt="" onerror="this.style.display=\\'none\\'" />'
     : '<div class="thumb-lg thumb-ph">No Thumb</div>';
 
   card.innerHTML =
@@ -1005,7 +1005,7 @@ function renderNowAiring() {
     $("upNextSec").style.display = "block";
     $("upNextGrid").innerHTML = snapshot.upcoming.map((it, i) => {
       const th = it.thumbnailUrl
-        ? '<img class="thumb" src="' + esc(it.thumbnailUrl) + '" alt="" onerror="this.style.display=\'none\'" />'
+        ? '<img class="thumb" src="' + esc(it.thumbnailUrl) + '" alt="" onerror="this.style.display=\\'none\\'" />'
         : '<div class="thumb thumb-ph">—</div>';
       return '<div class="card card-sm upcoming-card">' + th +
         '<div style="flex:1;min-width:0;">' +
@@ -1061,7 +1061,7 @@ function renderQueue() {
       (!it.isActive ? " q-inactive" : "");
 
     const th = it.thumbnailUrl
-      ? '<img class="thumb" src="' + esc(it.thumbnailUrl) + '" alt="" onerror="this.style.display=\'none\'" />'
+      ? '<img class="thumb" src="' + esc(it.thumbnailUrl) + '" alt="" onerror="this.style.display=\\'none\\'" />'
       : '<div class="thumb thumb-ph">—</div>';
 
     return '<div class="' + rowCls + '" data-id="' + esc(it.id) + '">' +
