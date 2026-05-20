@@ -448,14 +448,23 @@ export async function buildApp(): Promise<FastifyInstance> {
   app.addHook("preHandler", attachPrincipal());
   registerErrorHandler(app);
 
-  app.get("/", async () => ({
-    service: "temple-tv-api",
-    version: "1.0.0",
-    docs: "/docs",
-    openapi: "/docs/json",
-    api: API_PREFIX,
-    admin: "/dashboard/broadcast",
-  }));
+  // Root route: redirect browsers to the admin dashboard; return JSON for API clients.
+  // This prevents the Replit preview pane (and any browser hitting the API root)
+  // from seeing raw JSON when they navigate to the domain root.
+  app.get("/", async (req, reply) => {
+    const accept = req.headers["accept"] ?? "";
+    if (accept.includes("text/html")) {
+      return reply.redirect("/dashboard/broadcast", 302);
+    }
+    return {
+      service: "temple-tv-api",
+      version: "1.0.0",
+      docs: "/docs",
+      openapi: "/docs/json",
+      api: API_PREFIX,
+      admin: "/dashboard/broadcast",
+    };
+  });
 
   await app.register(healthRoutes);
   // Health probe alias under /api so the admin SPA's `apiUrl("/healthz")`
