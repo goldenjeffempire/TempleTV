@@ -26,6 +26,10 @@ args = "Start application"
 task = "workflow.run"
 args = "Start admin"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Mobile (Expo)"
+
 [[workflows.workflow]]
 name = "Start application"
 author = "agent"
@@ -49,6 +53,17 @@ outputType = "console"
 task = "shell.exec"
 args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 pnpm install --ignore-scripts && PORT=3000 pnpm --filter @workspace/admin run dev"
 waitForPort = 3000
+
+[[workflows.workflow]]
+name = "Mobile (Expo)"
+author = "agent"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 pnpm install --ignore-scripts && pnpm --filter @workspace/mobile run dev"
 
 [agent]
 stack = "BEST_EFFORT_FALLBACK"

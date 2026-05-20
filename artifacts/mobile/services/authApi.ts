@@ -165,7 +165,15 @@ export async function apiGetMe(): Promise<AuthUser> {
   const res = await authFetch("/api/auth/me");
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? "Failed to fetch user");
-  return (data as { user: AuthUser }).user;
+  // /api/auth/me returns user fields at the top level (not nested under "user")
+  const u = data as { id: string; email: string; displayName: string; avatarUrl?: string | null; emailVerified?: boolean };
+  return {
+    id: u.id,
+    email: u.email,
+    displayName: u.displayName ?? "",
+    avatarUrl: u.avatarUrl ?? null,
+    emailVerified: u.emailVerified ?? false,
+  };
 }
 
 export async function apiUpdateProfile(displayName: string): Promise<AuthUser> {
@@ -175,7 +183,15 @@ export async function apiUpdateProfile(displayName: string): Promise<AuthUser> {
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? "Failed to update profile");
-  return (data as { user: AuthUser }).user;
+  // PATCH /api/auth/profile returns user fields at the top level (not nested under "user")
+  const u = data as { id: string; email: string; displayName: string; avatarUrl?: string | null; emailVerified?: boolean };
+  return {
+    id: u.id,
+    email: u.email,
+    displayName: u.displayName ?? "",
+    avatarUrl: u.avatarUrl ?? null,
+    emailVerified: u.emailVerified ?? false,
+  };
 }
 
 export async function apiSyncFavorite(action: "add" | "remove", video: {
