@@ -1,0 +1,125 @@
+import type { FastifyInstance } from "fastify";
+import type { ZodTypeProvider } from "fastify-type-provider-zod";
+import { z } from "zod";
+import { and, eq, sql } from "drizzle-orm";
+import { nanoid } from "nanoid";
+import { db, schema } from "../../infrastructure/db.js";
+
+const WatchEventBodySchema = z.object({
+  /**
+   * Stable, anonymous per-device identifier.  Clients should persist this in
+   * localStorage / AsyncStorage and re-use it across sessions so heartbeat /
+   * completion events can be correlated with the original `started` event.
+   * If omitted the server generates a random ID (session-level only — no
+   * cross-request correlation).
+   */
+  deviceId: z.string().min(1).max(128).optional(),
+  platform: z.enum(["tv", "mobile", "web"]),
+  eventType: z.enum(["started", "heartbeat", "completed", "abandoned"]),
+  videoId: z.string().min(1),
+  videoTitle: z.string().optional(),
+  positionSecs: z.number().nonnegative().optional(),
+  durationSecs: z.number().positive().optional(),
+  isLive: z.boolean().optional(),
+  channelId: z.string().max(100).optional(),
+});
+
+export async function analyticsRoutes(app: FastifyInstance) {
+  const r = app.withTypeProvider<ZodTypeProvider>();
+
+  r.post(
+    "/watch-event",
+    {
+      schema: {
+        tags: ["analytics"],
+        summary:
+          "Record a watch-time event (started / heartbeat / completed / abandoned). " +
+          "Increments video viewCount on `started` and upserts into viewer_sessions so " +
+          "the admin analytics dashboard shows real-time engagement data.",
+        body: WatchEventBodySchema,
+        response: { 204: z.null() },
+      },
+    },
+    async (req, reply) => {
+      const {
+        deviceId,
+        platform,
+        eventType,
+        videoId,
+        positionSecs,
+        durationSecs,
+        isLive,
+        channelId,
+      } = req.body;
+
+      const effectiveDeviceId = deviceId ?? nanoid();
+      const sessions = schema.viewerSessionsTable;
+      const videos = schema.videosTable;
+
+      try {
+        if (eventType === "started") {
+          await Promise.all([
+            db
+              .insert(sessions)
+              .values({
+                id: nanoid(),
+                deviceId: effectiveDeviceId,
+                channelId: channelId ?? "temple-tv-live",
+                videoId,
+                platform,
+                isLive: isLive ?? false,
+                startedAt: new Date(),
+                lastHeartbeatAt: new Date(),
+              })
+              .onConflictDoNothing(),
+
+            db
+              .update(videos)
+              .set({ viewCount: sql`${videos.viewCount} + 1` })
+              .where(eq(videos.id, videoId)),
+          ]);
+        } else if (eventType === "heartbeat") {
+          await db
+            .update(sessions)
+            .set({
+              lastHeartbeatAt: new Date(),
+              watchedSecs: Math.round(positionSecs ?? 0),
+            })
+            .where(
+              and(
+                eq(sessions.deviceId, effectiveDeviceId),
+                eq(sessions.videoId!, videoId),
+              ),
+            );
+        } else if (eventType === "completed" || eventType === "abandoned") {
+          const watchedSecs = Math.round(positionSecs ?? 0);
+          const isCompleted =
+            eventType === "completed" ||
+            (durationSecs != null &&
+              durationSecs > 0 &&
+              watchedSecs / durationSecs >= 0.9);
+
+          await db
+            .update(sessions)
+            .set({
+              endedAt: new Date(),
+              lastHeartbeatAt: new Date(),
+              watchedSecs,
+              completed: Boolean(isCompleted),
+            })
+            .where(
+              and(
+                eq(sessions.deviceId, effectiveDeviceId),
+                eq(sessions.videoId!, videoId),
+              ),
+            );
+        }
+      } catch (err) {
+        // Non-fatal — analytics writes must never break playback
+        app.log.warn({ err, videoId, eventType }, "watch-event DB write failed");
+      }
+
+      return reply.code(204).send(null);
+    },
+  );
+}

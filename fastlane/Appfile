@@ -1,0 +1,12 @@
+app_identifier("com.templetv.jctm")
+apple_id("developer@templetv.org.ng")
+itc_team_id("")       # App Store Connect Team ID — fill in after provisioning
+team_id("")           # Developer Portal Team ID — fill in after provisioning
+
+for_platform :ios do
+  app_identifier("com.templetv.jctm")
+end
+
+for_platform :mac do
+  app_identifier("com.templetv.jctm.macos")
+end

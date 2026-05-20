@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+#
+# .githooks/pre-push — mobile lockfile invariant check
+#
+# Runs automatically before every `git push`. Catches pnpm global-override /
+# lockfile conflicts before they reach EAS Build, where the same failure costs
+# 10-20 minutes of remote Gradle time to surface.
+#
+# ── What it checks ──────────────────────────────────────────────────────────
+#
+# Four dependency-resolution invariants in pnpm-lock.yaml (snapshots section):
+#
+#   1. minimatch@3.x  → brace-expansion must be 1.x   [FAIL — scoped override]
+#   2. glob@7.x       → minimatch must be 3.x          [FAIL — forward guard]
+#   3. micromatch@4.x → picomatch known-safe at 4.x    [WARN  — documented]
+#   4. anymatch@3.x   → picomatch known-safe at 4.x    [WARN  — documented]
+#
+# See scripts/src/verify-mobile-lockfile.ts for the full check table and
+# remediation guidance for each failure mode.
+#
+# ── Skipping ─────────────────────────────────────────────────────────────────
+#
+# Emergency bypass (use sparingly — this check exists because of a production
+# incident on 2026-05-03):
+#
+#   git push --no-verify
+#
+# ── Installation ─────────────────────────────────────────────────────────────
+#
+# This hook is activated automatically by the `prepare` lifecycle script, which
+# runs `git config core.hooksPath .githooks` after every `pnpm install`.
+# To activate manually in a fresh clone:
+#
+#   git config core.hooksPath .githooks
+#   # or:
+#   pnpm run setup:hooks
+
+set -u
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$REPO_ROOT"
+
+echo ""
+echo "╔══════════════════════════════════════════════════════════════╗"
+echo "║  pre-push: verifying mobile lockfile invariants (~2s)        ║"
+echo "╚══════════════════════════════════════════════════════════════╝"
+echo ""
+
+if ! pnpm run verify:mobile-lockfile; then
+  echo ""
+  echo "╔══════════════════════════════════════════════════════════════╗"
+  echo "║  PUSH BLOCKED — lockfile invariant check failed.             ║"
+  echo "║                                                              ║"
+  echo "║  Fix the issue described above, then re-push.               ║"
+  echo "║                                                              ║"
+  echo "║  Emergency bypass (use sparingly):                          ║"
+  echo "║    git push --no-verify                                     ║"
+  echo "╚══════════════════════════════════════════════════════════════╝"
+  echo ""
+  exit 1
+fi
+
+echo ""
+echo "  pre-push: lockfile OK — proceeding."
+echo ""
+exit 0

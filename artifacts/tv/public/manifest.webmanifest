@@ -1,0 +1,40 @@
+{
+  "name": "Temple TV — Smart TV",
+  "short_name": "Temple TV",
+  "description": "Live worship, sermons, and 24/7 broadcasting from Jesus Christ Temple Ministry, optimised for Smart TVs.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#000000",
+  "theme_color": "#6A0DAD",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["entertainment", "lifestyle", "education"],
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/temple-tv-logo.png",
+      "sizes": "900x600",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/temple-tv-logo.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/temple-tv-logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

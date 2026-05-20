@@ -1,0 +1,187 @@
+import type { FastifyInstance } from "fastify";
+import type { ZodTypeProvider } from "fastify-type-provider-zod";
+import { z } from "zod";
+import { nanoid } from "nanoid";
+import { requireAuth } from "../../middleware/auth.js";
+import {
+  AdminStatsSchema,
+  AdminUserSchema,
+  AnalyticsOverviewSchema,
+  AnalyticsSchema,
+  ListUsersQuerySchema,
+  ListUsersResponseSchema,
+  UpdateUserRoleBodySchema,
+} from "./admin.schemas.js";
+import { adminService } from "./admin.service.js";
+import { db, schema } from "../../infrastructure/db.js";
+
+const idParam = z.object({ id: z.string().min(1) });
+
+export async function adminRoutes(app: FastifyInstance) {
+  const r = app.withTypeProvider<ZodTypeProvider>();
+
+  r.get(
+    "/stats",
+    {
+      preHandler: requireAuth("editor"),
+      schema: {
+        tags: ["admin"],
+        summary: "Aggregate dashboard counts (videos, users, queue, schedule)",
+        response: { 200: AdminStatsSchema },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async () => adminService.getStats(),
+  );
+
+  r.get(
+    "/analytics",
+    {
+      preHandler: requireAuth("editor"),
+      schema: {
+        tags: ["admin"],
+        summary: "Top videos by view count and total views",
+        response: { 200: AnalyticsSchema },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async () => adminService.getAnalytics(),
+  );
+
+  r.get(
+    "/analytics/overview",
+    {
+      preHandler: requireAuth("editor"),
+      schema: {
+        tags: ["admin"],
+        summary:
+          "Rich analytics overview: daily view time-series, platform breakdown, session engagement metrics",
+        querystring: z.object({
+          range: z.enum(["7d", "30d", "90d"]).default("30d"),
+        }),
+        response: { 200: AnalyticsOverviewSchema },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req) => adminService.getAnalyticsOverview(req.query.range),
+  );
+
+  r.delete(
+    "/users/:id",
+    {
+      preHandler: requireAuth("admin"),
+      schema: {
+        tags: ["admin"],
+        summary: "Permanently delete a user account and all associated data",
+        params: idParam,
+        response: {
+          200: z.object({ deleted: z.literal(true), id: z.string() }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req) => {
+      const result = await adminService.deleteUser(req.params.id);
+      req.log.warn(
+        {
+          by: req.principal?.id ?? "unknown",
+          byEmail: req.principal?.email ?? "unknown",
+          targetUserId: req.params.id,
+        },
+        "[rbac-audit] user deleted",
+      );
+      return result;
+    },
+  );
+
+  r.get(
+    "/users",
+    {
+      preHandler: requireAuth("admin"),
+      schema: {
+        tags: ["admin"],
+        summary: "List all users",
+        querystring: ListUsersQuerySchema,
+        response: { 200: ListUsersResponseSchema },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req) => adminService.listUsers(req.query),
+  );
+
+  r.post(
+    "/users/:id/ban",
+    {
+      preHandler: requireAuth("editor"),
+      schema: {
+        tags: ["admin"],
+        summary: "Ban a user from chat (creates indefinite chat_moderation ban record)",
+        params: idParam,
+        body: z.object({
+          reason: z.string().max(500).optional(),
+          durationSecs: z.number().int().positive().nullable().optional(),
+        }).optional(),
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            userId: z.string(),
+            action: z.literal("ban"),
+          }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req) => {
+      const { id: userId } = req.params;
+      const body = req.body ?? {};
+      const expiresAt =
+        body.durationSecs && body.durationSecs > 0
+          ? new Date(Date.now() + body.durationSecs * 1000)
+          : null;
+      await db
+        .insert(schema.chatModerationTable)
+        .values({
+          id: nanoid(),
+          subjectKind: "user",
+          subjectId: userId,
+          action: "ban",
+          reason: body.reason ?? null,
+          expiresAt,
+          createdBy: req.principal?.id ?? null,
+        });
+      req.log.info(
+        { by: req.principal?.id ?? "unknown", targetUserId: userId },
+        "[chat-mod-audit] user banned",
+      );
+      return { ok: true as const, userId, action: "ban" as const };
+    },
+  );
+
+  r.patch(
+    "/users/:id/role",
+    {
+      preHandler: requireAuth("admin"),
+      schema: {
+        tags: ["admin"],
+        summary: "Update a user's role",
+        params: idParam,
+        body: UpdateUserRoleBodySchema,
+        response: { 200: AdminUserSchema },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req) => {
+      const result = await adminService.updateUserRole(req.params.id, req.body);
+      req.log.info(
+        {
+          by: req.principal?.id ?? "unknown",
+          byEmail: req.principal?.email ?? "unknown",
+          targetUserId: req.params.id,
+          newRole: req.body.role,
+        },
+        "[rbac-audit] user role updated",
+      );
+      return result;
+    },
+  );
+}

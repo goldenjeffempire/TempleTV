@@ -1,0 +1,91 @@
+# =============================================================================
+# Temple TV — OTA Update (JS-only, zero downtime)
+# =============================================================================
+#
+# Fires on every push to main that only changes JavaScript/assets — no native
+# code. EAS Update publishes a new bundle to the `production` channel and all
+# running apps silently download it on next foreground resume.
+#
+# If native files change (android/, ios/, eas.json, package.json,
+# pnpm-lock.yaml) this workflow skips and a full EAS Build is required.
+#
+# Required secrets:
+#   EXPO_TOKEN — EAS personal access token
+# =============================================================================
+
+name: OTA Update
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      # Only run when JS/assets change
+      - 'artifacts/mobile/app/**'
+      - 'artifacts/mobile/components/**'
+      - 'artifacts/mobile/hooks/**'
+      - 'artifacts/mobile/lib/**'
+      - 'artifacts/mobile/store/**'
+      - 'artifacts/mobile/constants/**'
+      - 'artifacts/mobile/assets/**'
+      # Exclude anything that changes native layers
+      - '!artifacts/mobile/android/**'
+      - '!artifacts/mobile/ios/**'
+      - '!artifacts/mobile/eas.json'
+      - '!artifacts/mobile/package.json'
+      - '!**/pnpm-lock.yaml'
+
+concurrency:
+  group: ota-update
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '20.18.0'
+  PNPM_VERSION: '10.26.1'
+
+jobs:
+  ota:
+    name: Publish OTA update
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: COREPACK_ENABLE_STRICT=0 pnpm install --ignore-scripts --frozen-lockfile
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Publish OTA update
+        working-directory: artifacts/mobile
+        run: |
+          eas update \
+            --channel production \
+            --message "OTA: ${{ github.event.head_commit.message }}" \
+            --non-interactive
+          echo "OTA update published to production channel."
+
+      - name: Write job summary
+        run: |
+          echo "## OTA Update Published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Channel:** production" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Message:** ${{ github.event.head_commit.message }}" >> $GITHUB_STEP_SUMMARY

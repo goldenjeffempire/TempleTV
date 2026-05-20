@@ -1,0 +1,402 @@
+import net from "node:net";
+import { sql, ne, inArray, eq as drizzleEq } from "drizzle-orm";
+import { buildApp } from "./app.js";
+import { env } from "./config/env.js";
+import { logger } from "./infrastructure/logger.js";
+import { broadcastEngine } from "./modules/broadcast/queue.engine.js";
+import { channelRegistry } from "./modules/channels/channel-registry.js";
+import { overrideBus } from "./modules/live-overrides/override-bus.js";
+import { closeDb, db, ensureRuntimeIndexes, ensureBroadcastV2Tables, deactivateUnresolvableQueueRows, ensureUserSchemaColumns } from "./infrastructure/db.js";
+import { closeRedis } from "./infrastructure/redis.js";
+import { sseCounter } from "./infrastructure/sse-counter.js";
+import { scheduledNotificationDispatcher } from "./modules/scheduled-notifications/dispatcher.js";
+import { transcoderDispatcher } from "./modules/transcoder/transcoder.dispatcher.js";
+import { youtubeSyncDispatcher } from "./modules/youtube-sync/youtube-sync.dispatcher.js";
+import { cleanupWorker } from "./modules/transcoder/cleanup.service.js";
+import { verifyMailer } from "./infrastructure/mailer.js";
+import { broadcastScheduler } from "./modules/broadcast/broadcast-scheduler.js";
+import { startKeepAlive, stopKeepAlive } from "./modules/network/keep-alive.js";
+import { startMemoryWatchdog, stopMemoryWatchdog } from "./infrastructure/memory-watchdog.js";
+import { schema } from "./infrastructure/db.js";
+import { hashPassword } from "./modules/auth/password.js";
+import { nanoid } from "nanoid";
+
+/**
+ * Process roles, controlled by RUN_MODE env:
+ *   api    → Fastify HTTP listener + broadcast engine (broadcast is
+ *            in-process state every API replica needs)
+ *   worker → background dispatchers only (no HTTP listener) — used
+ *            when scaling workers separately from the API
+ *   all    → everything in one process (default; ideal for dev and
+ *            single-instance production)
+ *
+ * Adding a new background loop: implement start()/stop() on it,
+ * register it in startWorkers()/stopWorkers().
+ */
+let workerKeepalive: NodeJS.Timeout | null = null;
+
+/**
+ * Auto-seed the admin account on startup.
+ *
+ * Reads SEED_ADMIN_EMAIL + SEED_ADMIN_PASSWORD from env. When both are set:
+ *  - SEED_ADMIN_FORCE=false (default): creates the account only if no
+ *    elevated account (admin/editor/system/moderator) currently exists.
+ *  - SEED_ADMIN_FORCE=true: deletes ALL existing elevated accounts and
+ *    their refresh tokens, then creates a fresh admin. Use this to reset
+ *    production credentials after a deployment.
+ *
+ * The function is idempotent and non-fatal — any error is logged as a
+ * warning so a mis-configured seed never prevents the server from booting.
+ */
+async function seedAdminIfConfigured(): Promise<void> {
+  const email = env.SEED_ADMIN_EMAIL;
+  const password = env.SEED_ADMIN_PASSWORD;
+  if (!email || !password) return;
+
+  try {
+    const usersTable = schema.usersTable;
+    const refreshTokensTable = schema.refreshTokensTable;
+
+    const { sql } = await import("drizzle-orm");
+    const normalizedEmail = email.toLowerCase();
+    const passwordHash = await hashPassword(password);
+    const displayName = email.split("@")[0] ?? "Admin";
+
+    if (env.SEED_ADMIN_FORCE) {
+      // 1. Wipe all elevated accounts and their refresh tokens.
+      const elevated = await db
+        .select({ id: usersTable.id })
+        .from(usersTable)
+        .where(ne(usersTable.role, "user"));
+
+      if (elevated.length > 0) {
+        const ids = elevated.map((u) => u.id);
+        await db.delete(refreshTokensTable).where(inArray(refreshTokensTable.userId, ids));
+        await db.delete(usersTable).where(inArray(usersTable.id, ids));
+        logger.info({ wiped: elevated.length }, "[seed] wiped existing elevated accounts");
+      }
+
+      // 2. Also remove any remaining user (any role) with this email — using a
+      //    case-insensitive comparison to catch emails stored with different casing.
+      //    This prevents duplicate-key failures on the subsequent INSERT.
+      const remaining = await db
+        .select({ id: usersTable.id })
+        .from(usersTable)
+        .where(sql`lower(${usersTable.email}) = ${normalizedEmail}`);
+      if (remaining.length > 0) {
+        const rids = remaining.map((u) => u.id);
+        await db.delete(refreshTokensTable).where(inArray(refreshTokensTable.userId, rids));
+        await db.delete(usersTable).where(inArray(usersTable.id, rids));
+        logger.info({ wiped: remaining.length }, "[seed] cleared residual accounts with same email");
+      }
+    } else {
+      // No-op if any elevated account exists.
+      const existing = await db
+        .select({ id: usersTable.id })
+        .from(usersTable)
+        .where(ne(usersTable.role, "user"))
+        .limit(1);
+      if (existing.length > 0) {
+        logger.info({ email: normalizedEmail }, "[seed] admin already exists — skipping");
+        return;
+      }
+    }
+
+    // Upsert: INSERT or update on email conflict. This is idempotent and safe
+    // against any remaining race conditions or case-variant rows.
+    await db
+      .insert(usersTable)
+      .values({
+        id: nanoid(),
+        email: normalizedEmail,
+        passwordHash,
+        displayName,
+        role: "admin",
+      })
+      .onConflictDoUpdate({
+        target: usersTable.email,
+        set: { role: "admin" as const, passwordHash, updatedAt: new Date() },
+      });
+    logger.info({ email: normalizedEmail }, "[seed] admin account seeded");
+  } catch (err) {
+    logger.warn({ err }, "[seed] admin seed failed — server continues without seeding");
+  }
+}
+
+/**
+ * Auto-seed the primary "Temple TV Live" channel on startup.
+ *
+ * The broadcast engine hardcodes channelId = "temple-tv-live" so the primary
+ * channel MUST exist in the DB for `GET /api/channels` to return anything and
+ * for the multi-channel registry to report the correct viewer counts.
+ *
+ * Idempotent — no-op when the primary channel already exists. Non-fatal.
+ */
+async function seedPrimaryChannelIfAbsent(): Promise<void> {
+  try {
+    const channelsTable = schema.channelsTable;
+    const existing = await db
+      .select({ id: channelsTable.id })
+      .from(channelsTable)
+      .where(drizzleEq(channelsTable.isPrimary, true))
+      .limit(1);
+
+    if (existing.length > 0) return; // already seeded
+
+    await db.insert(channelsTable).values({
+      id: "temple-tv-live",
+      name: "Temple TV Live",
+      slug: "main",
+      description: "Jesus Christ Temple Ministry — 24/7 live worship, teaching, and praise.",
+      color: "#DC2626",
+      isPrimary: true,
+      isActive: true,
+      sortOrder: 0,
+    }).onConflictDoNothing();
+
+    logger.info("[seed] primary channel 'Temple TV Live' created");
+  } catch (err) {
+    logger.warn({ err }, "[seed] primary channel seed failed (non-fatal)");
+  }
+}
+
+async function startWorkers() {
+  scheduledNotificationDispatcher.start();
+  // Always start the transcoder — FFmpeg is confirmed available in this environment
+  // and uploads must be processed into HLS for broadcast playback.
+  // TRANSCODER_DISABLE env var is intentionally ignored here; use the
+  // TRANSCODER_POLL_MS env var to slow polling or stop the server entirely
+  // if you need to suppress transcoding.
+  transcoderDispatcher.start();
+  cleanupWorker.start();
+  if (!env.YOUTUBE_SYNC_DISABLE) {
+    youtubeSyncDispatcher.start();
+  } else {
+    logger.info("youtube-sync dispatcher disabled by YOUTUBE_SYNC_DISABLE");
+  }
+}
+
+function stopWorkers() {
+  scheduledNotificationDispatcher.stop();
+  transcoderDispatcher.stop();
+  cleanupWorker.stop();
+  youtubeSyncDispatcher.stop();
+}
+
+async function main() {
+  const mode = env.RUN_MODE;
+  logger.info({ runMode: mode }, "process starting");
+  logger.info("Prometheus metrics exporter active — scrape GET /metrics with admin token");
+
+  // Pre-warm the pg pool so the first inbound request doesn't pay the
+  // connection-establish round-trip. Failures are non-fatal — the app
+  // can still boot and recover once the DB becomes reachable; the
+  // /readyz probe will report `database: down` until then.
+  try {
+    const t0 = Date.now();
+    await db.execute(sql`select 1`);
+    logger.info({ elapsedMs: Date.now() - t0 }, "db pool warmed");
+  } catch (err) {
+    logger.warn({ err }, "db pool warmup failed (will retry on first request)");
+  }
+
+  // Ensure expression indexes that Drizzle Kit cannot manage in the schema DSL
+  // (GIN tsvector FTS index on managed_videos). Non-blocking — runs in
+  // background after pool warmup; server starts accepting requests regardless.
+  ensureRuntimeIndexes().catch((err) =>
+    logger.warn({ err }, "ensureRuntimeIndexes failed (non-fatal)"),
+  );
+
+  // Idempotent schema-heal: adds any columns that were introduced after the
+  // initial production deploy (TOTP/MFA fields on users, ip/user_agent on
+  // refresh_tokens, etc.). Must run BEFORE seedAdminIfConfigured() so the
+  // INSERT has all required columns available.
+  await ensureUserSchemaColumns();
+
+  // Auto-seed the admin account on startup (no-op if already exists and
+  // SEED_ADMIN_FORCE=false, which is the default for safety).
+  await seedAdminIfConfigured();
+
+  // Ensure the primary "Temple TV Live" channel row exists so that
+  // GET /api/channels returns at least one entry and the broadcast
+  // engine has a valid channel to attach to.
+  await seedPrimaryChannelIfAbsent();
+
+  // Hydrate the live-override in-memory cache from the DB so `buildState()`
+  // in the WS gateway returns the correct answer immediately when the first
+  // client connects, even if the server restarted mid-stream.
+  await overrideBus.init();
+  logger.info(
+    { isLive: Boolean(overrideBus.active), title: overrideBus.active?.title ?? null },
+    "override bus initialised",
+  );
+
+  let app: Awaited<ReturnType<typeof buildApp>> | null = null;
+
+  if (mode === "api" || mode === "all") {
+    app = await buildApp();
+    try {
+      await broadcastEngine.start();
+    } catch (err) {
+      logger.error(
+        { err },
+        "broadcast engine failed to start (server still listening)",
+      );
+    }
+    // Auto-create broadcast v2 DB tables so the orchestrator never crashes
+    // on a missing-table error even when drizzle-kit push was not run.
+    // Idempotent (CREATE TABLE IF NOT EXISTS). Non-blocking via .catch so a
+    // DB connectivity blip here doesn't delay the HTTP listener — the
+    // orchestrator's own hydrate() guards handle any residual table issues.
+    ensureBroadcastV2Tables().catch((err) =>
+      logger.error({ err }, "db: ensureBroadcastV2Tables failed (non-fatal)"),
+    );
+    // Deactivate queue rows whose video has no playable source so the
+    // orchestrator's pre-resolution step never rejects them silently.
+    // Non-destructive (is_active=false, not DELETE) and non-blocking.
+    deactivateUnresolvableQueueRows().catch((err) =>
+      logger.warn({ err }, "db: deactivateUnresolvableQueueRows failed (non-fatal)"),
+    );
+
+    // Broadcast v2 orchestrator (rebuild — coexists with v1 until cut-over).
+    try {
+      const { ensureBroadcastV2Started } = await import("./modules/broadcast-v2/index.js");
+      await ensureBroadcastV2Started();
+    } catch (err) {
+      logger.error({ err }, "[broadcast-v2] orchestrator failed to start (non-fatal)");
+    }
+    // Cross-environment broadcast queue mirror — only activates when
+    // PROD_SYNC_API_URL is set (typically dev pointing at prod). No-op in
+    // production. See modules/prod-sync/prod-queue-sync.ts for design notes.
+    try {
+      const { prodQueueSync } = await import("./modules/prod-sync/prod-queue-sync.js");
+      prodQueueSync.start();
+    } catch (err) {
+      logger.warn({ err }, "[prod-sync] failed to start (non-fatal)");
+    }
+    // Boot the multi-channel registry — starts per-channel engines for all
+    // non-primary active channels stored in the `channels` table.
+    // Runs after the primary engine so the DB pool is already warm.
+    channelRegistry.boot().catch((err) =>
+      logger.warn({ err }, "channel registry boot error (non-fatal)"),
+    );
+    // OMEGA Broadcast Automation: cron-style scheduler that auto-expires
+    // overrides, auto-starts scheduled broadcasts, and keeps the engine healthy.
+    broadcastScheduler.start();
+    // Non-blocking SMTP health-check — logs warning if misconfigured but
+    // never prevents the server from accepting HTTP requests.
+    verifyMailer().catch((err) => logger.warn({ err }, "mailer verify error"));
+    await app.listen({ port: env.PORT, host: "0.0.0.0" });
+    // OMEGA Hardening: keep-alive self-ping to prevent free-tier cold starts.
+    startKeepAlive();
+    // F17: memory pressure watchdog — emits ops-alert SSE when RSS
+    // exceeds MEMORY_WARN_RSS_MB so the admin console can warn operators.
+    startMemoryWatchdog();
+    logger.info({ port: env.PORT }, "API ready — http://0.0.0.0:" + env.PORT);
+
+    // Dev-only: bind a secondary port and forward to the real listener.
+    // Replit's edge proxy maps externalPort=80 ambiguously when the
+    // .replit file declares both localPort 5000 and 8080 against
+    // externalPort 80; whichever local port the proxy picks must have
+    // a listener or every public request returns 502. This forwarder
+    // makes both ports answer in dev. In production NODE_ENV=production
+    // and PORT=8080 already, so this branch is skipped.
+    const FORWARD_PORT = 8080;
+    if (process.env.NODE_ENV !== "production" && env.PORT !== FORWARD_PORT) {
+      const forwarder = net.createServer((sock) => {
+        const upstream = net.connect(env.PORT, "127.0.0.1");
+        sock.on("error", () => upstream.destroy());
+        upstream.on("error", () => sock.destroy());
+        sock.pipe(upstream).pipe(sock);
+      });
+      forwarder.on("error", (err) => {
+        logger.warn({ err, port: FORWARD_PORT }, "dev port forwarder error");
+      });
+      forwarder.listen(FORWARD_PORT, "0.0.0.0", () => {
+        logger.info(
+          { from: FORWARD_PORT, to: env.PORT },
+          "dev TCP forwarder ready (compensates for duplicate .replit port mapping)",
+        );
+      });
+    }
+  }
+
+  if (mode === "worker" || mode === "all") {
+    await startWorkers();
+  }
+
+  if (mode === "worker") {
+    // Keep the worker process alive even though there's no HTTP
+    // listener. The dispatcher uses setTimeout chains, which alone
+    // wouldn't keep the event loop pinned forever in some Node
+    // configurations — an interval is the cheapest deterministic
+    // keep-alive. Cleared on shutdown.
+    workerKeepalive = setInterval(() => undefined, 1 << 30);
+  }
+
+  let shuttingDown = false;
+  const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info({ signal }, "graceful shutdown starting");
+    if (mode === "worker" && workerKeepalive) clearInterval(workerKeepalive);
+    if (mode === "api" || mode === "all") {
+      broadcastEngine.stop();
+      broadcastScheduler.stop();
+      stopKeepAlive();
+      stopMemoryWatchdog();
+      try {
+        const { stopBroadcastV2 } = await import("./modules/broadcast-v2/index.js");
+        await stopBroadcastV2();
+      } catch {
+        // fanout already closed or never started — non-fatal
+      }
+    }
+    if (mode === "worker" || mode === "all") stopWorkers();
+    if (app) {
+      // F20: wait for open SSE connections to drain before closing the server.
+      // This gives long-lived SSE clients a chance to receive their last frame
+      // and reconnect cleanly instead of getting an abrupt TCP reset.
+      const drainMs = env.SHUTDOWN_DRAIN_MS;
+      if (drainMs > 0) {
+        const openSse = sseCounter.get();
+        if (openSse > 0) {
+          logger.info({ openSse, drainMs }, "waiting for SSE connections to drain");
+          const deadline = Date.now() + drainMs;
+          while (sseCounter.get() > 0 && Date.now() < deadline) {
+            await new Promise<void>((r) => setTimeout(r, 100));
+          }
+          const remaining = sseCounter.get();
+          if (remaining > 0) {
+            logger.warn({ remaining }, "SSE drain timeout reached — forcing close");
+          } else {
+            logger.info("all SSE connections drained");
+          }
+        }
+      }
+      try {
+        await app.close();
+      } catch (err) {
+        logger.error({ err }, "error closing fastify");
+      }
+    }
+    await closeDb().catch((err) => logger.warn({ err }, "error closing db pool during shutdown"));
+    await closeRedis().catch((err) => logger.warn({ err }, "error closing redis during shutdown"));
+    process.exit(0);
+  };
+
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("unhandledRejection", (reason) => {
+    logger.error({ reason }, "unhandledRejection");
+  });
+  process.on("uncaughtException", (err) => {
+    logger.fatal({ err }, "uncaughtException — exiting");
+    process.exit(1);
+  });
+}
+
+main().catch((err) => {
+  logger.fatal({ err }, "API failed to boot");
+  process.exit(1);
+});

@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
+
+    <title>Temple TV — Live Worship & Sermons on Smart TV | JCTM</title>
+    <meta name="description" content="Watch Temple TV on your Smart TV. Live worship, sermons, and 24/7 broadcasting from Jesus Christ Temple Ministry — optimised for 10-foot viewing with remote-friendly navigation." />
+    <meta name="keywords" content="Temple TV Smart TV, JCTM Smart TV, live worship Smart TV, online church TV, Christian sermons TV, Nigeria gospel TV, faith broadcasting" />
+    <meta name="author" content="Jesus Christ Temple Ministry" />
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />
+    <meta name="googlebot" content="index, follow, max-image-preview:large" />
+    <link rel="canonical" href="https://tv.templetv.org.ng/" />
+
+    <!-- Preconnect to the Temple TV API so the very first /api/videos and
+         /api/broadcast/current fetches skip TLS handshake latency. On Smart
+         TV CPUs (low-end SoCs) a cold TLS setup can cost 200–400 ms — this
+         hint eliminates that from the critical path entirely. -->
+    <link rel="preconnect" href="https://api.templetv.org.ng" crossorigin />
+    <link rel="dns-prefetch" href="https://api.templetv.org.ng" />
+
+    <!-- Preconnect to YouTube edge so the embedded player is ready before
+         the user picks a sermon. Big win on Smart-TV CPUs which have
+         slow TLS handshakes. -->
+    <link rel="preconnect" href="https://www.youtube-nocookie.com" crossorigin />
+    <link rel="preconnect" href="https://www.youtube.com" crossorigin />
+    <link rel="preconnect" href="https://i.ytimg.com" crossorigin />
+    <link rel="preconnect" href="https://s.ytimg.com" crossorigin />
+    <link rel="dns-prefetch" href="https://www.youtube-nocookie.com" />
+    <link rel="dns-prefetch" href="https://i.ytimg.com" />
+    <link rel="dns-prefetch" href="https://googlevideo.com" />
+
+    <meta name="theme-color" content="#000000" />
+    <meta name="application-name" content="Temple TV" />
+    <meta name="format-detection" content="telephone=no" />
+
+    <!-- Samsung Tizen Smart TV -->
+    <meta name="tizen.application.id" content="JCTMTV001.TempleTv" />
+
+    <!-- LG webOS Smart TV -->
+    <meta name="webos-app-id" content="com.templetv.jctm" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Temple TV" />
+    <meta property="og:title" content="Temple TV — Live Worship & Sermons on Smart TV" />
+    <meta property="og:description" content="Live worship, sermons, and 24/7 broadcasting from Jesus Christ Temple Ministry, optimised for Smart TVs." />
+    <meta property="og:url" content="https://tv.templetv.org.ng/" />
+    <meta property="og:image" content="https://templetv.org.ng/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Temple TV — Smart TV experience" />
+    <meta property="og:locale" content="en_US" />
+
+    <!-- Twitter / X -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Temple TV — Live Worship & Sermons on Smart TV" />
+    <meta name="twitter:description" content="Live worship, sermons, and 24/7 broadcasting from Jesus Christ Temple Ministry, optimised for Smart TVs." />
+    <meta name="twitter:image" content="https://templetv.org.ng/og-image.png" />
+
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="alternate icon" type="image/png" href="/temple-tv-logo.png" />
+    <link rel="apple-touch-icon" href="/temple-tv-logo.png" />
+    <link rel="mask-icon" href="/favicon.svg" color="#E11D48" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+
+    <!-- Preload the brand mark so the splash fallback and Home hero
+         paint the logo with the very first frame instead of flashing
+         a blank box first. `as=image` is the spec-correct hint for
+         critical above-the-fold images; `fetchpriority=high` ensures
+         it jumps the queue ahead of secondary thumbnail data. -->
+    <link rel="preload" as="image" href="/temple-tv-logo.png" fetchpriority="high" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="preconnect" href="https://www.youtube-nocookie.com" />
+    <link rel="preconnect" href="https://www.youtube.com" />
+    <link rel="preconnect" href="https://i.ytimg.com" />
+    <link rel="dns-prefetch" href="https://img.youtube.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+
+    <!-- Structured data: Organization + WebSite + BroadcastService -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "Organization",
+          "@id": "https://templetv.org.ng/#organization",
+          "name": "Jesus Christ Temple Ministry",
+          "alternateName": "Temple TV",
+          "url": "https://templetv.org.ng/",
+          "logo": "https://templetv.org.ng/icon.png",
+          "sameAs": [
+            "https://www.youtube.com/channel/UCPFFvkE-KGpR37qJgvYriJg"
+          ]
+        },
+        {
+          "@type": "WebSite",
+          "@id": "https://tv.templetv.org.ng/#website",
+          "url": "https://tv.templetv.org.ng/",
+          "name": "Temple TV — Smart TV",
+          "publisher": { "@id": "https://templetv.org.ng/#organization" },
+          "inLanguage": "en"
+        },
+        {
+          "@type": "BroadcastService",
+          "name": "Temple TV Live",
+          "broadcaster": { "@id": "https://templetv.org.ng/#organization" },
+          "broadcastDisplayName": "Temple TV",
+          "inLanguage": "en",
+          "videoFormat": "HD",
+          "url": "https://tv.templetv.org.ng/"
+        }
+      ]
+    }
+    </script>
+  </head>
+  <body>
+    <noscript>
+      <div style="padding:24px;font-family:system-ui,sans-serif;text-align:center;color:#fff;background:#000;">
+        <h1>Temple TV requires JavaScript</h1>
+        <p>Enable JavaScript on your Smart TV browser to watch live worship and sermons.</p>
+      </div>
+    </noscript>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,544 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
+import type { FastifyInstance } from "fastify";
+import { desc, eq } from "drizzle-orm";
+import { db, schema } from "../../infrastructure/db.js";
+import { storage } from "../../infrastructure/storage.js";
+import { env } from "../../config/env.js";
+import { logger } from "../../infrastructure/logger.js";
+
+/**
+ * Video-serve gateway — restores the three URL patterns that the old
+ * production API served from disk / direct S3 access and that are now
+ * referenced as absolute `https://api.templetv.org.ng/api/…` URLs in the
+ * database.
+ *
+ * Routes (each registered under both /api and /api/v1 by the dual-prefix
+ * registration in app.ts):
+ *
+ *   GET /uploads/:filename
+ *     302 → signed S3 download URL for key uploads/{filename}
+ *
+ *   GET /videos/:id/source
+ *     DB lookup → 302 to best available playback URL.
+ *     Never creates a redirect loop.
+ *
+ *   GET /hls/:videoId/*
+ *     Authenticated S3 proxy for the HLS tree stored at
+ *     transcoded/{videoId}/…  (master.m3u8, v0/seg_00001.ts …).
+ *     Because the bucket is private, we stream the bytes directly
+ *     rather than issuing a redirect. For .m3u8 files we also rewrite
+ *     any absolute S3 segment URLs back to our own /api/hls/… proxy
+ *     path so every subsequent segment fetch is also authenticated.
+ *
+ *   GET /hls-token/:videoId                            (A3: Security)
+ *     Returns a short-lived HMAC token that the client appends as ?t=TOKEN
+ *     to HLS requests when REQUIRE_HLS_TOKEN=true. 1-hour default TTL.
+ */
+
+// ── A5: HLS proxy concurrency limiter ────────────────────────────────────────
+// In-memory counter for simultaneous in-flight HLS proxy requests.
+// Prevents a burst of cold-start clients from overwhelming the S3
+// connection pool. 503 is returned immediately; clients fall back to
+// their failoverHlsUrl after the first segment load failure.
+let hlsConcurrent = 0;
+const HLS_MAX = () => env.HLS_MAX_CONCURRENT;
+
+// ── A3: HMAC token helpers ────────────────────────────────────────────────────
+const TOKEN_ALGO = "sha256";
+
+function makeHlsToken(videoId: string): { token: string; expiresAt: number } {
+  const secret = env.HLS_TOKEN_SECRET ?? "temple-tv-hls-default";
+  const expiresAt = Date.now() + env.HLS_TOKEN_TTL_SECONDS * 1000;
+  const payload = `${videoId}:${expiresAt}`;
+  const token = createHmac(TOKEN_ALGO, secret).update(payload).digest("hex");
+  return { token: `${token}:${expiresAt}`, expiresAt };
+}
+
+function validateHlsToken(videoId: string, raw: string): boolean {
+  try {
+    const parts = raw.split(":");
+    if (parts.length !== 2) return false;
+    const [token, expiresAtStr] = parts as [string, string];
+    const expiresAt = parseInt(expiresAtStr, 10);
+    if (isNaN(expiresAt) || Date.now() > expiresAt) return false;
+
+    const secret = env.HLS_TOKEN_SECRET ?? "temple-tv-hls-default";
+    const payload = `${videoId}:${expiresAt}`;
+    const expected = createHmac(TOKEN_ALGO, secret).update(payload).digest("hex");
+    // Timing-safe comparison prevents timing-attack token enumeration
+    const expectedBuf = Buffer.from(expected, "hex");
+    const tokenBuf = Buffer.from(token, "hex");
+    if (expectedBuf.length !== tokenBuf.length) return false;
+    return timingSafeEqual(expectedBuf, tokenBuf);
+  } catch {
+    return false;
+  }
+}
+
+export async function videoServeRoutes(app: FastifyInstance) {
+  // ── Startup advisory: warn when running in production without a CDN ───────
+  // HLS segment requests (can number in the thousands per viewer per hour)
+  // all hit this origin server when CDN_BASE_URL is unset. Configure a CDN
+  // edge layer and set CDN_BASE_URL=https://cdn.yourdomain.com to offload
+  // that traffic and reduce latency for geographically distributed viewers.
+  if (env.NODE_ENV === "production" && !env.CDN_BASE_URL) {
+    logger.warn(
+      "video-serve: CDN_BASE_URL is not set in production. All HLS segment " +
+      "requests will hit this origin server directly. Set CDN_BASE_URL to a " +
+      "CDN edge URL (e.g. https://cdn.templetv.org.ng) to reduce origin load " +
+      "and improve playback performance for remote viewers.",
+    );
+  }
+
+  // ── GET /hls-token/:videoId ────────────────────────────────────────────
+  // A3: Security — issue a short-lived HMAC token for a specific video.
+  // Clients call this before starting HLS playback when REQUIRE_HLS_TOKEN
+  // is set. The token is valid for HLS_TOKEN_TTL_SECONDS (default 1 hour)
+  // and scoped to a single videoId so token leakage doesn't grant access
+  // to other assets.
+  //
+  // No auth required on this endpoint — the token itself is worthless
+  // without a matching videoId; segment bytes still require an S3 fetch.
+  // Callers that need per-user auth should place this behind requireAuth.
+  app.get<{ Params: { videoId: string } }>(
+    "/hls-token/:videoId",
+    async (req, reply) => {
+      const { videoId } = req.params;
+      if (!videoId || videoId.includes("..")) {
+        return reply.code(400).send({ error: "Invalid videoId" });
+      }
+      const { token, expiresAt } = makeHlsToken(videoId);
+      return reply
+        .header("Cache-Control", "private, no-store")
+        .send({ token, expiresAt, videoId });
+    },
+  );
+
+  // ── Shared helper for /uploads/* content-type resolution ───────────────
+  function resolveUploadMime(key: string, storedContentType?: string): string {
+    const ext = key.split(".").pop()?.toLowerCase() ?? "";
+    const mimeMap: Record<string, string> = {
+      mp4: "video/mp4",
+      mov: "video/quicktime",
+      avi: "video/x-msvideo",
+      mkv: "video/x-matroska",
+      webm: "video/webm",
+      m4v: "video/x-m4v",
+      ts: "video/mp2t",
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      png: "image/png",
+      webp: "image/webp",
+      m3u8: "application/vnd.apple.mpegurl",
+    };
+    return storedContentType ?? mimeMap[ext] ?? "application/octet-stream";
+  }
+
+  function setUploadCorsHeaders(reply: import("fastify").FastifyReply, isImage: boolean): void {
+    reply
+      .header("Access-Control-Allow-Origin", "*")
+      .header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+      .header("Access-Control-Allow-Headers", "Range")
+      .header("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
+      .header("Cross-Origin-Resource-Policy", "cross-origin")
+      .header("Timing-Allow-Origin", "*");
+    if (!isImage) {
+      reply.header("Accept-Ranges", "bytes");
+    }
+  }
+
+  // ── OPTIONS /uploads/* — CORS preflight for Range requests ─────────────
+  // Browsers send an OPTIONS preflight before a Range-bearing GET.
+  // Without this, Chrome/Firefox block the media request cross-origin.
+  app.options<{ Params: { "*": string } }>(
+    "/uploads/*",
+    async (_req, reply) => {
+      return reply
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+        .header("Access-Control-Allow-Headers", "Range, Content-Type")
+        .header("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
+        .header("Access-Control-Max-Age", "86400")
+        .header("Cross-Origin-Resource-Policy", "cross-origin")
+        .code(204)
+        .send();
+    },
+  );
+
+  // ── HEAD /uploads/* ─────────────────────────────────────────────────────
+  // Many browsers and media players send HEAD before GET to discover
+  // Content-Length and whether Range is supported. A missing HEAD handler
+  // means they get a 404, which makes them think the asset doesn't exist.
+  app.head<{ Params: { "*": string } }>(
+    "/uploads/*",
+    async (req, reply) => {
+      const suffix = (req.params as Record<string, string>)["*"] || "";
+      if (suffix.includes("..") || suffix === "") {
+        return reply.code(400).send();
+      }
+      const key = `uploads/${suffix}`;
+      const s = storage();
+      if (!s.enabled) {
+        return reply.code(503).send();
+      }
+      try {
+        const head = await s.headObject(key);
+        if (!head.exists) {
+          return reply.code(404).send();
+        }
+        const ext = key.split(".").pop()?.toLowerCase() ?? "";
+        const isImage = ["jpg", "jpeg", "png", "webp"].includes(ext);
+        const cacheControl = isImage
+          ? "public, max-age=2592000, immutable"
+          : "public, max-age=3600";
+        const contentType = resolveUploadMime(key, head.contentType);
+        reply
+          .header("Content-Type", contentType)
+          .header("Cache-Control", cacheControl);
+        if (head.contentLength) {
+          reply.header("Content-Length", String(head.contentLength));
+        }
+        setUploadCorsHeaders(reply, isImage);
+        return reply.code(200).send();
+      } catch {
+        return reply.code(404).send();
+      }
+    },
+  );
+
+  // ── GET /uploads/* ─────────────────────────────────────────────────────
+  // Streams raw upload bytes directly from object storage with full HTTP
+  // Range request support. The wildcard (*) handles both flat and
+  // date-partitioned keys. Range support is required for:
+  //   - MP4 seeking (the browser requests bytes around the moov atom)
+  //   - Chrome's initial 2-byte probe: Range: bytes=0-1
+  //   - Safari's multi-range requests for streaming
+  //
+  // Without Range support the <video> element reports a media error and
+  // the player FSM classifies the source as stalled → "Source unavailable".
+  app.get<{ Params: { "*": string } }>(
+    "/uploads/*",
+    async (req, reply) => {
+      const suffix = (req.params as Record<string, string>)["*"] || "";
+      if (suffix.includes("..") || suffix === "") {
+        return reply.code(400).send({ error: "Invalid filename" });
+      }
+      const key = `uploads/${suffix}`;
+      const s = storage();
+      if (!s.enabled) {
+        return reply.code(503).send({ error: "Object storage not configured" });
+      }
+
+      const ext = key.split(".").pop()?.toLowerCase() ?? "";
+      const isImage = ["jpg", "jpeg", "png", "webp"].includes(ext);
+      const cacheControl = isImage
+        ? "public, max-age=2592000, immutable"
+        : "public, max-age=3600";
+
+      // ── Range request path ────────────────────────────────────────────
+      const rangeHeader = typeof req.headers["range"] === "string"
+        ? req.headers["range"]
+        : null;
+
+      if (rangeHeader && !isImage) {
+        // Parse "bytes=START-END" (suffix ranges like "bytes=-500" and
+        // multi-range are uncommon for video; handle the common single-range form).
+        const rangeMatch = /bytes=(\d*)-(\d*)/.exec(rangeHeader);
+        if (rangeMatch) {
+          try {
+            // Need total size to compute open-ended ranges and Content-Range.
+            const head = await s.headObject(key);
+            if (!head.exists) {
+              return reply.code(404).send({ error: "File not found in storage" });
+            }
+            const total = head.contentLength ?? 0;
+            const contentType = resolveUploadMime(key, head.contentType);
+
+            const rawStart = rangeMatch[1] ? parseInt(rangeMatch[1], 10) : 0;
+            // Open-ended "bytes=START-" means through the last byte.
+            const rawEnd = rangeMatch[2] ? parseInt(rangeMatch[2], 10) : total - 1;
+
+            // Clamp to valid bounds.
+            const start = Math.max(0, rawStart);
+            const end = Math.min(rawEnd, total - 1);
+
+            if (start > end || start >= total) {
+              // Range Not Satisfiable
+              return reply
+                .code(416)
+                .header("Content-Range", `bytes */${total}`)
+                .send({ error: "Range Not Satisfiable" });
+            }
+
+            const rangeObj = await s.getObjectRange(key, start, end);
+            if (!rangeObj) {
+              return reply.code(404).send({ error: "File not found in storage" });
+            }
+
+            reply
+              .code(206)
+              .header("Content-Type", contentType)
+              .header("Content-Range", `bytes ${start}-${end}/${total}`)
+              .header("Content-Length", String(rangeObj.contentLength))
+              .header("Cache-Control", cacheControl);
+            setUploadCorsHeaders(reply, isImage);
+            return reply.send(rangeObj.body);
+          } catch {
+            return reply.code(404).send({ error: "File not found in storage" });
+          }
+        }
+      }
+
+      // ── Full-file path ────────────────────────────────────────────────
+      try {
+        const obj = await s.getObject(key);
+        const contentType = resolveUploadMime(key, obj.contentType);
+        reply
+          .header("Cache-Control", cacheControl)
+          .header("Content-Type", contentType);
+        if (obj.contentLength) {
+          reply.header("Content-Length", String(obj.contentLength));
+        }
+        setUploadCorsHeaders(reply, isImage);
+        return reply.send(obj.body);
+      } catch {
+        return reply.code(404).send({ error: "File not found in storage" });
+      }
+    },
+  );
+
+  // ── GET /videos/:id/source ─────────────────────────────────────────────
+  app.get<{ Params: { id: string } }>(
+    "/videos/:id/source",
+    async (req, reply) => {
+      const { id } = req.params;
+      const rows = await db
+        .select({
+          localVideoUrl: schema.videosTable.localVideoUrl,
+          hlsMasterUrl: schema.videosTable.hlsMasterUrl,
+        })
+        .from(schema.videosTable)
+        .where(eq(schema.videosTable.id, id))
+        .limit(1);
+
+      const row = rows[0];
+      if (!row) {
+        return reply.code(404).send({ error: "Video not found" });
+      }
+
+      const hlsUrl = row.hlsMasterUrl;
+      const rawUrl = row.localVideoUrl;
+
+      const s = storage();
+
+      // HLS: prefer the proxy path; convert legacy raw S3 URLs on-the-fly.
+      if (hlsUrl) {
+        let target = hlsUrl;
+        if (hlsUrl.startsWith("http://") || hlsUrl.startsWith("https://")) {
+          const u = new URL(hlsUrl);
+          const m = u.pathname.match(/\/transcoded\/([^/]+)\/(.+)$/);
+          target = m ? `/api/hls/${m[1]}/${m[2]}` : (u.pathname.startsWith("/api/") ? u.pathname : hlsUrl);
+        }
+        return reply.header("Cache-Control", "private, max-age=3600").redirect(target, 302);
+      }
+
+      // Raw upload: generate a signed S3 download URL.
+      if (rawUrl && !rawUrl.includes("/api/videos/") && !rawUrl.includes("/source")) {
+        if ((rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) && s.enabled) {
+          try {
+            const u = new URL(rawUrl);
+            let key = u.pathname.slice(1);
+            if (s.bucket && key.startsWith(`${s.bucket}/`)) {
+              key = key.slice(s.bucket.length + 1);
+            }
+            if (key) {
+              const proxyUrl = s.publicUrl(key);
+              if (proxyUrl) {
+                return reply.header("Cache-Control", "private, max-age=3600").redirect(proxyUrl, 302);
+              }
+            }
+          } catch {
+            // Fall through to direct redirect below.
+          }
+        }
+        return reply.header("Cache-Control", "private, max-age=3600").redirect(rawUrl, 302);
+      }
+
+      // Last-resort: look up source key from transcoding_jobs.
+      if (s.enabled) {
+        const jobRows = await db
+          .select({ videoPath: schema.transcodingJobsTable.videoPath })
+          .from(schema.transcodingJobsTable)
+          .where(eq(schema.transcodingJobsTable.videoId, id))
+          .orderBy(desc(schema.transcodingJobsTable.createdAt))
+          .limit(1);
+        const jobRow = jobRows[0];
+        if (jobRow?.videoPath && !jobRow.videoPath.startsWith("/")) {
+          try {
+            const proxyUrl = s.publicUrl(jobRow.videoPath);
+            if (proxyUrl) {
+              return reply
+                .header("Cache-Control", "private, max-age=3600")
+                .redirect(proxyUrl, 302);
+            }
+          } catch {
+            // Object key invalid — fall through to 404.
+          }
+        }
+      }
+
+      return reply.code(404).send({ error: "No playback URL for this video" });
+    },
+  );
+
+  // ── GET /hls/:videoId/* ────────────────────────────────────────────────
+  // Streams HLS manifest + segments directly from the private S3 bucket.
+  //
+  // A2: CDN Optimization
+  //   When CDN_BASE_URL is configured, the master.m3u8 manifest response
+  //   rewrites variant playlist and segment URLs to point at the CDN instead
+  //   of this API proxy. Subsequent segment requests bypass the origin and
+  //   hit the CDN edge. The CDN should be configured to cache TS segments
+  //   (immutable content) for 7 days. Sub-playlists (.m3u8 variants) are
+  //   not rewritten to CDN so they still flow through auth if needed.
+  //
+  // A3: Security (opt-in via REQUIRE_HLS_TOKEN=true)
+  //   When enabled, the ?t=TOKEN query param is validated using an HMAC
+  //   keyed with HLS_TOKEN_SECRET. Invalid or expired tokens get 401.
+  //   TV and Mobile clients should call GET /api/hls-token/:videoId first.
+  //
+  // A5: Scalability
+  //   In-flight request counter. When HLS_MAX_CONCURRENT is exceeded,
+  //   requests receive 503 immediately with Retry-After: 5 so the client
+  //   backs off rather than stacking connections.
+  app.get<{ Params: { videoId: string; "*": string }; Querystring: { t?: string } }>(
+    "/hls/:videoId/*",
+    async (req, reply) => {
+      const { videoId } = req.params;
+      const wildcard = (req.params as Record<string, string>)["*"] || "master.m3u8";
+
+      if (wildcard.includes("..")) {
+        return reply.code(400).send({ error: "Invalid path" });
+      }
+
+      // A3: Token validation (opt-in)
+      if (env.REQUIRE_HLS_TOKEN) {
+        const tokenRaw = typeof req.query?.t === "string" ? req.query.t : "";
+        if (!tokenRaw || !validateHlsToken(videoId, tokenRaw)) {
+          return reply.code(401).send({ error: "Valid HLS token required. Call /api/hls-token/:videoId to obtain one." });
+        }
+      }
+
+      // A5: Concurrency gate
+      if (hlsConcurrent >= HLS_MAX()) {
+        logger.warn({ hlsConcurrent, max: HLS_MAX() }, "[hls-proxy] concurrency limit reached");
+        return reply
+          .code(503)
+          .header("Retry-After", "5")
+          .header("X-Queue-Depth", String(hlsConcurrent))
+          .send({ error: "HLS proxy busy — retry in 5 seconds" });
+      }
+
+      hlsConcurrent += 1;
+      const decrementConcurrent = () => { hlsConcurrent = Math.max(0, hlsConcurrent - 1); };
+      reply.raw.on("finish", decrementConcurrent);
+      reply.raw.on("close", decrementConcurrent);
+
+      const key = `transcoded/${videoId}/${wildcard}`;
+      const s = storage();
+      if (!s.enabled) {
+        decrementConcurrent();
+        return reply.code(503).send({ error: "Object storage not configured" });
+      }
+
+      let obj: Awaited<ReturnType<typeof s.getObject>>;
+      try {
+        obj = await s.getObject(key);
+      } catch (err) {
+        decrementConcurrent();
+        const e = err as { $metadata?: { httpStatusCode?: number }; message?: string };
+        const status = e?.$metadata?.httpStatusCode;
+        if (status === 403 || status === 404) {
+          return reply.code(404).send({ error: "HLS asset not found in storage" });
+        }
+        throw err;
+      }
+
+      const isManifest = wildcard.endsWith(".m3u8");
+      const isMaster = wildcard === "master.m3u8";
+
+      if (isManifest) {
+        // Buffer the manifest so we can rewrite absolute S3 segment URLs.
+        const chunks: Buffer[] = [];
+        for await (const chunk of obj.body) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+        }
+        let text = Buffer.concat(chunks).toString("utf8");
+
+        // Rewrite absolute S3/CDN URLs pointing to our transcoded prefix
+        // back to either the CDN base (when configured) or the API proxy path.
+        const cdnBase = env.CDN_BASE_URL?.replace(/\/$/, "");
+
+        // A2: CDN rewriting — only for the master manifest (redirects variant
+        // playlists + segments to CDN). Segment TS files are immutable content;
+        // variant playlists are small and similarly cacheable.
+        if (cdnBase && isMaster) {
+          // Rewrite /api/hls/:videoId/... references → CDN
+          const proxyPathPattern = new RegExp(`/api(?:/v1)?/hls/${videoId}/([^\\s"'\\r\\n]+)`, "g");
+          text = text.replace(proxyPathPattern, (_match, rest: string) => `${cdnBase}/api/hls/${videoId}/${rest}`);
+        }
+
+        // Always rewrite any absolute S3 URL that points into our transcoded prefix.
+        const s3UrlPattern = new RegExp(
+          `https?://[^\\s"']+/transcoded/${videoId}/([^\\s"'\\r\\n]+)`,
+          "g",
+        );
+        if (cdnBase && isMaster) {
+          // Point directly at CDN for segments from master manifest
+          text = text.replace(s3UrlPattern, (_match, rest: string) => `${cdnBase}/api/hls/${videoId}/${rest}`);
+        } else {
+          text = text.replace(s3UrlPattern, (_match, rest: string) => `/api/hls/${videoId}/${rest}`);
+        }
+
+        // A2: segment cache TTL on manifests — short public cache so the
+        // CDN/browser absorbs request stampedes (50+ concurrent viewers
+        // starting playback at the same moment), while keeping the TTL low
+        // enough that queue advances and live edge segments still propagate
+        // within ~10 s. `s-maxage` lets the edge cache; clients revalidate.
+        //
+        // stale-while-revalidate=5: CDN/browser serves the cached manifest
+        // immediately for up to 5 s past max-age while fetching a fresh copy
+        // in the background — eliminates the manifest-fetch stall that would
+        // otherwise freeze hls.js while it waits for a fresh playlist.
+        //
+        // stale-if-error=60: if the origin is transiently unavailable (deploy
+        // restart, DB blip) the CDN serves stale for up to 60 s rather than
+        // returning a 5xx that would cause hls.js to abort playback.
+        return reply
+          .header("Content-Type", "application/vnd.apple.mpegurl")
+          .header("Cache-Control", "public, max-age=10, s-maxage=10, stale-while-revalidate=5, stale-if-error=60")
+          .header("Access-Control-Allow-Origin", "*")
+          .header("Cross-Origin-Resource-Policy", "cross-origin")
+          .header("Timing-Allow-Origin", "*")
+          .header("X-Queue-Depth", String(hlsConcurrent))
+          .send(text);
+      }
+
+      // A2: Binary segment — long cache TTL (7 days). TS segments are immutable
+      // (content-addressed by the transcoder); a 7-day TTL is safe and dramatically
+      // reduces origin load once the CDN or browser cache is warm.
+      const contentType = obj.contentType ?? "video/mp2t";
+      reply
+        .header("Content-Type", contentType)
+        .header("Cache-Control", "public, max-age=604800, immutable")
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Cross-Origin-Resource-Policy", "cross-origin")
+        .header("Timing-Allow-Origin", "*")
+        .header("X-Queue-Depth", String(hlsConcurrent));
+      if (obj.contentLength) {
+        reply.header("Content-Length", String(obj.contentLength));
+      }
+      return reply.send(obj.body);
+    },
+  );
+}

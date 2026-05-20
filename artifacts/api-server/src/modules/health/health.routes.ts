@@ -1,0 +1,314 @@
+import type { FastifyInstance, FastifyReply } from "fastify";
+import type { ZodTypeProvider } from "fastify-type-provider-zod";
+import { z } from "zod";
+import { count, sql } from "drizzle-orm";
+import { db, schema } from "../../infrastructure/db.js";
+import { cache } from "../../infrastructure/cache.js";
+import { storage } from "../../infrastructure/storage.js";
+import { broadcastEngine } from "../broadcast/queue.engine.js";
+import { streamHealthAggregator } from "../broadcast/stream-health.js";
+import { liveOverridesService } from "../live-overrides/live-overrides.service.js";
+import { env } from "../../config/env.js";
+
+const HealthSchema = z.object({
+  status: z.enum(["ok", "degraded", "down"]),
+  uptimeSec: z.number(),
+  version: z.string(),
+  dependencies: z.object({
+    database: z.enum(["ok", "down"]),
+    cache: z.enum(["ok", "down"]),
+    storage: z.enum(["ok", "disabled"]),
+  }),
+  broadcast: z.object({
+    channelId: z.string(),
+    viewerCount: z.number().int().nonnegative(),
+    hasCurrent: z.boolean(),
+  }),
+});
+
+const startedAt = Date.now();
+
+export async function healthRoutes(app: FastifyInstance) {
+  const r = app.withTypeProvider<ZodTypeProvider>();
+
+  // Liveness probe (cheap, no I/O). The shared handler is mounted at
+  // both `/healthz` (k8s convention) and `/health` (the more common
+  // load-balancer / uptime-monitor convention) so we don't have to
+  // pick one and break a downstream consumer.
+  const liveness = async (_req: unknown, reply: FastifyReply) => {
+    reply.header("Cache-Control", "no-store, max-age=0");
+    return { status: "ok" as const };
+  };
+  const livenessSchema = {
+    tags: ["health"],
+    summary: "Liveness probe (cheap)",
+    response: { 200: z.object({ status: z.literal("ok") }) },
+  };
+  r.get("/healthz", { schema: livenessSchema }, liveness);
+  r.get("/health", { schema: livenessSchema }, liveness);
+
+  // Cheap diagnostic snapshot — version, uptime, runtime memory, run-mode,
+  // process pid, node version. No I/O, safe to poll from uptime monitors
+  // every few seconds. Distinct from /readyz (which probes DB + cache +
+  // storage + broadcast engine and may return 503).
+  const StatusSchema = z.object({
+    service: z.literal("temple-tv-api"),
+    version: z.string(),
+    runMode: z.enum(["api", "worker", "all"]),
+    env: z.string(),
+    uptimeSec: z.number(),
+    nodeVersion: z.string(),
+    pid: z.number(),
+    memory: z.object({
+      rssMb: z.number(),
+      heapUsedMb: z.number(),
+      heapTotalMb: z.number(),
+    }),
+  });
+  const statusHandler = async () => {
+    const mem = process.memoryUsage();
+    const toMb = (n: number) => Math.round((n / 1024 / 1024) * 10) / 10;
+    return {
+      service: "temple-tv-api" as const,
+      version: process.env.APP_VERSION ?? "1.0.0",
+      runMode: env.RUN_MODE,
+      env: env.NODE_ENV,
+      uptimeSec: Math.round((Date.now() - startedAt) / 1000),
+      nodeVersion: process.version,
+      pid: process.pid,
+      memory: {
+        rssMb: toMb(mem.rss),
+        heapUsedMb: toMb(mem.heapUsed),
+        heapTotalMb: toMb(mem.heapTotal),
+      },
+    };
+  };
+  const statusSchema = {
+    tags: ["health"],
+    summary: "Diagnostic snapshot (cheap, no I/O)",
+    response: { 200: StatusSchema },
+  };
+  r.get("/status", { schema: statusSchema }, statusHandler);
+
+  r.get(
+    "/readyz",
+    {
+      schema: {
+        tags: ["health"],
+        summary: "Readiness probe — DB + cache + storage + broadcast engine",
+        response: { 200: HealthSchema, 503: HealthSchema },
+      },
+    },
+    async (_req, reply) => {
+      let dbOk = true;
+      try {
+        await db.execute(sql`select 1`);
+      } catch {
+        dbOk = false;
+      }
+      let cacheOk = true;
+      try {
+        await cache().set("__health__", "1", 5);
+        await cache().get<string>("__health__");
+      } catch {
+        cacheOk = false;
+      }
+      const snap = broadcastEngine.snapshot();
+
+      const storageEnabled = storage().enabled;
+      const storageDisabledInProd = !storageEnabled && env.NODE_ENV === "production";
+
+      const status: "ok" | "degraded" | "down" =
+        !dbOk ? "down"
+        : storageDisabledInProd ? "down"
+        : !cacheOk ? "degraded"
+        : "ok";
+      const body = {
+        status,
+        uptimeSec: Math.round((Date.now() - startedAt) / 1000),
+        version: process.env.APP_VERSION ?? "1.0.0",
+        dependencies: {
+          database: dbOk ? "ok" as const : "down" as const,
+          cache: cacheOk ? "ok" as const : "down" as const,
+          storage: storageEnabled ? "ok" as const : "disabled" as const,
+        },
+        broadcast: {
+          channelId: snap.channelId,
+          viewerCount: broadcastEngine.getViewerCount(),
+          hasCurrent: snap.current !== null,
+        },
+      };
+      if (status === "down" || status === "degraded" && storageDisabledInProd) reply.code(503);
+      return body;
+    },
+  );
+
+  // ── Broadcast stream-health endpoint ─────────────────────────────────────
+  // Returns live broadcast KPIs in a single response: viewer counts, engine
+  // status, and rolling 5-minute telemetry aggregates (stalls, errors, avg
+  // buffer level, avg bitrate). Intended for dashboards, uptime monitors, and
+  // the admin panel's stream-health widget. No DB I/O — all data is in-memory.
+  const LiveHealthSchema = z.object({
+    ok: z.boolean(),
+    uptimeSec: z.number(),
+    checkedAt: z.string(),
+    broadcast: z.object({
+      channelId: z.string(),
+      engineRunning: z.boolean(),
+      hasCurrent: z.boolean(),
+      currentTitle: z.string().nullable(),
+      lastSnapshotAgeMs: z.number(),
+      engineHealthy: z.boolean(),
+    }),
+    viewers: z.object({
+      total: z.number().int().nonnegative(),
+    }),
+    telemetry: z.object({
+      windowMs: z.number(),
+      totalStalls: z.number().int().nonnegative(),
+      totalErrors: z.number().int().nonnegative(),
+      avgBufferedSecs: z.number().nullable(),
+      avgBitrateKbps: z.number().nullable(),
+      activeSessions: z.number().int().nonnegative(),
+      platformBreakdown: z.record(z.string(), z.number()),
+    }),
+  });
+
+  // ── GET /ops/status — public platform status for mobile/TV diagnostic use ──
+  // Returns a lightweight summary matching the `PlatformStatus` interface used
+  // by the mobile app's `services/platform.ts`. No auth required; used to show
+  // a "Platform Status" indicator in the mobile settings screen and to gate
+  // certain features (e.g., live chat) when the platform is degraded.
+  const OpsStatusSchema = z.object({
+    generatedAt: z.string(),
+    overallStatus: z.enum(["ok", "degraded", "critical"]),
+    checks: z.array(
+      z.object({
+        key: z.string(),
+        label: z.string(),
+        status: z.enum(["ok", "degraded", "critical"]),
+      }),
+    ),
+    database: z
+      .object({
+        counts: z
+          .object({
+            videos: z.number().int().optional(),
+            activeScheduleEntries: z.number().int().optional(),
+          })
+          .optional(),
+      })
+      .optional(),
+    broadcast: z
+      .object({
+        activeQueueItems: z.number().int().optional(),
+        activeLiveOverrides: z.number().int().optional(),
+      })
+      .optional(),
+  });
+
+  r.get(
+    "/ops/status",
+    {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["health"],
+        summary: "Public platform status summary for mobile / TV clients",
+        response: { 200: OpsStatusSchema },
+      },
+    },
+    async (_req, reply) => {
+      reply.header("Cache-Control", "public, s-maxage=15, max-age=15, stale-while-revalidate=30");
+
+      let dbStatus: "ok" | "degraded" | "critical" = "ok";
+      let videoCount: number | undefined;
+      try {
+        const [vc] = await db.select({ c: count() }).from(schema.videosTable);
+        videoCount = Number(vc?.c ?? 0);
+      } catch {
+        dbStatus = "critical";
+      }
+
+      const snap = broadcastEngine.snapshot();
+      const engineRunning = broadcastEngine.isRunning();
+      const broadcastStatus: "ok" | "degraded" | "critical" = engineRunning ? "ok" : "degraded";
+
+      let overridesCount = 0;
+      try {
+        const recent = await liveOverridesService.listRecent();
+        overridesCount = recent.items.filter((i) => i.isActive).length;
+      } catch { /* non-fatal */ }
+
+      const checks: Array<{ key: string; label: string; status: "ok" | "degraded" | "critical" }> = [
+        { key: "database",  label: "Database",         status: dbStatus },
+        { key: "broadcast", label: "Broadcast Engine", status: broadcastStatus },
+        { key: "api",       label: "API Server",       status: "ok" },
+      ];
+
+      const overallStatus: "ok" | "degraded" | "critical" =
+        checks.some((c) => c.status === "critical") ? "critical"
+        : checks.some((c) => c.status === "degraded") ? "degraded"
+        : "ok";
+
+      return {
+        generatedAt: new Date().toISOString(),
+        overallStatus,
+        checks,
+        database: { counts: { videos: videoCount } },
+        broadcast: {
+          activeQueueItems: snap.upcoming.length + (snap.current ? 1 : 0),
+          activeLiveOverrides: overridesCount,
+        },
+      };
+    },
+  );
+
+  r.get(
+    "/health/live",
+    {
+      schema: {
+        tags: ["health"],
+        summary: "Broadcast stream-health KPIs — viewers, engine status, telemetry (5-min window)",
+        response: { 200: LiveHealthSchema },
+      },
+    },
+    async () => {
+      const snap = broadcastEngine.snapshot();
+      const lastSnapshotAgeMs = broadcastEngine.getLastSnapshotAgeMs();
+      // Engine is "healthy" if:
+      //  • it is actively running (timer chain alive), OR
+      //  • the queue is empty (idle-by-design, not stuck)
+      //  • AND the last snapshot is fresh enough (< 90 s stale threshold)
+      const engineRunning = broadcastEngine.isRunning();
+      const engineHealthy = engineRunning && lastSnapshotAgeMs < 90_000;
+
+      const telemetry = streamHealthAggregator.getStats();
+
+      return {
+        ok: engineHealthy,
+        uptimeSec: Math.round((Date.now() - startedAt) / 1000),
+        checkedAt: new Date().toISOString(),
+        broadcast: {
+          channelId: snap.channelId,
+          engineRunning,
+          hasCurrent: snap.current !== null,
+          currentTitle: snap.current?.title ?? null,
+          lastSnapshotAgeMs,
+          engineHealthy,
+        },
+        viewers: {
+          total: broadcastEngine.getViewerCount(),
+        },
+        telemetry: {
+          windowMs: telemetry.windowMs,
+          totalStalls: telemetry.totalStalls,
+          totalErrors: telemetry.totalErrors,
+          avgBufferedSecs: telemetry.avgBufferedSecs,
+          avgBitrateKbps: telemetry.avgBitrateKbps,
+          activeSessions: telemetry.activeSessions,
+          platformBreakdown: telemetry.platformBreakdown,
+        },
+      };
+    },
+  );
+}

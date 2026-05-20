@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Samsung Tizen Smart TV — App Manifest
+  ======================================
+  Before packaging:
+    1. Replace TIZEN_PACKAGE_ID (10 chars, e.g. obtained from Samsung Seller Office)
+    2. Replace TIZEN_APP_ID format: <PACKAGE_ID>.<AppName>
+    3. Update version to match your release
+    4. Confirm icon assets exist in the tizen/ folder (icon.png 512x423, logo.png 960x540)
+  
+  Build command (requires Tizen CLI):
+    cd artifacts/tv && pnpm build:tizen && ./tizen/build.sh
+-->
+<widget xmlns="http://www.w3.org/ns/widgets"
+        xmlns:tizen="http://tizen.org/ns/widgets"
+        id="https://tv.templetv.org.ng"
+        version="1.0.0"
+        viewmodes="maximized">
+
+  <!-- Identity -->
+  <tizen:application id="JCTMTV001.TempleTv"
+                     package="JCTMTV001"
+                     required_version="6.5"/>
+
+  <name>Temple TV</name>
+  <description>
+    Live worship, sermons, and 24/7 broadcasting from Jesus Christ Temple Ministry.
+    Stream faith-filled content on your Samsung Smart TV.
+  </description>
+
+  <author href="https://templetv.org.ng" email="support@templetv.org.ng">
+    Jesus Christ Temple Ministry
+  </author>
+
+  <!-- Icons -->
+  <icon src="icon.png"/>
+  <tizen:icon src="icon.png"      section="MainIcons"/>
+  <tizen:icon src="icon_focus.png" section="MainIcons"/>
+  <tizen:icon src="logo.png"      section="DetailIcons"/>
+
+  <!-- TV profile -->
+  <tizen:profile name="tv"/>
+
+  <!-- Samsung-specific metadata -->
+  <tizen:metadata key="http://samsung.com/tv/metadata/use_background_mode" value="true"/>
+  <tizen:metadata key="http://samsung.com/tv/metadata/videoresolution" value="FHD"/>
+  <tizen:metadata key="http://samsung.com/tv/metadata/prelaunch_on_boot" value="false"/>
+  <tizen:metadata key="http://samsung.com/tv/metadata/deeplink" value="templetv://"/>
+
+  <!-- Entry point — built output -->
+  <content src="index.html"/>
+
+  <!-- Required TV features -->
+  <feature name="http://tizen.org/feature/screen.size.all"/>
+
+  <!-- Privileges -->
+  <tizen:privilege name="http://tizen.org/privilege/internet"/>
+  <tizen:privilege name="http://tizen.org/privilege/tv.inputdevice"/>
+  <tizen:privilege name="http://tizen.org/privilege/application.launch"/>
+  <tizen:privilege name="http://developer.samsung.com/privilege/productinfo"/>
+  <tizen:privilege name="http://developer.samsung.com/privilege/network.public"/>
+  <tizen:privilege name="http://tizen.org/privilege/storage.external"/>
+
+  <!-- Allow all origins for API / YouTube calls -->
+  <access origin="*" subdomains="true"/>
+
+  <!-- App settings -->
+  <tizen:setting screen-orientation="landscape"
+                 context-menu="disable"
+                 background-support="enable"
+                 encryption="disable"
+                 install-location="auto"
+                 hwkey-event="enable"
+                 sound-mode="exclusive"/>
+
+</widget>

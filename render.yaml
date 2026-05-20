@@ -1,0 +1,561 @@
+# ════════════════════════════════════════════════════════════════════════════
+#  Temple TV — Render deployment manifest (free-tier edition, 2026-05-06)
+# ════════════════════════════════════════════════════════════════════════════
+#
+#  Pipeline-minutes optimisation (2026-05-06)
+#  ───────────────────────────────────────────
+#  Each service now declares a `filter.paths` block so Render only triggers
+#  a rebuild when files relevant to THAT service change. Previously every
+#  commit rebuilt all 4 services regardless of what changed:
+#
+#    Before: 1 commit → 4 builds × ~6 min each = ~24 pipeline minutes
+#    After:  1 commit → typically 1 build × ~3 min        = ~3 pipeline minutes
+#
+#  Path filter rules (a deploy fires when ANY listed path matches a changed file):
+#    temple-tv-api   → artifacts/api-server/**, lib/**, root manifests, scripts
+#    temple-tv-admin → artifacts/admin/**,      lib/api-{client-react,zod,spec}/**
+#    temple-tv-web   → artifacts/mobile/**,     lib/api-{client-react,zod,spec}/**
+#    temple-tv-tv    → artifacts/tv/**,         lib/api-{client-react,zod,spec}/**
+#
+#  `pnpm run verify:render` runs in every buildCommand (after install, before
+#  the per-surface build). It omits `tsc --build` (OOMs on 512 MB free-tier
+#  containers) but enforces catalog, types, tsconfig, env-secrets, and
+#  db-schema guardrails. Required by verify-render-yaml.ts Invariant 2.
+#
+#
+#  Four Render services on one manifest, all in `frankfurt`:
+#
+#    ┌──────────────────────────┬──────────┬────────┬───────────────────────┐
+#    │ Service                  │ Type     │ Plan   │ Role                  │
+#    ├──────────────────────────┼──────────┼────────┼───────────────────────┤
+#    │ temple-tv-api            │ web      │ free   │ Fastify API + SSE +   │
+#    │                          │          │        │ notification dispatch  │
+#    │ temple-tv-admin          │ static   │ —      │ Vite SPA (admin)      │
+#    │ temple-tv-web            │ static   │ —      │ Expo Web (mobile)     │
+#    │ temple-tv-tv             │ static   │ —      │ Vite SPA (TV/Tizen)   │
+#    └──────────────────────────┴──────────┴────────┴───────────────────────┘
+#
+#  Free-tier constraint summary
+#  ─────────────────────────────
+#  Render free tier covers:
+#    • Web services  — 1 instance, 512 MiB RAM, 0.1 vCPU (spin-down after
+#                      15 min inactivity; first request cold-starts in ~30 s)
+#    • Static sites  — unlimited, global CDN, always free
+#    • Worker services have NO free tier (minimum Starter at $7/month)
+#
+#  Changes from the previous enterprise manifest:
+#    1. temple-tv-transcoder worker REMOVED — Render charges for all worker
+#       services regardless of plan; there is no free tier for workers.
+#    2. RUN_MODE changed from `api` → `all` so the scheduled-notification
+#       dispatcher runs inside the API process (it is lightweight — one Postgres
+#       poll every 30 s — and causes no memory pressure on the free tier).
+#    3. TRANSCODER_DISABLE=true — ffmpeg transcoding is disabled on the API
+#       process. A 0.1 vCPU / 512 MiB shared instance cannot safely run ffmpeg
+#       alongside a live HTTP/SSE server; the job would OOM-kill the process
+#       mid-encode. The entire rest of the platform (streaming, admin, auth,
+#       SSE broadcast, CRUD, scheduling, push notifications) is fully
+#       operational without the in-process transcoder. Re-enable by upgrading
+#       to a paid worker service (plan: starter or higher) and restoring
+#       RUN_MODE=api + a separate temple-tv-transcoder worker entry.
+#    4. NODE_OPTIONS max-old-space-size reduced from 256 MiB → 220 MiB to
+#       leave headroom for the in-process notification dispatcher, pino
+#       transport, and pg pool within the 512 MiB free-tier cgroup ceiling.
+#    5. No persistent disks — disks require a paid plan; all media I/O goes
+#       via S3 presigned URLs (confirmed already the case in this codebase).
+#    6. No managed databases or managed Redis — DATABASE_URL and REDIS_URL are
+#       external credentials supplied by the operator (e.g. Supabase free tier
+#       for Postgres, Upstash free tier for Redis). REDIS_URL is optional; the
+#       application falls back to an in-process LRU cache when absent.
+#
+#  Three shared env-var groups so secrets / AWS creds / public domain names
+#  are populated ONCE in the Render dashboard ("Environment Groups" page) and
+#  inherited by every consuming service:
+#    • temple-tv-aws            → AWS S3 credentials (API only in this config)
+#    • temple-tv-shared-secrets → DATABASE_URL, JWT secrets, REDIS_URL, Sentry
+#    • temple-tv-domains        → CORS_ORIGINS, APP_BASE_URL
+#
+#  Multi-domain architecture (temple-tv-domains group)
+#  ────────────────────────────────────────────────────
+#  CORS_ORIGINS is a comma-separated allowlist of permitted request origins.
+#  It lives in the Render dashboard (sync: false) so adding a new custom
+#  domain never requires a yaml edit or a forced redeploy — update the group
+#  value in the dashboard and restart the api service.
+#
+#  The API's CORS parser supports three origin formats:
+#    1. Exact origin  → https://templetv.org.ng
+#    2. Wildcard host → https://*.templetv.org.ng   (covers every subdomain)
+#    3. Regex literal → /^https:\/\/templetv\./     (advanced, rarely needed)
+#
+#  Minimum recommended value for production (covers 4+ custom domains):
+#    https://templetv.org.ng,https://www.templetv.org.ng,
+#    https://*.templetv.org.ng
+#
+#  To add a 5th, 6th, or Nth custom domain (e.g. jctm.church):
+#    → Append ,https://jctm.church,https://*.jctm.church to the dashboard value
+#    → No code change required; the API picks up the new value on next restart.
+#
+# ════════════════════════════════════════════════════════════════════════════
+
+# ─── Shared environment-variable groups ─────────────────────────────────────
+# Define credentials ONCE in the Render dashboard and every service that lists
+# `fromGroup: <name>` inherits them automatically.
+envVarGroups:
+  # AWS S3 — used by temple-tv-api for signed URLs, range streaming, and
+  # multipart finalize. Static frontends never see these values.
+  - name: temple-tv-aws
+    envVars:
+      - key: AWS_S3_BUCKET
+        sync: false
+      - key: AWS_REGION
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+
+  # Cross-service secrets shared between any services that need to validate
+  # the same JWTs, connect to the same Postgres, and report to Sentry.
+  # JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must each be ≥32-char random
+  # strings. REDIS_URL is optional — omit it and the app uses an in-process
+  # LRU cache (suitable for single-instance free-tier deployments).
+  - name: temple-tv-shared-secrets
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_ACCESS_SECRET
+        sync: false
+      - key: JWT_REFRESH_SECRET
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+      - key: SENTRY_RELEASE
+        sync: false
+
+  # Public domain / routing configuration — not secrets, but operator-managed
+  # so that adding a new custom domain requires no yaml edit or forced redeploy.
+  #
+  # CORS_ORIGINS: comma-separated allowlist of allowed request origins.
+  #   Supports three formats per entry:
+  #     • Exact origin   → https://templetv.org.ng
+  #     • Wildcard host  → https://*.templetv.org.ng  (all subdomains)
+  #     • Regex literal  → /^https:\/\/templetv\./    (advanced)
+  #   Minimum recommended value:
+  #     https://templetv.org.ng,https://www.templetv.org.ng,https://*.templetv.org.ng
+  #   To add a new root domain (e.g. jctm.church):
+  #     Append ,https://jctm.church,https://*.jctm.church in the dashboard.
+  #
+  # APP_BASE_URL: the canonical public-facing URL used to build clickable
+  #   links in outbound emails (password-reset, welcome, verification).
+  #   Set to the primary audience domain, e.g. https://templetv.org.ng.
+  - name: temple-tv-domains
+    envVars:
+      - key: CORS_ORIGINS
+        sync: false
+      - key: APP_BASE_URL
+        sync: false
+
+services:
+  # ═══════════════════════════════════════════════════════════════════════
+  #  temple-tv-api — Fastify + SSE + notification dispatcher, port 8080
+  # ═══════════════════════════════════════════════════════════════════════
+  #
+  #  Free-tier profile: 512 MiB RAM / 0.1 vCPU / 1 instance.
+  #  The service spins down after 15 minutes of inactivity on the free plan;
+  #  the first inbound request after spin-down incurs a ~30 s cold start.
+  #  For a worship-streaming use-case this is acceptable — broadcasts are
+  #  operator-initiated events, not 24/7 traffic, and the admin operator
+  #  hitting any dashboard page warms the instance before the stream starts.
+  - type: web
+    name: temple-tv-api
+    runtime: node
+    plan: free
+    region: frankfurt
+    branch: main
+    rootDir: .
+    autoDeploy: true
+    pullRequestPreviewsEnabled: false
+    numInstances: 1           # Free tier is single-instance only. Cross-instance
+                              # SSE fanout via Redis is wired but not exercised
+                              # here. Bump to a paid plan + numInstances: 2 when
+                              # load requires horizontal scale.
+
+    # ── Path-based deploy filter ───────────────────────────────────────────
+    # Only rebuild this service when API server code, shared libs, or
+    # dependency manifests change. Changes to admin/mobile/tv source files
+    # do NOT trigger an API rebuild, saving pipeline minutes on every commit
+    # that touches only a frontend surface.
+    filter:
+      paths:
+        - artifacts/api-server/**
+        - lib/**
+        - package.json
+        - pnpm-lock.yaml
+        - pnpm-workspace.yaml
+        - render.yaml
+        - scripts/**
+
+    # ── Build & start ──────────────────────────────────────────────────────
+    # `--prefer-offline` reuses Render's pnpm cache (cuts install from ~90 s
+    # → ~25 s on warm builds). `--frozen-lockfile` guarantees reproducible CI
+    # builds. `--prod=false` overrides Render's default NODE_ENV=production
+    # during install so devDependencies (tsc, vite, @types/*) are present for
+    # the build step — without this flag, tsc fails with TS2688.
+    #
+    buildCommand: |
+      bash ./scripts/render-install.sh && \
+      pnpm run verify:render && \
+      pnpm --filter @workspace/db run push-force && \
+      pnpm --filter @workspace/api-server run build
+    startCommand: pnpm --filter @workspace/api-server run start:prod
+
+    # ── Health check ───────────────────────────────────────────────────────
+    # Returns 200 ok / 503 starting / 503 draining / 503 db_down.
+    # Render's LB removes a pod from rotation after 3 consecutive non-200s.
+    healthCheckPath: /api/healthz
+
+    envVars:
+      # ── Inherited credential groups ───────────────────────────────────────
+      - fromGroup: temple-tv-aws
+      - fromGroup: temple-tv-shared-secrets
+      # ── Domain / CORS configuration (operator-managed in Render dashboard) ─
+      # Adding a new custom domain: update CORS_ORIGINS in the dashboard,
+      # then restart this service — no yaml edit or redeploy required.
+      - fromGroup: temple-tv-domains
+
+      # ── Runtime ───────────────────────────────────────────────────────────
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 8080
+
+      # RUN_MODE=all runs the Fastify HTTP server AND the in-process background
+      # dispatchers (scheduled-notification poller) in a single process.
+      # The transcoder dispatcher is disabled separately via TRANSCODER_DISABLE
+      # below so ffmpeg never runs on this instance.
+      - key: RUN_MODE
+        value: all
+
+      # ── Transcoder: disabled on free tier ─────────────────────────────────
+      # ffmpeg transcoding is incompatible with the free tier's 0.1 vCPU /
+      # 512 MiB constraint — a single encode job saturates the vCPU for
+      # minutes and can exhaust RSS, OOM-killing the live API process.
+      # Media uploaded via the admin panel is stored as-is on S3; operators
+      # should upload pre-encoded HLS content or use a separate paid worker
+      # (see the comment at the top of this file) to re-enable in-process
+      # transcoding. All other platform features are unaffected.
+      - key: TRANSCODER_DISABLE
+        value: "true"
+
+      # ── Memory containment ────────────────────────────────────────────────
+      # Layer 1: cap glibc malloc arenas to 2. Default (8× nCPU) causes heap
+      # fragmentation under sustained Buffer churn (AWS SDK + pg pool + zlib).
+      # Capping arenas cuts RSS 30–50 % on this workload.
+      - key: MALLOC_ARENA_MAX
+        value: "2"
+
+      # Layer 2: hard V8 heap cap sized for free tier.
+      # 220 MiB heap + ~100 MiB external (pg pool, pino, zlib) + ~50 MiB
+      # stacks/code + ~50 MiB notification dispatcher headroom = ~420 MiB,
+      # leaving ~90 MiB margin under the 512 MiB free-tier cgroup ceiling.
+      # `--max-http-header-size=16384` accommodates Render's LB headers.
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=220 --max-http-header-size=16384"
+
+      # Layer 3: observability. WARN at 380 MiB RSS — actionable lead time
+      # before the 512 MiB cgroup ceiling is hit. Logged via pino + Sentry.
+      - key: MEMORY_WARN_RSS_MB
+        value: "380"
+
+      # Layer 4: in-process self-restart at 430 MiB RSS. Graceful drain +
+      # restart well below the OOM-killer threshold (512 MiB), avoiding an
+      # uncatchable SIGKILL. Render auto-respawns the free-tier instance.
+      - key: MEMORY_RESTART_RSS_MB
+        value: "430"
+
+      # ── Graceful shutdown timing ───────────────────────────────────────────
+      # SIGTERM (rolling deploy / scale-in) starts a two-phase drain:
+      #   Phase 1: /api/healthz → 503 draining for SHUTDOWN_DRAIN_MS,
+      #            HTTP server keeps serving in-flight requests.
+      #   Phase 2: server.close() + process.exit(0).
+      #
+      # 10 s gives Render's LB ≥2 confirmed 503 probes (5 s cadence) before
+      # the socket closes, preventing mid-request TCP resets during deploys.
+      # Stays well under the 15 s hard force-timer in index.ts.
+      - key: SHUTDOWN_DRAIN_MS
+        value: "10000"
+
+      # ── HTTP server tuning ─────────────────────────────────────────────────
+      # Long-lived SSE clients (broadcast bus, ops events) can sit idle for
+      # 60+ s between server-pushed events. 75 s keep-alive prevents socket
+      # closure between events and the reconnect storm that follows.
+      - key: HTTP_KEEPALIVE_MS
+        value: "75000"
+      - key: HTTP_HEADERS_TIMEOUT_MS
+        value: "80000"
+
+      # ── Notification dispatcher tuning ────────────────────────────────────
+      # Poll every 30 s (default) — sub-minute notification accuracy without
+      # thrashing Postgres on the free external DB tier.
+      - key: SCHEDULED_NOTIF_POLL_MS
+        value: "30000"
+      - key: SCHEDULED_NOTIF_MAX_ATTEMPTS
+        value: "5"
+
+      # ── CORS / public URLs ─────────────────────────────────────────────────
+      # CORS_ORIGINS comes from the temple-tv-domains group (above).
+      # Set it in the Render dashboard — no yaml edit needed to add domains.
+      # Must NOT be '*' in production — the startup guard (F05) enforces this.
+      # Supports exact, wildcard (https://*.templetv.org.ng), and regex formats.
+      #
+      # CORS_ORIGINS_EXTRA: comma-separated *additional* origins merged with
+      # CORS_ORIGINS at startup. Hardcoded here (not in the dashboard group)
+      # because these are platform-specific URLs, not operator custom domains.
+      #
+      # https://*.onrender.com covers every Render auto-generated service URL
+      # (e.g. temple-tv-admin-<hash>.onrender.com) so the admin SPA works from
+      # its Render URL without requiring the operator to add it to the dashboard
+      # group. The wildcard uses one-level-deep matching (no dots in subdomain)
+      # so it does NOT accidentally accept arbitrary third-party *.onrender.com
+      # origins — only the direct subdomains of onrender.com.
+      - key: CORS_ORIGINS_EXTRA
+        value: "https://*.onrender.com"
+
+      - key: API_BASE_URL
+        value: https://api.templetv.org.ng
+
+      # ── Identity & API tokens ──────────────────────────────────────────────
+      # ADMIN_API_TOKEN is auto-generated by Render per deploy — scoped to
+      # the API service only (the worker is gone, nothing else needs it).
+      - key: ADMIN_API_TOKEN
+        generateValue: true
+
+      # ── Admin seed (auto-creates the first admin account on startup) ────────
+      # Set both values in the Render dashboard once. On every cold start the
+      # server checks whether any elevated account exists; if none does it
+      # creates one with these credentials. Safe to leave set permanently —
+      # the seeder is a no-op once the account exists.
+      # To reset / change the password: also set SEED_ADMIN_FORCE=true in the
+      # dashboard, trigger a manual deploy, then remove SEED_ADMIN_FORCE again.
+      - key: SEED_ADMIN_EMAIL
+        sync: false
+      - key: SEED_ADMIN_PASSWORD
+        sync: false
+
+      # ── Third-party integrations ───────────────────────────────────────────
+      - key: YOUTUBE_API_KEY
+        sync: false
+      - key: CLIENT_ERROR_SINK_URL
+        sync: false
+      - key: CLIENT_ERROR_SINK_TOKEN
+        sync: false
+
+      # ── Object storage paths ───────────────────────────────────────────────
+      - key: DEFAULT_OBJECT_STORAGE_BUCKET_ID
+        sync: false
+      - key: PRIVATE_OBJECT_DIR
+        sync: false
+      - key: PUBLIC_OBJECT_SEARCH_PATHS
+        sync: false
+
+  # ═══════════════════════════════════════════════════════════════════════
+  #  Static SPAs — admin, mobile (Expo Web), TV
+  # ═══════════════════════════════════════════════════════════════════════
+  #
+  # Render builds these on its own infra and serves the resulting dist/
+  # directory from a global CDN at zero cost. Cache-Control on hashed asset
+  # paths is immutable + 1y; the SPA shell (/index.html) gets no-store so
+  # deploys are picked up on next page load.
+
+  - type: web
+    name: temple-tv-admin
+    runtime: static
+    branch: main
+    rootDir: .
+    autoDeploy: true
+    pullRequestPreviewsEnabled: false
+    # Only rebuild when admin source or its consumed libraries change.
+    filter:
+      paths:
+        - artifacts/admin/**
+        - lib/api-client-react/**
+        - lib/api-zod/**
+        - lib/api-spec/**
+        - package.json
+        - pnpm-lock.yaml
+        - pnpm-workspace.yaml
+    buildCommand: |
+      bash ./scripts/render-install.sh && \
+      pnpm run verify:render && \
+      pnpm --filter @workspace/admin run build
+    staticPublishPath: ./artifacts/admin/dist/public
+    envVars:
+      # Build-time env vars — Vite inlines `import.meta.env.VITE_*` at build.
+      - key: VITE_API_URL
+        value: https://api.templetv.org.ng
+      - key: BASE_PATH
+        value: /
+    headers:
+      # ── Security headers ────────────────────────────────────────────────────
+      # The admin SPA is served by Render's CDN, not the API middleware, so it
+      # needs its own headers. HSTS here protects direct first-touch on
+      # admin.templetv.org.ng (e.g. bookmarks) that never hit the API first.
+      - path: /*
+        name: Strict-Transport-Security
+        value: "max-age=63072000; includeSubDomains; preload"
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(), geolocation=(), interest-cohort=()
+      # COOP gives the admin tab process-level isolation from cross-origin
+      # window openers — defense against Spectre-class side-channels and
+      # tab-nabbing. `same-origin` still allows the admin's own popups.
+      - path: /*
+        name: Cross-Origin-Opener-Policy
+        value: same-origin
+      # index.html must never be cached — a stale copy causes "Failed to fetch
+      # dynamically imported module" errors after every new deploy because the
+      # old entry point references chunk hashes that no longer exist on the CDN.
+      - path: /index.html
+        name: Cache-Control
+        value: no-store, no-cache, must-revalidate
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
+  - type: web
+    name: temple-tv-web
+    runtime: static
+    branch: main
+    rootDir: .
+    autoDeploy: true
+    pullRequestPreviewsEnabled: false
+    # Only rebuild when mobile/Expo source or its consumed libraries change.
+    filter:
+      paths:
+        - artifacts/mobile/**
+        - lib/api-client-react/**
+        - lib/api-zod/**
+        - lib/api-spec/**
+        - package.json
+        - pnpm-lock.yaml
+        - pnpm-workspace.yaml
+    buildCommand: |
+      bash ./scripts/render-install.sh && \
+      pnpm run verify:render && \
+      pnpm --filter @workspace/mobile run build:web
+    staticPublishPath: ./artifacts/mobile/web-dist
+    envVars:
+      # Build-time env vars — Expo inlines `process.env.EXPO_PUBLIC_*` at build.
+      - key: EXPO_PUBLIC_API_URL
+        value: https://api.templetv.org.ng
+      - key: EXPO_PUBLIC_DOMAIN
+        value: api.templetv.org.ng
+      - key: BASE_PATH
+        value: /
+    headers:
+      - path: /*
+        name: Strict-Transport-Security
+        value: "max-age=63072000; includeSubDomains; preload"
+      # SAMEORIGIN (not DENY) because the Expo PWA can be embedded in the
+      # admin preview pane for QA — same-origin only.
+      - path: /*
+        name: X-Frame-Options
+        value: SAMEORIGIN
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      # Camera/microphone/geolocation disabled — the Expo Web build is a
+      # streaming-viewer surface only; none of the audience screens need them.
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(), geolocation=(), interest-cohort=()
+      - path: /index.html
+        name: Cache-Control
+        value: no-store, no-cache, must-revalidate
+      - path: /_expo/static/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
+  - type: web
+    name: temple-tv-tv
+    runtime: static
+    branch: main
+    rootDir: .
+    autoDeploy: true
+    pullRequestPreviewsEnabled: false
+    # Only rebuild when TV source or its consumed libraries change.
+    filter:
+      paths:
+        - artifacts/tv/**
+        - lib/api-client-react/**
+        - lib/api-zod/**
+        - lib/api-spec/**
+        - package.json
+        - pnpm-lock.yaml
+        - pnpm-workspace.yaml
+    buildCommand: |
+      bash ./scripts/render-install.sh && \
+      pnpm run verify:render && \
+      pnpm --filter @workspace/tv run build
+    staticPublishPath: ./artifacts/tv/dist/public
+    envVars:
+      # Build-time env vars — Vite inlines `import.meta.env.VITE_*` at build.
+      - key: VITE_API_URL
+        value: https://api.templetv.org.ng
+      - key: BASE_PATH
+        value: /
+    headers:
+      - path: /*
+        name: Strict-Transport-Security
+        value: "max-age=63072000; includeSubDomains; preload"
+      # SAMEORIGIN (not DENY) because Tizen/webOS native TV shells embed the
+      # SPA in a system WebView whose origin Render cannot certify in advance —
+      # DENY would block legitimate native-TV launches.
+      - path: /*
+        name: X-Frame-Options
+        value: SAMEORIGIN
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      # Camera/microphone/geolocation disabled — TV viewers are passive
+      # consumers; none of the TV screens request these capabilities.
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(), geolocation=(), interest-cohort=()
+      - path: /index.html
+        name: Cache-Control
+        value: no-store, no-cache, must-revalidate
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

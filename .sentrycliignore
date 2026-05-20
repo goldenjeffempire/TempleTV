@@ -1,0 +1,13 @@
+node_modules/
+.pnpm-store/
+artifacts/api-server/src/
+artifacts/admin/src/
+artifacts/tv/src/
+artifacts/mobile/
+lib/
+*.test.*
+*.spec.*
+*.d.ts
+tsconfig*.json
+vite.config.*
+esbuild.config.*

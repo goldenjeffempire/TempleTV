@@ -1,0 +1,17 @@
+git_url("https://github.com/templetv/certificates")
+storage_mode("git")
+type("appstore")
+
+app_identifier([
+  "com.templetv.jctm",
+  "com.templetv.jctm.tvos"
+])
+
+username("developer@templetv.org.ng")
+team_id(ENV["APPLE_TEAM_ID"])
+
+# Branch per environment so staging and production certificates never conflict
+git_branch(ENV.fetch("MATCH_GIT_BRANCH", "main"))
+
+# In CI, decrypt via MATCH_PASSWORD secret — never commit the password
+readonly(ENV["CI"] == "true")

@@ -1,0 +1,80 @@
+{
+  "name": "workspace",
+  "version": "0.0.0",
+  "license": "MIT",
+  "scripts": {
+    "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
+    "setup:hooks": "git config core.hooksPath .githooks && echo 'Git hooks activated (.githooks/pre-push)'",
+    "build": "pnpm run typecheck && pnpm -r --if-present run build",
+    "typecheck:libs": "tsc --build",
+    "typecheck": "pnpm run typecheck:libs && pnpm --filter @workspace/scripts run run-typechecks --include-mockup",
+    "typecheck:production": "pnpm run typecheck:libs && pnpm --filter @workspace/scripts run run-typechecks",
+    "verify:codegen": "pnpm --filter @workspace/api-spec run codegen && (git diff --exit-code -- lib/api-zod/src/generated lib/api-client-react/src/generated || (echo '\\n[verify:codegen] FAIL: lib/api-spec/openapi.yaml is out of sync with generated clients. Run: pnpm --filter @workspace/api-spec run codegen, then commit the changes.' >&2; exit 1))",
+    "verify:catalog": "pnpm --filter @workspace/scripts run verify-catalog-lockfile-sync",
+    "verify:recharts-shim": "pnpm --filter @workspace/scripts run verify-recharts-shim",
+    "verify:react-types-singleton": "pnpm --filter @workspace/scripts run verify-react-types-singleton",
+    "verify:tsconfig-parity": "pnpm --filter @workspace/scripts run verify-tsconfig-parity",
+    "verify:render-yaml": "pnpm --filter @workspace/scripts run verify-render-yaml",
+    "verify:env-secrets": "pnpm --filter @workspace/scripts run verify-env-secrets",
+    "verify:db-schema-completeness": "pnpm --filter @workspace/scripts run verify-db-schema-completeness",
+    "verify:catalog-callsites": "pnpm --filter @workspace/scripts run verify-catalog-callsites",
+    "verify:mobile-lockfile": "pnpm --filter @workspace/scripts run verify-mobile-lockfile",
+    "verify:platform-consistency": "pnpm --filter @workspace/scripts run verify-platform-consistency",
+    "verify:metro-paths": "pnpm --filter @workspace/scripts run verify-metro-paths",
+    "verify": "pnpm run verify:codegen && pnpm run verify:catalog && pnpm run verify:catalog-callsites && pnpm run verify:recharts-shim && pnpm run verify:react-types-singleton && pnpm run verify:tsconfig-parity && pnpm run verify:render-yaml && pnpm run verify:env-secrets && pnpm run verify:db-schema-completeness && pnpm run verify:mobile-lockfile && pnpm run verify:platform-consistency && pnpm run verify:metro-paths && pnpm run typecheck",
+    "verify:production": "pnpm run verify:codegen && pnpm run verify:catalog && pnpm run verify:catalog-callsites && pnpm run verify:recharts-shim && pnpm run verify:react-types-singleton && pnpm run verify:tsconfig-parity && pnpm run verify:render-yaml && pnpm run verify:env-secrets && pnpm run verify:db-schema-completeness && pnpm run verify:mobile-lockfile && pnpm run verify:platform-consistency && pnpm run verify:metro-paths && pnpm run typecheck:production && pnpm run verify:production-readiness",
+    "verify:render": "pnpm run verify:codegen && pnpm run verify:catalog && pnpm run verify:catalog-callsites && pnpm run verify:recharts-shim && pnpm run verify:react-types-singleton && pnpm run verify:tsconfig-parity && pnpm run verify:render-yaml && pnpm run verify:env-secrets && pnpm run verify:db-schema-completeness && pnpm run verify:mobile-lockfile && pnpm run verify:platform-consistency && pnpm run verify:metro-paths && pnpm run verify:production-readiness",
+    "verify:production-readiness": "pnpm --filter @workspace/scripts run verify-production-readiness",
+    "mobile:eas:build": "pnpm --filter @workspace/mobile run eas:build --",
+    "release:staging": "bash scripts/release-all.sh --type patch --no-store",
+    "release:production": "bash scripts/release-all.sh --type patch",
+    "release:production:minor": "bash scripts/release-all.sh --type minor",
+    "release:production:major": "bash scripts/release-all.sh --type major",
+    "release:production:dry-run": "bash scripts/release-all.sh --type patch --dry-run",
+    "env:validate": "bash scripts/env-validate.sh",
+    "env:validate:api": "bash scripts/env-validate.sh --surface=api",
+    "seed:production": "bash scripts/seed-production.sh",
+    "lint": "eslint artifacts/api-server/src artifacts/admin/src artifacts/tv/src lib",
+    "lint:strict": "eslint artifacts/api-server/src artifacts/admin/src artifacts/tv/src lib --max-warnings=0",
+    "lint:fix": "eslint artifacts/api-server/src artifacts/admin/src artifacts/tv/src lib --fix",
+    "smoke-test": "bash scripts/smoke-test.sh",
+    "post-deploy-check": "bash scripts/post-deploy-check.sh",
+    "verify-secrets": "bash scripts/verify-secrets-vault.sh"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=24.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "packageManager": "pnpm@10.26.1",
+  "devDependencies": {
+    "typescript": "~5.9.2",
+    "prettier": "^3.8.1",
+    "@eslint/js": "^9.28.0",
+    "eslint": "^9.28.0",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "globals": "^16.1.0",
+    "typescript-eslint": "^8.33.1"
+  },
+  "pnpm": {
+    "patchedDependencies": {
+      "react-native-track-player@4.1.2": "patches/react-native-track-player@4.1.2.patch"
+    },
+    "overrides": {
+      "@types/react": "19.2.14",
+      "@types/react-dom": "19.2.3",
+      "@xmldom/xmldom": ">=0.8.13",
+      "brace-expansion": ">=2.0.3",
+      "minimatch@3>brace-expansion": "^1.1.11",
+      "drizzle-orm": ">=0.45.2",
+      "lodash": ">=4.18.0",
+      "path-to-regexp": ">=8.4.0",
+      "picomatch": ">=4.0.4",
+      "postcss": ">=8.5.10",
+      "vite": ">=7.3.2",
+      "yaml": ">=2.8.3",
+      "esbuild": ">=0.25.0"
+    }
+  }
+}

@@ -1,0 +1,250 @@
+import React, { memo } from "react";
+import { Image as ExpoImage } from "expo-image";
+import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { Feather } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
+import { useColors } from "@/hooks/useColors";
+import { GlassCard } from "@/components/GlassCard";
+import type { Sermon } from "@/types";
+
+const PLACEHOLDER = require("@/assets/images/sermon-placeholder.png");
+
+interface SermonCardProps {
+  sermon: Sermon;
+  onPress: (sermon: Sermon) => void;
+  variant?: "horizontal" | "vertical";
+  progress?: number;
+}
+
+const SmartImage = memo(function SmartImage({ uri, style }: { uri: string; style: object }) {
+  return (
+    <ExpoImage
+      source={uri || PLACEHOLDER}
+      placeholder={PLACEHOLDER}
+      contentFit="cover"
+      transition={150}
+      style={style}
+      cachePolicy="disk"
+    />
+  );
+});
+
+export const SermonCard = memo(function SermonCard({
+  sermon,
+  onPress,
+  variant = "vertical",
+  progress,
+}: SermonCardProps) {
+  const c = useColors();
+
+  const handlePress = () => {
+    if (Platform.OS !== "web") {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    }
+    onPress(sermon);
+  };
+
+  const showProgress = typeof progress === "number" && progress > 0.01 && progress < 0.98;
+  const isLocal = sermon.videoSource === "local";
+
+  if (variant === "horizontal") {
+    return (
+      <Pressable
+        onPress={handlePress}
+        style={({ pressed }) => [{ opacity: pressed ? 0.8 : 1, transform: [{ scale: pressed ? 0.98 : 1 }] }]}
+      >
+        <GlassCard style={styles.horizontalCard}>
+          <View style={styles.horizontalThumbWrap}>
+            <SmartImage uri={sermon.thumbnailUrl} style={styles.horizontalThumb} />
+            {showProgress && (
+              <View style={[styles.progressTrack, { backgroundColor: "rgba(255,255,255,0.2)" }]}>
+                <View
+                  style={[
+                    styles.progressFill,
+                    { backgroundColor: c.primary, width: `${Math.round(progress! * 100)}%` as any },
+                  ]}
+                />
+              </View>
+            )}
+          </View>
+          <View style={styles.horizontalInfo}>
+            <Text style={[styles.title, { color: c.foreground }]} numberOfLines={2}>
+              {sermon.title}
+            </Text>
+            <Text style={[styles.meta, { color: c.mutedForeground }]}>{sermon.preacher}</Text>
+            <View style={styles.metaRow}>
+              {!!sermon.duration && (
+                <>
+                  <Feather name="clock" size={11} color={c.mutedForeground} />
+                  <Text style={[styles.duration, { color: c.mutedForeground }]}>{sermon.duration}</Text>
+                </>
+              )}
+              {isLocal && (
+                <View style={[styles.localBadge, { backgroundColor: c.primary + "22" }]}>
+                  <Feather name="upload" size={9} color={c.primary} />
+                  <Text style={[styles.localBadgeText, { color: c.primary }]}>Local</Text>
+                </View>
+              )}
+              <View style={[styles.categoryBadge, { backgroundColor: c.secondary }]}>
+                <Text style={[styles.categoryText, { color: c.accent }]}>{sermon.category}</Text>
+              </View>
+            </View>
+          </View>
+        </GlassCard>
+      </Pressable>
+    );
+  }
+
+  return (
+    <Pressable
+      onPress={handlePress}
+      style={({ pressed }) => [
+        styles.verticalCard,
+        { opacity: pressed ? 0.8 : 1, transform: [{ scale: pressed ? 0.97 : 1 }] },
+      ]}
+    >
+      <View style={[styles.thumbContainer, { borderRadius: 12 }]}>
+        <SmartImage uri={sermon.thumbnailUrl} style={styles.verticalThumb} />
+        {!!sermon.duration && (
+          <View style={styles.durationBadge}>
+            <Text style={styles.durationBadgeText}>{sermon.duration}</Text>
+          </View>
+        )}
+        {isLocal && (
+          <View style={[styles.localBadgeThumb, { backgroundColor: c.primary }]}>
+            <Feather name="upload" size={9} color="#FFF" />
+          </View>
+        )}
+        {showProgress && (
+          <View style={[styles.progressTrack, { backgroundColor: "rgba(255,255,255,0.2)" }]}>
+            <View
+              style={[
+                styles.progressFill,
+                { backgroundColor: c.primary, width: `${Math.round(progress! * 100)}%` as any },
+              ]}
+            />
+          </View>
+        )}
+      </View>
+      <Text style={[styles.title, { color: c.foreground }]} numberOfLines={2}>
+        {sermon.title}
+      </Text>
+      <Text style={[styles.meta, { color: c.mutedForeground }]}>{sermon.preacher}</Text>
+    </Pressable>
+  );
+});
+
+const styles = StyleSheet.create({
+  verticalCard: {
+    width: 200,
+    gap: 8,
+  },
+  thumbContainer: {
+    overflow: "hidden",
+    position: "relative",
+  },
+  verticalThumb: {
+    width: 200,
+    height: 112,
+    backgroundColor: "#111",
+  },
+  durationBadge: {
+    position: "absolute",
+    bottom: 6,
+    right: 6,
+    backgroundColor: "rgba(0,0,0,0.8)",
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  durationBadgeText: {
+    color: "#FFFFFF",
+    fontSize: 11,
+    fontFamily: "Inter_500Medium",
+  },
+  localBadgeThumb: {
+    position: "absolute",
+    top: 6,
+    left: 6,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  progressTrack: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 3,
+  },
+  progressFill: {
+    height: 3,
+    borderRadius: 1.5,
+  },
+  horizontalCard: {
+    flexDirection: "row",
+    padding: 12,
+    gap: 12,
+  },
+  horizontalThumbWrap: {
+    borderRadius: 8,
+    overflow: "hidden",
+    width: 120,
+    height: 68,
+    backgroundColor: "#111",
+    position: "relative",
+  },
+  horizontalThumb: {
+    width: 120,
+    height: 68,
+  },
+  horizontalInfo: {
+    flex: 1,
+    justifyContent: "center",
+    gap: 3,
+  },
+  title: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    lineHeight: 18,
+  },
+  meta: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+  },
+  metaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginTop: 2,
+    flexWrap: "wrap",
+  },
+  duration: {
+    fontSize: 11,
+    fontFamily: "Inter_400Regular",
+  },
+  categoryBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+    marginLeft: 2,
+  },
+  categoryText: {
+    fontSize: 10,
+    fontFamily: "Inter_600SemiBold",
+  },
+  localBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 10,
+  },
+  localBadgeText: {
+    fontSize: 10,
+    fontFamily: "Inter_600SemiBold",
+  },
+});

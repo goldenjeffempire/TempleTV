@@ -1,0 +1,373 @@
+You are a Senior Enterprise Software Architect, DevOps Engineer, Media Infrastructure Engineer, Mobile Performance Engineer, and Security Specialist.
+
+Your task is to completely diagnose, rebuild, stabilize, optimize, and productionize the “Temple TV” broadcasting platform into a fully operational, enterprise-grade, scalable, fault-tolerant, secure, high-performance broadcasting ecosystem comparable to modern streaming platforms such as Netflix, YouTube, Hulu, and Twitch.
+
+CURRENT ISSUE:
+The application displays the following crash error:
+
+“App Error — It was detected that the "Temple TV" app crashed due to its own issues. Please wait for an update to fix the problem, or submit feedback through the in-app customer service channel.”
+
+This indicates critical failures in:
+- application architecture
+- crash handling
+- memory management
+- streaming infrastructure
+- exception management
+- API resilience
+- state management
+- network recovery
+- backend reliability
+- monitoring systems
+- DevOps infrastructure
+- scalability engineering
+
+YOUR OBJECTIVE:
+Transform the platform into a fully stable, enterprise-grade broadcasting platform with:
+- 99.9% uptime
+- high availability
+- enterprise security
+- distributed architecture
+- fault tolerance
+- auto-recovery systems
+- adaptive streaming
+- global scalability
+- real-time monitoring
+- professional UX/UI
+- production-ready infrastructure
+
+====================================================
+PHASE 1 — ROOT CAUSE ANALYSIS
+====================================================
+
+Perform a complete application audit and identify:
+- crash sources
+- unhandled exceptions
+- memory leaks
+- ANR issues
+- video player failures
+- streaming interruptions
+- API timeout issues
+- thread blocking
+- lifecycle management issues
+- dependency conflicts
+- SDK conflicts
+- state corruption
+- background service failures
+- authentication failures
+- database bottlenecks
+- network instability issues
+
+Implement enterprise-grade diagnostics using:
+- Firebase Crashlytics
+- Sentry
+- structured logging
+- real-time monitoring
+- analytics instrumentation
+
+Generate:
+- detailed crash reports
+- stack traces
+- memory analysis
+- thread analysis
+- performance profiling
+- stream diagnostics
+
+====================================================
+PHASE 2 — ENTERPRISE APPLICATION ARCHITECTURE
+====================================================
+
+Refactor the entire application architecture into enterprise-grade standards.
+
+Frontend Requirements:
+- Flutter or React Native architecture
+- clean architecture principles
+- modular architecture
+- scalable folder structure
+- repository pattern
+- dependency injection
+- enterprise state management
+- offline-first architecture
+- resilient network layer
+
+Implement:
+- Riverpod / Bloc / Redux Toolkit
+- immutable state management
+- graceful failure recovery
+- automatic retry systems
+- caching layer
+- optimized rendering
+- lazy loading
+- background synchronization
+
+Backend Requirements:
+Implement scalable microservices architecture with:
+- Authentication Service
+- Streaming Service
+- User Service
+- Analytics Service
+- Notification Service
+- CMS Service
+- Billing Service
+- Recommendation Engine
+- Moderation Service
+
+Recommended stack:
+- NestJS
+- Node.js
+- FastAPI
+- PostgreSQL
+- Redis
+- Kafka
+- GraphQL
+- WebSockets
+
+====================================================
+PHASE 3 — BROADCASTING & STREAMING INFRASTRUCTURE
+====================================================
+
+Rebuild the entire media streaming infrastructure into enterprise-grade broadcasting systems.
+
+Implement:
+- adaptive bitrate streaming
+- HLS support
+- MPEG-DASH support
+- low latency streaming
+- automatic stream recovery
+- stream redundancy
+- multi-CDN delivery
+- intelligent buffering
+- stream health monitoring
+
+Integrate:
+- Cloudflare Stream
+- AWS Media Services
+- Mux Video
+- CloudFront CDN
+- Cloudflare CDN
+
+Streaming Features:
+- live TV broadcasting
+- VOD streaming
+- DVR playback
+- multi-resolution transcoding
+- AI-based bitrate optimization
+- stream failover recovery
+- playback resilience
+- background playback support
+
+Fix:
+- black screen crashes
+- player initialization failures
+- buffering crashes
+- media decoder failures
+- audio/video desync
+- network transition failures
+
+====================================================
+PHASE 4 — PERFORMANCE OPTIMIZATION
+====================================================
+
+Optimize the entire platform for:
+- low memory consumption
+- ultra-fast rendering
+- minimal startup time
+- smooth navigation
+- zero frame drops
+- battery optimization
+- CPU optimization
+
+Implement:
+- image optimization
+- media caching
+- memory cleanup
+- controller disposal
+- lazy loading
+- optimized API batching
+- smart preloading
+- efficient database queries
+
+Target:
+- crash-free sessions above 99.5%
+- app launch under 2 seconds
+- smooth 60fps rendering
+- ultra-low latency playback
+
+====================================================
+PHASE 5 — ENTERPRISE SECURITY HARDENING
+====================================================
+
+Implement military-grade security and enterprise protection.
+
+Security Requirements:
+- JWT authentication
+- OAuth2
+- refresh tokens
+- RBAC authorization
+- API gateway security
+- DDoS protection
+- rate limiting
+- WAF protection
+- encrypted storage
+- HTTPS enforcement
+- SSL pinning
+- DRM media protection
+- signed streaming URLs
+- anti-piracy systems
+- session protection
+- biometric authentication
+
+Use:
+- Cloudflare WAF
+- OWASP standards
+- secure secret management
+- vulnerability scanning
+
+====================================================
+PHASE 6 — DEVOPS & CLOUD INFRASTRUCTURE
+====================================================
+
+Deploy enterprise cloud-native infrastructure.
+
+Implement:
+- Docker containerization
+- Kubernetes orchestration
+- CI/CD pipelines
+- automated deployments
+- blue-green deployment
+- rolling updates
+- rollback recovery
+- infrastructure as code
+- multi-region deployment
+- disaster recovery systems
+
+Use:
+- AWS
+- Cloudflare
+- Kubernetes
+- GitHub Actions
+- Terraform
+- NGINX ingress
+
+Infrastructure Requirements:
+- auto scaling
+- load balancing
+- failover recovery
+- distributed caching
+- health checks
+- service discovery
+- queue systems
+
+====================================================
+PHASE 7 — ENTERPRISE MONITORING & OBSERVABILITY
+====================================================
+
+Implement real-time observability and intelligent monitoring.
+
+Use:
+- Grafana
+- Prometheus
+- Datadog
+- New Relic
+- ELK Stack
+
+Monitor:
+- server health
+- API latency
+- streaming quality
+- CDN performance
+- memory usage
+- CPU usage
+- crash rates
+- user sessions
+- network failures
+- playback analytics
+
+Implement:
+- alert systems
+- anomaly detection
+- automated incident reporting
+- self-healing infrastructure
+
+====================================================
+PHASE 8 — PROFESSIONAL UX/UI ERROR HANDLING
+====================================================
+
+Remove all unprofessional crash popups and replace them with enterprise-grade user experience.
+
+Current Message:
+“Please wait for an update to fix the problem.”
+
+Replace with:
+“We encountered a temporary issue while loading Temple TV. Our engineering systems have automatically detected the issue and recovery is in progress. Please try again shortly.”
+
+Implement:
+- retry actions
+- graceful fallbacks
+- automatic recovery
+- offline mode
+- loading skeletons
+- smart reconnection
+- session restoration
+
+====================================================
+PHASE 9 — TESTING & QUALITY ASSURANCE
+====================================================
+
+Implement enterprise QA systems.
+
+Required Testing:
+- unit testing
+- integration testing
+- widget testing
+- stress testing
+- load testing
+- penetration testing
+- scalability testing
+- network failure testing
+- streaming resilience testing
+- device compatibility testing
+
+Ensure compatibility across:
+- Android
+- iOS
+- tablets
+- smart TVs
+- low-end devices
+- unstable network environments
+
+====================================================
+PHASE 10 — FINAL ENTERPRISE DELIVERABLES
+====================================================
+
+Generate:
+1. fully refactored production-ready codebase
+2. scalable enterprise architecture
+3. optimized database structure
+4. DevOps deployment configuration
+5. Kubernetes manifests
+6. CI/CD pipelines
+7. infrastructure documentation
+8. monitoring dashboards
+9. crash diagnostics system
+10. security hardening implementation
+11. enterprise streaming infrastructure
+12. automated recovery systems
+13. performance optimization reports
+14. production deployment strategy
+15. scalability roadmap
+
+FINAL REQUIREMENTS:
+- enterprise-grade code quality
+- modular architecture
+- production-ready deployment
+- zero critical vulnerabilities
+- high scalability
+- fault tolerance
+- resilient broadcasting systems
+- modern UI/UX
+- real-time observability
+- maximum reliability
+- optimized media delivery
+- secure streaming infrastructure
+
+The final platform must function as a world-class broadcasting ecosystem with enterprise reliability, security, scalability, and production readiness.

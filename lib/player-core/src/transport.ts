@@ -1,0 +1,601 @@
+import type { PlayerEvent, V2ServerFrame } from "./types.js";
+
+/**
+ * Transport: connects to the v2 WebSocket gateway, dispatches frames into
+ * the player machine via a callback, and auto-reconnects with exponential
+ * backoff. Falls back to SSE if WebSocket is unavailable (e.g. corporate
+ * proxies that strip the Upgrade header).
+ *
+ * Both transports use the same `Last-Event-ID` / `resume {lastSequence}`
+ * mechanism for replay on reconnect.
+ */
+
+export interface TransportConfig {
+  baseUrl: string;
+  channel?: string;
+  onPlayerEvent: (event: PlayerEvent) => void;
+  onConnectionChange?: (connected: boolean) => void;
+}
+
+const MAX_BACKOFF_MS = 6_000;
+const INITIAL_BACKOFF_MS = 300;
+
+/**
+ * Network-aware backoff cap.
+ *
+ * The Network Information API (navigator.connection) is available on Chrome/
+ * Chrome-based browsers and Android WebViews (not Safari/Firefox). When it
+ * reports a degraded connection (`effectiveType` of "slow-2g" or "2g") we cap
+ * the maximum reconnect backoff at 10 s instead of 30 s.
+ *
+ * Rationale: on slow mobile connections the TCP handshake + TLS negotiation
+ * already takes several seconds, so a 30 s back-off before even attempting
+ * the next connect doubles the black-screen window unnecessarily. The server's
+ * rate-limiter (120 req/min on /state) easily absorbs the higher reconnect
+ * cadence from slow-link devices.
+ *
+ * Returns MAX_BACKOFF_MS when the API is unavailable or reports a fast link.
+ */
+function effectiveMaxBackoffMs(): number {
+  try {
+    const conn = (navigator as unknown as { connection?: { effectiveType?: string } }).connection;
+    if (conn?.effectiveType === "slow-2g" || conn?.effectiveType === "2g") {
+      return 10_000;
+    }
+  } catch {
+    // Navigator APIs unavailable (Node/RN/old TV browsers) — use default.
+  }
+  return MAX_BACKOFF_MS;
+}
+
+/**
+ * Dead-connection detection: if no frame arrives (heartbeat, snapshot,
+ * event) for this many ms, the socket is a zombie — force-reconnect.
+ * Server heartbeat interval is 10 000 ms; allowing 1.4 missed beats (14 s)
+ * catches dead NAT-killed sockets quickly while remaining robust against
+ * brief single-missed-beat network jitter on flaky mobile connections.
+ */
+const DEAD_SOCKET_THRESHOLD_MS = 14_000;
+
+/**
+ * After this many consecutive WS connection-attempts that never reach
+ * `onopen`, fall back to SSE for the current backoff window. The next
+ * scheduled reconnect resets to WS so recovery is automatic once the
+ * proxy/network issue clears.
+ * 2 failures (down from 3) → SSE fallback activates one retry sooner,
+ * cutting the black-screen window by one full backoff cycle on bad proxies.
+ */
+const WS_FAIL_STREAK_SSE_FALLBACK = 2;
+
+// ── sessionStorage persistence for lastSequence ────────────────────────────
+// On page reload the transport starts with lastSequence=0, losing the ability
+// to replay missed events via `resume {N}`. Persisting to sessionStorage with
+// a short TTL restores replay on reload so the FSM skips BOOTSTRAP entirely
+// when the server confirms the same item is still playing.
+
+const SESSION_STORAGE_KEY = "ttv:broadcast:seq:v1";
+const SESSION_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function loadStoredSequence(): number {
+  try {
+    if (typeof sessionStorage === "undefined") return 0;
+    const raw = sessionStorage.getItem(SESSION_STORAGE_KEY);
+    if (!raw) return 0;
+    const parsed = JSON.parse(raw) as { seq?: unknown; expiresAt?: unknown };
+    if (typeof parsed.seq !== "number" || typeof parsed.expiresAt !== "number") return 0;
+    if (Date.now() > parsed.expiresAt) {
+      sessionStorage.removeItem(SESSION_STORAGE_KEY);
+      return 0;
+    }
+    return parsed.seq;
+  } catch {
+    return 0;
+  }
+}
+
+function saveStoredSequence(seq: number): void {
+  try {
+    if (typeof sessionStorage === "undefined") return;
+    sessionStorage.setItem(
+      SESSION_STORAGE_KEY,
+      JSON.stringify({ seq, expiresAt: Date.now() + SESSION_TTL_MS }),
+    );
+  } catch {
+    // sessionStorage may be unavailable in some TV / sandboxed environments
+  }
+}
+
+export class V2Transport {
+  private ws: WebSocket | null = null;
+  private es: EventSource | null = null;
+  private backoffMs = INITIAL_BACKOFF_MS;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastSequence = 0;
+  private stopped = false;
+  /**
+   * Bumped every time we deliberately replace the active socket
+   * (start, forceReconnect, scheduleReconnect→tick). Callbacks captured
+   * by an old socket compare against this and bail out if stale, so a
+   * zombie `onclose` from a replaced WebSocket cannot enqueue a duplicate
+   * reconnect that races with the fresh handshake.
+   */
+  private connGen = 0;
+  /**
+   * When true, the next `onclose` from the *current* socket is part of
+   * an intentional replacement and must not schedule a reconnect or
+   * bubble a "disconnected" notice (we already did it ourselves).
+   */
+  private replacing = false;
+
+  /**
+   * Wall-clock ms of the last frame received from the server (any type).
+   * Used by the dead-socket watchdog to detect zombies that stay in
+   * OPEN state but never carry any data (OS-level TCP keep-alives can
+   * maintain the socket while the application layer is dead).
+   */
+  private lastFrameMs = Date.now();
+
+  /**
+   * Number of consecutive WS connections that never reached `onopen`.
+   * When ≥ WS_FAIL_STREAK_SSE_FALLBACK we fall back to SSE for one
+   * cycle. Reset to 0 on any successful WS open or SSE connect.
+   */
+  private wsFailStreak = 0;
+
+  /**
+   * Heartbeat watchdog timer — checks every 15 s whether a frame has
+   * arrived recently; if not, force-reconnects to shed the zombie socket.
+   */
+  private heartbeatWatchdog: ReturnType<typeof setInterval> | null = null;
+
+  constructor(private readonly cfg: TransportConfig) {
+    // Restore lastSequence from sessionStorage so page reloads resume
+    // event-log replay rather than starting from sequence 0.
+    this.lastSequence = loadStoredSequence();
+  }
+
+  start(): void {
+    this.stopped = false;
+    this.lastFrameMs = Date.now();
+    this.startHeartbeatWatchdog();
+    this.connectWs();
+  }
+
+  stop(): void {
+    this.stopped = true;
+    this.stopHeartbeatWatchdog();
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    // Deterministic teardown: null handlers before closing so we don't
+    // double-emit onConnectionChange(false) (RN polyfills can fire
+    // onclose synchronously). We emit it ourselves at the end.
+    if (this.ws) {
+      const dead = this.ws;
+      this.ws = null;
+      try {
+        dead.onopen = null;
+        dead.onmessage = null;
+        dead.onerror = null;
+        dead.onclose = null;
+        dead.close();
+      } catch {
+        /* noop */
+      }
+    }
+    if (this.es) {
+      this.es.close();
+      this.es = null;
+    }
+    this.cfg.onConnectionChange?.(false);
+  }
+
+  /**
+   * Force-drop the current socket and reconnect immediately, resetting
+   * exponential backoff. Used by RN bindings on AppState→active so a
+   * sleep-wake "zombie" WebSocket (open at TCP layer, no traffic for
+   * minutes) is replaced by a fresh handshake the moment the user
+   * returns to the app — no waiting for the next failed heartbeat.
+   * Also used by the web hook on `visibilitychange` / `online` events.
+   * Safe to call repeatedly; no-op once `stop()` has been invoked.
+   */
+  forceReconnect(): void {
+    if (this.stopped) return;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    // Mark the in-flight socket as being intentionally replaced so its
+    // own `onclose` (which always fires after .close()) is recognised
+    // as a stale callback and ignored. We also detach handlers as
+    // belt-and-braces — some RN polyfills fire onclose synchronously.
+    this.replacing = true;
+    if (this.ws) {
+      const dead = this.ws;
+      this.ws = null;
+      try {
+        dead.onopen = null;
+        dead.onmessage = null;
+        dead.onerror = null;
+        dead.onclose = null;
+        dead.close();
+      } catch {
+        /* noop */
+      }
+    }
+    if (this.es) {
+      this.es.close();
+      this.es = null;
+    }
+    this.backoffMs = INITIAL_BACKOFF_MS;
+    this.lastFrameMs = Date.now(); // reset watchdog so it doesn't immediately re-fire
+    this.cfg.onConnectionChange?.(false);
+    this.replacing = false;
+    this.connectWs();
+  }
+
+  /**
+   * Whether a `doRequestSnapshot` REST call is currently in flight.
+   * Prevents concurrent REST requests from racing: if a newer event fires
+   * requestSnapshot() while a previous fetch is still pending, we skip
+   * the duplicate. When the inflight call completes it dispatches the
+   * freshest server state — no need for a second simultaneous fetch.
+   */
+  private snapshotInflight = false;
+
+  /**
+   * Fetch the current server state via REST and dispatch it to the FSM.
+   * Public so the machine's `onNeedSnapshot` callback can call it
+   * immediately when a buffer ends with no inactive item — cutting the
+   * SYNCING window from up to 8 s (keep-alive) to < 1 s.
+   *
+   * Inflight guard: if a fetch is already in progress this call is a no-op.
+   * Concurrent REST responses dispatched milliseconds apart can regress the
+   * machine (the older response arriving second overwrites a newer seek
+   * position). The in-flight fetch will deliver the authoritative state.
+   */
+  requestSnapshot(): void {
+    if (this.snapshotInflight) return;
+    void this.doRequestSnapshot();
+  }
+
+  // ── Dead-socket watchdog ───────────────────────────────────────────────
+
+  /**
+   * Returns true when the transport has an open socket (WS or SSE) that
+   * delivered a frame within the dead-socket threshold. Callers (e.g.
+   * `handleVisible`) use this to skip a force-reconnect when the connection
+   * is still healthy — avoiding the unnecessary "Reconnecting" flash on
+   * every tab-focus event.
+   */
+  isHealthy(): boolean {
+    if (this.stopped) return false;
+    if (!this.ws && !this.es) return false;
+    return Date.now() - this.lastFrameMs < DEAD_SOCKET_THRESHOLD_MS;
+  }
+
+  private startHeartbeatWatchdog(): void {
+    this.stopHeartbeatWatchdog();
+    this.heartbeatWatchdog = setInterval(() => {
+      if (this.stopped) return;
+      // Only fire if we have an active connection (WS or SSE) — not during
+      // a scheduled reconnect wait where silence is expected.
+      if (!this.ws && !this.es) return;
+      if (Date.now() - this.lastFrameMs > DEAD_SOCKET_THRESHOLD_MS) {
+        this.forceReconnect();
+      }
+    }, 6_000);
+    // Allow the Node.js process to exit even if this timer is still active
+    // (matters for SSR / test environments; no-op in the browser).
+    const t = this.heartbeatWatchdog as unknown as { unref?: () => void };
+    t.unref?.();
+  }
+
+  private stopHeartbeatWatchdog(): void {
+    if (this.heartbeatWatchdog) clearInterval(this.heartbeatWatchdog);
+    this.heartbeatWatchdog = null;
+  }
+
+  // ── Connection helpers ─────────────────────────────────────────────────
+
+  private connectWs(): void {
+    if (typeof WebSocket === "undefined") return this.connectSse();
+    if (this.stopped) return;
+    // If consecutive WS failures have exhausted the tolerance threshold,
+    // fall back to SSE for this reconnect cycle. The next scheduleReconnect
+    // call will reset and try WS again — recovery is automatic.
+    if (this.wsFailStreak >= WS_FAIL_STREAK_SSE_FALLBACK) {
+      this.wsFailStreak = 0; // reset so next round tries WS first
+      return this.connectSse();
+    }
+    // If a live socket already exists (defensive: should never happen
+    // outside of forceReconnect, which clears it first), tear it down
+    // intentionally before opening a new one.
+    if (this.ws) {
+      this.replacing = true;
+      const dead = this.ws;
+      this.ws = null;
+      try {
+        dead.onopen = null;
+        dead.onmessage = null;
+        dead.onerror = null;
+        dead.onclose = null;
+        dead.close();
+      } catch {
+        /* noop */
+      }
+      this.replacing = false;
+    }
+    const gen = ++this.connGen;
+    // Build an absolute ws:// / wss:// URL from baseUrl.
+    // WebSocket() requires an absolute URL — a relative path such as
+    // "/api/broadcast-v2" causes a DOMException and immediately falls into
+    // the catch block, incrementing wsFailStreak and cycling to SSE after 2
+    // attempts. Resolve relative paths against window.location so the Vite
+    // dev-proxy WebSocket upgrade fires correctly.
+    const url = (() => {
+      if (/^https?:\/\//i.test(this.cfg.baseUrl)) {
+        return this.cfg.baseUrl.replace(/^http/, "ws") + "/ws";
+      }
+      // Relative path — resolve against the current page origin.
+      if (typeof window !== "undefined") {
+        const wsOrigin = window.location.origin.replace(/^http/, "ws");
+        const path = this.cfg.baseUrl.startsWith("/")
+          ? this.cfg.baseUrl
+          : `/${this.cfg.baseUrl}`;
+        return `${wsOrigin}${path}/ws`;
+      }
+      // Node / RN: no window — these environments short-circuit at
+      // "typeof WebSocket === 'undefined'" above; this branch is unreachable.
+      return this.cfg.baseUrl + "/ws";
+    })();
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(url);
+    } catch {
+      this.wsFailStreak += 1;
+      return this.connectSse();
+    }
+    this.ws = ws;
+    // Track whether onopen fired for this socket — used to distinguish a
+    // "never-connected" close (wsFailStreak++) from a "connected-then-lost"
+    // close (don't penalise the streak).
+    let didOpen = false;
+    // Stale-callback guard: if the socket we captured no longer matches
+    // `this.ws`, or our generation has been superseded, the callback is
+    // from a replaced connection and must be a no-op.
+    const isCurrent = () => !this.stopped && this.ws === ws && this.connGen === gen;
+    ws.onopen = () => {
+      if (!isCurrent()) return;
+      didOpen = true;
+      this.wsFailStreak = 0; // successful open: clear failure streak
+      this.backoffMs = INITIAL_BACKOFF_MS;
+      this.cfg.onConnectionChange?.(true);
+      if (this.lastSequence > 0) {
+        try {
+          ws.send(JSON.stringify({ type: "resume", lastSequence: this.lastSequence }));
+        } catch {
+          /* socket may have died between open and send */
+        }
+      } else {
+        // First connect (no prior sequence) — proactively fetch the current
+        // snapshot via REST so the FSM exits BOOTSTRAP immediately even if
+        // the server's initial WS snapshot frame is delayed or dropped.
+        this.requestSnapshot();
+      }
+    };
+    ws.onmessage = (e) => {
+      if (!isCurrent()) return;
+      try {
+        const frame = JSON.parse(String(e.data)) as V2ServerFrame;
+        this.handleFrame(frame);
+      } catch {
+        /* ignore malformed frame */
+      }
+    };
+    ws.onclose = () => {
+      // If this close is the tail of a deliberate replacement, ignore.
+      if (this.replacing) return;
+      // If the socket has already been swapped out for a newer one, the
+      // newer socket owns connection-state notifications and reconnect
+      // scheduling — silently drop this stale event.
+      if (this.ws !== ws || this.connGen !== gen) return;
+      this.ws = null;
+      this.cfg.onConnectionChange?.(false);
+      // If this socket never reached onopen, count it as a WS failure.
+      if (!didOpen) this.wsFailStreak += 1;
+      this.scheduleReconnect();
+    };
+    ws.onerror = () => {
+      if (!isCurrent()) return;
+      try {
+        ws.close();
+      } catch {
+        /* noop */
+      }
+    };
+  }
+
+  private connectSse(): void {
+    if (typeof EventSource === "undefined") {
+      this.scheduleReconnect();
+      return;
+    }
+    if (this.stopped) return;
+    // Include lastSequence as a query param so the server can replay missed
+    // events from the event log on initial connect (e.g. after a page reload
+    // where EventSource has no Last-Event-ID to send automatically).
+    const params = this.lastSequence > 0 ? `?lastSequence=${this.lastSequence}` : "";
+    const url = this.cfg.baseUrl + "/events" + params;
+    let es: EventSource;
+    try {
+      es = new EventSource(url, { withCredentials: false });
+    } catch {
+      this.scheduleReconnect();
+      return;
+    }
+    // Carry the last-known sequence as Last-Event-ID so the server can
+    // replay missed events from the event log before resuming the live stream.
+    // EventSource handles this automatically on reconnect via the `id:` field
+    // in SSE messages; on initial connect we rely on the URL param fallback.
+    this.es = es;
+    const wrap = (frame: V2ServerFrame) => this.handleFrame(frame);
+    for (const t of ["hello", "snapshot", "event", "preload", "takeover", "heartbeat"] as const) {
+      es.addEventListener(t, (msg) => {
+        try {
+          wrap(JSON.parse((msg as MessageEvent).data));
+        } catch {
+          /* noop */
+        }
+      });
+    }
+    es.onerror = () => {
+      es.close();
+      if (this.es === es) this.es = null;
+      this.cfg.onConnectionChange?.(false);
+      this.scheduleReconnect();
+    };
+    this.wsFailStreak = 0; // SSE is working — reset WS failure streak so next cycle tries WS first
+    // Reset backoff so that if SSE drops immediately the next reconnect
+    // starts at INITIAL_BACKOFF_MS rather than the accumulated WS backoff.
+    // Mirrors what WS onopen does (line ~297 above).
+    this.backoffMs = INITIAL_BACKOFF_MS;
+    this.cfg.onConnectionChange?.(true);
+    // Fetch an initial snapshot via REST immediately on SSE connect.
+    // The SSE gateway sends a snapshot frame shortly after connection, but
+    // race conditions (proxy buffering, slow first-chunk) can delay it.
+    // The REST fetch guarantees the FSM exits BOOTSTRAP promptly.
+    this.requestSnapshot();
+  }
+
+  private handleFrame(frame: V2ServerFrame): void {
+    // Track the last received frame time for the dead-socket watchdog.
+    this.lastFrameMs = Date.now();
+    if ("sequence" in frame) {
+      const newSeq = Math.max(this.lastSequence, frame.sequence);
+      if (newSeq !== this.lastSequence) {
+        this.lastSequence = newSeq;
+        // Persist so page reloads can resume event-log replay.
+        saveStoredSequence(this.lastSequence);
+      }
+    }
+    switch (frame.type) {
+      case "snapshot":
+        this.cfg.onPlayerEvent({ type: "snapshot", snapshot: frame.state });
+        break;
+      case "preload":
+        this.cfg.onPlayerEvent({ type: "preload", item: frame.item, leadMs: frame.leadMs });
+        break;
+      case "takeover":
+        this.cfg.onPlayerEvent({ type: "takeover", override: frame.override });
+        break;
+      case "recover":
+        // Architect-flagged: replay must materially affect state. The current
+        // event types (queue.changed, item.advanced, item.skipped, override.*,
+        // failover.*) all imply server state has changed — the safest action
+        // is to fetch a fresh snapshot once replay is done so the FSM is
+        // aligned with authoritative server state.
+        for (const e of frame.events) this.handleFrame(e);
+        this.requestSnapshot();
+        break;
+      case "event":
+        // Belt-and-suspenders: the server always emits a snapshot immediately
+        // after state-changing events, so the snapshot frame normally arrives
+        // within the same TCP write. If that snapshot frame is ever lost in
+        // transit (proxy buffering, NAT reset mid-burst), proactively fetching
+        // /state ensures the FSM transitions without waiting for the next
+        // heartbeat.
+        //
+        // `queue.changed` is intentionally excluded: the server fires it on
+        // every 30-second drift-poll reload even when nothing has changed, and
+        // always pairs it with an inline emitSnapshot(). Fetching /state again
+        // a few seconds later produces a second snapshot whose startsAtMs is
+        // calculated from a slightly later Date.now(). In the PLAYING state
+        // the FSM's drift-correction branch can treat that tiny difference as
+        // a genuine anchor shift and seek the video — causing the visible skip.
+        // Item-transition events (item.advanced, item.skipped) and mode-change
+        // events (override.*) are kept because they represent real transitions
+        // that must not be missed.
+        if (
+          frame.eventType === "item.advanced" ||
+          frame.eventType === "item.skipped" ||
+          frame.eventType === "override.started" ||
+          frame.eventType === "override.ended"
+        ) {
+          this.requestSnapshot();
+        }
+        break;
+      case "hello":
+      case "heartbeat":
+      case "error":
+      default:
+        break;
+    }
+  }
+
+  private async doRequestSnapshot(): Promise<void> {
+    this.snapshotInflight = true;
+    try {
+      // 8-second timeout prevents an overloaded server from holding this
+      // fetch open while the FSM waits for a state update. The heartbeat
+      // watchdog (20 s) and exponential reconnect guarantee a reattempt.
+      const res = await fetch(this.cfg.baseUrl + "/state", {
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (!res.ok) {
+        // Retry once for server errors (5xx) and rate-limiting (429).
+        // Client errors (4xx except 429) indicate a misconfigured baseUrl —
+        // retrying immediately won't help; the heartbeat watchdog will retry
+        // on the next cycle. Rate-limited (429) clients back off 3 s before
+        // retrying so they don't compound the server pressure that caused
+        // the 429 in the first place.
+        if (res.status >= 500 || res.status === 429) {
+          const retryDelayMs = res.status === 429 ? 3_000 : 1_000;
+          await new Promise<void>((resolve) => setTimeout(resolve, retryDelayMs));
+          if (this.stopped) return;
+          const retry = await fetch(this.cfg.baseUrl + "/state", {
+            signal: AbortSignal.timeout(8_000),
+          }).catch(() => null);
+          if (!retry?.ok) return;
+          const retryBody = (await retry.json()) as { state?: unknown };
+          if (retryBody.state) {
+            this.cfg.onPlayerEvent({ type: "snapshot", snapshot: retryBody.state as never });
+          }
+        }
+        return;
+      }
+      const body = (await res.json()) as { state?: unknown };
+      if (body.state) {
+        this.cfg.onPlayerEvent({ type: "snapshot", snapshot: body.state as never });
+      }
+    } catch {
+      /* swallowed — next reconnect/heartbeat will reattempt */
+    } finally {
+      this.snapshotInflight = false;
+    }
+  }
+
+  private scheduleReconnect(): void {
+    if (this.stopped) return;
+    if (this.reconnectTimer) return;
+    // Apply ±25 % full-jitter to the base delay so a fleet of clients
+    // that all lost the connection at the same time (server restart,
+    // load-balancer failover, Cloudflare blip) don't pile into the new
+    // server in a synchronised thundering herd. Without jitter, doubling
+    // backoff produces identical retry windows across every client that
+    // disconnected in the same tick. With ±25 % the 500 ms initial window
+    // spreads to ~375–625 ms, 1 s → ~750–1250 ms, and so on — at 30 s
+    // max the spread is ±7.5 s, enough to smooth a burst of hundreds of
+    // clients into a gentle ramp over 15 s.
+    const jitter = this.backoffMs * (Math.random() * 0.5 - 0.25); // ±25 %
+    const delay = Math.max(0, Math.round(this.backoffMs + jitter));
+    // Cap growth at the network-quality-aware maximum. On slow-2g/2g links
+    // this is 10 s (vs 30 s on fast links) so devices reconnect sooner when
+    // TCP RTT is already high and extra wait time provides no real benefit.
+    const maxBackoff = effectiveMaxBackoffMs();
+    this.backoffMs = Math.min(maxBackoff, this.backoffMs * 2);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connectWs();
+    }, delay);
+  }
+}

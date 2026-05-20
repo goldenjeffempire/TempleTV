@@ -1,0 +1,229 @@
+# =============================================================================
+# Temple TV — Production Release Orchestrator
+# =============================================================================
+#
+# Master workflow that orchestrates a full release across ALL surfaces from a
+# single GitHub Actions trigger. This is the CI equivalent of running:
+#   bash scripts/release-all.sh --type patch
+#
+# Surfaces covered:
+#   • API + Admin  → Render deploy (via webhook)
+#   • Mobile       → EAS Build Android + iOS + TV variants → store submission
+#   • OTA          → EAS Update on `production` channel
+#
+# Usage (GitHub CLI):
+#   gh workflow run production-release.yml \
+#     --ref main \
+#     --field version_bump=patch
+#
+# Or via GitHub UI: Actions → Production Release → Run workflow
+#
+# Required GitHub Secrets (superset of all surface secrets):
+#   EXPO_TOKEN                   — EAS access token
+#   GOOGLE_SERVICE_ACCOUNT_JSON  — Google Play service account JSON
+#   APPLE_API_KEY_P8             — .p8 App Store Connect API key
+#   APPLE_API_KEY_ID             — API key ID
+#   APPLE_API_KEY_ISSUER_ID      — API key issuer UUID
+#   RENDER_DEPLOY_HOOK_URL       — Render webhook URL for API deploy
+#   SENTRY_AUTH_TOKEN            — Sentry source map upload (optional)
+# =============================================================================
+
+name: Production Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: 'Semver bump type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      skip_mobile:
+        description: 'Skip mobile builds'
+        required: false
+        default: false
+        type: boolean
+      skip_api:
+        description: 'Skip API/Admin deploy'
+        required: false
+        default: false
+        type: boolean
+      dry_run:
+        description: 'Dry run — validate without deploying'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: production-release
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '20.18.0'
+  PNPM_VERSION: '10.26.1'
+
+jobs:
+  # ── 0. Bump version + tag ─────────────────────────────────────────────────
+  version:
+    name: Bump version & tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      new_version: ${{ steps.bump.outputs.new_version }}
+      tag: ${{ steps.bump.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: COREPACK_ENABLE_STRICT=0 pnpm install --ignore-scripts --frozen-lockfile
+
+      - name: Lockfile pre-flight
+        run: pnpm run verify:mobile-lockfile
+
+      - name: Bump version
+        id: bump
+        run: |
+          BUMP="${{ inputs.version_bump }}"
+
+          NEW_VERSION=$(node -e "
+            const fs = require('fs');
+            const appJson = JSON.parse(fs.readFileSync('artifacts/mobile/app.json', 'utf8'));
+            const parts = appJson.expo.version.split('.').map(Number);
+            if ('$BUMP' === 'major') { parts[0]++; parts[1]=0; parts[2]=0; }
+            else if ('$BUMP' === 'minor') { parts[1]++; parts[2]=0; }
+            else { parts[2]++; }
+            console.log(parts.join('.'));
+          ")
+
+          TAG="v$NEW_VERSION"
+
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "DRY RUN: would bump to $NEW_VERSION (tag: $TAG)"
+            echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+            echo "tag=$TAG" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Apply the bump
+          node -e "
+            const fs = require('fs');
+            const v = '$NEW_VERSION';
+
+            const appJson = JSON.parse(fs.readFileSync('artifacts/mobile/app.json', 'utf8'));
+            appJson.expo.version = v;
+            fs.writeFileSync('artifacts/mobile/app.json', JSON.stringify(appJson, null, 2) + '\n');
+
+            const pkg = JSON.parse(fs.readFileSync('artifacts/mobile/package.json', 'utf8'));
+            pkg.version = v;
+            fs.writeFileSync('artifacts/mobile/package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add artifacts/mobile/app.json artifacts/mobile/package.json
+          git commit -m "Release $TAG"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin HEAD:main --follow-tags
+
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+  # ── 1. API + Admin deploy (Render) ───────────────────────────────────────────
+  deploy-api:
+    name: Deploy API + Admin (Render)
+    needs: version
+    if: inputs.skip_api != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Trigger Render deploy
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "DRY RUN: would trigger Render deploy"
+            exit 0
+          fi
+          curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
+          echo "Render deploy triggered."
+
+      - name: Wait for API health check
+        if: inputs.dry_run != true
+        run: |
+          echo "Waiting 60 s for Render to spin up..."
+          sleep 60
+          for i in 1 2 3 4 5; do
+            STATUS=$(curl -o /dev/null -s -w "%{http_code}" "${{ secrets.API_HEALTHCHECK_URL }}" || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "API health check passed (attempt $i)"
+              exit 0
+            fi
+            echo "Attempt $i: status $STATUS — waiting 30 s..."
+            sleep 30
+          done
+          echo "WARNING: API health check did not pass — check Render dashboard."
+          exit 1
+
+  # ── 2. Mobile builds (delegates to mobile-release.yml) ──────────────────────
+  mobile:
+    name: Trigger mobile release
+    needs: version
+    if: inputs.skip_mobile != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch mobile-release workflow
+        if: inputs.dry_run != true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'mobile-release.yml',
+              ref: '${{ needs.version.outputs.tag }}',
+              inputs: {
+                platforms: 'all',
+                submit: 'true',
+                message: 'Release ${{ needs.version.outputs.tag }}'
+              }
+            });
+            console.log('mobile-release.yml dispatched for tag ${{ needs.version.outputs.tag }}');
+
+      - name: DRY RUN notice
+        if: inputs.dry_run == true
+        run: echo "DRY RUN: would dispatch mobile-release.yml for ${{ needs.version.outputs.tag }}"
+
+  # ── Summary ──────────────────────────────────────────────────────────────────
+  summary:
+    name: Release summary
+    needs: [version, deploy-api, mobile]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print summary
+        run: |
+          V="${{ needs.version.outputs.tag }}"
+          echo "## Production Release ${V}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Step         | Result |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Version bump | ${{ needs.version.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| API deploy   | ${{ needs.deploy-api.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Mobile builds| ${{ needs.mobile.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Dry run:** ${{ inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY

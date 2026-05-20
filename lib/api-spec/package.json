@@ -1,0 +1,10 @@
+{
+  "name": "@workspace/api-spec",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "codegen": "echo 'Spec is generated at runtime — run: pnpm --filter @workspace/api-server run openapi'",
+    "emit": "pnpm --filter @workspace/api-server run openapi"
+  }
+}

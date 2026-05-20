@@ -1,0 +1,79 @@
+Completely rebuild and permanently fix the entire admin authentication, session persistence, token lifecycle, upload-session handling, websocket authentication, and admin state management system to eliminate all unexpected session expiration issues affecting uploads, broadcasting, and long-running admin operations.
+
+The current admin panel session system is unstable and continuously expires during active usage, causing interrupted video uploads, broken broadcast operations, forced logouts, failed requests, websocket disconnects, and loss of admin workflow state.
+
+Deeply audit and permanently resolve all issues related to:
+
+* unexpected admin session expiration
+* forced logout during uploads
+* token expiration during active usage
+* failed token refresh logic
+* session invalidation during large uploads
+* websocket authentication disconnects
+* upload interruption after session timeout
+* stale auth state handling
+* cookie/session synchronization failures
+* JWT expiration conflicts
+* frontend auth hydration failures
+* admin state desynchronization
+* broken persistent login handling
+* browser inactivity timeout issues
+* failed long-running request authentication
+* upload request cancellation after auth expiry
+* session loss during navigation
+* authentication middleware instability
+* reconnect loop failures
+* invalid session lifecycle handling
+* race conditions in auth state management
+* background auth refresh crashes
+* admin dashboard re-authentication loops
+* broken upload session persistence
+* storage upload interruptions
+* expired signed-upload sessions
+* disconnected streaming/admin workers
+
+Implement a resilient enterprise-grade persistent authentication architecture with:
+
+* persistent admin login sessions
+* long-lived secure authentication tokens
+* automatic silent token refresh
+* background session renewal
+* resilient auth-state hydration
+* websocket session persistence
+* upload-safe authentication handling
+* persistent upload session management
+* seamless session recovery
+* reconnect-safe authentication
+* fault-tolerant token lifecycle management
+* secure cookie persistence
+* local/session storage synchronization
+* refresh-token rotation
+* background auth validation
+* uninterrupted admin workflow persistence
+* upload continuity protection
+* broadcast-session persistence
+* self-healing authentication recovery
+* automatic session restoration after reconnect
+* enterprise-grade auth middleware stability
+* centralized auth error handling and logging
+
+Ensure:
+
+* admin sessions never expire while the browser tab/window remains open
+* video uploads continue uninterrupted regardless of upload duration
+* uploads survive slow networks and reconnects
+* broadcasts are never interrupted by auth expiration
+* admins remain continuously logged in during active use
+* authentication persists across admin navigation
+* websocket connections remain authenticated continuously
+* the admin panel behaves like a professional enterprise broadcasting control center
+* sessions only end when:
+
+  * the browser/tab is fully closed
+  * the admin manually logs out
+  * credentials are intentionally revoked
+  * a security invalidation is triggered intentionally
+
+Final objective:
+
+Create a fully stable, persistent, fault-tolerant, enterprise-grade admin authentication and upload-session infrastructure optimized for long-duration broadcasting operations, large media uploads, continuous admin workflows, and real-world production streaming environments without unexpected logout or session interruption issues.

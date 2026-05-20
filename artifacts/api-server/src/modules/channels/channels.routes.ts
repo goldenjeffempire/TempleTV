@@ -1,0 +1,320 @@
+import crypto from "node:crypto";
+import type { FastifyInstance } from "fastify";
+import type { ZodTypeProvider } from "fastify-type-provider-zod";
+import { z } from "zod";
+import { eq, asc, and } from "drizzle-orm";
+import { db, schema } from "../../infrastructure/db.js";
+import { requireAuth } from "../../middleware/auth.js";
+import { channelRegistry } from "./channel-registry.js";
+import { broadcastEngine } from "../broadcast/queue.engine.js";
+import { snapshotToCurrentResult } from "../broadcast/broadcast.routes.js";
+import { overrideBus } from "../live-overrides/override-bus.js";
+
+const ChannelBodySchema = z.object({
+  name: z.string().min(1).max(80),
+  slug: z.string().min(1).max(40).regex(/^[a-z0-9-]+$/, "slug must be lowercase alphanumeric with hyphens"),
+  description: z.string().max(400).optional().default(""),
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional().default("#DC2626"),
+  failoverHlsUrl: z.string().url().optional().nullable(),
+});
+
+const QueueItemBodySchema = z.object({
+  videoId: z.string().optional(),
+  youtubeId: z.string().min(1),
+  title: z.string().min(1).max(200),
+  thumbnailUrl: z.string().optional().default(""),
+  durationSecs: z.number().int().positive().default(1800),
+  localVideoUrl: z.string().optional().nullable(),
+  hlsMasterUrl: z.string().optional().nullable(),
+  videoSource: z.enum(["youtube", "local", "hls"]).default("youtube"),
+});
+
+export async function channelsRoutes(app: FastifyInstance) {
+  const r = app.withTypeProvider<ZodTypeProvider>();
+
+  // ── Public: list active channels ──────────────────────────────────────────
+  r.get(
+    "/channels",
+    {
+      schema: {
+        tags: ["channels"],
+        summary: "List all active channels",
+        response: {
+          200: z.array(z.object({
+            id: z.string(),
+            name: z.string(),
+            slug: z.string(),
+            description: z.string(),
+            color: z.string(),
+            isPrimary: z.boolean(),
+            sortOrder: z.number(),
+            viewerCount: z.number(),
+            isRunning: z.boolean(),
+          })),
+        },
+      },
+    },
+    async (req, reply) => {
+      // Channel list is nearly static — it changes only when an operator
+      // adds or removes a channel in the admin panel. A 15-second public
+      // cache dramatically reduces DB round-trips on mobile clients that
+      // poll this every 15 s for the viewer count / isRunning badge.
+      // `stale-while-revalidate=30` lets CDN/edge serve the cached body
+      // instantly while refreshing in the background.
+      reply.header("Cache-Control", "public, max-age=15, s-maxage=15, stale-while-revalidate=30");
+      const rows = await db
+        .select()
+        .from(schema.channelsTable)
+        .where(eq(schema.channelsTable.isActive, true))
+        .orderBy(asc(schema.channelsTable.sortOrder));
+
+      return rows.map((ch) => {
+        if (ch.isPrimary) {
+          return {
+            id: ch.id,
+            name: ch.name,
+            slug: ch.slug,
+            description: ch.description,
+            color: ch.color,
+            isPrimary: ch.isPrimary,
+            sortOrder: ch.sortOrder,
+            viewerCount: broadcastEngine.getViewerCount(),
+            isRunning: broadcastEngine.isRunning(),
+          };
+        }
+        const engine = channelRegistry.get(ch.id);
+        return {
+          id: ch.id,
+          name: ch.name,
+          slug: ch.slug,
+          description: ch.description,
+          color: ch.color,
+          isPrimary: ch.isPrimary,
+          sortOrder: ch.sortOrder,
+          viewerCount: engine?.getViewerCount() ?? 0,
+          isRunning: engine?.isRunning() ?? false,
+        };
+      });
+    },
+  );
+
+  // ── Public: get current broadcast for a channel ───────────────────────────
+  r.get(
+    "/channels/:slug/current",
+    {
+      schema: {
+        tags: ["channels"],
+        summary: "Get current broadcast snapshot for a channel by slug",
+        params: z.object({ slug: z.string() }),
+      },
+    },
+    async (req, reply) => {
+      const ch = await db
+        .select()
+        .from(schema.channelsTable)
+        .where(eq(schema.channelsTable.slug, req.params.slug))
+        .limit(1)
+        .then((r) => r[0]);
+
+      if (!ch) return reply.code(404).send({ error: "Channel not found" });
+
+      if (ch.isPrimary) {
+        return reply.send(snapshotToCurrentResult(broadcastEngine.snapshot(), overrideBus.active));
+      }
+      const engine = await channelRegistry.getOrCreate(ch.id);
+      return reply.send(snapshotToCurrentResult(engine.snapshot(), null));
+    },
+  );
+
+  // ── Admin: create channel ─────────────────────────────────────────────────
+  r.post(
+    "/admin/channels",
+    {
+      preHandler: requireAuth("admin"),
+      schema: {
+        tags: ["channels"],
+        summary: "Create a new broadcast channel",
+        body: ChannelBodySchema,
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req, reply) => {
+      const id = crypto.randomUUID();
+      const [ch] = await db.insert(schema.channelsTable).values({
+        id,
+        name: req.body.name,
+        slug: req.body.slug,
+        description: req.body.description ?? "",
+        color: req.body.color ?? "#DC2626",
+        failoverHlsUrl: req.body.failoverHlsUrl ?? null,
+        isPrimary: false,
+        isActive: true,
+        sortOrder: 0,
+      }).returning();
+      await channelRegistry.getOrCreate(id);
+      return reply.code(201).send(ch);
+    },
+  );
+
+  // ── Admin: update channel ─────────────────────────────────────────────────
+  r.patch(
+    "/admin/channels/:id",
+    {
+      preHandler: requireAuth("admin"),
+      schema: {
+        tags: ["channels"],
+        summary: "Update channel metadata",
+        params: z.object({ id: z.string() }),
+        body: ChannelBodySchema.partial(),
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req, reply) => {
+      const [updated] = await db
+        .update(schema.channelsTable)
+        .set({ ...req.body, updatedAt: new Date() })
+        .where(eq(schema.channelsTable.id, req.params.id))
+        .returning();
+      if (!updated) return reply.code(404).send({ error: "Channel not found" });
+      return reply.send(updated);
+    },
+  );
+
+  // ── Admin: delete channel ─────────────────────────────────────────────────
+  r.delete(
+    "/admin/channels/:id",
+    {
+      preHandler: requireAuth("admin"),
+      schema: {
+        tags: ["channels"],
+        summary: "Delete a non-primary channel",
+        params: z.object({ id: z.string() }),
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req, reply) => {
+      const [ch] = await db
+        .select()
+        .from(schema.channelsTable)
+        .where(eq(schema.channelsTable.id, req.params.id))
+        .limit(1);
+      if (!ch) return reply.code(404).send({ error: "Channel not found" });
+      if (ch.isPrimary) return reply.code(400).send({ error: "Cannot delete the primary channel" });
+
+      await channelRegistry.remove(req.params.id);
+      await db.delete(schema.channelQueueTable).where(eq(schema.channelQueueTable.channelId, req.params.id));
+      await db.delete(schema.channelsTable).where(eq(schema.channelsTable.id, req.params.id));
+      return reply.code(204).send(null);
+    },
+  );
+
+  // ── Admin: get queue for a channel ───────────────────────────────────────
+  r.get(
+    "/admin/channels/:id/queue",
+    {
+      preHandler: requireAuth("editor"),
+      schema: {
+        tags: ["channels"],
+        summary: "List queue items for a channel",
+        params: z.object({ id: z.string() }),
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req, reply) => {
+      const items = await db
+        .select()
+        .from(schema.channelQueueTable)
+        .where(eq(schema.channelQueueTable.channelId, req.params.id))
+        .orderBy(asc(schema.channelQueueTable.sortOrder), asc(schema.channelQueueTable.addedAt));
+      return reply.send(items);
+    },
+  );
+
+  // ── Admin: add item to channel queue ──────────────────────────────────────
+  r.post(
+    "/admin/channels/:id/queue",
+    {
+      preHandler: requireAuth("editor"),
+      schema: {
+        tags: ["channels"],
+        summary: "Add a video to a channel's broadcast queue",
+        params: z.object({ id: z.string() }),
+        body: QueueItemBodySchema,
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req, reply) => {
+      const maxSortOrder = await db
+        .select({ sortOrder: schema.channelQueueTable.sortOrder })
+        .from(schema.channelQueueTable)
+        .where(eq(schema.channelQueueTable.channelId, req.params.id))
+        .orderBy(asc(schema.channelQueueTable.sortOrder))
+        .limit(1)
+        .then((rows) => (rows.length > 0 ? rows[rows.length - 1]!.sortOrder + 1 : 0));
+
+      const [item] = await db.insert(schema.channelQueueTable).values({
+        id: crypto.randomUUID(),
+        channelId: req.params.id,
+        ...req.body,
+        sortOrder: maxSortOrder,
+      }).returning();
+
+      await channelRegistry.reload(req.params.id);
+      return reply.code(201).send(item);
+    },
+  );
+
+  // ── Admin: remove item from channel queue ────────────────────────────────
+  r.delete(
+    "/admin/channels/:channelId/queue/:itemId",
+    {
+      preHandler: requireAuth("editor"),
+      schema: {
+        tags: ["channels"],
+        summary: "Remove an item from a channel's queue",
+        params: z.object({ channelId: z.string(), itemId: z.string() }),
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req, reply) => {
+      await db
+        .delete(schema.channelQueueTable)
+        .where(
+          and(
+            eq(schema.channelQueueTable.id, req.params.itemId),
+            eq(schema.channelQueueTable.channelId, req.params.channelId),
+          ),
+        );
+      await channelRegistry.reload(req.params.channelId);
+      return reply.code(204).send(null);
+    },
+  );
+
+  // ── Admin: toggle queue item active ─────────────────────────────────────
+  r.patch(
+    "/admin/channels/:channelId/queue/:itemId/active",
+    {
+      preHandler: requireAuth("editor"),
+      schema: {
+        tags: ["channels"],
+        summary: "Toggle active status of a channel queue item",
+        params: z.object({ channelId: z.string(), itemId: z.string() }),
+        body: z.object({ isActive: z.boolean() }),
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req, reply) => {
+      await db
+        .update(schema.channelQueueTable)
+        .set({ isActive: req.body.isActive })
+        .where(
+          and(
+            eq(schema.channelQueueTable.id, req.params.itemId),
+            eq(schema.channelQueueTable.channelId, req.params.channelId),
+          ),
+        );
+      await channelRegistry.reload(req.params.channelId);
+      return reply.code(204).send(null);
+    },
+  );
+}

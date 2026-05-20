@@ -1,0 +1,151 @@
+# =============================================================================
+# Temple TV — Manual Store Re-submission
+# =============================================================================
+#
+# Re-submits the latest (or a specific) successful EAS build to the Play Store
+# or TestFlight without triggering a new build. Useful when:
+#   • A build passed but the auto-submit step failed
+#   • You want to promote a build to a different track (internal → production)
+#   • Manual approval flow before promoting to production
+#
+# Required secrets:
+#   EXPO_TOKEN                   — EAS personal access token
+#   GOOGLE_SERVICE_ACCOUNT_JSON  — Google Play service account JSON
+#   APPLE_API_KEY_P8             — App Store Connect .p8 key
+#   APPLE_API_KEY_ID             — ASC API key ID
+#   APPLE_API_KEY_ISSUER_ID      — ASC API key issuer UUID
+# =============================================================================
+
+name: Store Re-submit
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform to submit'
+        required: true
+        type: choice
+        options: [android, ios]
+      build_id:
+        description: 'EAS Build ID (leave blank to use latest successful build)'
+        required: false
+        type: string
+      track:
+        description: 'Android track (ignored for iOS)'
+        required: false
+        default: 'internal'
+        type: choice
+        options: [internal, alpha, beta, production]
+
+env:
+  NODE_VERSION: '20.18.0'
+  PNPM_VERSION: '10.26.1'
+
+jobs:
+  submit:
+    name: Re-submit ${{ inputs.platform }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: COREPACK_ENABLE_STRICT=0 pnpm install --ignore-scripts --frozen-lockfile
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      # ── Android ──────────────────────────────────────────────────────────
+      - name: Write Google service account key
+        if: inputs.platform == 'android'
+        run: |
+          echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' \
+            > artifacts/mobile/google-service-account.json
+
+      - name: Patch eas.json Android track
+        if: inputs.platform == 'android'
+        working-directory: artifacts/mobile
+        run: |
+          node -e "
+            const fs = require('fs');
+            const eas = JSON.parse(fs.readFileSync('eas.json', 'utf8'));
+            eas.submit.production.android.track = '${{ inputs.track }}';
+            fs.writeFileSync('eas.json', JSON.stringify(eas, null, 2) + '\n');
+          "
+
+      - name: Submit Android
+        if: inputs.platform == 'android'
+        working-directory: artifacts/mobile
+        run: |
+          BUILD_FLAG="${{ inputs.build_id != '' && format('--id {0}', inputs.build_id) || '--latest' }}"
+          eas submit \
+            --platform android \
+            --profile production \
+            $BUILD_FLAG \
+            --non-interactive
+          echo "Android submitted to ${{ inputs.track }} track."
+
+      # ── iOS ──────────────────────────────────────────────────────────────
+      - name: Write App Store Connect API key
+        if: inputs.platform == 'ios'
+        run: |
+          echo "${{ secrets.APPLE_API_KEY_P8 }}" > /tmp/asc-api-key.p8
+          chmod 600 /tmp/asc-api-key.p8
+
+      - name: Patch eas.json with ASC key metadata
+        if: inputs.platform == 'ios'
+        working-directory: artifacts/mobile
+        run: |
+          node -e "
+            const fs = require('fs');
+            const eas = JSON.parse(fs.readFileSync('eas.json', 'utf8'));
+            eas.submit.production.ios.ascApiKeyId     = '${{ secrets.APPLE_API_KEY_ID }}';
+            eas.submit.production.ios.ascApiIssuerId  = '${{ secrets.APPLE_API_KEY_ISSUER_ID }}';
+            fs.writeFileSync('eas.json', JSON.stringify(eas, null, 2) + '\n');
+          "
+
+      - name: Submit iOS
+        if: inputs.platform == 'ios'
+        working-directory: artifacts/mobile
+        run: |
+          BUILD_FLAG="${{ inputs.build_id != '' && format('--id {0}', inputs.build_id) || '--latest' }}"
+          eas submit \
+            --platform ios \
+            --profile production \
+            $BUILD_FLAG \
+            --non-interactive
+          echo "iOS submitted to TestFlight."
+
+      # ── Cleanup ──────────────────────────────────────────────────────────
+      - name: Clean up credentials
+        if: always()
+        run: |
+          rm -f artifacts/mobile/google-service-account.json
+          rm -f /tmp/asc-api-key.p8
+
+      - name: Write job summary
+        run: |
+          BUILD="${{ inputs.build_id || 'latest' }}"
+          echo "## Store Re-submit: ${{ inputs.platform }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field    | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Platform | ${{ inputs.platform }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build    | $BUILD |" >> $GITHUB_STEP_SUMMARY
+          echo "| Track    | ${{ inputs.platform == 'android' && inputs.track || 'TestFlight' }} |" >> $GITHUB_STEP_SUMMARY

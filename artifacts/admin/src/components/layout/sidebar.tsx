@@ -1,0 +1,204 @@
+import { Link, useLocation } from "wouter";
+import { cn } from "@/lib/utils";
+import { useAuth } from "@/contexts/use-auth";
+import { useSSE } from "@/contexts/sse-context";
+import {
+  LayoutDashboard, Radio, ListVideo, Activity, MessageSquare,
+  Video, ListMusic, BookOpen, CalendarDays, Clapperboard,
+  Bell, BarChart2, Users, Heart, Settings, Shield,
+  Zap, Cpu, Signal, Layers, Tv2, Wifi, WifiOff, Loader, ChevronRight, X, Youtube,
+  Image, Gauge, Rss, ClipboardList, Settings2, RefreshCw, Trash2, Headphones, Lock,
+} from "lucide-react";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+
+interface NavItem {
+  href: string;
+  label: string;
+  icon: React.ReactNode;
+  adminOnly?: boolean;
+  badge?: React.ReactNode;
+}
+
+interface NavSection {
+  title: string;
+  items: NavItem[];
+}
+
+function LiveBadge() {
+  const { lastStatusPayload } = useSSE();
+  if (!lastStatusPayload?.isLive) return null;
+  return (
+    <span className="ml-auto flex items-center gap-1 text-[10px] font-semibold uppercase tracking-widest text-white bg-red-600 px-1.5 py-0.5 rounded animate-pulse">
+      Live
+    </span>
+  );
+}
+
+function ConnectionStatus() {
+  const { state } = useSSE();
+
+  const config = {
+    connected:    { icon: <Wifi size={11} />,              label: "Live",         cls: "text-green-600 dark:text-green-400 bg-green-500/10 border-green-500/20" },
+    connecting:   { icon: <Loader size={11} className="animate-spin" />, label: "Connecting",  cls: "text-yellow-600 dark:text-yellow-400 bg-yellow-500/10 border-yellow-500/20" },
+    reconnecting: { icon: <Loader size={11} className="animate-spin" />, label: "Reconnecting", cls: "text-amber-600 dark:text-amber-400 bg-amber-500/10 border-amber-500/20" },
+    offline:      { icon: <WifiOff size={11} />,            label: "Offline",      cls: "text-red-600 dark:text-red-400 bg-red-500/10 border-red-500/20" },
+  }[state];
+
+  const tooltip = {
+    connected: "Real-time updates are live",
+    connecting: "Establishing real-time connection…",
+    reconnecting: "Connection lost — attempting to reconnect",
+    offline: "Real-time connection offline — dashboard data may be stale",
+  }[state];
+
+  return (
+    <div className="px-3 py-3 border-t border-sidebar-border">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div className={cn(
+            "flex items-center gap-2 px-2.5 py-1.5 rounded-md border text-xs select-none cursor-default w-full",
+            config.cls,
+          )}>
+            {config.icon}
+            <span className="font-medium">{config.label}</span>
+            <span className="ml-auto text-[10px] opacity-60">Real-time</span>
+          </div>
+        </TooltipTrigger>
+        <TooltipContent side="top" align="start">{tooltip}</TooltipContent>
+      </Tooltip>
+    </div>
+  );
+}
+
+export function Sidebar({ onClose }: { onClose?: () => void }) {
+  const [location] = useLocation();
+  const { isAdmin } = useAuth();
+
+  const sections: NavSection[] = [
+    {
+      title: "Broadcast",
+      items: [
+        { href: "/", label: "Dashboard", icon: <LayoutDashboard size={16} /> },
+        { href: "/live-control", label: "Live Control", icon: <Radio size={16} />, badge: <LiveBadge /> },
+        { href: "/broadcast", label: "Broadcast Queue", icon: <ListVideo size={16} /> },
+        { href: "/radio", label: "Radio Station", icon: <Headphones size={16} /> },
+        { href: "/broadcast-v2", label: "Master Control", icon: <Layers size={16} /> },
+        { href: "/stream-health", label: "Stream Health", icon: <Activity size={16} /> },
+        { href: "/chat", label: "Live Chat", icon: <MessageSquare size={16} /> },
+      ],
+    },
+    {
+      title: "Content",
+      items: [
+        { href: "/videos", label: "Videos", icon: <Video size={16} /> },
+        { href: "/library", label: "YouTube Library", icon: <Youtube size={16} /> },
+        { href: "/youtube-sync", label: "YouTube Sync", icon: <RefreshCw size={16} /> },
+        { href: "/playlists", label: "Playlists", icon: <ListMusic size={16} /> },
+        { href: "/series", label: "Series", icon: <BookOpen size={16} /> },
+        { href: "/schedule", label: "Schedule", icon: <CalendarDays size={16} /> },
+        { href: "/transcoding", label: "Transcoding", icon: <Clapperboard size={16} /> },
+      ],
+    },
+    {
+      title: "Engage",
+      items: [
+        { href: "/notifications", label: "Notifications", icon: <Bell size={16} /> },
+        { href: "/prayers", label: "Prayers", icon: <Heart size={16} /> },
+        { href: "/analytics", label: "Analytics", icon: <BarChart2 size={16} /> },
+      ],
+    },
+    {
+      title: "System",
+      items: [
+        { href: "/operations", label: "Operations", icon: <Cpu size={16} />, adminOnly: true },
+        { href: "/live-ingest", label: "Live Ingest", icon: <Wifi size={16} />, adminOnly: true },
+        { href: "/live-monitor", label: "Live Monitor", icon: <Signal size={16} /> },
+        { href: "/live-youtube", label: "YouTube Live", icon: <Tv2 size={16} /> },
+        { href: "/playback", label: "Playback Engine", icon: <Zap size={16} /> },
+        { href: "/graphics", label: "Graphics & Overlays", icon: <Image size={16} /> },
+        { href: "/youtube-quota", label: "YouTube Quota", icon: <Gauge size={16} /> },
+        { href: "/sse-bus", label: "SSE Event Bus", icon: <Rss size={16} />, adminOnly: true },
+        { href: "/users", label: "Users", icon: <Users size={16} />, adminOnly: true },
+        { href: "/security", label: "Security (MFA)", icon: <Lock size={16} /> },
+        { href: "/alerts", label: "Alerts", icon: <Shield size={16} /> },
+        { href: "/audit-log", label: "Audit Log", icon: <ClipboardList size={16} />, adminOnly: true },
+        { href: "/settings", label: "System Settings", icon: <Settings2 size={16} />, adminOnly: true },
+        { href: "/launch-readiness", label: "Launch Check", icon: <Settings size={16} /> },
+        { href: "/purge", label: "Storage Purge", icon: <Trash2 size={16} />, adminOnly: true },
+      ],
+    },
+  ];
+
+  const isActive = (href: string) => {
+    if (href === "/") return location === "/" || location === "/dashboard";
+    return location === href || location.startsWith(href + "/");
+  };
+
+  return (
+    <div className="flex flex-col h-full bg-sidebar border-r border-sidebar-border">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-4 border-b border-sidebar-border">
+        <Link href="/" className="flex items-center gap-2.5 min-w-0">
+          <img src="/temple-tv-logo.png" alt="Temple TV" className="w-7 h-7 rounded object-cover flex-shrink-0" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+          <div className="min-w-0">
+            <p className="font-semibold text-sm text-sidebar-foreground leading-none truncate">Temple TV</p>
+            <p className="text-[10px] text-sidebar-foreground/50 uppercase tracking-widest mt-0.5">Admin Panel</p>
+          </div>
+        </Link>
+        {onClose && (
+          <Button variant="ghost" size="icon" className="h-7 w-7 lg:hidden" onClick={onClose}>
+            <X size={14} />
+          </Button>
+        )}
+      </div>
+
+      {/* Nav */}
+      <ScrollArea className="flex-1 px-2 py-3">
+        <nav className="space-y-5">
+          {sections.map((section) => {
+            const visibleItems = section.items.filter((item) => !item.adminOnly || isAdmin);
+            if (visibleItems.length === 0) return null;
+            return (
+              <div key={section.title}>
+                <p className="px-2 mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-sidebar-foreground/40">
+                  {section.title}
+                </p>
+                <ul className="space-y-0.5">
+                  {visibleItems.map((item) => (
+                    <li key={item.href}>
+                      <Link
+                        href={item.href}
+                        onClick={onClose}
+                        className={cn(
+                          "flex items-center gap-2.5 px-2 py-2 rounded-md text-sm transition-colors group",
+                          isActive(item.href)
+                            ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
+                            : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground",
+                        )}
+                      >
+                        <span className={cn(
+                          "flex-shrink-0 transition-colors",
+                          isActive(item.href) ? "text-primary" : "text-sidebar-foreground/40 group-hover:text-sidebar-foreground/70",
+                        )}>
+                          {item.icon}
+                        </span>
+                        <span className="truncate flex-1">{item.label}</span>
+                        {item.badge}
+                        {isActive(item.href) && <ChevronRight size={12} className="flex-shrink-0 text-primary" />}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })}
+        </nav>
+      </ScrollArea>
+
+      {/* Connection status footer */}
+      <ConnectionStatus />
+    </div>
+  );
+}

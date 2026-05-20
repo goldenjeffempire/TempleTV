@@ -1,0 +1,21 @@
+{
+  "description": "webOS TV Device Configuration for Temple TV development",
+  "devices": [
+    {
+      "name": "tv-dev",
+      "host": "192.168.1.100",
+      "port": 22,
+      "username": "prisoner",
+      "privateKey": "",
+      "description": "LG webOS TV (development device)"
+    },
+    {
+      "name": "tv-emulator",
+      "host": "127.0.0.1",
+      "port": 6622,
+      "username": "prisoner",
+      "privateKey": "",
+      "description": "LG webOS TV Emulator"
+    }
+  ]
+}

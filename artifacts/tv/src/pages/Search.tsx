@@ -1,0 +1,344 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearch } from "../hooks/useSearch";
+import { Clock } from "../components/Clock";
+import type { VideoItem } from "../lib/api";
+import { keyEventToAction } from "../lib/tvKeys";
+
+const KEYBOARD_ROWS = [
+  ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
+  ["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"],
+  ["A", "S", "D", "F", "G", "H", "J", "K", "L", "⌫"],
+  ["Z", "X", "C", "V", "B", "N", "M", " ", "CLR", "✓"],
+];
+
+interface SearchProps {
+  onBack: () => void;
+  onPlay: (videoId: string, title: string, hlsUrl?: string) => void;
+  onDetails: (video: VideoItem) => void;
+}
+
+function KeyboardKey({ char, focused, onPress }: { char: string; focused: boolean; onPress: () => void }) {
+  return (
+    <div
+      onClick={onPress}
+      tabIndex={0}
+      style={{
+        width: 52,
+        height: 44,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        borderRadius: 8,
+        fontSize: char === " " ? 10 : char === "CLR" ? 11 : 16,
+        fontWeight: 600,
+        cursor: "pointer",
+        flexShrink: 0,
+        transition: "all 0.1s ease",
+        background: focused ? "rgba(106,13,173,0.7)" : "rgba(255,255,255,0.08)",
+        border: `1px solid ${focused ? "rgba(168,85,247,0.8)" : "rgba(255,255,255,0.12)"}`,
+        color: focused ? "#fff" : "rgba(255,255,255,0.7)",
+        boxShadow: focused ? "0 0 0 2px rgba(106,13,173,0.4), 0 4px 12px rgba(0,0,0,0.4)" : "none",
+        transform: focused ? "scale(1.1)" : "scale(1)",
+        userSelect: "none",
+      }}
+    >
+      {char === " " ? "SPACE" : char}
+    </div>
+  );
+}
+
+function ResultCard({ video, focused, onSelect }: { video: VideoItem; focused: boolean; onSelect: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (focused) ref.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [focused]);
+
+  return (
+    <div
+      ref={ref}
+      onClick={onSelect}
+      style={{
+        display: "flex",
+        gap: 14,
+        padding: "12px 16px",
+        borderRadius: 12,
+        cursor: "pointer",
+        transition: "all 0.15s ease",
+        background: focused ? "rgba(106,13,173,0.25)" : "rgba(255,255,255,0.03)",
+        border: `1px solid ${focused ? "rgba(168,85,247,0.5)" : "rgba(255,255,255,0.06)"}`,
+        boxShadow: focused ? "0 0 0 2px rgba(106,13,173,0.25)" : "none",
+        alignItems: "center",
+      }}
+    >
+      <div style={{ width: 120, height: 68, borderRadius: 8, overflow: "hidden", flexShrink: 0, background: "rgba(106,13,173,0.25)" }}>
+        {/*
+          Only render the <img> when we actually have a URL — passing an empty
+          string to `src` causes the browser to refetch the current document
+          and React logs a warning to the console on every render.
+        */}
+        {video.thumbnailUrl ? (
+          <img
+            src={video.thumbnailUrl}
+            alt={`Thumbnail for ${video.title}`}
+            loading="lazy"
+            decoding="async"
+            style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "center", background: "#000" }}
+            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+          />
+        ) : null}
+      </div>
+      <div style={{ flex: 1, overflow: "hidden" }}>
+        <div style={{ fontSize: 16, fontWeight: 600, color: focused ? "#e9d5ff" : "#fff", lineHeight: 1.3, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {video.title}
+        </div>
+        <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)" }}>{video.channelName} · {video.duration}</div>
+      </div>
+      {focused && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, background: "rgba(106,13,173,0.6)", borderRadius: 8, padding: "6px 12px", flexShrink: 0 }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+          <span style={{ fontSize: 12, color: "#fff", fontWeight: 600 }}>Details</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function Search({ onBack, onPlay, onDetails }: SearchProps) {
+  const { query, results, loading, error, search, allVideos, retry } = useSearch();
+  const [focusArea, setFocusArea] = useState<"keyboard" | "results">("keyboard");
+  const [kbRow, setKbRow] = useState(0);
+  const [kbCol, setKbCol] = useState(0);
+  const [resultIdx, setResultIdx] = useState(0);
+
+  const displayResults = query.trim() ? results : allVideos.slice(0, 16);
+
+  // When displayResults shrinks (e.g. user backspaces and the query changes),
+  // clamp the focused result index to the new length so it never points into
+  // a phantom slot. If there are now no results, snap focus back to the
+  // keyboard so the user isn't stranded in an empty results panel.
+  useEffect(() => {
+    if (focusArea !== "results") return;
+    if (displayResults.length === 0) {
+      setFocusArea("keyboard");
+    } else if (resultIdx >= displayResults.length) {
+      setResultIdx(displayResults.length - 1);
+    }
+  }, [displayResults.length, focusArea, resultIdx]);
+
+  const handleKeyChar = useCallback((char: string) => {
+    if (char === "⌫") {
+      search(query.slice(0, -1));
+    } else if (char === "CLR") {
+      search("");
+    } else if (char === "✓") {
+      if (displayResults.length > 0) {
+        setFocusArea("results");
+        setResultIdx(0);
+      }
+    } else {
+      search(query + char);
+    }
+  }, [query, search, displayResults]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const action = keyEventToAction(e);
+      const rowCount = KEYBOARD_ROWS.length;
+
+      if (action === "back" || action === "exit") {
+        e.preventDefault();
+        if (focusArea === "results") { setFocusArea("keyboard"); return; }
+        onBack();
+        return;
+      }
+
+      if (focusArea === "keyboard") {
+        const rowLen = KEYBOARD_ROWS[kbRow]?.length ?? 10;
+        if (action === "up") { e.preventDefault(); setKbRow((r) => Math.max(0, r - 1)); }
+        else if (action === "down") {
+          e.preventDefault();
+          if (kbRow === rowCount - 1 && displayResults.length > 0) { setFocusArea("results"); setResultIdx(0); }
+          else setKbRow((r) => Math.min(rowCount - 1, r + 1));
+        }
+        else if (action === "left") { e.preventDefault(); setKbCol((c) => Math.max(0, c - 1)); }
+        else if (action === "right") { e.preventDefault(); setKbCol((c) => Math.min(rowLen - 1, c + 1)); }
+        else if (action === "select") {
+          e.preventDefault();
+          const char = KEYBOARD_ROWS[kbRow]?.[kbCol];
+          if (char) handleKeyChar(char);
+        }
+        else if (e.key.length === 1 && /[a-zA-Z0-9 ]/.test(e.key)) {
+          search(query + e.key.toUpperCase());
+        }
+      } else {
+        if (action === "up") {
+          e.preventDefault();
+          if (resultIdx === 0) { setFocusArea("keyboard"); }
+          else setResultIdx((i) => Math.max(0, i - 1));
+        }
+        else if (action === "down") { e.preventDefault(); setResultIdx((i) => Math.min(displayResults.length - 1, i + 1)); }
+        else if (action === "select") {
+          e.preventDefault();
+          const v = displayResults[resultIdx];
+          if (v) onDetails(v);
+        }
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [focusArea, kbRow, kbCol, query, displayResults, resultIdx, handleKeyChar, onBack, onPlay, search]);
+
+  return (
+    <div style={{ width: "100vw", height: "100vh", display: "flex", flexDirection: "column", overflow: "hidden", background: "radial-gradient(ellipse at top, #0d1a2e 0%, #0a0a0f 60%)" }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 60px 16px", flexShrink: 0, borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
+          <button
+            onClick={onBack}
+            style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 10, padding: "8px 16px", color: "rgba(255,255,255,0.8)", fontSize: 14, cursor: "pointer", fontFamily: "inherit" }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+            Home
+          </button>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#a855f7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+              <span style={{ fontSize: 22, fontWeight: 800, color: "#fff" }}>Search</span>
+            </div>
+            <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginTop: 2 }}>
+              {loading ? "Loading library…" : error ? "Could not load library" : `${allVideos.length} videos available`}
+            </div>
+          </div>
+        </div>
+        <Clock />
+      </div>
+
+      {/* Search input display */}
+      <div style={{ padding: "16px 60px 12px", flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 14, padding: "12px 20px" }}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          <span style={{ fontSize: 20, color: query ? "#fff" : "rgba(255,255,255,0.3)", fontWeight: 500, flex: 1, letterSpacing: 1 }}>
+            {query || "Start typing to search…"}
+          </span>
+          {query && (
+            <span style={{ fontSize: 13, color: "rgba(168,85,247,0.8)", fontWeight: 600 }}>
+              {displayResults.length} result{displayResults.length !== 1 ? "s" : ""}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Main content: keyboard + results */}
+      <div style={{ flex: 1, display: "flex", gap: 0, overflow: "hidden" }}>
+        {/* On-screen keyboard */}
+        <div style={{ width: 600, flexShrink: 0, padding: "8px 60px 16px 60px", display: "flex", flexDirection: "column", gap: 8, justifyContent: "center" }}>
+          {KEYBOARD_ROWS.map((row, rowIdx) => (
+            <div key={rowIdx} style={{ display: "flex", gap: 6 }}>
+              {row.map((char, colIdx) => (
+                <KeyboardKey
+                  key={char}
+                  char={char}
+                  focused={focusArea === "keyboard" && kbRow === rowIdx && kbCol === colIdx}
+                  onPress={() => { setKbRow(rowIdx); setKbCol(colIdx); handleKeyChar(char); }}
+                />
+              ))}
+            </div>
+          ))}
+          <div style={{ marginTop: 12, fontSize: 12, color: "rgba(255,255,255,0.25)", letterSpacing: "0.04em" }}>
+            Arrow keys navigate · Enter selects · ESC back
+          </div>
+        </div>
+
+        {/* Results panel */}
+        <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "8px 60px 40px 20px", borderLeft: "1px solid rgba(255,255,255,0.06)" }}>
+          {error && allVideos.length === 0 ? (
+            <div style={{ paddingTop: 60, textAlign: "center" }}>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>⚠️</div>
+              <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 16, marginBottom: 20 }}>Could not load video library</div>
+              <button
+                onClick={retry}
+                style={{ background: "rgba(106,13,173,0.6)", border: "1px solid rgba(168,85,247,0.5)", borderRadius: 10, padding: "10px 28px", color: "#fff", fontSize: 15, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}
+              >
+                Retry
+              </button>
+            </div>
+          ) : loading && allVideos.length === 0 ? (
+            // Initial-load skeleton: 6 result-card placeholders matching
+            // the real ResultCard layout (120×68 thumb + 2 text lines).
+            // Uses the global `.skeleton` shimmer class (same one Home
+            // and TVGuide use) so the look-and-feel is consistent across
+            // the whole app and we don't ship a second animation token.
+            <div
+              role="status"
+              aria-busy="true"
+              aria-label="Loading video library"
+              style={{ display: "flex", flexDirection: "column", gap: 6 }}
+            >
+              <div style={{ fontSize: 12, color: "rgba(255,255,255,0.35)", fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 12, paddingLeft: 4 }}>
+                All Videos
+              </div>
+              {Array.from({ length: 6 }).map((_, i) => (
+                <div
+                  key={i}
+                  style={{
+                    display: "flex",
+                    gap: 14,
+                    padding: "12px 16px",
+                    borderRadius: 12,
+                    background: "rgba(255,255,255,0.03)",
+                    border: "1px solid rgba(255,255,255,0.06)",
+                    alignItems: "center",
+                  }}
+                >
+                  <div className="skeleton" style={{ width: 120, height: 68, borderRadius: 8, flexShrink: 0 }} />
+                  <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
+                    <div className="skeleton" style={{ height: 14, width: `${55 + ((i * 13) % 35)}%`, borderRadius: 6 }} />
+                    <div className="skeleton" style={{ height: 10, width: `${30 + ((i * 7) % 25)}%`, borderRadius: 6 }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : displayResults.length === 0 && query.trim() ? (
+            <div style={{ paddingTop: 60, textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
+              <div style={{ width: 64, height: 64, borderRadius: "50%", background: "rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.35)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+                </svg>
+              </div>
+              <div>
+                <div style={{ color: "rgba(255,255,255,0.75)", fontSize: 18, fontWeight: 700, marginBottom: 6 }}>No results for "{query}"</div>
+                <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 14 }}>Try different keywords or browse by category</div>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div style={{ fontSize: 12, color: "rgba(255,255,255,0.35)", fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 12, paddingLeft: 4 }}>
+                {query.trim() ? "Search Results" : "All Videos"}
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {displayResults.map((video, idx) => (
+                  <ResultCard
+                    key={video.videoId}
+                    video={video}
+                    focused={focusArea === "results" && resultIdx === idx}
+                    onSelect={() => { setFocusArea("results"); setResultIdx(idx); onDetails(video); }}
+                  />
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Hint bar */}
+      <div style={{ padding: "10px 60px", borderTop: "1px solid rgba(255,255,255,0.06)", display: "flex", gap: 20, flexShrink: 0 }}>
+        {[{ key: "↑ ↓ ← →", label: "Navigate" }, { key: "ENTER", label: "Details" }, { key: "ESC", label: "Back" }].map(h => (
+          <div key={h.key} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <kbd style={{ background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 5, padding: "2px 7px", fontSize: 11, color: "rgba(255,255,255,0.6)", fontFamily: "inherit" }}>{h.key}</kbd>
+            <span style={{ fontSize: 12, color: "rgba(255,255,255,0.3)" }}>{h.label}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

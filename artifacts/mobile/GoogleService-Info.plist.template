@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  TEMPLATE PLACEHOLDER — replace with your real GoogleService-Info.plist
+  from the Firebase console: https://console.firebase.google.com
+  Project → Project Settings → Your apps → iOS app → Download GoogleService-Info.plist
+
+  The real file MUST NOT be committed to version control.
+  Add it to CI via GitHub Secret GOOGLE_SERVICE_INFO_PLIST (base64-encoded) and
+  decode it in your workflow before the EAS build step.
+  See: https://docs.expo.dev/guides/using-firebase/#configure-metro
+-->
+<plist version="1.0">
+<dict>
+  <key>API_KEY</key>
+  <string>YOUR_IOS_API_KEY</string>
+  <key>GCM_SENDER_ID</key>
+  <string>YOUR_PROJECT_NUMBER</string>
+  <key>PLIST_VERSION</key>
+  <string>1</string>
+  <key>BUNDLE_ID</key>
+  <string>com.templetv.jctm</string>
+  <key>PROJECT_ID</key>
+  <string>YOUR_FIREBASE_PROJECT_ID</string>
+  <key>STORAGE_BUCKET</key>
+  <string>YOUR_FIREBASE_PROJECT_ID.appspot.com</string>
+  <key>IS_ADS_ENABLED</key>
+  <false/>
+  <key>IS_ANALYTICS_ENABLED</key>
+  <true/>
+  <key>IS_APPINVITE_ENABLED</key>
+  <true/>
+  <key>IS_GCM_ENABLED</key>
+  <true/>
+  <key>IS_SIGNIN_ENABLED</key>
+  <true/>
+  <key>GOOGLE_APP_ID</key>
+  <string>1:YOUR_PROJECT_NUMBER:ios:YOUR_APP_ID</string>
+</dict>
+</plist>

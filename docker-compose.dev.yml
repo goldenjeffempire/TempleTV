@@ -1,0 +1,79 @@
+version: "3.9"
+
+# =============================================================================
+# Temple TV — Development Docker Compose Override
+# =============================================================================
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# Overrides:
+#   - Hot-reload for API (via tsx watch)
+#   - Source mounts for live code changes
+#   - Debug ports exposed
+#   - Relaxed health check timeouts
+#   - Redis + DB data in named volumes (preserved across restarts)
+
+services:
+  api:
+    build:
+      target: builder
+    command: >
+      sh -c "node --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs"
+    environment:
+      NODE_ENV: development
+      PORT: "8080"
+      LOG_LEVEL: debug
+      JWT_ACCESS_SECRET: dev-access-secret-32-chars-minimum
+      JWT_REFRESH_SECRET: dev-refresh-secret-32-chars-minimum
+      ADMIN_API_TOKEN: dev-admin-token-1234567890
+      CORS_ORIGINS: "*"
+      YOUTUBE_SYNC_DISABLE: "true"
+      TRANSCODER_DISABLE: "false"
+    ports:
+      - "8080:8080"
+      - "9229:9229"    # Node.js inspector
+    volumes:
+      - ./artifacts/api-server/src:/repo/artifacts/api-server/src:ro
+      - ./lib:/repo/lib:ro
+    healthcheck:
+      interval: 10s
+      start_period: 30s
+
+  admin:
+    build:
+      target: deps
+    command: >
+      sh -c "pnpm --filter @workspace/admin run dev --host 0.0.0.0"
+    environment:
+      VITE_API_URL: http://localhost:8080
+      BASE_PATH: /admin
+      NODE_ENV: development
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./artifacts/admin/src:/workspace/artifacts/admin/src:ro
+
+  db:
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: templetv_dev
+      POSTGRES_USER: templetv
+      POSTGRES_PASSWORD: templetv_dev
+    healthcheck:
+      interval: 5s
+      retries: 10
+
+  redis:
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly no --loglevel verbose
+
+  # ── Dev-only: Mailhog for SMTP capture ────────────────────────────────────
+  mailhog:
+    image: mailhog/mailhog:latest
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI → http://localhost:8025
+    restart: unless-stopped
+    profiles: [mail]

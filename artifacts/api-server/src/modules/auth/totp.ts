@@ -1,0 +1,136 @@
+/**
+ * TOTP implementation — RFC 6238 / RFC 4226.
+ * Zero external dependencies; uses only Node.js built-in `node:crypto`.
+ *
+ * Algorithm:
+ *   TOTP(K, T) = HOTP(K, floor(unix_time / step))
+ *   HOTP(K, C) = Truncate( HMAC-SHA1(K, C) )
+ */
+import { createHmac, randomBytes, createHash, timingSafeEqual } from "node:crypto";
+
+// ── Base-32 (RFC 4648) ─────────────────────────────────────────────────────
+
+const BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+function base32Encode(buf: Buffer): string {
+  let bits = 0, value = 0, out = "";
+  for (let i = 0; i < buf.length; i++) {
+    value = (value << 8) | buf[i]!;
+    bits += 8;
+    while (bits >= 5) {
+      out += BASE32[(value >>> (bits - 5)) & 31]!;
+      bits -= 5;
+    }
+  }
+  if (bits > 0) out += BASE32[(value << (5 - bits)) & 31]!;
+  return out;
+}
+
+function base32Decode(str: string): Buffer {
+  const s = str.toUpperCase().replace(/=+$/, "").replace(/\s/g, "");
+  const bytes: number[] = [];
+  let bits = 0, value = 0;
+  for (const char of s) {
+    const idx = BASE32.indexOf(char);
+    if (idx < 0) continue;
+    value = (value << 5) | idx;
+    bits += 5;
+    if (bits >= 8) {
+      bytes.push((value >>> (bits - 8)) & 0xff);
+      bits -= 8;
+    }
+  }
+  return Buffer.from(bytes);
+}
+
+// ── HOTP / TOTP core ─────────────────────────────────────────────────────────
+
+function hotp(secret: Buffer, counter: bigint): string {
+  const buf = Buffer.alloc(8);
+  buf.writeBigInt64BE(counter);
+  const hmac = createHmac("sha1", secret).update(buf).digest();
+  const offset = hmac[hmac.length - 1]! & 0x0f;
+  const code =
+    ((hmac[offset]! & 0x7f) << 24) |
+    ((hmac[offset + 1]! & 0xff) << 16) |
+    ((hmac[offset + 2]! & 0xff) << 8) |
+    (hmac[offset + 3]! & 0xff);
+  return String(code % 1_000_000).padStart(6, "0");
+}
+
+const STEP_SECS = 30;
+const WINDOW = 1; // accept ±1 step for clock skew
+
+// ── Public API ───────────────────────────────────────────────────────────────
+
+/** Generate a new 160-bit TOTP secret (base32-encoded, uppercase). */
+export function generateTotpSecret(): string {
+  return base32Encode(randomBytes(20));
+}
+
+/** Generate the current TOTP code for a secret (useful for testing). */
+export function generateTotpCode(secret: string): string {
+  const t = BigInt(Math.floor(Date.now() / 1000 / STEP_SECS));
+  return hotp(base32Decode(secret), t);
+}
+
+/**
+ * Verify a 6-digit TOTP code.
+ * Accepts ±WINDOW time steps to tolerate clock drift.
+ */
+export function verifyTotpCode(code: string, secret: string): boolean {
+  if (!/^\d{6}$/.test(code)) return false;
+  const t = BigInt(Math.floor(Date.now() / 1000 / STEP_SECS));
+  const secretBuf = base32Decode(secret);
+  for (let i = -WINDOW; i <= WINDOW; i++) {
+    const expected = hotp(secretBuf, t + BigInt(i));
+    const a = Buffer.from(expected.padEnd(6, "0"));
+    const b = Buffer.from(code.padEnd(6, "0"));
+    if (a.length === b.length && timingSafeEqual(a, b)) return true;
+  }
+  return false;
+}
+
+/**
+ * Build the `otpauth://` URI recognised by Google Authenticator, Authy, etc.
+ * The URI encodes the issuer, account email, secret, algorithm, digits, and period
+ * so scanning the resulting QR code fully configures the authenticator.
+ */
+export function buildOtpauthUri(secret: string, email: string, issuer = "Temple TV"): string {
+  const label = `${encodeURIComponent(issuer)}:${encodeURIComponent(email)}`;
+  const qs = new URLSearchParams({
+    secret,
+    issuer,
+    algorithm: "SHA1",
+    digits: "6",
+    period: String(STEP_SECS),
+  });
+  return `otpauth://totp/${label}?${qs.toString()}`;
+}
+
+/** Generate N one-time backup codes (hex, formatted as XXXX-XXXX). */
+export function generateBackupCodes(n = 8): string[] {
+  return Array.from({ length: n }, () => {
+    const raw = randomBytes(4).toString("hex").toUpperCase();
+    return `${raw.slice(0, 4)}-${raw.slice(4)}`;
+  });
+}
+
+/** SHA-256 hash a backup code for storage. */
+export function hashBackupCode(code: string): string {
+  return createHash("sha256").update(code.toUpperCase().replace(/-/g, "")).digest("hex");
+}
+
+/** Verify and consume a backup code from the hashed list. Returns the updated list. */
+export function consumeBackupCode(
+  input: string,
+  hashedCodes: string[],
+): { valid: boolean; remaining: string[] } {
+  const normalized = input.toUpperCase().replace(/-/g, "");
+  const hashed = createHash("sha256").update(normalized).digest("hex");
+  const idx = hashedCodes.indexOf(hashed);
+  if (idx === -1) return { valid: false, remaining: hashedCodes };
+  const remaining = [...hashedCodes];
+  remaining.splice(idx, 1);
+  return { valid: true, remaining };
+}

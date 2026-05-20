@@ -1,0 +1,6 @@
+gem 'fastlane-plugin-firebase_app_distribution'
+gem 'fastlane-plugin-increment_build_number_in_plist'
+gem 'fastlane-plugin-changelog'
+gem 'fastlane-plugin-versioning'
+gem 'fastlane-plugin-sentry'
+gem 'fastlane-plugin-badge'

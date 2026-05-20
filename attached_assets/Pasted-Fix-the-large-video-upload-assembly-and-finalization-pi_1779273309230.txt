@@ -1,0 +1,51 @@
+Fix the large video upload assembly and finalization pipeline in the admin panel. Uploaded videos are successfully reaching 99% but are becoming stuck in the “Finalizing…” state before eventually failing with timeout-related errors such as:
+
+“Assembly timed out after 5 minutes. All chunks are safely uploaded.”
+
+Investigate and completely resolve the root cause of the upload assembly timeout, stalled finalization process, and incomplete post-upload workflow affecting large video uploads between 500MB–1GB+.
+
+Ensure the upload system can reliably handle large production-grade media files without freezing, timing out, entering duplicate finalization states, or falsely marking uploads as failed after chunk upload completion.
+
+Fully audit and fix:
+
+Chunked upload assembly pipeline
+Multipart upload completion handling
+Upload session synchronization
+File merge and storage finalization
+S3/R2/local storage multipart completion
+Upload lock and race condition conflicts
+Queue deadlocks and worker blocking
+Large file timeout configuration
+Reverse proxy upload limits
+Node.js request timeout limits
+Background job execution limits
+Database transaction locks
+Upload polling and frontend state synchronization
+Finalization retry/idempotency logic
+Redis/BullMQ queue congestion
+CPU-intensive blocking operations
+Memory-safe stream processing
+Transcoding trigger handoff
+WebSocket/realtime upload progress updates
+Upload cleanup and orphaned chunk recovery
+
+Implement production-grade improvements including:
+
+asynchronous background finalization,
+resumable uploads,
+non-blocking file assembly,
+persistent upload checkpoints,
+exponential retry handling,
+upload recovery after reconnect,
+and accurate real-time status tracking.
+
+Ensure that after upload reaches 100%:
+
+all chunks are assembled successfully,
+the upload finalizes automatically,
+metadata is stored correctly,
+transcoding/HLS generation begins,
+the video is saved into managed videos,
+and the video is automatically added into the broadcast queue without manual intervention.
+
+Also optimize the system for stable uploads under poor network conditions and large media workloads while preventing false timeout failures, stalled progress indicators, duplicate finalize requests, and endless “Finalizing… 99%” states.

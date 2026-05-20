@@ -1,0 +1,354 @@
+/**
+ * User data routes — favorites and watch history.
+ *
+ * All routes require authentication. User-specific rows are always scoped
+ * to the authenticated principal so one user can never read another's data.
+ *
+ * Endpoints:
+ *   GET    /user/me                      — profile alias (→ auth /me)
+ *   GET    /user/favorites               — list all favorites
+ *   POST   /user/favorites               — add a favorite
+ *   DELETE /user/favorites/:videoId      — remove a specific favorite
+ *
+ *   GET    /user/history                 — list watch history (newest first)
+ *   GET    /user/watch-history           — alias for /user/history
+ *   POST   /user/history                 — upsert a watch-history entry
+ *   DELETE /user/history                 — clear entire watch history
+ */
+
+import type { FastifyInstance } from "fastify";
+import type { ZodTypeProvider } from "fastify-type-provider-zod";
+import { z } from "zod";
+import { eq, and, desc } from "drizzle-orm";
+import { nanoid } from "nanoid";
+import { db, schema } from "../../infrastructure/db.js";
+import { requireAuth } from "../../middleware/auth.js";
+import { authService } from "../auth/auth.service.js";
+
+const favoritesTable = schema.userFavoritesTable;
+const historyTable = schema.userWatchHistoryTable;
+
+const FavoriteItemSchema = z.object({
+  id: z.string(),
+  videoId: z.string(),
+  videoTitle: z.string(),
+  videoThumbnail: z.string(),
+  videoCategory: z.string(),
+  createdAt: z.string(),
+});
+
+const HistoryItemSchema = z.object({
+  id: z.string(),
+  videoId: z.string(),
+  videoTitle: z.string(),
+  videoThumbnail: z.string(),
+  videoCategory: z.string(),
+  progressSecs: z.number().int(),
+  watchedAt: z.string(),
+});
+
+export async function userRoutes(app: FastifyInstance) {
+  const r = app.withTypeProvider<ZodTypeProvider>();
+
+  // ── GET /user/me — profile alias ──────────────────────────────────────────
+  // Convenience alias so clients that call /user/me (instead of /auth/me) work
+  // correctly. Delegates to the same auth.service.getProfile() handler.
+  r.get(
+    "/me",
+    {
+      preHandler: requireAuth(),
+      schema: {
+        tags: ["user"],
+        summary: "Get authenticated user's profile (alias for GET /auth/me)",
+        security: [{ bearerAuth: [] }],
+        response: {
+          200: z.object({
+            id: z.string(),
+            email: z.string(),
+            role: z.string(),
+            displayName: z.string(),
+            createdAt: z.string(),
+          }),
+        },
+      },
+    },
+    async (req) => authService.getProfile(req.principal!.id),
+  );
+
+  // ── Favorites ─────────────────────────────────────────────────────────────
+
+  r.get(
+    "/favorites",
+    {
+      preHandler: requireAuth(),
+      schema: {
+        tags: ["user"],
+        summary: "List all favorited videos for the authenticated user",
+        security: [{ bearerAuth: [] }],
+        response: {
+          200: z.object({ favorites: z.array(FavoriteItemSchema) }),
+        },
+      },
+    },
+    async (req) => {
+      const userId = req.principal!.id;
+      const rows = await db
+        .select()
+        .from(favoritesTable)
+        .where(eq(favoritesTable.userId, userId))
+        .orderBy(desc(favoritesTable.createdAt));
+      const favorites = rows.map((r) => ({
+        id: r.id,
+        videoId: r.videoId,
+        videoTitle: r.videoTitle,
+        videoThumbnail: r.videoThumbnail,
+        videoCategory: r.videoCategory,
+        createdAt: r.createdAt.toISOString(),
+      }));
+      return { favorites };
+    },
+  );
+
+  r.post(
+    "/favorites",
+    {
+      preHandler: requireAuth(),
+      schema: {
+        tags: ["user"],
+        summary: "Add a video to the authenticated user's favorites",
+        security: [{ bearerAuth: [] }],
+        body: z.object({
+          videoId: z.string().min(1),
+          videoTitle: z.string().min(1),
+          videoThumbnail: z.string().default(""),
+          videoCategory: z.string().default(""),
+        }),
+        response: {
+          201: FavoriteItemSchema,
+        },
+      },
+    },
+    async (req, reply) => {
+      const userId = req.principal!.id;
+      const { videoId, videoTitle, videoThumbnail, videoCategory } = req.body;
+
+      const existing = await db
+        .select({ id: favoritesTable.id })
+        .from(favoritesTable)
+        .where(and(eq(favoritesTable.userId, userId), eq(favoritesTable.videoId, videoId)))
+        .limit(1);
+
+      if (existing.length > 0) {
+        const row = (await db
+          .select()
+          .from(favoritesTable)
+          .where(eq(favoritesTable.id, existing[0]!.id))
+          .limit(1))[0]!;
+        reply.code(201);
+        return {
+          id: row.id,
+          videoId: row.videoId,
+          videoTitle: row.videoTitle,
+          videoThumbnail: row.videoThumbnail,
+          videoCategory: row.videoCategory,
+          createdAt: row.createdAt.toISOString(),
+        };
+      }
+
+      const inserted = await db
+        .insert(favoritesTable)
+        .values({ id: nanoid(), userId, videoId, videoTitle, videoThumbnail, videoCategory })
+        .returning();
+      const row = inserted[0]!;
+      reply.code(201);
+      return {
+        id: row.id,
+        videoId: row.videoId,
+        videoTitle: row.videoTitle,
+        videoThumbnail: row.videoThumbnail,
+        videoCategory: row.videoCategory,
+        createdAt: row.createdAt.toISOString(),
+      };
+    },
+  );
+
+  r.delete(
+    "/favorites/:videoId",
+    {
+      preHandler: requireAuth(),
+      schema: {
+        tags: ["user"],
+        summary: "Remove a video from the authenticated user's favorites",
+        security: [{ bearerAuth: [] }],
+        params: z.object({ videoId: z.string() }),
+        response: { 204: z.null() },
+      },
+    },
+    async (req, reply) => {
+      const userId = req.principal!.id;
+      await db
+        .delete(favoritesTable)
+        .where(and(eq(favoritesTable.userId, userId), eq(favoritesTable.videoId, req.params.videoId)));
+      reply.code(204);
+      return null;
+    },
+  );
+
+  // ── Watch history ─────────────────────────────────────────────────────────
+
+  r.get(
+    "/watch-history",
+    {
+      preHandler: requireAuth(),
+      schema: {
+        tags: ["user"],
+        summary: "Watch history alias (same as GET /user/history)",
+        security: [{ bearerAuth: [] }],
+        querystring: z.object({ limit: z.coerce.number().int().min(1).max(500).default(100) }),
+        response: {
+          200: z.object({ history: z.array(HistoryItemSchema) }),
+        },
+      },
+    },
+    async (req) => {
+      const userId = req.principal!.id;
+      const rows = await db
+        .select()
+        .from(historyTable)
+        .where(eq(historyTable.userId, userId))
+        .orderBy(desc(historyTable.watchedAt))
+        .limit(req.query.limit);
+      return {
+        history: rows.map((r) => ({
+          id: r.id,
+          videoId: r.videoId,
+          videoTitle: r.videoTitle,
+          videoThumbnail: r.videoThumbnail,
+          videoCategory: r.videoCategory,
+          progressSecs: r.progressSecs,
+          watchedAt: r.watchedAt.toISOString(),
+        })),
+      };
+    },
+  );
+
+  r.get(
+    "/history",
+    {
+      preHandler: requireAuth(),
+      schema: {
+        tags: ["user"],
+        summary: "List watch history for the authenticated user (newest first)",
+        security: [{ bearerAuth: [] }],
+        querystring: z.object({ limit: z.coerce.number().int().min(1).max(500).default(100) }),
+        response: {
+          200: z.object({ history: z.array(HistoryItemSchema) }),
+        },
+      },
+    },
+    async (req) => {
+      const userId = req.principal!.id;
+      const rows = await db
+        .select()
+        .from(historyTable)
+        .where(eq(historyTable.userId, userId))
+        .orderBy(desc(historyTable.watchedAt))
+        .limit(req.query.limit);
+      const history = rows.map((r) => ({
+        id: r.id,
+        videoId: r.videoId,
+        videoTitle: r.videoTitle,
+        videoThumbnail: r.videoThumbnail,
+        videoCategory: r.videoCategory,
+        progressSecs: r.progressSecs,
+        watchedAt: r.watchedAt.toISOString(),
+      }));
+      return { history };
+    },
+  );
+
+  r.post(
+    "/history",
+    {
+      preHandler: requireAuth(),
+      schema: {
+        tags: ["user"],
+        summary: "Upsert a watch-history entry (updates watchedAt + progress on re-watch)",
+        security: [{ bearerAuth: [] }],
+        body: z.object({
+          videoId: z.string().min(1),
+          videoTitle: z.string().min(1),
+          videoThumbnail: z.string().default(""),
+          videoCategory: z.string().default(""),
+          progressSecs: z.number().int().min(0).default(0),
+        }),
+        response: {
+          200: HistoryItemSchema,
+        },
+      },
+    },
+    async (req) => {
+      const userId = req.principal!.id;
+      const { videoId, videoTitle, videoThumbnail, videoCategory, progressSecs } = req.body;
+      const now = new Date();
+
+      const existing = await db
+        .select({ id: historyTable.id })
+        .from(historyTable)
+        .where(and(eq(historyTable.userId, userId), eq(historyTable.videoId, videoId)))
+        .limit(1);
+
+      if (existing.length > 0) {
+        const updated = await db
+          .update(historyTable)
+          .set({ watchedAt: now, progressSecs, videoTitle, videoThumbnail, videoCategory })
+          .where(eq(historyTable.id, existing[0]!.id))
+          .returning();
+        const row = updated[0]!;
+        return {
+          id: row.id,
+          videoId: row.videoId,
+          videoTitle: row.videoTitle,
+          videoThumbnail: row.videoThumbnail,
+          videoCategory: row.videoCategory,
+          progressSecs: row.progressSecs,
+          watchedAt: row.watchedAt.toISOString(),
+        };
+      }
+
+      const inserted = await db
+        .insert(historyTable)
+        .values({ id: nanoid(), userId, videoId, videoTitle, videoThumbnail, videoCategory, progressSecs, watchedAt: now })
+        .returning();
+      const row = inserted[0]!;
+      return {
+        id: row.id,
+        videoId: row.videoId,
+        videoTitle: row.videoTitle,
+        videoThumbnail: row.videoThumbnail,
+        videoCategory: row.videoCategory,
+        progressSecs: row.progressSecs,
+        watchedAt: row.watchedAt.toISOString(),
+      };
+    },
+  );
+
+  r.delete(
+    "/history",
+    {
+      preHandler: requireAuth(),
+      schema: {
+        tags: ["user"],
+        summary: "Clear entire watch history for the authenticated user",
+        security: [{ bearerAuth: [] }],
+        response: { 204: z.null() },
+      },
+    },
+    async (req, reply) => {
+      const userId = req.principal!.id;
+      await db.delete(historyTable).where(eq(historyTable.userId, userId));
+      reply.code(204);
+      return null;
+    },
+  );
+}

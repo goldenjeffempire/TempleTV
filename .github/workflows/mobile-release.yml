@@ -1,0 +1,231 @@
+# =============================================================================
+# Temple TV — Mobile Release (EAS Build + Store Submit)
+# =============================================================================
+#
+# Dispatched by production-release.yml OR triggered manually.
+# Builds Android AAB + iOS IPA on EAS, then auto-submits:
+#   Android → Google Play internal track
+#   iOS     → TestFlight (App Store Connect)
+#
+# Required secrets:
+#   EXPO_TOKEN                   — EAS personal access token
+#   GOOGLE_SERVICE_ACCOUNT_JSON  — Google Play service account JSON (full content)
+#   APPLE_API_KEY_P8             — App Store Connect .p8 key (full content)
+#   APPLE_API_KEY_ID             — ASC API key ID (e.g. ABCD123456)
+#   APPLE_API_KEY_ISSUER_ID      — ASC API key issuer UUID
+# =============================================================================
+
+name: Mobile Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: 'Platforms to build'
+        required: true
+        default: 'all'
+        type: choice
+        options: [all, android, ios]
+      submit:
+        description: 'Submit to stores after build'
+        required: false
+        default: 'true'
+        type: string
+      message:
+        description: 'Build message (shown in EAS dashboard)'
+        required: false
+        default: 'Automated release'
+        type: string
+
+concurrency:
+  group: mobile-release
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '20.18.0'
+  PNPM_VERSION: '10.26.1'
+
+jobs:
+  # ── Android: Build AAB → Play Store internal track ────────────────────────
+  android:
+    name: Android — Build + Submit
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    if: inputs.platforms == 'all' || inputs.platforms == 'android'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: COREPACK_ENABLE_STRICT=0 pnpm install --ignore-scripts --frozen-lockfile
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Write Google service account key
+        run: |
+          echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' \
+            > artifacts/mobile/google-service-account.json
+
+      - name: Build Android (AAB)
+        id: build
+        working-directory: artifacts/mobile
+        run: |
+          BUILD_JSON=$(eas build \
+            --platform android \
+            --profile production \
+            --non-interactive \
+            --json \
+            --no-wait \
+            --message "${{ inputs.message }}" \
+            2>/dev/null)
+          echo "$BUILD_JSON" | tee /tmp/android-build.json
+          BUILD_ID=$(echo "$BUILD_JSON" | \
+            jq -r 'if type=="array" then .[0].id else .id end')
+          echo "build_id=$BUILD_ID" >> $GITHUB_OUTPUT
+          echo "Android build queued: $BUILD_ID"
+
+      - name: Wait for build to complete
+        working-directory: artifacts/mobile
+        run: |
+          eas build:wait \
+            ${{ steps.build.outputs.build_id }} \
+            --timeout 3600
+          echo "Build ${{ steps.build.outputs.build_id }} finished."
+
+      - name: Submit to Play Store (internal track)
+        if: inputs.submit == 'true'
+        working-directory: artifacts/mobile
+        run: |
+          eas submit \
+            --platform android \
+            --profile production \
+            --id ${{ steps.build.outputs.build_id }} \
+            --non-interactive
+          echo "Submitted to Play Store internal track."
+
+      - name: Clean up credentials
+        if: always()
+        run: rm -f artifacts/mobile/google-service-account.json
+
+  # ── iOS: Build IPA → TestFlight ───────────────────────────────────────────
+  ios:
+    name: iOS — Build + Submit
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    if: inputs.platforms == 'all' || inputs.platforms == 'ios'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: COREPACK_ENABLE_STRICT=0 pnpm install --ignore-scripts --frozen-lockfile
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Write App Store Connect API key
+        run: |
+          echo "${{ secrets.APPLE_API_KEY_P8 }}" > /tmp/asc-api-key.p8
+          chmod 600 /tmp/asc-api-key.p8
+
+      - name: Patch eas.json with ASC key metadata
+        working-directory: artifacts/mobile
+        run: |
+          node -e "
+            const fs = require('fs');
+            const eas = JSON.parse(fs.readFileSync('eas.json', 'utf8'));
+            eas.submit.production.ios.ascApiKeyId     = '${{ secrets.APPLE_API_KEY_ID }}';
+            eas.submit.production.ios.ascApiIssuerId  = '${{ secrets.APPLE_API_KEY_ISSUER_ID }}';
+            fs.writeFileSync('eas.json', JSON.stringify(eas, null, 2) + '\n');
+          "
+
+      - name: Build iOS (IPA)
+        id: build
+        working-directory: artifacts/mobile
+        run: |
+          BUILD_JSON=$(eas build \
+            --platform ios \
+            --profile production-ios \
+            --non-interactive \
+            --json \
+            --no-wait \
+            --message "${{ inputs.message }}" \
+            2>/dev/null)
+          echo "$BUILD_JSON" | tee /tmp/ios-build.json
+          BUILD_ID=$(echo "$BUILD_JSON" | \
+            jq -r 'if type=="array" then .[0].id else .id end')
+          echo "build_id=$BUILD_ID" >> $GITHUB_OUTPUT
+          echo "iOS build queued: $BUILD_ID"
+
+      - name: Wait for build to complete
+        working-directory: artifacts/mobile
+        run: |
+          eas build:wait \
+            ${{ steps.build.outputs.build_id }} \
+            --timeout 3600
+          echo "Build ${{ steps.build.outputs.build_id }} finished."
+
+      - name: Submit to TestFlight
+        if: inputs.submit == 'true'
+        working-directory: artifacts/mobile
+        run: |
+          eas submit \
+            --platform ios \
+            --profile production \
+            --id ${{ steps.build.outputs.build_id }} \
+            --non-interactive
+          echo "Submitted to TestFlight."
+
+      - name: Clean up credentials
+        if: always()
+        run: rm -f /tmp/asc-api-key.p8
+
+  # ── Summary ──────────────────────────────────────────────────────────────
+  summary:
+    name: Release summary
+    needs: [android, ios]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write job summary
+        run: |
+          echo "## Mobile Release Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Platform | Result |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Android  | ${{ needs.android.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| iOS      | ${{ needs.ios.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Message:** ${{ inputs.message }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Submit:** ${{ inputs.submit }}" >> $GITHUB_STEP_SUMMARY

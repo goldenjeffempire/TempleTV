@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
+    <meta name="theme-color" content="#f5f7fc" />
+    <title>Temple TV Admin</title>
+
+    <!-- Private dashboard — keep out of search engines and AI crawlers entirely -->
+    <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex" />
+    <meta name="googlebot" content="noindex, nofollow, noarchive, nosnippet" />
+    <meta name="bingbot" content="noindex, nofollow" />
+    <meta name="referrer" content="no-referrer" />
+
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="alternate icon" type="image/png" href="/temple-tv-logo.png" />
+    <link rel="apple-touch-icon" href="/temple-tv-logo.png" />
+    <link rel="preload" as="image" href="/temple-tv-logo.png" fetchpriority="high" />
+
+    <!-- Preconnect to the Temple TV API so admin panel data requests skip TLS
+         setup latency on first load — dashboards, video lists, broadcast queue
+         all resolve faster when the TCP+TLS channel is already warm. -->
+    <link rel="preconnect" href="https://api.templetv.org.ng" crossorigin />
+    <link rel="dns-prefetch" href="https://api.templetv.org.ng" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+    <!--
+      Apply theme BEFORE first paint to eliminate flash of wrong theme.
+      Reads localStorage("ttv-theme") and falls back to prefers-color-scheme.
+      Must be a blocking script (no defer/async) so the class is on <html>
+      before the browser paints a single pixel.
+    -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem('ttv-theme');
+          var dark = t === 'dark' || (t !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          if (dark) {
+            document.documentElement.classList.add('dark');
+            document.querySelector('meta[name="theme-color"]')?.setAttribute('content', '#050c1a');
+          }
+        } catch (e) {}
+      })();
+    </script>
+
+    <!--
+      Inline loading screen styles — no external stylesheet needed.
+      Uses CSS custom properties that match the Tailwind design tokens so
+      the spinner colours are correct in both light and dark mode immediately.
+    -->
+    <style>
+      #app-loading {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 20px;
+        background: #f5f7fc;
+        transition: opacity 0.25s ease;
+      }
+      .dark #app-loading { background: #050c1a; }
+
+      #app-loading .ttv-logo-wrap {
+        position: relative;
+        width: 56px;
+        height: 56px;
+      }
+      #app-loading .ttv-logo {
+        width: 56px;
+        height: 56px;
+        border-radius: 14px;
+        object-fit: cover;
+        display: block;
+      }
+      #app-loading .ttv-logo-fallback {
+        width: 56px;
+        height: 56px;
+        border-radius: 14px;
+        background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 24px;
+        font-weight: 700;
+        color: #fff;
+        font-family: system-ui, sans-serif;
+      }
+      #app-loading .ttv-spinner {
+        width: 72px;
+        height: 72px;
+        border-radius: 50%;
+        border: 2px solid transparent;
+        border-top-color: #3b82f6;
+        border-right-color: #3b82f6;
+        animation: ttv-spin 0.75s linear infinite;
+        position: absolute;
+        top: -8px;
+        left: -8px;
+      }
+      @keyframes ttv-spin {
+        to { transform: rotate(360deg); }
+      }
+      #app-loading .ttv-wordmark {
+        text-align: center;
+        font-family: 'Inter', system-ui, sans-serif;
+      }
+      #app-loading .ttv-wordmark strong {
+        display: block;
+        font-size: 15px;
+        font-weight: 600;
+        color: #0f172a;
+        letter-spacing: -0.01em;
+      }
+      .dark #app-loading .ttv-wordmark strong { color: #e8edf5; }
+      #app-loading .ttv-wordmark span {
+        display: block;
+        font-size: 10px;
+        font-weight: 500;
+        color: #64748b;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        margin-top: 3px;
+      }
+      .dark #app-loading .ttv-wordmark span { color: #64748b; }
+    </style>
+  </head>
+
+  <body>
+    <!-- Instant loading screen — visible before React boots, removed in main.tsx -->
+    <div id="app-loading" aria-hidden="true">
+      <div class="ttv-logo-wrap">
+        <div class="ttv-spinner"></div>
+        <img
+          class="ttv-logo"
+          src="/temple-tv-logo.png"
+          alt=""
+          onerror="this.style.display='none';this.nextElementSibling.style.display='flex';"
+        />
+        <div class="ttv-logo-fallback" style="display:none;">T</div>
+      </div>
+      <div class="ttv-wordmark">
+        <strong>Temple TV</strong>
+        <span>Admin Panel</span>
+      </div>
+    </div>
+
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,114 @@
+import { asc, desc, eq, inArray, max, sql } from "drizzle-orm";
+import { nanoid } from "nanoid";
+import { db, schema } from "../../infrastructure/db.js";
+import { broadcastEngine } from "./queue.engine.js";
+import { adminEventBus } from "../admin-ops/admin-event-bus.js";
+import { NotFoundError } from "../../shared/errors.js";
+import type { z } from "zod";
+import type { AddQueueItemSchema } from "./broadcast.schemas.js";
+
+const queueTable = schema.broadcastQueueTable;
+
+export const broadcastService = {
+  snapshot() {
+    return broadcastEngine.snapshot();
+  },
+
+  async listQueue(): Promise<typeof queueTable.$inferSelect[]> {
+    return db.select().from(queueTable).orderBy(asc(queueTable.sortOrder), asc(queueTable.addedAt));
+  },
+
+  async addToQueue(item: z.infer<typeof AddQueueItemSchema>) {
+    // Defense-in-depth source check — mirrors the schema superRefine for
+    // programmatic callers (upload finalize, prod-sync) that bypass HTTP
+    // schema validation. Prevents the DB from ever receiving a row that the
+    // v2 orchestrator would always reject at pre-resolution time.
+    if (item.videoSource !== "youtube") {
+      const hasSource =
+        (!!item.localVideoUrl && item.localVideoUrl.trim() !== "") ||
+        (!!item.videoId && item.videoId.trim() !== "");
+      if (!hasSource) {
+        throw new Error(
+          `[broadcast] Cannot enqueue "${item.title}" — platform video item has no localVideoUrl or videoId. ` +
+            "Provide at least one playable source before adding to the queue.",
+        );
+      }
+    }
+
+    let sortOrder = item.sortOrder;
+    if (sortOrder === undefined) {
+      const last = await db
+        .select({ s: max(queueTable.sortOrder) })
+        .from(queueTable)
+        .limit(1);
+      sortOrder = (last[0]?.s ?? 0) + 10;
+    }
+    const inserted = await db
+      .insert(queueTable)
+      .values({
+        id: nanoid(),
+        videoId: item.videoId ?? null,
+        youtubeId: item.youtubeId ?? "",
+        title: item.title,
+        thumbnailUrl: item.thumbnailUrl,
+        durationSecs: item.durationSecs,
+        localVideoUrl: item.localVideoUrl ?? null,
+        videoSource: item.videoSource,
+        isActive: true,
+        sortOrder,
+      })
+      .returning();
+    await broadcastEngine.reload();
+    adminEventBus.push("broadcast-queue-updated", { reason: "item-added", id: inserted[0]!.id });
+    return inserted[0]!;
+  },
+
+  async removeFromQueue(id: string) {
+    const deleted = await db.delete(queueTable).where(eq(queueTable.id, id)).returning();
+    if (deleted.length === 0) throw new NotFoundError("Queue item not found");
+    await broadcastEngine.reload();
+    adminEventBus.push("broadcast-queue-updated", { reason: "item-removed", id });
+    return deleted[0]!;
+  },
+
+  async reorder(itemIds: string[]) {
+    // Build a single atomic CASE-based UPDATE so all sort_order changes land
+    // in one round-trip. A sequential loop would leave the queue in a
+    // half-renumbered state if any individual update fails mid-way.
+    //
+    // Equivalent SQL:
+    //   UPDATE broadcast_queue
+    //   SET sort_order = CASE id
+    //     WHEN 'a' THEN 10 WHEN 'b' THEN 20 …
+    //   END
+    //   WHERE id IN ('a','b',…)
+    // Build a safe parameterized CASE expression using Drizzle's sql tag.
+    // Each WHEN/THEN pair is a separate sql chunk so all values go through
+    // the driver's parameterization — no manual escaping or sql.raw needed.
+    const whenClauses = itemIds.map(
+      (id, i) => sql`WHEN ${id} THEN ${(i + 1) * 10}`,
+    );
+    const caseExpr = sql`CASE id ${sql.join(whenClauses, sql` `)} ELSE sort_order END`;
+    await db
+      .update(queueTable)
+      .set({ sortOrder: caseExpr })
+      .where(inArray(queueTable.id, itemIds));
+    await broadcastEngine.reload();
+    adminEventBus.push("broadcast-queue-updated", { reason: "reorder" });
+    return broadcastEngine.snapshot();
+  },
+
+  async toggleActive(id: string, isActive: boolean) {
+    const updated = await db
+      .update(queueTable)
+      .set({ isActive })
+      .where(eq(queueTable.id, id))
+      .returning();
+    if (updated.length === 0) throw new NotFoundError("Queue item not found");
+    await broadcastEngine.reload();
+    adminEventBus.push("broadcast-queue-updated", { reason: "toggle-active", id, isActive });
+    return updated[0]!;
+  },
+};
+
+export { desc };

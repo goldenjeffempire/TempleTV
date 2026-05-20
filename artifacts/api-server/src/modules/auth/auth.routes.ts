@@ -1,0 +1,552 @@
+import type { FastifyInstance } from "fastify";
+import type { ZodTypeProvider } from "fastify-type-provider-zod";
+import { z } from "zod";
+import { ne, inArray, eq, and, isNull, gt } from "drizzle-orm";
+import { randomBytes, createHash } from "node:crypto";
+import {
+  AuthTokensSchema,
+  ExtendBodySchema,
+  ExtendResponseSchema,
+  ForgotPasswordBodySchema,
+  LoginBodySchema,
+  LoginResponseSchema,
+  MeResponseSchema,
+  RefreshBodySchema,
+  RegisterBodySchema,
+  ResetPasswordBodySchema,
+} from "./auth.schemas.js";
+import { authService } from "./auth.service.js";
+import { mfaRoutes } from "./mfa.routes.js";
+import { signAccessToken, signRefreshToken } from "./jwt.js";
+import { hashPassword } from "./password.js";
+import { UnauthorizedError } from "../../shared/errors.js";
+import { requireAuth } from "../../middleware/auth.js";
+import { env } from "../../config/env.js";
+import { db, schema } from "../../infrastructure/db.js";
+import { nanoid } from "nanoid";
+
+// Stricter per-route rate limit for credential-bearing endpoints.
+// Defaults to 20/min/IP — enough for a real user fat-fingering their
+// password a few times, low enough to make online password-guessing
+// attacks impractical. Tunable via RATE_LIMIT_AUTH_PER_MINUTE.
+const authRateLimit = {
+  rateLimit: {
+    max: env.RATE_LIMIT_AUTH_PER_MINUTE,
+    timeWindow: "1 minute",
+  },
+};
+
+// Refresh token rotation gets its own higher limit (60/min) because it is
+// called automatically by the client keep-alive, not triggered by human
+// credential entry. Multiple authenticated admin tabs + aggressive keep-alive
+// intervals can each fire independently — sharing the credential limit with
+// /login would exhaust the 20/min budget for a normal operator.
+const refreshRateLimit = {
+  rateLimit: {
+    max: 60,
+    timeWindow: "1 minute",
+  },
+};
+
+// Password-reset routes get a tighter limit (5/min) to reduce the
+// attractiveness of using the endpoint as a spam relay.
+const pwResetRateLimit = {
+  rateLimit: {
+    max: 5,
+    timeWindow: "1 minute",
+  },
+};
+
+export async function authRoutes(app: FastifyInstance) {
+  const r = app.withTypeProvider<ZodTypeProvider>();
+
+  r.post(
+    "/register",
+    {
+      config: authRateLimit,
+      schema: {
+        tags: ["auth"],
+        summary: "Register a new viewer account",
+        body: RegisterBodySchema,
+        response: { 201: AuthTokensSchema },
+      },
+    },
+    async (req, reply) => {
+      const tokens = await authService.register(req.body);
+      reply.code(201);
+      return tokens;
+    },
+  );
+
+  r.post(
+    "/login",
+    {
+      config: authRateLimit,
+      schema: {
+        tags: ["auth"],
+        summary: "Exchange credentials for a JWT pair (returns MFA challenge if TOTP is enabled)",
+        body: LoginBodySchema,
+        response: { 200: LoginResponseSchema },
+      },
+    },
+    async (req) => authService.login(req.body),
+  );
+
+  // MFA / TOTP sub-routes — mounted at /auth/mfa/*
+  await app.register(mfaRoutes, { prefix: "/mfa" });
+
+  r.post(
+    "/refresh",
+    {
+      // Higher rate limit (60/min) — this is called automatically by the
+      // admin keep-alive and by every concurrent tab's interval, not by human
+      // credential entry. Sharing the 20/min login limit would exhaust it.
+      config: refreshRateLimit,
+      schema: {
+        tags: ["auth"],
+        summary: "Rotate refresh token + issue new access token",
+        body: RefreshBodySchema,
+        response: { 200: AuthTokensSchema },
+      },
+    },
+    async (req) => authService.refresh(req.body.refreshToken, {
+      ip: req.ip,
+      userAgent: req.headers["user-agent"] ?? undefined,
+    }),
+  );
+
+  // Non-rotating session extension — issues a new access token without
+  // revoking the refresh token. Used by the client keep-alive so normal
+  // session maintenance never creates a rotation race between concurrent admin
+  // tabs. Only rotates when the refresh token has < 7 days remaining.
+  //
+  // Rate limit: 120/min — generous for keep-alive from many concurrent tabs.
+  // DB cost: read (verify RT) + sign (new AT in-memory). No DB write unless
+  // the refresh token is near-expiry and rotation is triggered.
+  r.post(
+    "/extend",
+    {
+      config: { rateLimit: { max: 120, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["auth"],
+        summary: "Extend session — issues new access token without rotating refresh token",
+        body: ExtendBodySchema,
+        response: { 200: ExtendResponseSchema },
+      },
+    },
+    async (req) => authService.extend(req.body.refreshToken),
+  );
+
+  // Lightweight session heartbeat — validates the access token signature and
+  // expiry in-memory (no DB writes). Used as a fast-path health check before
+  // operations that need a guaranteed-fresh session, and by monitoring tooling
+  // that needs to assert the admin session is alive without consuming a refresh
+  // token rotation.
+  //
+  // Rate limit: 120/min — intentionally generous since the keep-alive calls
+  // this frequently and multiple tabs each have their own interval.
+  r.get(
+    "/session/ping",
+    {
+      preHandler: requireAuth(),
+      config: { rateLimit: { max: 120, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["auth"],
+        summary: "Session heartbeat — validates access token without DB writes",
+        security: [{ bearerAuth: [] }],
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            userId: z.string(),
+            role: z.string(),
+          }),
+        },
+      },
+    },
+    async (req) => ({
+      ok: true as const,
+      userId: req.principal!.id,
+      role: req.principal!.role,
+    }),
+  );
+
+  r.post(
+    "/logout",
+    {
+      config: authRateLimit,
+      schema: {
+        tags: ["auth"],
+        summary: "Revoke a refresh token (body optional — clears server session when provided)",
+        // Body is optional so clients that cannot provide the refresh token
+        // (e.g. race condition during teardown) still receive 204 and the
+        // local session is cleared. When the token IS provided it is revoked
+        // server-side immediately, preventing replay for the remaining 30-day
+        // window.
+        body: z.object({ refreshToken: z.string().min(10) }).nullish(),
+        response: { 204: z.null() },
+      },
+    },
+    async (req, reply) => {
+      await authService.logout(req.body?.refreshToken);
+      reply.code(204);
+      return null;
+    },
+  );
+
+  r.get(
+    "/me",
+    {
+      preHandler: requireAuth(),
+      schema: {
+        tags: ["auth"],
+        summary: "Current authenticated principal",
+        security: [{ bearerAuth: [] }],
+        response: { 200: MeResponseSchema },
+      },
+    },
+    async (req) => authService.getProfile(req.principal!.id),
+  );
+
+  // GET /profile — read-only alias for /me (used by mobile profile screen)
+  r.get(
+    "/profile",
+    {
+      preHandler: requireAuth(),
+      schema: {
+        tags: ["auth"],
+        summary: "Get authenticated user's profile (alias for GET /me)",
+        security: [{ bearerAuth: [] }],
+        response: { 200: MeResponseSchema },
+      },
+    },
+    async (req) => authService.getProfile(req.principal!.id),
+  );
+
+  // ── Password reset flow ─────────────────────────────────────────────────
+
+  r.post(
+    "/forgot-password",
+    {
+      config: pwResetRateLimit,
+      schema: {
+        tags: ["auth"],
+        summary: "Request a password reset email",
+        description:
+          "Always returns 202 regardless of whether the email exists — prevents email enumeration.",
+        body: ForgotPasswordBodySchema,
+        response: {
+          202: z.object({ message: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      // Fire-and-forget: DB + email work happens after the 202 response is
+      // sent so the caller cannot use timing side-channels to enumerate emails.
+      authService.forgotPassword(req.body).catch(() => {
+        /* silent — never surface internal errors on this endpoint */
+      });
+      reply.code(202);
+      return { message: "If that email is registered, you will receive a reset link shortly." };
+    },
+  );
+
+  r.post(
+    "/reset-password",
+    {
+      config: pwResetRateLimit,
+      schema: {
+        tags: ["auth"],
+        summary: "Complete a password reset using the token from the email link",
+        body: ResetPasswordBodySchema,
+        response: {
+          200: z.object({ message: z.string() }),
+        },
+      },
+    },
+    async (req) => {
+      await authService.resetPassword(req.body);
+      return { message: "Password updated successfully. Please log in with your new password." };
+    },
+  );
+
+  // ── Authenticated profile management ────────────────────────────────────
+
+  r.patch(
+    "/password",
+    {
+      preHandler: requireAuth(),
+      schema: {
+        tags: ["auth"],
+        summary: "Change authenticated user's password",
+        security: [{ bearerAuth: [] }],
+        body: z.object({
+          currentPassword: z.string().min(1),
+          newPassword: z.string().min(8).max(128),
+        }),
+        response: { 200: z.object({ message: z.string() }) },
+      },
+    },
+    async (req) => {
+      await authService.changePassword(req.principal!.id, req.body);
+      return { message: "Password updated successfully" };
+    },
+  );
+
+  r.patch(
+    "/profile",
+    {
+      preHandler: requireAuth(),
+      schema: {
+        tags: ["auth"],
+        summary: "Update authenticated user's profile",
+        security: [{ bearerAuth: [] }],
+        body: z.object({
+          displayName: z.string().min(1).max(80).optional(),
+        }),
+        response: { 200: MeResponseSchema },
+      },
+    },
+    async (req) => authService.updateProfile(req.principal!.id, req.body),
+  );
+
+  // ── Admin seed endpoint ──────────────────────────────────────────────────
+  // Creates the first admin account when none exist. Protected by the
+  // ADMIN_API_TOKEN (Bearer) so it can only be called from tooling/CI.
+  //
+  // force=true: deletes ALL existing elevated accounts (admin, system,
+  // editor, moderator) and their refresh tokens first, then creates
+  // the requested account. Use when resetting production credentials.
+  // force=false (default): no-op if any elevated account already exists.
+
+  r.post(
+    "/seed",
+    {
+      schema: {
+        tags: ["auth"],
+        summary: "Seed an initial admin account (requires ADMIN_API_TOKEN). Use force=true to wipe and re-seed.",
+        security: [{ bearerAuth: [] }],
+        body: z.object({
+          email: z.string().email(),
+          password: z.string().min(8),
+          displayName: z.string().min(1).max(80).optional(),
+          force: z.boolean().optional().default(false),
+        }),
+        response: {
+          200: z.object({
+            created: z.boolean(),
+            message: z.string(),
+            email: z.string(),
+            wiped: z.number().optional(),
+          }),
+        },
+      },
+    },
+    async (req, _reply) => {
+      // Only the static ADMIN_API_TOKEN may call this endpoint.
+      const authHeader = req.headers.authorization ?? "";
+      const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+      if (!env.ADMIN_API_TOKEN || token !== env.ADMIN_API_TOKEN) {
+        throw new UnauthorizedError("Invalid or missing ADMIN_API_TOKEN");
+      }
+
+      const usersTable = schema.usersTable;
+      const refreshTokensTable = schema.refreshTokensTable;
+
+      // When force=true, delete all elevated accounts and their tokens first.
+      let wiped = 0;
+      if (req.body.force) {
+        const elevated = await db
+          .select({ id: usersTable.id })
+          .from(usersTable)
+          .where(ne(usersTable.role, "user"));
+
+        if (elevated.length > 0) {
+          const ids = elevated.map((u) => u.id);
+          // Revoke all refresh tokens for these accounts.
+          await db
+            .delete(refreshTokensTable)
+            .where(inArray(refreshTokensTable.userId, ids));
+          // Delete the accounts.
+          await db
+            .delete(usersTable)
+            .where(inArray(usersTable.id, ids));
+          wiped = elevated.length;
+        }
+      } else {
+        const existing = await db
+          .select({ id: usersTable.id })
+          .from(usersTable)
+          .where(ne(usersTable.role, "user"))
+          .limit(1);
+
+        if (existing.length > 0) {
+          return {
+            created: false,
+            message: "Admin account already exists — pass force=true to wipe and re-seed",
+            email: req.body.email,
+          };
+        }
+      }
+
+      const email = req.body.email.toLowerCase();
+      const passwordHash = await hashPassword(req.body.password);
+      const displayName = req.body.displayName ?? email.split("@")[0] ?? "Admin";
+
+      await db.insert(usersTable).values({
+        id: nanoid(),
+        email,
+        passwordHash,
+        displayName,
+        role: "admin",
+      });
+
+      const msg = wiped > 0
+        ? `Wiped ${wiped} existing account(s) and created admin`
+        : "Admin account created successfully";
+
+      return { created: true, message: msg, email, wiped };
+    },
+  );
+
+  // ── Device-Link (TV pairing) ───────────────────────────────────────────────
+  // Flow: TV calls /create → displays code → user /claim on mobile → TV polls /exchange
+  const CODE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+  const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no I O 0 1
+  function generateCode(): string {
+    const bytes = randomBytes(8);
+    return Array.from({ length: 8 }, (_, i) => CODE_CHARS[bytes[i] % CODE_CHARS.length]).join("");
+  }
+  function sha256hex(s: string): string {
+    return createHash("sha256").update(s).digest("hex");
+  }
+
+  r.post(
+    "/device-link/create",
+    {
+      schema: {
+        tags: ["auth"],
+        summary: "Create a device-link pairing code (TV side)",
+        body: z.object({ deviceLabel: z.string().max(80).optional() }),
+        response: {
+          200: z.object({ code: z.string(), expiresIn: z.number(), expiresAt: z.string() }),
+        },
+      },
+    },
+    async (req) => {
+      const code = generateCode();
+      const expiresAt = new Date(Date.now() + CODE_TTL_MS);
+      await db.insert(schema.deviceLinkCodesTable).values({
+        code,
+        expiresAt,
+        deviceLabel: req.body.deviceLabel ?? "Smart TV",
+        ip: req.ip ?? null,
+      });
+      return { code, expiresIn: CODE_TTL_MS / 1000, expiresAt: expiresAt.toISOString() };
+    },
+  );
+
+  r.post(
+    "/device-link/exchange",
+    {
+      schema: {
+        tags: ["auth"],
+        summary: "TV polls to exchange a claimed code for tokens",
+        body: z.object({ code: z.string() }),
+      },
+    },
+    async (req, reply) => {
+      const code = req.body.code.toUpperCase().replace(/[\s-]+/g, "");
+      const [row] = await db
+        .select()
+        .from(schema.deviceLinkCodesTable)
+        .where(eq(schema.deviceLinkCodesTable.code, code))
+        .limit(1);
+
+      if (!row || row.consumedAt || new Date() > row.expiresAt) {
+        reply.status(410);
+        return { error: "Code not found, consumed, or expired" };
+      }
+
+      if (!row.userId || !row.claimedAt) {
+        reply.status(202);
+        return { status: "pending" };
+      }
+
+      const [user] = await db
+        .select()
+        .from(schema.usersTable)
+        .where(eq(schema.usersTable.id, row.userId))
+        .limit(1);
+
+      if (!user) {
+        reply.status(410);
+        return { error: "Linked user not found" };
+      }
+
+      const jti = nanoid(32);
+      const accessToken = await signAccessToken({ sub: user.id, email: user.email, role: user.role as any });
+      const refreshToken = await signRefreshToken({ sub: user.id, jti });
+
+      const expiresAt = new Date(Date.now() + env.JWT_REFRESH_TTL_SECONDS * 1000);
+      await db.insert(schema.refreshTokensTable).values({
+        id: jti,
+        userId: user.id,
+        tokenHash: sha256hex(refreshToken),
+        expiresAt,
+        ip: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+      });
+
+      await db
+        .update(schema.deviceLinkCodesTable)
+        .set({ consumedAt: new Date() })
+        .where(eq(schema.deviceLinkCodesTable.code, code));
+
+      return { accessToken, refreshToken, user: { id: user.id, email: user.email, displayName: user.displayName } };
+    },
+  );
+
+  r.post(
+    "/device-link/claim",
+    {
+      preHandler: requireAuth("user"),
+      schema: {
+        tags: ["auth"],
+        summary: "Authenticated user claims a device-link code (mobile/web side)",
+        body: z.object({ code: z.string() }),
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req, reply) => {
+      const code = req.body.code.toUpperCase().replace(/[\s-]+/g, "");
+      const [row] = await db
+        .select()
+        .from(schema.deviceLinkCodesTable)
+        .where(
+          and(
+            eq(schema.deviceLinkCodesTable.code, code),
+            isNull(schema.deviceLinkCodesTable.consumedAt),
+            gt(schema.deviceLinkCodesTable.expiresAt, new Date()),
+          ),
+        )
+        .limit(1);
+
+      if (!row) {
+        reply.status(410);
+        return { error: "Code not found, already used, or expired" };
+      }
+
+      if (row.claimedAt) {
+        reply.status(409);
+        return { error: "Code has already been claimed" };
+      }
+
+      await db
+        .update(schema.deviceLinkCodesTable)
+        .set({ userId: req.principal!.id, claimedAt: new Date() })
+        .where(eq(schema.deviceLinkCodesTable.code, code));
+
+      return { ok: true };
+    },
+  );
+}

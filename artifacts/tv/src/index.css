@@ -1,0 +1,386 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-border: hsl(var(--border));
+  --font-sans: var(--app-font-sans);
+}
+
+:root {
+  --background: 240 10% 4%;
+  --foreground: 0 0% 97%;
+  --card: 240 8% 9%;
+  --card-foreground: 0 0% 97%;
+  --primary: 271 77% 57%;
+  --primary-foreground: 0 0% 100%;
+  --muted: 240 6% 14%;
+  --muted-foreground: 0 0% 55%;
+  --accent: 240 6% 12%;
+  --border: 240 5% 18%;
+  --app-font-sans: 'Inter', 'Helvetica Neue', Arial, sans-serif;
+
+  /* ── TV Safe Zone ─────────────────────────────────────────────────────────
+     5 % on each side = 96 px on a 1920-px display (Samsung / LG spec).
+     Using clamp so the safe area scales correctly on 720p and 4K panels too.
+  ── */
+  --tv-safe-h: clamp(48px, 5vw, 96px);
+  --tv-safe-v: clamp(32px, 4vh, 72px);
+
+  /* Mobile bottom nav height — consumed by the scroll container padding.
+     Set to 0 on fine-pointer (TV/desktop) so no extra gap appears there. */
+  --mobile-nav-h: 68px;
+
+  /* Focus accent — bright white + purple glow */
+  --tv-focus-ring: 0 0 0 3px #fff, 0 0 0 6px rgba(139, 92, 246, 0.65), 0 8px 32px rgba(0,0,0,0.7);
+  --tv-focus-ring-primary: 0 0 0 3px hsl(var(--primary)), 0 0 0 6px rgba(139, 92, 246, 0.45), 0 8px 32px rgba(0,0,0,0.7);
+
+  /* Card hover glow */
+  --card-hover-shadow: 0 12px 40px rgba(0,0,0,0.7), 0 0 0 1px rgba(139,92,246,0.2);
+
+  /* Section accent colors by category */
+  --cat-faith: #3b82f6;
+  --cat-deliverance: #ef4444;
+  --cat-worship: #8b5cf6;
+  --cat-prophecy: #f59e0b;
+  --cat-teachings: #10b981;
+  --cat-prayers: #6366f1;
+  --cat-crusades: #f97316;
+  --cat-conferences: #14b8a6;
+  --cat-testimonies: #ec4899;
+  --cat-default: #a855f7;
+}
+
+@media (pointer: fine) {
+  :root {
+    --mobile-nav-h: 0px;
+  }
+}
+
+/* ── Base ──────────────────────────────────────────────────────────────── */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  height: 100dvh;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: var(--app-font-sans);
+  font-size: clamp(15px, 1.25vw, 20px);
+  overflow: hidden;
+}
+
+/* Cursor: none on TV/pointer:fine; auto on touch/mobile */
+@media (pointer: fine) {
+  html, body, #root { cursor: none; }
+}
+@media (pointer: coarse) {
+  html, body, #root { cursor: auto; }
+}
+
+/* Remove default browser focus outline — we draw our own */
+* { outline: none; }
+
+/* ── TV Focus Rings ─────────────────────────────────────────────────────── */
+.tv-focused {
+  box-shadow: var(--tv-focus-ring) !important;
+  transform: scale(1.06);
+  z-index: 10;
+  transition: box-shadow 0.12s ease, transform 0.12s ease !important;
+}
+
+.tv-focused-primary {
+  box-shadow: var(--tv-focus-ring-primary) !important;
+  transform: scale(1.05);
+  z-index: 10;
+}
+
+/* ── TV Safe-Zone utility class ──────────────────────────────────────────── */
+.tv-safe-x {
+  padding-left: var(--tv-safe-h);
+  padding-right: var(--tv-safe-h);
+}
+
+/* ── Premium Video Card ───────────────────────────────────────────────────── */
+.tt-card {
+  transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1),
+              box-shadow 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+  will-change: transform;
+  flex-shrink: 0;
+  cursor: pointer;
+  position: relative;
+}
+
+/* Desktop/TV hover — fine pointer devices only */
+@media (hover: hover) and (pointer: fine) {
+  .tt-card:hover {
+    transform: scale(1.04);
+    box-shadow: var(--card-hover-shadow);
+    z-index: 5;
+  }
+  .tt-card:hover .tt-play-btn {
+    opacity: 1 !important;
+    transform: scale(1.1);
+  }
+  .tt-card:hover .tt-card-overlay {
+    background: linear-gradient(to top,
+      rgba(0,0,0,0.97) 0%,
+      rgba(0,0,0,0.65) 45%,
+      rgba(0,0,0,0.15) 80%,
+      transparent 100%) !important;
+  }
+}
+
+/* Mobile touch — tap feedback */
+@media (hover: none) and (pointer: coarse) {
+  .tt-card:active {
+    transform: scale(0.97);
+    transition: transform 0.1s ease;
+  }
+}
+
+.tt-play-btn {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+/* ── Card Row ─────────────────────────────────────────────────────────────── */
+.tv-row {
+  transition: opacity 0.2s ease;
+}
+
+.tv-rows-active .tv-row:not(.tv-row-focused) {
+  opacity: 0.45;
+}
+.tv-rows-active .tv-row.tv-row-focused {
+  opacity: 1;
+}
+
+/* ── Mobile bottom nav label ─────────────────────────────────────────────── */
+/* Header button text labels — hidden on mobile, shown on tablet+ */
+.tt-btn-label {
+  display: inline;
+}
+
+/* ── Scrollbars hidden everywhere ─────────────────────────────────────────── */
+::-webkit-scrollbar { display: none; }
+* { scrollbar-width: none; }
+
+/* ── Animations ──────────────────────────────────────────────────────────── */
+
+/* Live pulse dot */
+@keyframes pulse-live {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.35; }
+}
+.live-pulse { animation: pulse-live 1.4s ease-in-out infinite; }
+
+/* LiveHero title entry */
+@keyframes tv-live-title-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Urgency pulse */
+@keyframes tv-imminent-pulse {
+  0%, 100% { transform: scale(1);   opacity: 1; }
+  50%      { transform: scale(1.4); opacity: 0.6; }
+}
+
+/* Spinner */
+@keyframes tt-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Card entry animation */
+@keyframes tt-card-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Bottom nav entry */
+@keyframes tt-nav-in {
+  from { opacity: 0; transform: translateY(100%); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Gradient overlays ───────────────────────────────────────────────────── */
+.gradient-bottom {
+  background: linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.5) 40%, transparent 100%);
+}
+.gradient-left {
+  background: linear-gradient(to right, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.5) 40%, transparent 100%);
+}
+
+/* ── Progress bar ─────────────────────────────────────────────────────────── */
+.progress-track {
+  height: 3px;
+  background: rgba(255,255,255,0.15);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: hsl(var(--primary));
+  border-radius: 2px;
+  transition: width 0.5s ease;
+}
+
+/* ── Shimmer skeleton ─────────────────────────────────────────────────────── */
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg,
+    rgba(255,255,255,0.04) 0%,
+    rgba(255,255,255,0.09) 50%,
+    rgba(255,255,255,0.04) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s infinite;
+  border-radius: 8px;
+}
+
+/* ── Screen transitions ───────────────────────────────────────────────────── */
+@keyframes tv-screen-in {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.tv-screen-enter {
+  animation: tv-screen-in 0.22s ease-out forwards;
+}
+
+/* ── Text truncation helpers ─────────────────────────────────────────────── */
+.line-clamp-1 { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
+.line-clamp-2 { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+
+/* ── Remote-hint bar ─────────────────────────────────────────────────────── */
+.tv-hint-bar {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 10px var(--tv-safe-h);
+  border-top: 1px solid rgba(255,255,255,0.06);
+  flex-shrink: 0;
+}
+.tv-hint-bar kbd {
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 0.7rem;
+  color: rgba(255,255,255,0.55);
+  font-family: inherit;
+  letter-spacing: 0.04em;
+}
+.tv-hint-bar span {
+  font-size: 0.75rem;
+  color: rgba(255,255,255,0.25);
+}
+
+/* Hide touch-only hints on TV */
+@media (pointer: coarse) {
+  .tt-hide-on-touch { display: none !important; }
+}
+
+/* ── Mobile bottom nav — hidden on fine-pointer (TV/desktop) ─────────────── */
+.tt-mobile-nav {
+  animation: tt-nav-in 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
+
+@media (pointer: fine) {
+  .tt-mobile-nav { display: none !important; }
+}
+
+/* ── Section header ──────────────────────────────────────────────────────── */
+.tt-section-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: clamp(15px, 1.45vw, 22px);
+  font-weight: 800;
+  color: rgba(255,255,255,0.95);
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+}
+
+/* ── Landscape guard — tablet only, not phone ─────────────────────────────── */
+@media (orientation: portrait) and (min-width: 481px) and (max-width: 900px) {
+  body::before {
+    content: "Please rotate your device to landscape";
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #000;
+    color: rgba(255,255,255,0.6);
+    font-size: 1.1rem;
+    text-align: center;
+    padding: 2rem;
+  }
+}
+
+/* ── HLS player spinner ─────────────────────────────────────────────────── */
+@keyframes tt-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Fullscreen video player ─────────────────────────────────────────────── */
+:fullscreen,
+:-webkit-full-screen,
+:-moz-full-screen {
+  width: 100vw !important;
+  height: 100vh !important;
+  background: #000 !important;
+  cursor: none !important;
+}
+
+:fullscreen video,
+:-webkit-full-screen video,
+:-moz-full-screen video {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain !important;
+  object-position: center center !important;
+}
+
+:fullscreen > div[aria-hidden],
+:-webkit-full-screen > div[aria-hidden] {
+  position: absolute !important;
+  inset: 0 !important;
+}
+
+/* ── Responsive overrides ─────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  :root {
+    --tv-safe-h: clamp(14px, 3.5vw, 24px);
+    --tv-safe-v: clamp(10px, 2.5vh, 20px);
+  }
+  .tt-btn-label {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  html, body, #root {
+    font-size: clamp(13px, 3.8vw, 16px);
+  }
+}

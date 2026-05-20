@@ -1,0 +1,367 @@
+fastlane_version "2.220.0"
+
+default_platform(:ios)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Temple TV — Fastlane Automation
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Lanes:
+#   iOS:
+#     fastlane ios certificates          — sync signing certs via Match
+#     fastlane ios build_dev             — dev build (ad-hoc, no upload)
+#     fastlane ios build_staging         — staging/TestFlight build
+#     fastlane ios build_production      — production App Store build
+#     fastlane ios release               — build + TestFlight upload + submit
+#     fastlane ios appletv_build         — tvOS production build
+#     fastlane ios appletv_release       — tvOS build + App Store submit
+#
+#   Android:
+#     fastlane android build_debug       — debug APK
+#     fastlane android build_staging     — signed APK for Firebase Distribution
+#     fastlane android build_production  — signed .aab for Play Store
+#     fastlane android release           — build + Play Store internal track
+#     fastlane android androidtv_build   — Android TV .aab
+#
+#   Cross-platform:
+#     fastlane bump_version type:patch   — bump semver in app.json + package.json
+#     fastlane changelog                 — generate CHANGELOG.md entry
+#     fastlane sentry_upload             — upload source maps to Sentry
+
+# ─── Shared helpers ───────────────────────────────────────────────────────────
+
+def app_json_path
+  File.expand_path("../artifacts/mobile/app.json", __dir__)
+end
+
+def read_app_json
+  require 'json'
+  JSON.parse(File.read(app_json_path))
+end
+
+def write_app_json(data)
+  require 'json'
+  File.write(app_json_path, JSON.pretty_generate(data) + "\n")
+end
+
+def current_version
+  read_app_json["expo"]["version"]
+end
+
+def bump_semver(version, type)
+  parts = version.split(".").map(&:to_i)
+  case type.to_sym
+  when :major then [parts[0] + 1, 0, 0].join(".")
+  when :minor then [parts[0], parts[1] + 1, 0].join(".")
+  when :patch then [parts[0], parts[1], parts[2] + 1].join(".")
+  else raise "Unknown bump type: #{type}. Use major, minor, or patch"
+  end
+end
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# iOS Platform
+# ═══════════════════════════════════════════════════════════════════════════════
+
+platform :ios do
+
+  before_all do
+    ensure_git_status_clean unless ENV["FASTLANE_SKIP_CLEAN_CHECK"] == "true"
+  end
+
+  desc "Sync iOS code-signing certificates and profiles via Match"
+  lane :certificates do |options|
+    type = options[:type] || "appstore"
+    match(
+      type: type,
+      app_identifier: ["com.templetv.jctm"],
+      git_url: ENV["MATCH_GIT_URL"],
+      git_branch: ENV.fetch("MATCH_GIT_BRANCH", "main"),
+      password: ENV["MATCH_PASSWORD"],
+      team_id: ENV["APPLE_TEAM_ID"],
+      readonly: ENV["CI"] == "true"
+    )
+  end
+
+  desc "Sync tvOS code-signing certificates"
+  lane :certificates_tv do
+    match(
+      type: "appstore",
+      app_identifier: ["com.templetv.jctm.tvos"],
+      git_url: ENV["MATCH_GIT_URL"],
+      git_branch: ENV.fetch("MATCH_GIT_BRANCH", "main"),
+      password: ENV["MATCH_PASSWORD"],
+      team_id: ENV["APPLE_TEAM_ID"],
+      platform: "tvos",
+      readonly: ENV["CI"] == "true"
+    )
+  end
+
+  desc "Development build (simulator or ad-hoc device)"
+  lane :build_dev do
+    match(type: "development", readonly: true)
+    gym(
+      scheme: "TempleTv",
+      configuration: "Debug",
+      export_method: "development",
+      output_directory: "fastlane/output/ios",
+      output_name: "TempleTv-dev.ipa"
+    )
+  end
+
+  desc "Staging build → TestFlight (internal)"
+  lane :build_staging do
+    certificates(type: "appstore")
+    increment_build_number(
+      build_number: Time.now.strftime("%Y%m%d%H%M"),
+      xcodeproj: "artifacts/mobile/ios/TempleTv.xcodeproj"
+    )
+    gym(
+      scheme: "TempleTv",
+      configuration: "Release",
+      export_method: "app-store",
+      output_directory: "fastlane/output/ios",
+      output_name: "TempleTv-staging.ipa",
+      xcargs: "APP_ENV=staging EXPO_PUBLIC_API_URL=https://api.templetv.org.ng"
+    )
+  end
+
+  desc "Production build (.ipa)"
+  lane :build_production do
+    certificates(type: "appstore")
+    increment_build_number(
+      build_number: ENV.fetch("BUILD_NUMBER", Time.now.strftime("%Y%m%d%H%M")),
+      xcodeproj: "artifacts/mobile/ios/TempleTv.xcodeproj"
+    )
+    gym(
+      scheme: "TempleTv",
+      configuration: "Release",
+      export_method: "app-store",
+      output_directory: "fastlane/output/ios",
+      output_name: "TempleTv.ipa",
+      include_bitcode: false,
+      xcargs: "APP_ENV=production EXPO_PUBLIC_API_URL=https://api.templetv.org.ng"
+    )
+  end
+
+  desc "Full iOS release: build → TestFlight → App Store submission"
+  lane :release do |options|
+    build_production
+
+    upload_to_testflight(
+      ipa: "fastlane/output/ios/TempleTv.ipa",
+      skip_waiting_for_build_processing: true,
+      distribute_external: false
+    )
+
+    if options[:submit]
+      upload_to_app_store(
+        ipa: "fastlane/output/ios/TempleTv.ipa",
+        submit_for_review: false,
+        automatic_release: false,
+        skip_screenshots: true,
+        skip_metadata: true
+      )
+    end
+
+    sentry_upload_dsym(
+      auth_token: ENV["SENTRY_AUTH_TOKEN"],
+      org_slug: ENV.fetch("SENTRY_ORG", "templetv"),
+      project_slug: ENV.fetch("SENTRY_PROJECT_IOS", "temple-tv-ios"),
+      dsym_path: lane_context[SharedValues::DSYM_OUTPUT_PATH]
+    ) if ENV["SENTRY_AUTH_TOKEN"]
+
+    version = current_version
+    UI.success("✅ iOS #{version} released to TestFlight!")
+  end
+
+  desc "Apple TV production build"
+  lane :appletv_build do
+    certificates_tv
+    gym(
+      scheme: "TempleTv-tvOS",
+      configuration: "Release",
+      export_method: "app-store",
+      destination: "generic/platform=tvOS",
+      output_directory: "fastlane/output/tvos",
+      output_name: "TempleTv-tvOS.ipa",
+      xcargs: "APP_ENV=production EXPO_PUBLIC_API_URL=https://api.templetv.org.ng EXPO_PUBLIC_PLATFORM=appletv"
+    )
+  end
+
+  desc "Apple TV release: build → App Store"
+  lane :appletv_release do
+    appletv_build
+    upload_to_testflight(
+      ipa: "fastlane/output/tvos/TempleTv-tvOS.ipa",
+      skip_waiting_for_build_processing: true
+    )
+    UI.success("✅ Apple TV build uploaded to TestFlight!")
+  end
+
+  error do |lane, exception|
+    UI.error("Lane #{lane} failed: #{exception.message}")
+  end
+end
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Android Platform
+# ═══════════════════════════════════════════════════════════════════════════════
+
+platform :android do
+
+  desc "Debug APK"
+  lane :build_debug do
+    gradle(
+      task: "assemble",
+      build_type: "Debug",
+      project_dir: "artifacts/mobile/android",
+      print_command: false
+    )
+    UI.success("Debug APK: #{lane_context[SharedValues::GRADLE_APK_OUTPUT_PATH]}")
+  end
+
+  desc "Staging APK → Firebase App Distribution"
+  lane :build_staging do
+    gradle(
+      task: "assemble",
+      build_type: "Release",
+      project_dir: "artifacts/mobile/android",
+      properties: {
+        "android.injected.signing.store.file" => ENV["KEYSTORE_PATH"],
+        "android.injected.signing.store.password" => ENV["KEYSTORE_PASSWORD"],
+        "android.injected.signing.key.alias" => ENV.fetch("KEY_ALIAS", "templetv"),
+        "android.injected.signing.key.password" => ENV["KEY_PASSWORD"],
+        "APP_ENV" => "staging",
+        "EXPO_PUBLIC_API_URL" => "https://api.templetv.org.ng"
+      },
+      print_command: false
+    )
+
+    firebase_app_distribution(
+      app: ENV["FIREBASE_ANDROID_APP_ID"],
+      service_credentials_file: ENV.fetch("FIREBASE_SERVICE_ACCOUNT_PATH", "google-service-account.json"),
+      groups: "internal-testers",
+      release_notes: "Staging build #{Time.now.strftime('%Y-%m-%d %H:%M')}"
+    ) if ENV["FIREBASE_ANDROID_APP_ID"]
+  end
+
+  desc "Production .aab for Google Play"
+  lane :build_production do
+    gradle(
+      task: "bundle",
+      build_type: "Release",
+      project_dir: "artifacts/mobile/android",
+      properties: {
+        "android.injected.signing.store.file" => ENV["KEYSTORE_PATH"],
+        "android.injected.signing.store.password" => ENV["KEYSTORE_PASSWORD"],
+        "android.injected.signing.key.alias" => ENV.fetch("KEY_ALIAS", "templetv"),
+        "android.injected.signing.key.password" => ENV["KEY_PASSWORD"],
+        "APP_ENV" => "production",
+        "EXPO_PUBLIC_API_URL" => "https://api.templetv.org.ng"
+      },
+      print_command: false
+    )
+    UI.success("AAB: #{lane_context[SharedValues::GRADLE_AAB_OUTPUT_PATH]}")
+  end
+
+  desc "Full Android release: build .aab → Play Store internal track"
+  lane :release do |options|
+    build_production
+
+    supply(
+      track: options.fetch(:track, "internal"),
+      aab: lane_context[SharedValues::GRADLE_AAB_OUTPUT_PATH],
+      package_name: "com.templetv.jctm",
+      json_key: ENV.fetch("PLAY_STORE_JSON_KEY_PATH", "artifacts/mobile/google-service-account.json"),
+      release_status: options.fetch(:release_status, "draft")
+    )
+
+    UI.success("✅ Android #{current_version} uploaded to Play Store internal track!")
+  end
+
+  desc "Android TV .aab"
+  lane :androidtv_build do
+    gradle(
+      task: "bundle",
+      build_type: "Release",
+      project_dir: "artifacts/mobile/android",
+      properties: {
+        "android.injected.signing.store.file" => ENV["KEYSTORE_PATH"],
+        "android.injected.signing.store.password" => ENV["KEYSTORE_PASSWORD"],
+        "android.injected.signing.key.alias" => ENV.fetch("KEY_ALIAS", "templetv"),
+        "android.injected.signing.key.password" => ENV["KEY_PASSWORD"],
+        "APP_ENV" => "production",
+        "EXPO_PUBLIC_API_URL" => "https://api.templetv.org.ng",
+        "EXPO_PUBLIC_PLATFORM" => "androidtv"
+      },
+      print_command: false
+    )
+  end
+
+  error do |lane, exception|
+    UI.error("Android lane #{lane} failed: #{exception.message}")
+  end
+end
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Cross-platform lanes (no platform prefix needed)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+desc "Bump app version — type: major | minor | patch (default: patch)"
+lane :bump_version do |options|
+  type = options.fetch(:type, "patch").to_s
+  data = read_app_json
+  old_ver = data["expo"]["version"]
+  new_ver = bump_semver(old_ver, type)
+
+  data["expo"]["version"] = new_ver
+  write_app_json(data)
+
+  # Mirror into package.json
+  pkg_path = File.expand_path("../artifacts/mobile/package.json", __dir__)
+  pkg = JSON.parse(File.read(pkg_path))
+  pkg["version"] = new_ver
+  File.write(pkg_path, JSON.pretty_generate(pkg) + "\n")
+
+  git_add(path: ["artifacts/mobile/app.json", "artifacts/mobile/package.json"])
+  git_commit(path: ["artifacts/mobile/app.json", "artifacts/mobile/package.json"],
+             message: "chore(release): bump version #{old_ver} → #{new_ver}")
+
+  add_git_tag(tag: "v#{new_ver}")
+  UI.success("Version bumped: #{old_ver} → #{new_ver} (tag v#{new_ver} created)")
+  new_ver
+end
+
+desc "Generate CHANGELOG entry from git log since last tag"
+lane :changelog do |options|
+  last_tag = sh("git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo ''").strip
+  since = last_tag.empty? ? "" : "#{last_tag}..HEAD"
+  log = sh("git log #{since} --pretty=format:'- %s (%h)' --no-merges").strip
+
+  version = current_version
+  date = Time.now.strftime("%Y-%m-%d")
+  entry = "## v#{version} — #{date}\n\n#{log.empty? ? '- No changes recorded.' : log}\n"
+
+  changelog_path = File.expand_path("../CHANGELOG.md", __dir__)
+  existing = File.exist?(changelog_path) ? File.read(changelog_path) : "# Temple TV — Changelog\n\n"
+  header = existing.lines.first(3).join
+  rest = existing.lines.drop(3).join
+
+  File.write(changelog_path, header + "\n" + entry + "\n" + rest)
+  UI.success("CHANGELOG.md updated with v#{version} entry.")
+end
+
+desc "Upload Sentry source maps for all platforms"
+lane :sentry_upload do
+  sh("pnpm --filter @workspace/api-server run build") if ENV["UPLOAD_API_MAPS"] == "true"
+
+  sentry_upload_file(
+    auth_token: ENV["SENTRY_AUTH_TOKEN"],
+    org_slug: ENV.fetch("SENTRY_ORG", "templetv"),
+    project_slug: ENV.fetch("SENTRY_PROJECT", "temple-tv-api"),
+    file: "artifacts/api-server/dist/index.mjs.map",
+    source_map: "artifacts/api-server/dist/index.mjs"
+  ) if File.exist?("artifacts/api-server/dist/index.mjs.map") && ENV["SENTRY_AUTH_TOKEN"]
+
+  UI.success("Sentry source maps uploaded.")
+end
