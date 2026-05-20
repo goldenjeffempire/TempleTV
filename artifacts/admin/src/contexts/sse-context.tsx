@@ -10,7 +10,13 @@ import {
 import { tokenStore, forceRefreshToken } from "@/lib/api";
 import { apiBase } from "@/lib/api-base";
 
-export type SSEConnectionState = "connecting" | "connected" | "reconnecting" | "offline";
+export type SSEConnectionState =
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "degraded"   // HTTP API reachable but SSE channel unavailable
+  | "offline";   // Both SSE and HTTP API unreachable
+
 type SSEEventHandler = (data: unknown) => void;
 
 export interface SSEActivityEntry {
@@ -47,33 +53,39 @@ interface SSEContextValue {
 
 const SSEContext = createContext<SSEContextValue | null>(null);
 
-const MAX_BACKOFF_MS = 6_000;
-const ACTIVITY_BUFFER_SIZE = 30;
-// If we haven't received any named SSE event (including the server's
-// `heartbeat` events emitted every 10 s) for this long, the socket is
-// considered "zombie" — open at the TCP layer but silent.
-//
-// 30 s = 3 missed heartbeats (server sends every 10 s).  This gives a
-// comfortable 3× safety margin above the heartbeat interval, surviving
-// aggressive background-tab timer throttling (Chrome min ≈ 1 min when
-// visible; can fire 2–4× late under memory pressure) without triggering
-// false reconnects on idle-but-healthy streams.
-//
-// NOTE: The server MUST send a named `heartbeat` event (not a bare
-// `: ping` comment).  SSE comments are discarded by EventSource and
-// never reach any addEventListener callback, so they cannot update
-// lastFrameAt.  The server heartbeat in admin-ops.routes.ts and
-// realtime/sse.gateway.ts sends `event: heartbeat\ndata: {...}\n\n`.
-const HEARTBEAT_STALE_MS = 30_000;
-// How long to wait before surfacing the "reconnecting" state to UI.
-// If the SSE connection recovers within this window (common after a
-// brief server hiccup or tab re-focus) the spinner never shows at all.
-const RECONNECTING_GRACE_MS = 1_500;
-// After this many failed reconnect attempts (~11 s cumulative) we surface
-// the "offline" state so operators know dashboard data is stale.
-// The browser's `offline` event also triggers an immediate transition.
-const OFFLINE_THRESHOLD_ATTEMPTS = 5;
+// ── Timing / threshold constants ─────────────────────────────────────────────
 
+// Maximum exponential-backoff cap. 30 s gives cold-start environments
+// (Render free tier ~30 s) time to wake up without flooding the server.
+const MAX_BACKOFF_MS = 30_000;
+
+const ACTIVITY_BUFFER_SIZE = 30;
+
+// Zombie-socket threshold. Server sends `heartbeat` every 10 s.
+// 45 s = ~4.5 missed heartbeats — generous margin for background-tab
+// timer throttling (Chrome ≥ 1 min, Safari can suspend timers entirely).
+const HEARTBEAT_STALE_MS = 45_000;
+
+// How long to defer "reconnecting"/"degraded"/"offline" label so brief
+// blips (token refresh, server restart) never flash the UI.
+const RECONNECTING_GRACE_MS = 2_000;
+
+// How many failed SSE attempts before we query the HTTP health endpoint.
+// 8 attempts × up to 15 s each = up to ~120 s — covers Render cold starts.
+const OFFLINE_THRESHOLD_ATTEMPTS = 8;
+
+// Watchdog poll cadence — checks for zombie sockets.
+const WATCHDOG_INTERVAL_MS = 10_000;
+
+// Independent HTTP health-check cadence.
+// Runs at all times; triggers an SSE reconnect when the API recovers.
+const HEALTH_CHECK_INTERVAL_MS = 20_000;
+
+// SSE-token fetch timeout. 15 s gives cold-start APIs enough time to
+// respond before we give up and schedule the next backoff attempt.
+const SSE_TOKEN_FETCH_TIMEOUT_MS = 15_000;
+
+// ── Event catalogue ───────────────────────────────────────────────────────────
 const KNOWN_EVENTS = [
   "snapshot", "viewer-count", "status", "broadcast-current-updated",
   "broadcast-queue-updated", "broadcast-schedule-updated", "broadcast-control-updated",
@@ -114,24 +126,20 @@ function summarize(event: string, data: unknown): string | null {
   }
 }
 
-// Fail-fast on any non-OK / network / timeout error so the caller can route
-// the failure through its single jittered backoff path. Hung fetches must
-// not be allowed to stall the connect() lock indefinitely — 8s is well
-// above any healthy round-trip and well below typical user patience.
+// ── SSE sub-token fetch ───────────────────────────────────────────────────────
 //
-// On a 401 we attempt one silent token refresh (via the same rotation path
-// used by the API wrapper) before giving up.  This handles the common case
-// where the access token expired between the last keep-alive tick and the
-// SSE reconnect — without this, every reconnect after token expiry would
-// silently fail and eventually surface the "Offline" indicator even though
-// the session is still alive and the refresh token is valid.
+// POST /admin/sse-token with Bearer token → short-lived single-use token.
+// Extended timeout (15 s) handles Render free-tier cold starts (~30 s
+// total across multiple retries). On 401 we attempt one silent token
+// refresh before giving up.
+
 async function fetchSseSubToken(): Promise<string> {
   const doFetch = async (): Promise<Response> => {
     const token = tokenStore.getAccess();
     const headers: Record<string, string> = { "X-Admin-CSRF": "1" };
     if (token) headers["Authorization"] = `Bearer ${token}`;
     const ac = new AbortController();
-    const timeout = setTimeout(() => ac.abort(), 8_000);
+    const timeout = setTimeout(() => ac.abort(), SSE_TOKEN_FETCH_TIMEOUT_MS);
     try {
       return await fetch(`${apiBase()}/admin/sse-token`, {
         method: "POST",
@@ -146,18 +154,12 @@ async function fetchSseSubToken(): Promise<string> {
 
   let res = await doFetch();
 
-  // On a 401, try once to silently refresh the access token then retry.
-  // A 401 here means the access token expired between the last proactive
-  // keep-alive and this reconnect attempt — forceRefreshToken() uses the
-  // refresh token to issue a new access token without clearing the session.
   if (res.status === 401 && tokenStore.getRefresh()) {
     try {
       await forceRefreshToken();
       res = await doFetch();
     } catch {
-      // Refresh failed — fall through, the outer catch/finally will
-      // schedule a reconnect and the 401 error will eventually trigger
-      // ttv:auth-expired through the normal auth-layer path.
+      // Refresh failed — outer catch will schedule a reconnect.
     }
   }
 
@@ -167,6 +169,31 @@ async function fetchSseSubToken(): Promise<string> {
   return d.token;
 }
 
+// ── HTTP health check ─────────────────────────────────────────────────────────
+//
+// Probes the public /broadcast-v2/health endpoint (no auth required).
+// Returns true if the API is reachable and responding with 2xx.
+// Used to distinguish "SSE proxy failure" (→ degraded) from
+// "API completely unreachable" (→ offline).
+
+async function checkApiHealth(): Promise<boolean> {
+  try {
+    const ac = new AbortController();
+    const tid = setTimeout(() => ac.abort(), 5_000);
+    const res = await fetch(`${apiBase()}/broadcast-v2/health`, {
+      signal: ac.signal,
+      credentials: "omit",
+      cache: "no-store",
+    });
+    clearTimeout(tid);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// ── Provider ──────────────────────────────────────────────────────────────────
+
 export function SSEProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<SSEConnectionState>("connecting");
   const [lastStatusPayload, setLastStatusPayload] = useState<AdminLiveStatus | null>(null);
@@ -174,22 +201,25 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
 
   const esRef = useRef<EventSource | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  // Grace timer: delays surfacing "reconnecting" state so brief drops
-  // (token refresh, server restart) don't flash the spinner in the UI.
   const reconnectingGraceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const attempt = useRef(0);
   const listenersRef = useRef<Map<string, Set<SSEEventHandler>>>(new Map());
-  // Tracks the last time *any* frame was received on the live SSE socket.
-  // Used by the visibility-change handler and the continuous watchdog to
-  // detect zombie connections.
   const lastFrameAt = useRef<number>(Date.now());
-  // Guards against concurrent connect() invocations (e.g. visibility +
-  // backoff timer racing) that would otherwise create two EventSources.
+  // Guards against concurrent connect() calls.
   const connecting = useRef(false);
-  // Provider-mount flag — guards against the "EventSource created after
-  // unmount because the in-flight token fetch resolved late" race that
-  // would otherwise leak a socket past component teardown.
+  // Provider-mount guard — prevents socket leaks after unmount.
   const mounted = useRef(true);
+  // Tracks whether we've ever successfully connected in this session.
+  // Used to decide whether to allow reconnects while the tab is hidden.
+  const everConnected = useRef(false);
+  // Ref mirror of state for reading inside intervals / timeouts without
+  // stale closure issues.
+  const stateRef = useRef<SSEConnectionState>("connecting");
+
+  const setStateSynced = useCallback((s: SSEConnectionState) => {
+    stateRef.current = s;
+    setState(s);
+  }, []);
 
   const pushActivity = useCallback((event: string, data: unknown) => {
     const summary = summarize(event, data);
@@ -208,128 +238,136 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
     listenersRef.current.get(event)?.forEach((h) => h(data));
   }, []);
 
-  // Single backoff scheduler — every failure path (connect error, token
-  // fetch error, late-resolve abort) routes through here so retry behavior
-  // is uniform and the operator can reason about timing.
+  // ── scheduleReconnect ───────────────────────────────────────────────────────
+  //
+  // Every failure path routes through here for uniform backoff.
+  // Before transitioning to "offline" (after OFFLINE_THRESHOLD_ATTEMPTS),
+  // we perform a lightweight HTTP health check:
+  //   • API reachable → "degraded"  (SSE proxy issue, not a real outage)
+  //   • API unreachable → "offline" (genuine connectivity loss)
+  //
+  // This prevents a false "Offline" badge when only the SSE channel is
+  // broken (e.g. Render SSE proxy timeout, Replit dev proxy quirk).
+
   const scheduleReconnect = useCallback(() => {
     if (!mounted.current) return;
-    // Delay surfacing the "reconnecting"/"offline" state by RECONNECTING_GRACE_MS.
-    // If the connection recovers within that window (e.g. token refresh,
-    // transient server hiccup, tab wake-up) the spinner never shows.
+
     if (reconnectingGraceTimer.current === null) {
       reconnectingGraceTimer.current = setTimeout(() => {
         reconnectingGraceTimer.current = null;
-        if (mounted.current && !esRef.current) {
-          // Surface "offline" after enough failed attempts so operators know
-          // dashboard data may be stale; otherwise show "reconnecting".
-          setState(attempt.current >= OFFLINE_THRESHOLD_ATTEMPTS ? "offline" : "reconnecting");
+        if (!mounted.current || esRef.current) return;
+
+        if (attempt.current >= OFFLINE_THRESHOLD_ATTEMPTS) {
+          // Check whether the HTTP API is actually reachable before
+          // surfacing the red "Offline" badge — prevents false positives
+          // when only the SSE channel is unavailable.
+          void checkApiHealth().then((reachable) => {
+            if (!mounted.current || esRef.current) return;
+            setStateSynced(reachable ? "degraded" : "offline");
+          });
+        } else {
+          setStateSynced("reconnecting");
         }
       }, RECONNECTING_GRACE_MS);
     }
+
+    // Exponential backoff with jitter, capped at MAX_BACKOFF_MS.
+    // The high cap lets us survive Render cold starts (~30 s) without
+    // flooding the server during outages.
     const baseMs = Math.min(300 * 2 ** attempt.current, MAX_BACKOFF_MS);
     const jitterMs = baseMs * (0.75 + Math.random() * 0.5);
     attempt.current++;
-    reconnectTimer.current = setTimeout(() => {
-      if (mounted.current && document.visibilityState !== "hidden") connect();
-    }, jitterMs);
-  // `connect` is forward-referenced; useCallback dep array is set after
-  // both are declared via the ref pattern below.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
+    reconnectTimer.current = setTimeout(() => {
+      if (!mounted.current) return;
+      // Allow reconnect even when hidden if we've never successfully
+      // connected (first-load scenario where tab opened in background).
+      const hiddenAndConnectedBefore =
+        document.visibilityState === "hidden" && everConnected.current;
+      if (!hiddenAndConnectedBefore) connect();
+    }, jitterMs);
+  // `connect` is forward-referenced via the ref pattern — dep added below.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setStateSynced]);
+
+  // ── connect ─────────────────────────────────────────────────────────────────
   const connect = useCallback(() => {
-    // Prevent the classic "two EventSources on one provider" bug: visibility
-    // change + backoff timer can fire in the same tick, both call connect(),
-    // both await the SSE-token fetch, and both end up assigning to esRef.
     if (connecting.current) return;
     connecting.current = true;
 
     esRef.current?.close();
     esRef.current = null;
 
-    fetchSseSubToken().then((sseToken) => {
-      // Late-resolve guard: the provider could have unmounted (or been
-      // torn down by a logout flow) while the token fetch was in flight.
-      // Creating an EventSource here would leak past the cleanup effect.
-      if (!mounted.current) return;
+    fetchSseSubToken()
+      .then((sseToken) => {
+        if (!mounted.current) return;
 
-      const apiOrigin = apiBase();
-      const url = new URL(`${apiOrigin}/admin/live/events?platform=admin`, window.location.origin);
-      // Sub-token only — we deliberately do NOT fall back to the raw
-      // access token in the URL. EventSource cannot send Authorization
-      // headers, so the only safe handoff is the short-lived sub-token
-      // returned by the /admin/sse-token endpoint (which uses cookie or
-      // bearer auth). Leaking an access token in the URL would hit
-      // browser history, server access logs, and Referer headers.
-      url.searchParams.set("sseToken", sseToken);
+        const apiOrigin = apiBase();
+        const url = new URL(
+          `${apiOrigin}/admin/live/events?platform=admin`,
+          window.location.origin,
+        );
+        url.searchParams.set("sseToken", sseToken);
 
-      // Use the full href for cross-origin connections (split-domain production:
-      // admin.templetv.org.ng → api.templetv.org.ng, or separate Render services).
-      // For same-origin connections the relative path is sufficient and avoids
-      // any CORS preflight complexity. Without this, a cross-origin apiBase() would
-      // have its origin silently stripped, causing EventSource to always connect to
-      // the admin static-site host rather than the API — producing an immediate error
-      // (HTML response, not text/event-stream) and an infinite "Reconnecting" loop.
-      const esUrl =
-        url.origin !== window.location.origin
-          ? url.href
-          : url.pathname + url.search;
-      const es = new EventSource(esUrl);
-      esRef.current = es;
-      lastFrameAt.current = Date.now();
+        // Use full href for cross-origin connections (split-domain prod);
+        // relative path for same-origin (dev Vite proxy) to avoid CORS
+        // preflight complexity.
+        const esUrl =
+          url.origin !== window.location.origin
+            ? url.href
+            : url.pathname + url.search;
 
-      es.addEventListener("open", () => {
-        // Cancel the pending "reconnecting" grace timer — we're back up.
-        if (reconnectingGraceTimer.current !== null) {
-          clearTimeout(reconnectingGraceTimer.current);
-          reconnectingGraceTimer.current = null;
-        }
-        setState("connected");
-        attempt.current = 0;
+        const es = new EventSource(esUrl);
+        esRef.current = es;
         lastFrameAt.current = Date.now();
-      });
 
-      KNOWN_EVENTS.forEach((evt) => {
-        es.addEventListener(evt, (e: MessageEvent) => {
+        es.addEventListener("open", () => {
+          if (reconnectingGraceTimer.current !== null) {
+            clearTimeout(reconnectingGraceTimer.current);
+            reconnectingGraceTimer.current = null;
+          }
+          everConnected.current = true;
+          attempt.current = 0;
           lastFrameAt.current = Date.now();
-          let parsed: unknown = e.data;
-          try { parsed = JSON.parse(e.data as string); } catch { /* keep raw */ }
-          if (evt === "snapshot" || evt === "status") setLastStatusPayload(parsed as AdminLiveStatus);
-          pushActivity(evt, parsed);
-          emit(evt, parsed);
+          setStateSynced("connected");
         });
+
+        KNOWN_EVENTS.forEach((evt) => {
+          es.addEventListener(evt, (e: MessageEvent) => {
+            lastFrameAt.current = Date.now();
+            let parsed: unknown = e.data;
+            try { parsed = JSON.parse(e.data as string); } catch { /* keep raw */ }
+            if (evt === "snapshot" || evt === "status") setLastStatusPayload(parsed as AdminLiveStatus);
+            pushActivity(evt, parsed);
+            emit(evt, parsed);
+          });
+        });
+
+        es.onerror = () => {
+          es.close();
+          esRef.current = null;
+          scheduleReconnect();
+        };
+      })
+      .catch(() => {
+        // Token fetch failed (timeout, 401, network) — handled in finally.
+      })
+      .finally(() => {
+        connecting.current = false;
+        // If no EventSource was created, schedule next attempt.
+        if (!esRef.current && mounted.current) scheduleReconnect();
       });
+  }, [emit, pushActivity, scheduleReconnect, setStateSynced]);
 
-      es.onerror = () => {
-        es.close();
-        esRef.current = null;
-        scheduleReconnect();
-      };
-    }).catch(() => {
-      // Token fetch failed (timeout, 401, network) — uniform backoff.
-      // The next retry will re-fetch the token, giving a refreshed
-      // session a chance to take effect.
-    }).finally(() => {
-      // Always release the lock — without `finally`, a hung-then-aborted
-      // fetch would keep the lock set forever and block all future
-      // visibility/online/timer-driven reconnects.
-      connecting.current = false;
-      // If we landed in catch (no esRef created), schedule next attempt.
-      if (!esRef.current && mounted.current) scheduleReconnect();
-    });
-  }, [emit, pushActivity, scheduleReconnect]);
-
+  // ── Main effect — connect + event listeners + watchdog + health monitor ─────
   useEffect(() => {
     mounted.current = true;
     connect();
 
+    // ── Visibility restore ──────────────────────────────────────────────────
     const onVisible = () => {
       if (document.visibilityState !== "visible") return;
       const stale = Date.now() - lastFrameAt.current > HEARTBEAT_STALE_MS;
-      // Force a fresh handshake on (a) socket-was-closed, or (b) socket
-      // is open but no frame seen in HEARTBEAT_STALE_MS — the latter is
-      // the "tab woken from sleep on a half-open TCP" case the browser
-      // never surfaces as an `error`.
       if (!esRef.current || stale) {
         clearTimeout(reconnectTimer.current);
         attempt.current = 0;
@@ -337,17 +375,19 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
       }
     };
 
+    // ── Network recovery ────────────────────────────────────────────────────
     const onOnline = () => {
       clearTimeout(reconnectTimer.current);
       attempt.current = 0;
-      // If we were fully offline, surface "reconnecting" immediately so the
-      // sidebar pill transitions away from red before the handshake completes.
-      setState((s) => s === "offline" ? "reconnecting" : s);
+      // Immediately surface "reconnecting" so the pill transitions away
+      // from red/amber before the handshake completes.
+      if (stateRef.current === "offline" || stateRef.current === "degraded") {
+        setStateSynced("reconnecting");
+      }
       connect();
     };
 
-    // Browser network-offline event → immediate transition to "offline" so
-    // operators see the red pill right away without waiting for backoff.
+    // ── Network loss ────────────────────────────────────────────────────────
     const onOffline = () => {
       if (!mounted.current) return;
       clearTimeout(reconnectTimer.current);
@@ -357,15 +397,13 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
       }
       esRef.current?.close();
       esRef.current = null;
-      setState("offline");
+      setStateSynced("offline");
     };
 
-    // Continuous zombie watchdog — fires every 10 s regardless of whether
-    // a visibility change occurred. Catches the case where the tab stays
-    // visible but the server-side SSE connection silently dies (e.g.
-    // load-balancer idle timeout, Cloudflare 100 s proxy timeout).
-    // The server heartbeats every 10 s, so HEARTBEAT_STALE_MS (15 s)
-    // fires on the second missed heartbeat — well before any visible lag.
+    // ── Zombie watchdog ─────────────────────────────────────────────────────
+    // Fires every 10 s. Catches silent TCP half-open sockets that the
+    // browser never surfaces as an `error` event (e.g. LB idle timeout,
+    // Cloudflare 100 s proxy timeout, Render SSE proxy drop).
     const watchdog = setInterval(() => {
       if (!mounted.current) return;
       if (document.visibilityState === "hidden") return;
@@ -375,14 +413,54 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
         attempt.current = 0;
         connect();
       }
-    }, 10_000);
+    }, WATCHDOG_INTERVAL_MS);
+
+    // ── HTTP health monitor ─────────────────────────────────────────────────
+    // Runs independently of SSE. When the API is reachable but SSE is
+    // down (degraded/offline state), this triggers a fresh connect()
+    // attempt so the panel recovers automatically — even after a long
+    // outage — without the operator having to reload the page.
+    const healthMonitor = setInterval(async () => {
+      if (!mounted.current) return;
+      // No need to probe when SSE is already live.
+      if (esRef.current && stateRef.current === "connected") return;
+      // Don't start a health check while a connect is already in progress.
+      if (connecting.current) return;
+
+      const reachable = await checkApiHealth();
+      if (!mounted.current) return;
+
+      if (reachable) {
+        if (
+          stateRef.current === "offline" ||
+          stateRef.current === "degraded" ||
+          stateRef.current === "reconnecting"
+        ) {
+          // API is up — attempt to (re)establish the SSE channel.
+          clearTimeout(reconnectTimer.current);
+          attempt.current = 0;
+          connect();
+        }
+        // Correct a stale "offline" label that somehow persisted.
+        if (stateRef.current === "offline" && !esRef.current) {
+          setStateSynced("reconnecting");
+        }
+      } else {
+        // Confirm offline if SSE is also down.
+        if (!esRef.current && stateRef.current !== "offline") {
+          setStateSynced("offline");
+        }
+      }
+    }, HEALTH_CHECK_INTERVAL_MS);
 
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("online", onOnline);
     window.addEventListener("offline", onOffline);
+
     return () => {
       mounted.current = false;
       clearInterval(watchdog);
+      clearInterval(healthMonitor);
       esRef.current?.close();
       esRef.current = null;
       clearTimeout(reconnectTimer.current);
@@ -394,7 +472,7 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", onOffline);
     };
-  }, [connect]);
+  }, [connect, setStateSynced]);
 
   const subscribe = useCallback((event: string, handler: SSEEventHandler) => {
     if (!listenersRef.current.has(event)) listenersRef.current.set(event, new Set());

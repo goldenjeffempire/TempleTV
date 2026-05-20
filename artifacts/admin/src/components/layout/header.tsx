@@ -44,10 +44,13 @@ function SSEIndicator() {
             ? "bg-green-500/10 border-green-500/20 text-green-600 dark:text-green-400"
             : (state === "connecting" || state === "reconnecting")
               ? "bg-yellow-500/10 border-yellow-500/20 text-yellow-600"
-              : "bg-red-500/10 border-red-500/20 text-red-600",
+              : state === "degraded"
+                ? "bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
+                : "bg-red-500/10 border-red-500/20 text-red-600",
         )}>
           {state === "connected" && <Wifi size={12} />}
           {(state === "connecting" || state === "reconnecting") && <Loader size={12} className="animate-spin" />}
+          {state === "degraded" && <Loader size={12} />}
           {state === "offline" && <WifiOff size={12} />}
           <span className="hidden sm:inline capitalize">{state}</span>
         </div>

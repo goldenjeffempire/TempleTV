@@ -501,6 +501,8 @@ export default function BroadcastV2Page() {
     ? "Partial"
     : sse.state === "reconnecting" || sse.state === "connecting"
     ? "Reconnecting"
+    : sse.state === "degraded"
+    ? "Degraded"
     : "Offline";
 
   async function clearBlocks() {
