@@ -318,7 +318,7 @@ export default function WatchScreen() {
   const { isOnline: networkConnected } = useNetworkStatus();
 
   const syncState = useBroadcastSync();
-  const { sermons, byCategory, loading, error, refetch } = useVideos();
+  const { sermons, byCategory, loading, error, refetch, isStale } = useVideos();
 
   // Latest sermon as hero fallback (newest first).
   //
@@ -365,6 +365,19 @@ export default function WatchScreen() {
 
       {/* Network offline banner */}
       <NetworkBanner visible={!networkConnected} />
+
+      {/* Stale cache indicator — shown briefly while network fetch is in
+          progress after a cold start hit the local cache. Dismissed
+          automatically once the fresh data arrives (isStale → false).
+          Pull-to-refresh also forces a fresh load and clears this banner. */}
+      {isStale && !loading && networkConnected && (
+        <View style={styles.staleBanner}>
+          <Feather name="clock" size={11} color="#92400e" />
+          <Text style={styles.staleBannerText}>
+            Showing cached content — refreshing…
+          </Text>
+        </View>
+      )}
 
       <ScrollView
         showsVerticalScrollIndicator={false}
@@ -513,6 +526,24 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   retryText: { color: "#fff", fontWeight: "600", fontSize: 14 },
+
+  // Stale cache indicator
+  staleBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginHorizontal: 16,
+    marginTop: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    backgroundColor: "#fef3c7",
+  },
+  staleBannerText: {
+    fontSize: 11,
+    fontWeight: "500",
+    color: "#92400e",
+  },
 
   // Empty
   emptyState: {

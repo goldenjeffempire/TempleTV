@@ -166,12 +166,18 @@ export interface UseVideosResult {
   loading: boolean;
   error: string | null;
   refetch: () => void;
+  /** True while the displayed data is from the local cache (network fetch not yet complete). */
+  isStale: boolean;
+  /** Timestamp of the last successful network fetch, or null if never fetched this session. */
+  lastFetchedAt: Date | null;
 }
 
 export function useVideos(): UseVideosResult {
   const [sermons, setSermons] = useState<Sermon[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isStale, setIsStale] = useState(false);
+  const [lastFetchedAt, setLastFetchedAt] = useState<Date | null>(null);
   const loadedRef = useRef(false);
   const { libraryRevision } = useBroadcastSync();
 
@@ -179,11 +185,13 @@ export function useVideos(): UseVideosResult {
     if (!silent) setLoading(true);
     setError(null);
     try {
-      // Cold-start: show cache immediately while network fetches
+      // Cold-start: paint cache immediately while the network fetch runs.
+      // Mark isStale=true so the UI can surface a subtle "cached" indicator.
       if (!loadedRef.current) {
         const cached = await readCache();
         if (cached?.length) {
           setSermons(cached);
+          setIsStale(true);
           setLoading(false);
         }
       }
@@ -192,6 +200,8 @@ export function useVideos(): UseVideosResult {
       const resp = await fetchVideos({ limit: 2000, sort: "newest" });
       const mapped = resp.videos.map((v, i) => apiVideoToSermon(v, i));
       setSermons(mapped);
+      setIsStale(false);
+      setLastFetchedAt(new Date());
       setLoading(false);
       loadedRef.current = true;
       await writeCache(mapped);
@@ -200,6 +210,7 @@ export function useVideos(): UseVideosResult {
         setError(err instanceof Error ? err.message : "Failed to load videos");
         setLoading(false);
       }
+      // On background-refresh failure keep isStale=true if we're serving cache
     }
   }, []);
 
@@ -229,7 +240,7 @@ export function useVideos(): UseVideosResult {
     [sermons],
   );
 
-  return { sermons, byCategory, loading, error, refetch: () => load(false) };
+  return { sermons, byCategory, loading, error, refetch: () => load(false), isStale, lastFetchedAt };
 }
 
 export interface UseFilteredVideosOptions {

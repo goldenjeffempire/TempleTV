@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import type { VideoItem } from "./lib/api";
 import type { SeriesItem } from "./hooks/useSeries";
 import { saveProgress, getProgress } from "./lib/watchProgress";
@@ -40,7 +40,7 @@ function getInitialScreen(): Screen {
     requested === "settings" ||
     requested === "playlists"
   )
-    {return requested;}
+    { return requested; }
   return "home";
 }
 
@@ -103,12 +103,111 @@ export default function App() {
   // Track the latest progress report so we can flush it on back (final save).
   const lastProgressRef = useRef<{ positionSecs: number; durationSecs: number } | null>(null);
 
-  const play = useCallback(
-    (videoId: string, title: string, hlsUrl?: string, startPositionSecs?: number, isLive?: boolean, thumbnailUrl?: string) => {
+  // ── History API — browser/remote Back button support ─────────────────────
+  //
+  // Every forward navigation pushes a new history entry. The remote Back
+  // button (or browser Back) fires `popstate`, which closes the topmost
+  // layer without a full page reload — critical for 24/7 TV deployments
+  // where a reload means a brief black screen visible to viewers.
+  //
+  // Flow:
+  //   play()          → pushState depth+1 → user presses Back
+  //   popstate fires  → flushAndClosePlayer() → depth returns to n
+  //   setScreen(x)    → pushState depth+1 → user presses Back
+  //   popstate fires  → setScreen("home")
+  //
+  // onBack callbacks in page components call window.history.back() so the
+  // popstate path is the single source of truth for state rollback.
+
+  const navDepthRef = useRef(0);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    history.replaceState({ depth: 0 }, "");
+    navDepthRef.current = 0;
+  }, []);
+
+  const pushHistory = useCallback(() => {
+    if (typeof window === "undefined") return;
+    navDepthRef.current += 1;
+    history.pushState({ depth: navDepthRef.current }, "");
+  }, []);
+
+  // Shared back handler used by all page onBack callbacks.
+  const handleBack = useCallback(() => {
+    if (typeof window !== "undefined") window.history.back();
+  }, []);
+
+  // Flush VOD progress to localStorage on player close, then clear the player.
+  const flushAndClosePlayer = useCallback(
+    (currentPlayer: NonNullable<typeof player>) => {
+      if (!currentPlayer.isLive && lastProgressRef.current) {
+        const p = lastProgressRef.current;
+        const thumbFallback =
+          currentPlayer.thumbnailUrl ||
+          (!currentPlayer.hlsUrl
+            ? `https://img.youtube.com/vi/${currentPlayer.videoId}/mqdefault.jpg`
+            : "");
+        saveProgress({
+          videoId: currentPlayer.videoId,
+          title: currentPlayer.title,
+          thumbnailUrl: thumbFallback,
+          hlsUrl: currentPlayer.hlsUrl ?? null,
+          positionSecs: p.positionSecs,
+          durationSecs: p.durationSecs,
+          updatedAt: Date.now(),
+        });
+      }
+      setPlayer(null);
       lastProgressRef.current = null;
-      setPlayer({ videoId, title, thumbnailUrl: thumbnailUrl ?? "", hlsUrl, startPositionSecs, isLive });
     },
     [],
+  );
+
+  // popstate = remote Back button press or browser Back button.
+  // Close the topmost layer in LIFO order.
+  useEffect(() => {
+    const handlePop = () => {
+      if (player !== null) {
+        flushAndClosePlayer(player);
+      } else if (detailsVideo !== null) {
+        setDetailsVideo(null);
+      } else if (seriesDetail !== null) {
+        setSeriesDetail(null);
+      } else if (screen !== "home") {
+        setScreen("home");
+      }
+      // At depth 0 with screen=home the popstate fires but there is nothing
+      // to close — the TV runtime or browser handles further back navigation.
+    };
+    window.addEventListener("popstate", handlePop);
+    return () => window.removeEventListener("popstate", handlePop);
+  }, [player, detailsVideo, seriesDetail, screen, flushAndClosePlayer]);
+
+  // ── Navigation helpers ────────────────────────────────────────────────────
+
+  const navigateScreen = useCallback(
+    (s: Screen) => {
+      setScreen(s);
+      if (s !== "home") pushHistory();
+    },
+    [pushHistory],
+  );
+
+  const play = useCallback(
+    (
+      videoId: string,
+      title: string,
+      hlsUrl?: string,
+      startPositionSecs?: number,
+      isLive?: boolean,
+      thumbnailUrl?: string,
+    ) => {
+      lastProgressRef.current = null;
+      setPlayer({ videoId, title, thumbnailUrl: thumbnailUrl ?? "", hlsUrl, startPositionSecs, isLive });
+      pushHistory();
+    },
+    [pushHistory],
   );
 
   // Called every ≈5 s by the active player for VOD content only.
@@ -116,7 +215,6 @@ export default function App() {
     (positionSecs: number, durationSecs: number) => {
       lastProgressRef.current = { positionSecs, durationSecs };
       if (!player || player.isLive) return;
-      // Derive YouTube thumbnail as fallback when no local thumbnailUrl is set.
       const thumbFallback =
         player.thumbnailUrl ||
         (!player.hlsUrl ? `https://img.youtube.com/vi/${player.videoId}/mqdefault.jpg` : "");
@@ -133,127 +231,148 @@ export default function App() {
     [player],
   );
 
-  // Flush the last known position when the viewer navigates back from the player.
-  const handlePlayerBack = useCallback(() => {
-    if (player && !player.isLive && lastProgressRef.current) {
-      const p = lastProgressRef.current;
-      const thumbFallback =
-        player.thumbnailUrl ||
-        (!player.hlsUrl ? `https://img.youtube.com/vi/${player.videoId}/mqdefault.jpg` : "");
-      saveProgress({
-        videoId: player.videoId,
-        title: player.title,
-        thumbnailUrl: thumbFallback,
-        hlsUrl: player.hlsUrl ?? null,
-        positionSecs: p.positionSecs,
-        durationSecs: p.durationSecs,
-        updatedAt: Date.now(),
-      });
-    }
-    setPlayer(null);
-  }, [player]);
+  const openDetails = useCallback(
+    (video: VideoItem, related: VideoItem[]) => {
+      setDetailsVideo({ video, related });
+      pushHistory();
+    },
+    [pushHistory],
+  );
+
+  const openSeries = useCallback(
+    (s: SeriesItem) => {
+      setSeriesDetail(s);
+      pushHistory();
+    },
+    [pushHistory],
+  );
+
+  // ── Page rendering ────────────────────────────────────────────────────────
+  // Each page is wrapped in its own ErrorBoundary so a crash in one page
+  // does not tear down the entire app. onReset navigates back via history so
+  // the user can recover without a full page reload.
 
   let content: React.ReactNode;
 
   if (player) {
     content = (
-      <Player
-        videoId={player.videoId}
-        title={player.title}
-        onBack={handlePlayerBack}
-        hlsUrl={player.hlsUrl}
-        startPositionSecs={player.startPositionSecs}
-        isLive={player.isLive ?? false}
-        onProgress={handleProgress}
-      />
+      <ErrorBoundary onReset={handleBack}>
+        <Player
+          videoId={player.videoId}
+          title={player.title}
+          onBack={handleBack}
+          hlsUrl={player.hlsUrl}
+          startPositionSecs={player.startPositionSecs}
+          isLive={player.isLive ?? false}
+          onProgress={handleProgress}
+        />
+      </ErrorBoundary>
     );
   } else if (detailsVideo) {
     content = (
-      <VideoDetails
-        video={detailsVideo.video}
-        relatedVideos={detailsVideo.related}
-        onPlay={(startSecs?: number) =>
-          play(
-            detailsVideo.video.videoId,
-            detailsVideo.video.title,
-            detailsVideo.video.localVideoUrl ?? undefined,
-            startSecs,
-            undefined,
-            detailsVideo.video.thumbnailUrl || undefined,
-          )
-        }
-        onBack={() => setDetailsVideo(null)}
-        onPlayRelated={(videoId, title, hlsUrl) => {
-          setDetailsVideo(null);
-          play(videoId, title, hlsUrl);
-        }}
-      />
+      <ErrorBoundary onReset={handleBack}>
+        <VideoDetails
+          video={detailsVideo.video}
+          relatedVideos={detailsVideo.related}
+          onPlay={(startSecs?: number) =>
+            play(
+              detailsVideo.video.videoId,
+              detailsVideo.video.title,
+              detailsVideo.video.localVideoUrl ?? undefined,
+              startSecs,
+              undefined,
+              detailsVideo.video.thumbnailUrl || undefined,
+            )
+          }
+          onBack={handleBack}
+          onPlayRelated={(videoId, title, hlsUrl) => {
+            setDetailsVideo(null);
+            play(videoId, title, hlsUrl);
+          }}
+        />
+      </ErrorBoundary>
     );
   } else if (seriesDetail) {
     content = (
-      <SeriesDetail
-        series={seriesDetail}
-        onBack={() => setSeriesDetail(null)}
-        onPlay={(videoId, title, hlsUrl, startSecs) => play(videoId, title, hlsUrl, startSecs, undefined, seriesDetail.thumbnailUrl || undefined)}
-        onEpisodeDetails={(video, related) => {
-          setSeriesDetail(null);
-          setDetailsVideo({ video, related });
-        }}
-      />
+      <ErrorBoundary onReset={handleBack}>
+        <SeriesDetail
+          series={seriesDetail}
+          onBack={handleBack}
+          onPlay={(videoId, title, hlsUrl, startSecs) =>
+            play(videoId, title, hlsUrl, startSecs, undefined, seriesDetail.thumbnailUrl || undefined)
+          }
+          onEpisodeDetails={(video, related) => {
+            setSeriesDetail(null);
+            openDetails(video, related);
+          }}
+        />
+      </ErrorBoundary>
     );
   } else if (screen === "settings") {
     content = (
-      <Settings
-        onBack={() => setScreen("home")}
-        onSignIn={() => setShowAuthGate(true)}
-      />
+      <ErrorBoundary onReset={handleBack}>
+        <Settings
+          onBack={handleBack}
+          onSignIn={() => setShowAuthGate(true)}
+        />
+      </ErrorBoundary>
     );
   } else if (screen === "search") {
     content = (
-      <Search
-        onBack={() => setScreen("home")}
-        onPlay={(videoId, title, hlsUrl) => {
-          const saved = getProgress(videoId);
-          play(videoId, title, hlsUrl, saved?.positionSecs);
-        }}
-        onDetails={(video) => {
-          setDetailsVideo({ video, related: [] });
-        }}
-      />
+      <ErrorBoundary onReset={handleBack}>
+        <Search
+          onBack={handleBack}
+          onPlay={(videoId, title, hlsUrl) => {
+            const saved = getProgress(videoId);
+            play(videoId, title, hlsUrl, saved?.positionSecs);
+          }}
+          onDetails={(video) => {
+            openDetails(video, []);
+          }}
+        />
+      </ErrorBoundary>
     );
   } else if (screen === "history") {
     content = (
-      <WatchHistory
-        onBack={() => setScreen("home")}
-        onPlay={(videoId, title, hlsUrl, startSecs) => play(videoId, title, hlsUrl, startSecs)}
-      />
+      <ErrorBoundary onReset={handleBack}>
+        <WatchHistory
+          onBack={handleBack}
+          onPlay={(videoId, title, hlsUrl, startSecs) => play(videoId, title, hlsUrl, startSecs)}
+        />
+      </ErrorBoundary>
     );
   } else if (screen === "playlists") {
     content = (
-      <Playlists
-        onBack={() => setScreen("home")}
-        onPlay={(videoId, title, hlsUrl, startSecs, isLive, thumbnailUrl) =>
-          play(videoId, title, hlsUrl, startSecs, isLive, thumbnailUrl)
-        }
-      />
+      <ErrorBoundary onReset={handleBack}>
+        <Playlists
+          onBack={handleBack}
+          onPlay={(videoId, title, hlsUrl, startSecs, isLive, thumbnailUrl) =>
+            play(videoId, title, hlsUrl, startSecs, isLive, thumbnailUrl)
+          }
+        />
+      </ErrorBoundary>
     );
   } else {
     content = (
-      <Home
-        onNavigateSearch={() => setScreen("search")}
-        onNavigateHistory={() => setScreen("history")}
-        onNavigateSettings={() => setScreen("settings")}
-        onNavigatePlaylists={() => setScreen("playlists")}
-        onPlay={(videoId, title, hlsUrl, startPositionSecs, isLive) => play(videoId, title, hlsUrl, startPositionSecs, isLive)}
-        onDetails={(video, related) => setDetailsVideo({ video, related })}
-        onSeriesDetail={(s) => setSeriesDetail(s)}
-      />
+      <ErrorBoundary onReset={() => { setScreen("home"); }}>
+        <Home
+          onNavigateSearch={() => navigateScreen("search")}
+          onNavigateHistory={() => navigateScreen("history")}
+          onNavigateSettings={() => navigateScreen("settings")}
+          onNavigatePlaylists={() => navigateScreen("playlists")}
+          onPlay={(videoId, title, hlsUrl, startPositionSecs, isLive) =>
+            play(videoId, title, hlsUrl, startPositionSecs, isLive)
+          }
+          onDetails={(video, related) => openDetails(video, related)}
+          onSeriesDetail={(s) => openSeries(s)}
+        />
+      </ErrorBoundary>
     );
   }
 
   // Derive a stable key so the tv-screen-enter animation fires whenever the
-  // active surface changes (home → search, search → history, etc.). Player and
-  // VideoDetails each get their own key so they fade in too.
+  // active surface changes (home → search, search → history, etc.). Player
+  // and VideoDetails each get their own key so they fade in too.
   const screenKey = player
     ? `player-${player.videoId}`
     : detailsVideo
@@ -266,7 +385,11 @@ export default function App() {
     <ErrorBoundary>
       <ConnectivityBanner />
       <Suspense fallback={<SplashFallback />}>
-        <div key={screenKey} className="tv-screen-enter" style={{ width: "100%", height: "100%", position: "relative" }}>
+        <div
+          key={screenKey}
+          className="tv-screen-enter"
+          style={{ width: "100%", height: "100%", position: "relative" }}
+        >
           {content}
           <OnAirOverlays />
         </div>
@@ -278,7 +401,7 @@ export default function App() {
         onClose={() => setShowAuthGate(false)}
         onAuthed={() => {
           setShowAuthGate(false);
-          // If the user signed in from Settings, return to home so they
+          // If the user signed in from Settings, return home so they
           // see the signed-in state on the hero
           if (screen === "settings") setScreen("home");
         }}

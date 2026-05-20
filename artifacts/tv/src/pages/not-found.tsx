@@ -1,16 +1,23 @@
+import { useEffect } from "react";
 import { TempleTvLogo } from "../components/TempleTvLogo";
 
 /**
  * 404 surface for the Smart-TV shell.
  *
- * Replaces the previous shadcn-style light-theme card (which looked
- * stranded against the dark TV chrome and shipped no brand identity at
- * all) with a centred wordmark + plain-language copy + back-button hint
- * sized for 10-foot viewing. Renders cleanly on Tizen, webOS, and
- * standard browser fallbacks because it relies only on flex centring
- * and inline styles — no Tailwind classes that might race the CSS load.
+ * Auto-redirects to the app root after a short delay so a viewer who
+ * somehow lands on an unknown URL (stale bookmark, typo in a deep link)
+ * is seamlessly returned to the Home screen without needing to interact
+ * with the remote. The manual Back / Home buttons remain available for
+ * viewers who want to navigate immediately.
  */
 export default function NotFound() {
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      window.location.replace("/");
+    }, 4_000);
+    return () => clearTimeout(timer);
+  }, []);
+
   return (
     <div
       style={{
@@ -31,9 +38,10 @@ export default function NotFound() {
           Channel not found
         </h1>
         <p style={{ fontSize: 22, lineHeight: 1.5, color: "rgba(255,255,255,0.7)", margin: 0 }}>
-          The page you tried to open isn't part of Temple TV. Press the{" "}
-          <strong style={{ color: "#fff" }}>Back</strong> button on your remote to return to the
-          home screen, or restart the app to continue watching.
+          Returning you to the home screen in a moment…
+        </p>
+        <p style={{ fontSize: 18, color: "rgba(255,255,255,0.45)", margin: 0 }}>
+          Or press a button below to navigate now.
         </p>
 
         <div style={{ display: "flex", gap: 16, flexWrap: "wrap", justifyContent: "center" }}>
@@ -87,7 +95,7 @@ export default function NotFound() {
               <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
               <polyline points="9 22 9 12 15 12 15 22" />
             </svg>
-            Home
+            Home Now
           </button>
         </div>
       </div>

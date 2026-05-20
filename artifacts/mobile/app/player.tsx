@@ -40,6 +40,7 @@ import {
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { router, useLocalSearchParams } from "expo-router";
+import { parseBoolParam, parseNumberParam } from "@/lib/params";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { useKeepAwake } from "expo-keep-awake";
@@ -341,7 +342,7 @@ export default function PlayerScreen() {
   const duration     = params.duration ?? "";
   const category     = params.category ?? "";
   const description  = params.description ?? "";
-  const isLive       = params.isLive === "true" || params.broadcastMode === "true";
+  const isLive       = parseBoolParam(params.isLive) || parseBoolParam(params.broadcastMode);
   // True when the V2 broadcast engine owns the player slot (HLS channel or
   // the raw "isLive=true" deep-link with no explicit source URL). Excludes
   // the YouTube live path — that is handled by the LiveBroadcastSupervisor
@@ -364,9 +365,9 @@ export default function PlayerScreen() {
   }, [isBroadcastV2, setIsBroadcastMode]);
 
   const startPositionSecs = params.startPositionSecs
-    ? parseFloat(params.startPositionSecs) || 0
+    ? parseNumberParam(params.startPositionSecs, 0)
     : params.startPositionMs
-    ? (parseFloat(params.startPositionMs) || 0) / 1000
+    ? parseNumberParam(params.startPositionMs, 0) / 1000
     : 0;
 
   const isYoutube = !!youtubeId && !hlsUrl;
