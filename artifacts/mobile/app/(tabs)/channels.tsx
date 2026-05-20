@@ -9,6 +9,12 @@ import {
   Text,
   View,
 } from "react-native";
+import type { ErrorBoundaryProps } from "expo-router";
+import { ErrorFallback } from "@/components/ErrorFallback";
+
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return <ErrorFallback error={error} resetError={retry} />;
+}
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { router } from "expo-router";

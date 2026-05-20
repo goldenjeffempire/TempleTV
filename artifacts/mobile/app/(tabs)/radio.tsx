@@ -17,6 +17,13 @@
  *   – Show animated wave visualizer when live
  *   – Show error + retry when the stream drops
  */
+import type { ErrorBoundaryProps } from "expo-router";
+import { ErrorFallback } from "@/components/ErrorFallback";
+
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return <ErrorFallback error={error} resetError={retry} />;
+}
+
 import React, { useEffect, useRef } from "react";
 import {
   ActivityIndicator,

@@ -9,7 +9,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { router, Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useEffect, useRef, useState } from "react";
-import { Platform, View } from "react-native";
+import { Linking, Platform, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
@@ -144,9 +144,97 @@ function NotificationOptInGate() {
   );
 }
 
+/**
+ * Known app paths — any incoming deep-link whose pathname starts with one
+ * of these is a valid app route. Everything else is a web-only path that
+ * happened to open the app via the broad `pathPrefix "/"` intent filter.
+ * Unrecognised paths are redirected to channels so the user never sees a
+ * 404 screen, even before +not-found.tsx has had a chance to mount.
+ */
+const KNOWN_APP_PATH_PREFIXES = [
+  "/channels",
+  "/library",
+  "/player",
+  "/search",
+  "/playlists",
+  "/series",
+  "/favorites",
+  "/history",
+  "/login",
+  "/signup",
+  "/donate",
+  "/settings",
+  "/radio",
+  "/account",
+  "/change-password",
+  "/link",
+];
+
+/**
+ * Returns true when the pathname could be an in-app route.
+ * The root "/" is also valid — it resolves to the tabs group.
+ */
+function isKnownAppPath(pathname: string): boolean {
+  if (pathname === "/" || pathname === "") return true;
+  return KNOWN_APP_PATH_PREFIXES.some((prefix) =>
+    pathname === prefix || pathname.startsWith(prefix + "/"),
+  );
+}
+
 function RootLayoutNav() {
   const notifListenerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // ── Deep-link safety net ────────────────────────────────────────────────────
+  // On cold start, Android may deliver the initial URL from:
+  //  • A Play Store referral link
+  //  • A shared https://templetv.org.ng/* link (autoVerify catches all paths)
+  //  • An OTA update channel redirect
+  //
+  // If the path doesn't map to a known app route, Expo Router falls back to
+  // +not-found.tsx (which now auto-redirects). As a belt-and-suspenders guard,
+  // we also intercept here so the redirect happens even earlier — before the
+  // not-found component has mounted — eliminating any possibility of a flash.
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+
+    // ── Initial URL (cold start) ────────────────────────────────────────────
+    Linking.getInitialURL().then((url) => {
+      if (!url) return;
+      try {
+        // Strip the custom scheme (templetv://) or https origin to get the path.
+        const parsed = new URL(url);
+        const path = parsed.pathname ?? "/";
+        if (!isKnownAppPath(path)) {
+          // Unknown path — redirect to the safe home screen immediately.
+          router.replace("/(tabs)/channels");
+        }
+      } catch {
+        // Malformed URL — navigate to safe home.
+        router.replace("/(tabs)/channels");
+      }
+    }).catch(() => {
+      // getInitialURL failure is non-fatal — the route resolver handles it.
+    });
+
+    // ── Subsequent incoming links (while app is foregrounded) ───────────────
+    const sub = Linking.addEventListener("url", ({ url: incomingUrl }) => {
+      if (!incomingUrl) return;
+      try {
+        const parsed = new URL(incomingUrl);
+        const path = parsed.pathname ?? "/";
+        if (!isKnownAppPath(path)) {
+          // Unknown external path — redirect to home so the user is never
+          // stranded on a 404 by a stale web link or Play Store referral URL.
+          router.replace("/(tabs)/channels");
+        }
+        // Known paths fall through — Expo Router's built-in handler processes them.
+      } catch { /* ignore malformed URLs */ }
+    });
+
+    return () => sub.remove();
+  }, []);
+
+  // ── Push notification tap handler ──────────────────────────────────────────
   useEffect(() => {
     if (Platform.OS === "web") return;
 

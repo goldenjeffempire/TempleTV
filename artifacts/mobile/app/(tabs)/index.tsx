@@ -13,6 +13,13 @@
  * Zero mock/stub data. Zero YouTube RSS calls.
  */
 
+import type { ErrorBoundaryProps } from "expo-router";
+import { ErrorFallback } from "@/components/ErrorFallback";
+
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return <ErrorFallback error={error} resetError={retry} />;
+}
+
 import React, { useCallback, useMemo, useState } from "react";
 import {
   FlatList,

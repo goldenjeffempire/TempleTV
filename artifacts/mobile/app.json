@@ -111,19 +111,62 @@
       ],
       "intentFilters": [
         {
-          "action": "MAIN",
-          "category": [
-            "LEANBACK_LAUNCHER"
-          ]
-        },
-        {
           "action": "VIEW",
           "autoVerify": true,
           "data": [
             {
               "scheme": "https",
               "host": "templetv.org.ng",
-              "pathPrefix": "/"
+              "pathPrefix": "/channels"
+            },
+            {
+              "scheme": "https",
+              "host": "templetv.org.ng",
+              "pathPrefix": "/library"
+            },
+            {
+              "scheme": "https",
+              "host": "templetv.org.ng",
+              "pathPrefix": "/player"
+            },
+            {
+              "scheme": "https",
+              "host": "templetv.org.ng",
+              "pathPrefix": "/search"
+            },
+            {
+              "scheme": "https",
+              "host": "templetv.org.ng",
+              "pathPrefix": "/playlists"
+            },
+            {
+              "scheme": "https",
+              "host": "templetv.org.ng",
+              "pathPrefix": "/series"
+            },
+            {
+              "scheme": "https",
+              "host": "templetv.org.ng",
+              "pathPrefix": "/favorites"
+            },
+            {
+              "scheme": "https",
+              "host": "templetv.org.ng",
+              "pathPrefix": "/history"
+            },
+            {
+              "scheme": "https",
+              "host": "www.templetv.org.ng",
+              "pathPrefix": "/channels"
+            },
+            {
+              "scheme": "https",
+              "host": "www.templetv.org.ng",
+              "pathPrefix": "/library"
+            },
+            {
+              "scheme": "templetv",
+              "host": "*"
             }
           ],
           "category": [
