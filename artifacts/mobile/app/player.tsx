@@ -60,6 +60,7 @@ import { VideoCard } from "@/components/VideoCard";
 import { sendReaction, submitPrayerRequest, recordView } from "@/services/api";
 import type { Sermon } from "@/types";
 import { ChatPanel } from "@/components/ChatPanel";
+import { FloatingReactions, type FloatingReactionsHandle } from "@/components/FloatingReactions";
 import { V2PlayerContainer } from "@/components/V2PlayerContainer";
 import { getApiBase } from "@/lib/apiBase";
 import { usePageSeo } from "@/hooks/usePageSeo";
@@ -443,6 +444,12 @@ export default function PlayerScreen() {
   const fsHideTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fsControlsOpacity = useRef(new Animated.Value(1)).current;
 
+  // ── Floating reactions refs — one per surface ─────────────────────────────
+  // Inline player (normal scroll view) and fullscreen modal each get their own
+  // ref so emitted particles appear in the currently-visible surface.
+  const reactionsRef   = useRef<FloatingReactionsHandle>(null);
+  const fsReactionsRef = useRef<FloatingReactionsHandle>(null);
+
   const scheduleFsHide = useCallback(() => {
     if (fsHideTimerRef.current) clearTimeout(fsHideTimerRef.current);
     fsHideTimerRef.current = setTimeout(() => {
@@ -554,6 +561,17 @@ export default function PlayerScreen() {
       ).catch(() => {});
     }
   }, [fsControlsOpacity, scheduleFsHide]);
+
+  // Fires a reaction: sends it to the API + emits a floating emoji particle
+  // over whichever player surface is currently active (inline vs fullscreen).
+  const handleReaction = useCallback((emoji: string, apiKey: string) => {
+    sendReaction(apiKey);
+    if (isFullscreen) {
+      fsReactionsRef.current?.emit(emoji);
+    } else {
+      reactionsRef.current?.emit(emoji);
+    }
+  }, [isFullscreen]);
 
   const exitFullscreen = useCallback(() => {
     if (fsHideTimerRef.current) clearTimeout(fsHideTimerRef.current);
@@ -758,6 +776,11 @@ export default function PlayerScreen() {
               <Feather name="maximize-2" size={15} color="#fff" />
             </Pressable>
           )}
+
+          {/* Floating emoji reactions — rendered over the video, pointerEvents="none"
+              so the back/badge/fullscreen controls still receive touches. Only
+              mounted during live broadcasts; idle during VOD playback. */}
+          {isLive && <FloatingReactions ref={reactionsRef} />}
         </View>
 
         {/* ── Title & Metadata ──────────────────────────────────────────── */}
@@ -873,10 +896,10 @@ export default function PlayerScreen() {
             <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
               <Text style={[styles.cardTitle, { color: c.foreground }]}>React</Text>
               <View style={styles.reactionsRow}>
-                <ReactionButton emoji="🙏" label="Amen"    onPress={() => sendReaction("amen")} />
-                <ReactionButton emoji="🔥" label="Fire"    onPress={() => sendReaction("fire")} />
-                <ReactionButton emoji="✨" label="Glory"   onPress={() => sendReaction("hallelujah")} />
-                <ReactionButton emoji="🕊️" label="Peace"  onPress={() => sendReaction("hallelujah")} />
+                <ReactionButton emoji="🙏" label="Amen"    onPress={() => handleReaction("🙏", "amen")} />
+                <ReactionButton emoji="🔥" label="Fire"    onPress={() => handleReaction("🔥", "fire")} />
+                <ReactionButton emoji="✨" label="Glory"   onPress={() => handleReaction("✨", "hallelujah")} />
+                <ReactionButton emoji="🕊️" label="Peace"  onPress={() => handleReaction("🕊️", "hallelujah")} />
               </View>
             </View>
             <PrayerSection />
@@ -977,6 +1000,11 @@ export default function PlayerScreen() {
             )}
           </View>
 
+          {/* Floating reactions — fullscreen surface. Sits above the player
+              but below the controls overlay so particles are always visible
+              regardless of whether the controls are hidden. */}
+          {isLive && <FloatingReactions ref={fsReactionsRef} />}
+
           {/* ── Controls overlay — tap anywhere on video to show/hide ── */}
           <Pressable
             style={StyleSheet.absoluteFill}
@@ -1018,6 +1046,39 @@ export default function PlayerScreen() {
                 colors={["transparent", "rgba(0,0,0,0.80)"]}
                 style={styles.fsBottomGradient}
               >
+                {/* Quick-reaction row — live broadcasts only */}
+                {isLive && (
+                  <View style={styles.fsReactionsRow}>
+                    {(
+                      [
+                        { emoji: "🙏", key: "amen" },
+                        { emoji: "🔥", key: "fire" },
+                        { emoji: "✨", key: "hallelujah" },
+                        { emoji: "🕊️", key: "peace" },
+                      ] as const
+                    ).map(({ emoji, key }) => (
+                      <Pressable
+                        key={key}
+                        onPress={() =>
+                          handleReaction(
+                            emoji,
+                            key === "peace" ? "hallelujah" : key,
+                          )
+                        }
+                        hitSlop={8}
+                        accessibilityRole="button"
+                        accessibilityLabel={`React with ${emoji}`}
+                        style={({ pressed }) => [
+                          styles.fsEmojiBtn,
+                          { opacity: pressed ? 0.55 : 1 },
+                        ]}
+                      >
+                        <Text style={styles.fsEmojiText}>{emoji}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                )}
+
                 <View style={[styles.fsBottomBar, { paddingBottom: Math.max(insets.bottom, 16) }]}>
                   {/* Play / Pause */}
                   <Pressable
@@ -1144,4 +1205,22 @@ const styles = StyleSheet.create({
   relatedTitle: { fontSize: 15, fontWeight: "700", flex: 1 },
   relatedCountPill: { paddingHorizontal: 9, paddingVertical: 3, borderRadius: 20 },
   relatedCountText: { fontSize: 12, fontWeight: "600" },
+
+  // Fullscreen quick-reaction row (live only)
+  fsReactionsRow: {
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingBottom: 8,
+  },
+  fsEmojiBtn: {
+    width: 48,
+    height: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 24,
+    backgroundColor: "rgba(0,0,0,0.40)",
+  },
+  fsEmojiText: { fontSize: 24 },
 });
