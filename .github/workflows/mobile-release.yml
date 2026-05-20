@@ -9,6 +9,7 @@
 #
 # Required secrets:
 #   EXPO_TOKEN                   — EAS personal access token
+#   GOOGLE_SERVICES_JSON         — google-services.json content (Firebase Android config)
 #   GOOGLE_SERVICE_ACCOUNT_JSON  — Google Play service account JSON (full content)
 #   APPLE_API_KEY_P8             — App Store Connect .p8 key (full content)
 #   APPLE_API_KEY_ID             — ASC API key ID (e.g. ABCD123456)
@@ -77,7 +78,12 @@ jobs:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
 
-      - name: Write Google service account key
+      - name: Write Firebase config (google-services.json)
+        run: |
+          echo '${{ secrets.GOOGLE_SERVICES_JSON }}' \
+            > artifacts/mobile/google-services.json
+
+      - name: Write Google Play service account key
         run: |
           echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' \
             > artifacts/mobile/google-service-account.json
@@ -121,7 +127,9 @@ jobs:
 
       - name: Clean up credentials
         if: always()
-        run: rm -f artifacts/mobile/google-service-account.json
+        run: |
+          rm -f artifacts/mobile/google-service-account.json
+          rm -f artifacts/mobile/google-services.json
 
   # ── iOS: Build IPA → TestFlight ───────────────────────────────────────────
   ios:

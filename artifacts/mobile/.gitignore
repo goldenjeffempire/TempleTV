@@ -44,5 +44,6 @@ screenshots/
 
 .env
 
-# Google Play service account key (sensitive — never commit)
+# Google credentials — never commit either of these
 google-service-account.json
+google-services.json

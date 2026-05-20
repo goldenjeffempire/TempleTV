@@ -1,0 +1,151 @@
+# =============================================================================
+# Temple TV — Android Auto-Build (native change detection)
+# =============================================================================
+#
+# Triggers automatically on push to main when native Android files change.
+# Complements ota-update.yml, which handles JS-only changes via EAS Update.
+#
+# Decision logic:
+#   Native files changed → full EAS Build (AAB) → Play Store internal track
+#   JS-only files changed → ota-update.yml handles it (this workflow skips)
+#
+# Native files that trigger a full build:
+#   artifacts/mobile/plugins/**      — Expo config plugins
+#   artifacts/mobile/app.json        — native config (SDK, permissions, etc.)
+#   artifacts/mobile/eas.json        — build profiles
+#   artifacts/mobile/package.json    — native dep changes
+#   artifacts/mobile/babel.config.js — Metro/Babel (can affect native bundles)
+#   **/pnpm-lock.yaml                — any dep change across the monorepo
+#
+# Required GitHub Secrets:
+#   EXPO_TOKEN                  — EAS personal access token
+#   GOOGLE_SERVICES_JSON        — Full content of google-services.json (Firebase)
+#   GOOGLE_SERVICE_ACCOUNT_JSON — Full content of Google Play service account JSON
+# =============================================================================
+
+name: Android Auto-Build
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'artifacts/mobile/plugins/**'
+      - 'artifacts/mobile/app.json'
+      - 'artifacts/mobile/eas.json'
+      - 'artifacts/mobile/package.json'
+      - 'artifacts/mobile/babel.config.js'
+      - 'artifacts/mobile/metro.config.js'
+      - '**/pnpm-lock.yaml'
+
+concurrency:
+  group: android-auto-build
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '20.18.0'
+  PNPM_VERSION: '10.26.1'
+
+jobs:
+  build-and-submit:
+    name: Android — Auto Build + Submit
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: COREPACK_ENABLE_STRICT=0 pnpm install --ignore-scripts --frozen-lockfile
+
+      - name: Lockfile pre-flight
+        run: pnpm run verify:mobile-lockfile
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Write Firebase config (google-services.json)
+        run: |
+          echo '${{ secrets.GOOGLE_SERVICES_JSON }}' \
+            > artifacts/mobile/google-services.json
+
+      - name: Write Google Play service account key
+        run: |
+          echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' \
+            > artifacts/mobile/google-service-account.json
+
+      - name: Build Android AAB (EAS cloud)
+        id: build
+        working-directory: artifacts/mobile
+        run: |
+          BUILD_JSON=$(eas build \
+            --platform android \
+            --profile production \
+            --non-interactive \
+            --json \
+            --no-wait \
+            --message "Auto-build: ${{ github.event.head_commit.message }}" \
+            2>/dev/null)
+          echo "$BUILD_JSON" | tee /tmp/android-build.json
+          BUILD_ID=$(echo "$BUILD_JSON" | \
+            jq -r 'if type=="array" then .[0].id else .id end')
+          echo "build_id=$BUILD_ID" >> $GITHUB_OUTPUT
+          echo "Android build queued on EAS: $BUILD_ID"
+          echo "Track progress at: https://expo.dev/accounts/templetv/projects/mobile/builds/$BUILD_ID"
+
+      - name: Wait for build to complete
+        working-directory: artifacts/mobile
+        run: |
+          echo "Waiting for EAS build ${{ steps.build.outputs.build_id }}..."
+          eas build:wait \
+            ${{ steps.build.outputs.build_id }} \
+            --timeout 3600
+          echo "Build finished."
+
+      - name: Submit to Play Store internal track
+        working-directory: artifacts/mobile
+        run: |
+          eas submit \
+            --platform android \
+            --profile production \
+            --id ${{ steps.build.outputs.build_id }} \
+            --non-interactive
+          echo "Submitted to Play Store internal track."
+
+      - name: Clean up credentials
+        if: always()
+        run: |
+          rm -f artifacts/mobile/google-service-account.json
+          rm -f artifacts/mobile/google-services.json
+
+      - name: Write job summary
+        if: always()
+        run: |
+          BUILD_ID="${{ steps.build.outputs.build_id }}"
+          echo "## Android Auto-Build" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field   | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Build ID | \`${BUILD_ID}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit  | ${{ github.sha }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Message | ${{ github.event.head_commit.message }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Track   | Play Store internal |" >> $GITHUB_STEP_SUMMARY
+          if [ -n "$BUILD_ID" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "[View build on EAS](https://expo.dev/accounts/templetv/projects/mobile/builds/${BUILD_ID})" >> $GITHUB_STEP_SUMMARY
+          fi

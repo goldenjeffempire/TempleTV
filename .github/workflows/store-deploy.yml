@@ -10,6 +10,7 @@
 #
 # Required secrets:
 #   EXPO_TOKEN                   — EAS personal access token
+#   GOOGLE_SERVICES_JSON         — google-services.json content (Firebase Android config)
 #   GOOGLE_SERVICE_ACCOUNT_JSON  — Google Play service account JSON
 #   APPLE_API_KEY_P8             — App Store Connect .p8 key
 #   APPLE_API_KEY_ID             — ASC API key ID
@@ -72,7 +73,13 @@ jobs:
           token: ${{ secrets.EXPO_TOKEN }}
 
       # ── Android ──────────────────────────────────────────────────────────
-      - name: Write Google service account key
+      - name: Write Firebase config (google-services.json)
+        if: inputs.platform == 'android'
+        run: |
+          echo '${{ secrets.GOOGLE_SERVICES_JSON }}' \
+            > artifacts/mobile/google-services.json
+
+      - name: Write Google Play service account key
         if: inputs.platform == 'android'
         run: |
           echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' \
@@ -137,6 +144,7 @@ jobs:
         if: always()
         run: |
           rm -f artifacts/mobile/google-service-account.json
+          rm -f artifacts/mobile/google-services.json
           rm -f /tmp/asc-api-key.p8
 
       - name: Write job summary
