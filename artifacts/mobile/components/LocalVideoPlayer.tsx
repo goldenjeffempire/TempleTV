@@ -642,7 +642,11 @@ export function LocalVideoPlayer({
         startLevel: -1,
         lowLatencyMode: false,
         // Off-main-thread MSE demuxing reduces jank on mobile browsers.
-        enableWorker: true,
+        // Must be false on web: Metro transforms hls.js with hermes-stable
+        // profile, so __HLS_WORKER_BUNDLE__.toString() produces source that
+        // V8's Worker engine cannot parse (SyntaxError: Unexpected identifier).
+        // Main-thread mode has identical correctness; Worker is a perf hint only.
+        enableWorker: false,
         maxBufferLength: 30,
         maxMaxBufferLength: 60,
         maxBufferSize: 30 * 1_000 * 1_000,
