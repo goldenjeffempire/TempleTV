@@ -3,10 +3,7 @@
 // and <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>
 // plus a LEANBACK_LAUNCHER intent filter to the main activity.
 
-const path = require("path");
-const { withAndroidManifest } = require(
-  path.resolve(__dirname, "../node_modules/@expo/config-plugins")
-);
+const { withAndroidManifest } = require("@expo/config-plugins");
 
 /** @param {import('@expo/config-plugins').ExpoConfig} config */
 module.exports = function androidTVPlugin(config) {
