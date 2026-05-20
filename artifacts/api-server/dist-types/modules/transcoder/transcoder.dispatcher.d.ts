@@ -23,6 +23,7 @@ declare class TranscoderDispatcher {
     private running;
     private stopped;
     start(): void;
+    private purgeOrphanedScratchDirs;
     private resetOrphanedJobs;
     stop(): void;
     runOnce(): Promise<{

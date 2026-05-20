@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { logger } from "../../infrastructure/logger.js";
 import { db, schema } from "../../infrastructure/db.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
-import { eq, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { env } from "../../config/env.js";
 
 /**

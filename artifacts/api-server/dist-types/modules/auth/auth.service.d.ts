@@ -1,19 +1,34 @@
+import type { ExtendResponse } from "./auth.schemas.js";
 import type { Role } from "../../shared/types.js";
 import type { AuthTokens, LoginBody, RegisterBody, ForgotPasswordBody, ResetPasswordBody } from "./auth.schemas.js";
 export declare const authService: {
     register(body: RegisterBody): Promise<AuthTokens>;
-    login(body: LoginBody): Promise<AuthTokens>;
+    login(body: LoginBody): Promise<AuthTokens | {
+        mfaRequired: true;
+        mfaToken: string;
+    }>;
     refresh(refreshToken: string, ctx?: {
         ip?: string;
         userAgent?: string;
     }): Promise<AuthTokens>;
-    logout(refreshToken: string): Promise<void>;
+    logout(refreshToken?: string): Promise<void>;
+    /**
+     * Non-rotating token extension — issues a new access token WITHOUT revoking
+     * the refresh token. Used by the client keep-alive so session maintenance
+     * never creates a rotation race between concurrent admin tabs.
+     *
+     * Rotation is still performed when the refresh token has < 7 days remaining,
+     * ensuring long-lived sessions are silently extended before the refresh token
+     * could expire.
+     */
+    extend(refreshToken: string): Promise<ExtendResponse>;
     getProfile(userId: string): Promise<{
         id: string;
         email: string;
         role: Role;
         displayName: string;
         createdAt: string;
+        mfaEnabled: boolean;
     }>;
     /**
      * Change the authenticated user's password.
@@ -36,6 +51,7 @@ export declare const authService: {
         role: Role;
         displayName: string;
         createdAt: string;
+        mfaEnabled: boolean;
     }>;
     /**
      * Initiate a password reset flow.

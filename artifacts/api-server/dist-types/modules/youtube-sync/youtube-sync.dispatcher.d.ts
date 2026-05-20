@@ -13,13 +13,9 @@ import { syncYouTubeChannel } from "./youtube-sync.service.js";
  * giving near-instant propagation without relying solely on the interval.
  * With the webhook active, 15-minute polling is purely a safety net —
  * new videos appear within seconds of the YouTube notification.
- *
- * Pattern mirrors transcoder.dispatcher.ts: start()/stop() lifecycle,
- * setTimeout chain (not setInterval), single-replica-safe.
  */
 declare class YouTubeSyncDispatcher {
     private timer;
-    private running;
     private stopped;
     get intervalMs(): number;
     start(): void;
@@ -29,7 +25,8 @@ declare class YouTubeSyncDispatcher {
     /**
      * Trigger an immediate out-of-band sync (e.g. from the admin panel or
      * a PubSubHubbub webhook notification for a new upload).
-     * Returns the result or re-throws on failure.
+     * Throws if a sync is already running (caller should check isSyncInProgress()
+     * first or catch the error and surface it as a 409).
      */
     triggerNow(): Promise<Awaited<ReturnType<typeof syncYouTubeChannel>>>;
 }

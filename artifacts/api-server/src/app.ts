@@ -286,7 +286,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     //
     //  SSE and WebSocket upgrade requests are long-lived connections that
     //  only open once; they should never trigger the counter.
-    skip: (req) => {
+    allowList: (req: import("fastify").FastifyRequest) => {
       const url = req.url ?? "";
       // Dev TV proxy
       if (url.startsWith("/tv/")) return true;
@@ -684,8 +684,8 @@ export async function buildApp(): Promise<FastifyInstance> {
     }
 
     const tvProxy = makeDevProxy(TV_DEV_PORT, "TV");
-    app.get("/tv", tvProxy as Parameters<typeof app.get>[1]);
-    app.get("/tv/*", tvProxy as Parameters<typeof app.get>[1]);
+    app.get("/tv", tvProxy as unknown as Parameters<typeof app.get>[1]);
+    app.get("/tv/*", tvProxy as unknown as Parameters<typeof app.get>[1]);
     logger.info({ port: TV_DEV_PORT }, "dev TV proxy registered at /tv/*");
 
     // ── Dev-only Mobile (Expo web) proxy ─────────────────────────────────────
@@ -699,13 +699,13 @@ export async function buildApp(): Promise<FastifyInstance> {
     const MOBILE_DEV_PORT = Number(process.env.MOBILE_DEV_PORT ?? "18115");
     const mobileProxy = makeDevProxy(MOBILE_DEV_PORT, "Mobile", "/mobile");
     const mobileAssetProxy = makeDevProxy(MOBILE_DEV_PORT, "Mobile");
-    app.get("/mobile", mobileProxy as Parameters<typeof app.get>[1]);
-    app.get("/mobile/*", mobileProxy as Parameters<typeof app.get>[1]);
+    app.get("/mobile", mobileProxy as unknown as Parameters<typeof app.get>[1]);
+    app.get("/mobile/*", mobileProxy as unknown as Parameters<typeof app.get>[1]);
     // Metro bundle + asset paths — no prefix stripping needed.
-    app.get("/artifacts/mobile/*", mobileAssetProxy as Parameters<typeof app.get>[1]);
+    app.get("/artifacts/mobile/*", mobileAssetProxy as unknown as Parameters<typeof app.get>[1]);
     // Expo Metro also serves font/image assets at /assets/* (unstable_path query).
-    app.get("/assets", mobileAssetProxy as Parameters<typeof app.get>[1]);
-    app.get("/assets/*", mobileAssetProxy as Parameters<typeof app.get>[1]);
+    app.get("/assets", mobileAssetProxy as unknown as Parameters<typeof app.get>[1]);
+    app.get("/assets/*", mobileAssetProxy as unknown as Parameters<typeof app.get>[1]);
     // Expo HMR WebSocket upgrade paths. Fastify handles GET for the initial
     // HTTP-to-WS upgrade handshake; we hijack and pipe the raw socket.
     const wsProxy = (req: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply) => {
@@ -725,8 +725,8 @@ export async function buildApp(): Promise<FastifyInstance> {
       upstream.on("error", () => socket.destroy());
       socket.on("error", () => upstream.destroy());
     };
-    app.get("/hot", wsProxy as Parameters<typeof app.get>[1]);
-    app.get("/message", wsProxy as Parameters<typeof app.get>[1]);
+    app.get("/hot", wsProxy as unknown as Parameters<typeof app.get>[1]);
+    app.get("/message", wsProxy as unknown as Parameters<typeof app.get>[1]);
     logger.info({ port: MOBILE_DEV_PORT }, "dev Mobile proxy registered at /mobile/*, /artifacts/mobile/*, /hot, /message");
   }
 

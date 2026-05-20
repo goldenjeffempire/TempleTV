@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { eq, inArray, and } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { broadcastService } from "../broadcast/broadcast.service.js";
@@ -10,7 +10,6 @@ import { clearSuspended } from "../broadcast-v2/repository/queue.repo.js";
 import { NotFoundError, BadRequestError } from "../../shared/errors.js";
 import { boostTranscodePriority } from "../transcoder/transcoder.queue.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
-import { env } from "../../config/env.js";
 import { logger } from "../../infrastructure/logger.js";
 
 /**

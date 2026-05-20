@@ -18,7 +18,7 @@ import { logger } from "../../../infrastructure/logger.js";
 
 export interface WorkerConfig {
   name: string;
-  fn: () => Promise<void>;
+  fn: () => Promise<unknown>;
   intervalMs?: number;
   backoffMs?: readonly number[];
   maxConsecutiveFailures?: number;

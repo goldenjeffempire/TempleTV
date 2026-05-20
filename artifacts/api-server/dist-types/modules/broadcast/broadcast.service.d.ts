@@ -47,7 +47,7 @@ declare const queueTable: import("drizzle-orm/pg-core").PgTableWithColumns<{
             data: string;
             driverParam: string;
             notNull: true;
-            hasDefault: false;
+            hasDefault: true;
             isPrimaryKey: false;
             isAutoincrement: false;
             hasRuntimeDefault: false;
@@ -109,6 +109,23 @@ declare const queueTable: import("drizzle-orm/pg-core").PgTableWithColumns<{
         }, {}, {}>;
         localVideoUrl: import("drizzle-orm/pg-core").PgColumn<{
             name: "local_video_url";
+            tableName: "broadcast_queue";
+            dataType: "string";
+            columnType: "PgText";
+            data: string;
+            driverParam: string;
+            notNull: false;
+            hasDefault: false;
+            isPrimaryKey: false;
+            isAutoincrement: false;
+            hasRuntimeDefault: false;
+            enumValues: [string, ...string[]];
+            baseColumn: never;
+            identity: undefined;
+            generated: undefined;
+        }, {}, {}>;
+        hlsMasterUrl: import("drizzle-orm/pg-core").PgColumn<{
+            name: "hls_master_url";
             tableName: "broadcast_queue";
             dataType: "string";
             columnType: "PgText";
@@ -205,6 +222,7 @@ export declare const broadcastService: {
         thumbnailUrl: string;
         videoSource: string;
         localVideoUrl: string | null;
+        hlsMasterUrl: string | null;
         isActive: boolean;
         videoId: string | null;
         sortOrder: number;
@@ -218,6 +236,7 @@ export declare const broadcastService: {
         thumbnailUrl: string;
         videoSource: string;
         localVideoUrl: string | null;
+        hlsMasterUrl: string | null;
         isActive: boolean;
         videoId: string | null;
         sortOrder: number;
@@ -233,6 +252,7 @@ export declare const broadcastService: {
         thumbnailUrl: string;
         durationSecs: number;
         localVideoUrl: string | null;
+        hlsMasterUrl: string | null;
         videoSource: string;
         isActive: boolean;
         sortOrder: number;

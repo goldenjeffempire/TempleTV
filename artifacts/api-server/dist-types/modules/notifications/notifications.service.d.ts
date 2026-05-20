@@ -1,6 +1,11 @@
 import type { z } from "zod";
 import type { ListNotificationsQuerySchema, SendPushBodySchema } from "./notifications.schemas.js";
 export declare const notificationsService: {
+    getStats(): Promise<{
+        expoTokens: number;
+        webSubscriptions: number;
+        total: number;
+    }>;
     listHistory(query: z.infer<typeof ListNotificationsQuerySchema>): Promise<{
         items: {
             id: string;

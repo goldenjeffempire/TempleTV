@@ -25,6 +25,7 @@ declare const Env: z.ZodObject<{
     RATE_LIMIT_DEFAULT_PER_MINUTE: z.ZodDefault<z.ZodNumber>;
     RATE_LIMIT_AUTH_PER_MINUTE: z.ZodDefault<z.ZodNumber>;
     MAX_SSE_PER_IP: z.ZodDefault<z.ZodNumber>;
+    MAX_WS_PER_IP: z.ZodDefault<z.ZodNumber>;
     BCRYPT_ROUNDS: z.ZodDefault<z.ZodNumber>;
     MEMORY_WARN_RSS_MB: z.ZodDefault<z.ZodNumber>;
     DB_POOL_MAX: z.ZodDefault<z.ZodNumber>;
@@ -35,6 +36,7 @@ declare const Env: z.ZodObject<{
     TRANSCODER_POLL_MS: z.ZodDefault<z.ZodNumber>;
     TRANSCODER_DISABLE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
     TRANSCODER_SCRATCH_DIR: z.ZodOptional<z.ZodString>;
+    TRANSCODER_JOB_TIMEOUT_MS: z.ZodDefault<z.ZodNumber>;
     SMTP_HOST: z.ZodOptional<z.ZodString>;
     SMTP_PORT: z.ZodDefault<z.ZodNumber>;
     SMTP_USER: z.ZodOptional<z.ZodString>;
@@ -55,6 +57,10 @@ declare const Env: z.ZodObject<{
     YOUTUBE_API_KEY: z.ZodOptional<z.ZodString>;
     YOUTUBE_SYNC_INTERVAL_MINS: z.ZodDefault<z.ZodNumber>;
     YOUTUBE_SYNC_DISABLE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
+    PROD_SYNC_API_URL: z.ZodOptional<z.ZodString>;
+    API_ORIGIN: z.ZodOptional<z.ZodString>;
+    PROD_SYNC_INTERVAL_MS: z.ZodDefault<z.ZodNumber>;
+    PROD_SYNC_DISABLE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
     CLEANUP_RETENTION_HOURS: z.ZodDefault<z.ZodNumber>;
     CLEANUP_SWEEP_MS: z.ZodDefault<z.ZodNumber>;
     CLEANUP_DISABLE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
@@ -63,10 +69,10 @@ declare const Env: z.ZodObject<{
     SEED_ADMIN_PASSWORD: z.ZodOptional<z.ZodString>;
     SEED_ADMIN_FORCE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
 }, "strip", z.ZodTypeAny, {
-    DATABASE_URL: string;
     NODE_ENV: "development" | "test" | "production";
     PORT: number;
     LOG_LEVEL: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
+    DATABASE_URL: string;
     JWT_ACCESS_SECRET: string;
     JWT_REFRESH_SECRET: string;
     JWT_ACCESS_TTL_SECONDS: number;
@@ -79,6 +85,7 @@ declare const Env: z.ZodObject<{
     RATE_LIMIT_DEFAULT_PER_MINUTE: number;
     RATE_LIMIT_AUTH_PER_MINUTE: number;
     MAX_SSE_PER_IP: number;
+    MAX_WS_PER_IP: number;
     BCRYPT_ROUNDS: number;
     MEMORY_WARN_RSS_MB: number;
     DB_POOL_MAX: number;
@@ -87,6 +94,7 @@ declare const Env: z.ZodObject<{
     SCHEDULED_NOTIF_MAX_ATTEMPTS: number;
     TRANSCODER_POLL_MS: number;
     TRANSCODER_DISABLE: boolean;
+    TRANSCODER_JOB_TIMEOUT_MS: number;
     SMTP_PORT: number;
     SMTP_FROM_NAME: string;
     SMTP_SECURE: boolean;
@@ -98,6 +106,8 @@ declare const Env: z.ZodObject<{
     SHUTDOWN_DRAIN_MS: number;
     YOUTUBE_SYNC_INTERVAL_MINS: number;
     YOUTUBE_SYNC_DISABLE: boolean;
+    PROD_SYNC_INTERVAL_MS: number;
+    PROD_SYNC_DISABLE: boolean;
     CLEANUP_RETENTION_HOURS: number;
     CLEANUP_SWEEP_MS: number;
     CLEANUP_DISABLE: boolean;
@@ -119,6 +129,8 @@ declare const Env: z.ZodObject<{
     CDN_BASE_URL?: string | undefined;
     HLS_TOKEN_SECRET?: string | undefined;
     YOUTUBE_API_KEY?: string | undefined;
+    PROD_SYNC_API_URL?: string | undefined;
+    API_ORIGIN?: string | undefined;
     SEED_ADMIN_EMAIL?: string | undefined;
     SEED_ADMIN_PASSWORD?: string | undefined;
 }, {
@@ -143,6 +155,7 @@ declare const Env: z.ZodObject<{
     RATE_LIMIT_DEFAULT_PER_MINUTE?: number | undefined;
     RATE_LIMIT_AUTH_PER_MINUTE?: number | undefined;
     MAX_SSE_PER_IP?: number | undefined;
+    MAX_WS_PER_IP?: number | undefined;
     BCRYPT_ROUNDS?: number | undefined;
     MEMORY_WARN_RSS_MB?: number | undefined;
     DB_POOL_MAX?: number | undefined;
@@ -153,6 +166,7 @@ declare const Env: z.ZodObject<{
     TRANSCODER_POLL_MS?: number | undefined;
     TRANSCODER_DISABLE?: string | boolean | undefined;
     TRANSCODER_SCRATCH_DIR?: string | undefined;
+    TRANSCODER_JOB_TIMEOUT_MS?: number | undefined;
     SMTP_HOST?: string | undefined;
     SMTP_PORT?: number | undefined;
     SMTP_USER?: string | undefined;
@@ -173,6 +187,10 @@ declare const Env: z.ZodObject<{
     YOUTUBE_API_KEY?: string | undefined;
     YOUTUBE_SYNC_INTERVAL_MINS?: number | undefined;
     YOUTUBE_SYNC_DISABLE?: string | boolean | undefined;
+    PROD_SYNC_API_URL?: string | undefined;
+    API_ORIGIN?: string | undefined;
+    PROD_SYNC_INTERVAL_MS?: number | undefined;
+    PROD_SYNC_DISABLE?: string | boolean | undefined;
     CLEANUP_RETENTION_HOURS?: number | undefined;
     CLEANUP_SWEEP_MS?: number | undefined;
     CLEANUP_DISABLE?: string | boolean | undefined;

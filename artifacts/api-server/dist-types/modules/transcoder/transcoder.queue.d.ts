@@ -51,3 +51,11 @@ export declare function queueStats(): Promise<{
     completedToday: number;
     failedToday: number;
 }>;
+/**
+ * Boost the priority of an existing queued transcoding job for a given video.
+ * Only affects jobs with status='queued' — processing/done/failed jobs are
+ * already running or terminal and must not be re-prioritised.
+ * Returns true when the update was applied, false when no eligible job exists.
+ * Safe to call fire-and-forget; errors are surfaced as the resolved boolean.
+ */
+export declare function boostTranscodePriority(videoId: string, priority: number): Promise<boolean>;

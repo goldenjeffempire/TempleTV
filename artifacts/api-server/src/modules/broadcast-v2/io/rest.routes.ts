@@ -18,7 +18,6 @@ import { db, schema } from "../../../infrastructure/db.js";
 import { eq, and, isNull, isNotNull } from "drizzle-orm";
 import { enqueueTranscode, boostTranscodePriority } from "../../transcoder/transcoder.queue.js";
 import { logger } from "../../../infrastructure/logger.js";
-import { env } from "../../../config/env.js";
 import { mediaIntegrityScanner } from "../engine/media-integrity-scanner.js";
 import { queueIntegrityValidator } from "../engine/queue-integrity-validator.js";
 import { workerSupervisor } from "../engine/worker-supervisor.js";
@@ -589,11 +588,11 @@ export async function restRoutes(app: FastifyInstance) {
           id: i.id,
           videoId: null,
           youtubeId: "",
-          title: i.title,
-          thumbnailUrl: i.thumbnailUrl,
-          durationSecs: i.durationSecs,
-          localVideoUrl: i.source.kind === "mp4" ? i.source.url : null,
-          hlsMasterUrl: i.source.kind === "hls" ? i.source.url : null,
+          title: "",
+          thumbnailUrl: null,
+          durationSecs: 0,
+          localVideoUrl: i.localVideoUrl,
+          hlsMasterUrl: i.hlsMasterUrl,
           faststartApplied: false,
           videoDuration: null,
         })));

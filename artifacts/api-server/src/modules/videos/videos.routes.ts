@@ -124,7 +124,13 @@ export async function invalidateVideosCatalogCache(): Promise<void> {
   await c.del(`videos:catalog:g${catalogGeneration}:newest:1:50`).catch(() => {});
 }
 
-function toDto(v: typeof videos.$inferSelect) {
+type VideoDtoRow = Pick<typeof videos.$inferSelect,
+  "id" | "youtubeId" | "title" | "description" | "thumbnailUrl" | "duration" |
+  "category" | "preacher" | "publishedAt" | "importedAt" | "viewCount" |
+  "videoSource" | "localVideoUrl" | "hlsMasterUrl"
+>;
+
+function toDto(v: VideoDtoRow) {
   return {
     id: v.id,
     youtubeId: v.youtubeId,

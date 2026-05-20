@@ -91,6 +91,13 @@ declare class BroadcastEngine extends EventEmitter {
     private watchdogInterval;
     /** Polls the DB when the queue is empty so the engine auto-starts on first add. */
     private emptyQueueRetryInterval;
+    /**
+     * Persists cycle position to DB.
+     * Raised from 10 s to 30 s — reduces idle DB writes 3× with no impact on
+     * restart accuracy (v2 orchestrator owns precision state; v1 checkpoint is
+     * a coarse fallback used only by the legacy overlay surfaces).
+     */
+    private checkpointInterval;
     /** Wall-clock ms of the last emitSnapshot() call — used by the watchdog. */
     private lastSnapshotMs;
     private viewerCount;
@@ -159,6 +166,14 @@ declare class BroadcastEngine extends EventEmitter {
      * auto-starts the moment an admin adds the first video.
      */
     private _startEmptyQueueRetry;
+    /**
+     * Starts a periodic interval that saves the current broadcast position to
+     * the checkpoint table every 10 s. On server restart, reload() reads this
+     * checkpoint and restores cycleStartedAt so the broadcast resumes at the
+     * correct real-time position rather than jumping to item 0.
+     */
+    private _startCheckpointSave;
+    private _saveCheckpoint;
 }
 export declare const broadcastEngine: BroadcastEngine;
 export {};

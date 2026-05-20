@@ -4,7 +4,7 @@ import { broadcastSequence, setBroadcastMode, SERVICE_LABELS } from "../../../in
 import { eventLogRepo } from "../repository/event-log.repo.js";
 import { runtimeRepo } from "../repository/runtime.repo.js";
 import { checkpointRepo } from "../repository/checkpoint.repo.js";
-import { queueRepo, isKnownBadUrl, clearAllBadUrls, clearBadUrl, BAD_URL_TTL_MS, incrementBadUrlSkipCount, resetBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, type RawQueueRow } from "../repository/queue.repo.js";
+import { queueRepo, isKnownBadUrl, markBadUrl, clearAllBadUrls, clearBadUrl, BAD_URL_TTL_MS, incrementBadUrlSkipCount, resetBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, type RawQueueRow } from "../repository/queue.repo.js";
 import { playbackAnalytics } from "./playback-analytics.js";
 import type {
   V2EventType,
@@ -689,7 +689,6 @@ class BroadcastOrchestrator extends EventEmitter {
     if (item.primaryUrl && isKnownBadUrl(item.primaryUrl)) return null;
     return {
       id: item.id,
-      videoId: item.videoId,
       title: item.title,
       thumbnailUrl: item.thumbnailUrl,
       durationSecs: item.durationSecs,
@@ -1471,8 +1470,12 @@ class BroadcastOrchestrator extends EventEmitter {
    * Used by the play-now endpoint to build the new ordered list without
    * an extra DB round-trip — the items array is always in sync after reload.
    */
-  getItems(): { id: string }[] {
-    return this.items.map((i) => ({ id: i.id }));
+  getItems(): { id: string; localVideoUrl: string | null; hlsMasterUrl: string | null }[] {
+    return this.items.map((i) => ({
+      id: i.id,
+      localVideoUrl: i.source.kind === "mp4" || i.source.kind === "youtube" ? i.source.url : null,
+      hlsMasterUrl: i.source.kind === "hls" || i.source.kind === "dash" ? i.source.url : null,
+    }));
   }
 
   /** Reload diagnostics for /health. */
