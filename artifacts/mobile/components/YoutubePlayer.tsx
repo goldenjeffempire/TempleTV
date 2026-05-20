@@ -86,7 +86,7 @@ function buildEmbedUrl({
  * Native (iOS/Android) uses YoutubePlayer.native.tsx via Expo's
  * platform-specific resolution.
  */
-export function YoutubePlayer({
+function WebYoutubePlayer({
   videoId,
   isLive,
   isBroadcastLive,
@@ -98,10 +98,6 @@ export function YoutubePlayer({
   onPlay,
   onPause,
 }: YoutubePlayerProps) {
-  if (Platform.OS !== "web") {
-    return null;
-  }
-
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const callbacksRef = useRef({ onEnd, onError, onPlay, onPause });
   callbacksRef.current = { onEnd, onError, onPlay, onPause };
@@ -334,6 +330,11 @@ export function YoutubePlayer({
       })}
     </View>
   );
+}
+
+export function YoutubePlayer(props: YoutubePlayerProps) {
+  if (Platform.OS !== "web") return null;
+  return <WebYoutubePlayer {...props} />;
 }
 
 const styles = StyleSheet.create({
