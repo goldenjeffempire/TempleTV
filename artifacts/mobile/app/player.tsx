@@ -28,6 +28,7 @@ import {
   Image,
   Modal,
   PanResponder,
+  Platform,
   Pressable,
   ScrollView,
   Share,
@@ -43,6 +44,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { useKeepAwake } from "expo-keep-awake";
 import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from "expo-av";
+import * as ScreenOrientation from "expo-screen-orientation";
 import { useColors } from "@/hooks/useColors";
 import { YoutubePlayer } from "@/components/YoutubePlayer";
 import { LocalVideoPlayer } from "@/components/LocalVideoPlayer";
@@ -537,12 +539,28 @@ export default function PlayerScreen() {
     fsControlsOpacity.setValue(1);
     setIsFullscreen(true);
     scheduleFsHide();
+    // On Android the Modal supportedOrientations prop is ignored — the
+    // Activity-level lock set in AndroidManifest takes precedence. We must
+    // programmatically unlock orientation to let the device rotate into
+    // landscape for an immersive fullscreen experience.
+    if (Platform.OS !== "web") {
+      ScreenOrientation.lockAsync(
+        ScreenOrientation.OrientationLock.LANDSCAPE,
+      ).catch(() => {});
+    }
   }, [fsControlsOpacity, scheduleFsHide]);
 
   const exitFullscreen = useCallback(() => {
     if (fsHideTimerRef.current) clearTimeout(fsHideTimerRef.current);
     setFsStartPositionMs(currentPositionMsRef.current);
     setIsFullscreen(false);
+    // Restore the app-wide portrait lock when leaving fullscreen so the
+    // rest of the app (tab bar, home feed, library) stays in portrait.
+    if (Platform.OS !== "web") {
+      ScreenOrientation.lockAsync(
+        ScreenOrientation.OrientationLock.PORTRAIT_UP,
+      ).catch(() => {});
+    }
   }, []);
 
   // Clean up timer whenever fullscreen is closed (e.g. Android back button).

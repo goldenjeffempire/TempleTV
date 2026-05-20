@@ -9,7 +9,7 @@
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "jsEngine": "hermes",
-    "description": "Stream live worship, sermons, and teachings from Temple TV JCTM Broadcasting \u2014 Jesus Christ Temple Ministry.",
+    "description": "Stream live worship, sermons, and teachings from Temple TV JCTM Broadcasting — Jesus Christ Temple Ministry.",
     "owner": "templetv",
     "primaryColor": "#6A0DAD",
     "assetBundlePatterns": [
@@ -240,7 +240,8 @@
       ],
       "./plugins/android-tv.js",
       "./plugins/with-kotlin-version.js",
-      "./plugins/with-foreground-service-type.js"
+      "./plugins/with-foreground-service-type.js",
+      "expo-screen-orientation"
     ],
     "extra": {
       "router": {
@@ -252,8 +253,7 @@
     },
     "experiments": {
       "typedRoutes": true,
-      "reactCompiler": false,
-      "baseUrl": "/mobile"
+      "reactCompiler": false
     }
   }
 }

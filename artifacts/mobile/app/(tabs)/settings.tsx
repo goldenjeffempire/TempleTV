@@ -25,11 +25,15 @@ import { useFavorites } from "@/hooks/useFavorites";
 import { useNotificationPreferences } from "@/hooks/useNotificationPreferences";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme, type ThemeChoice } from "@/context/ThemeContext";
+import Constants from "expo-constants";
 import { APP_CONFIG } from "@/constants/config";
 import {
   requestNotificationPermissions,
   getNotificationPermissionStatus,
 } from "@/services/notifications";
+
+const APP_VERSION =
+  Constants.expoConfig?.version ?? "1.0.5";
 
 function ToggleSwitch({ value, onToggle }: { value: boolean; onToggle: () => void }) {
   const c = useColors();
@@ -487,13 +491,23 @@ export default function SettingsScreen() {
           label="Contact"
           onPress={() => Linking.openURL("mailto:info@templetv.org.ng")}
         />
+        <Row
+          icon="shield"
+          label="Privacy Policy"
+          onPress={() => Linking.openURL("https://templetv.org.ng/privacy")}
+        />
+        <Row
+          icon="file-text"
+          label="Terms of Service"
+          onPress={() => Linking.openURL("https://templetv.org.ng/terms")}
+        />
       </GlassCard>
 
       {/* App info */}
       <View style={styles.appInfo}>
         <Logo />
         <Text style={[styles.appVersion, { color: c.mutedForeground }]}>
-          Temple TV · v1.0.4
+          Temple TV · v{APP_VERSION}
         </Text>
         <Text style={[styles.appTagline, { color: c.mutedForeground }]}>
           Changing lives with the word of God

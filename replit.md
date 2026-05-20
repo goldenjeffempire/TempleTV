@@ -172,6 +172,25 @@ The `TRANSCODER_DISABLE` Replit secret was blocking the transcoder dispatcher fr
 
 **For production (Render):** Deploy these changes. Then, in the admin panel → **Transcoding** tab → click **"Transcode All Unprocessed"** to re-queue the existing failed videos. The transcoder will process them to HLS.
 
+## Mobile Production Readiness (May 2026)
+
+The Android app is code-complete and ready for `eas build --platform android --profile production`. All changes are TypeScript-clean.
+
+**Changes made:**
+- `experiments.baseUrl: "/mobile"` removed from `app.json` — was added for the Replit dev proxy only. Dev preview still works via `EXPO_BASE_URL=/mobile` in the `dev` script + `public/index.html` URL-rewrite. EAS native builds no longer get `/mobile` inlined as `EXPO_BASE_URL`, so Android routing is clean.
+- `expo-screen-orientation` (`~9.0.9`) installed and added to `app.json` plugins. The player's fullscreen button now calls `ScreenOrientation.lockAsync(LANDSCAPE)` on enter and `lockAsync(PORTRAIT_UP)` on exit. Without this, Android ignores the Modal's `supportedOrientations` prop (it's Activity-level) and the video never rotates.
+- `package.json` version synced to `1.0.5` to match `app.json`.
+- Settings screen: hardcoded `v1.0.4` replaced with `Constants.expoConfig?.version` (auto-tracks future bumps). Privacy Policy and Terms of Service links added — both are required for Play Store data-safety submission.
+- `artifacts/mobile/google-services.json` placeholder created. **Replace all `REPLACE_WITH_...` values with your real Firebase project credentials before building** — `expo-notifications` requires a valid `google-services.json` for FCM push on Android.
+
+**Still required from you before Play Store submission:**
+1. **Replace `artifacts/mobile/google-services.json`** — Download from Firebase Console → Project settings → Your apps → Android app → `google-services.json`.
+2. **Create `artifacts/mobile/google-service-account.json`** — Google Play Console service account key needed for `eas submit`. Console → Setup → API access → Create a service account key.
+3. **EAS credentials** — Run `eas credentials` locally once to generate/upload the Android keystore. EAS stores it remotely (`credentialsSource: "remote"`).
+4. **Build command**: `eas build --platform android --profile production` → produces an `.aab` file.
+5. **Submit command**: `eas submit --platform android --profile production` → uploads to Play Store internal track.
+6. **Privacy policy page** — Publish `https://templetv.org.ng/privacy` before submitting (Play Store rejects apps without a reachable privacy policy URL).
+
 ## Gotchas
 
 - **Admin user**: seeded on startup via `seedAdminIfConfigured()`. Credentials controlled by `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` env vars (set in Replit Secrets). Default dev credentials: `admin@templetv.org.ng` / `Temple124@` (value of `SEED_ADMIN_PASSWORD`). Login at the admin panel → `/login`.
