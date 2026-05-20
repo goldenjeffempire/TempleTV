@@ -48,6 +48,9 @@ Thumbs.db
 .cache/
 .local/
 
+# Replit attached_assets (uploaded files — never commit, may contain credentials)
+attached_assets/
+
 # Google Play service account key (sensitive — never commit)
 google-service-account.json
 artifacts/mobile/google-service-account.json
