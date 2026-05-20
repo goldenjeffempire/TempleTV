@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { tokenStore } from "@/lib/api";
+import { tokenStore, forceRefreshToken } from "@/lib/api";
 import { apiBase } from "@/lib/api-base";
 
 export type SSEConnectionState = "connecting" | "connected" | "reconnecting" | "offline";
@@ -49,12 +49,22 @@ const SSEContext = createContext<SSEContextValue | null>(null);
 
 const MAX_BACKOFF_MS = 6_000;
 const ACTIVITY_BUFFER_SIZE = 30;
-// If we haven't received any frame (including the server's `heartbeat`
-// pings, which are emitted every 10 s) for this long, the socket is
-// considered "zombie" — open at the TCP layer but silent. 15 s = 1.5
-// missed heartbeats — enough headroom for one delayed beat while
-// still catching dead connections well before any visible UI impact.
-const HEARTBEAT_STALE_MS = 15_000;
+// If we haven't received any named SSE event (including the server's
+// `heartbeat` events emitted every 10 s) for this long, the socket is
+// considered "zombie" — open at the TCP layer but silent.
+//
+// 30 s = 3 missed heartbeats (server sends every 10 s).  This gives a
+// comfortable 3× safety margin above the heartbeat interval, surviving
+// aggressive background-tab timer throttling (Chrome min ≈ 1 min when
+// visible; can fire 2–4× late under memory pressure) without triggering
+// false reconnects on idle-but-healthy streams.
+//
+// NOTE: The server MUST send a named `heartbeat` event (not a bare
+// `: ping` comment).  SSE comments are discarded by EventSource and
+// never reach any addEventListener callback, so they cannot update
+// lastFrameAt.  The server heartbeat in admin-ops.routes.ts and
+// realtime/sse.gateway.ts sends `event: heartbeat\ndata: {...}\n\n`.
+const HEARTBEAT_STALE_MS = 30_000;
 // How long to wait before surfacing the "reconnecting" state to UI.
 // If the SSE connection recovers within this window (common after a
 // brief server hiccup or tab re-focus) the spinner never shows at all.
@@ -108,26 +118,53 @@ function summarize(event: string, data: unknown): string | null {
 // the failure through its single jittered backoff path. Hung fetches must
 // not be allowed to stall the connect() lock indefinitely — 8s is well
 // above any healthy round-trip and well below typical user patience.
+//
+// On a 401 we attempt one silent token refresh (via the same rotation path
+// used by the API wrapper) before giving up.  This handles the common case
+// where the access token expired between the last keep-alive tick and the
+// SSE reconnect — without this, every reconnect after token expiry would
+// silently fail and eventually surface the "Offline" indicator even though
+// the session is still alive and the refresh token is valid.
 async function fetchSseSubToken(): Promise<string> {
-  const token = tokenStore.getAccess();
-  const headers: Record<string, string> = { "X-Admin-CSRF": "1" };
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  const ac = new AbortController();
-  const timeout = setTimeout(() => ac.abort(), 8_000);
-  try {
-    const res = await fetch(`${apiBase()}/admin/sse-token`, {
-      method: "POST",
-      headers,
-      credentials: "include",
-      signal: ac.signal,
-    });
-    if (!res.ok) throw new Error(`sse-token ${res.status}`);
-    const d = (await res.json()) as { token?: string };
-    if (!d.token) throw new Error("sse-token missing token");
-    return d.token;
-  } finally {
-    clearTimeout(timeout);
+  const doFetch = async (): Promise<Response> => {
+    const token = tokenStore.getAccess();
+    const headers: Record<string, string> = { "X-Admin-CSRF": "1" };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const ac = new AbortController();
+    const timeout = setTimeout(() => ac.abort(), 8_000);
+    try {
+      return await fetch(`${apiBase()}/admin/sse-token`, {
+        method: "POST",
+        headers,
+        credentials: "include",
+        signal: ac.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  let res = await doFetch();
+
+  // On a 401, try once to silently refresh the access token then retry.
+  // A 401 here means the access token expired between the last proactive
+  // keep-alive and this reconnect attempt — forceRefreshToken() uses the
+  // refresh token to issue a new access token without clearing the session.
+  if (res.status === 401 && tokenStore.getRefresh()) {
+    try {
+      await forceRefreshToken();
+      res = await doFetch();
+    } catch {
+      // Refresh failed — fall through, the outer catch/finally will
+      // schedule a reconnect and the 401 error will eventually trigger
+      // ttv:auth-expired through the normal auth-layer path.
+    }
   }
+
+  if (!res.ok) throw new Error(`sse-token ${res.status}`);
+  const d = (await res.json()) as { token?: string };
+  if (!d.token) throw new Error("sse-token missing token");
+  return d.token;
 }
 
 export function SSEProvider({ children }: { children: React.ReactNode }) {

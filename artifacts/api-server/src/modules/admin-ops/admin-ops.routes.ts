@@ -2653,11 +2653,21 @@ export async function adminOpsRoutes(app: FastifyInstance) {
 
       sseCounter.inc();
 
+      // Disable Nagle's algorithm so each SSE frame is flushed immediately
+      // to the client without TCP batching. Without this, small heartbeat
+      // and snapshot frames may be held in the kernel send buffer for up to
+      // 40 ms, which delays the EventSource `open` event in browsers and
+      // makes the admin connection indicator flicker on idle streams.
+      reply.raw.socket?.setNoDelay(true);
+
       reply.raw.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache, no-transform",
         Connection: "keep-alive",
         "X-Accel-Buffering": "no",
+        // Explicitly opt out of any response compression middleware.
+        // Compressors buffer data before flushing — catastrophic for SSE.
+        "Content-Encoding": "identity",
       });
 
       const send = (event: string, data: unknown) => {
@@ -2684,13 +2694,25 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       };
       adminEventBus.on("admin-event", onAdminEvent);
 
+      // Send a named `heartbeat` event every 10 s so the client-side
+      // EventSource listener fires and updates `lastFrameAt`. A bare
+      // `: comment` (e.g. `: ping`) is silently discarded by the browser's
+      // EventSource implementation — it keeps the TCP connection alive at
+      // the transport layer but is invisible to the JavaScript watchdog that
+      // detects zombie connections. Using a named event ensures the client
+      // knows the stream is alive even during broadcast idle periods.
+      //
+      // Interval: 10 s.  Client stale threshold: 30 s (= 3 missed beats).
+      // This gives a comfortable 3× safety margin over timer jitter,
+      // background-tab throttling, and proxy latency before a reconnect
+      // is triggered.
       const heartbeat = setInterval(() => {
         try {
-          reply.raw.write(`: ping\n\n`);
+          reply.raw.write(`event: heartbeat\ndata: ${JSON.stringify({ ts: Date.now() })}\n\n`);
         } catch {
           /* ignore — close handler will clean up */
         }
-      }, 15_000);
+      }, 10_000);
 
       const cleanup = () => {
         clearInterval(heartbeat);

@@ -68,11 +68,14 @@ export async function sseRoutes(app: FastifyInstance) {
     bumpSseViewers(+1);
     sseCounter.inc();
 
+    reply.raw.socket?.setNoDelay(true);
+
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
+      "Content-Encoding": "identity",
     });
 
     const send = (e: BroadcastEvent) => {
@@ -101,11 +104,11 @@ export async function sseRoutes(app: FastifyInstance) {
 
     const heartbeat = setInterval(() => {
       try {
-        reply.raw.write(`: ping\n\n`);
+        reply.raw.write(`event: heartbeat\ndata: ${JSON.stringify({ ts: Date.now() })}\n\n`);
       } catch {
         /* ignore — close handler will clean up */
       }
-    }, 15_000);
+    }, 10_000);
 
     const cleanup = () => {
       clearInterval(heartbeat);

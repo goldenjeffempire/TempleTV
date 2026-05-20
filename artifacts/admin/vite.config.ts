@@ -100,6 +100,23 @@ export default defineConfig({
           timeout: 600_000,
           proxyTimeout: 600_000,
         },
+        // SSE streaming endpoints need infinite timeouts so the long-lived
+        // event stream is never closed by the dev proxy due to inactivity.
+        // These rules MUST appear before the catch-all "/api" entry.
+        "/api/admin/live/events": {
+          target,
+          changeOrigin: true,
+          secure: false,
+          timeout: 0,
+          proxyTimeout: 0,
+        },
+        "/api/broadcast/events": {
+          target,
+          changeOrigin: true,
+          secure: false,
+          timeout: 0,
+          proxyTimeout: 0,
+        },
         "/api": {
           target,
           changeOrigin: true,
