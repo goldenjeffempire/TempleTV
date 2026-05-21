@@ -1,3 +1,32 @@
+import * as Sentry from "@sentry/react-native";
+
+// ── Sentry crash reporting ────────────────────────────────────────────────────
+// Initialise as early as possible — before any other module that may throw.
+// Guarded by the env var so the SDK is a no-op in local dev unless the DSN
+// is explicitly set, and never active on web (Sentry RN is native-only).
+if (process.env.EXPO_PUBLIC_SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.EXPO_PUBLIC_SENTRY_DSN,
+    enabled: true,
+    environment: process.env.APP_ENV ?? "development",
+    // 10 % performance sampling — enough for bottleneck data without cost spikes.
+    tracesSampleRate: 0.1,
+    // Attach JS stack to every event (not just unhandled errors).
+    attachStacktrace: true,
+    // Track app foreground/background sessions for crash-free-rate metrics.
+    autoSessionTracking: true,
+    // Never log to the console in production builds.
+    debug: false,
+    // Ignore common benign "errors" that fire every session and pollute the feed.
+    ignoreErrors: [
+      "Non-Error promise rejection captured",
+      "Network request failed",
+      "AbortError",
+      "Load failed",
+    ],
+  });
+}
+
 import {
   Inter_400Regular,
   Inter_500Medium,
@@ -245,9 +274,45 @@ function RootLayoutNav() {
         const data = response.notification.request.content.data as Record<string, unknown>;
         const type = data?.type as string | undefined;
 
-        // All push notification types land on Channel — the global home.
-        if (type) {
-          router.push("/(tabs)/channels");
+        if (!type) return;
+
+        // Route the user to the most relevant screen based on notification type.
+        switch (type) {
+          case "live_started":
+          case "live_now":
+          case "live": {
+            // Live-stream alert — open the player in live mode immediately.
+            router.push({
+              pathname: "/player",
+              params: {
+                live: "true",
+                title: "Temple TV Live",
+                preacher: "Temple TV JCTM",
+              },
+            });
+            break;
+          }
+          case "new_video":
+          case "new_sermon":
+          case "video": {
+            // New-content alert — deep-link to specific video if id is attached.
+            const videoId = data?.videoId as string | undefined;
+            const title   = (data?.title as string | undefined) ?? "Temple TV";
+            if (videoId) {
+              router.push({
+                pathname: "/player",
+                params: { id: videoId, title },
+              });
+            } else {
+              router.push("/(tabs)/library");
+            }
+            break;
+          }
+          case "prayer":
+          case "announcement":
+          default:
+            // General or unrecognised type — land on the channel hub.
+            router.push("/(tabs)/channels");
         }
       });
     });
@@ -364,7 +429,7 @@ function RootLayoutNav() {
   );
 }
 
-export default function RootLayout() {
+function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({
     Inter_400Regular,
     Inter_500Medium,
@@ -454,3 +519,9 @@ export default function RootLayout() {
     </SafeAreaProvider>
   );
 }
+
+// Wrap with Sentry so uncaught JS exceptions are captured with full context,
+// touch-event breadcrumbs, and session tracking in production builds.
+// When EXPO_PUBLIC_SENTRY_DSN is unset (local dev without Sentry), Sentry.wrap
+// is a transparent pass-through that returns the component unchanged.
+export default Sentry.wrap(RootLayout);
