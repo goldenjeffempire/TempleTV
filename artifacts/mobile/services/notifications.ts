@@ -1,11 +1,6 @@
-const SW_PATH = "/sw-temple-push.js";
+import { getApiBase } from "@/lib/apiBase";
 
-function getApiBaseUrl(): string {
-  const apiUrl = process.env.EXPO_PUBLIC_API_URL ?? "";
-  if (apiUrl) return apiUrl.replace(/\/$/, "");
-  const domain = process.env.EXPO_PUBLIC_DOMAIN ?? "";
-  return domain ? `https://${domain}` : "";
-}
+const SW_PATH = "/sw-temple-push.js";
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
@@ -36,7 +31,7 @@ function isWebPushSupported(): boolean {
 
 async function fetchVapidPublicKey(): Promise<string | null> {
   try {
-    const res = await fetch(`${getApiBaseUrl()}/api/push/web-vapid-public-key`, {
+    const res = await fetch(`${getApiBase()}/api/push/web-vapid-public-key`, {
       signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) return null;
@@ -54,7 +49,7 @@ async function sendSubscriptionToServer(sub: PushSubscription): Promise<void> {
   const auth = json.keys?.auth ?? arrayBufferToBase64Url(sub.getKey("auth"));
   if (!endpoint || !p256dh || !auth) return;
 
-  await fetch(`${getApiBaseUrl()}/api/push/web-subscriptions`, {
+  await fetch(`${getApiBase()}/api/push/web-subscriptions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

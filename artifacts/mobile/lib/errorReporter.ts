@@ -1,5 +1,6 @@
 import { Platform } from "react-native";
 import Constants from "expo-constants";
+import { getApiBase } from "./apiBase";
 
 type ClientErrorPayload = {
   errorMessage: string;
@@ -8,20 +9,6 @@ type ClientErrorPayload = {
   componentStack?: string;
   context?: Record<string, string | number | boolean | null>;
 };
-
-function getApiBase(): string {
-  // EXPO_PUBLIC_API_URL is the canonical EAS-profile-driven API URL
-  // (production / preview / development). EXPO_PUBLIC_DOMAIN is a legacy
-  // fallback for early Expo Go builds and the web export.
-  const apiUrl = process.env.EXPO_PUBLIC_API_URL;
-  if (apiUrl) {
-    const trimmed = apiUrl.replace(/\/+$/, "");
-    if (/^https?:\/\//i.test(trimmed)) return trimmed;
-  }
-  const domain = process.env.EXPO_PUBLIC_DOMAIN;
-  if (domain) return `https://${domain.replace(/^https?:\/\//i, "").replace(/\/+$/, "")}`;
-  return "";
-}
 
 function getPlatform(): "ios" | "android" | "web" | "unknown" {
   if (Platform.OS === "ios") return "ios";

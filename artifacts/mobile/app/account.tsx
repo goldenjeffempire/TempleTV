@@ -207,7 +207,7 @@ export default function AccountScreen() {
           </Pressable>
 
           <Pressable
-            onPress={() => router.push("/(tabs)/history" as never)}
+            onPress={() => router.push("/history")}
             style={[styles.actionRow, { backgroundColor: c.card, borderColor: c.border }]}
           >
             <View style={[styles.actionIcon, { backgroundColor: c.primary + "22" }]}>

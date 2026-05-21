@@ -27,6 +27,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.templetv.jctm",
+      "googleServicesFile": "./GoogleService-Info.plist",
       "buildNumber": "1",
       "requireFullScreen": false,
       "config": {
@@ -90,6 +91,7 @@
     },
     "android": {
       "package": "com.templetv.jctm",
+      "googleServicesFile": "./google-services.json",
       "versionCode": 30,
       "allowBackup": false,
       "adaptiveIcon": {
