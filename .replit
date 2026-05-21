@@ -31,24 +31,24 @@ name = "Start application"
 author = "agent"
 
 [workflows.workflow.metadata]
-outputType = "webview"
+outputType = "console"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 pnpm install --ignore-scripts && EXPO_PUBLIC_API_URL=http://localhost:8080 CI=1 NODE_OPTIONS=--max-old-space-size=8192 EXPO_BASE_URL=/mobile EXPO_PACKAGER_PROXY_URL=https://$REPLIT_DEV_DOMAIN EXPO_PUBLIC_DOMAIN=$REPLIT_DEV_DOMAIN EXPO_PUBLIC_REPL_ID=$REPL_ID REACT_NATIVE_PACKAGER_HOSTNAME=$REPLIT_DEV_DOMAIN pnpm --filter @workspace/mobile exec expo start --port 5000"
-waitForPort = 5000
+args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 pnpm install --ignore-scripts && EXPO_PUBLIC_API_URL=http://localhost:8080 CI=1 NODE_OPTIONS=--max-old-space-size=8192 EXPO_BASE_URL=/mobile EXPO_PACKAGER_PROXY_URL=https://$REPLIT_DEV_DOMAIN EXPO_PUBLIC_DOMAIN=$REPLIT_DEV_DOMAIN EXPO_PUBLIC_REPL_ID=$REPL_ID REACT_NATIVE_PACKAGER_HOSTNAME=$REPLIT_DEV_DOMAIN pnpm --filter @workspace/mobile exec expo start --port 3000"
+waitForPort = 3000
 
 [[workflows.workflow]]
 name = "Start admin"
 author = "agent"
 
 [workflows.workflow.metadata]
-outputType = "console"
+outputType = "webview"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "API_DEV_PORT=8080 PORT=3000 pnpm --filter @workspace/admin run dev"
-waitForPort = 3000
+args = "API_DEV_PORT=8080 PORT=5000 pnpm --filter @workspace/admin run dev"
+waitForPort = 5000
 
 [[workflows.workflow]]
 name = "Start API"
@@ -78,6 +78,10 @@ externalPort = 3000
 [[ports]]
 localPort = 5000
 externalPort = 6000
+
+[[ports]]
+localPort = 5001
+externalPort = 5173
 
 [[ports]]
 localPort = 8080
