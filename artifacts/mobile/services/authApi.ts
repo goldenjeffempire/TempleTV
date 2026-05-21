@@ -9,6 +9,21 @@ import { fetchWithRetry } from "@/lib/fetchWithRetry";
 // surface to the caller immediately, not be silently retried.
 const AUTH_RETRY = { maxRetries: 2, baseDelayMs: 400, isRetryable: (r: Response) => r.status >= 500 };
 
+/**
+ * Thrown by apiGetMe() when the server returns 404 — meaning the JWT is
+ * structurally valid and the auth middleware accepted it, but the user row
+ * no longer exists in the database (e.g. account deleted, DB re-seeded).
+ *
+ * AuthContext catches this to clear the stale session and sign the user out
+ * rather than silently keeping them in a logged-in-but-broken state.
+ */
+export class UserNotFoundError extends Error {
+  constructor() {
+    super("User account not found. Please sign in again.");
+    this.name = "UserNotFoundError";
+  }
+}
+
 function getDeviceName(): string {
   const os = Platform.OS;
   if (os === "ios") return "iPhone / iPad";
@@ -190,6 +205,12 @@ export async function apiLogout(everywhere = false): Promise<void> {
 export async function apiGetMe(): Promise<AuthUser> {
   const res = await authFetch("/api/auth/me");
   const data = await res.json();
+  if (res.status === 404) {
+    // The JWT was accepted (auth middleware ran) but the user row is gone —
+    // most likely the DB was re-seeded or the account was deleted. Throw a
+    // typed error so AuthContext can clear the stale session automatically.
+    throw new UserNotFoundError();
+  }
   if (!res.ok) throw new Error(data.error ?? "Failed to fetch user");
   // /api/auth/me returns user fields at the top level (not nested under "user")
   const u = data as { id: string; email: string; displayName: string; avatarUrl?: string | null; emailVerified?: boolean };

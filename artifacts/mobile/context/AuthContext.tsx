@@ -2,7 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useState } fr
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { secureStorage } from "@/lib/secureStorage";
 import { STORAGE_KEYS } from "@/constants/config";
-import { apiGetMe, apiLogout, setOnSessionExpired, type AuthUser, type AuthResponse } from "@/services/authApi";
+import { apiGetMe, apiLogout, setOnSessionExpired, UserNotFoundError, type AuthUser, type AuthResponse } from "@/services/authApi";
 import { setAuthGateBindings, type PendingPlayback } from "@/utils/auth-gate";
 
 interface AuthContextValue {
@@ -83,9 +83,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setUser(freshUser);
             AsyncStorage.setItem(STORAGE_KEYS.authUser, JSON.stringify(freshUser)).catch(() => {});
           })
-          .catch(() => {
-            // Swallowed — transient failure keeps the cached session alive.
-            // A genuine 401 from the refresh step fires onSessionExpired separately.
+          .catch(async (err: unknown) => {
+            if (err instanceof UserNotFoundError) {
+              // The stored JWT is valid but the user row is gone (e.g. DB
+              // re-seeded, account deleted). Clear the stale session so the
+              // user lands on the sign-in screen instead of a broken state.
+              await clearLocal();
+            }
+            // All other failures (network timeout, 5xx) are transient —
+            // keep the cached session alive. A genuine 401 fires
+            // onSessionExpired separately via authApi's refresh path.
           });
       } catch {
         /* ignore restore errors — stay logged out */
