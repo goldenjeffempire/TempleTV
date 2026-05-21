@@ -4,7 +4,10 @@ import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 
-const rawPort = process.env.PORT ?? "5173";
+// Port 3000 is the Replit-assigned dev port for the Admin surface.
+// The API dev server runs on port 8080 ("Start API" workflow).
+// Override with PORT / API_DEV_PORT env vars if needed.
+const rawPort = process.env.PORT ?? "3000";
 const port = Number(rawPort);
 
 if (Number.isNaN(port) || port <= 0) {
@@ -80,7 +83,7 @@ export default defineConfig({
       // local-dev convention used 8080. Honor an explicit override
       // (`API_DEV_PORT`) and otherwise default to the Replit workflow port so
       // the admin SPA's `/api/...` calls resolve out-of-the-box.
-      const apiDevPort = process.env.API_DEV_PORT ?? "5000";
+      const apiDevPort = process.env.API_DEV_PORT ?? "8080";
       const target = `http://localhost:${apiDevPort}`;
       return {
         // Versioned upload path (/api/v1/...) must get the extended timeout

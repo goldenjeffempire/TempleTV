@@ -4,7 +4,10 @@ import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 
-const rawPort = process.env.PORT ?? "5173";
+// Port 23876 is the Replit-assigned dev port for the TV surface, mapped in
+// .replit [[ports]] (localPort=23876 externalPort=4200) and forwarded by the
+// API server's dev proxy at /tv/*.  Override with PORT env var if needed.
+const rawPort = process.env.PORT ?? "23876";
 const port = Number(rawPort);
 
 if (Number.isNaN(port) || port <= 0) {
