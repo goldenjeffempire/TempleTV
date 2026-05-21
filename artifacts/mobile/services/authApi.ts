@@ -2,6 +2,12 @@ import { Platform } from "react-native";
 import { secureStorage } from "@/lib/secureStorage";
 import { STORAGE_KEYS } from "@/constants/config";
 import { getApiBase } from "@/lib/apiBase";
+import { fetchWithRetry } from "@/lib/fetchWithRetry";
+
+// Auth endpoints only retry on 5xx — 4xx responses (wrong credentials, token
+// expired, account locked, etc.) are intentional server rejections that should
+// surface to the caller immediately, not be silently retried.
+const AUTH_RETRY = { maxRetries: 2, baseDelayMs: 400, isRetryable: (r: Response) => r.status >= 500 };
 
 function getDeviceName(): string {
   const os = Platform.OS;
@@ -45,12 +51,16 @@ async function attemptRefresh(): Promise<string | null> {
   const refreshToken = await secureStorage.getItem(STORAGE_KEYS.authRefreshToken);
   if (!refreshToken) return null;
   try {
-    const res = await fetch(`${getApiBase()}/api/auth/refresh`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refreshToken, deviceName: getDeviceName() }),
-      signal: AbortSignal.timeout(12_000),
-    });
+    const res = await fetchWithRetry(
+      `${getApiBase()}/api/auth/refresh`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refreshToken, deviceName: getDeviceName() }),
+        signal: AbortSignal.timeout(12_000),
+      },
+      AUTH_RETRY,
+    );
     if (!res.ok) {
       // Only treat a genuine 401 as a permanently invalid token — that means
       // the server explicitly rejected the refresh token (expired or revoked).
@@ -99,13 +109,15 @@ async function authFetch(path: string, options: RequestInit = {}): Promise<Respo
   // 12-second timeout on every auth fetch — prevents indefinite hangs on bad
   // network conditions (tunnel timeouts, captive portals, etc.).
   const signal = options.signal ?? AbortSignal.timeout(12_000);
-  const initial = await fetch(url, { ...options, signal, headers: buildHeaders(token) });
+  // Retry on network errors and 5xx; never retry 401/403 — those go through
+  // the token-refresh path below, not the retry path.
+  const initial = await fetchWithRetry(url, { ...options, signal, headers: buildHeaders(token) }, AUTH_RETRY);
   // Auto-refresh on 401 for any authenticated route except the auth endpoints
   // themselves (where 401 means bad credentials, not an expired access token).
   if (initial.status !== 401 || path.startsWith("/api/auth/")) return initial;
   const newToken = await refreshAccessToken();
   if (!newToken) return initial;
-  return fetch(url, { ...options, signal: AbortSignal.timeout(12_000), headers: buildHeaders(newToken) });
+  return fetchWithRetry(url, { ...options, signal: AbortSignal.timeout(12_000), headers: buildHeaders(newToken) }, AUTH_RETRY);
 }
 
 async function persistAuthResponse(data: AuthResponse): Promise<void> {
@@ -122,12 +134,16 @@ export async function apiSignup(
   password: string,
   displayName: string,
 ): Promise<AuthResponse> {
-  const res = await fetch(`${getApiBase()}/api/auth/register`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password, displayName, deviceName: getDeviceName() }),
-    signal: AbortSignal.timeout(12_000),
-  });
+  const res = await fetchWithRetry(
+    `${getApiBase()}/api/auth/register`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password, displayName, deviceName: getDeviceName() }),
+      signal: AbortSignal.timeout(12_000),
+    },
+    AUTH_RETRY,
+  );
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? "Signup failed");
   await persistAuthResponse(data as AuthResponse);
@@ -138,12 +154,16 @@ export async function apiLogin(
   email: string,
   password: string,
 ): Promise<AuthResponse> {
-  const res = await fetch(`${getApiBase()}/api/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password, deviceName: getDeviceName() }),
-    signal: AbortSignal.timeout(12_000),
-  });
+  const res = await fetchWithRetry(
+    `${getApiBase()}/api/auth/login`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password, deviceName: getDeviceName() }),
+      signal: AbortSignal.timeout(12_000),
+    },
+    AUTH_RETRY,
+  );
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? "Login failed");
   await persistAuthResponse(data as AuthResponse);

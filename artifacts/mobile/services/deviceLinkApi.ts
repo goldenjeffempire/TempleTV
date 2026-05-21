@@ -1,6 +1,7 @@
 import { secureStorage } from "@/lib/secureStorage";
 import { STORAGE_KEYS } from "@/constants/config";
 import { getApiBase } from "@/lib/apiBase";
+import { fetchWithRetry } from "@/lib/fetchWithRetry";
 
 /**
  * Claim a TV device-link code with the currently-authenticated user.
@@ -15,14 +16,19 @@ export async function apiClaimDeviceCode(code: string): Promise<{ ok: true }> {
   if (!token) {
     throw new Error("You need to be signed in to link a TV.");
   }
-  const res = await fetch(`${getApiBase()}/api/auth/device-link/claim`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
+  const res = await fetchWithRetry(
+    `${getApiBase()}/api/auth/device-link/claim`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ code: code.toUpperCase().replace(/\s+/g, "") }),
+      signal: AbortSignal.timeout(12_000),
     },
-    body: JSON.stringify({ code: code.toUpperCase().replace(/\s+/g, "") }),
-  });
+    { maxRetries: 2, baseDelayMs: 400, isRetryable: (r) => r.status >= 500 },
+  );
   if (!res.ok) {
     let message = "Could not link your TV. Please try again.";
     try {

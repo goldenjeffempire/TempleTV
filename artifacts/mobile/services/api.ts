@@ -12,6 +12,7 @@
 import { getApiBase } from "@/lib/apiBase";
 import { secureStorage } from "@/lib/secureStorage";
 import { STORAGE_KEYS } from "@/constants/config";
+import { fetchWithRetry } from "@/lib/fetchWithRetry";
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
 
@@ -19,16 +20,29 @@ function url(path: string): string {
   return `${getApiBase()}${path}`;
 }
 
+/**
+ * Fetch a public (unauthenticated) API endpoint with automatic retry.
+ * Retries up to 3 times on network errors and 5xx responses using full-jitter
+ * exponential backoff (350 ms base, 10 s cap). Fire-and-forget endpoints
+ * (reactions, prayers, view counts) also go through this path — silently
+ * catching in callers means transient network hiccups are recovered at the
+ * fetch layer before the caller even sees an error.
+ */
 async function publicFetch(path: string, init?: RequestInit): Promise<Response> {
-  return fetch(url(path), {
+  return fetchWithRetry(url(path), {
     ...init,
     signal: init?.signal ?? AbortSignal.timeout(12_000),
   });
 }
 
+/**
+ * Fetch an authenticated endpoint with the stored access token.
+ * Uses the same retry strategy as publicFetch. Auth errors (401, 403) are
+ * never retried — those are intentional server rejections, not transient errors.
+ */
 async function authedFetch(path: string, init?: RequestInit): Promise<Response> {
   const token = await secureStorage.getItem(STORAGE_KEYS.authToken);
-  return fetch(url(path), {
+  return fetchWithRetry(url(path), {
     ...init,
     headers: {
       "Content-Type": "application/json",

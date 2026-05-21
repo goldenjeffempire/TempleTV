@@ -1,4 +1,5 @@
 import { getApiBase } from "@/lib/apiBase";
+import { fetchWithRetry } from "@/lib/fetchWithRetry";
 
 export const JCTM_CHANNEL_HANDLE = "templetvjctm";
 export const JCTM_CHANNEL_URL = `https://www.youtube.com/@${JCTM_CHANNEL_HANDLE}`;
@@ -36,7 +37,7 @@ export function getThumbnailUrl(videoId: string, quality: "default" | "hq" | "ma
 
 async function checkLiveViaOembed(): Promise<LiveCheckResult> {
   const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(getChannelLiveUrl())}&format=json`;
-  const response = await fetch(oembedUrl, { signal: AbortSignal.timeout(6000) });
+  const response = await fetchWithRetry(oembedUrl, { signal: AbortSignal.timeout(6000) });
   if (!response.ok) return { isLive: false, videoId: null, title: null };
   const data = (await response.json()) as { title?: string; html?: string; thumbnail_url?: string };
   // Try extracting videoId from embed HTML first
@@ -50,7 +51,7 @@ async function checkLiveViaCachedStatus(): Promise<LiveCheckResult | null> {
   const apiBase = getApiBase();
   if (!apiBase) return null;
   try {
-    const res = await fetch(`${apiBase}/api/youtube/live/status`, {
+    const res = await fetchWithRetry(`${apiBase}/api/youtube/live/status`, {
       signal: AbortSignal.timeout(4000),
     });
     if (!res.ok) return null;
@@ -66,7 +67,7 @@ async function checkLiveViaApiServer(): Promise<LiveCheckResult | null> {
   const apiBase = getApiBase();
   if (!apiBase) return null;
   try {
-    const res = await fetch(`${apiBase}/api/youtube/live`, {
+    const res = await fetchWithRetry(`${apiBase}/api/youtube/live`, {
       signal: AbortSignal.timeout(6000),
     });
     if (!res.ok) return null;

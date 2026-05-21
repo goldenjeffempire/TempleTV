@@ -19,6 +19,7 @@
 
 import { Platform } from "react-native";
 import { getApiBase } from "@/lib/apiBase";
+import { fetchWithRetry } from "@/lib/fetchWithRetry";
 import type {
   BroadcastItem,
   BroadcastRealtimeEvent,
@@ -78,13 +79,13 @@ function apiUrl(path: string): string {
 
 async function apiFetch<T>(path: string): Promise<T | null> {
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-    const res = await fetch(apiUrl(path), {
-      headers: { "X-Platform": Platform.OS },
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
+    const res = await fetchWithRetry(
+      apiUrl(path),
+      {
+        headers: { "X-Platform": Platform.OS },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      },
+    );
     if (!res.ok) return null;
     return await res.json() as T;
   } catch {
@@ -171,7 +172,7 @@ export function subscribeBroadcastEvents(
  */
 export async function sendReaction(type: ReactionType): Promise<void> {
   try {
-    await fetch(apiUrl("/api/broadcast/reaction"), {
+    await fetchWithRetry(apiUrl("/api/broadcast/reaction"), {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Platform": Platform.OS },
       body: JSON.stringify({ type }),
@@ -195,7 +196,7 @@ export async function submitPrayerRequest(
   message: string,
 ): Promise<boolean> {
   try {
-    const res = await fetch(apiUrl("/api/broadcast/prayer"), {
+    const res = await fetchWithRetry(apiUrl("/api/broadcast/prayer"), {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Platform": Platform.OS },
       body: JSON.stringify({ name: name ?? "Anonymous", message, platform: "mobile" }),
@@ -223,7 +224,7 @@ export async function postPlaybackTelemetryDelta(
   dropped: number,
 ): Promise<void> {
   try {
-    await fetch(apiUrl("/api/broadcast/playback-telemetry"), {
+    await fetchWithRetry(apiUrl("/api/broadcast/playback-telemetry"), {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Platform": Platform.OS },
       body: JSON.stringify({ platform, decoded, dropped, ts: Date.now() }),
@@ -241,7 +242,7 @@ export async function postPlaybackTelemetryDelta(
  */
 export async function recordMobileView(videoId: string): Promise<void> {
   try {
-    await fetch(apiUrl(`/api/videos/${videoId}/view`), {
+    await fetchWithRetry(apiUrl(`/api/videos/${videoId}/view`), {
       method: "POST",
       headers: { "X-Platform": Platform.OS },
     });

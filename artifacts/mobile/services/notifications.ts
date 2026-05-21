@@ -1,4 +1,5 @@
 import { getApiBase } from "@/lib/apiBase";
+import { fetchWithRetry } from "@/lib/fetchWithRetry";
 
 const SW_PATH = "/sw-temple-push.js";
 
@@ -31,7 +32,7 @@ function isWebPushSupported(): boolean {
 
 async function fetchVapidPublicKey(): Promise<string | null> {
   try {
-    const res = await fetch(`${getApiBase()}/api/push/web-vapid-public-key`, {
+    const res = await fetchWithRetry(`${getApiBase()}/api/push/web-vapid-public-key`, {
       signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) return null;
@@ -49,7 +50,7 @@ async function sendSubscriptionToServer(sub: PushSubscription): Promise<void> {
   const auth = json.keys?.auth ?? arrayBufferToBase64Url(sub.getKey("auth"));
   if (!endpoint || !p256dh || !auth) return;
 
-  await fetch(`${getApiBase()}/api/push/web-subscriptions`, {
+  await fetchWithRetry(`${getApiBase()}/api/push/web-subscriptions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

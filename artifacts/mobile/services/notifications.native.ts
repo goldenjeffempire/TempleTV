@@ -3,6 +3,7 @@ import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
 import { getApiBase } from "@/lib/apiBase";
+import { fetchWithRetry } from "@/lib/fetchWithRetry";
 
 const PUSH_TOKEN_KEY = "@temple_tv/push_token";
 const ANDROID_CHANNEL_ID = "temple-tv-default";
@@ -21,7 +22,7 @@ async function registerTokenWithServer(token: string): Promise<void> {
   try {
     const platform = Platform.OS as "ios" | "android";
     const baseUrl = getApiBase();
-    await fetch(`${baseUrl}/api/push-tokens`, {
+    await fetchWithRetry(`${baseUrl}/api/push-tokens`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token, platform }),
