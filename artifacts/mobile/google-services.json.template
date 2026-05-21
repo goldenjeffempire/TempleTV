@@ -2,21 +2,23 @@
   "_INSTRUCTIONS": [
     "This is a TEMPLATE placeholder — replace with your real google-services.json",
     "from the Firebase console: https://console.firebase.google.com",
-    "Project → Project Settings → Your apps → Android app → Download google-services.json",
-    "The real file MUST NOT be committed to version control.",
-    "Add it to CI via GitHub Secret GOOGLE_SERVICES_JSON (base64-encoded) and",
-    "decode it in your workflow before the EAS build step.",
+    "  Project → Project Settings → Your apps → Android app (com.templetv.jctm) → Download google-services.json",
+    "Save the downloaded file as google-services.json (overwrite this template).",
+    "The real file MUST NOT be committed to version control — it is in .gitignore.",
+    "For CI (GitHub Actions / EAS): store the file content as a base64-encoded GitHub Secret",
+    "  named GOOGLE_SERVICES_JSON and decode it before the eas build step:",
+    "  echo '${{ secrets.GOOGLE_SERVICES_JSON }}' | base64 -d > artifacts/mobile/google-services.json",
     "See: https://docs.expo.dev/guides/using-firebase/#configure-metro"
   ],
   "project_info": {
-    "project_number": "YOUR_PROJECT_NUMBER",
-    "project_id": "YOUR_FIREBASE_PROJECT_ID",
-    "storage_bucket": "YOUR_FIREBASE_PROJECT_ID.appspot.com"
+    "project_number": "REPLACE_WITH_PROJECT_NUMBER",
+    "project_id": "REPLACE_WITH_FIREBASE_PROJECT_ID",
+    "storage_bucket": "REPLACE_WITH_FIREBASE_PROJECT_ID.appspot.com"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:YOUR_PROJECT_NUMBER:android:YOUR_APP_ID",
+        "mobilesdk_app_id": "1:REPLACE_WITH_PROJECT_NUMBER:android:REPLACE_WITH_APP_ID",
         "android_client_info": {
           "package_name": "com.templetv.jctm"
         }
@@ -24,7 +26,7 @@
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "YOUR_ANDROID_API_KEY"
+          "current_key": "REPLACE_WITH_ANDROID_API_KEY"
         }
       ],
       "services": {
