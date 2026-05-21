@@ -708,7 +708,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
     async (req) => {
       const { sessionId } = req.params;
 
-      const session = await db
+      let session = await db
         .select()
         .from(sessions)
         .where(eq(sessions.sessionId, sessionId))
@@ -745,6 +745,31 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             .set({ completedVideoId: null })
             .where(eq(sessions.sessionId, sessionId)),
         ]);
+      }
+
+      // Stale-lock recovery: If status is "assembling" but completedVideoId is null,
+      // a prior finalize attempt locked the session but crashed before pre-committing
+      // the video row (e.g. DB error thrown from db.insert(videos)).
+      // Without this reset the session is permanently stuck — subsequent finalize
+      // calls see lockResult.length === 0, re-read status="assembling" + null id,
+      // and throw 409 forever. Reset to "uploading" so this attempt can proceed.
+      if (session.status === "assembling" && !session.completedVideoId) {
+        req.log.warn(
+          { sessionId },
+          "[finalize] stale-lock recovery: status=assembling but no completedVideoId — resetting to uploading",
+        );
+        await db
+          .update(sessions)
+          .set({ status: "uploading", updatedAt: new Date() })
+          .where(eq(sessions.sessionId, sessionId))
+          .catch(() => {});
+        // Re-read to get fresh state for the lock acquisition below.
+        session = (await db
+          .select()
+          .from(sessions)
+          .where(eq(sessions.sessionId, sessionId))
+          .limit(1)
+          .then((r) => r[0])) ?? session;
       }
 
       // Idempotency: already completed OR pre-committed (background assembly running).
@@ -814,6 +839,26 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               transcodingWarning: null,
             };
           }
+        }
+
+        // Stale lock race: status="assembling" but no completedVideoId means a prior
+        // finalize crashed before pre-committing the video row. The stale-lock recovery
+        // block above (run on the initial session read) would have reset this to
+        // "uploading" already. If we still end up here with null completedVideoId,
+        // surface a 503 (not 409) so the client knows it can retry immediately.
+        if (refreshed?.status === "assembling" && !refreshed.completedVideoId) {
+          await db
+            .update(sessions)
+            .set({ status: "uploading", updatedAt: new Date() })
+            .where(eq(sessions.sessionId, sessionId))
+            .catch(() => {});
+          throw Object.assign(
+            new Error(
+              "A prior finalize attempt left a stale lock. The lock has been cleared — " +
+              "please retry finalization now.",
+            ),
+            { statusCode: 503 },
+          );
         }
 
         // Truly still assembling via the old sync path — tell the client to poll.
@@ -927,31 +972,45 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         );
 
         // Pre-insert the video row with the deterministic storage URL.
-        // transcodingStatus is null until enqueueTranscode runs after assembly.
-        const inserted = await db
-          .insert(videos)
-          .values({
-            id: videoId,
-            youtubeId: null,
-            title: session.title,
-            description: session.description ?? "",
-            thumbnailUrl: "",
-            duration: String(durationSecs),
-            category: session.category ?? "sermon",
-            preacher: session.preacher ?? "",
-            publishedAt: null,
-            videoSource: "local",
-            localVideoUrl,
-            featured: session.featured,
-            originalFilename: session.originalFilename ?? null,
-            mimeType: session.mimeType ?? null,
-            sizeBytes: session.sizeBytes,
-            objectPath: objectKey,
-            uploadedBy: session.uploadedBy ?? null,
-            s3MirroredAt: null, // set after background assembly confirms blob exists
-            broadcastOnly: true, // hidden from public library until admin publishes
-          })
-          .returning();
+        // Wrapped in try/catch: if this INSERT throws (e.g. DB connection hiccup or
+        // unique-key conflict), we must release the assembly lock so subsequent
+        // finalize retries can proceed instead of hitting a permanent 409.
+        let inserted: (typeof videos.$inferSelect)[];
+        try {
+          inserted = await db
+            .insert(videos)
+            .values({
+              id: videoId,
+              youtubeId: null,
+              title: session.title,
+              description: session.description ?? "",
+              thumbnailUrl: "",
+              duration: String(durationSecs),
+              category: session.category ?? "sermon",
+              preacher: session.preacher ?? "",
+              publishedAt: null,
+              videoSource: "local",
+              localVideoUrl,
+              featured: session.featured,
+              originalFilename: session.originalFilename ?? null,
+              mimeType: session.mimeType ?? null,
+              sizeBytes: session.sizeBytes,
+              objectPath: objectKey,
+              uploadedBy: session.uploadedBy ?? null,
+              s3MirroredAt: null, // set after background assembly confirms blob exists
+              broadcastOnly: true, // hidden from public library until admin publishes
+            })
+            .returning();
+        } catch (insertErr) {
+          await resetLock();
+          req.log.error({ err: insertErr, sessionId, videoId }, "[finalize] video INSERT failed — lock released");
+          throw Object.assign(
+            new Error(
+              "Failed to create video record. The upload is safe — please retry finalization.",
+            ),
+            { statusCode: 500, cause: insertErr },
+          );
+        }
 
         const row = inserted[0];
         if (!row) {
@@ -963,10 +1022,21 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         //   • Idempotent /finalize retries return the video row immediately.
         //   • GET /finalize-status returns the videoId while assembling.
         // Session status stays "assembling" until background assembly completes.
-        await db
-          .update(sessions)
-          .set({ completedVideoId: videoId, updatedAt: new Date() })
-          .where(eq(sessions.sessionId, sessionId));
+        // Wrapped in try/catch: if this update fails the video row already exists,
+        // so the background assembly can still mark it completed. We log the failure
+        // and continue — the response still returns the video row so the client
+        // doesn't see a 500.
+        try {
+          await db
+            .update(sessions)
+            .set({ completedVideoId: videoId, updatedAt: new Date() })
+            .where(eq(sessions.sessionId, sessionId));
+        } catch (updateErr) {
+          req.log.warn(
+            { err: updateErr, sessionId, videoId },
+            "[finalize] completedVideoId update failed (non-fatal) — background task will set it on assembly completion",
+          );
+        }
 
         // NOTE: The video is NOT added to the broadcast queue here.
         // faststart.service.ts auto-adds it AFTER relocating the moov atom
@@ -1162,34 +1232,49 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       }
 
       // Insert managed_videos row (db_fallback path)
+      // Wrapped in try/catch so a DB error releases the assembly lock and lets
+      // the client retry instead of being permanently stuck on 409.
       const videoId = randomUUID();
-      const inserted = await db
-        .insert(videos)
-        .values({
-          id: videoId,
-          youtubeId: null,
-          title: session.title,
-          description: session.description ?? "",
-          thumbnailUrl: "",
-          duration: session.durationSecs ? String(Math.round(session.durationSecs)) : "0",
-          category: session.category ?? "sermon",
-          preacher: session.preacher ?? "",
-          publishedAt: null,
-          videoSource: "local",
-          localVideoUrl,
-          featured: session.featured,
-          originalFilename: session.originalFilename ?? null,
-          mimeType: session.mimeType ?? null,
-          sizeBytes: session.sizeBytes,
-          objectPath: finalObjectKey ?? null,
-          uploadedBy: session.uploadedBy ?? null,
-          s3MirroredAt: finalStorageBackend === "db" ? new Date() : null,
-          broadcastOnly: true, // hidden from public library until admin publishes
-        })
-        .returning();
+      let inserted2: (typeof videos.$inferSelect)[];
+      try {
+        inserted2 = await db
+          .insert(videos)
+          .values({
+            id: videoId,
+            youtubeId: null,
+            title: session.title,
+            description: session.description ?? "",
+            thumbnailUrl: "",
+            duration: session.durationSecs ? String(Math.round(session.durationSecs)) : "0",
+            category: session.category ?? "sermon",
+            preacher: session.preacher ?? "",
+            publishedAt: null,
+            videoSource: "local",
+            localVideoUrl,
+            featured: session.featured,
+            originalFilename: session.originalFilename ?? null,
+            mimeType: session.mimeType ?? null,
+            sizeBytes: session.sizeBytes,
+            objectPath: finalObjectKey ?? null,
+            uploadedBy: session.uploadedBy ?? null,
+            s3MirroredAt: finalStorageBackend === "db" ? new Date() : null,
+            broadcastOnly: true, // hidden from public library until admin publishes
+          })
+          .returning();
+      } catch (insertErr) {
+        await resetLock();
+        req.log.error({ err: insertErr, sessionId, videoId }, "[finalize:db_fallback] video INSERT failed — lock released");
+        throw Object.assign(
+          new Error("Failed to create video record. The upload is safe — please retry finalization."),
+          { statusCode: 500, cause: insertErr },
+        );
+      }
 
-      const row = inserted[0];
-      if (!row) throw new Error("videos insert returned no rows");
+      const row = inserted2[0];
+      if (!row) {
+        await resetLock();
+        throw new Error("videos insert returned no rows");
+      }
 
       await db
         .update(sessions)
