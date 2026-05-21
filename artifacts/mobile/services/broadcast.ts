@@ -223,7 +223,7 @@ export async function postPlaybackTelemetryDelta(
   dropped: number,
 ): Promise<void> {
   try {
-    await fetch(apiUrl("/api/broadcast/telemetry"), {
+    await fetch(apiUrl("/api/broadcast/playback-telemetry"), {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Platform": Platform.OS },
       body: JSON.stringify({ platform, decoded, dropped, ts: Date.now() }),
@@ -241,7 +241,7 @@ export async function postPlaybackTelemetryDelta(
  */
 export async function recordMobileView(videoId: string): Promise<void> {
   try {
-    await fetch(apiUrl(`/api/videos/${videoId}/views`), {
+    await fetch(apiUrl(`/api/videos/${videoId}/view`), {
       method: "POST",
       headers: { "X-Platform": Platform.OS },
     });
