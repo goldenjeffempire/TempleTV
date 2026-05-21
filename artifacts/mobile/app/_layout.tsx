@@ -1,32 +1,4 @@
 import * as Sentry from "@sentry/react-native";
-
-// ── Sentry crash reporting ────────────────────────────────────────────────────
-// Initialise as early as possible — before any other module that may throw.
-// Guarded by the env var so the SDK is a no-op in local dev unless the DSN
-// is explicitly set, and never active on web (Sentry RN is native-only).
-if (process.env.EXPO_PUBLIC_SENTRY_DSN) {
-  Sentry.init({
-    dsn: process.env.EXPO_PUBLIC_SENTRY_DSN,
-    enabled: true,
-    environment: process.env.APP_ENV ?? "development",
-    // 10 % performance sampling — enough for bottleneck data without cost spikes.
-    tracesSampleRate: 0.1,
-    // Attach JS stack to every event (not just unhandled errors).
-    attachStacktrace: true,
-    // Track app foreground/background sessions for crash-free-rate metrics.
-    enableAutoSessionTracking: true,
-    // Never log to the console in production builds.
-    debug: false,
-    // Ignore common benign "errors" that fire every session and pollute the feed.
-    ignoreErrors: [
-      "Non-Error promise rejection captured",
-      "Network request failed",
-      "AbortError",
-      "Load failed",
-    ],
-  });
-}
-
 import {
   Inter_400Regular,
   Inter_500Medium,
@@ -41,6 +13,29 @@ import React, { useEffect, useRef, useState } from "react";
 import { Linking, Platform, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+
+// ── Sentry crash reporting ────────────────────────────────────────────────────
+// Initialise after all imports so Platform is resolved before this block runs.
+// @sentry/react-native ships a browser-compatible build (used by Expo web).
+// We guard init() to native-only: the RN SDK's native crash integrations and
+// session tracking are no-ops on web and add unnecessary overhead.
+if (Platform.OS !== "web" && process.env.EXPO_PUBLIC_SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.EXPO_PUBLIC_SENTRY_DSN,
+    enabled: true,
+    environment: process.env.APP_ENV ?? "development",
+    tracesSampleRate: 0.1,
+    attachStacktrace: true,
+    enableAutoSessionTracking: true,
+    debug: false,
+    ignoreErrors: [
+      "Non-Error promise rejection captured",
+      "Network request failed",
+      "AbortError",
+      "Load failed",
+    ],
+  });
+}
 
 let KeyboardProvider: React.ComponentType<{ children: React.ReactNode }> | null = null;
 try {
@@ -450,8 +445,24 @@ function RootLayout() {
     Inter_700Bold,
   });
 
+  // ── Font-load timeout ───────────────────────────────────────────────────────
+  // On web the Inter fonts are fetched from the Google Fonts CDN. In restricted
+  // environments (Replit sandbox, corporate proxies) that CDN may be unreachable,
+  // causing useFonts() to stay pending indefinitely. Without this guard the app
+  // renders nothing — a permanent blank white screen. After 2 s we proceed with
+  // system fonts rather than waiting forever. On native, fonts are bundled and
+  // load in < 100 ms, so this timer never fires in practice.
+  const [fontTimedOut, setFontTimedOut] = useState(false);
   useEffect(() => {
-    if (fontsLoaded || fontError) {
+    if (fontsLoaded || fontError) return;
+    const t = setTimeout(() => setFontTimedOut(true), 2000);
+    return () => clearTimeout(t);
+  }, [fontsLoaded, fontError]);
+
+  const fontReady = fontsLoaded || !!fontError || fontTimedOut;
+
+  useEffect(() => {
+    if (fontReady) {
       clearTimeout(_splashSafetyTimer);
       SplashScreen.hideAsync().catch(() => {});
       setupAudioSession();
@@ -482,9 +493,9 @@ function RootLayout() {
         }
       }
     }
-  }, [fontsLoaded, fontError]);
+  }, [fontReady]);
 
-  if (!fontsLoaded && !fontError) return null;
+  if (!fontReady) return null;
 
   return (
     <SafeAreaProvider style={{ flex: 1 }}>
