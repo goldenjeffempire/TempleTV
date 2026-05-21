@@ -129,6 +129,15 @@ class BroadcastOrchestrator extends EventEmitter {
   private queueCheckpoint: { itemId: string; positionMs: number } | null = null;
   private failover: { active: boolean; reason: string | null } = { active: false, reason: null };
   private sequence = 0;
+  /** True while the broadcast is running from the YouTube library (no local queue content). */
+  private inYoutubeFallback = false;
+  /**
+   * Stable shuffled list of YouTube library items used during fallback playback.
+   * Built once when entering fallback; cleared when local content returns.
+   * Re-used on drift-poll reloads so the playing order stays stable (no disruptive
+   * cycle resets during routine 30-second self-heal ticks).
+   */
+  private youtubeFallbackCache: CachedQueueItem[] | null = null;
   private tickTimer: NodeJS.Timeout | null = null;
   private checkpointTimer: NodeJS.Timeout | null = null;
   private trimTimer: NodeJS.Timeout | null = null;
@@ -555,6 +564,89 @@ class BroadcastOrchestrator extends EventEmitter {
         "[broadcast-v2] reloadInner: some items rejected at pre-resolution — they will not air",
       );
     }
+
+    // ── YouTube fallback ───────────────────────────────────────────────────
+    // When the local broadcast queue has no playable content (empty queue or
+    // all items failed resolution), fall back to a shuffled rotation of every
+    // YouTube video in the managed_videos library.  This keeps the broadcast
+    // "on air" with watchable content until an operator uploads local videos.
+    //
+    // Stability guarantee: the shuffle is computed ONCE when entering fallback
+    // and stored in `youtubeFallbackCache`.  Subsequent drift-poll reloads
+    // (every 30 s) reuse the same cached list, so `prevItemIds === newItemIds`
+    // and no spurious sequence bump / client seek is triggered.
+    //
+    // Exit: when `resolved` is non-empty (local content returned), the cache
+    // is cleared and the mode is restored to "queue" before the prevItemIds
+    // comparison so the transition fires exactly one `queue.changed` event.
+    if (resolved.length === 0) {
+      if (!this.youtubeFallbackCache) {
+        // First entry into fallback — load the full YouTube library from DB
+        // and Fisher-Yates shuffle it into a stable play order.
+        try {
+          const ytRows = await queueRepo.loadYoutubeLibrary(300);
+          if (ytRows.length > 0) {
+            const shuffled = [...ytRows];
+            for (let i = shuffled.length - 1; i > 0; i--) {
+              const j = Math.floor(Math.random() * (i + 1));
+              [shuffled[i], shuffled[j]] = [shuffled[j]!, shuffled[i]!];
+            }
+            this.youtubeFallbackCache = shuffled.map((row) => ({
+              id: `yt-fb-${row.youtubeId}`,
+              videoId: null,
+              title: row.title,
+              thumbnailUrl: row.thumbnailUrl,
+              durationSecs: row.durationSecs,
+              // YouTube items bypass the bad-URL cache: the client-side YouTube
+              // player handles its own retries and error recovery autonomously.
+              // Server-side URL probing of youtube.com/watch URLs would be both
+              // slow and misleading.
+              primaryUrl: null,
+              source: {
+                kind: "youtube" as const,
+                url: `https://www.youtube.com/watch?v=${row.youtubeId}`,
+                expiresAtMs: null,
+              },
+              failoverSource: null,
+            }));
+            logger.info(
+              { count: this.youtubeFallbackCache.length },
+              "[broadcast-v2] entering YouTube fallback mode — no local content available, broadcasting YouTube library",
+            );
+          } else {
+            logger.warn(
+              "[broadcast-v2] YouTube fallback: library is empty — staying OFF_AIR (upload videos to fix this)",
+            );
+          }
+        } catch (err) {
+          logger.warn(
+            { err },
+            "[broadcast-v2] YouTube fallback: library load failed — staying OFF_AIR",
+          );
+        }
+      }
+
+      if (this.youtubeFallbackCache && this.youtubeFallbackCache.length > 0) {
+        // Populate resolved with the stable shuffled YouTube playlist.
+        resolved.push(...this.youtubeFallbackCache);
+        if (!this.inYoutubeFallback) {
+          this.inYoutubeFallback = true;
+          this.mode = "youtube_fallback";
+        }
+      }
+    } else if (this.inYoutubeFallback) {
+      // Local content has appeared — exit YouTube fallback gracefully.
+      // Clear the cache so the next fallback entry gets a fresh shuffle.
+      this.inYoutubeFallback = false;
+      this.youtubeFallbackCache = null;
+      this.mode = "queue";
+      logger.info(
+        { count: resolved.length },
+        "[broadcast-v2] local content detected — exiting YouTube fallback mode",
+      );
+    }
+    // ── End YouTube fallback ───────────────────────────────────────────────
+
     // Snapshot the old item IDs BEFORE replacing this.items so we can detect
     // whether the queue content actually changed. An unchanged queue means the
     // reload was a routine 30-second drift-poll — we should not bump the
@@ -1592,6 +1684,17 @@ class BroadcastOrchestrator extends EventEmitter {
       allSourcesBlocked: blocked,
       allBlockedSinceMs: this.allBlockedSinceMs,
       allBlockedDurationMs: blocked ? Date.now() - this.allBlockedSinceMs! : null,
+    };
+  }
+
+  /** YouTube fallback diagnostics for /health. */
+  getYoutubeFallbackInfo(): {
+    active: boolean;
+    cachedItemCount: number;
+  } {
+    return {
+      active: this.inYoutubeFallback,
+      cachedItemCount: this.youtubeFallbackCache?.length ?? 0,
     };
   }
 

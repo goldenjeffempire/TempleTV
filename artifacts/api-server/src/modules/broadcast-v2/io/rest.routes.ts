@@ -98,6 +98,7 @@ export async function restRoutes(app: FastifyInstance) {
       prodSync: sync,
       drift: broadcastOrchestrator.getDriftInfo(),
       allBlocked: broadcastOrchestrator.getAllBlockedInfo(),
+      youtubeFallback: broadcastOrchestrator.getYoutubeFallbackInfo(),
       redis: {
         connected: broadcastFanout.isConnected(),
         role: broadcastFanout.getRole(),

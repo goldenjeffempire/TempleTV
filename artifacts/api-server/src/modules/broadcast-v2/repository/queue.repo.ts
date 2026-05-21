@@ -362,6 +362,31 @@ export function getItemsHealth(
 const q = schema.broadcastQueueTable;
 const v = schema.videosTable;
 
+/**
+ * Parse a YouTube duration string into seconds.
+ *
+ * Handles:
+ *   • ISO 8601  "PT1H30M45S" → 5445
+ *   • Numeric   "3600.5"     → 3601
+ *   • null / ""              → 1200 (20-minute placeholder)
+ */
+function parseYoutubeDuration(dur: string | null | undefined): number {
+  if (!dur) return 1200;
+  // Numeric seconds (some sync paths store raw seconds as a string)
+  const numeric = parseFloat(dur);
+  if (!isNaN(numeric) && numeric > 0) return Math.round(numeric);
+  // ISO 8601 PT format: PT[nH][nM][nS]
+  const match = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$/i.exec(dur);
+  if (match) {
+    const h = parseInt(match[1] ?? "0", 10);
+    const m = parseInt(match[2] ?? "0", 10);
+    const s = Math.round(parseFloat(match[3] ?? "0"));
+    const total = h * 3600 + m * 60 + s;
+    return total > 0 ? total : 1200;
+  }
+  return 1200;
+}
+
 export interface RawQueueRow {
   id: string;
   videoId: string | null;
@@ -583,6 +608,51 @@ export const queueRepo = {
       );
     }
     return validated.map((r) => ({ ...r, durationSecs: Math.max(1, r.durationSecs) }));
+  },
+
+  /**
+   * Load all YouTube videos from the managed_videos library for fallback
+   * broadcast playback.
+   *
+   * Returns up to `limit` rows (default 300) with a stable play-ready
+   * representation.  The caller is responsible for shuffling.
+   *
+   * Duration is parsed from the stored text column which may contain:
+   *   • ISO 8601 ("PT1H30M45S") — from the YouTube Data API
+   *   • Numeric string ("3600.5") — seconds, from some sync paths
+   * Unparseable or zero-length values fall back to 1200 s (20 minutes).
+   */
+  async loadYoutubeLibrary(limit = 300): Promise<Array<{
+    youtubeId: string;
+    title: string;
+    thumbnailUrl: string | null;
+    durationSecs: number;
+  }>> {
+    const rows = await db
+      .select({
+        youtubeId: v.youtubeId,
+        title: v.title,
+        thumbnailUrl: v.thumbnailUrl,
+        duration: v.duration,
+      })
+      .from(v)
+      .where(
+        and(
+          eq(v.videoSource, "youtube"),
+          isNotNull(v.youtubeId),
+          ne(v.youtubeId, ""),
+        ),
+      )
+      .limit(limit);
+
+    return rows
+      .filter((r): r is typeof r & { youtubeId: string } => typeof r.youtubeId === "string" && r.youtubeId.length > 0)
+      .map((r) => ({
+        youtubeId: r.youtubeId,
+        title: r.title,
+        thumbnailUrl: r.thumbnailUrl ?? null,
+        durationSecs: parseYoutubeDuration(r.duration),
+      }));
   },
 
   /**

@@ -346,6 +346,40 @@ export function LiveBroadcastV2({
         />
       )}
 
+      {/* ── YouTube fallback iframe ────────────────────────────────────────
+          Rendered when the current item is a YouTube source (kind="youtube").
+          The iframe sits above the native <video> buffers (zIndex 5) but
+          below overlays (zIndex 20+). The video buffers stay mounted so the
+          player-core FSM continues to run — they are harmlessly invisible
+          behind the iframe.
+          autoplay=1 requires the iframe to be rendered after a user gesture
+          on most browsers; Smart TV platforms typically permit autoplay in
+          fullscreen embedded contexts.                                      */}
+      {(() => {
+        const src = server?.current?.source;
+        if (src?.kind !== "youtube") return null;
+        let ytId: string | null = null;
+        try { ytId = new URL(src.url).searchParams.get("v"); } catch { /* ignore */ }
+        if (!ytId) return null;
+        return (
+          <iframe
+            key={ytId}
+            src={`https://www.youtube.com/embed/${ytId}?autoplay=1&rel=0&modestbranding=1&enablejsapi=1`}
+            allow="autoplay; encrypted-media; fullscreen"
+            allowFullScreen
+            style={{
+              position: "absolute",
+              inset: 0,
+              width: "100%",
+              height: "100%",
+              border: "none",
+              zIndex: 5,
+            }}
+            title={server?.current?.title ?? "Temple TV — YouTube"}
+          />
+        );
+      })()}
+
       {/* Buffer A — initially active */}
       <video
         ref={attach.A}

@@ -109,6 +109,10 @@ interface EngineHealth {
     allBlockedSinceMs: number | null;
     allBlockedDurationMs: number | null;
   };
+  youtubeFallback?: {
+    active: boolean;
+    cachedItemCount: number;
+  };
 }
 
 interface WorkerHealth {
@@ -309,6 +313,8 @@ export default function BroadcastV2Page() {
   const [stuckAlertDismissed, setStuckAlertDismissed] = useState(false);
   // Dismissible all-sources-blocked banner. Same auto-reset pattern.
   const [allBlockedDismissed, setAllBlockedDismissed] = useState(false);
+  // Dismissible YouTube fallback banner. Auto-reset when local content returns.
+  const [ytFallbackDismissed, setYtFallbackDismissed] = useState(false);
   // Dismissible faststart-in-progress banner. Auto-reset when no items remain
   // in 'processing' state so the banner reappears if a new faststart starts.
   const [processingAlertDismissed, setProcessingAlertDismissed] = useState(false);
@@ -469,6 +475,12 @@ export default function BroadcastV2Page() {
     if (!isAllBlocked) setAllBlockedDismissed(false);
   }, [isAllBlocked]);
 
+  // YouTube fallback: no local content in queue — broadcasting YouTube library.
+  const isYtFallback = engineHealth?.youtubeFallback?.active === true;
+  useEffect(() => {
+    if (!isYtFallback) setYtFallbackDismissed(false);
+  }, [isYtFallback]);
+
   // Auto-reset the processing banner when no more items are in 'processing'.
   useEffect(() => {
     if (processingCount === 0) setProcessingAlertDismissed(false);
@@ -577,6 +589,11 @@ export default function BroadcastV2Page() {
             <Badge variant="secondary">Mode: {server.mode}</Badge>
             <Badge variant="outline">Seq: {server.sequence}</Badge>
             <Badge variant="outline">{activeQueueCount} active</Badge>
+            {server.mode === "youtube_fallback" && (
+              <Badge className="shrink-0 bg-red-600 hover:bg-red-600 text-white gap-1">
+                <span style={{ fontSize: 10 }}>▶</span> YouTube Fallback
+              </Badge>
+            )}
             {server.failover.active && (
               <Badge variant="destructive">
                 <AlertTriangle className="mr-1 h-3 w-3" /> Failover: {server.failover.reason}
@@ -740,6 +757,33 @@ export default function BroadcastV2Page() {
               <X className="h-4 w-4" />
             </button>
           </div>
+        </div>
+      )}
+
+      {/* YouTube fallback banner — dismissible amber info strip */}
+      {isYtFallback && !ytFallbackDismissed && (
+        <div
+          role="status"
+          className="flex items-start gap-3 rounded-md border border-amber-300/60 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-700/60 dark:bg-amber-950/30 dark:text-amber-200"
+        >
+          <Radio className="mt-0.5 h-4 w-4 shrink-0" />
+          <div className="flex-1">
+            <strong>Broadcasting YouTube library.</strong>{" "}
+            No local videos are in the broadcast queue, so the system is automatically
+            cycling through{engineHealth?.youtubeFallback?.cachedItemCount
+              ? ` ${engineHealth.youtubeFallback.cachedItemCount}`
+              : ""}{" "}
+            YouTube videos in shuffled order. Upload local videos and add them to the
+            queue to restore normal broadcast mode.
+          </div>
+          <button
+            type="button"
+            aria-label="Dismiss YouTube fallback alert"
+            onClick={() => setYtFallbackDismissed(true)}
+            className="shrink-0 rounded p-0.5 hover:bg-amber-200/60 dark:hover:bg-amber-800/40"
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
       )}
 
