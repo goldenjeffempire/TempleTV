@@ -312,13 +312,33 @@ export function BroadcastPreviewV2({ className }: Props) {
   const [ytTimedOut, setYtTimedOut] = useState(false);
   const ytTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // True during the detection window (between iframe mount and onReady/timeout).
+  // A loading overlay is rendered over the iframe during this window so that
+  // YouTube's own "Error 153 · Video player configuration error" screen is never
+  // visible to the operator — they see a neutral spinner instead.
+  const [ytChecking, setYtChecking] = useState(false);
+
+  // Persistent cross-reconnect cache of YouTube video IDs whose embedding is
+  // confirmed blocked (timeout fired or onError 101/150 received). A Set ref
+  // so it survives React re-renders and SSE reconnects without resetting.
+  // When the SSE drops and reconnects, the server may re-send the same video ID;
+  // without this cache the 4-second exposure window restarts for every reconnect,
+  // causing the raw Error 153 screen to flash repeatedly.
+  const ytBlockedIdsRef = useRef<Set<string>>(new Set());
+
+  // Ref mirror of the active YouTube video ID, used inside message-event
+  // closures to add to ytBlockedIdsRef without a stale closure.
+  const currentYtVideoIdRef = useRef<string | null>(null);
+
   // How long to wait for YouTube onReady before assuming embedding is blocked.
-  // 7 s is generous enough for slow connections while still being responsive.
-  const YOUTUBE_READY_TIMEOUT_MS = 7000;
+  // 4 s is generous for slow connections (working embeds fire onReady in ~1 s)
+  // while still being fast enough to avoid a long exposure of the error screen
+  // on the rare occasion a new, not-yet-cached video ID is encountered.
+  const YOUTUBE_READY_TIMEOUT_MS = 4000;
 
   // Listen for YouTube IFrame API postMessage events so we can detect:
-  //   onReady   → player initialized successfully → cancel the timeout
-  //   onError   → post-init error (100 / 101 / 150) → show fallback immediately
+  //   onReady   → player initialized → cancel timeout, hide loading overlay
+  //   onError   → post-init error (100 / 101 / 150) → cache + show fallback
   useEffect(() => {
     function handleMessage(ev: MessageEvent) {
       if (ev.origin !== "https://www.youtube.com") return;
@@ -332,19 +352,31 @@ export function BroadcastPreviewV2({ className }: Props) {
       const evt = (data as Record<string, unknown>).event;
 
       if (evt === "onReady") {
-        // Player initialized — embedding is allowed. Cancel the timeout.
+        // Player initialized — embedding is allowed. Cancel the detection window.
         if (ytTimeoutRef.current) {
           clearTimeout(ytTimeoutRef.current);
           ytTimeoutRef.current = null;
         }
         setYtTimedOut(false);
+        setYtChecking(false);
         return;
       }
 
       if (evt === "onError" && "info" in data) {
         const code = (data as Record<string, unknown>).info;
         if (typeof code === "number") {
+          // Cancel any pending timeout — the error is already known.
+          if (ytTimeoutRef.current) {
+            clearTimeout(ytTimeoutRef.current);
+            ytTimeoutRef.current = null;
+          }
+          // Cache embedding-disabled errors (101/150) so subsequent reconnects
+          // skip the detection window entirely for this video ID.
+          if ((code === 101 || code === 150) && currentYtVideoIdRef.current) {
+            ytBlockedIdsRef.current.add(currentYtVideoIdRef.current);
+          }
           setYtEmbedError(code);
+          setYtChecking(false);
         }
       }
     }
@@ -379,22 +411,43 @@ export function BroadcastPreviewV2({ className }: Props) {
   }, [server]);
 
   // Reset embed error + timeout state whenever the active YouTube video changes.
-  // Also starts the onReady timeout for the new video; if onReady doesn't arrive
-  // within YOUTUBE_READY_TIMEOUT_MS we assume embedding is blocked (Error 153).
+  // Checks the blocked-IDs cache first so SSE reconnects never re-expose the
+  // raw YouTube error screen for a video that was already confirmed blocked.
   useEffect(() => {
+    // Keep the closure-ref in sync.
+    currentYtVideoIdRef.current = youtubeVideoId;
+
     setYtEmbedError(null);
-    setYtTimedOut(false);
 
     if (ytTimeoutRef.current) {
       clearTimeout(ytTimeoutRef.current);
       ytTimeoutRef.current = null;
     }
 
-    if (youtubeVideoId) {
-      ytTimeoutRef.current = setTimeout(() => {
-        setYtTimedOut(true);
-      }, YOUTUBE_READY_TIMEOUT_MS);
+    if (!youtubeVideoId) {
+      setYtTimedOut(false);
+      setYtChecking(false);
+      return;
     }
+
+    // Already confirmed blocked in a previous detection cycle — show the
+    // fallback immediately without any exposure of the YouTube error screen.
+    if (ytBlockedIdsRef.current.has(youtubeVideoId)) {
+      setYtTimedOut(true);
+      setYtChecking(false);
+      return;
+    }
+
+    // New (uncached) video — start the detection window with a loading overlay.
+    setYtTimedOut(false);
+    setYtChecking(true);
+
+    ytTimeoutRef.current = setTimeout(() => {
+      // Timeout fired — embedding is blocked. Cache it so reconnects are instant.
+      ytBlockedIdsRef.current.add(youtubeVideoId);
+      setYtTimedOut(true);
+      setYtChecking(false);
+    }, YOUTUBE_READY_TIMEOUT_MS);
 
     return () => {
       if (ytTimeoutRef.current) {
@@ -561,27 +614,39 @@ export function BroadcastPreviewV2({ className }: Props) {
           reloading the player. Starts muted to match the default admin mute state.
           Hidden (replaced by the fallback card) once:
             - ytTimedOut: onReady never arrived → embedding disabled / Error 153
-            - ytEmbedError: post-init onError code (100 / 101 / 150) */}
+            - ytEmbedError: post-init onError code (100 / 101 / 150)
+          A loading overlay (ytChecking) covers the iframe during the detection window
+          so YouTube's own "Error 153" screen is never visible — the operator sees a
+          neutral spinner until onReady fires (embed works) or the timeout fires (blocked). */}
       {youtubeVideoId && !ytEmbedError && !ytTimedOut && (
-        <iframe
-          key={youtubeVideoId}
-          ref={ytIframeRef}
-          className="absolute inset-0 w-full h-full"
-          src={`https://www.youtube.com/embed/${youtubeVideoId}?autoplay=1&mute=1&enablejsapi=1&rel=0&modestbranding=1&playsinline=1`}
-          allow="autoplay; encrypted-media; picture-in-picture"
-          allowFullScreen
-          title="YouTube broadcast preview"
-          style={{ zIndex: 5, border: "none" }}
-          onLoad={() => {
-            if (ytIframeRef.current) {
-              postYouTubeCommand(ytIframeRef.current, muted ? "mute" : "unMute");
-            }
-          }}
-        />
+        <div className="absolute inset-0" style={{ zIndex: 5 }}>
+          <iframe
+            key={youtubeVideoId}
+            ref={ytIframeRef}
+            className="absolute inset-0 w-full h-full"
+            src={`https://www.youtube.com/embed/${youtubeVideoId}?autoplay=1&mute=1&enablejsapi=1&rel=0&modestbranding=1&playsinline=1`}
+            allow="autoplay; encrypted-media; picture-in-picture"
+            allowFullScreen
+            title="YouTube broadcast preview"
+            style={{ border: "none" }}
+            onLoad={() => {
+              if (ytIframeRef.current) {
+                postYouTubeCommand(ytIframeRef.current, muted ? "mute" : "unMute");
+              }
+            }}
+          />
+          {/* Detection-window overlay: blocks YouTube's raw error UI from showing.
+              Fades out the moment onReady fires (embed confirmed working). */}
+          {ytChecking && (
+            <div className="absolute inset-0 bg-black flex items-center justify-center pointer-events-none">
+              <Loader2 size={16} className="animate-spin text-white/30" />
+            </div>
+          )}
+        </div>
       )}
 
       {/* YouTube embed error fallback — shown when:
-            - ytTimedOut: onReady never fired within 7 s → embedding disabled (Error 153
+            - ytTimedOut: onReady never fired within 4 s → embedding disabled (Error 153
               "Video player configuration error"). YouTube shows this in-player error BEFORE
               the IFrame API initializes, so it is never propagated via postMessage onError.
               The timeout is the only reliable detection path.

@@ -30,6 +30,15 @@ declare class BroadcastOrchestrator extends EventEmitter {
     private queueCheckpoint;
     private failover;
     private sequence;
+    /** True while the broadcast is running from the YouTube library (no local queue content). */
+    private inYoutubeFallback;
+    /**
+     * Stable shuffled list of YouTube library items used during fallback playback.
+     * Built once when entering fallback; cleared when local content returns.
+     * Re-used on drift-poll reloads so the playing order stays stable (no disruptive
+     * cycle resets during routine 30-second self-heal ticks).
+     */
+    private youtubeFallbackCache;
     private tickTimer;
     private checkpointTimer;
     private trimTimer;
@@ -381,6 +390,19 @@ declare class BroadcastOrchestrator extends EventEmitter {
         allBlockedSinceMs: number | null;
         allBlockedDurationMs: number | null;
     };
+    /** YouTube fallback diagnostics for /health. */
+    getYoutubeFallbackInfo(): {
+        active: boolean;
+        cachedItemCount: number;
+    };
+    /**
+     * Clears the in-memory YouTube fallback cache so the next reload
+     * re-fetches and re-shuffles the library. Keeps `inYoutubeFallback=true`
+     * so the reload stays in fallback mode — it just gets a fresh order.
+     * Call this when an operator wants a new shuffle without restarting
+     * the server.
+     */
+    clearYoutubeFallbackCache(): void;
     isStarted(): boolean;
 }
 export declare const broadcastOrchestrator: BroadcastOrchestrator;

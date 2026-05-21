@@ -6,6 +6,7 @@ import { z } from "zod";
 declare const Env: z.ZodObject<{
     NODE_ENV: z.ZodDefault<z.ZodEnum<["development", "test", "production"]>>;
     PORT: z.ZodDefault<z.ZodNumber>;
+    REPLIT_DEV_DOMAIN: z.ZodOptional<z.ZodString>;
     LOG_LEVEL: z.ZodDefault<z.ZodEnum<["fatal", "error", "warn", "info", "debug", "trace", "silent"]>>;
     DATABASE_URL: z.ZodString;
     JWT_ACCESS_SECRET: z.ZodString;
@@ -69,10 +70,10 @@ declare const Env: z.ZodObject<{
     SEED_ADMIN_PASSWORD: z.ZodOptional<z.ZodString>;
     SEED_ADMIN_FORCE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
 }, "strip", z.ZodTypeAny, {
-    DATABASE_URL: string;
     NODE_ENV: "development" | "test" | "production";
     PORT: number;
     LOG_LEVEL: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
+    DATABASE_URL: string;
     JWT_ACCESS_SECRET: string;
     JWT_REFRESH_SECRET: string;
     JWT_ACCESS_TTL_SECONDS: number;
@@ -113,6 +114,7 @@ declare const Env: z.ZodObject<{
     CLEANUP_DISABLE: boolean;
     CLEANUP_MAX_PER_SWEEP: number;
     SEED_ADMIN_FORCE: boolean;
+    REPLIT_DEV_DOMAIN?: string | undefined;
     ADMIN_API_TOKEN?: string | undefined;
     ADMIN_API_TOKEN_IP_ALLOWLIST?: string | undefined;
     CORS_ORIGINS_EXTRA?: string | undefined;
@@ -139,6 +141,7 @@ declare const Env: z.ZodObject<{
     JWT_REFRESH_SECRET: string;
     NODE_ENV?: "development" | "test" | "production" | undefined;
     PORT?: number | undefined;
+    REPLIT_DEV_DOMAIN?: string | undefined;
     LOG_LEVEL?: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent" | undefined;
     JWT_ACCESS_TTL_SECONDS?: number | undefined;
     JWT_REFRESH_TTL_SECONDS?: number | undefined;

@@ -6,7 +6,7 @@
  * `lib/player-core`) by every client surface. Any change here is a wire
  * protocol change.
  */
-export type V2Mode = "queue" | "override" | "failover" | "offline_hold";
+export type V2Mode = "queue" | "override" | "failover" | "offline_hold" | "youtube_fallback";
 export type V2SourceKind = "hls" | "mp4" | "dash" | "youtube";
 export interface V2Source {
     kind: V2SourceKind;

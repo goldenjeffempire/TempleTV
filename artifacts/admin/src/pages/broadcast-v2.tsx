@@ -605,11 +605,6 @@ export default function BroadcastV2Page() {
             <Badge variant="secondary">Mode: {server.mode}</Badge>
             <Badge variant="outline">Seq: {server.sequence}</Badge>
             <Badge variant="outline">{activeQueueCount} active</Badge>
-            {server.mode === "youtube_fallback" && (
-              <Badge className="shrink-0 bg-red-600 hover:bg-red-600 text-white gap-1">
-                <span style={{ fontSize: 10 }}>▶</span> YouTube Fallback
-              </Badge>
-            )}
             {server.failover.active && (
               <Badge variant="destructive">
                 <AlertTriangle className="mr-1 h-3 w-3" /> Failover: {server.failover.reason}

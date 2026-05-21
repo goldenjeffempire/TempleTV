@@ -60,8 +60,8 @@ export declare const AuthTokensSchema: z.ZodObject<{
         id: string;
         displayName: string;
     };
-    refreshToken: string;
     accessToken: string;
+    refreshToken: string;
     accessTokenExpiresIn: number;
     refreshTokenExpiresIn: number;
 }, {
@@ -71,8 +71,8 @@ export declare const AuthTokensSchema: z.ZodObject<{
         id: string;
         displayName: string;
     };
-    refreshToken: string;
     accessToken: string;
+    refreshToken: string;
     accessTokenExpiresIn: number;
     refreshTokenExpiresIn: number;
 }>;
@@ -86,11 +86,11 @@ export declare const MfaChallengeSchema: z.ZodObject<{
     mfaRequired: z.ZodLiteral<true>;
     mfaToken: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    mfaRequired: true;
     mfaToken: string;
+    mfaRequired: true;
 }, {
-    mfaRequired: true;
     mfaToken: string;
+    mfaRequired: true;
 }>;
 export type MfaChallenge = z.infer<typeof MfaChallengeSchema>;
 /** Discriminated union: either full auth tokens or an MFA challenge. */
@@ -122,8 +122,8 @@ export declare const LoginResponseSchema: z.ZodUnion<[z.ZodObject<{
         id: string;
         displayName: string;
     };
-    refreshToken: string;
     accessToken: string;
+    refreshToken: string;
     accessTokenExpiresIn: number;
     refreshTokenExpiresIn: number;
 }, {
@@ -133,19 +133,19 @@ export declare const LoginResponseSchema: z.ZodUnion<[z.ZodObject<{
         id: string;
         displayName: string;
     };
-    refreshToken: string;
     accessToken: string;
+    refreshToken: string;
     accessTokenExpiresIn: number;
     refreshTokenExpiresIn: number;
 }>, z.ZodObject<{
     mfaRequired: z.ZodLiteral<true>;
     mfaToken: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    mfaRequired: true;
     mfaToken: string;
+    mfaRequired: true;
 }, {
-    mfaRequired: true;
     mfaToken: string;
+    mfaRequired: true;
 }>]>;
 export type LoginResponse = z.infer<typeof LoginResponseSchema>;
 export declare const MfaSetupResponseSchema: z.ZodObject<{
@@ -218,15 +218,15 @@ export declare const MeResponseSchema: z.ZodObject<{
     email: string;
     role: "system" | "admin" | "editor" | "user";
     id: string;
-    displayName: string;
     createdAt: string;
+    displayName: string;
     mfaEnabled: boolean;
 }, {
     email: string;
     role: "system" | "admin" | "editor" | "user";
     id: string;
-    displayName: string;
     createdAt: string;
+    displayName: string;
     mfaEnabled: boolean;
 }>;
 /**

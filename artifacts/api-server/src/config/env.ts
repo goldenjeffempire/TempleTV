@@ -16,6 +16,9 @@ if (process.env.PGHOST && process.env.PGUSER && process.env.PGDATABASE) {
 const Env = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().nonnegative().default(8080),
+  // Injected automatically by Replit in dev environments. Used by sse-cors.ts
+  // to allow the Replit preview origin in addition to localhost.
+  REPLIT_DEV_DOMAIN: z.string().optional(),
   LOG_LEVEL: z
     .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
     .default("info"),

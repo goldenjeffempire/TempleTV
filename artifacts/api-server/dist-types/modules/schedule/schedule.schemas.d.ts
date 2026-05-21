@@ -11,10 +11,10 @@ export declare const ScheduleEntrySchema: z.ZodObject<{
     isActive: z.ZodBoolean;
     createdAt: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    title: string;
     id: string;
-    createdAt: string;
+    title: string;
     isActive: boolean;
+    createdAt: string;
     dayOfWeek: number;
     startTime: string;
     endTime: string | null;
@@ -22,10 +22,10 @@ export declare const ScheduleEntrySchema: z.ZodObject<{
     contentId: string | null;
     isRecurring: boolean;
 }, {
-    title: string;
     id: string;
-    createdAt: string;
+    title: string;
     isActive: boolean;
+    createdAt: string;
     dayOfWeek: number;
     startTime: string;
     endTime: string | null;
@@ -46,10 +46,10 @@ export declare const ListScheduleResponseSchema: z.ZodObject<{
         isActive: z.ZodBoolean;
         createdAt: z.ZodString;
     }, "strip", z.ZodTypeAny, {
-        title: string;
         id: string;
-        createdAt: string;
+        title: string;
         isActive: boolean;
+        createdAt: string;
         dayOfWeek: number;
         startTime: string;
         endTime: string | null;
@@ -57,10 +57,10 @@ export declare const ListScheduleResponseSchema: z.ZodObject<{
         contentId: string | null;
         isRecurring: boolean;
     }, {
-        title: string;
         id: string;
-        createdAt: string;
+        title: string;
         isActive: boolean;
+        createdAt: string;
         dayOfWeek: number;
         startTime: string;
         endTime: string | null;
@@ -70,11 +70,12 @@ export declare const ListScheduleResponseSchema: z.ZodObject<{
     }>, "many">;
     total: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
+    total: number;
     items: {
-        title: string;
         id: string;
-        createdAt: string;
+        title: string;
         isActive: boolean;
+        createdAt: string;
         dayOfWeek: number;
         startTime: string;
         endTime: string | null;
@@ -82,13 +83,13 @@ export declare const ListScheduleResponseSchema: z.ZodObject<{
         contentId: string | null;
         isRecurring: boolean;
     }[];
-    total: number;
 }, {
+    total: number;
     items: {
-        title: string;
         id: string;
-        createdAt: string;
+        title: string;
         isActive: boolean;
+        createdAt: string;
         dayOfWeek: number;
         startTime: string;
         endTime: string | null;
@@ -96,7 +97,6 @@ export declare const ListScheduleResponseSchema: z.ZodObject<{
         contentId: string | null;
         isRecurring: boolean;
     }[];
-    total: number;
 }>;
 export declare const TIME_RE: RegExp;
 export declare const CreateScheduleBodySchema: z.ZodObject<{
