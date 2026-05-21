@@ -489,6 +489,12 @@ export async function buildApp(): Promise<FastifyInstance> {
     };
   });
 
+  // Browsers always fetch /favicon.ico at the root — redirect to the mobile
+  // app's favicon so the tab gets an icon instead of logging a 404.
+  app.get("/favicon.ico", async (_req, reply) => {
+    return reply.redirect("/mobile/favicon.ico", 301);
+  });
+
   await app.register(healthRoutes);
   // Health probe alias under /api so the admin SPA's `apiUrl("/healthz")`
   // — which prefixes /api in dev — resolves correctly without the SPA
@@ -737,6 +743,104 @@ export async function buildApp(): Promise<FastifyInstance> {
     app.get("/hot", wsProxy as unknown as Parameters<typeof app.get>[1]);
     app.get("/message", wsProxy as unknown as Parameters<typeof app.get>[1]);
     logger.info({ port: MOBILE_DEV_PORT }, "dev Mobile proxy registered at /mobile/*, /artifacts/mobile/*, /hot, /message");
+  }
+
+  // ── Production static SPA serving ─────────────────────────────────────────
+  // In production, the mobile web (Expo export) and TV (Vite) apps are served
+  // as pre-built static files directly from the API server.  The dev-mode
+  // proxy block above handles the same paths in development instead.
+  //
+  // SPA fallback: any path that doesn't resolve to a concrete file on disk
+  // falls through to index.html so client-side routing works correctly.
+  //
+  // Asset cache strategy:
+  //   • JS/CSS/images with content-hash filenames → immutable (1 year)
+  //   • HTML entry points                         → no-cache (always fresh)
+  if (env.NODE_ENV === "production") {
+    const { resolve: pathResolve, join, extname } = await import("node:path");
+    const { existsSync, createReadStream } = await import("node:fs");
+
+    const MIME_MAP: Record<string, string> = {
+      ".html": "text/html; charset=utf-8",
+      ".js": "application/javascript; charset=utf-8",
+      ".mjs": "application/javascript; charset=utf-8",
+      ".css": "text/css; charset=utf-8",
+      ".json": "application/json",
+      ".map": "application/json",
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".gif": "image/gif",
+      ".svg": "image/svg+xml",
+      ".ico": "image/x-icon",
+      ".woff": "font/woff",
+      ".woff2": "font/woff2",
+      ".ttf": "font/ttf",
+      ".webp": "image/webp",
+      ".mp4": "video/mp4",
+      ".webm": "video/webm",
+      ".txt": "text/plain",
+    };
+
+    // Registers two Fastify GET routes (bare + wildcard) for `prefix` that
+    // serve files from `distDir` with an SPA index.html fallback.
+    function mountSpa(distDir: string, prefix: string) {
+      if (!existsSync(distDir)) {
+        logger.warn({ distDir, prefix }, "prod SPA: dist directory not found — path will 404 until first deployment build");
+        return;
+      }
+
+      const handler = async (
+        req: import("fastify").FastifyRequest,
+        reply: import("fastify").FastifyReply,
+      ) => {
+        // 1. Strip the path prefix that the route was mounted under.
+        let rel = req.url;
+        if (rel.startsWith(prefix)) rel = rel.slice(prefix.length);
+        // 2. Drop query string — static files are identified by path only.
+        const qIdx = rel.indexOf("?");
+        if (qIdx !== -1) rel = rel.slice(0, qIdx);
+        // 3. Normalise: empty or bare slash → index.html.
+        if (!rel || rel === "/") rel = "index.html";
+        if (rel.startsWith("/")) rel = rel.slice(1);
+
+        const filePath = join(distDir, rel);
+        const indexPath = join(distDir, "index.html");
+
+        if (existsSync(filePath)) {
+          const ext = extname(filePath).toLowerCase();
+          const isAsset = ext !== ".html" && ext !== "";
+          reply.header("Content-Type", MIME_MAP[ext] ?? "application/octet-stream");
+          reply.header(
+            "Cache-Control",
+            isAsset
+              ? "public, max-age=31536000, immutable"
+              : "no-cache, no-store, must-revalidate",
+          );
+          return reply.send(createReadStream(filePath));
+        }
+
+        // SPA fallback: serve index.html for any deep-link the SPA handles.
+        if (existsSync(indexPath)) {
+          reply.header("Content-Type", "text/html; charset=utf-8");
+          reply.header("Cache-Control", "no-cache, no-store, must-revalidate");
+          return reply.send(createReadStream(indexPath));
+        }
+
+        return reply.status(404).send({ error: "SPA dist not built" });
+      };
+
+      const bare = prefix.replace(/\/$/, "");
+      app.get(bare, handler as unknown as Parameters<typeof app.get>[1]);
+      app.get(`${bare}/*`, handler as unknown as Parameters<typeof app.get>[1]);
+      logger.info({ distDir, prefix }, "prod SPA mounted");
+    }
+
+    const cwd = process.cwd();
+    // Mobile web app — built with: EXPO_BASE_URL=/mobile expo export --platform web --output-dir web-dist
+    mountSpa(pathResolve(cwd, "artifacts/mobile/web-dist"), "/mobile");
+    // TV web app  — built with: BASE_PATH=/tv/ vite build
+    mountSpa(pathResolve(cwd, "artifacts/tv/dist/public"), "/tv");
   }
 
   // Subscribe to YouTube's PubSubHubbub hub once the server is fully ready
