@@ -68,8 +68,21 @@ import { PlayerProvider } from "@/context/PlayerContext";
 import { AuthProvider } from "@/context/AuthContext";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { RadioStreamProvider } from "@/context/RadioStreamContext";
+import { NetworkProvider } from "@/context/NetworkContext";
+import { NetworkBanner } from "@/components/NetworkBanner";
+import { useNetworkStatus } from "@/hooks/useNetworkStatus";
 import { setupTrackPlayer } from "@/services/nowPlaying";
 import { useNotificationPreferences } from "@/hooks/useNotificationPreferences";
+
+/**
+ * Global offline/recovery banner — mounted once at the root so every screen
+ * gets coverage without each screen needing its own NetworkBanner instance.
+ * Reads from the singleton NetworkContext (one poll interval for the whole app).
+ */
+function GlobalNetworkBanner() {
+  const { isOnline, justRecovered } = useNetworkStatus();
+  return <NetworkBanner visible={!isOnline} recovered={justRecovered} />;
+}
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -476,6 +489,7 @@ function RootLayout() {
   return (
     <SafeAreaProvider style={{ flex: 1 }}>
       <ThemeProvider>
+      <NetworkProvider>
       <ErrorBoundary
         onError={(error, stackTrace) => {
           reportClientError({
@@ -508,6 +522,14 @@ function RootLayout() {
                    * the splash screen fades, never before. Only shown on native.
                    */}
                   <NotificationOptInGate />
+                  {/*
+                   * GlobalNetworkBanner overlays every screen with an amber
+                   * "No connection" strip when the device goes offline, and a
+                   * brief green "Back online" flash when connectivity returns.
+                   * Reads from the singleton NetworkContext — one poll interval
+                   * for the whole app, no per-screen duplication.
+                   */}
+                  <GlobalNetworkBanner />
                 </SafeKeyboardProvider>
               </GestureHandlerRootView>
             </PlayerProvider>
@@ -515,6 +537,7 @@ function RootLayout() {
           </AuthProvider>
         </QueryClientProvider>
       </ErrorBoundary>
+      </NetworkProvider>
       </ThemeProvider>
     </SafeAreaProvider>
   );

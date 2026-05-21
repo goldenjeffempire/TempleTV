@@ -39,7 +39,6 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { AppHeader } from "@/components/AppHeader";
 import { LiveBadge } from "@/components/LiveBadge";
-import { NetworkBanner } from "@/components/NetworkBanner";
 import { useNetworkStatus } from "@/hooks/useNetworkStatus";
 import { useBroadcastSync } from "@/hooks/useBroadcastSync";
 import { useVideos } from "@/hooks/useVideos";
@@ -362,9 +361,6 @@ export default function WatchScreen() {
           </Pressable>
         }
       />
-
-      {/* Network offline banner */}
-      <NetworkBanner visible={!networkConnected} />
 
       {/* Stale cache indicator — three states:
           1. isStale + refreshing:  "Showing cached content — refreshing…"

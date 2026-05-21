@@ -50,7 +50,6 @@ import { useColors } from "@/hooks/useColors";
 import { YoutubePlayer } from "@/components/YoutubePlayer";
 import { LocalVideoPlayer } from "@/components/LocalVideoPlayer";
 import { LiveBadge } from "@/components/LiveBadge";
-import { NetworkBanner } from "@/components/NetworkBanner";
 import { useNetworkStatus } from "@/hooks/useNetworkStatus";
 import { useFavorites } from "@/hooks/useFavorites";
 import { useWatchHistory } from "@/hooks/useWatchHistory";
@@ -669,8 +668,6 @@ export default function PlayerScreen() {
   return (
     <View style={[styles.root, { backgroundColor: c.background }]}>
       <StatusBar barStyle="light-content" backgroundColor="#000" />
-      <NetworkBanner visible={!isOnline} />
-
       <ScrollView
         showsVerticalScrollIndicator={false}
         bounces

@@ -3,44 +3,60 @@ import { Animated, Platform, StyleSheet, Text, useColorScheme, View } from "reac
 import { Feather } from "@expo/vector-icons";
 
 interface NetworkBannerProps {
+  /** Show the amber offline banner */
   visible: boolean;
   /**
-   * Optional override for the banner copy. Defaults to the landing-page
-   * message ("No connection — showing cached content"), which is correct
-   * when the surface behind the banner is a static cache-backed list.
-   * The broadcast player surface passes a different copy ("Reconnecting…")
-   * because there's no cache to fall back to during live playback — the
-   * accurate signal is "we're aware, we're waiting", not "we substituted
-   * stale content".
+   * When true, briefly shows a green "Back online" recovery flash instead of
+   * the amber offline banner. The caller is responsible for clearing this flag
+   * after the flash duration (NetworkContext does this automatically).
+   */
+  recovered?: boolean;
+  /**
+   * Optional override for the offline banner copy.
+   * Defaults to "No connection — retrying…" which is accurate for all surfaces
+   * now that the fetch layer retries automatically.
    */
   message?: string;
 }
 
-export function NetworkBanner({ visible, message }: NetworkBannerProps) {
+export function NetworkBanner({ visible, recovered = false, message }: NetworkBannerProps) {
   const slideAnim = useRef(new Animated.Value(-52)).current;
   const colorScheme = useColorScheme();
   const isDark = colorScheme === "dark";
 
+  const shouldShow = visible || recovered;
+
   useEffect(() => {
     const ND = Platform.OS !== "web";
     Animated.spring(slideAnim, {
-      toValue: visible ? 0 : -52,
+      toValue: shouldShow ? 0 : -52,
       useNativeDriver: ND,
       damping: 22,
       stiffness: 200,
     }).start();
-  }, [visible, slideAnim]);
+  }, [shouldShow, slideAnim]);
 
-  const bgColor = isDark ? "rgba(30, 10, 50, 0.96)" : "rgba(15, 5, 25, 0.92)";
+  const bgColor = recovered
+    ? isDark ? "rgba(10, 40, 20, 0.96)" : "rgba(5, 30, 15, 0.92)"
+    : isDark ? "rgba(30, 10, 50, 0.96)" : "rgba(15, 5, 25, 0.92)";
+
+  const iconName: "wifi" | "wifi-off" = recovered ? "wifi" : "wifi-off";
+  const iconColor = recovered ? "#69DB7C" : "#FFA94D";
+  const iconBg = recovered ? "rgba(105, 219, 124, 0.18)" : "rgba(255, 169, 77, 0.18)";
+  const textColor = recovered ? "#A3E8B0" : "#FFC97A";
+  const label = recovered ? "Back online" : (message ?? "No connection — retrying…");
 
   return (
     <Animated.View
-      style={[styles.container, { backgroundColor: bgColor, transform: [{ translateY: slideAnim }], pointerEvents: "none" }]}
+      style={[
+        styles.container,
+        { backgroundColor: bgColor, transform: [{ translateY: slideAnim }], pointerEvents: "none" },
+      ]}
     >
-      <View style={styles.iconWrap}>
-        <Feather name="wifi-off" size={13} color="#FFA94D" />
+      <View style={[styles.iconWrap, { backgroundColor: iconBg }]}>
+        <Feather name={iconName} size={13} color={iconColor} />
       </View>
-      <Text style={styles.text}>{message ?? "No connection — showing cached content"}</Text>
+      <Text style={[styles.text, { color: textColor }]}>{label}</Text>
     </Animated.View>
   );
 }
@@ -63,12 +79,10 @@ const styles = StyleSheet.create({
     width: 22,
     height: 22,
     borderRadius: 11,
-    backgroundColor: "rgba(255, 169, 77, 0.18)",
     alignItems: "center",
     justifyContent: "center",
   },
   text: {
-    color: "#FFC97A",
     fontSize: 12,
     fontFamily: "Inter_500Medium",
   },
