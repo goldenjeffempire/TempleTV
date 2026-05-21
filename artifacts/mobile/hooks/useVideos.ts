@@ -323,10 +323,17 @@ export interface PaginatedVideosState {
   total: number;
   totalPages: number;
   page: number;
+  /** True only during the initial load (no data yet). */
   loading: boolean;
+  /** True during an infinite-scroll page fetch. */
   loadingMore: boolean;
+  /** True while a pull-to-refresh runs on top of existing data. */
+  isRefreshing: boolean;
   hasMore: boolean;
+  /** Set on initial-load failure. Null when data loaded successfully. */
   error: string | null;
+  /** Set when a background refresh fails but existing data is still shown. */
+  refreshError: string | null;
   loadMore: () => void;
   refetch: () => void;
 }
@@ -379,7 +386,9 @@ export function usePaginatedVideos(opts: {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
 
   const hasMore = page < totalPages;
 
@@ -387,36 +396,36 @@ export function usePaginatedVideos(opts: {
   const optsRef = useRef({ debouncedSearch, category: opts.category, sort: opts.sort });
   optsRef.current = { debouncedSearch, category: opts.category, sort: opts.sort };
 
+  // Snapshot of sermons before a background refresh so we can restore on failure
+  const preRefreshSermonsRef = useRef<Sermon[]>([]);
+
   const fetchPage = useCallback(async (pageNum: number, replace: boolean) => {
     const { debouncedSearch: search, category, sort } = optsRef.current;
     const apiCategory = categoryToApiSlug(category);
     const apiSort = sortModeToApi(sort);
 
-    try {
-      const resp = await fetchVideos({
-        limit: PAGE_SIZE,
-        page: pageNum,
-        search: search || undefined,
-        category: apiCategory,
-        sort: apiSort as "newest" | "oldest" | "views",
+    const resp = await fetchVideos({
+      limit: PAGE_SIZE,
+      page: pageNum,
+      search: search || undefined,
+      category: apiCategory,
+      sort: apiSort as "newest" | "oldest" | "views",
+    });
+    const mapped = resp.videos.map((v, i) => apiVideoToSermon(v, (pageNum - 1) * PAGE_SIZE + i));
+    if (replace) {
+      setSermons(mapped);
+    } else {
+      setSermons((prev) => {
+        // Deduplicate by id in case of concurrent fetches
+        const ids = new Set(prev.map((s) => s.id));
+        return [...prev, ...mapped.filter((s) => !ids.has(s.id))];
       });
-      const mapped = resp.videos.map((v, i) => apiVideoToSermon(v, (pageNum - 1) * PAGE_SIZE + i));
-      if (replace) {
-        setSermons(mapped);
-      } else {
-        setSermons((prev) => {
-          // Deduplicate by id in case of concurrent fetches
-          const ids = new Set(prev.map((s) => s.id));
-          return [...prev, ...mapped.filter((s) => !ids.has(s.id))];
-        });
-      }
-      setTotal(resp.total ?? mapped.length);
-      setTotalPages(resp.totalPages ?? 1);
-      setPage(pageNum);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load videos");
     }
+    setTotal(resp.total ?? mapped.length);
+    setTotalPages(resp.totalPages ?? 1);
+    setPage(pageNum);
+    setError(null);
+    setRefreshError(null);
   }, []);
 
   // Reset and load page 1 when filters change
@@ -426,21 +435,50 @@ export function usePaginatedVideos(opts: {
     setPage(1);
     setTotal(0);
     setTotalPages(1);
-    void fetchPage(1, true).finally(() => setLoading(false));
+    setRefreshError(null);
+    void fetchPage(1, true)
+      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load videos"))
+      .finally(() => setLoading(false));
   }, [debouncedSearch, opts.category, opts.sort, fetchPage, libraryRevision]);
 
   const loadMore = useCallback(() => {
     if (loadingMore || !hasMore) return;
     setLoadingMore(true);
-    void fetchPage(page + 1, false).finally(() => setLoadingMore(false));
+    void fetchPage(page + 1, false)
+      .catch(() => { /* loadMore failures are silent — user can scroll again */ })
+      .finally(() => setLoadingMore(false));
   }, [loadingMore, hasMore, page, fetchPage]);
 
+  /**
+   * Pull-to-refresh: if data is already showing, keep it visible while the
+   * refresh runs (sets isRefreshing). On failure, restore the previous data
+   * and surface refreshError. On success, replace with fresh data.
+   */
   const refetch = useCallback(() => {
-    setLoading(true);
-    setSermons([]);
+    if (sermons.length === 0) {
+      // No data yet — fall back to a full loading state.
+      setLoading(true);
+      setPage(1);
+      void fetchPage(1, true)
+        .catch((err) => setError(err instanceof Error ? err.message : "Failed to load videos"))
+        .finally(() => setLoading(false));
+      return;
+    }
+
+    // Background refresh — keep existing data visible.
+    preRefreshSermonsRef.current = sermons;
+    setIsRefreshing(true);
+    setRefreshError(null);
     setPage(1);
-    void fetchPage(1, true).finally(() => setLoading(false));
-  }, [fetchPage]);
+
+    void fetchPage(1, true)
+      .catch((err) => {
+        // Restore previous sermons so the user doesn't see an empty list.
+        setSermons(preRefreshSermonsRef.current);
+        setRefreshError(err instanceof Error ? err.message : "Couldn't refresh");
+      })
+      .finally(() => setIsRefreshing(false));
+  }, [sermons, fetchPage]);
 
   return {
     sermons,
@@ -449,8 +487,10 @@ export function usePaginatedVideos(opts: {
     page,
     loading,
     loadingMore,
+    isRefreshing,
     hasMore,
     error,
+    refreshError,
     loadMore,
     refetch,
   };

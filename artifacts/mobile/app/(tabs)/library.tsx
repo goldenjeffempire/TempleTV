@@ -27,6 +27,8 @@ import { AppHeader } from "@/components/AppHeader";
 import { usePaginatedVideos } from "@/hooks/useVideos";
 import { SermonCard } from "@/components/SermonCard";
 import { getApiBase } from "@/lib/apiBase";
+import { fetchWithRetry } from "@/lib/fetchWithRetry";
+import { useNetworkStatus } from "@/hooks/useNetworkStatus";
 import type { Sermon, SermonCategory, SortMode } from "@/types";
 import { useWatchProgress, type ContinueWatchingItem } from "@/hooks/useWatchProgress";
 
@@ -335,7 +337,7 @@ function useSeriesList() {
     setError(null);
     try {
       const apiBase = getApiBase();
-      const res = await fetch(`${apiBase}/api/series?limit=50`);
+      const res = await fetchWithRetry(`${apiBase}/api/series?limit=50`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setSeries(data.series ?? []);
@@ -383,13 +385,17 @@ export default function LibraryScreen() {
   }, [categoryParam]);
 
   // Server-side paginated search — reacts to search/category/sort changes
+  const { isOnline } = useNetworkStatus();
+
   const {
     sermons,
     total,
     loading,
     loadingMore,
+    isRefreshing,
     hasMore,
     error,
+    refreshError,
     loadMore,
     refetch,
   } = usePaginatedVideos({ search, category, sort });
@@ -585,6 +591,39 @@ export default function LibraryScreen() {
         <Text style={[styles.headerTitle, { color: c.foreground }]}>Library</Text>
       </View>
 
+      {/* Stale / refresh-fail indicator — only shown in videos mode, only when online
+          (NetworkBanner already covers the offline case at the root). */}
+      {mode === "videos" && isOnline && (isRefreshing || !!refreshError) && (
+        <View style={[
+          styles.staleBanner,
+          !!refreshError && styles.staleBannerFailed,
+        ]}>
+          <Feather
+            name={refreshError ? "wifi-off" : "clock"}
+            size={11}
+            color={refreshError ? "#991b1b" : "#92400e"}
+          />
+          <Text style={[
+            styles.staleBannerText,
+            !!refreshError && styles.staleBannerTextFailed,
+          ]}>
+            {refreshError
+              ? "Couldn't refresh — showing saved results"
+              : "Refreshing catalog…"}
+          </Text>
+          {!!refreshError && (
+            <Pressable
+              onPress={refetch}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Retry refreshing videos"
+            >
+              <Text style={styles.staleBannerRetry}>Retry</Text>
+            </Pressable>
+          )}
+        </View>
+      )}
+
       {mode === "videos" && (
         <>
           {loading && sermons.length === 0 ? (
@@ -605,7 +644,7 @@ export default function LibraryScreen() {
               contentContainerStyle={[styles.list, { paddingBottom: insets.bottom + 100 }]}
               refreshControl={
                 <RefreshControl
-                  refreshing={loading && sermons.length > 0}
+                  refreshing={isRefreshing}
                   onRefresh={refetch}
                   tintColor={c.primary}
                 />
@@ -776,6 +815,32 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     padding: 12,
     borderRadius: 8,
+  },
+  staleBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 7,
+    backgroundColor: "#fef3c7",
+  },
+  staleBannerFailed: {
+    backgroundColor: "#fee2e2",
+  },
+  staleBannerText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: "500",
+    color: "#92400e",
+  },
+  staleBannerTextFailed: {
+    color: "#991b1b",
+  },
+  staleBannerRetry: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#991b1b",
+    textDecorationLine: "underline",
   },
   list: { gap: 0 },
   loadingWrap: { flex: 1, alignItems: "center", justifyContent: "center", gap: 12, paddingTop: 60 },

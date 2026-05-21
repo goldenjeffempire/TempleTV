@@ -31,6 +31,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useColors } from "@/hooks/useColors";
 import { SermonCard } from "@/components/SermonCard";
 import { usePaginatedVideos } from "@/hooks/useVideos";
+import { useNetworkStatus } from "@/hooks/useNetworkStatus";
 import type { Sermon, SermonCategory, SortMode } from "@/types";
 
 const RECENT_KEY = "@temple_tv/recent_searches_v1";
@@ -103,7 +104,9 @@ export default function SearchScreen() {
 
   const isSearching = query.trim().length > 0;
 
-  const { sermons, total, loading, loadingMore, hasMore, loadMore } = usePaginatedVideos({
+  const { isOnline } = useNetworkStatus();
+
+  const { sermons, total, loading, loadingMore, isRefreshing, hasMore, refreshError, loadMore, refetch } = usePaginatedVideos({
     search: isSearching ? query : "",
     category,
     sort,
@@ -237,6 +240,27 @@ export default function SearchScreen() {
             </Pressable>
           )}
         />
+      )}
+
+      {/* ── Refresh / stale indicator — shown when a background refresh is
+           running or has failed on top of existing results.
+           The global NetworkBanner covers the fully-offline case. */}
+      {isSearching && isOnline && (isRefreshing || !!refreshError) && (
+        <View style={[styles.staleBanner, !!refreshError && styles.staleBannerFailed]}>
+          <Feather
+            name={refreshError ? "wifi-off" : "clock"}
+            size={11}
+            color={refreshError ? "#991b1b" : "#92400e"}
+          />
+          <Text style={[styles.staleBannerText, !!refreshError && styles.staleBannerTextFailed]}>
+            {refreshError ? "Couldn't refresh — showing previous results" : "Refreshing results…"}
+          </Text>
+          {!!refreshError && (
+            <Pressable onPress={refetch} hitSlop={8} accessibilityRole="button">
+              <Text style={styles.staleBannerRetry}>Retry</Text>
+            </Pressable>
+          )}
+        </View>
       )}
 
       {/* ── Results ──────────────────────────────────────────────────── */}
