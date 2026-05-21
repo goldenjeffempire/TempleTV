@@ -20,7 +20,7 @@
       },
       "env": {
         "APP_ENV": "development",
-        "EXPO_PUBLIC_API_URL": "http://localhost:5000",
+        "EXPO_PUBLIC_API_URL": "http://localhost:8080",
         "NODE_OPTIONS": "--max-old-space-size=4096"
       }
     },

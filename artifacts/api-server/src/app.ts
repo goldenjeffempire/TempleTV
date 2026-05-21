@@ -462,13 +462,21 @@ export async function buildApp(): Promise<FastifyInstance> {
   app.addHook("preHandler", attachPrincipal());
   registerErrorHandler(app);
 
-  // Root route: redirect browsers to the admin dashboard; return JSON for API clients.
-  // This prevents the Replit preview pane (and any browser hitting the API root)
-  // from seeing raw JSON when they navigate to the domain root.
+  // Root route: redirect browsers to the mobile web app; return JSON for API clients.
+  //
+  // Browser requests (Accept: text/html) are redirected to /mobile/ so that:
+  //   • Replit's "Simulate on Web" preview lands on the mobile app, not the API.
+  //   • The Replit published deployment's root URL shows the app, not a 404.
+  //   • Users who bookmark or share the root domain see the app immediately.
+  //
+  // Admins reach the dashboard at /dashboard/broadcast directly or via the
+  // sidebar link — they are not impacted by this redirect.
+  //
+  // API clients (curl, OpenAPI, health probes) receive JSON as before.
   app.get("/", async (req, reply) => {
     const accept = req.headers["accept"] ?? "";
     if (accept.includes("text/html")) {
-      return reply.redirect("/dashboard/broadcast", 302);
+      return reply.redirect("/mobile/", 302);
     }
     return {
       service: "temple-tv-api",
@@ -477,6 +485,7 @@ export async function buildApp(): Promise<FastifyInstance> {
       openapi: "/docs/json",
       api: API_PREFIX,
       admin: "/dashboard/broadcast",
+      app: "/mobile/",
     };
   });
 
