@@ -507,7 +507,7 @@ class DatabaseObjectStorage implements ObjectStorage {
     // INSERT … SELECT copies chunk bytes entirely within the DB; Node.js sees
     // only the SQL string — no video bytes cross the pg connection.
     const firstPartKey = `${partPrefix}${String(sorted[0]!.partNumber).padStart(6, "0")}`;
-    await db.execute(sql`
+    const seedResult = await db.execute(sql`
       INSERT INTO storage_blobs (key, content_type, data, size_bytes, updated_at)
       SELECT ${key}, ${contentType}, data, size_bytes, NOW()
       FROM   storage_blobs
@@ -518,6 +518,16 @@ class DatabaseObjectStorage implements ObjectStorage {
         size_bytes   = EXCLUDED.size_bytes,
         updated_at   = NOW()
     `);
+    const seedRowCount = (seedResult as unknown as { rowCount: number }).rowCount ?? 0;
+    if (seedRowCount === 0) {
+      throw Object.assign(
+        new Error(
+          `Assembly failed: first part (key ${firstPartKey}) not found in storage. ` +
+          `The upload part rows may have been cleaned up — restart the upload to recover.`,
+        ),
+        { statusCode: 409 },
+      );
+    }
 
     // ── Append remaining parts one at a time ───────────────────────────────────
     // O(n²) in total PostgreSQL I/O — each UPDATE reads the growing dest blob

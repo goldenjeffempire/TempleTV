@@ -34,7 +34,7 @@ import { randomUUID, createHash } from "node:crypto";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { eq, asc, and, inArray, lt } from "drizzle-orm";
+import { eq, asc, and, inArray, lt, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { storage } from "../../infrastructure/storage.js";
 import { requireAuth } from "../../middleware/auth.js";
@@ -123,7 +123,7 @@ function getMissingChunks(received: number[], total: number): number[] {
 
 async function finalizeFromDbFallback(
   session: typeof sessions.$inferSelect,
-  allChunks: Array<typeof chunks.$inferSelect>,
+  totalChunks: number,
   log: FastifyInstance["log"],
 ): Promise<{ localVideoUrl: string | null; objectKey: string; storageBackend: "db" | "db_fallback" }> {
   const now = new Date();
@@ -152,22 +152,36 @@ async function finalizeFromDbFallback(
       contentType: session.contentType,
     });
 
-    // Assemble BYTEA chunks into multipart parts. The DatabaseObjectStorage
-    // adapter has no minimum part-size restriction (unlike S3's 5 MiB floor),
-    // so we upload each chunk as its own part immediately rather than
-    // accumulating chunks. Processing one at a time keeps peak additional
-    // memory at ~one chunk size (8 MiB) rather than a growing accumulator
-    // buffer. The original data is already in `allChunks`; we just process
-    // it sequentially to allow Node.js GC to free each Buffer sooner.
+    // Assemble BYTEA chunks into multipart parts ONE AT A TIME.
+    //
+    // CRITICAL: Do NOT use a pre-loaded allChunks array with fallbackData here.
+    // Loading all chunk BYTEA at once (e.g. 30 × 8 MiB = 240 MiB) into Node.js
+    // memory in a single SELECT * causes OOM on Replit's constrained heap for
+    // any file larger than ~50 MB. Instead, each chunk's fallbackData is fetched
+    // individually, uploaded as a part, and then eligible for GC before the next
+    // chunk is fetched. Peak Node.js memory overhead is ~one chunk size (8 MiB).
     const parts: Array<{ partNumber: number; etag: string }> = [];
 
-    for (let i = 0; i < allChunks.length; i++) {
-      const chunk = allChunks[i]!;
-      const buf = chunk.fallbackData
-        ? (chunk.fallbackData as unknown as Buffer)
+    for (let i = 0; i < totalChunks; i++) {
+      // Fetch only this chunk's BYTEA — prior chunks are GC-eligible after this point.
+      const chunkRow = await db
+        .select({ fallbackData: chunks.fallbackData })
+        .from(chunks)
+        .where(and(eq(chunks.sessionId, session.sessionId), eq(chunks.chunkIndex, i)))
+        .limit(1)
+        .then((r) => r[0]);
+
+      const buf = chunkRow?.fallbackData
+        ? (chunkRow.fallbackData as unknown as Buffer)
         : Buffer.alloc(0);
 
-      if (buf.length === 0) continue;
+      if (buf.length === 0) {
+        log.warn(
+          { sessionId: session.sessionId, chunkIndex: i },
+          "[finalize-fallback] chunk has empty fallbackData — skipping",
+        );
+        continue;
+      }
 
       const { etag } = await storage().uploadPart({
         key: objectKey,
@@ -268,7 +282,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       try {
         const cutoff = new Date(Date.now() - ABANDONED_AGE_MS);
         const abandoned = await db
-          .select({ sessionId: sessions.sessionId })
+          .select({ sessionId: sessions.sessionId, uploadId: sessions.uploadId })
           .from(sessions)
           .where(and(eq(sessions.status, "uploading"), lt(sessions.updatedAt, cutoff)));
 
@@ -276,10 +290,27 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           const ids = abandoned.map((r) => r.sessionId);
           // Delete chunks first (FK dependency), then the session rows.
           await db.delete(chunks).where(inArray(chunks.sessionId, ids));
+
+          // Also clean up orphaned _parts/{uploadId}/... rows in storage_blobs.
+          // These are created during the db-mode upload path and are normally
+          // cleaned up by completeMultipartUpload, but abandoned sessions leave
+          // them orphaned, causing unbounded storage growth.
+          const uploadIds = abandoned
+            .map((r) => r.uploadId)
+            .filter((id): id is string => id != null);
+          for (const uploadId of uploadIds) {
+            const partPrefix = `_parts/${uploadId}/`;
+            await db
+              .execute(sql`DELETE FROM storage_blobs WHERE starts_with(key, ${partPrefix})`)
+              .catch((err: unknown) =>
+                app.log.warn({ err, uploadId }, "[upload] _parts cleanup failed (non-fatal)"),
+              );
+          }
+
           await db.delete(sessions).where(inArray(sessions.sessionId, ids));
           app.log.info(
-            { count: abandoned.length, ids },
-            "[upload] cleaned up abandoned upload sessions and their chunks",
+            { count: abandoned.length, ids, uploadIdsCleared: uploadIds.length },
+            "[upload] cleaned up abandoned upload sessions, chunks, and orphaned storage parts",
           );
         }
       } catch (err) {
@@ -806,9 +837,23 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           .catch(() => {});
       };
 
-      // Load all received chunks, ordered by index
+      // Load all received chunks, ordered by index.
+      // Deliberately exclude the fallbackData (BYTEA) column — for db-mode sessions
+      // it is always null (no overhead), but for db_fallback sessions loading all
+      // chunk BYTEA at once (e.g. 30 × 8 MiB = 240 MiB for a 240 MB file) into
+      // Node.js memory causes OOM on Replit's constrained heap. fallbackData is
+      // loaded lazily one chunk at a time inside finalizeFromDbFallback.
       const allChunks = await db
-        .select()
+        .select({
+          id: chunks.id,
+          sessionId: chunks.sessionId,
+          chunkIndex: chunks.chunkIndex,
+          checksum: chunks.checksum,
+          sizeBytes: chunks.sizeBytes,
+          s3Etag: chunks.s3Etag,
+          storageBackend: chunks.storageBackend,
+          receivedAt: chunks.receivedAt,
+        })
         .from(chunks)
         .where(eq(chunks.sessionId, sessionId))
         .orderBy(asc(chunks.chunkIndex));
@@ -1094,7 +1139,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       }, ASSEMBLY_TIMEOUT_MS);
 
       try {
-        const result = await finalizeFromDbFallback(session, allChunks, req.log);
+        const result = await finalizeFromDbFallback(session, allChunks.length, req.log);
         localVideoUrl = result.localVideoUrl;
         finalObjectKey = result.objectKey;
         finalStorageBackend = result.storageBackend;
