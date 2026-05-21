@@ -26,6 +26,7 @@ import {
   Radio,
   Users,
   Cpu,
+  Shuffle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Link } from "wouter";
@@ -397,6 +398,21 @@ export default function BroadcastV2Page() {
     },
     onError: (err) => {
       toast.error(err instanceof HttpError ? err.message : "Failed to re-enable item.");
+    },
+  });
+
+  // Clears the in-memory YouTube fallback shuffle cache and triggers a reload
+  // so a fresh random order takes effect immediately without a server restart.
+  const reshuffleMutation = useMutation({
+    mutationFn: () =>
+      api.post<{ ok: boolean; message: string }>("/broadcast-v2/youtube-fallback/reshuffle"),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      toast.success("YouTube fallback reshuffled — new play order will take effect within seconds.");
+    },
+    onError: (err) => {
+      const detail = err instanceof HttpError ? err.message : "Unknown error";
+      toast.error(`Reshuffle failed (${detail})`);
     },
   });
 
@@ -776,14 +792,29 @@ export default function BroadcastV2Page() {
             YouTube videos in shuffled order. Upload local videos and add them to the
             queue to restore normal broadcast mode.
           </div>
-          <button
-            type="button"
-            aria-label="Dismiss YouTube fallback alert"
-            onClick={() => setYtFallbackDismissed(true)}
-            className="shrink-0 rounded p-0.5 hover:bg-amber-200/60 dark:hover:bg-amber-800/40"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 border-amber-400/70 bg-amber-50 text-amber-800 hover:bg-amber-100 dark:border-amber-600/60 dark:bg-transparent dark:text-amber-300 dark:hover:bg-amber-900/40"
+              onClick={() => reshuffleMutation.mutate()}
+              disabled={reshuffleMutation.isPending}
+              title="Clear the current shuffle and apply a new random order immediately"
+            >
+              {reshuffleMutation.isPending
+                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                : <Shuffle className="h-3.5 w-3.5" />}
+              <span className="ml-1.5">Reshuffle</span>
+            </Button>
+            <button
+              type="button"
+              aria-label="Dismiss YouTube fallback alert"
+              onClick={() => setYtFallbackDismissed(true)}
+              className="rounded p-0.5 hover:bg-amber-200/60 dark:hover:bg-amber-800/40"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
         </div>
       )}
 

@@ -645,4 +645,17 @@ export async function restRoutes(app: FastifyInstance) {
     const windowMs = q.windowMs ? Math.min(Math.max(Number(q.windowMs), 60_000), 24 * 60 * 60_000) : 60 * 60_000;
     return playbackAnalytics.getReport(windowMs);
   });
+
+  // ── Admin: reshuffle YouTube fallback ─────────────────────────────────
+  // Clears the in-memory YouTube fallback cache so the next orchestrator
+  // reload fetches and shuffles the library again. Immediately triggers a
+  // reload so the new order takes effect within seconds — no server
+  // restart required.
+  // Requires editor auth. Idempotent — safe to call multiple times.
+  app.post("/youtube-fallback/reshuffle", adminGuard, async (_req, reply) => {
+    broadcastOrchestrator.clearYoutubeFallbackCache();
+    void broadcastOrchestrator.reload();
+    logger.info("[broadcast-v2] /youtube-fallback/reshuffle — cache cleared and reload triggered");
+    return reply.send({ ok: true, message: "YouTube fallback cache cleared — reshuffling now" });
+  });
 }

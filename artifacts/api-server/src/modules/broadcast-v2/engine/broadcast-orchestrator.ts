@@ -1698,6 +1698,20 @@ class BroadcastOrchestrator extends EventEmitter {
     };
   }
 
+  /**
+   * Clears the in-memory YouTube fallback cache so the next reload
+   * re-fetches and re-shuffles the library. Keeps `inYoutubeFallback=true`
+   * so the reload stays in fallback mode — it just gets a fresh order.
+   * Call this when an operator wants a new shuffle without restarting
+   * the server.
+   */
+  clearYoutubeFallbackCache(): void {
+    this.youtubeFallbackCache = null;
+    logger.info(
+      "[broadcast-v2] YouTube fallback cache cleared by operator — next reload will reshuffle",
+    );
+  }
+
   isStarted(): boolean {
     return this.started;
   }
