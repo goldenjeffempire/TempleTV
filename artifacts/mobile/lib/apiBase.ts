@@ -50,5 +50,23 @@ export function getApiBase(): string {
     return window.location.origin;
   }
 
+  // Native-only startup warning: if we reach here on a non-web platform,
+  // push notifications, API calls, and WS connections will all fail silently
+  // because every URL will be a bare path with no host. Emit once at module
+  // load so developers see it immediately rather than when the first request
+  // fails with a cryptic error.
+  if (
+    __DEV__ &&
+    typeof window === "undefined"
+  ) {
+    console.warn(
+      "[apiBase] getApiBase() returned \"\" — no EXPO_PUBLIC_API_URL or EXPO_PUBLIC_DOMAIN set.\n" +
+      "All API calls will use bare paths and fail on native. Set one of:\n" +
+      "  EXPO_PUBLIC_API_URL=https://api.templetv.org.ng  (production / preview / device builds)\n" +
+      "  EXPO_PUBLIC_API_URL=http://10.0.2.2:8080         (Android emulator, dev profile)\n" +
+      "  EXPO_PUBLIC_DOMAIN=<your-replit-dev-domain>      (Replit dev environment)",
+    );
+  }
+
   return "";
 }

@@ -110,7 +110,16 @@ export async function fetchWithRetry(
 
       if (res.ok) return res;
 
-      if (!isRetryable(res)) return res;
+      if (!isRetryable(res)) {
+        // In dev, surface the non-OK status immediately so engineers see the
+        // problem rather than chasing a silent null return in a service layer.
+        if (__DEV__) {
+          console.warn(
+            `[fetchWithRetry] Non-retryable ${res.status} from ${typeof input === "string" ? input : String(input)}`,
+          );
+        }
+        return res;
+      }
 
       if (attempt >= maxRetries) return res;
 

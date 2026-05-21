@@ -86,9 +86,17 @@ async function apiFetch<T>(path: string): Promise<T | null> {
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       },
     );
-    if (!res.ok) return null;
+    if (!res.ok) {
+      if (__DEV__) {
+        console.warn(`[broadcast] apiFetch ${path} → HTTP ${res.status}`);
+      }
+      return null;
+    }
     return await res.json() as T;
-  } catch {
+  } catch (err) {
+    if (__DEV__) {
+      console.warn(`[broadcast] apiFetch ${path} failed:`, err);
+    }
     return null;
   }
 }

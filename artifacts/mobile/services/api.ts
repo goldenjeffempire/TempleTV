@@ -29,10 +29,14 @@ function url(path: string): string {
  * fetch layer before the caller even sees an error.
  */
 async function publicFetch(path: string, init?: RequestInit): Promise<Response> {
-  return fetchWithRetry(url(path), {
+  const res = await fetchWithRetry(url(path), {
     ...init,
     signal: init?.signal ?? AbortSignal.timeout(12_000),
   });
+  if (__DEV__ && !res.ok) {
+    console.warn(`[api] publicFetch ${path} → HTTP ${res.status}`);
+  }
+  return res;
 }
 
 /**
@@ -42,7 +46,7 @@ async function publicFetch(path: string, init?: RequestInit): Promise<Response> 
  */
 async function authedFetch(path: string, init?: RequestInit): Promise<Response> {
   const token = await secureStorage.getItem(STORAGE_KEYS.authToken);
-  return fetchWithRetry(url(path), {
+  const res = await fetchWithRetry(url(path), {
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -51,6 +55,10 @@ async function authedFetch(path: string, init?: RequestInit): Promise<Response> 
     },
     signal: init?.signal ?? AbortSignal.timeout(12_000),
   });
+  if (__DEV__ && !res.ok) {
+    console.warn(`[api] authedFetch ${path} → HTTP ${res.status}`);
+  }
+  return res;
 }
 
 // ─── Video catalog types ─────────────────────────────────────────────────────
