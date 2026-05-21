@@ -297,14 +297,28 @@ export function BroadcastPreviewV2({ className }: Props) {
   const ytIframeRef = useRef<HTMLIFrameElement>(null);
 
   // YouTube IFrame API error code (null = no error, number = YT error code).
-  // Error 153 = embedding disabled by video owner.
   // Error 100 = video not found / private.
-  // Error 101/150 = embedding not allowed (equivalent to 153 in practice).
+  // Error 101/150 = embedding not allowed.
+  // NOTE: Error 153 ("Video player configuration error") is a pre-init failure
+  // that YouTube shows in the player UI but NEVER sends via postMessage onError
+  // because the IFrame API never finishes initializing. It is detected instead
+  // via the onReady timeout below.
   const [ytEmbedError, setYtEmbedError] = useState<number | null>(null);
 
-  // Listen for YouTube IFrame API postMessage events so we can detect
-  // when a video has embedding disabled (Error 153 / 101 / 150) and swap
-  // the broken iframe for an actionable fallback card.
+  // True when the YouTube IFrame API's onReady event does not arrive within
+  // YOUTUBE_READY_TIMEOUT_MS. This is the reliable signal for Error 153
+  // (embedding disabled / video player configuration error) because that error
+  // occurs before the IFrame API initializes and therefore never sends onError.
+  const [ytTimedOut, setYtTimedOut] = useState(false);
+  const ytTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // How long to wait for YouTube onReady before assuming embedding is blocked.
+  // 7 s is generous enough for slow connections while still being responsive.
+  const YOUTUBE_READY_TIMEOUT_MS = 7000;
+
+  // Listen for YouTube IFrame API postMessage events so we can detect:
+  //   onReady   → player initialized successfully → cancel the timeout
+  //   onError   → post-init error (100 / 101 / 150) → show fallback immediately
   useEffect(() => {
     function handleMessage(ev: MessageEvent) {
       if (ev.origin !== "https://www.youtube.com") return;
@@ -314,13 +328,20 @@ export function BroadcastPreviewV2({ className }: Props) {
       } catch {
         return;
       }
-      if (
-        data &&
-        typeof data === "object" &&
-        "event" in data &&
-        (data as Record<string, unknown>).event === "onError" &&
-        "info" in data
-      ) {
+      if (!data || typeof data !== "object" || !("event" in data)) return;
+      const evt = (data as Record<string, unknown>).event;
+
+      if (evt === "onReady") {
+        // Player initialized — embedding is allowed. Cancel the timeout.
+        if (ytTimeoutRef.current) {
+          clearTimeout(ytTimeoutRef.current);
+          ytTimeoutRef.current = null;
+        }
+        setYtTimedOut(false);
+        return;
+      }
+
+      if (evt === "onError" && "info" in data) {
         const code = (data as Record<string, unknown>).info;
         if (typeof code === "number") {
           setYtEmbedError(code);
@@ -357,10 +378,31 @@ export function BroadcastPreviewV2({ className }: Props) {
     return null;
   }, [server]);
 
-  // Reset the embed error whenever the active YouTube video changes.
+  // Reset embed error + timeout state whenever the active YouTube video changes.
+  // Also starts the onReady timeout for the new video; if onReady doesn't arrive
+  // within YOUTUBE_READY_TIMEOUT_MS we assume embedding is blocked (Error 153).
   useEffect(() => {
     setYtEmbedError(null);
-  }, [youtubeVideoId]);
+    setYtTimedOut(false);
+
+    if (ytTimeoutRef.current) {
+      clearTimeout(ytTimeoutRef.current);
+      ytTimeoutRef.current = null;
+    }
+
+    if (youtubeVideoId) {
+      ytTimeoutRef.current = setTimeout(() => {
+        setYtTimedOut(true);
+      }, YOUTUBE_READY_TIMEOUT_MS);
+    }
+
+    return () => {
+      if (ytTimeoutRef.current) {
+        clearTimeout(ytTimeoutRef.current);
+        ytTimeoutRef.current = null;
+      }
+    };
+  }, [youtubeVideoId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const overlay = useMemo(() => {
     if (snapshot.state === "OFFLINE_HOLD") {
@@ -517,10 +559,10 @@ export function BroadcastPreviewV2({ className }: Props) {
       {/* YouTube embed — shown on top of the video buffers when the active source is YouTube.
           Uses the IFrame API (enablejsapi=1) so mute/unmute works via postMessage without
           reloading the player. Starts muted to match the default admin mute state.
-          When the IFrame API fires an error (e.g. Error 153 = embedding disabled), the
-          iframe is swapped for an actionable fallback card instead of showing YouTube's
-          cryptic "Video player configuration error" screen. */}
-      {youtubeVideoId && !ytEmbedError && (
+          Hidden (replaced by the fallback card) once:
+            - ytTimedOut: onReady never arrived → embedding disabled / Error 153
+            - ytEmbedError: post-init onError code (100 / 101 / 150) */}
+      {youtubeVideoId && !ytEmbedError && !ytTimedOut && (
         <iframe
           key={youtubeVideoId}
           ref={ytIframeRef}
@@ -538,11 +580,14 @@ export function BroadcastPreviewV2({ className }: Props) {
         />
       )}
 
-      {/* YouTube embed error fallback — replaces the broken iframe when the IFrame API
-          reports an embed restriction (Error 153 / 101 / 150) or the video is unavailable
-          (Error 100). Shows the video thumbnail, a direct watch link, and instructions
-          for the operator to enable embedding in YouTube Studio. */}
-      {youtubeVideoId && ytEmbedError !== null && (
+      {/* YouTube embed error fallback — shown when:
+            - ytTimedOut: onReady never fired within 7 s → embedding disabled (Error 153
+              "Video player configuration error"). YouTube shows this in-player error BEFORE
+              the IFrame API initializes, so it is never propagated via postMessage onError.
+              The timeout is the only reliable detection path.
+            - ytEmbedError: post-init onError code (100 = unavailable, 101/150 = no embed).
+          Shows the video thumbnail, a direct watch link, and instructions for the operator. */}
+      {youtubeVideoId && (ytEmbedError !== null || ytTimedOut) && (
         <div
           className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-4 text-center"
           style={{ zIndex: 5 }}
@@ -565,7 +610,7 @@ export function BroadcastPreviewV2({ className }: Props) {
           />
 
           {/* Error message */}
-          <div className="relative z-10 space-y-1.5 max-w-[220px]">
+          <div className="relative z-10 space-y-1.5 max-w-[240px]">
             <p className="text-white text-[11px] font-semibold leading-snug">
               {ytEmbedError === 100
                 ? "Video unavailable or private"
@@ -577,7 +622,10 @@ export function BroadcastPreviewV2({ className }: Props) {
                 : "The video owner has disabled embedding. Go to YouTube Studio → Content → select the video → Edit → More options → Distribution → enable \"Allow embedding\"."}
             </p>
             <p className="text-white/40 text-[9px] font-mono">
-              YouTube Error {ytEmbedError} · preview only · viewers unaffected
+              {ytEmbedError !== null
+                ? `YouTube Error ${ytEmbedError}`
+                : "YouTube Error 153"}{" "}
+              · preview only · viewers unaffected
             </p>
           </div>
 
