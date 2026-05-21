@@ -4,10 +4,13 @@ import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 
-// Port 3000 is the Replit-assigned dev port for the Admin surface.
-// The API dev server runs on port 8080 ("Start API" workflow).
-// Override with PORT / API_DEV_PORT env vars if needed.
-const rawPort = process.env.PORT ?? "3000";
+// Port 23744 is the Replit-assigned local port for the "artifacts/admin: web"
+// workflow (mapped to external port 3002). The primary "Start application"
+// workflow always sets PORT=5000 explicitly, so changing this default does
+// not affect it. The artifact workflow does not inject PORT, so it falls
+// through to this default and binds on 23744 as Replit expects.
+// Override with PORT env var if needed.
+const rawPort = process.env.PORT ?? "23744";
 const port = Number(rawPort);
 
 if (Number.isNaN(port) || port <= 0) {

@@ -16,27 +16,19 @@ const isServerCommand = (() => {
   return cmd === "" || cmd === "dev" || cmd === "serve" || cmd === "preview";
 })();
 
-const rawPort = process.env.PORT;
+// Port 8081 is the Replit-assigned local port for the
+// "artifacts/mockup-sandbox: Component Preview Server" workflow (mapped to
+// external port 8081). The artifact workflow does not inject PORT or
+// BASE_PATH, so default to the expected values here instead of throwing.
+const rawPort = process.env.PORT ?? "8081";
 
-if (isServerCommand && !rawPort) {
-  throw new Error(
-    "PORT environment variable is required but was not provided.",
-  );
-}
+const port = Number(rawPort);
 
-const port = rawPort ? Number(rawPort) : 0;
-
-if (rawPort && (Number.isNaN(port) || port <= 0)) {
+if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
-const basePath = process.env.BASE_PATH;
-
-if (isServerCommand && !basePath) {
-  throw new Error(
-    "BASE_PATH environment variable is required but was not provided.",
-  );
-}
+const basePath = process.env.BASE_PATH ?? "/";
 
 export default defineConfig({
   base: basePath ?? "/",
