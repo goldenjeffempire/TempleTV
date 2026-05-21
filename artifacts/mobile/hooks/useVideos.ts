@@ -191,6 +191,10 @@ export function useVideos(): UseVideosResult {
   // decide whether a network failure should surface as a full error screen
   // (no data at all) or just flip the stale-banner to "Couldn't refresh".
   const hasDataRef = useRef(false);
+  // Tracks how many auto-retries have fired so far for the current failure
+  // streak. Incremented each time a retry timer is scheduled; resets to 0
+  // on component mount (so each fresh session gets its own 3-attempt budget).
+  const autoRetryRef = useRef(0);
   const { libraryRevision } = useBroadcastSync();
 
   const load = useCallback(async (silent = false) => {
@@ -242,6 +246,21 @@ export function useVideos(): UseVideosResult {
     const timer = setInterval(() => load(true), 5 * 60 * 1000);
     return () => clearInterval(timer);
   }, [load]);
+
+  // Auto-retry on initial load failure when there is no cached data to show.
+  // Covers transient 500s that can occur if the API server is still warming up
+  // when the bundle first renders, or if "Simulate on Web" opens against a
+  // different port origin before the API proxy is ready.
+  // Budget: 3 retries at 4 s → 12 s → 30 s, then defers to the user's
+  // manual "Try Again" button.  The counter resets on every fresh mount.
+  useEffect(() => {
+    if (!error || hasDataRef.current) return;
+    if (autoRetryRef.current >= 3) return;
+    const DELAYS = [4_000, 12_000, 30_000];
+    const delay = DELAYS[autoRetryRef.current++];
+    const t = setTimeout(() => load(false), delay);
+    return () => clearTimeout(t);
+  }, [error, load]);
 
   // SSE-driven instant refetch on library changes
   useEffect(() => {
