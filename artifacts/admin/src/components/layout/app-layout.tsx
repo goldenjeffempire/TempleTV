@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Sidebar } from "./sidebar";
 import { Header } from "./header";
+import { GlobalApiErrorToasts } from "@/components/shared/global-api-error-toasts";
 import { cn } from "@/lib/utils";
 
 interface AppLayoutProps {
@@ -33,6 +34,7 @@ export function AppLayout({ children }: AppLayoutProps) {
 
   return (
     <div className="flex h-[100dvh] bg-background overflow-hidden">
+      <GlobalApiErrorToasts />
       {/* Mobile backdrop — tap to close */}
       <div
         className={cn(

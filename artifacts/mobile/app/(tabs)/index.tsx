@@ -318,7 +318,7 @@ export default function WatchScreen() {
   const { isOnline: networkConnected } = useNetworkStatus();
 
   const syncState = useBroadcastSync();
-  const { sermons, byCategory, loading, error, refetch, isStale } = useVideos();
+  const { sermons, byCategory, loading, error, refetch, isStale, refreshFailed } = useVideos();
 
   // Latest sermon as hero fallback (newest first).
   //
@@ -366,16 +366,39 @@ export default function WatchScreen() {
       {/* Network offline banner */}
       <NetworkBanner visible={!networkConnected} />
 
-      {/* Stale cache indicator — shown briefly while network fetch is in
-          progress after a cold start hit the local cache. Dismissed
-          automatically once the fresh data arrives (isStale → false).
-          Pull-to-refresh also forces a fresh load and clears this banner. */}
+      {/* Stale cache indicator — three states:
+          1. isStale + refreshing:  "Showing cached content — refreshing…"
+          2. isStale + failed:      "Couldn't refresh — showing saved content" + retry
+          3. network offline:       hidden (NetworkBanner already covers this)
+          Dismissed automatically when fresh data arrives (isStale → false). */}
       {isStale && !loading && networkConnected && (
-        <View style={styles.staleBanner}>
-          <Feather name="clock" size={11} color="#92400e" />
-          <Text style={styles.staleBannerText}>
-            Showing cached content — refreshing…
+        <View style={[
+          styles.staleBanner,
+          refreshFailed && styles.staleBannerFailed,
+        ]}>
+          <Feather
+            name={refreshFailed ? "wifi-off" : "clock"}
+            size={11}
+            color={refreshFailed ? "#991b1b" : "#92400e"}
+          />
+          <Text style={[
+            styles.staleBannerText,
+            refreshFailed && styles.staleBannerTextFailed,
+          ]}>
+            {refreshFailed
+              ? "Couldn't refresh — showing saved content"
+              : "Showing cached content — refreshing…"}
           </Text>
+          {refreshFailed && (
+            <Pressable
+              onPress={refetch}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Retry loading videos"
+            >
+              <Text style={styles.staleBannerRetry}>Retry</Text>
+            </Pressable>
+          )}
         </View>
       )}
 
@@ -543,6 +566,19 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "500",
     color: "#92400e",
+    flex: 1,
+  },
+  staleBannerFailed: {
+    backgroundColor: "#fee2e2",
+  },
+  staleBannerTextFailed: {
+    color: "#991b1b",
+  },
+  staleBannerRetry: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#dc2626",
+    textDecorationLine: "underline",
   },
 
   // Empty

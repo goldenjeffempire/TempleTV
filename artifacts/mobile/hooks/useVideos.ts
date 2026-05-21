@@ -168,6 +168,13 @@ export interface UseVideosResult {
   refetch: () => void;
   /** True while the displayed data is from the local cache (network fetch not yet complete). */
   isStale: boolean;
+  /**
+   * True when a background refresh attempt failed but we still have cached/
+   * previously-fetched data to show. The stale banner should reflect this
+   * state ("Couldn't refresh") rather than the generic "refreshing…" message.
+   * Cleared automatically when a subsequent refresh succeeds.
+   */
+  refreshFailed: boolean;
   /** Timestamp of the last successful network fetch, or null if never fetched this session. */
   lastFetchedAt: Date | null;
 }
@@ -177,8 +184,13 @@ export function useVideos(): UseVideosResult {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isStale, setIsStale] = useState(false);
+  const [refreshFailed, setRefreshFailed] = useState(false);
   const [lastFetchedAt, setLastFetchedAt] = useState<Date | null>(null);
   const loadedRef = useRef(false);
+  // True once we have any data to show (from cache or network). Used to
+  // decide whether a network failure should surface as a full error screen
+  // (no data at all) or just flip the stale-banner to "Couldn't refresh".
+  const hasDataRef = useRef(false);
   const { libraryRevision } = useBroadcastSync();
 
   const load = useCallback(async (silent = false) => {
@@ -191,6 +203,7 @@ export function useVideos(): UseVideosResult {
         const cached = await readCache();
         if (cached?.length) {
           setSermons(cached);
+          hasDataRef.current = true;
           setIsStale(true);
           setLoading(false);
         }
@@ -200,17 +213,25 @@ export function useVideos(): UseVideosResult {
       const resp = await fetchVideos({ limit: 2000, sort: "newest" });
       const mapped = resp.videos.map((v, i) => apiVideoToSermon(v, i));
       setSermons(mapped);
+      hasDataRef.current = true;
       setIsStale(false);
+      setRefreshFailed(false);
       setLastFetchedAt(new Date());
       setLoading(false);
       loadedRef.current = true;
       await writeCache(mapped);
     } catch (err) {
-      if (!loadedRef.current) {
+      if (hasDataRef.current) {
+        // We already have cached or previously-fetched data to show.
+        // Flip the stale banner to "Couldn't refresh" instead of blowing
+        // away the visible content with an error screen.
+        setRefreshFailed(true);
+        if (!silent) setLoading(false);
+      } else {
+        // No data at all — show the full empty-state error screen.
         setError(err instanceof Error ? err.message : "Failed to load videos");
         setLoading(false);
       }
-      // On background-refresh failure keep isStale=true if we're serving cache
     }
   }, []);
 
@@ -240,7 +261,7 @@ export function useVideos(): UseVideosResult {
     [sermons],
   );
 
-  return { sermons, byCategory, loading, error, refetch: () => load(false), isStale, lastFetchedAt };
+  return { sermons, byCategory, loading, error, refetch: () => load(false), isStale, refreshFailed, lastFetchedAt };
 }
 
 export interface UseFilteredVideosOptions {
