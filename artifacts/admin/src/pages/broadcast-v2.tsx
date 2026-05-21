@@ -26,6 +26,9 @@ import {
   Radio,
   Users,
   Cpu,
+  Upload,
+  Video,
+  ListPlus,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Link } from "wouter";
@@ -1511,6 +1514,51 @@ export default function BroadcastV2Page() {
 
       <TranscodingProgressPanel />
 
+      {/* ── OFF_AIR status card — visible only when queue is empty ─────────── */}
+      {!queueLoading && queueItems.length === 0 && (
+        <Card className="border-destructive/40 bg-destructive/5">
+          <CardContent className="flex flex-col items-center gap-5 py-10 text-center sm:flex-row sm:text-left sm:gap-8 sm:py-8 sm:px-8">
+            {/* Icon block */}
+            <div className="flex-shrink-0 flex h-16 w-16 items-center justify-center rounded-full bg-destructive/10 ring-1 ring-destructive/30">
+              <Radio className="h-8 w-8 text-destructive" />
+            </div>
+
+            {/* Text block */}
+            <div className="flex-1 space-y-1.5">
+              <div className="flex items-center justify-center gap-2 sm:justify-start">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-destructive px-2.5 py-0.5 text-xs font-bold uppercase tracking-widest text-destructive-foreground">
+                  <span className="relative flex h-1.5 w-1.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-destructive-foreground opacity-75" />
+                    <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-destructive-foreground" />
+                  </span>
+                  Off Air
+                </span>
+                <span className="text-sm font-medium text-foreground">Broadcast queue is empty</span>
+              </div>
+              <p className="text-sm text-muted-foreground max-w-md">
+                Nothing is scheduled to air. Upload your sermon videos, then add them to the broadcast queue to go live.
+              </p>
+            </div>
+
+            {/* Action buttons */}
+            <div className="flex flex-shrink-0 flex-col gap-2 sm:flex-row">
+              <Link href="/videos">
+                <Button className="gap-2 w-full sm:w-auto">
+                  <Upload className="h-4 w-4" />
+                  Upload Videos
+                </Button>
+              </Link>
+              <Link href="/broadcast">
+                <Button variant="outline" className="gap-2 w-full sm:w-auto">
+                  <ListPlus className="h-4 w-4" />
+                  Edit Queue
+                </Button>
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Broadcast queue</CardTitle>
@@ -1524,8 +1572,9 @@ export default function BroadcastV2Page() {
           {queueLoading ? (
             <p className="text-sm text-muted-foreground">Loading queue…</p>
           ) : queueItems.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No items in the broadcast queue. Open the editor to add uploaded videos.
+            <p className="flex items-center gap-2 text-sm text-muted-foreground py-2">
+              <Video className="h-4 w-4 flex-shrink-0 opacity-50" />
+              Queue is empty — use the card above to upload videos and go live.
             </p>
           ) : (
             <ul className="divide-y rounded-md border">
