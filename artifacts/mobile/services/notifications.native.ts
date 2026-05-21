@@ -79,40 +79,49 @@ export async function registerForPushTokenAsync(): Promise<string | null> {
       (Constants as any).easConfig?.projectId ??
       undefined;
 
+    // The canonical EAS project ID for Temple TV (templetv Expo account).
+    // When this is present and matches, cross-validate Firebase credentials so
+    // push tokens don't silently fail with a cryptic FCM error on first build.
+    const TEMPLE_TV_EAS_PROJECT_ID = "f0137848-bf77-486f-b1ff-0fbadc6b7840";
+
     if (__DEV__) {
       if (!projectId) {
         console.warn(
           "[notifications] EAS projectId not found in Constants.expoConfig.extra.eas.projectId.\n" +
-          "Push tokens will fail on production builds. Ensure app.json extra.eas.projectId is set\n" +
-          "and google-services.json (Android) / GoogleService-Info.plist (iOS) contain real\n" +
-          "Firebase credentials — not the REPLACE_WITH_... placeholder values.",
+          "Push tokens will fail on production builds. Expected projectId:\n" +
+          `  "${TEMPLE_TV_EAS_PROJECT_ID}"\n` +
+          "Ensure app.json extra.eas.projectId is set and google-services.json /\n" +
+          "GoogleService-Info.plist contain real Firebase credentials.",
         );
-      }
-      // Detect placeholder google-services.json at runtime so engineers get
-      // an explicit error instead of a cryptic FCM auth failure on the build
-      // machine. google-services.json is bundled as a static asset by Metro,
-      // so require() works in dev; on production native builds it is embedded
-      // into the APK by the Gradle plugin and this branch is stripped by Hermes.
-      if (Platform.OS === "android") {
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const gServices = require("../../google-services.json") as {
-            project_info?: { project_id?: string; project_number?: string };
-          };
-          const pid = gServices.project_info?.project_id ?? "";
-          const pnum = gServices.project_info?.project_number ?? "";
-          const isPlaceholder = (s: string) =>
-            s.startsWith("REPLACE_WITH_") || s.startsWith("YOUR_");
-          if (isPlaceholder(pid) || isPlaceholder(pnum)) {
-            console.error(
-              "[notifications] google-services.json still contains REPLACE_WITH_... placeholder values.\n" +
-              "Push notifications WILL FAIL. Download the real google-services.json from:\n" +
-              "  Firebase Console → Project Settings → Your Apps → Android (com.templetv.jctm)\n" +
-              "and replace artifacts/mobile/google-services.json before building.",
-            );
+      } else if (projectId === TEMPLE_TV_EAS_PROJECT_ID) {
+        // EAS project ID is correctly set — cross-check Firebase credentials.
+        // Detect placeholder google-services.json at runtime so engineers get an
+        // explicit error instead of a cryptic FCM auth failure at build time.
+        // google-services.json is bundled by Metro in dev builds; on production
+        // native builds it is embedded by the Gradle Firebase plugin and this
+        // __DEV__ branch is stripped by Hermes dead-code elimination.
+        if (Platform.OS === "android") {
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const gServices = require("../google-services.json") as {
+              project_info?: { project_id?: string; project_number?: string };
+            };
+            const pid = gServices.project_info?.project_id ?? "";
+            const pnum = gServices.project_info?.project_number ?? "";
+            const isPlaceholder = (s: string) =>
+              s.startsWith("REPLACE_WITH_") || s.startsWith("YOUR_");
+            if (isPlaceholder(pid) || isPlaceholder(pnum)) {
+              console.error(
+                "[notifications] EAS project ID is set but google-services.json still\n" +
+                "contains REPLACE_WITH_... placeholder values — push notifications WILL FAIL.\n" +
+                "Download the real file from:\n" +
+                "  Firebase Console → Project Settings → Your Apps → Android (com.templetv.jctm)\n" +
+                "and replace artifacts/mobile/google-services.json before building.",
+              );
+            }
+          } catch {
+            // File not bundled in this build config — not an error.
           }
-        } catch {
-          // File not bundled in this build config — not an error.
         }
       }
     }
