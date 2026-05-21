@@ -57,7 +57,7 @@ import { useWatchProgress } from "@/hooks/useWatchProgress";
 import { useBroadcastSync } from "@/hooks/useBroadcastSync";
 import { useVideos } from "@/hooks/useVideos";
 import { VideoCard } from "@/components/VideoCard";
-import { sendReaction, submitPrayerRequest, recordView } from "@/services/api";
+import { sendReaction, submitPrayerRequest, recordView, type ReactionType } from "@/services/api";
 import type { Sermon } from "@/types";
 import { ChatPanel } from "@/components/ChatPanel";
 import { FloatingReactions, type FloatingReactionsHandle } from "@/components/FloatingReactions";
@@ -564,7 +564,7 @@ export default function PlayerScreen() {
 
   // Fires a reaction: sends it to the API + emits a floating emoji particle
   // over whichever player surface is currently active (inline vs fullscreen).
-  const handleReaction = useCallback((emoji: string, apiKey: string) => {
+  const handleReaction = useCallback((emoji: string, apiKey: ReactionType) => {
     sendReaction(apiKey);
     if (isFullscreen) {
       fsReactionsRef.current?.emit(emoji);

@@ -14,7 +14,7 @@ if (process.env.EXPO_PUBLIC_SENTRY_DSN) {
     // Attach JS stack to every event (not just unhandled errors).
     attachStacktrace: true,
     // Track app foreground/background sessions for crash-free-rate metrics.
-    autoSessionTracking: true,
+    enableAutoSessionTracking: true,
     // Never log to the console in production builds.
     debug: false,
     // Ignore common benign "errors" that fire every session and pollute the feed.

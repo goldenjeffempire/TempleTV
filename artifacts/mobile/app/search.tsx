@@ -473,4 +473,36 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   catGridText: { fontSize: 14, fontWeight: "600" },
+
+  staleBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginHorizontal: 12,
+    marginBottom: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 8,
+    backgroundColor: "#fef3c7",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#fcd34d",
+  },
+  staleBannerFailed: {
+    backgroundColor: "#fee2e2",
+    borderColor: "#fca5a5",
+  },
+  staleBannerText: {
+    flex: 1,
+    fontSize: 12,
+    color: "#92400e",
+  },
+  staleBannerTextFailed: {
+    color: "#991b1b",
+  },
+  staleBannerRetry: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#991b1b",
+    paddingLeft: 4,
+  },
 });

@@ -83,6 +83,7 @@
   "dependencies": {
     "@sentry/react-native": "~7.2.0",
     "expo-av": "~16.0.8",
+    "react-native-sse": "^1.2.1",
     "expo-clipboard": "~8.0.8",
     "expo-file-system": "~19.0.22",
     "expo-notifications": "~0.32.17",
