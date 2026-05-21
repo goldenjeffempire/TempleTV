@@ -78,6 +78,16 @@ export async function registerForPushTokenAsync(): Promise<string | null> {
       Constants.expoConfig?.extra?.eas?.projectId ??
       (Constants as any).easConfig?.projectId ??
       undefined;
+
+    if (!projectId && __DEV__) {
+      console.warn(
+        "[notifications] EAS projectId not found in Constants.expoConfig.extra.eas.projectId.\n" +
+        "Push tokens will fail on production builds. Ensure app.json extra.eas.projectId is set\n" +
+        "and google-services.json (Android) / GoogleService-Info.plist (iOS) contain real\n" +
+        "Firebase credentials — not the REPLACE_WITH_... placeholder values.",
+      );
+    }
+
     const { data: token } = await Notifications.getExpoPushTokenAsync(
       projectId ? { projectId } : undefined,
     );
@@ -86,7 +96,10 @@ export async function registerForPushTokenAsync(): Promise<string | null> {
       await registerTokenWithServer(token);
     }
     return token ?? null;
-  } catch {
+  } catch (err) {
+    if (__DEV__) {
+      console.warn("[notifications] registerForPushTokenAsync failed:", err);
+    }
     return null;
   }
 }
