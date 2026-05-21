@@ -23,6 +23,7 @@ import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { env } from "../../config/env.js";
 import { db, schema } from "../../infrastructure/db.js";
 import { sseCounter } from "../../infrastructure/sse-counter.js";
+import { sseCorsHeaders } from "../../lib/sse-cors.js";
 
 // Converts absolute `https://api.templetv.org.ng/api/…` URLs stored in the
 // DB to relative `/api/…` paths so the client always hits the correct host
@@ -797,6 +798,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
         "Cache-Control": "no-cache, no-transform",
         Connection: "keep-alive",
         "X-Accel-Buffering": "no",
+        ...sseCorsHeaders(req),
       });
 
       const emit = (eventName: string, data: unknown) => {

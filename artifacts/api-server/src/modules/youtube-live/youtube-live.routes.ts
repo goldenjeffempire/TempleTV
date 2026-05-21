@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { ytPoller } from "./youtube-live.poller.js";
+import { sseCorsHeaders } from "../../lib/sse-cors.js";
 
 /**
  * YouTube live event stream — SSE channel the admin Live Monitor page
@@ -117,6 +118,7 @@ export async function youtubeLiveRoutes(app: FastifyInstance) {
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
+      ...sseCorsHeaders(req),
     });
 
     let closed = false;

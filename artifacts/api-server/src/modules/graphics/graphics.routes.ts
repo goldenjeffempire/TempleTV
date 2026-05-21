@@ -7,6 +7,7 @@ import { eq, and } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { logger } from "../../infrastructure/logger.js";
+import { sseCorsHeaders } from "../../lib/sse-cors.js";
 
 /**
  * On-Air Graphics Bus — fans out graphic activation/deactivation events
@@ -102,6 +103,7 @@ export async function graphicsRoutes(app: FastifyInstance) {
         "Cache-Control": "no-cache, no-transform",
         Connection: "keep-alive",
         "X-Accel-Buffering": "no",
+        ...sseCorsHeaders(req),
       });
 
       const send = (evt: GraphicsEvent) => {

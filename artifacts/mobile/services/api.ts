@@ -329,8 +329,33 @@ export async function fetchPlaylists(limit = 100): Promise<ApiPlaylist[]> {
     signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) throw new Error(`Failed to fetch playlists (${res.status})`);
-  const data = await res.json() as { playlists?: ApiPlaylist[]; data?: ApiPlaylist[] };
-  return data.playlists ?? data.data ?? [];
+
+  type RawPlaylistItem = {
+    id: string;
+    name?: string;
+    title?: string;
+    description?: string;
+    thumbnailUrl?: string;
+    videoCount?: number;
+    category?: string;
+    createdAt?: string;
+  };
+  const data = await res.json() as {
+    playlists?: RawPlaylistItem[];
+    items?: RawPlaylistItem[];
+    data?: RawPlaylistItem[];
+  };
+
+  const raw = data.playlists ?? data.items ?? data.data ?? [];
+  return raw.map((p) => ({
+    id: p.id,
+    title: p.title ?? p.name ?? "",
+    description: p.description ?? "",
+    thumbnailUrl: p.thumbnailUrl ?? "",
+    videoCount: p.videoCount ?? 0,
+    category: p.category ?? "",
+    createdAt: p.createdAt ?? "",
+  }));
 }
 
 /** Fetch a single playlist with its ordered videos. */
@@ -339,8 +364,60 @@ export async function fetchPlaylistById(id: string): Promise<ApiPlaylistDetail> 
     signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) throw new Error(`Playlist not found (${res.status})`);
-  const data = await res.json() as { playlist?: ApiPlaylistDetail } | ApiPlaylistDetail;
-  return ("playlist" in data && data.playlist) ? data.playlist : (data as ApiPlaylistDetail);
+
+  type RawPlaylistVideo = {
+    id: string;
+    videoId?: string;
+    youtubeId?: string;
+    title?: string;
+    thumbnailUrl?: string;
+    duration?: string;
+    category?: string;
+  };
+  type RawPlaylistDetail = {
+    id: string;
+    name?: string;
+    title?: string;
+    description?: string;
+    thumbnailUrl?: string;
+    videoCount?: number;
+    category?: string;
+    createdAt?: string;
+    videos?: RawPlaylistVideo[];
+  };
+
+  const raw = await res.json() as { playlist?: RawPlaylistDetail } | RawPlaylistDetail;
+  const detail: RawPlaylistDetail =
+    ("playlist" in raw && raw.playlist) ? raw.playlist : (raw as RawPlaylistDetail);
+
+  const playlist: ApiPlaylist = {
+    id: detail.id,
+    title: detail.title ?? detail.name ?? "",
+    description: detail.description ?? "",
+    thumbnailUrl: detail.thumbnailUrl ?? "",
+    videoCount: detail.videoCount ?? 0,
+    category: detail.category ?? "",
+    createdAt: detail.createdAt ?? "",
+  };
+
+  const videos: ApiVideo[] = (detail.videos ?? []).map((v) => ({
+    id: v.videoId ?? v.id,
+    youtubeId: v.youtubeId ?? "",
+    title: v.title ?? "",
+    description: "",
+    thumbnailUrl: v.thumbnailUrl ?? "",
+    duration: v.duration ?? "",
+    category: v.category ?? "",
+    preacher: "",
+    publishedAt: null,
+    importedAt: "",
+    viewCount: 0,
+    videoSource: (v.youtubeId ? "youtube" : "local") as ApiVideo["videoSource"],
+    localVideoUrl: null,
+    hlsMasterUrl: null,
+  }));
+
+  return { ...playlist, videos };
 }
 
 // ─── Series list ─────────────────────────────────────────────────────────────

@@ -68,6 +68,7 @@ import { StartOverrideBodySchema } from "../live-overrides/live-overrides.schema
 import { schema } from "../../infrastructure/db.js";
 import { streamHealthAggregator } from "../broadcast/stream-health.js";
 import { getWatchdogState } from "../../infrastructure/memory-watchdog.js";
+import { sseCorsHeaders } from "../../lib/sse-cors.js";
 
 const startedAtMs = Date.now();
 const instanceId = `inst-${Math.random().toString(36).slice(2, 10)}`;
@@ -2668,6 +2669,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         // Explicitly opt out of any response compression middleware.
         // Compressors buffer data before flushing — catastrophic for SSE.
         "Content-Encoding": "identity",
+        ...sseCorsHeaders(req),
       });
 
       const send = (event: string, data: unknown) => {

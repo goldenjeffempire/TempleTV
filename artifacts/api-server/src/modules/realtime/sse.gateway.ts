@@ -5,6 +5,7 @@ import { overrideBus } from "../live-overrides/override-bus.js";
 import { bumpSseViewers } from "./viewer-tracker.js";
 import { env } from "../../config/env.js";
 import { sseCounter } from "../../infrastructure/sse-counter.js";
+import { sseCorsHeaders } from "../../lib/sse-cors.js";
 
 /**
  * Server-Sent Events stream for the live channel.
@@ -76,6 +77,7 @@ export async function sseRoutes(app: FastifyInstance) {
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
       "Content-Encoding": "identity",
+      ...sseCorsHeaders(req),
     });
 
     const send = (e: BroadcastEvent) => {
