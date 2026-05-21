@@ -1,0 +1,58 @@
+# EAS build ignore — mirrors .gitignore but explicitly KEEPS
+# google-services.json and GoogleService-Info.plist so EAS cloud
+# builds receive the Firebase config files.
+#
+# NOTE: google-services.json / GoogleService-Info.plist currently
+# contain dummy placeholder values. Replace them with real Firebase
+# credentials from https://console.firebase.google.com before
+# shipping to production for working push notifications.
+
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+web-dist/
+expo-env.d.ts
+
+# Native (generated — EAS regenerates these from managed config)
+ios/
+android/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Metro
+.metro-health-check*
+
+# debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# macOS
+.DS_Store
+*.pem
+
+# local env files
+.env*.local
+
+# typescript
+*.tsbuildinfo
+.vercel
+
+# device captures
+screenshots/
+
+.env
+
+# Google Play service account key (submit credential — NOT the Firebase app config)
+google-service-account.json
+
+# google-services.json and GoogleService-Info.plist are intentionally
+# NOT listed here so EAS uploads them with the build archive.
