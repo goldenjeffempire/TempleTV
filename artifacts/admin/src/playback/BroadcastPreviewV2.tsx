@@ -33,6 +33,7 @@ import {
 import {
   AlertTriangle,
   CheckCircle2,
+  ExternalLink,
   Info,
   Loader2,
   RefreshCw,
@@ -295,6 +296,41 @@ export function BroadcastPreviewV2({ className }: Props) {
   const bRef = useRef<HTMLVideoElement>(null);
   const ytIframeRef = useRef<HTMLIFrameElement>(null);
 
+  // YouTube IFrame API error code (null = no error, number = YT error code).
+  // Error 153 = embedding disabled by video owner.
+  // Error 100 = video not found / private.
+  // Error 101/150 = embedding not allowed (equivalent to 153 in practice).
+  const [ytEmbedError, setYtEmbedError] = useState<number | null>(null);
+
+  // Listen for YouTube IFrame API postMessage events so we can detect
+  // when a video has embedding disabled (Error 153 / 101 / 150) and swap
+  // the broken iframe for an actionable fallback card.
+  useEffect(() => {
+    function handleMessage(ev: MessageEvent) {
+      if (ev.origin !== "https://www.youtube.com") return;
+      let data: unknown;
+      try {
+        data = typeof ev.data === "string" ? JSON.parse(ev.data) : ev.data;
+      } catch {
+        return;
+      }
+      if (
+        data &&
+        typeof data === "object" &&
+        "event" in data &&
+        (data as Record<string, unknown>).event === "onError" &&
+        "info" in data
+      ) {
+        const code = (data as Record<string, unknown>).info;
+        if (typeof code === "number") {
+          setYtEmbedError(code);
+        }
+      }
+    }
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, []);
+
   // Keep DOM `muted` in sync — the FSM owns play/pause but volume is admin-local.
   useEffect(() => {
     if (aRef.current) aRef.current.muted = muted;
@@ -320,6 +356,11 @@ export function BroadcastPreviewV2({ className }: Props) {
     if (currentKind === "youtube" && currentUrl) return extractYouTubeVideoId(currentUrl);
     return null;
   }, [server]);
+
+  // Reset the embed error whenever the active YouTube video changes.
+  useEffect(() => {
+    setYtEmbedError(null);
+  }, [youtubeVideoId]);
 
   const overlay = useMemo(() => {
     if (snapshot.state === "OFFLINE_HOLD") {
@@ -475,8 +516,11 @@ export function BroadcastPreviewV2({ className }: Props) {
 
       {/* YouTube embed — shown on top of the video buffers when the active source is YouTube.
           Uses the IFrame API (enablejsapi=1) so mute/unmute works via postMessage without
-          reloading the player. Starts muted to match the default admin mute state. */}
-      {youtubeVideoId && (
+          reloading the player. Starts muted to match the default admin mute state.
+          When the IFrame API fires an error (e.g. Error 153 = embedding disabled), the
+          iframe is swapped for an actionable fallback card instead of showing YouTube's
+          cryptic "Video player configuration error" screen. */}
+      {youtubeVideoId && !ytEmbedError && (
         <iframe
           key={youtubeVideoId}
           ref={ytIframeRef}
@@ -487,12 +531,79 @@ export function BroadcastPreviewV2({ className }: Props) {
           title="YouTube broadcast preview"
           style={{ zIndex: 5, border: "none" }}
           onLoad={() => {
-            // Once loaded, sync current mute state into the iframe.
             if (ytIframeRef.current) {
               postYouTubeCommand(ytIframeRef.current, muted ? "mute" : "unMute");
             }
           }}
         />
+      )}
+
+      {/* YouTube embed error fallback — replaces the broken iframe when the IFrame API
+          reports an embed restriction (Error 153 / 101 / 150) or the video is unavailable
+          (Error 100). Shows the video thumbnail, a direct watch link, and instructions
+          for the operator to enable embedding in YouTube Studio. */}
+      {youtubeVideoId && ytEmbedError !== null && (
+        <div
+          className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-4 text-center"
+          style={{ zIndex: 5 }}
+        >
+          {/* Blurred thumbnail as background */}
+          <div
+            className="absolute inset-0 bg-cover bg-center opacity-15"
+            style={{
+              backgroundImage: `url(https://img.youtube.com/vi/${youtubeVideoId}/hqdefault.jpg)`,
+              filter: "blur(4px)",
+            }}
+          />
+
+          {/* Thumbnail */}
+          <img
+            src={`https://img.youtube.com/vi/${youtubeVideoId}/mqdefault.jpg`}
+            alt="Video thumbnail"
+            className="relative z-10 w-28 rounded shadow-lg object-cover"
+            draggable={false}
+          />
+
+          {/* Error message */}
+          <div className="relative z-10 space-y-1.5 max-w-[220px]">
+            <p className="text-white text-[11px] font-semibold leading-snug">
+              {ytEmbedError === 100
+                ? "Video unavailable or private"
+                : "Embedding disabled for this video"}
+            </p>
+            <p className="text-white/60 text-[10px] leading-relaxed">
+              {ytEmbedError === 100
+                ? "This video may have been deleted or set to private on YouTube."
+                : "The video owner has disabled embedding. Go to YouTube Studio → Content → select the video → Edit → More options → Distribution → enable \"Allow embedding\"."}
+            </p>
+            <p className="text-white/40 text-[9px] font-mono">
+              YouTube Error {ytEmbedError} · preview only · viewers unaffected
+            </p>
+          </div>
+
+          {/* Actions */}
+          <div className="relative z-10 flex items-center gap-2 flex-wrap justify-center">
+            <a
+              href={`https://www.youtube.com/watch?v=${youtubeVideoId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1.5 text-[11px] font-medium text-white bg-red-600 hover:bg-red-500 transition-colors px-2.5 py-1 rounded"
+            >
+              <ExternalLink size={10} />
+              Watch on YouTube
+            </a>
+            {ytEmbedError !== 100 && (
+              <a
+                href={`https://studio.youtube.com/video/${youtubeVideoId}/edit`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1.5 text-[11px] font-medium text-white/80 hover:text-white bg-white/10 hover:bg-white/20 transition-colors px-2.5 py-1 rounded"
+              >
+                Open in Studio
+              </a>
+            )}
+          </div>
+        </div>
       )}
 
       {/* State overlays — fade in/out instead of hard snap */}
