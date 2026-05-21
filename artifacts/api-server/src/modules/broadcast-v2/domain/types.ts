@@ -7,7 +7,7 @@
  * protocol change.
  */
 
-export type V2Mode = "queue" | "override" | "failover" | "offline_hold" | "youtube_fallback";
+export type V2Mode = "queue" | "override" | "failover" | "offline_hold";
 
 export type V2SourceKind = "hls" | "mp4" | "dash" | "youtube";
 

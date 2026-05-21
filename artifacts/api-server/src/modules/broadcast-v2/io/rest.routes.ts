@@ -98,7 +98,6 @@ export async function restRoutes(app: FastifyInstance) {
       prodSync: sync,
       drift: broadcastOrchestrator.getDriftInfo(),
       allBlocked: broadcastOrchestrator.getAllBlockedInfo(),
-      youtubeFallback: broadcastOrchestrator.getYoutubeFallbackInfo(),
       redis: {
         connected: broadcastFanout.isConnected(),
         role: broadcastFanout.getRole(),
@@ -432,16 +431,19 @@ export async function restRoutes(app: FastifyInstance) {
       return { ok: true, sequence: broadcastOrchestrator.getSequence(), duplicate: true };
     }
 
-    // Build new ordered id list: target item first, rest in their current order.
-    const currentItems = broadcastOrchestrator.getItems();
+    // Build new ordered id list from the DB — target item first, rest in
+    // their current sort order. Using DB rows instead of orchestrator memory
+    // ensures Play Now works regardless of the orchestrator's current mode
+    // (failover, offline_hold, or an empty queue where getItems() returns []).
     const targetId = parsed.data.queueItemId;
-    const targetExists = currentItems.some((i) => i.id === targetId);
+    const activeRows = await queueRepo.loadActive();
+    const targetExists = activeRows.some((r) => r.id === targetId);
     if (!targetExists) {
-      return reply.code(404).send({ error: "Queue item not found" });
+      return reply.code(404).send({ error: "Queue item not found in active broadcast queue" });
     }
     const newOrder = [
       targetId,
-      ...currentItems.filter((i) => i.id !== targetId).map((i) => i.id),
+      ...activeRows.filter((r) => r.id !== targetId).map((r) => r.id),
     ];
 
     // 1. Persist new sort order in DB (broadcastService also pushes the bus
@@ -646,16 +648,4 @@ export async function restRoutes(app: FastifyInstance) {
     return playbackAnalytics.getReport(windowMs);
   });
 
-  // ── Admin: reshuffle YouTube fallback ─────────────────────────────────
-  // Clears the in-memory YouTube fallback cache so the next orchestrator
-  // reload fetches and shuffles the library again. Immediately triggers a
-  // reload so the new order takes effect within seconds — no server
-  // restart required.
-  // Requires editor auth. Idempotent — safe to call multiple times.
-  app.post("/youtube-fallback/reshuffle", adminGuard, async (_req, reply) => {
-    broadcastOrchestrator.clearYoutubeFallbackCache();
-    void broadcastOrchestrator.reload();
-    logger.info("[broadcast-v2] /youtube-fallback/reshuffle — cache cleared and reload triggered");
-    return reply.send({ ok: true, message: "YouTube fallback cache cleared — reshuffling now" });
-  });
 }

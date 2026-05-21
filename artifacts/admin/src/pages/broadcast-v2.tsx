@@ -26,7 +26,6 @@ import {
   Radio,
   Users,
   Cpu,
-  Shuffle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Link } from "wouter";
@@ -109,10 +108,6 @@ interface EngineHealth {
     allSourcesBlocked: boolean;
     allBlockedSinceMs: number | null;
     allBlockedDurationMs: number | null;
-  };
-  youtubeFallback?: {
-    active: boolean;
-    cachedItemCount: number;
   };
 }
 
@@ -314,8 +309,6 @@ export default function BroadcastV2Page() {
   const [stuckAlertDismissed, setStuckAlertDismissed] = useState(false);
   // Dismissible all-sources-blocked banner. Same auto-reset pattern.
   const [allBlockedDismissed, setAllBlockedDismissed] = useState(false);
-  // Dismissible YouTube fallback banner. Auto-reset when local content returns.
-  const [ytFallbackDismissed, setYtFallbackDismissed] = useState(false);
   // Dismissible faststart-in-progress banner. Auto-reset when no items remain
   // in 'processing' state so the banner reappears if a new faststart starts.
   const [processingAlertDismissed, setProcessingAlertDismissed] = useState(false);
@@ -401,21 +394,6 @@ export default function BroadcastV2Page() {
     },
   });
 
-  // Clears the in-memory YouTube fallback shuffle cache and triggers a reload
-  // so a fresh random order takes effect immediately without a server restart.
-  const reshuffleMutation = useMutation({
-    mutationFn: () =>
-      api.post<{ ok: boolean; message: string }>("/broadcast-v2/youtube-fallback/reshuffle"),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
-      toast.success("YouTube fallback reshuffled — new play order will take effect within seconds.");
-    },
-    onError: (err) => {
-      const detail = err instanceof HttpError ? err.message : "Unknown error";
-      toast.error(`Reshuffle failed (${detail})`);
-    },
-  });
-
   // Auto-reload orchestrator when queue mutates.
   // The server-side bus bridge already triggers a reload before this SSE fires,
   // so the 1 s delayed POST is belt-and-suspenders for when the bus bridge
@@ -490,12 +468,6 @@ export default function BroadcastV2Page() {
   useEffect(() => {
     if (!isAllBlocked) setAllBlockedDismissed(false);
   }, [isAllBlocked]);
-
-  // YouTube fallback: no local content in queue — broadcasting YouTube library.
-  const isYtFallback = engineHealth?.youtubeFallback?.active === true;
-  useEffect(() => {
-    if (!isYtFallback) setYtFallbackDismissed(false);
-  }, [isYtFallback]);
 
   // Auto-reset the processing banner when no more items are in 'processing'.
   useEffect(() => {
@@ -764,48 +736,6 @@ export default function BroadcastV2Page() {
               aria-label="Dismiss all-sources-blocked alert"
               onClick={() => setAllBlockedDismissed(true)}
               className="shrink-0 rounded p-0.5 hover:bg-red-200/60 dark:hover:bg-red-800/40"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* YouTube fallback banner — dismissible amber info strip */}
-      {isYtFallback && !ytFallbackDismissed && (
-        <div
-          role="status"
-          className="flex items-start gap-3 rounded-md border border-amber-300/60 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-700/60 dark:bg-amber-950/30 dark:text-amber-200"
-        >
-          <Radio className="mt-0.5 h-4 w-4 shrink-0" />
-          <div className="flex-1">
-            <strong>Broadcasting YouTube library.</strong>{" "}
-            No local videos are in the broadcast queue, so the system is automatically
-            cycling through{engineHealth?.youtubeFallback?.cachedItemCount
-              ? ` ${engineHealth.youtubeFallback.cachedItemCount}`
-              : ""}{" "}
-            YouTube videos in shuffled order. Upload local videos and add them to the
-            queue to restore normal broadcast mode.
-          </div>
-          <div className="flex items-center gap-1.5 shrink-0">
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 border-amber-400/70 bg-amber-50 text-amber-800 hover:bg-amber-100 dark:border-amber-600/60 dark:bg-transparent dark:text-amber-300 dark:hover:bg-amber-900/40"
-              onClick={() => reshuffleMutation.mutate()}
-              disabled={reshuffleMutation.isPending}
-              title="Clear the current shuffle and apply a new random order immediately"
-            >
-              {reshuffleMutation.isPending
-                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                : <Shuffle className="h-3.5 w-3.5" />}
-              <span className="ml-1.5">Reshuffle</span>
-            </Button>
-            <button
-              type="button"
-              aria-label="Dismiss YouTube fallback alert"
-              onClick={() => setYtFallbackDismissed(true)}
-              className="rounded p-0.5 hover:bg-amber-200/60 dark:hover:bg-amber-800/40"
             >
               <X className="h-4 w-4" />
             </button>
