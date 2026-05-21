@@ -134,6 +134,60 @@ export default defineConfig({
         // global ApiHealthContext, so route it to the same backend.
         "/healthz": { target, changeOrigin: true, secure: false },
         "/readyz": { target, changeOrigin: true, secure: false },
+
+        // ── Mobile (Expo web) dev proxy ────────────────────────────────────
+        // The Expo Metro dev server runs on port 18115. These rules make the
+        // mobile app accessible at /mobile/ via the main Replit domain so the
+        // Replit "Temple TV Mobile" workflow preview works without a separate
+        // port URL.
+        //
+        // Rule 1: /mobile/* — app entry point. Strips the /mobile prefix so
+        //   Expo Router sees "/" and renders the index route correctly.
+        //   (Expo's public/index.html has a history.replaceState shim that
+        //   also strips the prefix client-side for deep links.)
+        //
+        // Rule 2: /artifacts/mobile/* — Metro injects the JS bundle script at
+        //   /artifacts/mobile/index.ts.bundle?..., which is served at this
+        //   absolute path by the Metro dev server. No prefix rewrite needed.
+        //
+        // Rule 3: /assets/* — Expo image/font assets are served by Metro at
+        //   /assets?unstable_path=... and /assets/<hash>. Forward these so
+        //   fonts and images load correctly inside the /mobile/ preview.
+        //
+        // Rules 4-5: /hot and /message — Expo Metro HMR WebSocket upgrade
+        //   paths. Forward so the Expo web page can receive hot updates.
+        //
+        // These rules are intentionally placed after /api so that API calls
+        // from the admin SPA continue to reach the Fastify backend.
+        "/mobile": {
+          target: "http://localhost:18115",
+          changeOrigin: true,
+          secure: false,
+          ws: true,
+          rewrite: (path: string) => path.replace(/^\/mobile/, "") || "/",
+        },
+        "/artifacts/mobile": {
+          target: "http://localhost:18115",
+          changeOrigin: true,
+          secure: false,
+        },
+        "/assets": {
+          target: "http://localhost:18115",
+          changeOrigin: true,
+          secure: false,
+        },
+        "/hot": {
+          target: "http://localhost:18115",
+          changeOrigin: true,
+          secure: false,
+          ws: true,
+        },
+        "/message": {
+          target: "http://localhost:18115",
+          changeOrigin: true,
+          secure: false,
+          ws: true,
+        },
       };
     })(),
     fs: {
