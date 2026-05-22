@@ -38,7 +38,7 @@ function navigateToSermon(sermon: Sermon) {
       id: sermon.id,
       title: sermon.title,
       youtubeId: sermon.videoSource === "youtube" ? sermon.youtubeId : "",
-      hlsUrl: sermon.localVideoUrl ?? "",
+      hlsUrl: sermon.hlsMasterUrl ?? sermon.localVideoUrl ?? "",
       thumbnailUrl: sermon.thumbnailUrl,
       preacher: sermon.preacher,
       duration: sermon.duration,

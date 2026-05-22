@@ -685,7 +685,7 @@ export default function PlayerScreen() {
         id: s.id,
         title: s.title,
         youtubeId: s.videoSource === "youtube" ? s.youtubeId : "",
-        hlsUrl: s.localVideoUrl ?? "",
+        hlsUrl: s.hlsMasterUrl ?? s.localVideoUrl ?? "",
         thumbnailUrl: s.thumbnailUrl,
         preacher: s.preacher,
         duration: s.duration,
