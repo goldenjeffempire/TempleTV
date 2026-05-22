@@ -6,6 +6,7 @@ import {
   Inter_700Bold,
   useFonts,
 } from "@expo-google-fonts/inter";
+import { Feather } from "@expo/vector-icons";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Constants from "expo-constants";
 import { router, Stack } from "expo-router";
@@ -454,21 +455,34 @@ function RootLayoutNav() {
 }
 
 
+// Build the font map once — static per platform so the hook call count is
+// always the same and React's hook rules are satisfied.
+//
+// Web:    Feather is registered via @font-face data URI in public/index.html
+//         BEFORE React mounts. Calling Font.loadAsync here would inject a
+//         second @font-face pointing to the Metro asset URL, which 404s when
+//         EXPO_BASE_URL=/mobile is set and can shadow the good declaration.
+//
+// Native: @expo/vector-icons does NOT auto-register its fonts in Expo Go or
+//         EAS builds — Font.loadAsync is required or every <Feather /> shows
+//         a placeholder □. We explicitly include Feather.font only here.
+const _featherFont =
+  Platform.OS !== "web" &&
+  Feather.font != null &&
+  typeof Feather.font === "object"
+    ? (Feather.font as Record<string, unknown>)
+    : {};
+
+const _fontMap = {
+  Inter_400Regular,
+  Inter_500Medium,
+  Inter_600SemiBold,
+  Inter_700Bold,
+  ..._featherFont,
+};
+
 function RootLayout() {
-  const [fontsLoaded, fontError] = useFonts({
-    Inter_400Regular,
-    Inter_500Medium,
-    Inter_600SemiBold,
-    Inter_700Bold,
-    // NOTE: Feather icon font is intentionally NOT loaded here.
-    // • Web: registered via @font-face data URI in public/index.html before
-    //   React mounts — no Metro asset pipeline involvement, cannot 404.
-    //   Adding it via useFonts would cause Font.loadAsync to inject a second
-    //   @font-face pointing to the Metro asset URL which 404s when
-    //   EXPO_BASE_URL=/mobile is set, potentially shadowing the good declaration.
-    // • Native (Expo Go, EAS builds): @expo/vector-icons auto-registers all
-    //   its fonts from the bundled assets — no Font.loadAsync call needed.
-  });
+  const [fontsLoaded, fontError] = useFonts(_fontMap);
 
   // ── Font-load timeout ───────────────────────────────────────────────────────
   // On web the Inter fonts may be fetched from the Google Fonts CDN which can
