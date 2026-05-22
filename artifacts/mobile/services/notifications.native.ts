@@ -114,21 +114,15 @@ export async function registerForPushTokenAsync(): Promise<string | null> {
       (Constants as { easConfig?: { projectId?: string } }).easConfig?.projectId ??
       undefined;
 
-    // The canonical EAS project ID for Temple TV (templetv Expo account).
-    // When this is present and matches, cross-validate Firebase credentials so
-    // push tokens don't silently fail with a cryptic FCM error on first build.
-    const TEMPLE_TV_EAS_PROJECT_ID = "f0137848-bf77-486f-b1ff-0fbadc6b7840";
-
     if (__DEV__) {
       if (!projectId) {
         console.warn(
           "[notifications] EAS projectId not found in Constants.expoConfig.extra.eas.projectId.\n" +
-          "Push tokens will fail on production builds. Expected projectId:\n" +
-          `  "${TEMPLE_TV_EAS_PROJECT_ID}"\n` +
-          "Ensure app.json extra.eas.projectId is set and google-services.json /\n" +
-          "GoogleService-Info.plist contain real Firebase credentials.",
+          "Push tokens will fail on production builds.\n" +
+          "Run `eas init` from artifacts/mobile/ to populate it, and ensure\n" +
+          "google-services.json / GoogleService-Info.plist contain real Firebase credentials.",
         );
-      } else if (projectId === TEMPLE_TV_EAS_PROJECT_ID) {
+      } else {
         if (Platform.OS === "android") {
           try {
             // eslint-disable-next-line @typescript-eslint/no-require-imports
