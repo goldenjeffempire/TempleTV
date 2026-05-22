@@ -84,7 +84,10 @@ const RECONNECTING_AFTER_ATTEMPTS = 3;
 // close it and schedule a reconnect. Guards against silent proxy hangs
 // (Vite dev proxy accepting the TCP connection but never forwarding it)
 // which otherwise keep the connection stuck for 5-11 seconds per attempt.
-const OPEN_TIMEOUT_MS = 8_000;
+// 20 s gives the Replit preview proxy → Vite → API 3-hop chain enough
+// time to complete the SSE handshake on cold starts and slow environments
+// without falsely cycling into "reconnecting" during normal operation.
+const OPEN_TIMEOUT_MS = 20_000;
 
 // How many failed SSE attempts before we query the HTTP health endpoint.
 // 8 attempts × up to 15 s each = up to ~120 s — covers Render cold starts.
@@ -355,6 +358,12 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
 
         es.addEventListener("open", () => {
           clearTimeout(openTimeout);
+          // ── Stale-closure guard ────────────────────────────────────────────
+          // A concurrent connect() call may have already closed this ES and
+          // created a newer one. If so, this `open` belongs to a dead socket —
+          // ignore it so we don't incorrectly flip state to "connected" for a
+          // connection that no longer exists.
+          if (esRef.current !== es) return;
           if (reconnectingGraceTimer.current !== null) {
             clearTimeout(reconnectingGraceTimer.current);
             reconnectingGraceTimer.current = null;
@@ -367,6 +376,10 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
 
         KNOWN_EVENTS.forEach((evt) => {
           es.addEventListener(evt, (e: MessageEvent) => {
+            // Guard: discard frames from a replaced EventSource so stale events
+            // don't advance lastFrameAt (which would suppress the watchdog) or
+            // dispatch to subscribers.
+            if (esRef.current !== es) return;
             lastFrameAt.current = Date.now();
             let parsed: unknown = e.data;
             try { parsed = JSON.parse(e.data as string); } catch { /* keep raw */ }
@@ -378,6 +391,17 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
 
         es.onerror = () => {
           clearTimeout(openTimeout);
+          // ── Stale-closure guard (critical) ────────────────────────────────
+          // When connect() explicitly closes an old EventSource to start a
+          // fresh handshake, the old ES fires `onerror` asynchronously.
+          // Without this guard the handler would:
+          //   1. Set esRef.current = null  — nullifying the BRAND-NEW connection
+          //   2. Call scheduleReconnect()  — firing a timer that closes the new
+          //      connection before it opens, restarting the cycle
+          // This creates a self-perpetuating storm: Connecting → Reconnecting
+          // → Connecting → … that never settles on "Connected".
+          // Fix: only act when this ES is still the authoritative connection.
+          if (esRef.current !== es) return;
           es.close();
           esRef.current = null;
           scheduleReconnect();
