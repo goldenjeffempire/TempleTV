@@ -455,19 +455,26 @@ function RootLayoutNav() {
 }
 
 
-// Build the font map once — static per platform so the hook call count is
-// always the same and React's hook rules are satisfied.
+// Detect a REAL browser environment, not just Platform.OS === "web".
+// The Expo dev tools' "Simulate on Android/iOS" toggle changes Platform.OS
+// to "android" or "ios" while the code is still running inside a browser.
+// In that case CSS @font-face still applies (browser is browser) and we
+// must NOT call Font.loadAsync — it would inject a second @font-face with
+// a Metro asset URL that 404s and shadows the good base64 declaration.
+const _isBrowser =
+  typeof document !== "undefined" && typeof window !== "undefined";
+
+// Build the font map once. Hook call count stays constant across renders.
 //
-// Web:    Feather is registered via @font-face data URI in public/index.html
-//         BEFORE React mounts. Calling Font.loadAsync here would inject a
-//         second @font-face pointing to the Metro asset URL, which 404s when
-//         EXPO_BASE_URL=/mobile is set and can shadow the good declaration.
+// Browser (real web OR simulated native in dev tools):
+//   Feather is registered via @font-face data URI in public/index.html
+//   BEFORE React mounts. Skip Font.loadAsync entirely.
 //
-// Native: @expo/vector-icons does NOT auto-register its fonts in Expo Go or
-//         EAS builds — Font.loadAsync is required or every <Feather /> shows
-//         a placeholder □. We explicitly include Feather.font only here.
+// Native (Expo Go, EAS standalone, EAS dev-client):
+//   @expo/vector-icons does NOT auto-register its fonts — Font.loadAsync
+//   is required or every <Feather /> shows a placeholder □.
 const _featherFont =
-  Platform.OS !== "web" &&
+  !_isBrowser &&
   Feather.font != null &&
   typeof Feather.font === "object"
     ? (Feather.font as Record<string, unknown>)
