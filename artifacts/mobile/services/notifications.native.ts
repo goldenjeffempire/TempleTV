@@ -9,14 +9,22 @@ const PUSH_TOKEN_KEY = "@temple_tv/push_token";
 const ANDROID_CHANNEL_ID = "temple-tv-default";
 const EMERGENCY_CHANNEL_ID = "temple-tv-emergency";
 
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowBanner: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-    shouldShowList: true,
-  }),
-});
+// Expo Go (Constants.executionEnvironment === "storeClient") dropped remote
+// push support in SDK 53. Calling Notifications APIs there emits a noisy
+// console error on every cold start. Push only works in dev-client and
+// standalone/store builds — gate all setup behind this check.
+const IS_EXPO_GO = Constants?.executionEnvironment === "storeClient";
+
+if (!IS_EXPO_GO) {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowBanner: true,
+      shouldPlaySound: true,
+      shouldSetBadge: true,
+      shouldShowList: true,
+    }),
+  });
+}
 
 async function registerTokenWithServer(token: string): Promise<void> {
   try {
@@ -34,7 +42,7 @@ async function registerTokenWithServer(token: string): Promise<void> {
 }
 
 export async function setupAndroidNotificationChannel(): Promise<void> {
-  if (Platform.OS !== "android") return;
+  if (Platform.OS !== "android" || IS_EXPO_GO) return;
   try {
     await Notifications.setNotificationChannelAsync(ANDROID_CHANNEL_ID, {
       name: "Temple TV",
@@ -60,6 +68,7 @@ export async function setupAndroidNotificationChannel(): Promise<void> {
 
 export async function registerForPushTokenAsync(): Promise<string | null> {
   if (Platform.OS === "web") return null;
+  if (IS_EXPO_GO) return null;
 
   try {
     await setupAndroidNotificationChannel();

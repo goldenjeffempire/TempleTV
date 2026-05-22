@@ -266,7 +266,17 @@ export class BroadcastEngine {
   // ── Browser event dispatch ────────────────────────────────────────────────
 
   private dispatchConnectionEvent(connected: boolean): void {
-    if (typeof window === "undefined") return;
+    // Browser-only DOM event bridge. React Native's `window` polyfill exists
+    // but does NOT expose `CustomEvent` / `dispatchEvent` — referencing them
+    // throws "Property 'CustomEvent' doesn't exist" and trips the RN error
+    // boundary. Guard on the constructor itself, not on `typeof window`.
+    if (
+      typeof window === "undefined" ||
+      typeof (globalThis as { CustomEvent?: unknown }).CustomEvent !== "function" ||
+      typeof window.dispatchEvent !== "function"
+    ) {
+      return;
+    }
     window.dispatchEvent(
       new CustomEvent("temple-tv-broadcast-connected", { detail: { connected } }),
     );
