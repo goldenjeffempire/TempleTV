@@ -1,6 +1,40 @@
 import * as Sentry from "@sentry/react-native";
 import { Platform } from "react-native";
 
+// ── AbortSignal.timeout polyfill ─────────────────────────────────────────────
+// Hermes (React Native's JS engine) only added AbortSignal.timeout in very
+// recent versions. On older builds — and inside Expo Go for SDK 53 — calling
+// `AbortSignal.timeout(ms)` throws "AbortSignal.timeout is not a function (it
+// is undefined)" and tears down every fetch that uses it. We have 30+ call
+// sites across the mobile app and shared libs; polyfilling once globally is
+// far safer than editing every site.
+if (typeof (globalThis as { AbortSignal?: typeof AbortSignal }).AbortSignal !== "undefined") {
+  const AS = (globalThis as { AbortSignal: typeof AbortSignal & { timeout?: (ms: number) => AbortSignal } }).AbortSignal;
+  if (typeof AS.timeout !== "function") {
+    AS.timeout = (ms: number): AbortSignal => {
+      const controller = new AbortController();
+      const id = setTimeout(() => {
+        try {
+          // DOMException is available in Hermes; fall back to a plain Error.
+          const DOMExceptionCtor: typeof DOMException | undefined =
+            (globalThis as { DOMException?: typeof DOMException }).DOMException;
+          const reason = DOMExceptionCtor
+            ? new DOMExceptionCtor("The operation timed out.", "TimeoutError")
+            : Object.assign(new Error("The operation timed out."), { name: "TimeoutError" });
+          controller.abort(reason);
+        } catch {
+          controller.abort();
+        }
+      }, ms);
+      // Don't keep the JS runtime awake just for the timeout.
+      if (typeof (id as unknown as { unref?: () => void })?.unref === "function") {
+        (id as unknown as { unref: () => void }).unref();
+      }
+      return controller.signal;
+    };
+  }
+}
+
 const sentryDsn = process.env.EXPO_PUBLIC_SENTRY_DSN;
 if (sentryDsn) {
   Sentry.init({
