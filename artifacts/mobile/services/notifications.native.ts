@@ -1,4 +1,7 @@
-import * as Notifications from "expo-notifications";
+// Type-only import — stripped by the TS compiler, never evaluated at runtime.
+// All runtime access to `expo-notifications` goes through `getNotifications()`,
+// which only loads the module when we're NOT in Expo Go.
+import type * as NotificationsModule from "expo-notifications";
 import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
@@ -10,20 +13,40 @@ const ANDROID_CHANNEL_ID = "temple-tv-default";
 const EMERGENCY_CHANNEL_ID = "temple-tv-emergency";
 
 // Expo Go (Constants.executionEnvironment === "storeClient") dropped remote
-// push support in SDK 53. Calling Notifications APIs there emits a noisy
-// console error on every cold start. Push only works in dev-client and
-// standalone/store builds — gate all setup behind this check.
-const IS_EXPO_GO = Constants?.executionEnvironment === "storeClient";
+// push support in SDK 53. Importing `expo-notifications` there at module-eval
+// time prints a noisy red Console Error on every cold start. Treat unknown
+// environments conservatively as Expo Go so we never touch the module unless
+// we're positively in a dev-client / standalone / bare build.
+const ENV: unknown = Constants?.executionEnvironment;
+const OWNERSHIP: unknown = (Constants as { appOwnership?: unknown })?.appOwnership;
+const IS_NATIVE_BUILD =
+  ENV === "standalone" || ENV === "bare" || OWNERSHIP === "standalone";
+const IS_EXPO_GO = !IS_NATIVE_BUILD;
 
-if (!IS_EXPO_GO) {
-  Notifications.setNotificationHandler({
-    handleNotification: async () => ({
-      shouldShowBanner: true,
-      shouldPlaySound: true,
-      shouldSetBadge: true,
-      shouldShowList: true,
-    }),
-  });
+let _Notifications: typeof NotificationsModule | null = null;
+let _handlerInstalled = false;
+
+function getNotifications(): typeof NotificationsModule | null {
+  if (IS_EXPO_GO) return null;
+  if (_Notifications) return _Notifications;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    _Notifications = require("expo-notifications") as typeof NotificationsModule;
+    if (!_handlerInstalled && _Notifications) {
+      _Notifications.setNotificationHandler({
+        handleNotification: async () => ({
+          shouldShowBanner: true,
+          shouldPlaySound: true,
+          shouldSetBadge: true,
+          shouldShowList: true,
+        }),
+      });
+      _handlerInstalled = true;
+    }
+    return _Notifications;
+  } catch {
+    return null;
+  }
 }
 
 async function registerTokenWithServer(token: string): Promise<void> {
@@ -42,19 +65,21 @@ async function registerTokenWithServer(token: string): Promise<void> {
 }
 
 export async function setupAndroidNotificationChannel(): Promise<void> {
-  if (Platform.OS !== "android" || IS_EXPO_GO) return;
+  if (Platform.OS !== "android") return;
+  const N = getNotifications();
+  if (!N) return;
   try {
-    await Notifications.setNotificationChannelAsync(ANDROID_CHANNEL_ID, {
+    await N.setNotificationChannelAsync(ANDROID_CHANNEL_ID, {
       name: "Temple TV",
-      importance: Notifications.AndroidImportance.HIGH,
+      importance: N.AndroidImportance.HIGH,
       vibrationPattern: [0, 250, 250, 250],
       lightColor: "#9B30FF",
       sound: "default",
       enableVibrate: true,
     });
-    await Notifications.setNotificationChannelAsync(EMERGENCY_CHANNEL_ID, {
+    await N.setNotificationChannelAsync(EMERGENCY_CHANNEL_ID, {
       name: "Temple TV — Emergency Alerts",
-      importance: Notifications.AndroidImportance.MAX,
+      importance: N.AndroidImportance.MAX,
       vibrationPattern: [0, 500, 250, 500],
       lightColor: "#FF3B3B",
       sound: "default",
@@ -68,16 +93,17 @@ export async function setupAndroidNotificationChannel(): Promise<void> {
 
 export async function registerForPushTokenAsync(): Promise<string | null> {
   if (Platform.OS === "web") return null;
-  if (IS_EXPO_GO) return null;
+  const N = getNotifications();
+  if (!N) return null;
 
   try {
     await setupAndroidNotificationChannel();
 
-    const { status: existingStatus } = await Notifications.getPermissionsAsync();
+    const { status: existingStatus } = await N.getPermissionsAsync();
     let finalStatus = existingStatus;
 
     if (existingStatus !== "granted") {
-      const { status } = await Notifications.requestPermissionsAsync();
+      const { status } = await N.requestPermissionsAsync();
       finalStatus = status;
     }
 
@@ -85,7 +111,7 @@ export async function registerForPushTokenAsync(): Promise<string | null> {
 
     const projectId =
       Constants.expoConfig?.extra?.eas?.projectId ??
-      (Constants as any).easConfig?.projectId ??
+      (Constants as { easConfig?: { projectId?: string } }).easConfig?.projectId ??
       undefined;
 
     // The canonical EAS project ID for Temple TV (templetv Expo account).
@@ -103,12 +129,6 @@ export async function registerForPushTokenAsync(): Promise<string | null> {
           "GoogleService-Info.plist contain real Firebase credentials.",
         );
       } else if (projectId === TEMPLE_TV_EAS_PROJECT_ID) {
-        // EAS project ID is correctly set — cross-check Firebase credentials.
-        // Detect placeholder google-services.json at runtime so engineers get an
-        // explicit error instead of a cryptic FCM auth failure at build time.
-        // google-services.json is bundled by Metro in dev builds; on production
-        // native builds it is embedded by the Gradle Firebase plugin and this
-        // __DEV__ branch is stripped by Hermes dead-code elimination.
         if (Platform.OS === "android") {
           try {
             // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -135,7 +155,7 @@ export async function registerForPushTokenAsync(): Promise<string | null> {
       }
     }
 
-    const { data: token } = await Notifications.getExpoPushTokenAsync(
+    const { data: token } = await N.getExpoPushTokenAsync(
       projectId ? { projectId } : undefined,
     );
     if (token) {
@@ -161,25 +181,26 @@ export async function getStoredPushToken(): Promise<string | null> {
 
 export async function requestNotificationPermissions(): Promise<boolean> {
   if (Platform.OS === "web") return false;
+  const N = getNotifications();
+  if (!N) return false;
 
   try {
     await setupAndroidNotificationChannel();
 
-    const { status: existingStatus } = await Notifications.getPermissionsAsync();
+    const { status: existingStatus } = await N.getPermissionsAsync();
     let finalStatus = existingStatus;
 
     if (existingStatus !== "granted") {
-      const { status } = await Notifications.requestPermissionsAsync();
+      const { status } = await N.requestPermissionsAsync();
       finalStatus = status;
     }
 
     if (finalStatus === "granted") {
       const projectId =
         Constants.expoConfig?.extra?.eas?.projectId ??
-        (Constants as any).easConfig?.projectId ??
+        (Constants as { easConfig?: { projectId?: string } }).easConfig?.projectId ??
         undefined;
-      // Re-register token with server in case it changed
-      const { data: token } = await Notifications.getExpoPushTokenAsync(
+      const { data: token } = await N.getExpoPushTokenAsync(
         projectId ? { projectId } : undefined,
       );
       if (token) {
@@ -194,10 +215,12 @@ export async function requestNotificationPermissions(): Promise<boolean> {
   }
 }
 
-export async function getNotificationPermissionStatus(): Promise<Notifications.PermissionStatus | null> {
+export async function getNotificationPermissionStatus(): Promise<NotificationsModule.PermissionStatus | null> {
   if (Platform.OS === "web") return null;
+  const N = getNotifications();
+  if (!N) return null;
   try {
-    const { status } = await Notifications.getPermissionsAsync();
+    const { status } = await N.getPermissionsAsync();
     return status;
   } catch {
     return null;
@@ -206,12 +229,14 @@ export async function getNotificationPermissionStatus(): Promise<Notifications.P
 
 export async function sendLiveServiceNotification(title: string): Promise<void> {
   if (Platform.OS === "web") return;
+  const N = getNotifications();
+  if (!N) return;
 
   try {
     const hasPermission = await requestNotificationPermissions();
     if (!hasPermission) return;
 
-    await Notifications.scheduleNotificationAsync({
+    await N.scheduleNotificationAsync({
       content: {
         title: "🔴 Temple TV is LIVE!",
         body: title || "Temple TV JCTM is streaming live right now. Tap to join!",
@@ -228,12 +253,14 @@ export async function sendLiveServiceNotification(title: string): Promise<void> 
 
 export async function sendNewSermonNotification(sermonTitle: string): Promise<void> {
   if (Platform.OS === "web") return;
+  const N = getNotifications();
+  if (!N) return;
 
   try {
     const hasPermission = await requestNotificationPermissions();
     if (!hasPermission) return;
 
-    await Notifications.scheduleNotificationAsync({
+    await N.scheduleNotificationAsync({
       content: {
         title: "📺 New Sermon Available",
         body: sermonTitle,
@@ -250,12 +277,14 @@ export async function sendNewSermonNotification(sermonTitle: string): Promise<vo
 
 export async function sendEmergencyBroadcastNotification(message: string): Promise<void> {
   if (Platform.OS === "web") return;
+  const N = getNotifications();
+  if (!N) return;
 
   try {
     const hasPermission = await requestNotificationPermissions();
     if (!hasPermission) return;
 
-    await Notifications.scheduleNotificationAsync({
+    await N.scheduleNotificationAsync({
       content: {
         title: "🚨 Urgent Announcement",
         body: message || "Temple TV has an important message. Tap to read it.",
@@ -274,8 +303,10 @@ export async function sendEmergencyBroadcastNotification(message: string): Promi
 
 export async function cancelAllNotifications(): Promise<void> {
   if (Platform.OS === "web") return;
+  const N = getNotifications();
+  if (!N) return;
   try {
-    await Notifications.cancelAllScheduledNotificationsAsync();
+    await N.cancelAllScheduledNotificationsAsync();
   } catch {
     //
   }

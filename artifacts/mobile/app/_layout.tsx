@@ -7,6 +7,7 @@ import {
   useFonts,
 } from "@expo-google-fonts/inter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import Constants from "expo-constants";
 import { router, Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useEffect, useRef, useState } from "react";
@@ -274,6 +275,16 @@ function RootLayoutNav() {
   // ── Push notification tap handler ──────────────────────────────────────────
   useEffect(() => {
     if (Platform.OS === "web") return;
+
+    // Default-deny: only load expo-notifications in a real native build.
+    // In Expo Go (SDK 53) importing the module emits a noisy red Console Error
+    // every cold start. Mirror the gate used by services/notifications.native.ts
+    // and artifacts/mobile/index.ts.
+    const env: unknown = Constants?.executionEnvironment;
+    const ownership: unknown = (Constants as { appOwnership?: unknown })?.appOwnership;
+    const isNativeBuild =
+      env === "standalone" || env === "bare" || ownership === "standalone";
+    if (!isNativeBuild) return;
 
     let subscription: { remove: () => void } | null = null;
 

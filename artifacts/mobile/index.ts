@@ -34,18 +34,37 @@ if (sentryDsn) {
 if (Platform.OS !== "web") {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const Constants = require("expo-constants").default;
-    const env = Constants?.executionEnvironment;
-    // "storeClient" === Expo Go.  "standalone" / "bare" === dev-client or
-    // production build where the native module is linked.
-    if (env !== "storeClient") {
+    const ConstantsModule = require("expo-constants");
+    const Constants = ConstantsModule?.default ?? ConstantsModule;
+    const env: unknown = Constants?.executionEnvironment;
+    const ownership: unknown = Constants?.appOwnership;
+
+    // DEFAULT DENY: only load RNTP when we can positively confirm we are in a
+    // dev-client / standalone / bare build (where the native TurboModule is
+    // linked). If the environment is unknown ("" / undefined / null) — which
+    // happens in Expo Go variants and inside the Replit web preview — skip the
+    // require entirely. Touching `react-native-track-player`'s JS shim with no
+    // native module mounted eagerly evaluates `Capability.ts` and throws an
+    // UNCATCHABLE "Cannot read property 'CAPABILITY_PLAY' of null" before
+    // Hermes can return control to this try/catch.
+    const isNativeBuild =
+      env === "standalone" ||
+      env === "bare" ||
+      ownership === "standalone";
+
+    if (isNativeBuild) {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const TrackPlayerModule = require("react-native-track-player");
-      const TrackPlayer = TrackPlayerModule?.default ?? TrackPlayerModule;
-      if (TrackPlayer && typeof TrackPlayer.registerPlaybackService === "function") {
+      const { NativeModules } = require("react-native");
+      // Final safety check: the native module must actually be registered.
+      if (NativeModules?.TrackPlayerModule) {
         // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const { PlaybackService } = require("./services/PlayerService");
-        TrackPlayer.registerPlaybackService(() => PlaybackService);
+        const TrackPlayerModule = require("react-native-track-player");
+        const TrackPlayer = TrackPlayerModule?.default ?? TrackPlayerModule;
+        if (TrackPlayer && typeof TrackPlayer.registerPlaybackService === "function") {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const { PlaybackService } = require("./services/PlayerService");
+          TrackPlayer.registerPlaybackService(() => PlaybackService);
+        }
       }
     }
   } catch {
