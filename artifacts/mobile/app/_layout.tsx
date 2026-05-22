@@ -303,14 +303,36 @@ function RootLayoutNav() {
           case "new_video":
           case "new_sermon":
           case "video": {
-            // New-content alert — deep-link to specific video if id is attached.
-            const videoId = data?.videoId as string | undefined;
-            const title   = (data?.title as string | undefined) ?? "Temple TV";
+            // New-content alert — deep-link directly into the player.
+            // We must fetch the full video record first so the player has a URL
+            // to play; passing only `id` with no hlsUrl/youtubeId leaves the
+            // player in a blank "no-source" state.
+            const videoId    = data?.videoId as string | undefined;
+            const notifTitle = (data?.title as string | undefined) ?? "Temple TV";
             if (videoId) {
-              router.push({
-                pathname: "/player",
-                params: { id: videoId, title },
-              });
+              (async () => {
+                try {
+                  const { fetchVideoById } = await import("@/services/api");
+                  const video = await fetchVideoById(videoId);
+                  router.push({
+                    pathname: "/player",
+                    params: {
+                      id:           videoId,
+                      title:        video.title ?? notifTitle,
+                      youtubeId:    video.videoSource === "youtube" ? (video.youtubeId ?? "") : "",
+                      hlsUrl:       video.hlsMasterUrl ?? video.localVideoUrl ?? "",
+                      thumbnailUrl: video.thumbnailUrl ?? "",
+                      preacher:     video.preacher ?? "",
+                      duration:     video.duration ?? "",
+                      category:     video.category ?? "",
+                      description:  video.description ?? "",
+                    },
+                  });
+                } catch {
+                  // Fallback: take the user to Library where they can find the new content.
+                  router.push("/(tabs)/library");
+                }
+              })();
             } else {
               router.push("/(tabs)/library");
             }

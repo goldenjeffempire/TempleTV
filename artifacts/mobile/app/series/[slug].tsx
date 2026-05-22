@@ -57,8 +57,8 @@ function episodeToSermon(ep: Episode): Sermon {
     category: (ep.category as Sermon["category"]) ?? "Faith",
     preacher: ep.preacher ?? "",
     date: ep.publishedAt?.slice(0, 10) ?? "",
-    videoSource: (ep.videoSource === "local" ? "local" : "youtube") as "youtube" | "local",
-    localVideoUrl: ep.hlsMasterUrl ?? undefined,
+    videoSource: (ep.videoSource === "local" || ep.videoSource === "upload") ? "local" : "youtube",
+    hlsMasterUrl: ep.hlsMasterUrl ?? undefined,
   };
 }
 
