@@ -46,6 +46,28 @@
         }
       })();
     </script>
+
+    <!--
+      Web-only Feather icon font preload. On native (Expo Go / EAS builds) the
+      @expo/vector-icons font is auto-bundled and loaded by RN's asset system.
+      On Expo web, useFonts({ ...Feather.font }) is unreliable through the
+      Metro asset pipeline when EXPO_BASE_URL=/mobile is set — the asset URL
+      rewriting causes the TTF fetch to 404 and every <Feather /> renders as
+      a placeholder □. Bypassing Metro by serving the TTF from /public and
+      injecting an @font-face directly is bulletproof: the browser loads the
+      font over plain HTTP before React mounts, and the font-family name
+      "Feather" matches what the @expo/vector-icons Text component sets.
+    -->
+    <style id="ttv-icon-fonts">
+      @font-face {
+        font-family: "Feather";
+        src: url("/mobile/Feather.ttf") format("truetype"),
+             url("./Feather.ttf") format("truetype");
+        font-weight: normal;
+        font-style: normal;
+        font-display: block;
+      }
+    </style>
   </head>
 
   <body>
