@@ -17,7 +17,7 @@ import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
-import { apiLogin } from "@/services/authApi";
+import { apiLogin, isValidEmail, MfaRequiredError } from "@/services/authApi";
 import { Logo } from "@/components/Logo";
 import { usePageSeo } from "@/hooks/usePageSeo";
 
@@ -109,7 +109,7 @@ export default function LoginScreen() {
   });
 
   const insets = useSafeAreaInsets();
-  const { signIn } = useAuth();
+  const { signIn, consumePendingPlayback } = useAuth();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -135,6 +135,10 @@ export default function LoginScreen() {
       setError("Please enter your email and password.");
       return;
     }
+    if (!isValidEmail(trimmedEmail)) {
+      setError("That doesn't look like a valid email address.");
+      return;
+    }
 
     Animated.sequence([
       Animated.timing(btnScale, { toValue: 0.96, duration: 80, useNativeDriver: true }),
@@ -145,9 +149,25 @@ export default function LoginScreen() {
     try {
       const resp = await apiLogin(trimmedEmail, password);
       await signIn(resp, resp.user);
-      router.replace("/(tabs)/channels");
+      // If the user was gated into login while trying to play something,
+      // restore that target instead of dumping them on the home tab.
+      const pending = consumePendingPlayback();
+      if (pending?.pathname) {
+        router.replace({ pathname: pending.pathname, params: pending.params } as never);
+      } else {
+        router.replace("/(tabs)");
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Invalid credentials. Please try again.");
+      if (err instanceof MfaRequiredError) {
+        // Server requested 2FA — surface a friendly message until the
+        // mobile MFA challenge screen ships. The MFA token has a short TTL,
+        // so we don't persist it across the manual retry.
+        setError("Two-factor authentication is enabled on this account. Use a web browser to sign in, or disable 2FA in your account settings.");
+      } else if (err instanceof Error && /network|timed?\s*out|fetch/i.test(err.message)) {
+        setError("Couldn't reach the server. Check your connection and try again.");
+      } else {
+        setError(err instanceof Error ? err.message : "Sign in failed. Please try again.");
+      }
     } finally {
       setLoading(false);
     }
@@ -177,7 +197,7 @@ export default function LoginScreen() {
           showsVerticalScrollIndicator={false}
         >
           <Pressable
-            onPress={() => router.canGoBack() ? router.back() : router.replace("/(tabs)/channels")}
+            onPress={() => router.canGoBack() ? router.back() : router.replace("/(tabs)")}
             style={[styles.backBtn, { top: insets.top + 8 }]}
           >
             <View style={styles.backBtnInner}>
@@ -268,11 +288,11 @@ export default function LoginScreen() {
             </View>
 
             <Pressable
-              onPress={() => Linking.openURL("mailto:support@templetv.org.ng?subject=Password%20Reset%20Request")}
+              onPress={() => router.push("/forgot-password" as never)}
               style={styles.forgotBtn}
               hitSlop={8}
             >
-              <Text style={styles.forgotText}>Forgot password? Contact support</Text>
+              <Text style={styles.forgotText}>Forgot password?</Text>
             </Pressable>
 
             <View style={styles.divider}>

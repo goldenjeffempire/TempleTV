@@ -309,6 +309,29 @@ export async function authRoutes(app: FastifyInstance) {
     async (req) => authService.updateProfile(req.principal!.id, req.body),
   );
 
+  // ── Account deletion (App Store / Play Store mandatory) ────────────────
+  // Requires re-entering the current password. Cascade FKs in the schema
+  // clean up refresh tokens, favorites, history, device-link codes, and
+  // password-reset tokens automatically.
+  r.delete(
+    "/account",
+    {
+      preHandler: requireAuth(),
+      config: authRateLimit,
+      schema: {
+        tags: ["auth"],
+        summary: "Permanently delete the authenticated user's account",
+        security: [{ bearerAuth: [] }],
+        body: z.object({ currentPassword: z.string().min(1) }),
+        response: { 200: z.object({ message: z.string() }) },
+      },
+    },
+    async (req) => {
+      await authService.deleteAccount(req.principal!.id, req.body);
+      return { message: "Account deleted" };
+    },
+  );
+
   // ── Admin seed endpoint ──────────────────────────────────────────────────
   // Creates the first admin account when none exist. Protected by the
   // ADMIN_API_TOKEN (Bearer) so it can only be called from tooling/CI.

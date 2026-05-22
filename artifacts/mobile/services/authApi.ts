@@ -9,6 +9,11 @@ import { fetchWithRetry } from "@/lib/fetchWithRetry";
 // surface to the caller immediately, not be silently retried.
 const AUTH_RETRY = { maxRetries: 2, baseDelayMs: 400, isRetryable: (r: Response) => r.status >= 500 };
 
+// Proactive refresh: when an access token has < this many seconds remaining,
+// the next authFetch() will refresh BEFORE making the call instead of waiting
+// for a 401 round-trip. Eliminates the perceptible glitch around token expiry.
+const PROACTIVE_REFRESH_WINDOW_SECONDS = 90;
+
 /**
  * Thrown by apiGetMe() when the server returns 404 — meaning the JWT is
  * structurally valid and the auth middleware accepted it, but the user row
@@ -24,11 +29,95 @@ export class UserNotFoundError extends Error {
   }
 }
 
+/**
+ * Thrown by apiLogin when the server requires a second factor (TOTP).
+ * The UI catches this and prompts the user for their 6-digit code.
+ */
+export class MfaRequiredError extends Error {
+  mfaToken: string;
+  constructor(mfaToken: string) {
+    super("Multi-factor authentication required.");
+    this.name = "MfaRequiredError";
+    this.mfaToken = mfaToken;
+  }
+}
+
 function getDeviceName(): string {
   const os = Platform.OS;
   if (os === "ios") return "iPhone / iPad";
   if (os === "android") return "Android Device";
   return "Mobile App";
+}
+
+/**
+ * Best-effort decode of a JWT's `exp` claim (seconds-since-epoch). Returns
+ * null if the token is malformed. We do NOT verify the signature — clients
+ * cannot, and don't need to: the worst case of a bogus exp is a redundant
+ * proactive refresh which the server will reject if the token is bad.
+ */
+function decodeJwtExp(token: string): number | null {
+  try {
+    const part = token.split(".")[1];
+    if (!part) return null;
+    // RN has no atob in all engines — use Buffer/global fallback.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const g = globalThis as any;
+    const base64 = part.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64 + "===".slice((base64.length + 3) % 4);
+    const json = typeof g.atob === "function"
+      ? g.atob(padded)
+      : (typeof g.Buffer !== "undefined" ? g.Buffer.from(padded, "base64").toString("utf8") : null);
+    if (!json) return null;
+    const payload = JSON.parse(json) as { exp?: unknown };
+    return typeof payload.exp === "number" ? payload.exp : null;
+  } catch {
+    return null;
+  }
+}
+
+function isAccessTokenNearExpiry(token: string | null): boolean {
+  if (!token) return false;
+  const exp = decodeJwtExp(token);
+  if (exp == null) return false;
+  return exp - Math.floor(Date.now() / 1000) < PROACTIVE_REFRESH_WINDOW_SECONDS;
+}
+
+/**
+ * Extract a human-readable error message from a fetch Response that we
+ * believe is an error. Handles every envelope the server might produce:
+ *   { error: "string" }
+ *   { error: { message: "..." } }
+ *   { message: "..." }
+ *   { detail: "..." }                              (FastAPI / RFC7807 style)
+ *   { error: { code: "...", message: "...", details: {...} } }
+ *   plain text body
+ * Falls back to status-based copy on a 5xx so the user never sees raw JSON.
+ */
+async function extractApiError(res: Response, fallback: string): Promise<string> {
+  try {
+    const text = await res.text();
+    if (!text) return fallback;
+    try {
+      const data = JSON.parse(text) as unknown;
+      if (data && typeof data === "object") {
+        const d = data as Record<string, unknown>;
+        if (typeof d.message === "string" && d.message) return d.message;
+        if (typeof d.detail === "string" && d.detail) return d.detail;
+        if (typeof d.error === "string" && d.error) return d.error;
+        if (d.error && typeof d.error === "object") {
+          const e = d.error as Record<string, unknown>;
+          if (typeof e.message === "string" && e.message) return e.message;
+        }
+      }
+      return fallback;
+    } catch {
+      return text.length < 200 ? text : fallback;
+    }
+  } catch {
+    if (res.status === 429) return "Too many attempts. Please wait a moment and try again.";
+    if (res.status >= 500) return "Server is temporarily unavailable. Please try again shortly.";
+    return fallback;
+  }
 }
 
 export interface AuthUser {
@@ -110,15 +199,31 @@ async function refreshAccessToken(): Promise<string | null> {
   return inflightRefresh;
 }
 
+/** Public hook used by AuthContext to force a refresh on app resume. */
+export async function ensureFreshAccessToken(): Promise<string | null> {
+  const current = await secureStorage.getItem(STORAGE_KEYS.authToken);
+  if (current && !isAccessTokenNearExpiry(current)) return current;
+  return refreshAccessToken();
+}
+
 /**
- * Authenticated fetch with automatic 401 → token-refresh → retry cycle.
+ * Authenticated fetch with automatic 401 → token-refresh → retry cycle plus
+ * proactive refresh when the access token is within 90 s of expiry.
+ *
  * Exported so other API modules (e.g. services/api.ts) can reuse the full
  * auth lifecycle without duplicating the refresh-coordination logic here.
  * Internal callers and external callers both go through the same
  * single-flight inflightRefresh deduplication.
  */
 export async function authFetch(path: string, options: RequestInit = {}): Promise<Response> {
-  const token = await secureStorage.getItem(STORAGE_KEYS.authToken);
+  let token = await secureStorage.getItem(STORAGE_KEYS.authToken);
+  // Proactive refresh: if we already know the token is about to expire,
+  // swap it for a fresh one BEFORE making the call. Eliminates the
+  // 401-then-retry round-trip in the steady state.
+  if (token && isAccessTokenNearExpiry(token) && !path.startsWith("/api/auth/refresh")) {
+    const fresh = await refreshAccessToken();
+    if (fresh) token = fresh;
+  }
   const buildHeaders = (t: string | null): Record<string, string> => {
     const h: Record<string, string> = {
       "Content-Type": "application/json",
@@ -151,6 +256,21 @@ async function persistAuthResponse(data: AuthResponse): Promise<void> {
   ]);
 }
 
+// ── Client-side validators ────────────────────────────────────────────────
+// Cheap pre-checks that avoid burning a server round-trip + rate-limit slot
+// on obviously-malformed input. The server still validates everything.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+export function isValidEmail(email: string): boolean {
+  return EMAIL_RE.test(email.trim());
+}
+export function validatePasswordStrength(password: string): string | null {
+  if (password.length < 8) return "Password must be at least 8 characters long.";
+  if (password.length > 128) return "Password cannot be longer than 128 characters.";
+  // Trivial password sanity: server allows it but it's hostile to the user.
+  if (/^(.)\1+$/.test(password)) return "Please choose a less predictable password.";
+  return null;
+}
+
 export async function apiSignup(
   email: string,
   password: string,
@@ -166,40 +286,62 @@ export async function apiSignup(
     },
     AUTH_RETRY,
   );
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error ?? "Signup failed");
-  await persistAuthResponse(data as AuthResponse);
-  return data as AuthResponse;
+  if (!res.ok) throw new Error(await extractApiError(res, "Sign up failed. Please try again."));
+  const data = (await res.json()) as AuthResponse;
+  await persistAuthResponse(data);
+  return data;
 }
 
 export async function apiLogin(
   email: string,
   password: string,
+  totpCode?: string,
 ): Promise<AuthResponse> {
+  const body: Record<string, unknown> = { email, password, deviceName: getDeviceName() };
+  if (totpCode) body.totpCode = totpCode;
   const res = await fetchWithRetry(
     `${getApiBase()}/api/auth/login`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password, deviceName: getDeviceName() }),
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(12_000),
     },
     AUTH_RETRY,
   );
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error ?? "Login failed");
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error("Incorrect email or password. Please try again.");
+    }
+    if (res.status === 429) {
+      throw new Error("Too many sign-in attempts. Please wait a minute and try again.");
+    }
+    throw new Error(await extractApiError(res, "Sign in failed. Please try again."));
+  }
+  const data = (await res.json()) as AuthResponse | { mfaRequired: true; mfaToken: string };
+  if ("mfaRequired" in data && data.mfaRequired) {
+    throw new MfaRequiredError((data as { mfaToken: string }).mfaToken);
+  }
   await persistAuthResponse(data as AuthResponse);
   return data as AuthResponse;
 }
 
 export async function apiLogout(everywhere = false): Promise<void> {
   const refreshToken = await secureStorage.getItem(STORAGE_KEYS.authRefreshToken);
-  // Best-effort server revocation; never block local sign-out on network failure.
+  // Best-effort server revocation; never block local sign-out on network
+  // failure. Use a tight 4 s timeout — we never want the user staring at a
+  // spinner on the way OUT of the app.
   try {
-    await authFetch("/api/auth/logout", {
-      method: "POST",
-      body: JSON.stringify({ refreshToken, everywhere }),
-    });
+    await fetchWithRetry(
+      `${getApiBase()}/api/auth/logout`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refreshToken, everywhere }),
+        signal: AbortSignal.timeout(4_000),
+      },
+      { maxRetries: 0, baseDelayMs: 0, isRetryable: () => false },
+    );
   } catch {
     /* swallow */
   }
@@ -211,22 +353,20 @@ export async function apiLogout(everywhere = false): Promise<void> {
 
 export async function apiGetMe(): Promise<AuthUser> {
   const res = await authFetch("/api/auth/me");
-  const data = await res.json();
   if (res.status === 404) {
     // The JWT was accepted (auth middleware ran) but the user row is gone —
     // most likely the DB was re-seeded or the account was deleted. Throw a
     // typed error so AuthContext can clear the stale session automatically.
     throw new UserNotFoundError();
   }
-  if (!res.ok) throw new Error(data.error ?? "Failed to fetch user");
-  // /api/auth/me returns user fields at the top level (not nested under "user")
-  const u = data as { id: string; email: string; displayName: string; avatarUrl?: string | null; emailVerified?: boolean };
+  if (!res.ok) throw new Error(await extractApiError(res, "Failed to fetch user"));
+  const data = (await res.json()) as { id: string; email: string; displayName: string; avatarUrl?: string | null; emailVerified?: boolean };
   return {
-    id: u.id,
-    email: u.email,
-    displayName: u.displayName ?? "",
-    avatarUrl: u.avatarUrl ?? null,
-    emailVerified: u.emailVerified ?? false,
+    id: data.id,
+    email: data.email,
+    displayName: data.displayName ?? "",
+    avatarUrl: data.avatarUrl ?? null,
+    emailVerified: data.emailVerified ?? false,
   };
 }
 
@@ -235,16 +375,14 @@ export async function apiUpdateProfile(displayName: string): Promise<AuthUser> {
     method: "PATCH",
     body: JSON.stringify({ displayName }),
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error ?? "Failed to update profile");
-  // PATCH /api/auth/profile returns user fields at the top level (not nested under "user")
-  const u = data as { id: string; email: string; displayName: string; avatarUrl?: string | null; emailVerified?: boolean };
+  if (!res.ok) throw new Error(await extractApiError(res, "Failed to update profile"));
+  const data = (await res.json()) as { id: string; email: string; displayName: string; avatarUrl?: string | null; emailVerified?: boolean };
   return {
-    id: u.id,
-    email: u.email,
-    displayName: u.displayName ?? "",
-    avatarUrl: u.avatarUrl ?? null,
-    emailVerified: u.emailVerified ?? false,
+    id: data.id,
+    email: data.email,
+    displayName: data.displayName ?? "",
+    avatarUrl: data.avatarUrl ?? null,
+    emailVerified: data.emailVerified ?? false,
   };
 }
 
@@ -302,16 +440,16 @@ export interface CloudHistoryEntry {
 
 export async function apiGetFavorites(): Promise<CloudFavorite[]> {
   const res = await authFetch("/api/user/favorites");
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error ?? "Failed to fetch favorites");
-  return (data as { favorites: CloudFavorite[] }).favorites ?? [];
+  if (!res.ok) throw new Error(await extractApiError(res, "Failed to fetch favorites"));
+  const data = (await res.json()) as { favorites: CloudFavorite[] };
+  return data.favorites ?? [];
 }
 
 export async function apiGetHistory(): Promise<CloudHistoryEntry[]> {
   const res = await authFetch("/api/user/history");
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error ?? "Failed to fetch history");
-  return (data as { history: CloudHistoryEntry[] }).history ?? [];
+  if (!res.ok) throw new Error(await extractApiError(res, "Failed to fetch history"));
+  const data = (await res.json()) as { history: CloudHistoryEntry[] };
+  return data.history ?? [];
 }
 
 export async function apiChangePassword(currentPassword: string, newPassword: string): Promise<void> {
@@ -319,6 +457,72 @@ export async function apiChangePassword(currentPassword: string, newPassword: st
     method: "PATCH",
     body: JSON.stringify({ currentPassword, newPassword }),
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error ?? "Failed to change password");
+  if (!res.ok) throw new Error(await extractApiError(res, "Failed to change password"));
+}
+
+/**
+ * Request a password-reset email. Always resolves successfully on 202 —
+ * the server intentionally does not disclose whether the email is registered
+ * (prevents email enumeration).
+ */
+export async function apiForgotPassword(email: string): Promise<void> {
+  const res = await fetchWithRetry(
+    `${getApiBase()}/api/auth/forgot-password`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+      signal: AbortSignal.timeout(12_000),
+    },
+    AUTH_RETRY,
+  );
+  // 202 is the only success — anything else is an error worth surfacing.
+  if (res.status === 202) return;
+  if (res.status === 429) {
+    throw new Error("Too many reset requests. Please wait a minute and try again.");
+  }
+  throw new Error(await extractApiError(res, "Couldn't send reset email. Please try again."));
+}
+
+/**
+ * Complete a password reset using the token from the email link.
+ */
+export async function apiResetPassword(token: string, newPassword: string): Promise<void> {
+  const res = await fetchWithRetry(
+    `${getApiBase()}/api/auth/reset-password`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, newPassword }),
+      signal: AbortSignal.timeout(12_000),
+    },
+    AUTH_RETRY,
+  );
+  if (!res.ok) {
+    if (res.status === 400 || res.status === 410) {
+      throw new Error("This reset link is invalid or has expired. Please request a new one.");
+    }
+    throw new Error(await extractApiError(res, "Couldn't reset password. Please try again."));
+  }
+}
+
+/**
+ * Permanently delete the authenticated user's account. Requires the
+ * current password as a confirmation step. App / Play Store compliance.
+ */
+export async function apiDeleteAccount(currentPassword: string): Promise<void> {
+  const res = await authFetch("/api/auth/account", {
+    method: "DELETE",
+    body: JSON.stringify({ currentPassword }),
+  });
+  if (!res.ok) {
+    if (res.status === 401) throw new Error("Incorrect password. Please try again.");
+    throw new Error(await extractApiError(res, "Couldn't delete account. Please try again."));
+  }
+  // Wipe local credentials immediately — the server already revoked the
+  // refresh tokens via cascade delete, but we must not leave them on disk.
+  await Promise.all([
+    secureStorage.removeItem(STORAGE_KEYS.authToken),
+    secureStorage.removeItem(STORAGE_KEYS.authRefreshToken),
+  ]);
 }

@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -25,6 +26,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { useAuth } from "@/context/AuthContext";
 import { updateProfile } from "@/services/api";
+import { apiDeleteAccount } from "@/services/authApi";
 
 function getInitials(name: string): string {
   const parts = name.trim().split(/\s+/);
@@ -35,7 +37,15 @@ function getInitials(name: string): string {
 export default function AccountScreen() {
   const insets = useSafeAreaInsets();
   const c = useColors();
-  const { user, isLoggedIn, updateUser, signOut } = useAuth();
+  const { user, isLoggedIn, updateUser, signOut, forgetSession } = useAuth();
+  const [deleting, setDeleting] = useState(false);
+  // Custom cross-platform password-confirm modal. We cannot use Alert.prompt
+  // because that API is iOS-only — on Android it is a no-op, which would
+  // make account deletion silently impossible and block Play Store
+  // compliance (Play policy requires in-app account deletion).
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const [displayName, setDisplayName] = useState(user?.displayName ?? "");
   const [saving, setSaving] = useState(false);
@@ -66,6 +76,54 @@ export default function AccountScreen() {
       setSaving(false);
     }
   }, [displayName, user, updateUser]);
+
+  const handleDeleteAccount = useCallback(() => {
+    Alert.alert(
+      "Delete account?",
+      "This permanently removes your account, watch history, favourites, and all personal data from Temple TV. This cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Continue",
+          style: "destructive",
+          // Open the cross-platform password-confirm modal. iOS used to use
+          // Alert.prompt here, but Android has no equivalent — using a Modal
+          // for both keeps the flow identical on every platform.
+          onPress: () => {
+            setDeletePassword("");
+            setDeleteError(null);
+            setDeleteModalOpen(true);
+          },
+        },
+      ],
+    );
+  }, []);
+
+  const confirmDeleteAccount = useCallback(async () => {
+    const password = deletePassword.trim();
+    if (!password) {
+      setDeleteError("Please enter your current password to confirm.");
+      return;
+    }
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await apiDeleteAccount(password);
+      // forgetSession is a local-only wipe; apiDeleteAccount already cleared
+      // tokens, but this also flushes user-scoped caches (favorites/history)
+      // so a future sign-in on this device starts clean.
+      await forgetSession();
+      setDeleteModalOpen(false);
+      setDeletePassword("");
+      Alert.alert("Account deleted", "Your account has been permanently removed.", [
+        { text: "OK", onPress: () => router.replace("/(tabs)") },
+      ]);
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "Couldn't delete account. Please try again.");
+    } finally {
+      setDeleting(false);
+    }
+  }, [deletePassword, forgetSession]);
 
   const handleSignOut = useCallback(() => {
     Alert.alert("Sign Out", "Are you sure you want to sign out?", [
@@ -237,8 +295,82 @@ export default function AccountScreen() {
             </View>
             <Text style={[styles.actionLabel, { color: "#ef4444" }]}>Sign Out</Text>
           </Pressable>
+
+          <Pressable
+            onPress={handleDeleteAccount}
+            disabled={deleting}
+            style={[styles.actionRow, { backgroundColor: c.card, borderColor: c.border, opacity: deleting ? 0.6 : 1 }]}
+          >
+            <View style={[styles.actionIcon, { backgroundColor: "#ef444422" }]}>
+              {deleting ? (
+                <ActivityIndicator size="small" color="#ef4444" />
+              ) : (
+                <Feather name="trash-2" size={17} color="#ef4444" />
+              )}
+            </View>
+            <Text style={[styles.actionLabel, { color: "#ef4444" }]}>
+              {deleting ? "Deleting account..." : "Delete Account"}
+            </Text>
+          </Pressable>
         </View>
       </ScrollView>
+
+      {/* ── Cross-platform delete-account confirmation modal ────────── */}
+      <Modal
+        visible={deleteModalOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => { if (!deleting) setDeleteModalOpen(false); }}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { backgroundColor: c.card, borderColor: c.border }]}>
+            <View style={[styles.modalIcon, { backgroundColor: "#ef444422" }]}>
+              <Feather name="alert-triangle" size={22} color="#ef4444" />
+            </View>
+            <Text style={[styles.modalTitle, { color: c.foreground }]}>Confirm with password</Text>
+            <Text style={[styles.modalBody, { color: c.mutedForeground }]}>
+              Enter your current password to permanently delete your account. This action cannot be undone.
+            </Text>
+            <TextInput
+              style={[styles.modalInput, { color: c.foreground, borderColor: c.border, backgroundColor: c.background }]}
+              value={deletePassword}
+              onChangeText={(t) => { setDeletePassword(t); if (deleteError) setDeleteError(null); }}
+              placeholder="Current password"
+              placeholderTextColor={c.mutedForeground}
+              secureTextEntry
+              autoComplete="current-password"
+              textContentType="password"
+              autoFocus
+              editable={!deleting}
+              returnKeyType="done"
+              onSubmitEditing={confirmDeleteAccount}
+            />
+            {deleteError && (
+              <Text style={styles.modalError}>{deleteError}</Text>
+            )}
+            <View style={styles.modalActions}>
+              <Pressable
+                onPress={() => { if (!deleting) { setDeleteModalOpen(false); setDeletePassword(""); setDeleteError(null); } }}
+                disabled={deleting}
+                style={[styles.modalBtn, { backgroundColor: "transparent", borderColor: c.border, borderWidth: 1 }]}
+              >
+                <Text style={[styles.modalBtnText, { color: c.foreground }]}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={confirmDeleteAccount}
+                disabled={deleting}
+                style={[styles.modalBtn, { backgroundColor: "#ef4444", opacity: deleting ? 0.7 : 1 }]}
+              >
+                {deleting ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={[styles.modalBtnText, { color: "#fff" }]}>Delete account</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -371,4 +503,53 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   actionLabel: { flex: 1, fontSize: 15, fontWeight: "600" },
+
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+  },
+  modalCard: {
+    width: "100%",
+    maxWidth: 380,
+    borderRadius: 18,
+    borderWidth: 1,
+    padding: 22,
+    gap: 12,
+  },
+  modalIcon: {
+    width: 44, height: 44, borderRadius: 22,
+    alignItems: "center", justifyContent: "center",
+    alignSelf: "flex-start",
+  },
+  modalTitle: { fontSize: 18, fontWeight: "700", letterSpacing: -0.2 },
+  modalBody: { fontSize: 14, lineHeight: 20 },
+  modalInput: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    height: 48,
+    fontSize: 15,
+    marginTop: 4,
+  },
+  modalError: {
+    color: "#ef4444",
+    fontSize: 13,
+    marginTop: -4,
+  },
+  modalActions: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 8,
+  },
+  modalBtn: {
+    flex: 1,
+    height: 46,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  modalBtnText: { fontSize: 15, fontWeight: "700" },
 });

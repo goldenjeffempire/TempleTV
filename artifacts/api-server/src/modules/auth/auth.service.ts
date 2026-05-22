@@ -378,6 +378,25 @@ export const authService = {
   },
 
   /**
+   * Permanently delete the authenticated user's account.
+   * Requires re-entering the current password as a confirmation step
+   * (Apple App Store Review Guideline 5.1.1(v) — "If your app supports
+   * account creation, you must also offer account deletion within the app").
+   *
+   * Cascade FKs on refresh_tokens / favorites / history / password_reset_tokens
+   * / device_link_codes clean up dependent rows automatically.
+   */
+  async deleteAccount(userId: string, body: { currentPassword: string }): Promise<void> {
+    const rows = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+    const user = rows[0];
+    if (!user) throw new NotFoundError("User not found");
+    const valid = await verifyPassword(body.currentPassword, user.passwordHash);
+    if (!valid) throw new UnauthorizedError("Current password is incorrect");
+    // Single DELETE — ON DELETE CASCADE removes all dependent rows.
+    await db.delete(usersTable).where(eq(usersTable.id, userId));
+  },
+
+  /**
    * Initiate a password reset flow.
    *
    * Always returns success (even for unknown emails) to prevent email

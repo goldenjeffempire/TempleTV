@@ -16,7 +16,7 @@ import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
-import { apiSignup } from "@/services/authApi";
+import { apiSignup, isValidEmail, validatePasswordStrength } from "@/services/authApi";
 import { Logo } from "@/components/Logo";
 import { usePageSeo } from "@/hooks/usePageSeo";
 
@@ -108,7 +108,7 @@ export default function SignupScreen() {
   });
 
   const insets = useSafeAreaInsets();
-  const { signIn } = useAuth();
+  const { signIn, consumePendingPlayback } = useAuth();
 
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
@@ -139,8 +139,17 @@ export default function SignupScreen() {
       setError("Please fill in all required fields.");
       return;
     }
-    if (password.length < 8) {
-      setError("Password must be at least 8 characters long.");
+    if (trimmedName.length > 80) {
+      setError("Display name must be 80 characters or fewer.");
+      return;
+    }
+    if (!isValidEmail(trimmedEmail)) {
+      setError("That doesn't look like a valid email address.");
+      return;
+    }
+    const weak = validatePasswordStrength(password);
+    if (weak) {
+      setError(weak);
       return;
     }
     if (password !== confirmPassword) {
@@ -157,9 +166,18 @@ export default function SignupScreen() {
     try {
       const resp = await apiSignup(trimmedEmail, password, trimmedName);
       await signIn(resp, resp.user);
-      router.replace("/(tabs)/channels");
+      const pending = consumePendingPlayback();
+      if (pending?.pathname) {
+        router.replace({ pathname: pending.pathname, params: pending.params } as never);
+      } else {
+        router.replace("/(tabs)");
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Sign up failed. Please try again.");
+      if (err instanceof Error && /network|timed?\s*out|fetch/i.test(err.message)) {
+        setError("Couldn't reach the server. Check your connection and try again.");
+      } else {
+        setError(err instanceof Error ? err.message : "Sign up failed. Please try again.");
+      }
     } finally {
       setLoading(false);
     }
@@ -189,7 +207,7 @@ export default function SignupScreen() {
           showsVerticalScrollIndicator={false}
         >
           <Pressable
-            onPress={() => router.canGoBack() ? router.back() : router.replace("/(tabs)/channels")}
+            onPress={() => router.canGoBack() ? router.back() : router.replace("/(tabs)")}
             style={[styles.backBtn, { top: insets.top + 8 }]}
           >
             <View style={styles.backBtnInner}>

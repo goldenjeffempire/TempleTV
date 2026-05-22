@@ -1,8 +1,18 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
+import React, { createContext, useCallback, useEffect, useRef, useState } from "react";
+import { AppState, type AppStateStatus } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { router } from "expo-router";
 import { secureStorage } from "@/lib/secureStorage";
 import { STORAGE_KEYS } from "@/constants/config";
-import { apiGetMe, apiLogout, setOnSessionExpired, UserNotFoundError, type AuthUser, type AuthResponse } from "@/services/authApi";
+import {
+  apiGetMe,
+  apiLogout,
+  ensureFreshAccessToken,
+  setOnSessionExpired,
+  UserNotFoundError,
+  type AuthUser,
+  type AuthResponse,
+} from "@/services/authApi";
 import { setAuthGateBindings, type PendingPlayback } from "@/utils/auth-gate";
 
 interface AuthContextValue {
@@ -10,6 +20,8 @@ interface AuthContextValue {
   token: string | null;
   isLoading: boolean;
   isLoggedIn: boolean;
+  /** True for ~3 s after onSessionExpired fired so the UI can show a toast. */
+  sessionExpiredAt: number | null;
   /**
    * Persist the auth response from a login/signup call. Accepts either the
    * full {@link AuthResponse} (preferred) or, for backward-compat, a single
@@ -17,25 +29,42 @@ interface AuthContextValue {
    */
   signIn: (resp: AuthResponse | string, user: AuthUser) => Promise<void>;
   signOut: (everywhere?: boolean) => Promise<void>;
+  /** Local-only wipe — used after a server-side account deletion. */
+  forgetSession: () => Promise<void>;
   updateUser: (user: AuthUser) => void;
   // ── Gating modal state ────────────────────────────────────────────
-  /** True while the AuthGateModal is on screen. */
   isAuthGateOpen: boolean;
-  /** The playback target captured at the moment the gate opened. */
   pendingPlayback: PendingPlayback | null;
-  /** Open the gate with an optional pending target to restore after auth. */
   openAuthGate: (target: PendingPlayback) => void;
-  /**
-   * Close the modal. By default also clears the pending playback target;
-   * pass `keepPending: true` when navigating to login/signup so the
-   * target survives until the auth flow completes.
-   */
   closeAuthGate: (opts?: { keepPending?: boolean }) => void;
-  /** Pop the pending target (one-shot) so the consumer can navigate to it. */
   consumePendingPlayback: () => PendingPlayback | null;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+
+/**
+ * In-app caches that hold user-scoped data and MUST be flushed on sign-out
+ * so a second user signing in on the same device never sees the first
+ * user's favorites/history/playlists. Keys must match what favourites /
+ * history / playlists modules read.
+ */
+const USER_SCOPED_STORAGE_PREFIXES = [
+  "@temple_tv/favorites",
+  "@temple_tv/history",
+  "@temple_tv/watch_history",
+  "@temple_tv/playlists",
+  "@temple_tv/cloud_sync",
+];
+
+async function clearUserScopedCaches(): Promise<void> {
+  try {
+    const keys = await AsyncStorage.getAllKeys();
+    const toRemove = keys.filter((k) => USER_SCOPED_STORAGE_PREFIXES.some((p) => k.startsWith(p)));
+    if (toRemove.length > 0) await AsyncStorage.multiRemove(toRemove);
+  } catch {
+    /* best-effort */
+  }
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
@@ -43,6 +72,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [isAuthGateOpen, setAuthGateOpen] = useState(false);
   const [pendingPlayback, setPendingPlayback] = useState<PendingPlayback | null>(null);
+  const [sessionExpiredAt, setSessionExpiredAt] = useState<number | null>(null);
+  // Tracks whether we've already navigated to /login for the current
+  // session-expiry event, to avoid stacking navigations.
+  const expiryNavigatedRef = useRef(false);
 
   useEffect(() => {
     const restore = async () => {
@@ -53,10 +86,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           await secureStorage.setItem(STORAGE_KEYS.authToken, legacyToken);
           await AsyncStorage.removeItem(STORAGE_KEYS.authToken);
         }
-
-        // Migration: legacy AsyncStorage authUser profile → SecureStore (one-time).
-        // User PII (email, displayName) should not sit in unencrypted AsyncStorage;
-        // move it to Keychain / EncryptedSharedPreferences at first boot after upgrade.
         const legacyUser = await AsyncStorage.getItem(STORAGE_KEYS.authUser);
         if (legacyUser) {
           await secureStorage.setItem(STORAGE_KEYS.authUser, legacyUser);
@@ -69,12 +98,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           secureStorage.getItem(STORAGE_KEYS.authUser),
         ]);
 
-        // Restore if we have any stored credential (access OR refresh token).
-        // A missing user-profile cache is recovered by the background apiGetMe() call.
         const hasCredential = !!(storedToken || storedRefresh);
         if (!hasCredential) return;
 
-        // Immediately mark as logged in with cached data so the UI is responsive.
         if (storedToken) setToken(storedToken);
         if (storedUser) {
           try {
@@ -84,9 +110,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
         }
 
-        // Background: refresh user profile. Auto-refreshes the access token if
-        // expired. Only fires onSessionExpired (→ logout) on a genuine 401, never
-        // on transient network errors (fixed in authApi.ts).
+        // Proactively refresh the access token if it's near expiry BEFORE
+        // making /me, so the user never sees a refresh round-trip on cold start.
+        try {
+          const fresh = await ensureFreshAccessToken();
+          if (fresh && fresh !== storedToken) setToken(fresh);
+        } catch {
+          /* transient — apiGetMe will retry */
+        }
+
         apiGetMe()
           .then((freshUser) => {
             setUser(freshUser);
@@ -94,14 +126,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           })
           .catch(async (err: unknown) => {
             if (err instanceof UserNotFoundError) {
-              // The stored JWT is valid but the user row is gone (e.g. DB
-              // re-seeded, account deleted). Clear the stale session so the
-              // user lands on the sign-in screen instead of a broken state.
               await clearLocal();
             }
-            // All other failures (network timeout, 5xx) are transient —
-            // keep the cached session alive. A genuine 401 fires
-            // onSessionExpired separately via authApi's refresh path.
+            // Transient (network/5xx) failures are swallowed — the cached
+            // session stays usable. onSessionExpired fires separately for
+            // genuine 401-permanent failures via authApi.
           });
       } catch {
         /* ignore restore errors — stay logged out */
@@ -117,34 +146,72 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       secureStorage.removeItem(STORAGE_KEYS.authToken),
       secureStorage.removeItem(STORAGE_KEYS.authRefreshToken),
       secureStorage.removeItem(STORAGE_KEYS.authUser),
+      clearUserScopedCaches(),
     ]);
     setToken(null);
     setUser(null);
   }, []);
 
-  // Wire authApi → context so a permanent refresh failure forces signOut.
+  // Wire authApi → context so a permanent refresh failure forces signOut
+  // AND navigates the user to /login (otherwise they're stranded on an
+  // authenticated screen with a "Not Signed In" empty state).
   useEffect(() => {
     setOnSessionExpired(() => {
+      setSessionExpiredAt(Date.now());
       clearLocal().catch(() => {});
+      if (!expiryNavigatedRef.current) {
+        expiryNavigatedRef.current = true;
+        // Defer one tick so any in-flight UI updates settle first.
+        setTimeout(() => {
+          try {
+            router.replace("/login");
+          } catch {
+            /* router not ready — restore handler will pick up on next mount */
+          }
+          // Clear the flag after navigation so a future expiry can navigate again.
+          setTimeout(() => { expiryNavigatedRef.current = false; }, 3000);
+        }, 0);
+      }
     });
     return () => setOnSessionExpired(null);
   }, [clearLocal]);
+
+  // Re-check token freshness whenever the app comes back to the foreground.
+  // Catches the case where the device was backgrounded long enough for the
+  // access token to expire — refresh now so the first user action in the
+  // resumed app doesn't hit a 401.
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (next: AppStateStatus) => {
+      if (next === "active" && user) {
+        ensureFreshAccessToken().then((t) => {
+          if (t) setToken(t);
+        }).catch(() => {});
+      }
+    });
+    return () => sub.remove();
+  }, [user]);
 
   const signIn = useCallback(async (resp: AuthResponse | string, newUser: AuthUser) => {
     // authApi.apiLogin/apiSignup already persisted both tokens to SecureStore
     // when given an AuthResponse; we only need to mirror state and the user.
     const accessToken = typeof resp === "string" ? resp : (resp.accessToken ?? resp.token);
     if (typeof resp === "string") {
-      // Legacy callers that only pass an access-token string: persist it here.
       await secureStorage.setItem(STORAGE_KEYS.authToken, resp);
     }
     await secureStorage.setItem(STORAGE_KEYS.authUser, JSON.stringify(newUser));
     setToken(accessToken);
     setUser(newUser);
+    setSessionExpiredAt(null);
   }, []);
 
   const signOut = useCallback(async (everywhere = false) => {
     await apiLogout(everywhere).catch(() => {});
+    await clearLocal();
+  }, [clearLocal]);
+
+  const forgetSession = useCallback(async () => {
+    // Local-only wipe — server has already revoked the tokens (e.g. after
+    // an account-delete call). Skips the network round-trip.
     await clearLocal();
   }, [clearLocal]);
 
@@ -172,9 +239,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return snapshot;
   }, []);
 
-  // Expose the live auth-gate bindings to non-React utilities (e.g.
-  // navigateToSermon) via a module-level snapshot. Re-runs whenever
-  // any input changes so the snapshot never goes stale.
   const isLoggedIn = !!user;
   useEffect(() => {
     setAuthGateBindings({
@@ -184,8 +248,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
   }, [isLoggedIn, isLoading, openAuthGate]);
 
-  // If the user authenticates while the gate is open (e.g. via a
-  // separate route), close it automatically.
   useEffect(() => {
     if (isLoggedIn && isAuthGateOpen) setAuthGateOpen(false);
   }, [isLoggedIn, isAuthGateOpen]);
@@ -197,8 +259,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         token,
         isLoading,
         isLoggedIn,
+        sessionExpiredAt,
         signIn,
         signOut,
+        forgetSession,
         updateUser,
         isAuthGateOpen,
         pendingPlayback,
@@ -213,7 +277,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 }
 
 export function useAuth() {
-  const ctx = useContext(AuthContext);
+  const ctx = React.useContext(AuthContext);
   if (!ctx) throw new Error("useAuth must be used within AuthProvider");
   return ctx;
 }
