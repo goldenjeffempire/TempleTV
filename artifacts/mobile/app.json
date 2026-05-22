@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Temple TV",
-    "slug": "mobile",
+    "slug": "temple-tv-mobile",
     "version": "1.0.5",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",

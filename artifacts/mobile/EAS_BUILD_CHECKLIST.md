@@ -8,7 +8,7 @@ Use this checklist before every production build. Steps marked **[one-time]** on
 
 - [ ] **EAS CLI installed**: `npm install -g eas-cli` (requires CLI ≥ 18.0.0 per `eas.json`)
 - [ ] **Logged in to Expo**: `eas login` with the `templetv` Expo account
-- [ ] **Linked to EAS project**: `eas project:info` should show project ID `f0137848-bf77-486f-b1ff-0fbadc6b7840`
+- [ ] **Linked to EAS project**: `eas project:info` should show the project ID populated by `eas init` (under the `temple_tv` Expo account)
 - [ ] **Android keystore uploaded**: `eas credentials --platform android` → upload or generate keystore. Stored remotely (`credentialsSource: "remote"` in `eas.json`). **Keep a local backup.**
 - [ ] **iOS distribution certificate + provisioning profile**: `eas credentials --platform ios`. Required for App Store builds.
 - [ ] **Apple App Store Connect API key**: Download a `.p8` key from App Store Connect → Users & Access → Keys. Place at `/tmp/asc-api-key.p8` (path expected by `eas.json` submit config). Alternatively configure via `EXPO_APPLE_APP_STORE_CONNECT_API_KEY_*` env vars.
@@ -31,7 +31,7 @@ Use this checklist before every production build. Steps marked **[one-time]** on
   - Verify `REVERSED_CLIENT_ID` is present (required for Google Sign-In if used).
 
 ### Verify Push Setup
-- [ ] EAS project ID in `app.json` (`extra.eas.projectId`) = `f0137848-bf77-486f-b1ff-0fbadc6b7840` ✅ (already set)
+- [ ] EAS project ID in `app.json` (`extra.eas.projectId`) — auto-populated by `npx eas init` under the `temple_tv` account
 - [ ] `expo-notifications` mode in `app.json` plugins = `"production"` ✅ (already set)
 - [ ] Upload FCM server key to Expo: Dashboard → Project → Push Notifications → Add Android FCM key
 
