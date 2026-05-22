@@ -21,7 +21,10 @@ artifacts/mockup-sandbox/
 # ── Database / spec / other libs (not direct mobile deps) ──────────────────
 lib/db/
 lib/api-spec/
-lib/api-zod/
+# NOTE: lib/api-zod/ is required because lib/api-client-react (mobile dep)
+# declares "@workspace/api-zod": "workspace:*" — excluding it makes
+# `pnpm install` fail at the EAS Prebuild phase with
+# ERR_PNPM_WORKSPACE_PKG_NOT_FOUND.
 
 # ── Local agent state ──────────────────────────────────────────────────────
 .local/
@@ -47,3 +50,4 @@ turbo.json
 # lib/broadcast-sync/     (@workspace/broadcast-sync dep)
 # lib/broadcast-types/    (@workspace/broadcast-types dep)
 # lib/api-client-react/   (@workspace/api-client-react dep)
+# lib/api-zod/            (transitive: api-client-react -> api-zod)
