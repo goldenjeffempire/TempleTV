@@ -6,7 +6,6 @@ import {
   Inter_700Bold,
   useFonts,
 } from "@expo-google-fonts/inter";
-import { Feather } from "@expo/vector-icons";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Constants from "expo-constants";
 import { router, Stack } from "expo-router";
@@ -454,11 +453,6 @@ function RootLayoutNav() {
   );
 }
 
-// Safe accessor: Feather.font may be undefined in some Metro environments
-// (e.g. SSR, web-only builds, or Expo SDK version mismatches). Spread into
-// useFonts only when the value is a non-null object.
-const featherFont: Record<string, unknown> =
-  Feather.font != null && typeof Feather.font === "object" ? Feather.font as Record<string, unknown> : {};
 
 function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({
@@ -466,12 +460,14 @@ function RootLayout() {
     Inter_500Medium,
     Inter_600SemiBold,
     Inter_700Bold,
-    // Feather icon font. On Expo web the @font-face in public/index.html
-    // registers the font via a base64 data URI (bulletproof, no Metro
-    // asset pipeline). Including it here as well ensures it is loaded
-    // via expo-font on native dev-client and standalone builds.
-    // featherFont is empty {} if Feather.font is unavailable — safe to spread.
-    ...featherFont,
+    // NOTE: Feather icon font is intentionally NOT loaded here.
+    // • Web: registered via @font-face data URI in public/index.html before
+    //   React mounts — no Metro asset pipeline involvement, cannot 404.
+    //   Adding it via useFonts would cause Font.loadAsync to inject a second
+    //   @font-face pointing to the Metro asset URL which 404s when
+    //   EXPO_BASE_URL=/mobile is set, potentially shadowing the good declaration.
+    // • Native (Expo Go, EAS builds): @expo/vector-icons auto-registers all
+    //   its fonts from the bundled assets — no Font.loadAsync call needed.
   });
 
   // ── Font-load timeout ───────────────────────────────────────────────────────
