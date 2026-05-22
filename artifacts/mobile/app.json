@@ -90,7 +90,7 @@
       ]
     },
     "android": {
-      "package": "com.templetv.app",
+      "package": "com.templetv.jctm",
       "googleServicesFile": "./google-services.json",
       "versionCode": 30,
       "allowBackup": false,
