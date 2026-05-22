@@ -17,27 +17,10 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 // ── Sentry crash reporting ────────────────────────────────────────────────────
-// Initialise after all imports so Platform is resolved before this block runs.
-// @sentry/react-native ships a browser-compatible build (used by Expo web).
-// We guard init() to native-only: the RN SDK's native crash integrations and
-// session tracking are no-ops on web and add unnecessary overhead.
-if (Platform.OS !== "web" && process.env.EXPO_PUBLIC_SENTRY_DSN) {
-  Sentry.init({
-    dsn: process.env.EXPO_PUBLIC_SENTRY_DSN,
-    enabled: true,
-    environment: process.env.APP_ENV ?? "development",
-    tracesSampleRate: 0.1,
-    attachStacktrace: true,
-    enableAutoSessionTracking: true,
-    debug: false,
-    ignoreErrors: [
-      "Non-Error promise rejection captured",
-      "Network request failed",
-      "AbortError",
-      "Load failed",
-    ],
-  });
-}
+// Sentry.init() is performed exactly once in `index.ts` (the true entry point)
+// with a tuned `beforeSend` filter that drops transient network noise. A second
+// Sentry.init here would clobber that filter and burn through quota in
+// production. Do NOT re-add it.
 
 let KeyboardProvider: React.ComponentType<{ children: React.ReactNode }> | null = null;
 try {

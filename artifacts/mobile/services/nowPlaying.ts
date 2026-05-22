@@ -7,8 +7,34 @@ let State: typeof import("react-native-track-player").State | null = null;
 
 let isSetup = false;
 
+function isNativeRNTPCapable(): boolean {
+  // Default-DENY. RNTP's JS shim eagerly reads CAPABILITY_PLAY off the native
+  // TurboModule during module init. In Expo Go the native module is null and
+  // the read throws "Cannot read property 'CAPABILITY_PLAY' of null" — an
+  // uncatchable Hermes error that escapes even our try/catch wrapper. Only
+  // load RNTP when we can positively confirm we're in a dev-client /
+  // standalone / bare build AND the native module is actually registered.
+  if (Platform.OS === "web") return false;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const ConstantsModule = require("expo-constants");
+    const Constants = ConstantsModule?.default ?? ConstantsModule;
+    const env: unknown = Constants?.executionEnvironment;
+    const ownership: unknown = Constants?.appOwnership;
+    const isNativeBuild =
+      env === "standalone" || env === "bare" || ownership === "standalone";
+    if (!isNativeBuild) return false;
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { NativeModules } = require("react-native");
+    return Boolean(NativeModules?.TrackPlayerModule);
+  } catch {
+    return false;
+  }
+}
+
 async function loadRNTP() {
   if (TrackPlayer) return true;
+  if (!isNativeRNTPCapable()) return false;
   try {
     const mod = await import("react-native-track-player");
     TrackPlayer = mod.default;
