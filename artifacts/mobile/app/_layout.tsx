@@ -6,6 +6,7 @@ import {
   Inter_700Bold,
   useFonts,
 } from "@expo-google-fonts/inter";
+import { Feather } from "@expo/vector-icons";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Constants from "expo-constants";
 import { router, Stack } from "expo-router";
@@ -476,6 +477,10 @@ function RootLayout() {
     Inter_500Medium,
     Inter_600SemiBold,
     Inter_700Bold,
+    // Vector-icon font. @expo/vector-icons auto-loads its own font on native,
+    // but on web (the Replit Expo preview) the .ttf must be registered through
+    // useFonts() or every <Feather /> renders as a placeholder rectangle.
+    ...Feather.font,
   });
 
   // ── Font-load timeout ───────────────────────────────────────────────────────
