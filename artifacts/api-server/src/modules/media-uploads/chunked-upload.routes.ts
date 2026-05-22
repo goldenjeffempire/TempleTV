@@ -1301,6 +1301,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       void invalidateVideosCatalogCache();
       try { broadcastEngine.pushSnapshot(); } catch { /* non-fatal */ }
       adminEventBus.push("videos-library-updated", { videoId: row.id, reason: "upload-finalized" });
+      adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalized", videoId: row.id });
 
       let transcodingWarning: string | null = null;
       try {

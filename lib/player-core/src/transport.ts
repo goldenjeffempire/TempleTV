@@ -230,7 +230,17 @@ export class V2Transport {
     this.lastFrameMs = Date.now(); // reset watchdog so it doesn't immediately re-fire
     this.cfg.onConnectionChange?.(false);
     this.replacing = false;
-    this.connectWs();
+    // Jitter 0–300 ms before re-opening so a fleet of clients triggered by
+    // the same server hiccup (watchdog 14 s threshold vs 10 s heartbeat) do
+    // not all reconnect in the same tick — prevents thundering-herd on the
+    // WS gateway during minor latency spikes at peak viewing time.
+    const jitterMs = Math.floor(Math.random() * 300);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.stopped) return;
+      this.connectWs();
+    }, jitterMs);
+    (this.reconnectTimer as unknown as { unref?: () => void }).unref?.();
   }
 
   /**

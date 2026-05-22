@@ -1,4 +1,5 @@
 import type { V2Source } from "../domain/types.js";
+import { env } from "../../../config/env.js";
 
 /**
  * URL allowlist: prevents SSRF by refusing to resolve sources to arbitrary
@@ -88,6 +89,35 @@ export class SourceAllowlistError extends Error {
   }
 }
 
+// IPv4 literals in private/loopback/link-local/CGNAT/multicast ranges.
+// Hostnames that resolve via DNS are not checked here (would require an
+// async lookup the resolver path is not set up for); the suffix allowlist
+// limits DNS-name surface to known CDN providers that do not let arbitrary
+// users register subdomains on the root domains we trust.
+const PRIVATE_IPV4_PATTERNS: ReadonlyArray<RegExp> = [
+  /^10\./,
+  /^127\./,
+  /^169\.254\./,
+  /^172\.(1[6-9]|2\d|3[0-1])\./,
+  /^192\.168\./,
+  /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./, // 100.64.0.0/10 CGNAT
+  /^0\./,
+  /^22[4-9]\.|^23\d\./, // multicast 224.0.0.0/4
+  /^24\d\.|^25[0-5]\./, // reserved 240.0.0.0/4
+];
+
+function isPrivateIp(host: string): boolean {
+  // IPv6 loopback / unspecified / link-local / unique-local
+  if (host === "::1" || host === "::" || host === "[::1]" || host === "[::]") return true;
+  if (/^\[?f[cd][0-9a-f]{2}:/i.test(host)) return true; // fc00::/7
+  if (/^\[?fe[89ab][0-9a-f]:/i.test(host)) return true; // fe80::/10
+  // IPv4
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {
+    return PRIVATE_IPV4_PATTERNS.some((r) => r.test(host));
+  }
+  return false;
+}
+
 function isAllowed(url: string): boolean {
   let parsed: URL;
   try {
@@ -96,7 +126,18 @@ function isAllowed(url: string): boolean {
     return false;
   }
   if (!/^https?:$/.test(parsed.protocol)) return false;
+  // Reject credentials in URL — common SSRF + credential-leak vector
+  // (`http://attacker.com@victim.internal/` style).
+  if (parsed.username || parsed.password) return false;
   const host = parsed.hostname.toLowerCase();
+  const isLoopbackHost = host === "localhost" || host === "127.0.0.1";
+  // Loopback is permitted in dev/test only. In production the server has
+  // outbound fetch sinks (media-integrity-scanner HEAD probes, faststart
+  // worker, etc.) — letting a compromised editor enqueue an item whose URL
+  // resolves to 127.0.0.1 would let them probe / interact with the server's
+  // own admin port from inside the cluster.
+  if (isLoopbackHost && env.NODE_ENV === "production") return false;
+  if (!isLoopbackHost && isPrivateIp(host)) return false;
   return ALLOWED_HOST_SUFFIXES.some((suf) => host === suf.replace(/^\./, "") || host.endsWith(suf));
 }
 

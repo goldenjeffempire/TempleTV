@@ -188,7 +188,11 @@ export function ensureBroadcastV2Started(): Promise<void> {
     return Promise.resolve();
   }
   if (!bootInFlight) {
-    startAttempts += 1;
+    // Increment startAttempts only when an attempt actually fails (see
+    // .catch() below) so successful boots and concurrent callers during
+    // the same boot do not burn through the 5→15→30→60 s backoff tiers.
+    // Without this gate, two routes calling ensureBroadcastV2Started()
+    // during a cold start jumped straight to the 60 s ceiling.
     lastStartAttemptAtMs = Date.now();
     bootInFlight = broadcastOrchestrator
       .start()
@@ -201,6 +205,7 @@ export function ensureBroadcastV2Started(): Promise<void> {
         );
       })
       .catch((err) => {
+        startAttempts += 1;
         lastStartError = err instanceof Error ? err.message : String(err);
         logger.error(
           { err, attempt: startAttempts },
