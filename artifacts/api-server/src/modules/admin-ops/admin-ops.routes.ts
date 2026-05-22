@@ -2672,6 +2672,15 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         ...sseCorsHeaders(req),
       });
 
+      // Flush the response headers immediately so the browser's EventSource
+      // fires its `open` event without waiting for the first data frame.
+      // Without this, Vite's dev proxy and nginx may buffer the response
+      // until data arrives, delaying the `open` event by several seconds and
+      // causing the admin panel to stay in "connecting" state.
+      // A bare SSE comment (": ok") is invisible to JavaScript listeners but
+      // travels through all proxy layers, confirming the stream is live.
+      reply.raw.write(": ok\n\n");
+
       const send = (event: string, data: unknown) => {
         try {
           reply.raw.write(`event: ${event}\n`);
@@ -2696,7 +2705,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       };
       adminEventBus.on("admin-event", onAdminEvent);
 
-      // Send a named `heartbeat` event every 10 s so the client-side
+      // Send a named `heartbeat` event every 5 s so the client-side
       // EventSource listener fires and updates `lastFrameAt`. A bare
       // `: comment` (e.g. `: ping`) is silently discarded by the browser's
       // EventSource implementation — it keeps the TCP connection alive at
@@ -2704,17 +2713,17 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       // detects zombie connections. Using a named event ensures the client
       // knows the stream is alive even during broadcast idle periods.
       //
-      // Interval: 10 s.  Client stale threshold: 30 s (= 3 missed beats).
-      // This gives a comfortable 3× safety margin over timer jitter,
-      // background-tab throttling, and proxy latency before a reconnect
-      // is triggered.
+      // Interval: 5 s (halved from 10 s) so Replit's reverse proxy and any
+      // intermediate nginx/Vite proxy layers see activity well within their
+      // idle-timeout windows and do not silently drop the connection.
+      // Client stale threshold remains 45 s (= 9 missed beats at 5 s).
       const heartbeat = setInterval(() => {
         try {
           reply.raw.write(`event: heartbeat\ndata: ${JSON.stringify({ ts: Date.now() })}\n\n`);
         } catch {
           /* ignore — close handler will clean up */
         }
-      }, 10_000);
+      }, 5_000);
 
       const cleanup = () => {
         clearInterval(heartbeat);

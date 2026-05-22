@@ -68,7 +68,23 @@ const HEARTBEAT_STALE_MS = 45_000;
 
 // How long to defer "reconnecting"/"degraded"/"offline" label so brief
 // blips (token refresh, server restart) never flash the UI.
+// Only applies once we've previously connected; on the initial connect
+// sequence we keep "connecting" state until attempt 4 to avoid showing
+// "reconnecting" during normal dev-proxy warm-up (first 1-2 EventSource
+// connections hang ~5s in the Vite proxy before succeeding).
 const RECONNECTING_GRACE_MS = 2_000;
+
+// How many failed attempts to allow before transitioning from "connecting"
+// to "reconnecting". During the initial connect sequence the dev Vite proxy
+// may drop the first 1-2 SSE connections; showing "connecting" is more
+// accurate than "reconnecting" during that warm-up window.
+const RECONNECTING_AFTER_ATTEMPTS = 3;
+
+// If an EventSource is created but `open` never fires within this window,
+// close it and schedule a reconnect. Guards against silent proxy hangs
+// (Vite dev proxy accepting the TCP connection but never forwarding it)
+// which otherwise keep the connection stuck for 5-11 seconds per attempt.
+const OPEN_TIMEOUT_MS = 8_000;
 
 // How many failed SSE attempts before we query the HTTP health endpoint.
 // 8 attempts × up to 15 s each = up to ~120 s — covers Render cold starts.
@@ -265,9 +281,14 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
             if (!mounted.current || esRef.current) return;
             setStateSynced(reachable ? "degraded" : "offline");
           });
-        } else {
+        } else if (everConnected.current || attempt.current >= RECONNECTING_AFTER_ATTEMPTS) {
+          // Only show "reconnecting" once we've had a prior successful
+          // connection, or after several failed attempts. On the very first
+          // connect sequence (dev proxy warm-up), "connecting" is more
+          // accurate than "reconnecting".
           setStateSynced("reconnecting");
         }
+        // else: keep "connecting" state — initial warm-up phase
       }, RECONNECTING_GRACE_MS);
     }
 
@@ -321,7 +342,19 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
         esRef.current = es;
         lastFrameAt.current = Date.now();
 
+        // Guard: if `open` never fires within OPEN_TIMEOUT_MS the Vite/nginx
+        // dev proxy silently accepted the TCP connection but never forwarded
+        // it to the API (common on first 1-2 attempts at startup). Close and
+        // retry rather than letting it hang for up to 15 s.
+        const openTimeout = setTimeout(() => {
+          if (!mounted.current || esRef.current !== es) return;
+          es.close();
+          esRef.current = null;
+          scheduleReconnect();
+        }, OPEN_TIMEOUT_MS);
+
         es.addEventListener("open", () => {
+          clearTimeout(openTimeout);
           if (reconnectingGraceTimer.current !== null) {
             clearTimeout(reconnectingGraceTimer.current);
             reconnectingGraceTimer.current = null;
@@ -344,6 +377,7 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
         });
 
         es.onerror = () => {
+          clearTimeout(openTimeout);
           es.close();
           esRef.current = null;
           scheduleReconnect();
