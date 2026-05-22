@@ -145,11 +145,13 @@ function dbVideoToVideoItem(v: DbVideo): VideoItem {
 }
 
 /**
- * Fetch all videos (YouTube + local uploads) from the public catalogue endpoint.
- * This is the canonical source of truth for the TV library.
+ * Fetch YouTube-sourced videos from the public catalogue endpoint.
+ * The TV Library mirrors the mobile Library and lists only YouTube content —
+ * locally-uploaded files are reserved for the 24/7 Broadcasting module and
+ * never appear in the public catalogue.
  */
 export async function fetchVideos(): Promise<VideoItem[]> {
-  const res = await fetch(apiUrl("/videos?limit=2000"), {
+  const res = await fetch(apiUrl("/videos?limit=2000&source=youtube"), {
     signal: AbortSignal.timeout(12000),
   });
   if (!res.ok) throw new Error("Failed to fetch videos");

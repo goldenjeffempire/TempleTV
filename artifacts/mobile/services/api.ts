@@ -93,6 +93,13 @@ export interface FetchVideosOptions {
    * ("newest" | "oldest" | "published" | "views" | "title").
    */
   sort?: "newest" | "oldest" | "popular" | "views" | "published" | "title";
+  /**
+   * Restrict the catalogue by ingestion source. The Library tab passes
+   * "youtube" so it only ever displays YouTube-sourced content — locally
+   * uploaded videos belong to the 24/7 Broadcasting module and must not
+   * appear in the public catalogue.
+   */
+  source?: "youtube" | "local";
 }
 
 // ─── Broadcast types ─────────────────────────────────────────────────────────
@@ -159,6 +166,7 @@ export async function fetchVideos(opts: FetchVideosOptions = {}): Promise<Videos
     const apiSort = opts.sort === "popular" ? "views" : opts.sort;
     params.set("sort", apiSort);
   }
+  if (opts.source) params.set("source", opts.source);
 
   const res = await publicFetch(`/api/videos?${params.toString()}`);
   if (!res.ok) {

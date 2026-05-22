@@ -396,6 +396,12 @@ export function usePaginatedVideos(opts: {
   search: string;
   category: SermonCategory;
   sort: SortMode;
+  /**
+   * Restrict the catalogue by ingestion source. The Library tab passes
+   * "youtube" so it only ever lists YouTube-sourced videos — locally
+   * uploaded content lives in the 24/7 Broadcasting module exclusively.
+   */
+  source?: "youtube" | "local";
 }): PaginatedVideosState {
   const debouncedSearch = useDebounce(opts.search, 350);
   const { libraryRevision } = useBroadcastSync();
@@ -413,14 +419,14 @@ export function usePaginatedVideos(opts: {
   const hasMore = page < totalPages;
 
   // Stable ref to latest opts to avoid stale closure in loadMore
-  const optsRef = useRef({ debouncedSearch, category: opts.category, sort: opts.sort });
-  optsRef.current = { debouncedSearch, category: opts.category, sort: opts.sort };
+  const optsRef = useRef({ debouncedSearch, category: opts.category, sort: opts.sort, source: opts.source });
+  optsRef.current = { debouncedSearch, category: opts.category, sort: opts.sort, source: opts.source };
 
   // Snapshot of sermons before a background refresh so we can restore on failure
   const preRefreshSermonsRef = useRef<Sermon[]>([]);
 
   const fetchPage = useCallback(async (pageNum: number, replace: boolean) => {
-    const { debouncedSearch: search, category, sort } = optsRef.current;
+    const { debouncedSearch: search, category, sort, source } = optsRef.current;
     const apiCategory = categoryToApiSlug(category);
     const apiSort = sortModeToApi(sort);
 
@@ -430,6 +436,7 @@ export function usePaginatedVideos(opts: {
       search: search || undefined,
       category: apiCategory,
       sort: apiSort as "newest" | "oldest" | "views",
+      source,
     });
     const mapped = resp.videos.map((v, i) => apiVideoToSermon(v, (pageNum - 1) * PAGE_SIZE + i));
     if (replace) {
@@ -459,7 +466,7 @@ export function usePaginatedVideos(opts: {
     void fetchPage(1, true)
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load videos"))
       .finally(() => setLoading(false));
-  }, [debouncedSearch, opts.category, opts.sort, fetchPage, libraryRevision]);
+  }, [debouncedSearch, opts.category, opts.sort, opts.source, fetchPage, libraryRevision]);
 
   const loadMore = useCallback(() => {
     if (loadingMore || !hasMore) return;

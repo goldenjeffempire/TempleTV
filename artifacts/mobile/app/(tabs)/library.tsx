@@ -398,7 +398,7 @@ export default function LibraryScreen() {
     refreshError,
     loadMore,
     refetch,
-  } = usePaginatedVideos({ search, category, sort });
+  } = usePaginatedVideos({ search, category, sort, source: "youtube" });
 
   const { series, loading: seriesLoading, error: seriesError, refetch: refetchSeries } = useSeriesList();
   const { continueWatching } = useWatchProgress();

@@ -79,6 +79,10 @@ const ListQuerySchema = z.object({
   search: z.string().trim().max(200).optional(),
   category: z.string().trim().max(100).optional(),
   sort: z.enum(["newest", "oldest", "published", "views", "title"]).default("newest"),
+  // Filter by ingestion source. The mobile Library tab passes "youtube" so it
+  // only displays YouTube-sourced videos — locally-uploaded files are reserved
+  // for the 24/7 Broadcasting module and never surface in the public catalogue.
+  source: z.enum(["youtube", "local"]).optional(),
 });
 
 const ListResponseSchema = z.object({
@@ -175,7 +179,11 @@ function buildOrderBy(sort: string) {
   }
 }
 
-function buildWhere(search: string | undefined, category: string | undefined): SQL | undefined {
+function buildWhere(
+  search: string | undefined,
+  category: string | undefined,
+  source: "youtube" | "local" | undefined,
+): SQL | undefined {
   // Always exclude YouTube videos published more than 2 years ago.
   // Local / HLS uploads (video_source != 'youtube') are always shown.
   // YouTube rows whose published_at is NULL are kept as a safety net.
@@ -223,6 +231,10 @@ function buildWhere(search: string | undefined, category: string | undefined): S
     }
   }
 
+  if (source) {
+    clauses.push(sql`${videos.videoSource} = ${source}`);
+  }
+
   return clauses.length > 0 ? and(...clauses) : undefined;
 }
 
@@ -244,10 +256,10 @@ export async function videosRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const { limit, page, search, category, sort } = req.query;
-      const isFiltered = !!(search?.trim() || category?.trim());
+      const { limit, page, search, category, sort, source } = req.query;
+      const isFiltered = !!(search?.trim() || category?.trim() || source);
       const offset = (page - 1) * limit;
-      const where = buildWhere(search, category);
+      const where = buildWhere(search, category, source);
       const orderBy = buildOrderBy(sort);
 
       // ── Server-side cache (unfiltered requests only) ──────────────────────
