@@ -161,12 +161,45 @@ export async function fetchVideos(opts: FetchVideosOptions = {}): Promise<Videos
   }
 
   const res = await publicFetch(`/api/videos?${params.toString()}`);
-  if (!res.ok) throw new Error(`Failed to fetch videos (${res.status})`);
+  if (!res.ok) {
+    // Server-error fallback: on 5xx try /featured so the home screen at least
+    // shows top videos instead of an empty error wall. Only fires for the
+    // unfiltered "give me everything" call — filtered/paginated requests
+    // legitimately need the full endpoint and should surface the error.
+    const isUnfiltered = !opts.search && !opts.category && (!opts.page || opts.page === 1);
+    if (res.status >= 500 && isUnfiltered) {
+      try {
+        const featured = await fetchFeaturedVideos(Math.min(opts.limit ?? 50, 50));
+        return {
+          videos: featured,
+          total: featured.length,
+          totalPages: 1,
+          page: 1,
+          limit: featured.length,
+        };
+      } catch {
+        /* fall through to the original error below */
+      }
+    }
+    throw new Error(`We're having trouble reaching the library. Please try again in a moment.`);
+  }
   const data = await res.json() as { videos?: ApiVideo[]; data?: ApiVideo[]; total?: number; totalPages?: number };
   const videos = data.videos ?? data.data ?? [];
   const total = data.total ?? videos.length;
   const totalPages = data.totalPages ?? 1;
   return { videos, total, totalPages, page: opts.page ?? 1, limit: opts.limit ?? 200 };
+}
+
+/**
+ * Fetch the curated "featured" list (top videos by view count).
+ * Used as a graceful fallback when /api/videos 5xxs so the home screen
+ * still has something to show instead of an empty error state.
+ */
+export async function fetchFeaturedVideos(limit = 24): Promise<ApiVideo[]> {
+  const res = await publicFetch(`/api/videos/featured?limit=${limit}`);
+  if (!res.ok) throw new Error(`Failed to fetch featured videos (${res.status})`);
+  const data = await res.json() as { videos?: ApiVideo[] };
+  return data.videos ?? [];
 }
 
 /**

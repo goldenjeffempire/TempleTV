@@ -209,3 +209,9 @@ id = "Jpukm0005922hnFZIK-x8"
 uri = "file://artifacts/mobile/dist/temple-tv-android-release.tar.gz"
 type = "unspecified"
 title = "Temple TV — Android release bundle (.aab + upload cert)"
+
+[[outputs]]
+id = "6mBBWO3P3N1dCYI-ZR4AK"
+uri = "file://artifacts/mobile/dist/temple-tv-android-v34.tar.gz"
+type = "unspecified"
+title = "Temple TV — Android v1.0.5 (versionCode 34, .aab + upload cert)"
