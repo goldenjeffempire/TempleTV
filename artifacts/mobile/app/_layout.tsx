@@ -454,29 +454,39 @@ function RootLayoutNav() {
   );
 }
 
+// Safe accessor: Feather.font may be undefined in some Metro environments
+// (e.g. SSR, web-only builds, or Expo SDK version mismatches). Spread into
+// useFonts only when the value is a non-null object.
+const featherFont: Record<string, unknown> =
+  Feather.font != null && typeof Feather.font === "object" ? Feather.font as Record<string, unknown> : {};
+
 function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({
     Inter_400Regular,
     Inter_500Medium,
     Inter_600SemiBold,
     Inter_700Bold,
-    // Vector-icon font. @expo/vector-icons auto-loads its own font on native,
-    // but on web (the Replit Expo preview) the .ttf must be registered through
-    // useFonts() or every <Feather /> renders as a placeholder rectangle.
-    ...Feather.font,
+    // Feather icon font. On Expo web the @font-face in public/index.html
+    // registers the font via a base64 data URI (bulletproof, no Metro
+    // asset pipeline). Including it here as well ensures it is loaded
+    // via expo-font on native dev-client and standalone builds.
+    // featherFont is empty {} if Feather.font is unavailable — safe to spread.
+    ...featherFont,
   });
 
   // ── Font-load timeout ───────────────────────────────────────────────────────
-  // On web the Inter fonts are fetched from the Google Fonts CDN. In restricted
-  // environments (Replit sandbox, corporate proxies) that CDN may be unreachable,
-  // causing useFonts() to stay pending indefinitely. Without this guard the app
-  // renders nothing — a permanent blank white screen. After 2 s we proceed with
-  // system fonts rather than waiting forever. On native, fonts are bundled and
-  // load in < 100 ms, so this timer never fires in practice.
+  // On web the Inter fonts may be fetched from the Google Fonts CDN which can
+  // be blocked in some environments, causing useFonts() to stay pending
+  // indefinitely. Without this guard the app renders nothing — a permanent
+  // blank white screen. After 1.5 s we proceed with system fonts rather than
+  // waiting forever. On native, fonts are bundled and load in < 100 ms, so
+  // this timer almost never fires in practice.
   const [fontTimedOut, setFontTimedOut] = useState(false);
   useEffect(() => {
     if (fontsLoaded || fontError) return;
-    const t = setTimeout(() => setFontTimedOut(true), 2000);
+    // Shorter timeout on native (fonts are local) vs web (may need CDN)
+    const ms = Platform.OS === "web" ? 1500 : 800;
+    const t = setTimeout(() => setFontTimedOut(true), ms);
     return () => clearTimeout(t);
   }, [fontsLoaded, fontError]);
 
