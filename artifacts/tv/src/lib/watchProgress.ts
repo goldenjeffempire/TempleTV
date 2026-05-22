@@ -27,6 +27,7 @@ export interface WatchEntry {
   title: string;
   thumbnailUrl: string;
   hlsUrl: string | null;
+  hlsMasterUrl?: string | null;
   positionSecs: number;
   durationSecs: number;
   updatedAt: number;
@@ -79,6 +80,7 @@ export function saveProgress(entry: WatchEntry): void {
       title: entry.title,
       thumbnailUrl: entry.thumbnailUrl,
       hlsUrl: entry.hlsUrl,
+      hlsMasterUrl: entry.hlsMasterUrl,
       positionSecs: entry.positionSecs,
       durationSecs: entry.durationSecs,
       completed: true,
@@ -89,6 +91,7 @@ export function saveProgress(entry: WatchEntry): void {
       title: entry.title,
       thumbnailUrl: entry.thumbnailUrl,
       hlsUrl: entry.hlsUrl,
+      hlsMasterUrl: entry.hlsMasterUrl,
       positionSecs: entry.positionSecs,
       durationSecs: entry.durationSecs,
       completed: true,
@@ -116,6 +119,7 @@ export function saveProgress(entry: WatchEntry): void {
     title: entry.title,
     thumbnailUrl: entry.thumbnailUrl,
     hlsUrl: entry.hlsUrl,
+    hlsMasterUrl: entry.hlsMasterUrl,
     positionSecs: entry.positionSecs,
     durationSecs: entry.durationSecs,
     completed: false,
@@ -127,6 +131,7 @@ export function saveProgress(entry: WatchEntry): void {
     title: entry.title,
     thumbnailUrl: entry.thumbnailUrl,
     hlsUrl: entry.hlsUrl,
+    hlsMasterUrl: entry.hlsMasterUrl,
     positionSecs: entry.positionSecs,
     durationSecs: entry.durationSecs,
     completed: false,

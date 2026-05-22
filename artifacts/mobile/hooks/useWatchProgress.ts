@@ -12,6 +12,7 @@ interface ProgressEntry {
   thumbnailUrl?: string;
   youtubeId?: string;
   localVideoUrl?: string;
+  hlsMasterUrl?: string;
 }
 
 interface WatchProgressMap {
@@ -28,6 +29,7 @@ export interface ContinueWatchingItem {
   thumbnailUrl?: string;
   youtubeId?: string;
   localVideoUrl?: string;
+  hlsMasterUrl?: string;
 }
 
 export function useWatchProgress() {
@@ -47,7 +49,7 @@ export function useWatchProgress() {
       videoKey: string,
       position: number,
       duration: number,
-      meta?: { title?: string; thumbnailUrl?: string; youtubeId?: string; localVideoUrl?: string },
+      meta?: { title?: string; thumbnailUrl?: string; youtubeId?: string; localVideoUrl?: string; hlsMasterUrl?: string },
     ) => {
       if (!videoKey || duration <= 0 || position < 5) return;
 
@@ -113,6 +115,7 @@ export function useWatchProgress() {
       thumbnailUrl: entry.thumbnailUrl,
       youtubeId: entry.youtubeId,
       localVideoUrl: entry.localVideoUrl,
+      hlsMasterUrl: entry.hlsMasterUrl,
     }));
 
   return {

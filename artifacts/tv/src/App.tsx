@@ -90,6 +90,7 @@ export default function App() {
     title: string;
     thumbnailUrl: string;
     hlsUrl?: string;
+    hlsMasterUrl?: string;
     startPositionSecs?: number;
     isLive?: boolean;
   } | null>(null);
@@ -153,6 +154,7 @@ export default function App() {
           title: currentPlayer.title,
           thumbnailUrl: thumbFallback,
           hlsUrl: currentPlayer.hlsUrl ?? null,
+          hlsMasterUrl: currentPlayer.hlsMasterUrl ?? null,
           positionSecs: p.positionSecs,
           durationSecs: p.durationSecs,
           updatedAt: Date.now(),
@@ -204,7 +206,7 @@ export default function App() {
       thumbnailUrl?: string,
     ) => {
       lastProgressRef.current = null;
-      setPlayer({ videoId, title, thumbnailUrl: thumbnailUrl ?? "", hlsUrl, startPositionSecs, isLive });
+      setPlayer({ videoId, title, thumbnailUrl: thumbnailUrl ?? "", hlsUrl, hlsMasterUrl: hlsUrl, startPositionSecs, isLive });
       pushHistory();
     },
     [pushHistory],
@@ -223,6 +225,7 @@ export default function App() {
         title: player.title,
         thumbnailUrl: thumbFallback,
         hlsUrl: player.hlsUrl ?? null,
+        hlsMasterUrl: player.hlsMasterUrl ?? null,
         positionSecs,
         durationSecs,
         updatedAt: Date.now(),

@@ -536,6 +536,7 @@ export default function PlayerScreen() {
         thumbnailUrl,
         youtubeId: isYoutube ? youtubeId : undefined,
         localVideoUrl: isHls ? hlsUrl : undefined,
+        hlsMasterUrl: isHls ? hlsUrl : undefined,
       });
     },
     [videoId, isLive, saveProgress, title, thumbnailUrl, isYoutube, youtubeId, isHls, hlsUrl],

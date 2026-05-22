@@ -154,7 +154,7 @@ function ContinueWatchingRow({ items }: { items: ContinueWatchingItem[] }) {
         title: item.title ?? "Continue Watching",
         thumbnailUrl: item.thumbnailUrl ?? "",
         youtubeId: item.youtubeId ?? "",
-        hlsUrl: item.localVideoUrl ?? "",
+        hlsUrl: item.hlsMasterUrl ?? item.localVideoUrl ?? "",
         startPositionSecs: String(Math.floor(item.position)),
       },
     });

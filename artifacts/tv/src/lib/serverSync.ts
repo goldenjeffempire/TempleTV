@@ -38,6 +38,7 @@ export function syncProgressToServer(entry: {
   title: string;
   thumbnailUrl: string;
   hlsUrl: string | null;
+  hlsMasterUrl?: string | null;
   positionSecs: number;
   durationSecs: number;
   completed: boolean;
@@ -50,6 +51,7 @@ export function syncProgressToServer(entry: {
     title: entry.title,
     thumbnailUrl: entry.thumbnailUrl,
     hlsUrl: entry.hlsUrl ?? null,
+    hlsMasterUrl: entry.hlsMasterUrl ?? null,
     positionSecs: Math.floor(entry.positionSecs),
     durationSecs: Math.floor(entry.durationSecs),
     completed: entry.completed,

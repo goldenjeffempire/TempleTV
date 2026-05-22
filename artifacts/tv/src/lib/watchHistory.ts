@@ -14,6 +14,7 @@ export interface HistoryEntry {
   title: string;
   thumbnailUrl: string;
   hlsUrl: string | null;
+  hlsMasterUrl?: string | null;
   positionSecs: number;
   durationSecs: number;
   /** true when the viewer reached ≥ 95 % of the video. */
