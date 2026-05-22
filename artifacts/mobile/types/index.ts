@@ -10,6 +10,9 @@ export interface Sermon {
   date: string;
   views?: number;
   videoSource?: "youtube" | "local";
+  /** HLS master playlist URL, if the video has been transcoded. Takes precedence over localVideoUrl for playback. */
+  hlsMasterUrl?: string;
+  /** Raw upload/legacy URL. Prefer hlsMasterUrl when both are present. Populated by useVideos as hlsMasterUrl ?? localVideoUrl. */
   localVideoUrl?: string;
 }
 

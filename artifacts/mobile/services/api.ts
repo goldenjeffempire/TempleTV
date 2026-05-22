@@ -287,7 +287,7 @@ export async function submitPrayerRequest(
 /** Record a view event for a video (best-effort). */
 export async function recordView(videoId: string): Promise<void> {
   try {
-    await authedFetch(`/api/videos/${videoId}/view`, {
+    await publicFetch(`/api/videos/${videoId}/view`, {
       method: "POST",
       signal: AbortSignal.timeout(5_000),
     });

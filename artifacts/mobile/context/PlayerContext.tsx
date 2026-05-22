@@ -590,6 +590,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       setVolume,
       seekTo,
       updatePlayback,
+      setIsBroadcastMode,
     ],
   );
 

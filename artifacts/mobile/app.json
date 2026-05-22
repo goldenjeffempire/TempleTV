@@ -233,7 +233,7 @@
           "icon": "./assets/images/notification-icon.png",
           "color": "#6A0DAD",
           "sounds": [],
-          "mode": "production"
+          "mode": "default"
         }
       ],
       [
