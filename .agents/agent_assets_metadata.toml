@@ -203,3 +203,9 @@ id = "K-ONid78WtiwoSiEgyAOO"
 uri = "file://artifacts/mobile/upload_certificate.pem.txt"
 type = "text"
 title = "upload_certificate.pem — upload this to Play Console"
+
+[[outputs]]
+id = "Jpukm0005922hnFZIK-x8"
+uri = "file://artifacts/mobile/dist/temple-tv-android-release.tar.gz"
+type = "unspecified"
+title = "Temple TV — Android release bundle (.aab + upload cert)"

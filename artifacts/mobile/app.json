@@ -90,7 +90,6 @@
     },
     "android": {
       "package": "com.templetv.jctm",
-      "googleServicesFile": "./google-services.json",
       "versionCode": 30,
       "allowBackup": false,
       "adaptiveIcon": {
@@ -292,7 +291,9 @@
       "router": {
         "origin": "https://templetv.org.ng"
       },
-      "eas": {}
+      "eas": {
+        "projectId": "cfb79426-75fa-4d94-a86b-b4b4627c2ef2"
+      }
     },
     "experiments": {
       "typedRoutes": true,
