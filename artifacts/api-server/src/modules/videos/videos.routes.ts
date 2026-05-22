@@ -149,21 +149,29 @@ function toDto(v: VideoDtoRow) {
   };
 }
 
+// Safe cast for the text `published_at` column.  Production has rows whose
+// value is an empty string or otherwise malformed (the column predates strict
+// validation), and a raw `::timestamptz` cast throws — which 500s the entire
+// list endpoint.  NULLIF strips empty strings; the regex guard treats anything
+// that doesn't start with 4 digits as NULL so the cast only ever sees ISO-ish
+// timestamps.  Result: bad rows sort as NULL rather than aborting the query.
+const SAFE_PUB_AT = sql`CASE WHEN ${videos.publishedAt} ~ '^[0-9]{4}' THEN NULLIF(${videos.publishedAt}, '')::timestamptz ELSE NULL END`;
+
 function buildOrderBy(sort: string) {
   // For "newest" / "oldest" prefer the video's own publish date (YouTube date) so
   // that the library order matches the channel chronologically.  Local uploads
   // that have no publishedAt fall back to importedAt so they still sort sensibly.
   switch (sort) {
     case "oldest":
-      return sql`COALESCE(${videos.publishedAt}::timestamptz, ${videos.importedAt}) ASC`;
+      return sql`COALESCE(${SAFE_PUB_AT}, ${videos.importedAt}) ASC`;
     case "published":
-      return sql`${videos.publishedAt}::timestamptz DESC NULLS LAST`;
+      return sql`${SAFE_PUB_AT} DESC NULLS LAST`;
     case "views":
       return desc(videos.viewCount);
     case "title":
       return asc(videos.title);
     default: // "newest"
-      return sql`COALESCE(${videos.publishedAt}::timestamptz, ${videos.importedAt}) DESC`;
+      return sql`COALESCE(${SAFE_PUB_AT}, ${videos.importedAt}) DESC`;
   }
 }
 
@@ -172,7 +180,7 @@ function buildWhere(search: string | undefined, category: string | undefined): S
   // Local / HLS uploads (video_source != 'youtube') are always shown.
   // YouTube rows whose published_at is NULL are kept as a safety net.
   const clauses: SQL[] = [
-    sql`(${videos.videoSource} != 'youtube' OR ${videos.publishedAt} IS NULL OR ${videos.publishedAt}::timestamptz >= NOW() - INTERVAL '2 years')`,
+    sql`(${videos.videoSource} != 'youtube' OR ${videos.publishedAt} IS NULL OR ${videos.publishedAt} = '' OR ${videos.publishedAt} !~ '^[0-9]{4}' OR ${videos.publishedAt}::timestamptz >= NOW() - INTERVAL '2 years')`,
     // Exclude upload-only broadcast content from the public library.
     // broadcast_only=true means the video was uploaded for internal broadcast
     // and the admin has not yet published it to the public library.
