@@ -66,7 +66,7 @@ export function useBroadcastSync(): BroadcastSyncState {
       if (next === "background" || next === "inactive") {
         backgroundAtRef.current = Date.now();
       } else if (next === "active") {
-        if (Date.now() - backgroundAtRef.current > 3_000) {
+        if (Date.now() - backgroundAtRef.current > 10_000) {
           setReconnectKey((k) => k + 1);
         }
       }
