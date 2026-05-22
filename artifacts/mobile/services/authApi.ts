@@ -110,7 +110,14 @@ async function refreshAccessToken(): Promise<string | null> {
   return inflightRefresh;
 }
 
-async function authFetch(path: string, options: RequestInit = {}): Promise<Response> {
+/**
+ * Authenticated fetch with automatic 401 → token-refresh → retry cycle.
+ * Exported so other API modules (e.g. services/api.ts) can reuse the full
+ * auth lifecycle without duplicating the refresh-coordination logic here.
+ * Internal callers and external callers both go through the same
+ * single-flight inflightRefresh deduplication.
+ */
+export async function authFetch(path: string, options: RequestInit = {}): Promise<Response> {
   const token = await secureStorage.getItem(STORAGE_KEYS.authToken);
   const buildHeaders = (t: string | null): Record<string, string> => {
     const h: Record<string, string> = {

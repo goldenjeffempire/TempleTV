@@ -25,6 +25,8 @@ import React, {
 import {
   Alert,
   Animated,
+  AppState,
+  type AppStateStatus,
   Image,
   Modal,
   PanResponder,
@@ -67,6 +69,14 @@ import { usePageSeo } from "@/hooks/usePageSeo";
 import { usePlayer } from "@/context/PlayerContext";
 
 const PLACEHOLDER = require("@/assets/images/sermon-placeholder.png");
+
+// Derive the canonical site origin from build-time env vars so structured-data
+// URLs are correct across dev, preview, and production builds.
+// Falls back to the production domain when the env var is absent (native-only
+// builds that don't set EXPO_PUBLIC_DOMAIN).
+const SITE_ORIGIN: string = process.env.EXPO_PUBLIC_DOMAIN
+  ? `https://${(process.env.EXPO_PUBLIC_DOMAIN as string).replace(/^https?:\/\//, "").replace(/\/$/, "")}`
+  : "https://templetv.org.ng";
 
 // ─── Reaction Button ──────────────────────────────────────────────────────────
 
@@ -389,7 +399,7 @@ export default function PlayerScreen() {
             isLiveBroadcast: true,
             location: {
               "@type": "VirtualLocation",
-              url: "https://templetv.org.ng/player",
+              url: `${SITE_ORIGIN}/player`,
             },
             broadcaster: {
               "@type": "Organization",
@@ -592,6 +602,26 @@ export default function PlayerScreen() {
       clearTimeout(fsHideTimerRef.current);
       fsHideTimerRef.current = null;
     }
+  }, [isFullscreen]);
+
+  // Release the landscape orientation lock when the app is sent to the
+  // background or to an inactive state (e.g. incoming call, lock screen).
+  // Without this, the LANDSCAPE lock bleeds into the home screen and any
+  // app opened afterwards until the device auto-rotates on its own.
+  // We restore PORTRAIT_UP here but do NOT exit fullscreen — if the user
+  // returns quickly and the Modal is still open, enterFullscreen will
+  // reapply the LANDSCAPE lock. For a proper exit the back button fires
+  // exitFullscreen which already restores portrait.
+  useEffect(() => {
+    if (Platform.OS === "web") return undefined;
+    const sub = AppState.addEventListener("change", (nextState: AppStateStatus) => {
+      if ((nextState === "background" || nextState === "inactive") && isFullscreen) {
+        ScreenOrientation.lockAsync(
+          ScreenOrientation.OrientationLock.PORTRAIT_UP,
+        ).catch(() => {});
+      }
+    });
+    return () => sub.remove();
   }, [isFullscreen]);
 
   // Live broadcast sync — used by BroadcastHlsPlayer internally.

@@ -10,9 +10,8 @@
  */
 
 import { getApiBase } from "@/lib/apiBase";
-import { secureStorage } from "@/lib/secureStorage";
-import { STORAGE_KEYS } from "@/constants/config";
 import { fetchWithRetry } from "@/lib/fetchWithRetry";
+import { authFetch } from "@/services/authApi";
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
 
@@ -40,19 +39,14 @@ async function publicFetch(path: string, init?: RequestInit): Promise<Response> 
 }
 
 /**
- * Fetch an authenticated endpoint with the stored access token.
- * Uses the same retry strategy as publicFetch. Auth errors (401, 403) are
- * never retried — those are intentional server rejections, not transient errors.
+ * Fetch an authenticated endpoint with automatic 401 → token-refresh → retry.
+ * Delegates to authFetch from authApi so the full refresh-coordination logic
+ * (single-flight inflightRefresh deduplication, session-expired signOut) is
+ * shared with the auth module rather than duplicated here.
  */
 async function authedFetch(path: string, init?: RequestInit): Promise<Response> {
-  const token = await secureStorage.getItem(STORAGE_KEYS.authToken);
-  const res = await fetchWithRetry(url(path), {
+  const res = await authFetch(path, {
     ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers as Record<string, string> | undefined),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
     signal: init?.signal ?? AbortSignal.timeout(12_000),
   });
   if (__DEV__ && !res.ok) {

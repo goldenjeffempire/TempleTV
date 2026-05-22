@@ -27,12 +27,18 @@ export function getApiBase(): string {
   if (apiUrl) {
     const trimmed = apiUrl.replace(/\/$/, "");
     if (/^https?:\/\//i.test(trimmed)) return trimmed;
-    // Common mistake: someone set EXPO_PUBLIC_API_URL to a bare domain.
-    if (__DEV__ && typeof console !== "undefined") {
+    // Auto-fix: bare domain without a protocol prefix — assume https://.
+    // This recovers from the common mistake of setting EXPO_PUBLIC_API_URL
+    // to "api.templetv.org.ng" instead of "https://api.templetv.org.ng".
+    // Failing silently here would make every API call fail on native with a
+    // cryptic "Network request failed" error, so we fix and warn instead.
+    if (typeof console !== "undefined") {
       console.warn(
-        `[apiBase] EXPO_PUBLIC_API_URL "${apiUrl}" is missing a protocol; ignoring.`,
+        `[apiBase] EXPO_PUBLIC_API_URL "${apiUrl}" is missing a protocol; ` +
+        `auto-fixing with https://. Update the env var to silence this warning.`,
       );
     }
+    return `https://${trimmed}`;
   }
 
   // 2. Explicit domain env var — covers Replit dev + native Expo Go builds.

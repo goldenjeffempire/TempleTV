@@ -54,10 +54,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           await AsyncStorage.removeItem(STORAGE_KEYS.authToken);
         }
 
+        // Migration: legacy AsyncStorage authUser profile → SecureStore (one-time).
+        // User PII (email, displayName) should not sit in unencrypted AsyncStorage;
+        // move it to Keychain / EncryptedSharedPreferences at first boot after upgrade.
+        const legacyUser = await AsyncStorage.getItem(STORAGE_KEYS.authUser);
+        if (legacyUser) {
+          await secureStorage.setItem(STORAGE_KEYS.authUser, legacyUser);
+          await AsyncStorage.removeItem(STORAGE_KEYS.authUser);
+        }
+
         const [storedToken, storedRefresh, storedUser] = await Promise.all([
           secureStorage.getItem(STORAGE_KEYS.authToken),
           secureStorage.getItem(STORAGE_KEYS.authRefreshToken),
-          AsyncStorage.getItem(STORAGE_KEYS.authUser),
+          secureStorage.getItem(STORAGE_KEYS.authUser),
         ]);
 
         // Restore if we have any stored credential (access OR refresh token).
@@ -81,7 +90,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         apiGetMe()
           .then((freshUser) => {
             setUser(freshUser);
-            AsyncStorage.setItem(STORAGE_KEYS.authUser, JSON.stringify(freshUser)).catch(() => {});
+            secureStorage.setItem(STORAGE_KEYS.authUser, JSON.stringify(freshUser)).catch(() => {});
           })
           .catch(async (err: unknown) => {
             if (err instanceof UserNotFoundError) {
@@ -107,7 +116,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await Promise.all([
       secureStorage.removeItem(STORAGE_KEYS.authToken),
       secureStorage.removeItem(STORAGE_KEYS.authRefreshToken),
-      AsyncStorage.removeItem(STORAGE_KEYS.authUser),
+      secureStorage.removeItem(STORAGE_KEYS.authUser),
     ]);
     setToken(null);
     setUser(null);
@@ -129,7 +138,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Legacy callers that only pass an access-token string: persist it here.
       await secureStorage.setItem(STORAGE_KEYS.authToken, resp);
     }
-    await AsyncStorage.setItem(STORAGE_KEYS.authUser, JSON.stringify(newUser));
+    await secureStorage.setItem(STORAGE_KEYS.authUser, JSON.stringify(newUser));
     setToken(accessToken);
     setUser(newUser);
   }, []);
@@ -141,7 +150,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const updateUser = useCallback((updated: AuthUser) => {
     setUser(updated);
-    AsyncStorage.setItem(STORAGE_KEYS.authUser, JSON.stringify(updated)).catch(() => {});
+    secureStorage.setItem(STORAGE_KEYS.authUser, JSON.stringify(updated)).catch(() => {});
   }, []);
 
   const openAuthGate = useCallback((target: PendingPlayback) => {
