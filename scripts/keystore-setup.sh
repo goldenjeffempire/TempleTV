@@ -45,7 +45,7 @@ fi
 # ── Collect parameters ────────────────────────────────────────────────────────
 KEYSTORE_FILE="$KEYSTORE_DIR/templetv-release.jks"
 KEY_ALIAS="${KEYSTORE_KEY_ALIAS:-templetv}"
-APP_PACKAGE="com.templetv.jctm"
+APP_PACKAGE="com.templetv.app"
 
 if [ -f "$KEYSTORE_FILE" ]; then
   echo "⚠️  Keystore already exists at $KEYSTORE_FILE"

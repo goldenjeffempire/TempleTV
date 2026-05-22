@@ -73,7 +73,7 @@ platform :ios do
     type = options[:type] || "appstore"
     match(
       type: type,
-      app_identifier: ["com.templetv.jctm"],
+      app_identifier: ["com.templetv.app"],
       git_url: ENV["MATCH_GIT_URL"],
       git_branch: ENV.fetch("MATCH_GIT_BRANCH", "main"),
       password: ENV["MATCH_PASSWORD"],
@@ -86,7 +86,7 @@ platform :ios do
   lane :certificates_tv do
     match(
       type: "appstore",
-      app_identifier: ["com.templetv.jctm.tvos"],
+      app_identifier: ["com.templetv.app.tvos"],
       git_url: ENV["MATCH_GIT_URL"],
       git_branch: ENV.fetch("MATCH_GIT_BRANCH", "main"),
       password: ENV["MATCH_PASSWORD"],
@@ -271,7 +271,7 @@ platform :android do
     supply(
       track: options.fetch(:track, "internal"),
       aab: lane_context[SharedValues::GRADLE_AAB_OUTPUT_PATH],
-      package_name: "com.templetv.jctm",
+      package_name: "com.templetv.app",
       json_key: ENV.fetch("PLAY_STORE_JSON_KEY_PATH", "artifacts/mobile/google-service-account.json"),
       release_status: options.fetch(:release_status, "draft")
     )

@@ -13,7 +13,7 @@ Make the entire mobile streaming experience stable, professional, and fully prod
 # ROOT CAUSE REPORT — Temple TV Android Startup Crash
 
 **Severity:** Production-Blocking (S1)
-**Package:** com.templetv.jctm
+**Package:** com.templetv.app
 **Platform:** Android (all versions)
 **Symptom:** "Temple TV crashed due to its own issues" — immediate crash on launch from Play Store
 

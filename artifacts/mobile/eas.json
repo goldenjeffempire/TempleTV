@@ -196,7 +196,7 @@
         "changesNotSentForReview": true
       },
       "ios": {
-        "bundleIdentifier": "com.templetv.jctm",
+        "bundleIdentifier": "com.templetv.app",
         "ascApiKeyPath": "/tmp/asc-api-key.p8"
       }
     },
@@ -208,7 +208,7 @@
         "changesNotSentForReview": true
       },
       "ios": {
-        "bundleIdentifier": "com.templetv.jctm",
+        "bundleIdentifier": "com.templetv.app",
         "ascApiKeyPath": "/tmp/asc-api-key.p8"
       }
     }

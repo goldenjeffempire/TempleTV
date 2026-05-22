@@ -97,7 +97,7 @@ If the tag is already on the remote, the script prints the deliberate-undo recip
 | `command 'node' error=2` (Android Studio) | `sudo ln -s "$(which node)" /usr/local/bin/node` |
 | `adb: command not found` | Add `$ANDROID_HOME/platform-tools` to PATH |
 | `error: no devices/emulators found` | Plug in device with USB debugging enabled, or start emulator |
-| `INSTALL_FAILED_UPDATE_INCOMPATIBLE` | `adb uninstall com.templetv.jctm`, then retry |
+| `INSTALL_FAILED_UPDATE_INCOMPATIBLE` | `adb uninstall com.templetv.app`, then retry |
 | CMake "codegen/jni/ is not an existing directory" | `pnpm run mobile:doctor -- --fix` (or `pnpm run android:reset` if persistent) |
 | Build Tools 35.0.0 / 36.0.0 missing files | Doctor flags it; follow its `rm -rf … && sdkmanager …` instruction |
 | `babel-preset-expo` not found | `pnpm run mobile:doctor` will catch a broken `babel.config.js` |

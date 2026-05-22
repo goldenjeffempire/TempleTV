@@ -115,7 +115,7 @@ export async function registerForPushTokenAsync(): Promise<string | null> {
                 "[notifications] EAS project ID is set but google-services.json still\n" +
                 "contains REPLACE_WITH_... placeholder values — push notifications WILL FAIL.\n" +
                 "Download the real file from:\n" +
-                "  Firebase Console → Project Settings → Your Apps → Android (com.templetv.jctm)\n" +
+                "  Firebase Console → Project Settings → Your Apps → Android (com.templetv.app)\n" +
                 "and replace artifacts/mobile/google-services.json before building.",
               );
             }

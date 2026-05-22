@@ -28,7 +28,7 @@ artifacts/tv/lg/
 2. Set up your TV device: `ares-setup-device` (follow prompts)
 3. Enable developer mode on your LG TV (Settings → Software Information → press the number combination shown on screen)
 4. Run `bash artifacts/tv/lg/build.sh`
-5. Test on device: `ares-install -d tv-dev com.templetv.jctm_1.0.0_all.ipk`
+5. Test on device: `ares-install -d tv-dev com.templetv.app_1.0.0_all.ipk`
 6. Submit to [LG Seller Lounge](https://seller.lgappstv.com)
 
 ## Certification Checklist

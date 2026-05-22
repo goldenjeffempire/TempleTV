@@ -3,8 +3,8 @@ storage_mode("git")
 type("appstore")
 
 app_identifier([
-  "com.templetv.jctm",
-  "com.templetv.jctm.tvos"
+  "com.templetv.app",
+  "com.templetv.app.tvos"
 ])
 
 username("developer@templetv.org.ng")

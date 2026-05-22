@@ -154,7 +154,7 @@ verify each of:
 The codebase is App-Store-ready. Remaining steps are **outside** the repo:
 
 1. Apple Developer Program enrollment (USD 99/yr) — confirm `templetv` team.
-2. App Store Connect → create app record with `bundleIdentifier=com.templetv.jctm`.
+2. App Store Connect → create app record with `bundleIdentifier=com.templetv.app`.
 3. Build and upload from your local Mac:
    ```sh
    cd artifacts/mobile
@@ -169,7 +169,7 @@ The codebase is App-Store-ready. Remaining steps are **outside** the repo:
 ### 5.4 Play Store submission (Android)
 
 1. Google Play Console enrollment (USD 25 one-time).
-2. Create app with `package=com.templetv.jctm`.
+2. Create app with `package=com.templetv.app`.
 3. Build & upload AAB from your local machine:
    ```sh
    cd artifacts/mobile
@@ -275,7 +275,7 @@ If you later want native Smart-TV apps, recommended order:
 
 ### 8.6 App Store / Play Store compliance confirmation
 
-- Bundle / package IDs set: `com.templetv.jctm` (both stores)
+- Bundle / package IDs set: `com.templetv.app` (both stores)
 - All required iOS Info.plist usage descriptions present
 - `UIBackgroundModes: [audio, fetch, remote-notification]` for live worship continuity
 - `ITSAppUsesNonExemptEncryption: false`

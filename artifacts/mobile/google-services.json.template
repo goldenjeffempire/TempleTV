@@ -2,7 +2,7 @@
   "_INSTRUCTIONS": [
     "This is a TEMPLATE placeholder — replace with your real google-services.json",
     "from the Firebase console: https://console.firebase.google.com",
-    "  Project → Project Settings → Your apps → Android app (com.templetv.jctm) → Download google-services.json",
+    "  Project → Project Settings → Your apps → Android app (com.templetv.app) → Download google-services.json",
     "Save the downloaded file as google-services.json (overwrite this template).",
     "The real file MUST NOT be committed to version control — it is in .gitignore.",
     "For CI (GitHub Actions / EAS): store the file content as a base64-encoded GitHub Secret",
@@ -20,7 +20,7 @@
       "client_info": {
         "mobilesdk_app_id": "1:REPLACE_WITH_PROJECT_NUMBER:android:REPLACE_WITH_APP_ID",
         "android_client_info": {
-          "package_name": "com.templetv.jctm"
+          "package_name": "com.templetv.app"
         }
       },
       "oauth_client": [],

@@ -1,5 +1,5 @@
 # Temple TV — Android .aab Build Guide
-> Google Play Store release for **com.templetv.jctm** (Temple TV JCTM)
+> Google Play Store release for **com.templetv.app** (Temple TV JCTM)
 >
 > Stack: Expo SDK 54 · React Native 0.81.5 · Expo Router 6 · EAS Build
 
@@ -97,7 +97,7 @@ Track progress in your browser at `https://expo.dev` → Builds.
 ## 5. First-Time Google Play Setup
 
 1. Create a new app in [Google Play Console](https://play.google.com/console)
-   - Package name: `com.templetv.jctm`
+   - Package name: `com.templetv.app`
    - Default language: English (United States)
 2. Fill out the **Store listing** (description, screenshots, feature graphic)
 3. Complete **Content rating** questionnaire (choose Entertainment / General)

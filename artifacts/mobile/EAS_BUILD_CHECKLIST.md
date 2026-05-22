@@ -22,12 +22,12 @@ Use this checklist before every production build. Steps marked **[one-time]** on
   - The file currently contains `REPLACE_WITH_...` placeholder values.
   - Download the real file from Firebase Console → Project Settings → Your Apps → Android app → `google-services.json`.
   - Required fields: `project_number`, `project_id`, `mobilesdk_app_id`, `current_key`
-  - Package name must match: `com.templetv.jctm`
+  - Package name must match: `com.templetv.app`
 
 ### iOS
 - [ ] **Add `GoogleService-Info.plist`** (`artifacts/mobile/GoogleService-Info.plist`):
   - Download from Firebase Console → Project Settings → Your Apps → iOS app → `GoogleService-Info.plist`.
-  - Bundle ID must match: `com.templetv.jctm`
+  - Bundle ID must match: `com.templetv.app`
   - Verify `REVERSED_CLIENT_ID` is present (required for Google Sign-In if used).
 
 ### Verify Push Setup

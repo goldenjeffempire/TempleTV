@@ -1,6 +1,6 @@
 # Temple TV — Google Play Console: Complete Setup & Compliance Guide
 
-> **Package ID**: `com.templetv.jctm`
+> **Package ID**: `com.templetv.app`
 > **Version**: 1.0.0 (versionCode 21)
 > **Last updated**: May 2026
 > **Status**: Production-ready. Copy values from each section directly into the Play Console.
@@ -36,7 +36,7 @@
 | Field | Value |
 |---|---|
 | **App name** | Temple TV – Live Worship & Sermons |
-| **Package name** | `com.templetv.jctm` |
+| **Package name** | `com.templetv.app` |
 | **Default language** | English (United States) – en-US |
 | **App or game?** | App |
 | **Free or paid?** | Free |
@@ -667,7 +667,7 @@ The `androidtv` EAS profile builds a separate `.aab` for the **Android TV** trac
 
 - Track: **Android TV — Production**
 - Managed separately from the phone/tablet track
-- Uses the same package ID `com.templetv.jctm` with `LEANBACK_LAUNCHER` intent filter
+- Uses the same package ID `com.templetv.app` with `LEANBACK_LAUNCHER` intent filter
 
 ### Google Play app signing
 
@@ -913,4 +913,4 @@ Temple TV should appear in search results for:
 
 ---
 
-*Generated May 2026 — Temple TV v1.0.0 — com.templetv.jctm*
+*Generated May 2026 — Temple TV v1.0.0 — com.templetv.app*

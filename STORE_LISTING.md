@@ -1,6 +1,6 @@
 # Temple TV — App Store & Play Store Listing Copy
 
-> **Package/Bundle ID**: `com.templetv.jctm`
+> **Package/Bundle ID**: `com.templetv.app`
 > **Version**: 1.0.0 (Android versionCode 21, iOS buildNumber 1)
 > **Last updated**: May 2026
 >
@@ -13,7 +13,7 @@
 | Field | Value |
 |---|---|
 | **App name** | Temple TV: JCTM Live & Sermons |
-| **Bundle / package ID** | `com.templetv.jctm` |
+| **Bundle / package ID** | `com.templetv.app` |
 | **iOS subtitle** (30 chars) | Watch JCTM Live & On Demand |
 | **Android short description** (80 chars) | Live worship, sermons & broadcasts from Jesus Christ Temple Ministry (JCTM). |
 | **Primary category** | Entertainment (Android) / Lifestyle (iOS alternate) |

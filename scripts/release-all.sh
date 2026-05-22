@@ -166,7 +166,7 @@ if ! $SKIP_TV; then
   info "Packaging LG webOS (.ipk)..."
   if command -v ares-package &>/dev/null; then
     bash artifacts/tv/lg/build.sh || warn "LG packaging failed"
-    ok "LG .ipk created: artifacts/tv/lg/com.templetv.jctm_${NEW_VERSION}_all.ipk"
+    ok "LG .ipk created: artifacts/tv/lg/com.templetv.app_${NEW_VERSION}_all.ipk"
   else
     warn "ares-cli not found — skipping .ipk packaging (npm install -g @webosose/ares-cli)"
   fi

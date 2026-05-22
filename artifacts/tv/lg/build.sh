@@ -10,14 +10,14 @@
 #   cd artifacts/tv && bash lg/build.sh
 #
 # Output:
-#   artifacts/tv/lg/com.templetv.jctm_1.0.0_all.ipk  (upload to LG Seller Lounge)
+#   artifacts/tv/lg/com.templetv.app_1.0.0_all.ipk  (upload to LG Seller Lounge)
 # =============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TV_ROOT="$(dirname "$SCRIPT_DIR")"
 DIST="$TV_ROOT/dist/lg"
-APP_ID="com.templetv.jctm"
+APP_ID="com.templetv.app"
 VERSION="1.0.0"
 IPK="$SCRIPT_DIR/${APP_ID}_${VERSION}_all.ipk"
 

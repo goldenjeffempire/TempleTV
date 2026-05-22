@@ -146,7 +146,7 @@ Build time: ~10–20 minutes on first run (subsequent builds are faster).
 ## Step 5 — Upload to Google Play
 
 1. Go to https://play.google.com/console
-2. Create a new app (package: `com.templetv.jctm`)
+2. Create a new app (package: `com.templetv.app`)
 3. Go to **Testing → Internal testing** → Create new release
 4. Upload `app-release.aab`
 5. Add release notes and roll out

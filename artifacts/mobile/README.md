@@ -3,8 +3,8 @@
 The Temple TV mobile and mobile-web client, built on **Expo SDK 54** with
 **React Native** and **expo-router**. Ships from a single codebase to:
 
-- **iOS** (App Store) — `com.templetv.jctm`
-- **Android** (Play Store) — `com.templetv.jctm`
+- **iOS** (App Store) — `com.templetv.app`
+- **Android** (Play Store) — `com.templetv.app`
 - **Mobile Web** — `https://templetv.org.ng` (Expo's metro web bundle)
 
 > Production web: `https://templetv.org.ng`

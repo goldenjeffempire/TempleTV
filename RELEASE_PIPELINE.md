@@ -247,7 +247,7 @@ tizen sdb devices
 # Full build + package
 cd artifacts/tv && bash lg/build.sh
 
-# Output: artifacts/tv/lg/com.templetv.jctm_1.0.0_all.ipk
+# Output: artifacts/tv/lg/com.templetv.app_1.0.0_all.ipk
 ```
 
 **Store submission:**
@@ -261,8 +261,8 @@ cd artifacts/tv && bash lg/build.sh
 ares-setup-device
 
 # Install and launch
-ares-install -d tv-dev com.templetv.jctm_1.0.0_all.ipk
-ares-launch -d tv-dev com.templetv.jctm
+ares-install -d tv-dev com.templetv.app_1.0.0_all.ipk
+ares-launch -d tv-dev com.templetv.app
 ```
 
 ### Amazon Fire TV
