@@ -26,7 +26,6 @@
 name: Android Auto-Build
 
 on:
-  # Auto-trigger on native file changes pushed to main
   push:
     branches:
       - main
@@ -38,19 +37,6 @@ on:
       - 'artifacts/mobile/babel.config.js'
       - 'artifacts/mobile/metro.config.js'
       - '**/pnpm-lock.yaml'
-  # Manual trigger — click "Run workflow" in the GitHub Actions UI
-  workflow_dispatch:
-    inputs:
-      submit_to_play_store:
-        description: 'Submit the .aab to Google Play internal track after build'
-        required: false
-        default: false
-        type: boolean
-      build_message:
-        description: 'Message shown on the EAS dashboard'
-        required: false
-        default: 'Manual production build'
-        type: string
 
 concurrency:
   group: android-auto-build
@@ -113,7 +99,7 @@ jobs:
             --non-interactive \
             --json \
             --no-wait \
-            --message "${{ github.event.inputs.build_message || format('Auto-build: {0}', github.event.head_commit.message) }}" \
+            --message "Auto-build: ${{ github.event.head_commit.message }}" \
             2>/dev/null)
           echo "$BUILD_JSON" | tee /tmp/android-build.json
           BUILD_ID=$(echo "$BUILD_JSON" | \
@@ -132,7 +118,6 @@ jobs:
           echo "Build finished."
 
       - name: Submit to Play Store internal track
-        if: github.event_name == 'push' || github.event.inputs.submit_to_play_store == 'true'
         working-directory: artifacts/mobile
         run: |
           eas submit \
