@@ -47,3 +47,8 @@ screenshots/
 # Google credentials — never commit either of these
 google-service-account.json
 google-services.json
+
+# EAS / Android signing — NEVER commit (contains keystore passwords)
+credentials.json
+credentials/
+upload_certificate.pem

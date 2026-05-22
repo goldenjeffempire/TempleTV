@@ -197,3 +197,9 @@ id = "_xVfgPw7qUBUnLmPZKB0p"
 uri = "file://attached_assets/temple-tv-feature-graphic.png"
 type = "image"
 title = "Temple TV — Google Play Feature Graphic (1024×500)"
+
+[[outputs]]
+id = "K-ONid78WtiwoSiEgyAOO"
+uri = "file://artifacts/mobile/upload_certificate.pem.txt"
+type = "text"
+title = "upload_certificate.pem — upload this to Play Console"
