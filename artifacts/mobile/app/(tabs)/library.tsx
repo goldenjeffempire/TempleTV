@@ -31,6 +31,7 @@ import { fetchWithRetry } from "@/lib/fetchWithRetry";
 import { useNetworkStatus } from "@/hooks/useNetworkStatus";
 import type { Sermon, SermonCategory, SortMode } from "@/types";
 import { useWatchProgress, type ContinueWatchingItem } from "@/hooks/useWatchProgress";
+import { playbackQueue } from "@/lib/playbackQueue";
 
 const CATEGORIES: { label: string; value: SermonCategory }[] = [
   { label: "All", value: "All" },
@@ -59,7 +60,16 @@ interface SeriesItem {
   isOngoing: boolean;
 }
 
-function navigateToSermon(sermon: Sermon) {
+function navigateToSermon(sermon: Sermon, orderedList?: readonly Sermon[]) {
+  // Snapshot the current library ordering into the shared playback queue so
+  // the player screen can derive Prev/Next without re-fetching. When the
+  // list isn't provided (deep-links, Continue Watching cards) we fall back
+  // to a single-item queue — Prev/Next will hide automatically.
+  if (orderedList && orderedList.length > 0) {
+    playbackQueue.set(orderedList, sermon.id);
+  } else {
+    playbackQueue.set([sermon], sermon.id);
+  }
   router.push({
     pathname: "/player",
     params: {
@@ -405,16 +415,38 @@ export default function LibraryScreen() {
 
   const currentSort = SORT_OPTIONS.find((s) => s.value === sort)!;
 
+  // Stable ref to the latest sermons array so renderItem doesn't have to
+  // depend on it (which would re-render every visible row on every page
+  // append). Reading the ref at tap-time gives the player the most current
+  // ordering for Prev/Next without trashing the FlatList memoization.
+  const sermonsRef = useRef<Sermon[]>(sermons);
+  sermonsRef.current = sermons;
+
   const renderItem = useCallback(
     ({ item }: { item: Sermon }) => (
       <SermonCard
         sermon={item}
-        onPress={() => navigateToSermon(item)}
+        onPress={() => navigateToSermon(item, sermonsRef.current)}
         variant="horizontal"
       />
     ),
     [],
   );
+
+  // Keep the shared playback queue in sync as the library loads more pages
+  // (infinite scroll). If the player is open and the user reaches the end
+  // of the snapshot, this extends the queue underneath them — appended-only,
+  // no re-order, so the current item's index is preserved.
+  useEffect(() => {
+    if (sermons.length === 0) return;
+    playbackQueue.extend(sermons);
+  }, [sermons]);
+
+  // Note: we don't aggressively clear the queue when filters change.
+  // navigateToSermon overwrites it on every tap with the current ordering,
+  // so a stale snapshot is replaced on the next play. Clearing on filter
+  // change would also wipe the queue mid-watch when the library re-mounts
+  // behind the player screen.
 
   const keyExtractor = useCallback((item: Sermon) => item.id, []);
 

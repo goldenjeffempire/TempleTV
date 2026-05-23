@@ -21,6 +21,7 @@ import React, {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import {
   Alert,
@@ -58,6 +59,11 @@ import { useWatchHistory } from "@/hooks/useWatchHistory";
 import { useWatchProgress } from "@/hooks/useWatchProgress";
 import { useBroadcastSync } from "@/hooks/useBroadcastSync";
 import { useVideos } from "@/hooks/useVideos";
+import {
+  playbackQueue,
+  getNextSermon,
+  getPrevSermon,
+} from "@/lib/playbackQueue";
 import { VideoCard } from "@/components/VideoCard";
 import { sendReaction, submitPrayerRequest, recordView, type ReactionType } from "@/services/api";
 import type { Sermon } from "@/types";
@@ -382,6 +388,47 @@ export default function PlayerScreen() {
   const isYoutube = !!youtubeId && !hlsUrl;
   const isHls     = !!hlsUrl;
 
+  // ── Library Prev/Next + autoplay countdown ───────────────────────────────
+  // VOD-only feature. Live broadcasts always own their own queue (driven by
+  // the station orchestrator) so prev/next/countdown stay hidden for them.
+  const isVod = !isLive && (isYoutube || isHls);
+  const queueSnapshot = useSyncExternalStore(
+    playbackQueue.subscribe,
+    playbackQueue.getSnapshot,
+    playbackQueue.getSnapshot,
+  );
+  // The queue is only treated as "owned by this watch session" when its
+  // pointer matches the currently-playing id AND that id exists in the
+  // items array. This guards against three failure modes:
+  //   • Deep-link / push notification arrival — the queue may still hold
+  //     a stale snapshot from a previous library tap.
+  //   • Continue Watching cards — they push to /player without seeding.
+  //   • Library `extend()` keeps the items list current, but never moves
+  //     the pointer, so an unseeded entry won't accidentally hijack it.
+  // navigateToRelated (this screen) and navigateToSermon (library) are the
+  // only paths that legitimately call `playbackQueue.set/setCurrent`, so
+  // the comparison below is a reliable "did the user enter from a seeded
+  // surface?" check.
+  const queueIsSeededForThisVideo =
+    isVod &&
+    !!videoId &&
+    videoId !== "live" &&
+    queueSnapshot.currentId === videoId &&
+    queueSnapshot.items.some((s) => s.id === videoId);
+
+  const prevSermon = queueIsSeededForThisVideo ? getPrevSermon(queueSnapshot) : null;
+  const nextSermon = queueIsSeededForThisVideo ? getNextSermon(queueSnapshot) : null;
+
+  // Pre-resolve the upcoming HLS URL so we can hand it to LocalVideoPlayer's
+  // A/B inactive slot. Only valid when the next item is HLS/local — the
+  // YoutubePlayer surface has no preload primitive, so YT→YT advances will
+  // hit a brief load spinner (acceptable: YT itself caches the first frame).
+  const nextHlsForPreload = useMemo(() => {
+    if (!nextSermon) return undefined;
+    if (nextSermon.videoSource === "youtube") return undefined;
+    return nextSermon.hlsMasterUrl ?? nextSermon.localVideoUrl ?? undefined;
+  }, [nextSermon]);
+
   // Inject structured data (VideoObject or BroadcastEvent) for web-embedded
   // and PWA surfaces. This is a no-op on bare React Native / Expo Go — the
   // hook checks `typeof document` before writing to the DOM.
@@ -705,6 +752,9 @@ export default function PlayerScreen() {
   }, [videoId, title, thumbnailUrl, youtubeId, description, duration, category, preacher, isYoutube, hlsUrl, toggleFavorite]);
 
   const navigateToRelated = useCallback((s: Sermon) => {
+    // Keep the shared queue pointer in sync so Prev/Next on the next render
+    // pivot around the newly-loaded item rather than the previous one.
+    playbackQueue.setCurrent(s.id);
     router.replace({
       pathname: "/player",
       params: {
@@ -720,6 +770,106 @@ export default function PlayerScreen() {
       },
     });
   }, []);
+
+  // ── Autoplay countdown state ────────────────────────────────────────────
+  // Counts down 5 → 1 after a VOD ends. `null` = no countdown active.
+  // Reaches 0 → navigate to nextSermon. Cancelled by user tap, by the
+  // video id changing (already moved on), or component unmount.
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const countdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Deferred-fire handle for the terminal tick. The interval callback can't
+  // navigate inline (router.replace inside a state setter is illegal), so
+  // it schedules a 0-ms setTimeout instead. That timeout must also be
+  // cancellable — otherwise a Cancel/Prev/unmount in the same frame as
+  // count==1 still produces a delayed navigation against a stale pivot.
+  const countdownFireRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Navigation-in-flight latch. Set immediately on Prev/Next tap and
+  // cleared once the router actually delivers a new `videoId` param.
+  // Without this, a rapid double-tap on Next would read the just-updated
+  // queue pointer and skip an item — Next #2 would derive from
+  // nextSermon's neighbour instead of the intended immediate next.
+  const navInFlightRef = useRef(false);
+
+  const stopCountdown = useCallback(() => {
+    if (countdownTimerRef.current) {
+      clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
+    if (countdownFireRef.current) {
+      clearTimeout(countdownFireRef.current);
+      countdownFireRef.current = null;
+    }
+    setCountdown(null);
+  }, []);
+
+  const goToNext = useCallback(() => {
+    if (navInFlightRef.current) return;
+    if (!nextSermon) return;
+    navInFlightRef.current = true;
+    stopCountdown();
+    navigateToRelated(nextSermon);
+  }, [nextSermon, stopCountdown, navigateToRelated]);
+
+  const goToPrev = useCallback(() => {
+    if (navInFlightRef.current) return;
+    if (!prevSermon) return;
+    navInFlightRef.current = true;
+    stopCountdown();
+    navigateToRelated(prevSermon);
+  }, [prevSermon, stopCountdown, navigateToRelated]);
+
+  const startCountdown = useCallback(() => {
+    // Self-guarded: silently no-ops for live broadcasts or end-of-queue,
+    // so the four onEnd call sites don't need to know whether countdown
+    // is appropriate for the current source.
+    if (!isVod || !nextSermon) return;
+    if (countdownTimerRef.current) return; // already running
+    setCountdown(5);
+    countdownTimerRef.current = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev === null) return null;
+        if (prev <= 1) {
+          if (countdownTimerRef.current) {
+            clearInterval(countdownTimerRef.current);
+            countdownTimerRef.current = null;
+          }
+          // Defer navigation outside the state setter and track the
+          // handle so stopCountdown() can cancel it if the user reacts
+          // within the same frame as count==1.
+          countdownFireRef.current = setTimeout(() => {
+            countdownFireRef.current = null;
+            goToNext();
+          }, 0);
+          return null;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  }, [isVod, nextSermon, goToNext]);
+
+  // Cancel the countdown automatically when the screen unmounts or the
+  // user advances to another item (videoId changes). Without this, a
+  // ticking timer (or deferred terminal-tick fire) could outlive its
+  // render and fire navigation against the wrong "current" pivot.
+  useEffect(() => {
+    return () => {
+      if (countdownTimerRef.current) {
+        clearInterval(countdownTimerRef.current);
+        countdownTimerRef.current = null;
+      }
+      if (countdownFireRef.current) {
+        clearTimeout(countdownFireRef.current);
+        countdownFireRef.current = null;
+      }
+    };
+  }, []);
+  useEffect(() => {
+    // Route delivered a new video id — clear the in-flight latch so the
+    // user can immediately tap Prev/Next again, and cancel any countdown
+    // that was racing the transition.
+    navInFlightRef.current = false;
+    stopCountdown();
+  }, [videoId, stopCountdown]);
 
   return (
     <View style={[styles.root, { backgroundColor: c.background }]}>
@@ -750,7 +900,7 @@ export default function PlayerScreen() {
               startPositionSecs={startPositionSecs}
               playerHeight={playerHeight}
               isBroadcastLive={isLive}
-              onEnd={() => {}}
+              onEnd={startCountdown}
               onProgress={handleProgress}
             />
           ) : isHls ? (
@@ -763,7 +913,9 @@ export default function PlayerScreen() {
               startPositionMs={livePositionMs}
               isBroadcastLive={isLive}
               playerHeightOverride={playerHeight}
-              onEnd={() => {}}
+              nextVideoUrl={nextHlsForPreload}
+              nextHlsMasterUrl={nextHlsForPreload}
+              onEnd={startCountdown}
               onError={() => {
                 Alert.alert(
                   "Playback Error",
@@ -831,10 +983,54 @@ export default function PlayerScreen() {
             </Pressable>
           )}
 
+          {/* Library Prev/Next chrome — VOD only, only when the queue has
+              siblings to navigate to. The buttons share the same visual
+              language as the back/fullscreen pills so the player feels
+              consistent across surfaces. */}
+          {isVod && (!!prevSermon || !!nextSermon) && (
+            <>
+              {prevSermon && (
+                <Pressable
+                  onPress={goToPrev}
+                  style={styles.prevBtnInline}
+                  hitSlop={16}
+                  accessibilityLabel={`Previous video: ${prevSermon.title}`}
+                  accessibilityRole="button"
+                >
+                  <Feather name="skip-back" size={15} color="#fff" />
+                </Pressable>
+              )}
+              {nextSermon && (
+                <Pressable
+                  onPress={goToNext}
+                  style={[styles.nextBtnInline, !isYoutube && { right: 56 }]}
+                  hitSlop={16}
+                  accessibilityLabel={`Next video: ${nextSermon.title}`}
+                  accessibilityRole="button"
+                >
+                  <Feather name="skip-forward" size={15} color="#fff" />
+                </Pressable>
+              )}
+            </>
+          )}
+
           {/* Floating emoji reactions — rendered over the video, pointerEvents="none"
               so the back/badge/fullscreen controls still receive touches. Only
               mounted during live broadcasts; idle during VOD playback. */}
           {isLive && <FloatingReactions ref={reactionsRef} />}
+
+          {/* Autoplay countdown overlay — covers the player surface when a
+              VOD ends and another item is queued. Self-hides on Cancel /
+              Play Now / video advance / unmount. */}
+          {countdown !== null && nextSermon && (
+            <CountdownOverlay
+              next={nextSermon}
+              count={countdown}
+              onPlayNow={goToNext}
+              onCancel={stopCountdown}
+              colors={c}
+            />
+          )}
         </View>
 
         {/* ── Title & Metadata ──────────────────────────────────────────── */}
@@ -1018,7 +1214,7 @@ export default function PlayerScreen() {
                 startPositionSecs={Math.round(fsStartPositionMs / 1000)}
                 playerHeight={height}
                 isBroadcastLive={isLive}
-                onEnd={() => {}}
+                onEnd={startCountdown}
                 onProgress={handleProgress}
               />
             ) : isHls ? (
@@ -1031,7 +1227,9 @@ export default function PlayerScreen() {
                 startPositionMs={fsStartPositionMs}
                 isBroadcastLive
                 fillContainer
-                onEnd={() => {}}
+                nextVideoUrl={nextHlsForPreload}
+                nextHlsMasterUrl={nextHlsForPreload}
+                onEnd={startCountdown}
                 onError={exitFullscreen}
                 onProgress={handleProgressWithPosition}
                 onAspectRatioChange={handleAspectRatioChange}
@@ -1058,6 +1256,17 @@ export default function PlayerScreen() {
               but below the controls overlay so particles are always visible
               regardless of whether the controls are hidden. */}
           {isLive && <FloatingReactions ref={fsReactionsRef} />}
+
+          {/* Autoplay countdown overlay — fullscreen surface */}
+          {countdown !== null && nextSermon && (
+            <CountdownOverlay
+              next={nextSermon}
+              count={countdown}
+              onPlayNow={goToNext}
+              onCancel={stopCountdown}
+              colors={c}
+            />
+          )}
 
           {/* ── Controls overlay — tap anywhere on video to show/hide ── */}
           <Pressable
@@ -1134,6 +1343,19 @@ export default function PlayerScreen() {
                 )}
 
                 <View style={[styles.fsBottomBar, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+                  {/* Library prev — VOD only when queue has a predecessor */}
+                  {isVod && prevSermon && (
+                    <Pressable
+                      onPress={goToPrev}
+                      style={styles.fsIconBtn}
+                      hitSlop={12}
+                      accessibilityLabel={`Previous video: ${prevSermon.title}`}
+                      accessibilityRole="button"
+                    >
+                      <Feather name="skip-back" size={20} color="#fff" />
+                    </Pressable>
+                  )}
+
                   {/* Play / Pause */}
                   <Pressable
                     onPress={handleFsPlayPause}
@@ -1144,6 +1366,19 @@ export default function PlayerScreen() {
                   >
                     <Feather name={isPlaying ? "pause" : "play"} size={22} color="#fff" />
                   </Pressable>
+
+                  {/* Library next — VOD only when queue has a successor */}
+                  {isVod && nextSermon && (
+                    <Pressable
+                      onPress={goToNext}
+                      style={styles.fsIconBtn}
+                      hitSlop={12}
+                      accessibilityLabel={`Next video: ${nextSermon.title}`}
+                      accessibilityRole="button"
+                    >
+                      <Feather name="skip-forward" size={20} color="#fff" />
+                    </Pressable>
+                  )}
 
                   {/* Current time */}
                   <Text style={styles.fsTimeText}>
@@ -1179,6 +1414,181 @@ export default function PlayerScreen() {
   );
 }
 
+// ─── Countdown Overlay ───────────────────────────────────────────────────────
+
+/**
+ * Post-video autoplay countdown card.
+ *
+ * Renders absolutely over its parent (inline player shell or fullscreen
+ * modal) with a translucent scrim that dims the last video frame and a
+ * small card surfacing the next item's poster + title + a 5→1 counter.
+ *
+ * UX contract:
+ *  • Cancel        → user opts out, video stays paused on its end frame
+ *  • Play Now      → fires immediately (skip the remaining countdown)
+ *  • Tapping scrim → does nothing (avoids accidental dismiss / autoplay)
+ *
+ * Renders independently of theme — the overlay is on top of black video
+ * pixels, so it uses fixed dark-mode tokens rather than `useColors()`.
+ */
+function CountdownOverlay({
+  next,
+  count,
+  onPlayNow,
+  onCancel,
+  colors: _colors,
+}: {
+  next: Sermon;
+  count: number;
+  onPlayNow: () => void;
+  onCancel: () => void;
+  colors: ReturnType<typeof useColors>;
+}) {
+  return (
+    <View style={overlayStyles.root}>
+      {/* Scrim absorbs taps so touches outside the card don't pass through
+          to underlying controls (e.g. the fullscreen tap-to-toggle layer
+          or the back button). Empty onPress is intentional — we want the
+          overlay to be modal-ish without hijacking it for autoplay. */}
+      <Pressable
+        style={overlayStyles.scrim}
+        onPress={() => {}}
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+      />
+      <View style={overlayStyles.card}>
+        <Text style={overlayStyles.kicker}>UP NEXT IN {count}s</Text>
+        {next.thumbnailUrl ? (
+          <Image source={{ uri: next.thumbnailUrl }} style={overlayStyles.thumb} />
+        ) : (
+          <View style={[overlayStyles.thumb, { backgroundColor: "#1a1a1a" }]} />
+        )}
+        <Text style={overlayStyles.title} numberOfLines={2}>{next.title}</Text>
+        {!!next.preacher && (
+          <Text style={overlayStyles.sub} numberOfLines={1}>{next.preacher}</Text>
+        )}
+        <View style={overlayStyles.btnRow}>
+          <Pressable
+            onPress={onCancel}
+            style={({ pressed }) => [
+              overlayStyles.btn,
+              overlayStyles.btnGhost,
+              pressed && { opacity: 0.7 },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="Cancel autoplay"
+          >
+            <Text style={overlayStyles.btnGhostText}>Cancel</Text>
+          </Pressable>
+          <Pressable
+            onPress={onPlayNow}
+            style={({ pressed }) => [
+              overlayStyles.btn,
+              overlayStyles.btnPrimary,
+              pressed && { opacity: 0.85 },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel={`Play next now: ${next.title}`}
+          >
+            <Feather name="play" size={14} color="#fff" />
+            <Text style={overlayStyles.btnPrimaryText}>Play Now</Text>
+          </Pressable>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+const overlayStyles = StyleSheet.create({
+  root: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 30,
+  },
+  scrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.65)",
+  },
+  card: {
+    width: "84%",
+    maxWidth: 360,
+    backgroundColor: "rgba(20,20,22,0.96)",
+    borderRadius: 14,
+    padding: 14,
+    alignItems: "center",
+    gap: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.10)",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 10,
+  },
+  kicker: {
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 1.2,
+    color: "#DC2626",
+  },
+  thumb: {
+    width: "100%",
+    aspectRatio: 16 / 9,
+    borderRadius: 8,
+    backgroundColor: "#000",
+  },
+  title: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#fff",
+    textAlign: "center",
+    letterSpacing: -0.1,
+  },
+  sub: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: "rgba(255,255,255,0.65)",
+  },
+  btnRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 4,
+    width: "100%",
+  },
+  btn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  btnGhost: {
+    backgroundColor: "rgba(255,255,255,0.10)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.18)",
+  },
+  btnGhostText: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  btnPrimary: {
+    backgroundColor: "#DC2626",
+  },
+  btnPrimaryText: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+});
+
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
@@ -1188,6 +1598,8 @@ const styles = StyleSheet.create({
   backBtn: { position: "absolute", left: 12, zIndex: 20, width: 38, height: 38, borderRadius: 19, backgroundColor: "rgba(0,0,0,0.50)", alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.4, shadowRadius: 4, elevation: 5 },
   liveBadgePos: { position: "absolute", right: 12, zIndex: 20 },
   fullscreenBtn: { position: "absolute", right: 12, bottom: 12, zIndex: 20, width: 34, height: 34, borderRadius: 17, backgroundColor: "rgba(0,0,0,0.50)", alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.4, shadowRadius: 4, elevation: 5 },
+  prevBtnInline: { position: "absolute", left: 12, bottom: 12, zIndex: 20, width: 34, height: 34, borderRadius: 17, backgroundColor: "rgba(0,0,0,0.50)", alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.4, shadowRadius: 4, elevation: 5 },
+  nextBtnInline: { position: "absolute", right: 12, bottom: 12, zIndex: 20, width: 34, height: 34, borderRadius: 17, backgroundColor: "rgba(0,0,0,0.50)", alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.4, shadowRadius: 4, elevation: 5 },
 
   fsRoot: { flex: 1, backgroundColor: "#000" },
   fsPlayerWrap: { flex: 1 },
