@@ -43,22 +43,22 @@ export declare const AuthTokensSchema: z.ZodObject<{
         role: z.ZodEnum<["admin", "editor", "user", "system"]>;
         displayName: z.ZodString;
     }, "strip", z.ZodTypeAny, {
-        email: string;
-        role: "system" | "admin" | "editor" | "user";
         id: string;
+        email: string;
         displayName: string;
+        role: "system" | "admin" | "editor" | "user";
     }, {
-        email: string;
-        role: "system" | "admin" | "editor" | "user";
         id: string;
+        email: string;
         displayName: string;
+        role: "system" | "admin" | "editor" | "user";
     }>;
 }, "strip", z.ZodTypeAny, {
     user: {
-        email: string;
-        role: "system" | "admin" | "editor" | "user";
         id: string;
+        email: string;
         displayName: string;
+        role: "system" | "admin" | "editor" | "user";
     };
     accessToken: string;
     refreshToken: string;
@@ -66,10 +66,10 @@ export declare const AuthTokensSchema: z.ZodObject<{
     refreshTokenExpiresIn: number;
 }, {
     user: {
-        email: string;
-        role: "system" | "admin" | "editor" | "user";
         id: string;
+        email: string;
         displayName: string;
+        role: "system" | "admin" | "editor" | "user";
     };
     accessToken: string;
     refreshToken: string;
@@ -105,22 +105,22 @@ export declare const LoginResponseSchema: z.ZodUnion<[z.ZodObject<{
         role: z.ZodEnum<["admin", "editor", "user", "system"]>;
         displayName: z.ZodString;
     }, "strip", z.ZodTypeAny, {
-        email: string;
-        role: "system" | "admin" | "editor" | "user";
         id: string;
+        email: string;
         displayName: string;
+        role: "system" | "admin" | "editor" | "user";
     }, {
-        email: string;
-        role: "system" | "admin" | "editor" | "user";
         id: string;
+        email: string;
         displayName: string;
+        role: "system" | "admin" | "editor" | "user";
     }>;
 }, "strip", z.ZodTypeAny, {
     user: {
-        email: string;
-        role: "system" | "admin" | "editor" | "user";
         id: string;
+        email: string;
         displayName: string;
+        role: "system" | "admin" | "editor" | "user";
     };
     accessToken: string;
     refreshToken: string;
@@ -128,10 +128,10 @@ export declare const LoginResponseSchema: z.ZodUnion<[z.ZodObject<{
     refreshTokenExpiresIn: number;
 }, {
     user: {
-        email: string;
-        role: "system" | "admin" | "editor" | "user";
         id: string;
+        email: string;
         displayName: string;
+        role: "system" | "admin" | "editor" | "user";
     };
     accessToken: string;
     refreshToken: string;
@@ -215,18 +215,18 @@ export declare const MeResponseSchema: z.ZodObject<{
     createdAt: z.ZodString;
     mfaEnabled: z.ZodBoolean;
 }, "strip", z.ZodTypeAny, {
-    email: string;
-    role: "system" | "admin" | "editor" | "user";
     id: string;
     createdAt: string;
+    email: string;
     displayName: string;
+    role: "system" | "admin" | "editor" | "user";
     mfaEnabled: boolean;
 }, {
-    email: string;
-    role: "system" | "admin" | "editor" | "user";
     id: string;
     createdAt: string;
+    email: string;
     displayName: string;
+    role: "system" | "admin" | "editor" | "user";
     mfaEnabled: boolean;
 }>;
 /**

@@ -44,6 +44,10 @@ pool.on("acquire", updatePoolMetrics);
 pool.on("remove", updatePoolMetrics);
 
 export const db = drizzle(pool, { schema });
+// Export the underlying pool so call-sites that require a pinned connection
+// (advisory locks, LISTEN/NOTIFY, COPY) can `pool.connect()` and own the
+// client lifecycle. Most consumers should still go through `db`.
+export const pgPool = pool;
 export { schema };
 export type Database = typeof db;
 

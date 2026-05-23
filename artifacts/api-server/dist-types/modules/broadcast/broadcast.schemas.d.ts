@@ -179,6 +179,7 @@ export declare const BroadcastSnapshotSchema: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     channelId: string;
     failoverHlsUrl: string | null;
+    generatedAt: string;
     current: {
         id: string;
         youtubeId: string;
@@ -192,7 +193,6 @@ export declare const BroadcastSnapshotSchema: z.ZodObject<{
         startsAt: string;
         hlsMasterUrl?: string | null | undefined;
     } | null;
-    generatedAt: string;
     next: {
         id: string;
         youtubeId: string;
@@ -223,6 +223,7 @@ export declare const BroadcastSnapshotSchema: z.ZodObject<{
 }, {
     channelId: string;
     failoverHlsUrl: string | null;
+    generatedAt: string;
     current: {
         id: string;
         youtubeId: string;
@@ -236,7 +237,6 @@ export declare const BroadcastSnapshotSchema: z.ZodObject<{
         startsAt: string;
         hlsMasterUrl?: string | null | undefined;
     } | null;
-    generatedAt: string;
     next: {
         id: string;
         youtubeId: string;
@@ -528,6 +528,7 @@ export declare const BroadcastCurrentResultSchema: z.ZodObject<{
     totalSecs: number;
     queueLength: number;
     failoverHlsUrl?: string | null | undefined;
+    serverTimeMs?: number | undefined;
     upcomingItems?: {
         id: string;
         youtubeId: string;
@@ -543,7 +544,6 @@ export declare const BroadcastCurrentResultSchema: z.ZodObject<{
     }[] | undefined;
     progressPercent?: number | undefined;
     syncedAt?: string | undefined;
-    serverTimeMs?: number | undefined;
     currentItemEndsAtMs?: number | null | undefined;
     itemStartEpochSecs?: number | null | undefined;
     failoverReason?: string | null | undefined;
@@ -591,6 +591,7 @@ export declare const BroadcastCurrentResultSchema: z.ZodObject<{
     totalSecs: number;
     queueLength: number;
     failoverHlsUrl?: string | null | undefined;
+    serverTimeMs?: number | undefined;
     upcomingItems?: {
         id: string;
         youtubeId: string;
@@ -606,7 +607,6 @@ export declare const BroadcastCurrentResultSchema: z.ZodObject<{
     }[] | undefined;
     progressPercent?: number | undefined;
     syncedAt?: string | undefined;
-    serverTimeMs?: number | undefined;
     currentItemEndsAtMs?: number | null | undefined;
     itemStartEpochSecs?: number | null | undefined;
     failoverReason?: string | null | undefined;

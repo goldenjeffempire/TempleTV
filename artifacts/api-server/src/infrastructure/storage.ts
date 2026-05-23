@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { sql } from "drizzle-orm";
-import { db } from "./db.js";
+import { db, pgPool } from "./db.js";
 import { logger } from "./logger.js";
 
 /**
@@ -468,6 +468,40 @@ class DatabaseObjectStorage implements ObjectStorage {
    * orphaned rows that the storage GC sweep can clean later).
    */
   async completeMultipartUpload({ key, uploadId, parts }: { key: string; uploadId: string; parts: MultipartPart[] }): Promise<{ key: string; etag: string | null; location: string | null }> {
+    // ── TOCTOU guard via PostgreSQL session-level advisory lock ────────────
+    // Two concurrent /finalize calls for the same upload (client retry while
+    // the first is still assembling) would otherwise both INSERT…ON CONFLICT
+    // race on the seed row and then interleave UPDATE …|| src.data appends,
+    // producing a corrupt assembled blob whose size_bytes no longer equals
+    // the sum of the parts.
+    //
+    // CRITICAL: PostgreSQL session-scoped advisory locks are tied to the
+    // physical connection. The Drizzle `db` instance is backed by a pg pool,
+    // so two `db.execute` calls can land on different connections — the lock
+    // would be released the moment the lock-acquire call returns the
+    // connection to the pool. We therefore pin a single client for the
+    // entire lock → assembly → unlock critical section. Connection loss
+    // releases the lock automatically.
+    let lockKey = 0;
+    for (let i = 0; i < uploadId.length; i++) {
+      lockKey = ((lockKey << 5) - lockKey + uploadId.charCodeAt(i)) | 0;
+    }
+    const client = await pgPool.connect();
+    try {
+      await client.query("SELECT pg_advisory_lock($1::bigint)", [lockKey]);
+      try {
+        return await this._completeMultipartUploadLocked({ key, uploadId, parts });
+      } finally {
+        await client
+          .query("SELECT pg_advisory_unlock($1::bigint)", [lockKey])
+          .catch(() => {});
+      }
+    } finally {
+      client.release();
+    }
+  }
+
+  private async _completeMultipartUploadLocked({ key, uploadId, parts }: { key: string; uploadId: string; parts: MultipartPart[] }): Promise<{ key: string; etag: string | null; location: string | null }> {
     const sorted = [...parts].sort((a, b) => a.partNumber - b.partNumber);
 
     // Resolve content-type from the _meta record stored at createMultipartUpload time.

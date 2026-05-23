@@ -85,13 +85,57 @@ interface NativeSession {
   machineUnsub: () => void;
 }
 
-/** Singleton sessions keyed by baseUrl. Never deleted — transport persists
- * across React navigations so remounts get instant-resume instead of BOOTSTRAP. */
-const sessions = new Map<string, NativeSession>();
+/** Singleton sessions keyed by baseUrl. Transport persists across React
+ * navigations so remounts get instant-resume instead of BOOTSTRAP. A
+ * background janitor (see startJanitor) evicts sessions that have had zero
+ * subscribers for SESSION_IDLE_EVICT_MS so backgrounded apps don't keep a
+ * dead WebSocket and FSM in memory forever. */
+const sessions = new Map<string, { session: NativeSession; lastIdleAtMs: number | null }>();
+
+const SESSION_IDLE_EVICT_MS = 5 * 60 * 1000;
+let janitorInterval: ReturnType<typeof setInterval> | null = null;
+
+function startJanitor(): void {
+  if (janitorInterval !== null) return;
+  if (typeof setInterval === "undefined") return;
+  janitorInterval = setInterval(() => {
+    const now = Date.now();
+    for (const [baseUrl, entry] of sessions) {
+      const hasListeners =
+        entry.session.snapshotListeners.size > 0 ||
+        entry.session.connectedListeners.size > 0;
+      if (hasListeners) {
+        entry.lastIdleAtMs = null;
+        continue;
+      }
+      if (entry.lastIdleAtMs === null) {
+        entry.lastIdleAtMs = now;
+        continue;
+      }
+      if (now - entry.lastIdleAtMs >= SESSION_IDLE_EVICT_MS) {
+        try {
+          entry.session.machineUnsub();
+          entry.session.transport.stop?.();
+        } catch {
+          /* best-effort */
+        }
+        sessions.delete(baseUrl);
+      }
+    }
+    if (sessions.size === 0 && janitorInterval !== null) {
+      clearInterval(janitorInterval);
+      janitorInterval = null;
+    }
+  }, 60_000);
+  (janitorInterval as unknown as { unref?: () => void }).unref?.();
+}
 
 function getOrCreateSession(baseUrl: string): NativeSession {
   const existing = sessions.get(baseUrl);
-  if (existing) return existing;
+  if (existing) {
+    existing.lastIdleAtMs = null;
+    return existing.session;
+  }
 
   // Forward-declare so the machine's IntentHandler closure can reference it.
   let session!: NativeSession;
@@ -161,7 +205,8 @@ function getOrCreateSession(baseUrl: string): NativeSession {
     machineUnsub,
   };
 
-  sessions.set(baseUrl, session);
+  sessions.set(baseUrl, { session, lastIdleAtMs: null });
+  startJanitor();
   return session;
 }
 

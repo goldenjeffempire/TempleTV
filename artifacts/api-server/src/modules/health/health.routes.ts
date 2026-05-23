@@ -6,6 +6,7 @@ import { db, schema } from "../../infrastructure/db.js";
 import { cache } from "../../infrastructure/cache.js";
 import { storage } from "../../infrastructure/storage.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
+import { broadcastOrchestrator } from "../broadcast-v2/engine/broadcast-orchestrator.js";
 import { streamHealthAggregator } from "../broadcast/stream-health.js";
 import { liveOverridesService } from "../live-overrides/live-overrides.service.js";
 import { env } from "../../config/env.js";
@@ -18,6 +19,7 @@ const HealthSchema = z.object({
     database: z.enum(["ok", "down"]),
     cache: z.enum(["ok", "down"]),
     storage: z.enum(["ok", "disabled"]),
+    broadcastV2: z.enum(["ok", "stuck", "down"]),
   }),
   broadcast: z.object({
     channelId: z.string(),
@@ -118,10 +120,33 @@ export async function healthRoutes(app: FastifyInstance) {
       const storageEnabled = storage().enabled;
       const storageDisabledInProd = !storageEnabled && env.NODE_ENV === "production";
 
+      // Broadcast-v2 health: surface stuck-orchestrator state (boot succeeded
+      // but sequence never advanced past 0 while items exist for >30 s).
+      // Uses the orchestrator's own start timestamp — NOT the health module's
+      // load time — so a freshly started orchestrator on a long-lived process
+      // is not falsely flagged as stuck.
+      let v2Status: "ok" | "stuck" | "down" = "ok";
+      try {
+        if (!broadcastOrchestrator.isStarted()) {
+          v2Status = "down";
+        } else {
+          const seq = broadcastOrchestrator.getSequence();
+          const itemCount = broadcastOrchestrator.getItemCount();
+          const startedAtMs = broadcastOrchestrator.getStartedAtMs();
+          const orchestratorUptimeMs = startedAtMs > 0 ? Date.now() - startedAtMs : 0;
+          if (seq === 0 && itemCount > 0 && orchestratorUptimeMs > 30_000) {
+            v2Status = "stuck";
+          }
+        }
+      } catch {
+        v2Status = "down";
+      }
+
       const status: "ok" | "degraded" | "down" =
         !dbOk ? "down"
         : storageDisabledInProd ? "down"
-        : !cacheOk ? "degraded"
+        : v2Status === "down" ? "down"
+        : (!cacheOk || v2Status === "stuck") ? "degraded"
         : "ok";
       const body = {
         status,
@@ -131,6 +156,7 @@ export async function healthRoutes(app: FastifyInstance) {
           database: dbOk ? "ok" as const : "down" as const,
           cache: cacheOk ? "ok" as const : "down" as const,
           storage: storageEnabled ? "ok" as const : "disabled" as const,
+          broadcastV2: v2Status,
         },
         broadcast: {
           channelId: snap.channelId,
@@ -138,7 +164,7 @@ export async function healthRoutes(app: FastifyInstance) {
           hasCurrent: snap.current !== null,
         },
       };
-      if (status === "down" || status === "degraded" && storageDisabledInProd) reply.code(503);
+      if (status === "down") reply.code(503);
       return body;
     },
   );

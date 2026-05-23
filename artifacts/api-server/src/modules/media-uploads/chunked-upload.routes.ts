@@ -1203,6 +1203,13 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               { err, sessionId, videoId, assemblyMs: Date.now() - assemblyStartMs },
               "[finalize:bg] ASSEMBLY FAILED — resetting session, marking video failed",
             );
+            // Best-effort orphan cleanup: if the seed INSERT succeeded but a
+            // later append failed, a partially-assembled blob remains at the
+            // final key. Delete it so the storage GC doesn't carry it for
+            // 4 h and the next finalize retry starts from a clean slate.
+            if (session.objectKey) {
+              void storage().deleteObject(session.objectKey).catch(() => {});
+            }
             await Promise.allSettled([
               db.update(videos).set({ transcodingStatus: "failed" }).where(eq(videos.id, videoId)),
               db

@@ -39,8 +39,8 @@ export declare const PlaylistVideoSchema: z.ZodObject<{
     sortOrder: z.ZodNumber;
     addedAt: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    id: string;
     duration: string;
+    id: string;
     youtubeId: string;
     title: string;
     thumbnailUrl: string;
@@ -50,8 +50,8 @@ export declare const PlaylistVideoSchema: z.ZodObject<{
     sortOrder: number;
     addedAt: string;
 }, {
-    id: string;
     duration: string;
+    id: string;
     youtubeId: string;
     title: string;
     thumbnailUrl: string;
@@ -83,8 +83,8 @@ export declare const PlaylistDetailSchema: z.ZodObject<{
         sortOrder: z.ZodNumber;
         addedAt: z.ZodString;
     }, "strip", z.ZodTypeAny, {
-        id: string;
         duration: string;
+        id: string;
         youtubeId: string;
         title: string;
         thumbnailUrl: string;
@@ -94,8 +94,8 @@ export declare const PlaylistDetailSchema: z.ZodObject<{
         sortOrder: number;
         addedAt: string;
     }, {
-        id: string;
         duration: string;
+        id: string;
         youtubeId: string;
         title: string;
         thumbnailUrl: string;
@@ -114,8 +114,8 @@ export declare const PlaylistDetailSchema: z.ZodObject<{
     createdAt: string;
     updatedAt: string;
     videos: {
-        id: string;
         duration: string;
+        id: string;
         youtubeId: string;
         title: string;
         thumbnailUrl: string;
@@ -135,8 +135,8 @@ export declare const PlaylistDetailSchema: z.ZodObject<{
     createdAt: string;
     updatedAt: string;
     videos: {
-        id: string;
         duration: string;
+        id: string;
         youtubeId: string;
         title: string;
         thumbnailUrl: string;
@@ -179,7 +179,6 @@ export declare const ListPlaylistsResponseSchema: z.ZodObject<{
     }>, "many">;
     total: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
-    total: number;
     items: {
         id: string;
         description: string;
@@ -190,8 +189,8 @@ export declare const ListPlaylistsResponseSchema: z.ZodObject<{
         updatedAt: string;
         videoCount: number;
     }[];
+    total: number;
 }, {
-    total: number;
     items: {
         id: string;
         description: string;
@@ -202,6 +201,7 @@ export declare const ListPlaylistsResponseSchema: z.ZodObject<{
         updatedAt: string;
         videoCount: number;
     }[];
+    total: number;
 }>;
 export declare const CreatePlaylistBodySchema: z.ZodObject<{
     name: z.ZodString;

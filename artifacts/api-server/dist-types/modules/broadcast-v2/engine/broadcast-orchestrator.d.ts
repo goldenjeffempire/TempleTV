@@ -30,15 +30,6 @@ declare class BroadcastOrchestrator extends EventEmitter {
     private queueCheckpoint;
     private failover;
     private sequence;
-    /** True while the broadcast is running from the YouTube library (no local queue content). */
-    private inYoutubeFallback;
-    /**
-     * Stable shuffled list of YouTube library items used during fallback playback.
-     * Built once when entering fallback; cleared when local content returns.
-     * Re-used on drift-poll reloads so the playing order stays stable (no disruptive
-     * cycle resets during routine 30-second self-heal ticks).
-     */
-    private youtubeFallbackCache;
     private tickTimer;
     private checkpointTimer;
     private trimTimer;
@@ -63,6 +54,13 @@ declare class BroadcastOrchestrator extends EventEmitter {
      */
     private selfHealEmptyTimer;
     private selfHealStaleTimer;
+    /**
+     * Number of consecutive empty-queue polls since the last time the queue
+     * had items. Reset to 0 the moment any item is reloaded. When this hits
+     * EMPTY_POLLS_BEFORE_LIBRARY_SCAN we fire a library scan as the 24/7
+     * continuity backstop, then reset to 0 so we don't re-scan every tick.
+     */
+    private consecutiveEmptyPolls;
     /**
      * Dirty flag for the position checkpoint.  Set whenever the orchestrator
      * emits a snapshot (state has changed).  persistCheckpoint() returns
@@ -137,6 +135,19 @@ declare class BroadcastOrchestrator extends EventEmitter {
     private lastCpItemId;
     private lastCpPositionMs;
     private lastCpWallMs;
+    /**
+     * Throttle for the "no playable local content" info log. The reload path
+     * runs on a 10 s drift-poll cadence, so without throttling this single
+     * branch produces 6 identical log lines per minute of OFF_AIR — pure noise
+     * in production. We log at most once per 60 s while the condition holds.
+     */
+    private lastOffAirLogAtMs;
+    /**
+     * Set by start() the first (and each subsequent) time the orchestrator
+     * transitions from stopped → started. Used by /readyz to differentiate
+     * "still booting" from "stuck at sequence 0".
+     */
+    private startedAtWallMs;
     constructor();
     /**
      * Boot the orchestrator. NEVER throws — any failure falls back to a safe
@@ -390,19 +401,14 @@ declare class BroadcastOrchestrator extends EventEmitter {
         allBlockedSinceMs: number | null;
         allBlockedDurationMs: number | null;
     };
-    /** YouTube fallback diagnostics for /health. */
-    getYoutubeFallbackInfo(): {
-        active: boolean;
-        cachedItemCount: number;
-    };
     /**
-     * Clears the in-memory YouTube fallback cache so the next reload
-     * re-fetches and re-shuffles the library. Keeps `inYoutubeFallback=true`
-     * so the reload stays in fallback mode — it just gets a fresh order.
-     * Call this when an operator wants a new shuffle without restarting
-     * the server.
+     * Wall-clock timestamp (ms) of the moment `start()` last transitioned the
+     * orchestrator from stopped → started.  Returns 0 before the first
+     * successful boot.  Used by /readyz to decide whether enough time has
+     * passed since boot to call a still-at-sequence-0 orchestrator "stuck"
+     * rather than just "still booting".
      */
-    clearYoutubeFallbackCache(): void;
+    getStartedAtMs(): number;
     isStarted(): boolean;
 }
 export declare const broadcastOrchestrator: BroadcastOrchestrator;

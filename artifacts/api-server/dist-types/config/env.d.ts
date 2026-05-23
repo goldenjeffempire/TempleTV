@@ -36,6 +36,7 @@ declare const Env: z.ZodObject<{
     SCHEDULED_NOTIF_MAX_ATTEMPTS: z.ZodDefault<z.ZodNumber>;
     TRANSCODER_POLL_MS: z.ZodDefault<z.ZodNumber>;
     TRANSCODER_DISABLE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
+    BROADCAST_AUTO_ENQUEUE_DISABLE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
     TRANSCODER_SCRATCH_DIR: z.ZodOptional<z.ZodString>;
     TRANSCODER_JOB_TIMEOUT_MS: z.ZodDefault<z.ZodNumber>;
     SMTP_HOST: z.ZodOptional<z.ZodString>;
@@ -95,6 +96,7 @@ declare const Env: z.ZodObject<{
     SCHEDULED_NOTIF_MAX_ATTEMPTS: number;
     TRANSCODER_POLL_MS: number;
     TRANSCODER_DISABLE: boolean;
+    BROADCAST_AUTO_ENQUEUE_DISABLE: boolean;
     TRANSCODER_JOB_TIMEOUT_MS: number;
     SMTP_PORT: number;
     SMTP_FROM_NAME: string;
@@ -168,6 +170,7 @@ declare const Env: z.ZodObject<{
     SCHEDULED_NOTIF_MAX_ATTEMPTS?: number | undefined;
     TRANSCODER_POLL_MS?: number | undefined;
     TRANSCODER_DISABLE?: string | boolean | undefined;
+    BROADCAST_AUTO_ENQUEUE_DISABLE?: string | boolean | undefined;
     TRANSCODER_SCRATCH_DIR?: string | undefined;
     TRANSCODER_JOB_TIMEOUT_MS?: number | undefined;
     SMTP_HOST?: string | undefined;

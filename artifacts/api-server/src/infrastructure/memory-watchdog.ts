@@ -19,6 +19,20 @@ import { processRssGauge, SERVICE_LABELS } from "./metrics.js";
 
 const SAMPLE_INTERVAL_MS = 30_000;
 const SUSTAIN_SAMPLES = 3;
+/**
+ * Critical-pressure escalation:
+ *   • OVER threshold for this many consecutive samples → graceful exit
+ *   • At 30 s/sample × 10 = 5 minutes of sustained pressure
+ *
+ * Rationale: at this point the process is at high risk of OOM-kill, which is
+ * abrupt and kills in-flight uploads / SSE connections without grace. A
+ * voluntary `process.exit(1)` lets the supervisor (deployments, k8s, Replit)
+ * restart cleanly while in-flight work drains via the SIGTERM handler.
+ *
+ * Disabled in development (NODE_ENV !== "production") so working with a
+ * memory-hungry repl doesn't keep cycling the dev server.
+ */
+const CRITICAL_SAMPLES_FOR_EXIT = 10;
 
 export interface WatchdogState {
   enabled: boolean;
@@ -113,6 +127,34 @@ function sample() {
         },
       });
     }
+  }
+
+  // ── Critical escalation: voluntary exit so the supervisor restarts us ───
+  // Only in production — in dev a runaway memory bug shouldn't keep cycling
+  // the local server. The orchestrator restores broadcast position from
+  // broadcast_runtime_state and players reconnect via WS, so viewer impact
+  // is bounded by the restart time (~5 s on Replit).
+  if (
+    env.NODE_ENV === "production" &&
+    consecutiveRssOver >= CRITICAL_SAMPLES_FOR_EXIT
+  ) {
+    logger.fatal(
+      { rssMb, thresholdMb, consecutiveRssOver, criticalThreshold: CRITICAL_SAMPLES_FOR_EXIT },
+      "[memory-watchdog] CRITICAL: sustained memory pressure — initiating graceful exit (supervisor will restart)",
+    );
+    _emit?.({
+      type: "ops-alert",
+      data: {
+        level: "fatal",
+        code: "memory-critical-exit",
+        message: `RSS sustained above ${thresholdMb} MB for ${consecutiveRssOver} samples — process will exit for clean restart`,
+        rssMb,
+        thresholdMb,
+      },
+    });
+    // Give SIGTERM hook a few seconds to drain SSE/WS before forcing exit.
+    setTimeout(() => process.exit(1), 100);
+    process.kill(process.pid, "SIGTERM");
   }
 }
 

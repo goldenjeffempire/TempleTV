@@ -78,6 +78,27 @@ export const transcodingQueueDepth = new Gauge({
   registers: [promRegistry],
 });
 
+export const broadcastQueueDepth = new Gauge({
+  name: "broadcast_queue_depth",
+  help: "Number of playable items currently in the broadcast queue (after pre-resolution)",
+  labelNames: ["channel", "service", "env"] as const,
+  registers: [promRegistry],
+});
+
+export const broadcastViewerCount = new Gauge({
+  name: "broadcast_viewer_count",
+  help: "Estimated concurrent viewers on the broadcast channel (sum of WS + SSE + recent REST polls)",
+  labelNames: ["channel", "service", "env"] as const,
+  registers: [promRegistry],
+});
+
+export const broadcastQueueStuck = new Gauge({
+  name: "broadcast_queue_stuck",
+  help: "1 when the orchestrator has been unable to advance for >30 s while items are present, else 0",
+  labelNames: ["channel", "service", "env"] as const,
+  registers: [promRegistry],
+});
+
 export const dbPoolConnectionsActive = new Gauge({
   name: "db_pool_connections_active",
   help: "pg pool connections currently checked out (in-use)",

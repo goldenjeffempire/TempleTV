@@ -70,7 +70,6 @@ export declare const ListScheduleResponseSchema: z.ZodObject<{
     }>, "many">;
     total: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
-    total: number;
     items: {
         id: string;
         title: string;
@@ -83,8 +82,8 @@ export declare const ListScheduleResponseSchema: z.ZodObject<{
         contentId: string | null;
         isRecurring: boolean;
     }[];
+    total: number;
 }, {
-    total: number;
     items: {
         id: string;
         title: string;
@@ -97,6 +96,7 @@ export declare const ListScheduleResponseSchema: z.ZodObject<{
         contentId: string | null;
         isRecurring: boolean;
     }[];
+    total: number;
 }>;
 export declare const TIME_RE: RegExp;
 export declare const CreateScheduleBodySchema: z.ZodObject<{

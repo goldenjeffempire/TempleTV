@@ -88,24 +88,6 @@ export interface RawQueueRow {
 export declare const queueRepo: {
     loadActive(): Promise<RawQueueRow[]>;
     /**
-     * Load all YouTube videos from the managed_videos library for fallback
-     * broadcast playback.
-     *
-     * Returns up to `limit` rows (default 300) with a stable play-ready
-     * representation.  The caller is responsible for shuffling.
-     *
-     * Duration is parsed from the stored text column which may contain:
-     *   • ISO 8601 ("PT1H30M45S") — from the YouTube Data API
-     *   • Numeric string ("3600.5") — seconds, from some sync paths
-     * Unparseable or zero-length values fall back to 1200 s (20 minutes).
-     */
-    loadYoutubeLibrary(limit?: number): Promise<Array<{
-        youtubeId: string;
-        title: string;
-        thumbnailUrl: string | null;
-        durationSecs: number;
-    }>>;
-    /**
      * Update the duration_secs on a specific broadcast_queue row.
      *
      * Called by:

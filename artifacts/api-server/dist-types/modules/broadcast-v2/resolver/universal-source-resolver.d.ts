@@ -1,11 +1,9 @@
 import type { V2Source } from "../domain/types.js";
 export interface ResolverInput {
-    /** Primary URL (HLS preferred, then MP4, then YouTube id/url). */
+    /** Primary URL (HLS preferred, then MP4, then YouTube watch URL). */
     primaryUrl: string | null;
     /** Optional fallback MP4 URL. */
     mp4Url?: string | null;
-    /** YouTube video id (11 chars) — used when no other source is present. */
-    youtubeId?: string | null;
 }
 export interface ResolvedSource {
     source: V2Source;

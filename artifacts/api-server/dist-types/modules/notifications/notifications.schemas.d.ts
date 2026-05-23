@@ -94,9 +94,6 @@ export declare const ListNotificationsResponseSchema: z.ZodObject<{
     limit: z.ZodNumber;
     offset: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
-    limit: number;
-    offset: number;
-    total: number;
     items: {
         type: string;
         status: string;
@@ -111,10 +108,10 @@ export declare const ListNotificationsResponseSchema: z.ZodObject<{
         scheduledAt: string;
         errorMessage: string | null;
     }[];
+    total: number;
+    limit: number;
+    offset: number;
 }, {
-    limit: number;
-    offset: number;
-    total: number;
     items: {
         type: string;
         status: string;
@@ -129,6 +126,9 @@ export declare const ListNotificationsResponseSchema: z.ZodObject<{
         scheduledAt: string;
         errorMessage: string | null;
     }[];
+    total: number;
+    limit: number;
+    offset: number;
 }>;
 export declare const SendPushBodySchema: z.ZodObject<{
     title: z.ZodString;

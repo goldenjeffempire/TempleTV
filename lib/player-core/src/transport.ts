@@ -21,30 +21,18 @@ const MAX_BACKOFF_MS = 6_000;
 const INITIAL_BACKOFF_MS = 300;
 
 /**
- * Network-aware backoff cap.
+ * Maximum reconnect backoff. Previously this function returned 10_000 ms for
+ * slow-2g/2g links — which was actually *higher* than the 6 000 ms default,
+ * making slow links wait longer between reconnects (the comment claimed the
+ * opposite). The original intent (cap below a hypothetical 30 s default) was
+ * stale: MAX_BACKOFF_MS has been 6 s since the v2 cutover, so the special-
+ * case branch made slow connections strictly worse than fast ones.
  *
- * The Network Information API (navigator.connection) is available on Chrome/
- * Chrome-based browsers and Android WebViews (not Safari/Firefox). When it
- * reports a degraded connection (`effectiveType` of "slow-2g" or "2g") we cap
- * the maximum reconnect backoff at 10 s instead of 30 s.
- *
- * Rationale: on slow mobile connections the TCP handshake + TLS negotiation
- * already takes several seconds, so a 30 s back-off before even attempting
- * the next connect doubles the black-screen window unnecessarily. The server's
- * rate-limiter (120 req/min on /state) easily absorbs the higher reconnect
- * cadence from slow-link devices.
- *
- * Returns MAX_BACKOFF_MS when the API is unavailable or reports a fast link.
+ * The 6 s cap is already aggressive and works well for slow links — the
+ * server's rate-limiter easily absorbs that cadence — so we simply return
+ * the constant.
  */
 function effectiveMaxBackoffMs(): number {
-  try {
-    const conn = (navigator as unknown as { connection?: { effectiveType?: string } }).connection;
-    if (conn?.effectiveType === "slow-2g" || conn?.effectiveType === "2g") {
-      return 10_000;
-    }
-  } catch {
-    // Navigator APIs unavailable (Node/RN/old TV browsers) — use default.
-  }
   return MAX_BACKOFF_MS;
 }
 

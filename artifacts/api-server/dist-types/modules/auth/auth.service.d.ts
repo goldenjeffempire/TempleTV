@@ -54,6 +54,18 @@ export declare const authService: {
         mfaEnabled: boolean;
     }>;
     /**
+     * Permanently delete the authenticated user's account.
+     * Requires re-entering the current password as a confirmation step
+     * (Apple App Store Review Guideline 5.1.1(v) — "If your app supports
+     * account creation, you must also offer account deletion within the app").
+     *
+     * Cascade FKs on refresh_tokens / favorites / history / password_reset_tokens
+     * / device_link_codes clean up dependent rows automatically.
+     */
+    deleteAccount(userId: string, body: {
+        currentPassword: string;
+    }): Promise<void>;
+    /**
      * Initiate a password reset flow.
      *
      * Always returns success (even for unknown emails) to prevent email

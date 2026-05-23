@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { logger } from "../../../infrastructure/logger.js";
-import { broadcastSequence, setBroadcastMode, SERVICE_LABELS } from "../../../infrastructure/metrics.js";
+import { broadcastSequence, broadcastQueueDepth, setBroadcastMode, SERVICE_LABELS } from "../../../infrastructure/metrics.js";
 import { eventLogRepo } from "../repository/event-log.repo.js";
 import { runtimeRepo } from "../repository/runtime.repo.js";
 import { checkpointRepo } from "../repository/checkpoint.repo.js";
@@ -248,6 +248,19 @@ class BroadcastOrchestrator extends EventEmitter {
   private lastCpItemId: string | null = null;
   private lastCpPositionMs: number | null = null;
   private lastCpWallMs: number | null = null;
+  /**
+   * Throttle for the "no playable local content" info log. The reload path
+   * runs on a 10 s drift-poll cadence, so without throttling this single
+   * branch produces 6 identical log lines per minute of OFF_AIR — pure noise
+   * in production. We log at most once per 60 s while the condition holds.
+   */
+  private lastOffAirLogAtMs = 0;
+  /**
+   * Set by start() the first (and each subsequent) time the orchestrator
+   * transitions from stopped → started. Used by /readyz to differentiate
+   * "still booting" from "stuck at sequence 0".
+   */
+  private startedAtWallMs = 0;
 
   constructor() {
     super();
@@ -314,6 +327,7 @@ class BroadcastOrchestrator extends EventEmitter {
     // All initialisation done — mark as started and start timers.
     // This is the ONLY place this.started becomes true.
     this.started = true;
+    this.startedAtWallMs = Date.now();
 
     // ── Tick loop (purely computational — no async/DB work ever) ──────────
     this.tickTimer = setInterval(() => this.tick(), TICK_MS);
@@ -608,9 +622,16 @@ class BroadcastOrchestrator extends EventEmitter {
     }
 
     if (resolved.length === 0) {
-      logger.info(
-        "[broadcast-v2] reloadInner: no playable local content — broadcast will be OFF_AIR until videos are added to the queue",
-      );
+      // Throttle to once per 60 s — this branch is hit on every queue reload
+      // (drift-poll cadence is 10 s) so without throttling we emit ~6 lines
+      // per minute that say the same thing.
+      const nowMs = Date.now();
+      if (nowMs - this.lastOffAirLogAtMs > 60_000) {
+        this.lastOffAirLogAtMs = nowMs;
+        logger.info(
+          "[broadcast-v2] reloadInner: no playable local content — broadcast will be OFF_AIR until videos are added to the queue",
+        );
+      }
     }
 
     // Snapshot the old item IDs BEFORE replacing this.items so we can detect
@@ -629,6 +650,8 @@ class BroadcastOrchestrator extends EventEmitter {
     this.lastReloadError = null;
     this.reloadSuccesses += 1;
     this.cycleDurationMs = this.items.reduce((s, r) => s + r.durationSecs * 1000, 0);
+    // Mirror playable-queue depth as a Prometheus gauge for dashboards/alerts.
+    broadcastQueueDepth.set({ channel: this.channelId, ...SERVICE_LABELS }, this.items.length);
 
     if (prevCurrentId && this.items.length > 0) {
       const idx = this.items.findIndex((i) => i.id === prevCurrentId);
@@ -1648,6 +1671,17 @@ class BroadcastOrchestrator extends EventEmitter {
       allBlockedSinceMs: this.allBlockedSinceMs,
       allBlockedDurationMs: blocked ? Date.now() - this.allBlockedSinceMs! : null,
     };
+  }
+
+  /**
+   * Wall-clock timestamp (ms) of the moment `start()` last transitioned the
+   * orchestrator from stopped → started.  Returns 0 before the first
+   * successful boot.  Used by /readyz to decide whether enough time has
+   * passed since boot to call a still-at-sequence-0 orchestrator "stuck"
+   * rather than just "still booting".
+   */
+  getStartedAtMs(): number {
+    return this.startedAtWallMs;
   }
 
   isStarted(): boolean {

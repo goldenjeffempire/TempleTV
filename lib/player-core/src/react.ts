@@ -85,8 +85,55 @@ interface BroadcastSession {
   machineUnsub: () => void;
 }
 
-/** Singleton sessions keyed by baseUrl. Never deleted — sessions persist. */
-const sessions = new Map<string, BroadcastSession>();
+/** Singleton sessions keyed by baseUrl. Persist across React component
+ * unmounts so SPA navigation produces zero BOOTSTRAP latency. A janitor
+ * (started lazily on first session creation) evicts sessions that have had
+ * no listeners for SESSION_IDLE_EVICT_MS, so a long-lived tab that visited
+ * a player once doesn't keep a WebSocket open indefinitely.
+ */
+const sessions = new Map<string, { session: BroadcastSession; lastIdleAtMs: number | null }>();
+
+/** Sessions idle this long with zero subscribers are torn down. */
+const SESSION_IDLE_EVICT_MS = 5 * 60 * 1000;
+let janitorInterval: ReturnType<typeof setInterval> | null = null;
+
+function startJanitor(): void {
+  if (janitorInterval !== null) return;
+  if (typeof setInterval === "undefined") return;
+  janitorInterval = setInterval(() => {
+    const now = Date.now();
+    for (const [baseUrl, entry] of sessions) {
+      const hasListeners =
+        entry.session.snapshotListeners.size > 0 ||
+        entry.session.connectedListeners.size > 0;
+      if (hasListeners) {
+        entry.lastIdleAtMs = null;
+        continue;
+      }
+      if (entry.lastIdleAtMs === null) {
+        entry.lastIdleAtMs = now;
+        continue;
+      }
+      if (now - entry.lastIdleAtMs >= SESSION_IDLE_EVICT_MS) {
+        try {
+          entry.session.machineUnsub();
+          entry.session.transport.stop?.();
+          detachElements(entry.session);
+        } catch {
+          /* best-effort */
+        }
+        sessions.delete(baseUrl);
+      }
+    }
+    if (sessions.size === 0 && janitorInterval !== null) {
+      clearInterval(janitorInterval);
+      janitorInterval = null;
+    }
+  }, 60_000);
+  // Don't keep Node-style event loops alive on RN/Node — best-effort
+  // (browsers ignore unref).
+  (janitorInterval as unknown as { unref?: () => void }).unref?.();
+}
 
 function createSession(baseUrl: string): BroadcastSession {
   // `session` is declared with `let` so the machine's IntentHandler closure
@@ -294,12 +341,16 @@ export function useV2Broadcast(opts: UseV2BroadcastOptions): UseV2BroadcastResul
   // Get or lazily create the singleton session for this baseUrl.
   const session = useMemo<BroadcastSession | null>(() => {
     if (!enabled) return null;
-    let s = sessions.get(baseUrl);
-    if (!s) {
-      s = createSession(baseUrl);
-      sessions.set(baseUrl, s);
+    let entry = sessions.get(baseUrl);
+    if (!entry) {
+      entry = { session: createSession(baseUrl), lastIdleAtMs: null };
+      sessions.set(baseUrl, entry);
+      startJanitor();
+    } else {
+      // Re-entering with active hook — cancel any pending eviction.
+      entry.lastIdleAtMs = null;
     }
-    return s;
+    return entry.session;
   }, [baseUrl, enabled]);
 
   const [snapshot, setSnapshot] = useState<PlayerSnapshot>(
