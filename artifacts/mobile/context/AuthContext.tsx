@@ -198,15 +198,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (typeof resp === "string") {
       await secureStorage.setItem(STORAGE_KEYS.authToken, resp);
     }
-    await secureStorage.setItem(STORAGE_KEYS.authUser, JSON.stringify(newUser));
+    // Normalize the user object so a freshly-logged-in user has the EXACT
+    // same shape as a user restored from /me on cold-start. The server's
+    // /login response omits `avatarUrl` and `emailVerified` entirely (and
+    // /me only includes them sometimes), so without this normalization the
+    // user state object has `undefined` for those fields after login but
+    // `null`/`false` after restart — React rerenders flicker and downstream
+    // `user.emailVerified` checks behave inconsistently across sessions.
+    // Match the defaults apiGetMe applies so all entry points produce
+    // identical state.
+    const normalizedUser: AuthUser = {
+      id: newUser.id,
+      email: newUser.email,
+      displayName: newUser.displayName ?? "",
+      avatarUrl: newUser.avatarUrl ?? null,
+      emailVerified: newUser.emailVerified ?? false,
+    };
+    await secureStorage.setItem(STORAGE_KEYS.authUser, JSON.stringify(normalizedUser));
     setToken(accessToken);
-    setUser(newUser);
+    setUser(normalizedUser);
     setSessionExpiredAt(null);
   }, []);
 
   const signOut = useCallback(async (everywhere = false) => {
     await apiLogout(everywhere).catch(() => {});
     await clearLocal();
+    // Intentionally does NOT navigate — callers decide where to go because
+    // the right destination is screen-specific (account.tsx → /(tabs)/settings;
+    // settings.tsx → stay on the tab and re-render as logged-out). The
+    // session-expiry path is the only flow that auto-navigates, because
+    // there's no caller in control of that one.
   }, [clearLocal]);
 
   const forgetSession = useCallback(async () => {
