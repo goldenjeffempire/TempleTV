@@ -1,4 +1,4 @@
-import { and, desc, eq, ilike, sql, count } from "drizzle-orm";
+import { and, desc, eq, ilike, ne, sql, count } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, schema } from "../../infrastructure/db.js";
 import { storage } from "../../infrastructure/storage.js";
@@ -39,11 +39,14 @@ function toDto(row: typeof videos.$inferSelect) {
 
 export const mediaService = {
   async list(query: z.infer<typeof ListMediaQuerySchema>) {
-    const conditions = [];
+    const conditions: ReturnType<typeof eq>[] = [
+      // Library is YouTube-only. Local uploads are for broadcast only.
+      ne(videos.videoSource, "local") as ReturnType<typeof eq>,
+    ];
     if (query.category) conditions.push(eq(videos.category, query.category));
     if (query.featured !== undefined) conditions.push(eq(videos.featured, query.featured));
-    if (query.search) conditions.push(ilike(videos.title, `%${query.search}%`));
-    const where = conditions.length > 0 ? and(...conditions) : undefined;
+    if (query.search) conditions.push(ilike(videos.title, `%${query.search}%`) as ReturnType<typeof eq>);
+    const where = and(...conditions);
 
     const [rows, totalRows] = await Promise.all([
       db

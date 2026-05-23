@@ -313,6 +313,14 @@ async function pollOnce(): Promise<void> {
   let skippedUnreachable = 0;
 
   for (const { item, localUrl, hlsUrl, probeUrl, reachable, safeSource, sortOrder, probedDurationSecs } of resolved) {
+    // YouTube items are library-only and must not enter the local broadcast
+    // queue — they trigger media-scanner 204 warnings and dead-air auto-skip
+    // loops since the v2 orchestrator's source resolver cannot play YouTube
+    // watch URLs. Check `item.videoSource` (the canonical upstream field),
+    // not `safeSource` which may resolve to "local" when localVideoUrl
+    // happens to contain a YouTube watch URL.
+    if (item.videoSource === "youtube") continue;
+
     if (!reachable) skippedUnreachable += 1;
 
     // Deactivate unreachable rows only when at least one peer is reachable.

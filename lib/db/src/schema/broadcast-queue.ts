@@ -1,4 +1,5 @@
-import { pgTable, text, timestamp, integer, boolean, index } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, integer, boolean, index, check } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 export const broadcastQueueTable = pgTable("broadcast_queue", {
   id: text("id").primaryKey(),
@@ -11,7 +12,7 @@ export const broadcastQueueTable = pgTable("broadcast_queue", {
   // Populated after HLS transcoding completes; takes precedence over
   // localVideoUrl in the v2 orchestrator source resolver.
   hlsMasterUrl: text("hls_master_url"),
-  videoSource: text("video_source").notNull().default("youtube"),
+  videoSource: text("video_source").notNull().default("local"),
   isActive: boolean("is_active").notNull().default(true),
   sortOrder: integer("sort_order").notNull().default(0),
   addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
@@ -26,6 +27,9 @@ export const broadcastQueueTable = pgTable("broadcast_queue", {
   // `videoId` to flip `localVideoUrl` and emit broadcast-state events.
   // Without this, every transcode completion did a sequence scan.
   index("idx_broadcast_queue_video_id").on(table.videoId),
+  // YouTube content belongs in the Library only, never the broadcast queue.
+  check("no_youtube_in_queue", sql`${table.videoSource} != 'youtube'`),
+  check("no_youtube_urls_in_queue", sql`${table.localVideoUrl} NOT LIKE '%youtube.com/watch%' AND ${table.localVideoUrl} NOT LIKE '%youtu.be/%'`),
 ]);
 
 export type BroadcastQueueItem = typeof broadcastQueueTable.$inferSelect;

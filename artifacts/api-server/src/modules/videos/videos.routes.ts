@@ -79,9 +79,9 @@ const ListQuerySchema = z.object({
   search: z.string().trim().max(200).optional(),
   category: z.string().trim().max(100).optional(),
   sort: z.enum(["newest", "oldest", "published", "views", "title"]).default("newest"),
-  // Filter by ingestion source. The mobile Library tab passes "youtube" so it
-  // only displays YouTube-sourced videos — locally-uploaded files are reserved
-  // for the 24/7 Broadcasting module and never surface in the public catalogue.
+  // Source filter (library is always YouTube-only; this param is kept for
+  // backward compatibility but "local" will always yield zero results since
+  // locally-uploaded files are reserved for the 24/7 broadcast feed).
   source: z.enum(["youtube", "local"]).optional(),
 });
 
@@ -184,9 +184,10 @@ function buildWhere(
   category: string | undefined,
   source: "youtube" | "local" | undefined,
 ): SQL | undefined {
-  // Always exclude YouTube videos published more than 2 years ago.
-  // Local / HLS uploads (video_source != 'youtube') are always shown.
-  // YouTube rows whose published_at is NULL are kept as a safety net.
+  // Policy: the public Library is YouTube-only.
+  // Locally-uploaded videos are reserved for the 24/7 broadcast feed and
+  // must never surface in the public catalogue. This clause is unconditional
+  // so it cannot be bypassed via the `source` query param.
   //
   // CRITICAL: we MUST use the SAFE_PUB_AT CASE helper instead of a direct
   // `::timestamptz` cast here. PostgreSQL's planner does not reliably
@@ -198,11 +199,13 @@ function buildWhere(
   // already used in `buildOrderBy` for the same reason — `buildWhere`
   // had been missing it (prod May 2026 outage).
   const clauses: SQL[] = [
-    sql`(${videos.videoSource} != 'youtube' OR ${SAFE_PUB_AT} IS NULL OR ${SAFE_PUB_AT} >= NOW() - INTERVAL '2 years')`,
-    // Exclude upload-only broadcast content from the public library.
-    // broadcast_only=true means the video was uploaded for internal broadcast
-    // and the admin has not yet published it to the public library.
-    // COALESCE guards prod DBs whose schema may pre-date the column.
+    // Only YouTube content in the public Library.
+    sql`${videos.videoSource} = 'youtube'`,
+    // Exclude stale YouTube content older than 2 years (keeps the library fresh).
+    // Rows whose published_at is NULL are kept as a safety net.
+    sql`(${SAFE_PUB_AT} IS NULL OR ${SAFE_PUB_AT} >= NOW() - INTERVAL '2 years')`,
+    // Exclude items explicitly marked broadcast-only by an admin.
+    // COALESCE guards prod DBs whose schema may pre-date this column.
     sql`COALESCE(${videos.broadcastOnly}, false) = false`,
   ];
 
