@@ -13,6 +13,7 @@ import {
 } from "../domain/commands.js";
 import { requireAuth } from "../../../middleware/auth.js";
 import { broadcastService } from "../../broadcast/broadcast.service.js";
+import { scanLibraryAndEnqueue, listMissingFromQueue } from "../../broadcast/auto-enqueue.service.js";
 import { markBadUrl, clearAllBadUrls, getItemsHealth, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, getRecentlySuspended } from "../repository/queue.repo.js";
 import { db, schema } from "../../../infrastructure/db.js";
 import { eq, and, isNull, isNotNull } from "drizzle-orm";
@@ -662,6 +663,40 @@ export async function restRoutes(app: FastifyInstance) {
     const q = req.query as Record<string, string>;
     const windowMs = q.windowMs ? Math.min(Math.max(Number(q.windowMs), 60_000), 24 * 60 * 60_000) : 60 * 60_000;
     return playbackAnalytics.getReport(windowMs);
+  });
+
+  // ── Admin: manual library → queue sync ───────────────────────────────
+  // Scans managed_videos for playable rows not yet in broadcast_queue and
+  // inserts them. Idempotent — already-queued videos are silently skipped.
+  // Typical use: after a bulk YouTube import, after a DB migration, or
+  // whenever the operator wants to confirm nothing was missed by the
+  // automatic pipeline. Rate-limited to prevent accidental double-clicks
+  // from hammering the DB with back-to-back full-library scans.
+  app.post("/sync-library", {
+    ...adminGuard,
+    config: { rateLimit: { max: 6, timeWindow: "1 minute" } },
+  }, async (_req, reply) => {
+    reply.header("Cache-Control", "no-store, max-age=0");
+    const result = await scanLibraryAndEnqueue({ reason: "manual", maxToAdd: 500 });
+    return { ok: true, ...result };
+  });
+
+  // ── Admin: queue sync status ──────────────────────────────────────────
+  // Returns how many library videos are currently missing from the broadcast
+  // queue and a sample list of them. Used by the admin console to surface a
+  // "N videos not in queue — Sync now?" banner without running a full scan.
+  app.get("/queue-sync-status", {
+    ...adminGuard,
+    config: { rateLimit: { max: 12, timeWindow: "1 minute" } },
+  }, async (_req, reply) => {
+    reply.header("Cache-Control", "no-store, max-age=0");
+    const missing = await listMissingFromQueue(100);
+    const missingReady = missing.filter((m) => m.reason === "ready");
+    return {
+      missingCount: missing.length,
+      missingReadyCount: missingReady.length,
+      sample: missing.slice(0, 10),
+    };
   });
 
 }

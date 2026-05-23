@@ -9,6 +9,7 @@ import { transcodingQueueDepth, SERVICE_LABELS } from "../../infrastructure/metr
 import { runTranscode, checkFfmpegAvailable } from "./transcoder.service.js";
 import { scheduleSourceCleanup } from "./cleanup.service.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
+import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
 import { broadcastSignal } from "../network/signal-bus.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
@@ -290,6 +291,21 @@ class TranscoderDispatcher {
         // so it immediately picks up hlsMasterUrl and serves adaptive HLS to every
         // connected client without waiting for a manual queue mutation.
         adminEventBus.push("broadcast-queue-updated", { reason: "hls-ready", videoId: job.videoId });
+
+        // Safety-net enqueue: if this video somehow never made it into the
+        // broadcast queue (e.g. faststart was skipped, the server restarted
+        // during the upload pipeline, or the video was imported without going
+        // through the normal upload flow), add it now. HLS is confirmed ready
+        // so isPlayableForBroadcast() will pass and enqueueIfMissing inserts
+        // the row immediately. Idempotent — no-ops if already queued.
+        void enqueueIfMissing({ videoId: job.videoId, reason: "upload-finalize" }).then((res) => {
+          if (res.enqueued) {
+            logger.info(
+              { videoId: job.videoId, queueItemId: res.queueItemId },
+              "transcoder: safety-net auto-enqueued video after HLS completion",
+            );
+          }
+        }).catch(() => { /* non-fatal — orchestrator self-heal covers this case */ });
 
         logger.info({
           jobId: job.id,

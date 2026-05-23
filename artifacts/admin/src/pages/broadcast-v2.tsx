@@ -59,6 +59,12 @@ interface SourceHealthEntry {
   badUntilMs: number | null;
 }
 
+interface QueueSyncStatus {
+  missingCount: number;
+  missingReadyCount: number;
+  sample: Array<{ id: string; title: string; videoSource: string; reason: string }>;
+}
+
 interface EngineHealth {
   ok: boolean;
   channelId: string;
@@ -395,6 +401,39 @@ export default function BroadcastV2Page() {
     onError: (err) => {
       toast.error(err instanceof HttpError ? err.message : "Failed to re-enable item.");
     },
+  });
+
+  // Sync library → queue: scans managed_videos for playable rows not yet in
+  // broadcast_queue and inserts them. Idempotent — safe to call repeatedly.
+  const syncLibraryMutation = useMutation({
+    mutationFn: () =>
+      api.post<{ ok: boolean; scanned: number; enqueued: number; skipped: number }>(
+        "/broadcast-v2/sync-library",
+        { idempotencyKey: crypto.randomUUID() },
+      ),
+    onSuccess: (result) => {
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
+      if (result.enqueued > 0) {
+        toast.success(
+          `Synced ${result.enqueued} video${result.enqueued !== 1 ? "s" : ""} into the broadcast queue (scanned ${result.scanned}).`,
+        );
+      } else {
+        toast.success(`Library scan complete — all ${result.scanned} playable video${result.scanned !== 1 ? "s" : ""} already in queue.`);
+      }
+    },
+    onError: (err) => {
+      toast.error(err instanceof HttpError ? err.message : "Library sync failed — check server logs.");
+    },
+  });
+
+  // How many library videos are missing from the queue — refreshed every 60 s
+  // so the banner stays accurate without hammering the server.
+  const { data: queueSyncStatus } = useQuery({
+    queryKey: ["broadcast-v2-queue-sync-status"],
+    queryFn: () => api.get<QueueSyncStatus>("/broadcast-v2/queue-sync-status"),
+    refetchInterval: 60_000,
+    staleTime: 45_000,
   });
 
   // Auto-reload orchestrator when queue mutates.
@@ -1560,13 +1599,42 @@ export default function BroadcastV2Page() {
       )}
 
       <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle>Broadcast queue</CardTitle>
-          <Link href="/broadcast">
-            <Button size="sm" variant="outline" className="gap-1">
-              <Pencil className="h-3 w-3" /> Edit queue
+        <CardHeader className="flex flex-row items-center justify-between gap-2">
+          <div className="flex items-center gap-3 min-w-0">
+            <CardTitle className="shrink-0">Broadcast queue</CardTitle>
+            {queueSyncStatus && queueSyncStatus.missingReadyCount > 0 && (
+              <Badge
+                variant="outline"
+                className="gap-1 shrink-0 text-amber-600 border-amber-300 dark:border-amber-700"
+                title={`${queueSyncStatus.missingReadyCount} playable video${queueSyncStatus.missingReadyCount !== 1 ? "s" : ""} in the library are not in the broadcast queue. Click "Sync library" to add them.`}
+              >
+                <AlertTriangle className="h-3 w-3" />
+                {queueSyncStatus.missingReadyCount} not queued
+              </Badge>
+            )}
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1"
+              onClick={() => syncLibraryMutation.mutate()}
+              disabled={syncLibraryMutation.isPending}
+              title="Scan the video library and add any playable videos that are missing from the broadcast queue. Safe to run at any time — already-queued videos are skipped."
+            >
+              {syncLibraryMutation.isPending ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3 w-3" />
+              )}
+              Sync library
             </Button>
-          </Link>
+            <Link href="/broadcast">
+              <Button size="sm" variant="outline" className="gap-1">
+                <Pencil className="h-3 w-3" /> Edit queue
+              </Button>
+            </Link>
+          </div>
         </CardHeader>
         <CardContent>
           {queueLoading ? (

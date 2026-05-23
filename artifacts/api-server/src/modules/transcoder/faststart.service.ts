@@ -28,7 +28,7 @@ import { storage } from "../../infrastructure/storage.js";
 import { logger as rootLogger } from "../../infrastructure/logger.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
-import { broadcastService } from "../broadcast/broadcast.service.js";
+import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
 
 const videos = schema.videosTable;
 
@@ -231,40 +231,13 @@ export async function runFaststart(
     // Videos are only enqueued AFTER faststart so the player always receives
     // a moov-at-byte-0 (seekable) MP4 — never a raw upload with moov at EOF
     // that causes player timeouts and infinite SKIP_PENDING dead-air loops.
-    try {
-      const existing = await db
-        .select({ id: schema.broadcastQueueTable.id })
-        .from(schema.broadcastQueueTable)
-        .where(eq(schema.broadcastQueueTable.videoId, videoId))
-        .limit(1);
-
-      if (existing.length === 0) {
-        const [videoRow] = await db
-          .select({
-            title: videos.title,
-            thumbnailUrl: videos.thumbnailUrl,
-            duration: videos.duration,
-            localVideoUrl: videos.localVideoUrl,
-          })
-          .from(videos)
-          .where(eq(videos.id, videoId))
-          .limit(1);
-
-        if (videoRow) {
-          const durationSecs = Math.round(parseFloat(videoRow.duration ?? "0")) || 1800;
-          await broadcastService.addToQueue({
-            videoId,
-            title: videoRow.title,
-            thumbnailUrl: videoRow.thumbnailUrl ?? "",
-            durationSecs,
-            localVideoUrl: videoRow.localVideoUrl ?? null,
-            videoSource: "local",
-          });
-          log.info({ videoId, durationSecs }, "faststart: auto-added video to broadcast queue");
-        }
-      }
-    } catch (autoQueueErr) {
-      log.warn({ err: autoQueueErr, videoId }, "faststart: auto-add to broadcast queue failed (non-fatal)");
+    // enqueueIfMissing handles de-dup, playability check, and bus signal
+    // internally — no need for a manual EXISTS query here.
+    const enqueueResult = await enqueueIfMissing({ videoId, reason: "upload-finalize" });
+    if (enqueueResult.enqueued) {
+      log.info({ videoId, queueItemId: enqueueResult.queueItemId }, "faststart: auto-added video to broadcast queue");
+    } else {
+      log.debug({ videoId, skipReason: enqueueResult.skipReason }, "faststart: enqueueIfMissing skipped");
     }
 
     const elapsedMs = Date.now() - startMs;

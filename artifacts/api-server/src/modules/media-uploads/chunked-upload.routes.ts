@@ -44,7 +44,7 @@ import { runFaststart } from "../transcoder/faststart.service.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { env } from "../../config/env.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
-import { broadcastService } from "../broadcast/broadcast.service.js";
+import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { ServiceUnavailableError } from "../../shared/errors.js";
 
@@ -1167,46 +1167,28 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             }
 
             // Defensive auto-queue: if faststart didn't run (ffmpeg missing,
-            // timeout, etc.) the video has no broadcast_queue row. Insert
-            // one now so it airs. Idempotent — skip if a row already exists
-            // (faststart success path already inserted one).
+            // timeout, etc.) attempt to enqueue via the centralized pipeline.
+            // enqueueIfMissing enforces the playability contract — it will only
+            // insert a queue row when the video has a seekable source (HLS or
+            // faststart-applied MP4). If neither is available yet the video
+            // will enter the queue once HLS transcoding completes or the
+            // orchestrator's self-heal scanner runs (~60 s cadence).
             if (!faststartOk) {
               try {
-                const existing = await db
-                  .select({ id: schema.broadcastQueueTable.id })
-                  .from(schema.broadcastQueueTable)
-                  .where(eq(schema.broadcastQueueTable.videoId, videoId))
-                  .limit(1);
-                if (existing.length === 0) {
-                  const [v] = await db
-                    .select({
-                      title: schema.videosTable.title,
-                      thumbnailUrl: schema.videosTable.thumbnailUrl,
-                      duration: schema.videosTable.duration,
-                      localVideoUrl: schema.videosTable.localVideoUrl,
-                    })
-                    .from(schema.videosTable)
-                    .where(eq(schema.videosTable.id, videoId))
-                    .limit(1);
-                  if (v && v.localVideoUrl) {
-                    const durationSecs = Math.round(parseFloat(v.duration ?? "0")) || 1800;
-                    await broadcastService.addToQueue({
-                      videoId,
-                      title: v.title,
-                      thumbnailUrl: v.thumbnailUrl ?? "",
-                      durationSecs,
-                      localVideoUrl: v.localVideoUrl,
-                      videoSource: "local",
-                    });
-                    adminEventBus.push("videos-library-updated", { videoId, reason: "auto-queued-no-faststart" });
-                    capturedLog.info(
-                      { videoId, durationSecs },
-                      "[finalize:bg] faststart unavailable — auto-queued raw upload (moov may be at EOF)",
-                    );
-                  }
+                const enqRes = await enqueueIfMissing({ videoId, reason: "upload-finalize" });
+                if (enqRes.enqueued) {
+                  capturedLog.info(
+                    { videoId, queueItemId: enqRes.queueItemId },
+                    "[finalize:bg] faststart unavailable — auto-enqueued via enqueueIfMissing",
+                  );
+                } else {
+                  capturedLog.debug(
+                    { videoId, skipReason: enqRes.skipReason },
+                    "[finalize:bg] faststart unavailable — enqueueIfMissing deferred (will retry via HLS completion or self-heal)",
+                  );
                 }
               } catch (autoQueueErr) {
-                capturedLog.warn({ err: autoQueueErr, videoId }, "[finalize:bg] defensive auto-queue failed (non-fatal)");
+                capturedLog.warn({ err: autoQueueErr, videoId }, "[finalize:bg] defensive enqueueIfMissing failed (non-fatal)");
               }
             }
 
