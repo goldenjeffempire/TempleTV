@@ -187,12 +187,23 @@ function buildWhere(
   // Always exclude YouTube videos published more than 2 years ago.
   // Local / HLS uploads (video_source != 'youtube') are always shown.
   // YouTube rows whose published_at is NULL are kept as a safety net.
+  //
+  // CRITICAL: we MUST use the SAFE_PUB_AT CASE helper instead of a direct
+  // `::timestamptz` cast here. PostgreSQL's planner does not reliably
+  // short-circuit operands of an OR clause — it may evaluate the cast on
+  // rows whose `published_at` is empty/malformed even when an earlier
+  // `IS NULL` / regex guard would have eliminated them. The cast then
+  // throws "invalid input syntax for type timestamp with time zone" and
+  // the entire `/api/videos` endpoint returns 500. The same pattern is
+  // already used in `buildOrderBy` for the same reason — `buildWhere`
+  // had been missing it (prod May 2026 outage).
   const clauses: SQL[] = [
-    sql`(${videos.videoSource} != 'youtube' OR ${videos.publishedAt} IS NULL OR ${videos.publishedAt} = '' OR ${videos.publishedAt} !~ '^[0-9]{4}' OR ${videos.publishedAt}::timestamptz >= NOW() - INTERVAL '2 years')`,
+    sql`(${videos.videoSource} != 'youtube' OR ${SAFE_PUB_AT} IS NULL OR ${SAFE_PUB_AT} >= NOW() - INTERVAL '2 years')`,
     // Exclude upload-only broadcast content from the public library.
     // broadcast_only=true means the video was uploaded for internal broadcast
     // and the admin has not yet published it to the public library.
-    sql`(${videos.broadcastOnly} IS NULL OR ${videos.broadcastOnly} = false)`,
+    // COALESCE guards prod DBs whose schema may pre-date the column.
+    sql`COALESCE(${videos.broadcastOnly}, false) = false`,
   ];
 
   if (search?.trim()) {

@@ -386,6 +386,16 @@ export async function ensureUserSchemaColumns(): Promise<void> {
       ALTER TABLE managed_videos
         ADD COLUMN IF NOT EXISTS faststart_applied BOOLEAN NOT NULL DEFAULT false
     `);
+    // Broadcast-only flag — added May 2026.
+    // True for videos uploaded for internal broadcast that the admin has not
+    // published to the public library. The `/api/videos` WHERE clause filters
+    // these out via `COALESCE(broadcast_only, false) = false`. Without this
+    // column the public catalogue endpoint returns 500 with SQLSTATE 42703
+    // ("column does not exist") on any pre-existing prod DB.
+    await client.query(`
+      ALTER TABLE managed_videos
+        ADD COLUMN IF NOT EXISTS broadcast_only BOOLEAN NOT NULL DEFAULT false
+    `);
 
     logger.info("db: user/auth schema columns ensured (all IF NOT EXISTS — idempotent)");
   } catch (err) {
