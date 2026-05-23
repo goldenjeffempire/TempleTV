@@ -518,15 +518,24 @@ class DatabaseObjectStorage implements ObjectStorage {
     const sorted = [...parts].sort((a, b) => a.partNumber - b.partNumber);
 
     // Resolve content-type from the _meta record stored at createMultipartUpload time.
+    // Read via the pinned `client` so the entire lock-critical section (meta read +
+    // seed INSERT + per-part UPDATE loop + content-type UPDATE) executes on a single
+    // physical connection while the advisory lock is held. This closes any TOCTOU
+    // window between the meta lookup and assembly: a concurrent abort/cleanup on
+    // another client would block on the same advisory lock and cannot race the read.
     let contentType = "application/octet-stream";
     try {
-      const metaObj = await this.getObject(`_meta/${uploadId}`);
-      const metaBufs: Buffer[] = [];
-      for await (const chunk of metaObj.body) {
-        metaBufs.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+      const metaKey = `_meta/${uploadId}`;
+      const metaRes = await client.query<{ data: Buffer }>(
+        `SELECT data FROM storage_blobs WHERE key = $1`,
+        [metaKey],
+      );
+      if (metaRes.rowCount && metaRes.rows[0]?.data) {
+        const parsed = JSON.parse(metaRes.rows[0].data.toString("utf8")) as {
+          contentType?: string;
+        };
+        if (parsed.contentType) contentType = parsed.contentType;
       }
-      const parsed = JSON.parse(Buffer.concat(metaBufs).toString("utf8")) as { contentType?: string };
-      if (parsed.contentType) contentType = parsed.contentType;
     } catch {
       // Non-fatal: fall back to octet-stream.
     }
