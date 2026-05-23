@@ -14,16 +14,25 @@ if (typeof (globalThis as { AbortSignal?: typeof AbortSignal }).AbortSignal !== 
     AS.timeout = (ms: number): AbortSignal => {
       const controller = new AbortController();
       const id = setTimeout(() => {
+        // Hermes does NOT reliably expose `DOMException` as a global — earlier
+        // versions of this polyfill assumed it did and crashed with
+        // "ReferenceError: Property 'DOMException' doesn't exist". We now
+        // always abort with a plain Error shaped like a TimeoutError so
+        // userland `.name === "TimeoutError"` checks still match.
+        //
+        // We also deliberately avoid the no-arg `controller.abort()`
+        // fallback: on some Hermes builds, AbortController internally
+        // constructs `new DOMException(...)` to fill in a default reason,
+        // re-triggering the same ReferenceError from inside the engine —
+        // which is uncatchable from JS userland.
+        const reason = Object.assign(new Error("The operation timed out."), {
+          name: "TimeoutError",
+        });
         try {
-          // DOMException is available in Hermes; fall back to a plain Error.
-          const DOMExceptionCtor: typeof DOMException | undefined =
-            (globalThis as { DOMException?: typeof DOMException }).DOMException;
-          const reason = DOMExceptionCtor
-            ? new DOMExceptionCtor("The operation timed out.", "TimeoutError")
-            : Object.assign(new Error("The operation timed out."), { name: "TimeoutError" });
           controller.abort(reason);
         } catch {
-          controller.abort();
+          // Swallow — if abort itself throws, the signal will simply
+          // never fire and downstream fetches will use their own timeouts.
         }
       }, ms);
       // Don't keep the JS runtime awake just for the timeout.
