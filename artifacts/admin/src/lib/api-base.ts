@@ -55,6 +55,16 @@ function inferProductionApiOrigin(): string | null {
   if (/^admin\./i.test(hostname) && !/\.replit\.dev$/i.test(hostname)) {
     return `${protocol}//${hostname.replace(/^admin\./i, "api.")}`;
   }
+  // Render's auto-generated URLs follow the pattern
+  // `temple-tv-admin-<hash>.onrender.com`. There is no `admin.` prefix to
+  // rewrite, and the static host has a SPA catch-all that returns
+  // `index.html` for `/api/*` — so a relative base would silently break
+  // every API call. When `VITE_API_URL` was not baked in at build time
+  // (older deploys, or missing env-var binding on the Render static
+  // service), hardcode the production API origin so the panel still works.
+  if (/(^|\.)temple-tv-admin[^.]*\.onrender\.com$/i.test(hostname)) {
+    return "https://api.templetv.org.ng";
+  }
   return null;
 }
 
