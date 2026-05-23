@@ -158,6 +158,30 @@ function startSupervisedWorkers(): void {
     backoffMs: [5_000, 15_000, 30_000],
   });
 
+  // Viewer-count metrics updater: mirrors the v1 broadcastEngine viewer count
+  // (sum of WS + SSE + recent REST polls) into the broadcast_viewer_count
+  // Prometheus gauge so dashboards/alerts have a single source of truth.
+  // v2 doesn't have its own viewer registry yet — the v1 engine is the
+  // canonical concurrency signal across all surfaces (admin, TV, mobile).
+  // Polled every 5 s so Prometheus scrapes never see stale data even at the
+  // most aggressive default scrape interval.
+  workerSupervisor.spawn({
+    name: "viewer-count-metrics-updater",
+    fn: async () => {
+      const { broadcastEngine } = await import("../broadcast/queue.engine.js");
+      const { broadcastViewerCount, SERVICE_LABELS } = await import(
+        "../../infrastructure/metrics.js"
+      );
+      broadcastViewerCount.set(
+        { channel: broadcastEngine.channelId, ...SERVICE_LABELS },
+        broadcastEngine.getViewerCount(),
+      );
+    },
+    intervalMs: 5_000,
+    initialDelayMs: 5_000,
+    backoffMs: [5_000, 15_000, 30_000],
+  });
+
   logger.info("[broadcast-v2] supervised workers registered");
 }
 

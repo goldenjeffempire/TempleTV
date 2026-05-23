@@ -490,7 +490,7 @@ class DatabaseObjectStorage implements ObjectStorage {
     try {
       await client.query("SELECT pg_advisory_lock($1::bigint)", [lockKey]);
       try {
-        return await this._completeMultipartUploadLocked({ key, uploadId, parts });
+        return await this._completeMultipartUploadLocked({ key, uploadId, parts }, client);
       } finally {
         await client
           .query("SELECT pg_advisory_unlock($1::bigint)", [lockKey])
@@ -501,7 +501,20 @@ class DatabaseObjectStorage implements ObjectStorage {
     }
   }
 
-  private async _completeMultipartUploadLocked({ key, uploadId, parts }: { key: string; uploadId: string; parts: MultipartPart[] }): Promise<{ key: string; etag: string | null; location: string | null }> {
+  /**
+   * Lock-protected assembly. The `client` argument is the same pinned
+   * pg connection that holds the session-scoped advisory lock — all SQL
+   * runs on it so the finalize path consumes exactly one pool connection
+   * (not two) and the lock is observably held for every UPDATE.
+   *
+   * The cleanup work (DELETE temp parts, DELETE _meta) is fire-and-forget
+   * through the shared `db` pool because it runs after the assembled blob
+   * is committed and the lock is no longer needed.
+   */
+  private async _completeMultipartUploadLocked(
+    { key, uploadId, parts }: { key: string; uploadId: string; parts: MultipartPart[] },
+    client: import("pg").PoolClient,
+  ): Promise<{ key: string; etag: string | null; location: string | null }> {
     const sorted = [...parts].sort((a, b) => a.partNumber - b.partNumber);
 
     // Resolve content-type from the _meta record stored at createMultipartUpload time.
@@ -541,18 +554,19 @@ class DatabaseObjectStorage implements ObjectStorage {
     // INSERT … SELECT copies chunk bytes entirely within the DB; Node.js sees
     // only the SQL string — no video bytes cross the pg connection.
     const firstPartKey = `${partPrefix}${String(sorted[0]!.partNumber).padStart(6, "0")}`;
-    const seedResult = await db.execute(sql`
-      INSERT INTO storage_blobs (key, content_type, data, size_bytes, updated_at)
-      SELECT ${key}, ${contentType}, data, size_bytes, NOW()
-      FROM   storage_blobs
-      WHERE  key = ${firstPartKey}
-      ON CONFLICT (key) DO UPDATE SET
-        content_type = EXCLUDED.content_type,
-        data         = EXCLUDED.data,
-        size_bytes   = EXCLUDED.size_bytes,
-        updated_at   = NOW()
-    `);
-    const seedRowCount = (seedResult as unknown as { rowCount: number }).rowCount ?? 0;
+    const seedResult = await client.query(
+      `INSERT INTO storage_blobs (key, content_type, data, size_bytes, updated_at)
+       SELECT $1, $2, data, size_bytes, NOW()
+       FROM   storage_blobs
+       WHERE  key = $3
+       ON CONFLICT (key) DO UPDATE SET
+         content_type = EXCLUDED.content_type,
+         data         = EXCLUDED.data,
+         size_bytes   = EXCLUDED.size_bytes,
+         updated_at   = NOW()`,
+      [key, contentType, firstPartKey],
+    );
+    const seedRowCount = seedResult.rowCount ?? 0;
     if (seedRowCount === 0) {
       throw Object.assign(
         new Error(
@@ -571,17 +585,18 @@ class DatabaseObjectStorage implements ObjectStorage {
     const assemblyStart = Date.now();
     for (let i = 1; i < sorted.length; i++) {
       const partKey = `${partPrefix}${String(sorted[i]!.partNumber).padStart(6, "0")}`;
-      const appended = await db.execute(sql`
-        UPDATE storage_blobs AS dest
-        SET
-          data       = dest.data || src.data,
-          size_bytes = dest.size_bytes + src.size_bytes,
-          updated_at = NOW()
-        FROM   storage_blobs AS src
-        WHERE  dest.key = ${key}
-          AND  src.key  = ${partKey}
-      `);
-      const rowCount = (appended as unknown as { rowCount: number }).rowCount ?? 0;
+      const appended = await client.query(
+        `UPDATE storage_blobs AS dest
+         SET
+           data       = dest.data || src.data,
+           size_bytes = dest.size_bytes + src.size_bytes,
+           updated_at = NOW()
+         FROM   storage_blobs AS src
+         WHERE  dest.key = $1
+           AND  src.key  = $2`,
+        [key, partKey],
+      );
+      const rowCount = appended.rowCount ?? 0;
       if (rowCount === 0) {
         throw Object.assign(
           new Error(
@@ -604,10 +619,10 @@ class DatabaseObjectStorage implements ObjectStorage {
 
     // Correct content-type on the assembled row (the seed INSERT already set it,
     // but an idempotent re-finalize may have preserved a stale value).
-    await db.execute(sql`
-      UPDATE storage_blobs SET content_type = ${contentType}, updated_at = NOW()
-      WHERE key = ${key}
-    `);
+    await client.query(
+      `UPDATE storage_blobs SET content_type = $1, updated_at = NOW() WHERE key = $2`,
+      [contentType, key],
+    );
 
     // Clean up temp part rows and meta record asynchronously — non-fatal.
     void Promise.allSettled([

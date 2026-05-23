@@ -33,6 +33,20 @@ const SUSTAIN_SAMPLES = 3;
  * memory-hungry repl doesn't keep cycling the dev server.
  */
 const CRITICAL_SAMPLES_FOR_EXIT = 10;
+/**
+ * Maximum time the watchdog gives the SIGTERM/graceful-shutdown handler to
+ * drain in-flight SSE/WS/upload work before it force-exits. 30 s aligns with
+ * common cloud-supervisor `terminationGracePeriodSeconds` defaults (k8s 30 s,
+ * Replit deployments 30 s) so the supervisor's hard kill arrives at or after
+ * our voluntary force-exit, preserving controlled shutdown semantics.
+ */
+const FORCE_EXIT_GRACE_MS = 30_000;
+/**
+ * Latches the moment we kick off the critical-exit dance so a continuing
+ * stream of over-threshold samples can't schedule a second SIGTERM or stack
+ * additional force-exit timers on top of the first one.
+ */
+let criticalExitInFlight = false;
 
 export interface WatchdogState {
   enabled: boolean;
@@ -136,8 +150,10 @@ function sample() {
   // is bounded by the restart time (~5 s on Replit).
   if (
     env.NODE_ENV === "production" &&
-    consecutiveRssOver >= CRITICAL_SAMPLES_FOR_EXIT
+    consecutiveRssOver >= CRITICAL_SAMPLES_FOR_EXIT &&
+    !criticalExitInFlight
   ) {
+    criticalExitInFlight = true;
     logger.fatal(
       { rssMb, thresholdMb, consecutiveRssOver, criticalThreshold: CRITICAL_SAMPLES_FOR_EXIT },
       "[memory-watchdog] CRITICAL: sustained memory pressure — initiating graceful exit (supervisor will restart)",
@@ -147,14 +163,30 @@ function sample() {
       data: {
         level: "fatal",
         code: "memory-critical-exit",
-        message: `RSS sustained above ${thresholdMb} MB for ${consecutiveRssOver} samples — process will exit for clean restart`,
+        message: `RSS sustained above ${thresholdMb} MB for ${consecutiveRssOver} samples — process will exit for clean restart in ${FORCE_EXIT_GRACE_MS / 1000}s`,
         rssMb,
         thresholdMb,
+        graceMs: FORCE_EXIT_GRACE_MS,
       },
     });
-    // Give SIGTERM hook a few seconds to drain SSE/WS before forcing exit.
-    setTimeout(() => process.exit(1), 100);
+    // Two-stage shutdown that cooperates with the SIGTERM handler:
+    //   1. SIGTERM kicks off graceful drain (close server, end SSE, flush DB).
+    //      The handler is expected to call process.exit(0) on its own when
+    //      drain completes — we wait for that.
+    //   2. If drain doesn't complete within FORCE_EXIT_GRACE_MS, we force-exit
+    //      to guarantee the supervisor restarts us before the OS OOM-killer
+    //      strikes. The `.unref()` on the timer means a *successful* graceful
+    //      drain can still exit cleanly through the SIGTERM handler without
+    //      this timer blocking the event loop.
     process.kill(process.pid, "SIGTERM");
+    const forceExitTimer = setTimeout(() => {
+      logger.fatal(
+        { graceMs: FORCE_EXIT_GRACE_MS },
+        "[memory-watchdog] graceful drain exceeded budget — force-exiting now",
+      );
+      process.exit(1);
+    }, FORCE_EXIT_GRACE_MS);
+    forceExitTimer.unref();
   }
 }
 
