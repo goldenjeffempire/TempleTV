@@ -66,7 +66,12 @@ const UPLOAD_CONCURRENCY = 6;
  * Build the FFmpeg filter_complex + per-rendition output args for multi-rendition HLS.
  * Accepts the specific renditions to encode so the caller can filter for upscaling.
  */
-function buildFfmpegArgs(input: string, outDir: string, renditions: RenditionSpec[]): string[] {
+function buildFfmpegArgs(
+  input: string,
+  outDir: string,
+  renditions: RenditionSpec[],
+  hasAudio: boolean = true,
+): string[] {
   const filterParts: string[] = [];
   filterParts.push(`[0:v]split=${renditions.length}` + renditions.map((_, i) => `[vsplit${i}]`).join(""));
   renditions.forEach((r, i) => {
@@ -103,16 +108,26 @@ function buildFfmpegArgs(input: string, outDir: string, renditions: RenditionSpe
   args.push("-force_key_frames", `expr:gte(t,n_forced*${KEYFRAME_INTERVAL_SECS})`);
   args.push("-sc_threshold", "0");
 
-  renditions.forEach((r, i) => {
-    args.push(
-      "-map", "a:0?",
-      `-c:a:${i}`, "aac",
-      `-b:a:${i}`, `${r.audioBitrateK}k`,
-      `-ac:a:${i}`, "2",
-    );
-  });
+  // Audio mapping: only emit per-rendition AAC outputs when the source actually
+  // has an audio stream. If the source is video-only (silent screen recording,
+  // audio-stripped MP4, etc.) we MUST skip the audio map entirely AND emit a
+  // video-only var_stream_map — otherwise the HLS muxer fails with
+  // "Unable to map stream at a:0 / incorrect codec parameters" (exit 234)
+  // because var_stream_map references audio outputs that don't exist.
+  if (hasAudio) {
+    renditions.forEach((r, i) => {
+      args.push(
+        "-map", "a:0?",
+        `-c:a:${i}`, "aac",
+        `-b:a:${i}`, `${r.audioBitrateK}k`,
+        `-ac:a:${i}`, "2",
+      );
+    });
+  }
 
-  const varStreamMap = renditions.map((_, i) => `v:${i},a:${i}`).join(" ");
+  const varStreamMap = renditions
+    .map((_, i) => (hasAudio ? `v:${i},a:${i}` : `v:${i}`))
+    .join(" ");
 
   args.push(
     "-f", "hls",
@@ -160,6 +175,43 @@ async function probeDurationSecs(inputUrl: string): Promise<number | null> {
       clearTimeout(timer);
       const v = parseFloat(out.trim());
       settle(Number.isFinite(v) && v > 0 ? v : null);
+    });
+  });
+}
+
+/**
+ * Probe whether the input file contains at least one audio stream.
+ * Returns true on probe success when an audio stream exists, false otherwise.
+ * Defaults to FALSE on any failure (probe timeout, ffprobe unavailable, etc.)
+ * — a missing audio map in the HLS args is recoverable (video-only stream),
+ * but a stale `v:i,a:i` var_stream_map against a no-audio input kills the
+ * entire transcode (exit 234). Failing safe = preferring video-only output.
+ */
+async function probeHasAudio(inputPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const proc = spawn("ffprobe", [
+      "-v", "error",
+      "-select_streams", "a",
+      "-show_entries", "stream=codec_type",
+      "-of", "csv=p=0",
+      inputPath,
+    ]);
+    let out = "";
+    let settled = false;
+    const settle = (val: boolean) => {
+      if (settled) return;
+      settled = true;
+      resolve(val);
+    };
+    const timer = setTimeout(() => {
+      try { proc.kill("SIGKILL"); } catch { /* noop */ }
+      settle(false);
+    }, RESOLUTION_PROBE_TIMEOUT_MS);
+    proc.stdout.on("data", (b: Buffer) => { out += b.toString(); });
+    proc.on("error", () => { clearTimeout(timer); settle(false); });
+    proc.on("close", () => {
+      clearTimeout(timer);
+      settle(out.includes("audio"));
     });
   });
 }
@@ -374,11 +426,18 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
     // Download source first (may throw — scratch dir cleanup still runs).
     await downloadSourceToTempFile(req.sourceObjectKey, sourceTempPath);
 
-    // Run duration probe and resolution probe in parallel (both are ffprobe calls).
-    const [durationSecs, srcResolution] = await Promise.all([
+    // Run duration, resolution, and audio probes in parallel (all are ffprobe calls).
+    const [durationSecs, srcResolution, hasAudio] = await Promise.all([
       probeDurationSecs(sourceTempPath),
       probeResolution(sourceTempPath),
+      probeHasAudio(sourceTempPath),
     ]);
+    if (!hasAudio) {
+      logger.info(
+        { videoId: req.videoId },
+        "transcoder: source has no audio stream — encoding video-only HLS",
+      );
+    }
 
     // Select renditions: only include those whose height is ≤ the source height
     // to avoid upscaling. Always keep at least the lowest rendition (360p).
@@ -404,7 +463,7 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
       await mkdir(path.join(scratchDir, `v${i}`), { recursive: true });
     }
 
-    const args = buildFfmpegArgs(sourceTempPath, scratchDir, renditionsToUse);
+    const args = buildFfmpegArgs(sourceTempPath, scratchDir, renditionsToUse, hasAudio);
 
     // Run HLS transcoding and thumbnail extraction in parallel.
     const hlsPromise = new Promise<void>((resolve, reject) => {
