@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { logger } from "../../../infrastructure/logger.js";
-import { broadcastSequence, broadcastQueueDepth, setBroadcastMode, SERVICE_LABELS } from "../../../infrastructure/metrics.js";
+import { broadcastSequence, broadcastQueueDepth, broadcastQueueStuck, setBroadcastMode, SERVICE_LABELS } from "../../../infrastructure/metrics.js";
 import { eventLogRepo } from "../repository/event-log.repo.js";
 import { runtimeRepo } from "../repository/runtime.repo.js";
 import { checkpointRepo } from "../repository/checkpoint.repo.js";
@@ -652,6 +652,17 @@ class BroadcastOrchestrator extends EventEmitter {
     this.cycleDurationMs = this.items.reduce((s, r) => s + r.durationSecs * 1000, 0);
     // Mirror playable-queue depth as a Prometheus gauge for dashboards/alerts.
     broadcastQueueDepth.set({ channel: this.channelId, ...SERVICE_LABELS }, this.items.length);
+    // Stuck signal: orchestrator started, queue populated, but no sequence
+    // advance for >30s past start. Mirrors the /readyz stuck-detection rule.
+    // 1 = stuck, 0 = healthy. Allows alert rules without re-implementing logic.
+    const startedAtMs = this.startedAtWallMs;
+    const stuck =
+      this.started &&
+      this.sequence === 0 &&
+      this.items.length > 0 &&
+      startedAtMs > 0 &&
+      Date.now() - startedAtMs > 30_000;
+    broadcastQueueStuck.set({ channel: this.channelId, ...SERVICE_LABELS }, stuck ? 1 : 0);
 
     if (prevCurrentId && this.items.length > 0) {
       const idx = this.items.findIndex((i) => i.id === prevCurrentId);
