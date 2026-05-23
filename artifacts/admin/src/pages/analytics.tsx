@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, isTransientError} from "@/lib/api";
 import { PageHeader } from "@/components/shared/page-header";
@@ -87,19 +87,31 @@ export default function AnalyticsPage() {
     staleTime: 60_000,
   });
 
-  const chartData = (data?.dailyViews ?? []).map((d) => ({
-    date: fmtDate(d.date),
-    views: d.views,
-  }));
+  // Memoize chart transforms so Recharts tooltip hover (which triggers a
+  // re-render of the parent) doesn't rebuild the entire dataset on every
+  // mouse move. Without memoization a 90-day range rebuilds ~90 objects
+  // dozens of times per second while the user hovers the chart.
+  const chartData = useMemo(
+    () =>
+      (data?.dailyViews ?? []).map((d) => ({
+        date: fmtDate(d.date),
+        views: d.views,
+      })),
+    [data?.dailyViews],
+  );
 
-  const topVideosChart = (data?.topVideos ?? []).slice(0, 8).map((v) => ({
-    name: v.title.length > 22 ? v.title.slice(0, 22) + "…" : v.title,
-    views: v.viewCount,
-  }));
+  const topVideosChart = useMemo(
+    () =>
+      (data?.topVideos ?? []).slice(0, 8).map((v) => ({
+        name: v.title.length > 22 ? v.title.slice(0, 22) + "…" : v.title,
+        views: v.viewCount,
+      })),
+    [data?.topVideos],
+  );
 
-  const totalPlatformSessions = (data?.platformBreakdown ?? []).reduce(
-    (s, p) => s + p.sessions,
-    0,
+  const totalPlatformSessions = useMemo(
+    () => (data?.platformBreakdown ?? []).reduce((s, p) => s + p.sessions, 0),
+    [data?.platformBreakdown],
   );
 
   return (

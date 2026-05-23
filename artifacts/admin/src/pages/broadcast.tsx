@@ -1275,6 +1275,12 @@ export default function BroadcastPage() {
   const [items, setItems] = useState<BroadcastQueueItem[]>([]);
   const [removeConfirm, setRemoveConfirm] = useState<BroadcastQueueItem | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
+  // Top-level drag state. dnd-kit's per-row `isDragging` is local to each
+  // SortableRow, but we need a queue-wide flag so the items-sync effect
+  // below doesn't yank the row out from under the user mid-drag when a
+  // background poll arrives. Set true on DnDContext.onDragStart, cleared
+  // by handleDragEnd (the reorder mutation owns isSyncing from drop on).
+  const [isDragging, setIsDragging] = useState(false);
 
   // ── Data queries ──────────────────────────────────────────────────────────
 
@@ -1350,8 +1356,12 @@ export default function BroadcastPage() {
   // ── Sync queue items to local drag state ──────────────────────────────────
 
   useEffect(() => {
-    if (!isSyncing && queue?.items) setItems(queue.items);
-  }, [queue?.items, isSyncing]);
+    // Skip sync while the user is actively dragging or a reorder is mid-flight,
+    // otherwise a background poll would overwrite the in-progress arrangement
+    // and cause a visible jump / lost drop.
+    if (isDragging || isSyncing) return;
+    if (queue?.items) setItems(queue.items);
+  }, [queue?.items, isSyncing, isDragging]);
 
   // ── SSE real-time invalidation ────────────────────────────────────────────
 
@@ -1844,7 +1854,12 @@ export default function BroadcastPage() {
                 <DndContext
                   sensors={sensors}
                   collisionDetection={closestCenter}
-                  onDragEnd={handleDragEnd}
+                  onDragStart={() => setIsDragging(true)}
+                  onDragCancel={() => setIsDragging(false)}
+                  onDragEnd={(e) => {
+                    setIsDragging(false);
+                    handleDragEnd(e);
+                  }}
                 >
                   <SortableContext
                     items={items.map((i) => i.id)}

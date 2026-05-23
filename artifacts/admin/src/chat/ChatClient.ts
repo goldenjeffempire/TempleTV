@@ -169,6 +169,33 @@ export class ChatClient {
 
   private connect(): void {
     if (this.closedByUser) return;
+    // Defensively close any prior socket before opening a new one. Without
+    // this, rapid back-to-back connect() calls (React StrictMode double-
+    // mount in dev, scheduleReconnect firing while a previous connect is
+    // still in-flight, or token-rotation triggering a reconnect mid-open)
+    // would leak the old socket: its onmessage / onclose handlers would
+    // keep firing against stale state, and the browser's WS connection
+    // budget would drift up over time.
+    if (this.ws) {
+      const stale = this.ws;
+      this.ws = null;
+      // Detach handlers so the close event from this old socket can't
+      // recurse into scheduleReconnect() while we're already mid-connect.
+      stale.onopen = null;
+      stale.onmessage = null;
+      stale.onerror = null;
+      stale.onclose = null;
+      try {
+        if (
+          stale.readyState === WebSocket.OPEN ||
+          stale.readyState === WebSocket.CONNECTING
+        ) {
+          stale.close(1000, "client-reconnect");
+        }
+      } catch {
+        // Ignore — already closed or invalid state.
+      }
+    }
     this.setState(this.reconnectAttempts === 0 ? "connecting" : "reconnecting");
     // Resolve the current token on every connection/reconnection attempt so
     // that a rotated or extended access token is always used in the WS
