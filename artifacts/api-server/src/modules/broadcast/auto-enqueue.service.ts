@@ -116,6 +116,23 @@ export async function enqueueIfMissing(opts: {
     );
     return { enqueued: true, queueItemId: inserted.id };
   } catch (err) {
+    // Special-case the DB-level unique violation on
+    // `uq_broadcast_queue_video_id_active`. That index exists precisely so
+    // two concurrent enqueue paths (event-triggered enqueueIfMissing +
+    // orchestrator self-heal library scan, or two API replicas) can race
+    // safely: the first writer wins, the second sees Postgres 23505. From
+    // the caller's perspective this is *not* an error — the video is
+    // queued, just not by this call — so emit a debug-level breadcrumb
+    // instead of a WARN to avoid alarming operators when the safety net
+    // is doing its job.
+    const code = (err as { code?: string } | null)?.code;
+    if (code === "23505") {
+      logger.debug(
+        { videoId: opts.videoId, reason: opts.reason },
+        "[broadcast] auto-enqueue: lost unique-violation race (already queued by concurrent path)",
+      );
+      return { enqueued: false, skipReason: "already-queued" };
+    }
     // Never throw — the caller (upload finalize, YT sync) must continue
     // succeeding even if auto-add hits a transient DB blip. Worst case the
     // library-scan safety net picks the video up within 30 s.

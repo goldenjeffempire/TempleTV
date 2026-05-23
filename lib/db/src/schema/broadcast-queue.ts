@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, integer, boolean, index, check } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, integer, boolean, index, check, uniqueIndex } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
 export const broadcastQueueTable = pgTable("broadcast_queue", {
@@ -30,6 +30,24 @@ export const broadcastQueueTable = pgTable("broadcast_queue", {
   // YouTube content belongs in the Library only, never the broadcast queue.
   check("no_youtube_in_queue", sql`${table.videoSource} != 'youtube'`),
   check("no_youtube_urls_in_queue", sql`${table.localVideoUrl} NOT LIKE '%youtube.com/watch%' AND ${table.localVideoUrl} NOT LIKE '%youtu.be/%'`),
+  // Dedupe at the DB layer for the 24/7-continuity guarantee. Multiple
+  // auto-enqueue paths race naturally:
+  //   • event-triggered enqueueIfMissing() from upload finalize, faststart
+  //     completion, transcoder completion, YouTube sync
+  //   • the orchestrator's empty-queue self-heal library scan (every ~60s
+  //     of OFF_AIR), which fires a NOT-EXISTS anti-join then inserts
+  //   • a future second API replica behind a load balancer
+  // Each path does a read-then-insert dedupe in application code, but two
+  // concurrent paths can both pass the read and both insert, producing
+  // duplicate queue rows that air back-to-back. A partial unique index on
+  // `video_id` (excluding NULL — prod-sync upserts use videoId=NULL with
+  // youtube_id as the dedupe key) eliminates that race authoritatively:
+  // the second insert raises a unique-violation that the app already
+  // swallows in enqueueIfMissing's try/catch. Partial so existing rows
+  // with NULL video_id (legacy prod-sync) stay untouched.
+  uniqueIndex("uq_broadcast_queue_video_id_active")
+    .on(table.videoId)
+    .where(sql`${table.videoId} IS NOT NULL`),
 ]);
 
 export type BroadcastQueueItem = typeof broadcastQueueTable.$inferSelect;
