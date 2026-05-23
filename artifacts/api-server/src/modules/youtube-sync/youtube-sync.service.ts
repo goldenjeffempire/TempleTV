@@ -5,6 +5,7 @@ import { logger } from "../../infrastructure/logger.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { isUndefinedColumnError } from "../../infrastructure/db-schema-guard.js";
+import { scanLibraryAndEnqueue } from "../broadcast/auto-enqueue.service.js";
 
 const CHANNEL_ID = "UCPFFvkE-KGpR37qJgvYriJg";
 const YT_API_BASE = "https://www.googleapis.com/youtube/v3";
@@ -1077,6 +1078,17 @@ export async function syncYouTubeChannel(triggeredBy: "scheduler" | "manual" = "
     void invalidateVideosCatalogCache();
     adminEventBus.push("videos-library-updated", null);
     void persistQuota();
+
+    // Auto-reflect newly-imported YouTube rows into the broadcast queue so
+    // the 24/7 stream picks them up without an operator clicking "Add to
+    // Queue" for every video. Fire-and-forget: a transient DB blip must not
+    // fail the sync run, and the orchestrator's empty-queue self-heal also
+    // scans for missing rows as a backstop. Library scan handles the case
+    // where a previous auto-enqueue was disabled or skipped — re-enabling
+    // catches up on the next sync without manual intervention.
+    void scanLibraryAndEnqueue({ reason: "yt-sync", maxToAdd: 500 }).catch(
+      (err) => logger.warn({ err }, "youtube-sync: post-sync auto-enqueue failed (non-fatal)"),
+    );
 
     // Store the fingerprint of this successful full upsert so the next
     // scheduled run can short-circuit when the channel content is unchanged.

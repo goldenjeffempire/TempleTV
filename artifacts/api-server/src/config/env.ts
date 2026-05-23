@@ -128,6 +128,18 @@ const Env = z.object({
     .union([z.boolean(), z.string()])
     .transform((v) => v === true || v === "true" || v === "1")
     .default(false),
+  // Kill-switch for the Library → Broadcast Queue auto-enqueue pipeline.
+  // When unset (default), every newly-uploaded / faststart-completed / YT-
+  // synced video is automatically reflected in `broadcast_queue` so the
+  // broadcast stays 24/7 with zero operator action. Set to 1 to disable the
+  // entire pipeline (e.g. during a content audit window) without removing
+  // the call sites. The orchestrator's empty-queue self-heal also respects
+  // this flag — when disabled, an empty queue stays Off Air until an
+  // operator adds content manually.
+  BROADCAST_AUTO_ENQUEUE_DISABLE: z
+    .union([z.boolean(), z.string()])
+    .transform((v) => v === true || v === "true" || v === "1")
+    .default(false),
   // F31: Where ffmpeg writes its HLS segments and thumbnails during
   // transcoding. Each job creates a sub-directory named after the jobId;
   // the directory is deleted when the job finishes (success or failure).

@@ -6,6 +6,7 @@ import { runtimeRepo } from "../repository/runtime.repo.js";
 import { checkpointRepo } from "../repository/checkpoint.repo.js";
 import { queueRepo, isKnownBadUrl, markBadUrl, clearAllBadUrls, clearBadUrl, BAD_URL_TTL_MS, incrementBadUrlSkipCount, resetBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, type RawQueueRow } from "../repository/queue.repo.js";
 import { playbackAnalytics } from "./playback-analytics.js";
+import { scanLibraryAndEnqueue } from "../../broadcast/auto-enqueue.service.js";
 import type {
   V2EventType,
   V2Item,
@@ -73,6 +74,15 @@ const EVENT_LOG_TRIM_INTERVAL_MS = 60_000;
  */
 const SELF_HEAL_EMPTY_MS  = 10_000;
 const SELF_HEAL_STALE_MS  = 30_000;
+/**
+ * After this many consecutive empty-queue polls (10 s × 6 = 60 s), the
+ * orchestrator runs a full library scan and auto-enqueues every playable
+ * `managed_videos` row that isn't already in `broadcast_queue`. This is the
+ * 24/7 guarantee backstop: if every upstream auto-enqueue hook silently
+ * failed (DB blip, code regression, operator import via an unhooked path),
+ * the broadcast still self-heals back on-air within ~60 s.
+ */
+const EMPTY_POLLS_BEFORE_LIBRARY_SCAN = 6;
 
 /**
  * Pre-resolved queue item stored in the orchestrator's in-memory items array.
@@ -153,6 +163,13 @@ class BroadcastOrchestrator extends EventEmitter {
    */
   private selfHealEmptyTimer: NodeJS.Timeout | null = null;
   private selfHealStaleTimer: NodeJS.Timeout | null = null;
+  /**
+   * Number of consecutive empty-queue polls since the last time the queue
+   * had items. Reset to 0 the moment any item is reloaded. When this hits
+   * EMPTY_POLLS_BEFORE_LIBRARY_SCAN we fire a library scan as the 24/7
+   * continuity backstop, then reset to 0 so we don't re-scan every tick.
+   */
+  private consecutiveEmptyPolls = 0;
   /**
    * Dirty flag for the position checkpoint.  Set whenever the orchestrator
    * emits a snapshot (state has changed).  persistCheckpoint() returns
@@ -325,10 +342,44 @@ class BroadcastOrchestrator extends EventEmitter {
     // ── Self-heal timers (outside tick — no DB work in tickInner()) ───────
     // Empty-queue poll: check DB every 10 s so a freshly-added item is
     // promoted to LIVE quickly even if the admin-event-bus signal was missed.
+    //
+    // Belt-and-suspenders: every Nth empty poll (≈60 s when EMPTY_MS=10 s)
+    // also fires a library scan. If the queue has been empty for a full
+    // minute AND `managed_videos` contains playable rows that simply
+    // weren't auto-enqueued (operator imported via a path that bypassed
+    // the hooks, a previous DB blip swallowed the auto-add, an admin had
+    // BROADCAST_AUTO_ENQUEUE_DISABLE on briefly), this guarantees the
+    // broadcast comes back on-air without operator action. The scan is
+    // itself a no-op when auto-enqueue is disabled.
     this.selfHealEmptyTimer = setInterval(() => {
       if (!this.started) return;
       if (this.items.length === 0) {
         this.scheduleSelfHealReload("empty-queue-poll");
+        this.consecutiveEmptyPolls += 1;
+        if (this.consecutiveEmptyPolls >= EMPTY_POLLS_BEFORE_LIBRARY_SCAN) {
+          this.consecutiveEmptyPolls = 0;
+          void scanLibraryAndEnqueue({
+            reason: "self-heal-empty",
+            maxToAdd: 100,
+          })
+            .then((res) => {
+              if (res.enqueued > 0) {
+                logger.info(
+                  res,
+                  "[broadcast-v2] self-heal: library scan promoted playable videos into empty queue — reloading",
+                );
+                this.scheduleSelfHealReload("self-heal-library-scan");
+              }
+            })
+            .catch((err) => {
+              logger.warn(
+                { err },
+                "[broadcast-v2] self-heal: library scan failed (non-fatal)",
+              );
+            });
+        }
+      } else {
+        this.consecutiveEmptyPolls = 0;
       }
     }, SELF_HEAL_EMPTY_MS);
     this.selfHealEmptyTimer.unref?.();
