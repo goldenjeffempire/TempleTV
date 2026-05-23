@@ -142,6 +142,16 @@ interface ItemPollState {
 }
 const prevItemPollState = new Map<string, ItemPollState>();
 
+/**
+ * Last upstream-seen timestamp per item id. Used by the ghost-item sweep
+ * below: items that disappear from upstream for longer than
+ * GHOST_GRACE_MS are deactivated locally so the dev orchestrator does
+ * not keep airing entries that prod has already removed. We never DELETE
+ * the row — re-appearance instantly re-activates via the upsert path.
+ */
+const lastSeenAtMs = new Map<string, number>();
+const GHOST_GRACE_MS = 10 * 60 * 1000;
+
 let pollTimer: NodeJS.Timeout | null = null;
 let stats = {
   enabled: false,
@@ -230,13 +240,11 @@ async function pollOnce(): Promise<void> {
   }
 
   const items = Array.isArray(payload?.items) ? payload.items : [];
-  if (items.length === 0) {
-    stats.lastPollAtMs = Date.now();
-    stats.lastPollOk = true;
-    stats.lastPollError = null;
-    stats.lastUpsertCount = 0;
-    return;
-  }
+  // NOTE: we deliberately do NOT early-return on empty payloads. An empty
+  // upstream guide is a legitimate "queue cleared" signal that must reach
+  // the ghost-sweep loop below — otherwise an admin clearing the prod
+  // queue would leave the dev mirror stuck with the last known items
+  // until something else mutated upstream.
 
   // Pass 1 — resolve URLs and probe reachability IN PARALLEL.
   //
@@ -387,6 +395,43 @@ async function pollOnce(): Promise<void> {
     }
   }
 
+  // Ghost-item sweep: any id we've seen previously but is absent from this
+  // poll's payload gets its lastSeenAtMs frozen; once the gap exceeds the
+  // grace window we deactivate the local row so the dev orchestrator drops
+  // it from rotation. The row is preserved — re-appearance in any future
+  // poll re-activates via the normal upsert path above. This closes the
+  // "additive-only over weeks" gap from the May 2026 audit.
+  const nowSweepMs = Date.now();
+  const currentIds = new Set(resolved.map((r) => r.item.id));
+  for (const id of currentIds) lastSeenAtMs.set(id, nowSweepMs);
+  let ghostDeactivated = 0;
+  for (const [id, seenAt] of lastSeenAtMs) {
+    if (currentIds.has(id)) continue;
+    if (nowSweepMs - seenAt < GHOST_GRACE_MS) continue;
+    const prev = prevItemPollState.get(id);
+    if (!prev || !prev.isActive) {
+      // Already deactivated — drop the tracking entry so the map does
+      // not grow unbounded for items that prod removed long ago.
+      lastSeenAtMs.delete(id);
+      continue;
+    }
+    try {
+      await db
+        .update(schema.broadcastQueueTable)
+        .set({ isActive: false })
+        .where(sql`${schema.broadcastQueueTable.id} = ${id}`);
+      prevItemPollState.set(id, { ...prev, isActive: false });
+      lastSeenAtMs.delete(id);
+      ghostDeactivated += 1;
+      logger.info(
+        { itemId: id, missingForMs: nowSweepMs - seenAt },
+        "[prod-sync] item missing upstream beyond grace window — deactivated locally (ghost sweep)",
+      );
+    } catch (err) {
+      logger.warn({ err, itemId: id }, "[prod-sync] ghost deactivation failed");
+    }
+  }
+
   stats.lastPollAtMs = Date.now();
   stats.lastPollOk = true;
   stats.lastPollError = null;
@@ -394,7 +439,7 @@ async function pollOnce(): Promise<void> {
   stats.lastSkippedUnreachableCount = skippedUnreachable;
   stats.totalUpserts += upserted;
 
-  if (upserted > 0) {
+  if (upserted > 0 || ghostDeactivated > 0) {
     // Tell the v2 orchestrator to reload from the (now-updated) DB only when
     // rows actually changed. The bus bridge in modules/broadcast-v2/index.ts
     // debounces 250 ms so rapid back-to-back mutations coalesce into one
@@ -463,7 +508,3 @@ export const prodQueueSync = {
   },
 };
 
-// Suppress "imported but unused" warning when sql isn't referenced —
-// retained because future scoped deletes will need it (e.g. soft-delete
-// rows that disappear from upstream after a configurable grace period).
-void sql;

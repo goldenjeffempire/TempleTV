@@ -191,14 +191,25 @@ export function V2PlayerContainer({
   // something that triggers a network round-trip.
   useEffect(() => {
     let last = AppState.currentState;
+    let mounted = true;
     const sub = AppState.addEventListener("change", (next) => {
+      // Belt-and-braces guard: although sub.remove() in the cleanup below
+      // unregisters this handler synchronously on unmount, some RN versions
+      // can still flush a queued AppState change event after removal. The
+      // mounted flag ensures we never poke transport methods on an already
+      // torn-down hook, eliminating "setState on unmounted component" noise
+      // and the associated WS keep-alive leak.
+      if (!mounted) return;
       if (last !== "active" && next === "active") {
         notifyOnline();
         forceReconnect();
       }
       last = next;
     });
-    return () => sub.remove();
+    return () => {
+      mounted = false;
+      sub.remove();
+    };
   }, [forceReconnect, notifyOnline]);
 
   const server = snapshot.lastServerSnapshot;

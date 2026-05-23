@@ -554,6 +554,13 @@ export default function PlayerScreen() {
     [handleProgress],
   );
 
+  // Tracks the *intent* of the most recent orientation request so that if
+  // the user rapidly toggles fullscreen (e.g. taps Back during the async
+  // lockAsync transition), a stale LANDSCAPE promise resolving after the
+  // exit will not leave the home tab stuck in landscape. Whoever resolves
+  // last re-applies the *current* intent.
+  const orientationIntentRef = useRef<"portrait" | "landscape">("portrait");
+
   const enterFullscreen = useCallback(() => {
     const posSecs = currentPositionMsRef.current / 1000;
     setFsStartPositionMs(currentPositionMsRef.current);
@@ -567,9 +574,18 @@ export default function PlayerScreen() {
     // programmatically unlock orientation to let the device rotate into
     // landscape for an immersive fullscreen experience.
     if (Platform.OS !== "web") {
+      orientationIntentRef.current = "landscape";
       ScreenOrientation.lockAsync(
         ScreenOrientation.OrientationLock.LANDSCAPE,
-      ).catch(() => {});
+      )
+        .then(() => {
+          if (orientationIntentRef.current !== "landscape") {
+            ScreenOrientation.lockAsync(
+              ScreenOrientation.OrientationLock.PORTRAIT_UP,
+            ).catch(() => {});
+          }
+        })
+        .catch(() => {});
     }
   }, [fsControlsOpacity, scheduleFsHide]);
 
@@ -591,9 +607,18 @@ export default function PlayerScreen() {
     // Restore the app-wide portrait lock when leaving fullscreen so the
     // rest of the app (tab bar, home feed, library) stays in portrait.
     if (Platform.OS !== "web") {
+      orientationIntentRef.current = "portrait";
       ScreenOrientation.lockAsync(
         ScreenOrientation.OrientationLock.PORTRAIT_UP,
-      ).catch(() => {});
+      )
+        .then(() => {
+          if (orientationIntentRef.current !== "portrait") {
+            ScreenOrientation.lockAsync(
+              ScreenOrientation.OrientationLock.LANDSCAPE,
+            ).catch(() => {});
+          }
+        })
+        .catch(() => {});
     }
   }, []);
 
