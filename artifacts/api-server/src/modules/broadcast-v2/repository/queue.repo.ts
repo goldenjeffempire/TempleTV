@@ -113,14 +113,14 @@ export function makeMediaProxyUrl(externalUrl: string, ownBase?: string): string
 
 /**
  * Rewrite an external MP4/dash source URL through the media proxy.
- * YouTube and HLS sources are returned unchanged.
+ * YouTube watch URLs and HLS sources are returned unchanged.
  * Same-origin sources are returned unchanged (no proxy needed).
  */
 function proxyExternalSource<T extends Pick<V2Source, "kind" | "url">>(
   source: T,
   ownBase: string,
 ): T {
-  // YouTube is handled by the native YouTube player on TV/mobile — never proxy.
+  // YouTube watch URLs are handled by the native YouTube IFrame player — never proxy.
   if (source.kind === "youtube") return source;
   // HLS: rewriting the manifest is not enough because embedded segment URLs
   // would still be fetched from the external origin. Leave HLS unchanged;

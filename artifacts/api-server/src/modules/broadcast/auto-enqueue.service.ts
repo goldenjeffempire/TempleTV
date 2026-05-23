@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 import { env } from "../../config/env.js";
@@ -27,8 +27,9 @@ import { broadcastService } from "./broadcast.service.js";
  *    off without removing the call sites. Provides an emergency kill-switch.
  *
  * What counts as "playable" for auto-enqueue:
- *  • YouTube  — has a non-empty youtube_id (the player loads via the IFrame
- *    API which doesn't need any server-side source).
+ *  • YouTube  — has a non-empty youtube_id. The queue row stores the YouTube
+ *    watch URL in localVideoUrl and videoId=null so loadActive() admits it
+ *    via the v.id IS NULL branch (bypassing the YouTube source filter).
  *  • Local    — has hls_master_url (preferred — adaptive bitrate) OR a
  *    local_video_url AND faststart_applied=true (moov-at-byte-0). Raw
  *    uploads without faststart are intentionally excluded — broadcasting
@@ -101,17 +102,24 @@ export async function enqueueIfMissing(opts: {
     }
 
     const durationSecs = Math.max(1, Math.round(parseFloat(row.duration ?? "0")) || 1800);
+
+    // YouTube items: store the watch URL in localVideoUrl and leave videoId=null
+    // so loadActive() admits them via the `v.id IS NULL` branch (bypassing the
+    // YouTube-source filter which only applies when a video row is joined).
+    const isYouTube = row.videoSource === "youtube";
     const inserted = await broadcastService.addToQueue({
-      videoId: row.id,
+      videoId: isYouTube ? null : row.id,
       youtubeId: row.youtubeId ?? "",
       title: row.title,
       thumbnailUrl: row.thumbnailUrl ?? "",
       durationSecs,
-      localVideoUrl: row.localVideoUrl ?? null,
-      videoSource: row.videoSource === "youtube" ? "youtube" : "local",
+      localVideoUrl: isYouTube
+        ? (row.youtubeId ? `https://www.youtube.com/watch?v=${row.youtubeId}` : null)
+        : (row.localVideoUrl ?? null),
+      videoSource: isYouTube ? "youtube" : "local",
     });
     logger.info(
-      { videoId: row.id, queueItemId: inserted.id, reason: opts.reason },
+      { videoId: row.id, queueItemId: inserted.id, reason: opts.reason, isYouTube },
       "[broadcast] auto-enqueue: video added to broadcast queue",
     );
     return { enqueued: true, queueItemId: inserted.id };
@@ -158,6 +166,11 @@ export async function scanLibraryAndEnqueue(opts: {
     // only library rows that aren't represented in the queue by either
     // videoId or youtubeId. Ordered newest-first so the broadcast leads
     // with the freshest content the moment the queue is hydrated.
+    //
+    // YouTube videos are included: isPlayableForBroadcast() accepts them when
+    // they have a non-empty youtubeId. enqueueIfMissing() stores the YouTube
+    // watch URL in localVideoUrl and leaves videoId=null so loadActive() admits
+    // them via the `v.id IS NULL` branch of its YouTube-source filter.
     const candidates = await db
       .select({
         id: videosTable.id,
@@ -173,17 +186,16 @@ export async function scanLibraryAndEnqueue(opts: {
       .from(videosTable)
       .where(
         and(
-          // v2 broadcast is uploads-only — skip YouTube rows at the DB level
-          // (queueRepo filters them out on load anyway, but inserting them
-          // here would pollute broadcast_queue with permanently-rejected
-          // rows). When v2 grows YouTube support, drop this clause.
-          ne(videosTable.videoSource, "youtube"),
-          // Has at least one local-playback source signal. The per-row
-          // isPlayableForBroadcast() check below applies the full faststart
-          // rule (raw MP4 without moov-at-byte-0 is intentionally excluded).
+          // Has at least one playable source signal. For local videos this means
+          // hlsMasterUrl or localVideoUrl; for YouTube videos the youtubeId itself
+          // is the playable source (enqueueIfMissing constructs the watch URL).
           or(
             isNotNull(videosTable.hlsMasterUrl),
             isNotNull(videosTable.localVideoUrl),
+            and(
+              eq(videosTable.videoSource, "youtube"),
+              isNotNull(videosTable.youtubeId),
+            ),
           ),
           // NOT EXISTS subquery — keeps the JOIN cheap and the candidate set
           // small; the dedupe inside enqueueIfMissing is the authoritative
@@ -262,14 +274,11 @@ function isPlayableForBroadcast(row: {
   hlsMasterUrl: string | null;
   faststartApplied: boolean | null;
 }): boolean {
-  // v2 broadcast is uploads-only: queueRepo.loadActive() rejects rows where
-  // the joined video has video_source='youtube' (see queue.repo.ts:444 —
-  // "youtubeId intentionally omitted — v2 broadcast is uploads-only").
-  // Auto-enqueuing YT rows would pollute broadcast_queue with rows the
-  // orchestrator silently filters out. When v2 grows multi-source support
-  // this branch can return true based on youtubeId; until then they stay
-  // in `managed_videos` only and surface through the catalog APIs.
-  if (row.videoSource === "youtube") return false;
+  // YouTube videos are playable via the IFrame API. enqueueIfMissing() stores
+  // the watch URL in localVideoUrl with videoId=null so loadActive() admits them.
+  if (row.videoSource === "youtube") {
+    return !!(row.youtubeId && row.youtubeId.trim() !== "");
+  }
   // Local / uploaded. HLS is the gold standard; raw MP4 is OK only when
   // faststart has relocated the moov atom — see faststart.service.ts for
   // the full rationale (raw MP4 without faststart triggers the dead-air

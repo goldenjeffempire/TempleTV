@@ -611,8 +611,8 @@ export async function restRoutes(app: FastifyInstance) {
           title: "",
           thumbnailUrl: null,
           durationSecs: 0,
-          localVideoUrl: i.localVideoUrl,
-          hlsMasterUrl: i.hlsMasterUrl,
+          localVideoUrl: i.localVideoUrl ?? null,
+          hlsMasterUrl: i.hlsMasterUrl ?? null,
           faststartApplied: false,
           videoDuration: null,
         })));

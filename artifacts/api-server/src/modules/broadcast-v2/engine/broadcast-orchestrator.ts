@@ -1457,9 +1457,6 @@ class BroadcastOrchestrator extends EventEmitter {
     const url = item.source?.url ?? null;
     if (!url) return;
 
-    // Skip YouTube — the iframe API loads the video, not the HEAD URL.
-    if (url.includes("youtube.com") || url.includes("youtu.be")) return;
-
     void (async () => {
       const reachable = await this.probeUrlReachability(url);
       if (reachable !== false) return; // ok or ambiguous — leave rotation unchanged
@@ -1531,7 +1528,7 @@ class BroadcastOrchestrator extends EventEmitter {
   getItems(): { id: string; localVideoUrl: string | null; hlsMasterUrl: string | null }[] {
     return this.items.map((i) => ({
       id: i.id,
-      localVideoUrl: i.source.kind === "mp4" || i.source.kind === "youtube" ? i.source.url : null,
+      localVideoUrl: i.source.kind === "mp4" || i.source.kind === "youtube" ? i.source.url : null, // youtube watch URLs stored here
       hlsMasterUrl: i.source.kind === "hls" || i.source.kind === "dash" ? i.source.url : null,
     }));
   }

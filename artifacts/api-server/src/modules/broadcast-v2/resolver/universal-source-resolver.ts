@@ -70,12 +70,10 @@ const YT_HOST = /(?:^|\.)(youtube\.com|youtu\.be)$/i;
 const VIMEO_HOST = /(?:^|\.)vimeo(?:cdn)?\.com$/i;
 
 export interface ResolverInput {
-  /** Primary URL (HLS preferred, then MP4, then YouTube id/url). */
+  /** Primary URL (HLS preferred, then MP4, then YouTube watch URL). */
   primaryUrl: string | null;
   /** Optional fallback MP4 URL. */
   mp4Url?: string | null;
-  /** YouTube video id (11 chars) — used when no other source is present. */
-  youtubeId?: string | null;
 }
 
 export interface ResolvedSource {
@@ -194,15 +192,11 @@ export function resolveSource(input: ResolverInput): ResolvedSource | null {
     const kind = classify(input.mp4Url);
     if (kind === "mp4" || kind === "hls") candidates.push({ url: input.mp4Url, kind });
   }
-  if (input.youtubeId && /^[\w-]{11}$/.test(input.youtubeId)) {
-    candidates.push({ url: `https://www.youtube.com/watch?v=${input.youtubeId}`, kind: "youtube" });
-  }
-
   if (candidates.length === 0) {
     return null; // no classifiable URL — caller logs and skips this item
   }
 
-  // Prefer HLS > DASH > MP4 > YouTube
+  // Prefer HLS > DASH > MP4 > YouTube (explicit watch URL stored in primaryUrl)
   const order: Record<V2Source["kind"], number> = { hls: 0, dash: 1, mp4: 2, youtube: 3 };
   candidates.sort((a, b) => order[a.kind] - order[b.kind]);
 
