@@ -82,16 +82,32 @@ export async function restRoutes(app: FastifyInstance) {
     const boot = getBroadcastV2BootStatus();
     const reload = broadcastOrchestrator.getReloadStats();
     const sync = prodQueueSync.getStatus();
+    const sequence = broadcastOrchestrator.getSequence();
+    const itemCount = broadcastOrchestrator.getItemCount();
+    const uptimeMs = Date.now() - PROCESS_BOOTED_AT_MS;
+    // Composite "stuck" indicator so external monitors don't have to
+    // reproduce the signature locally. True iff the orchestrator booted
+    // (>30s uptime), the bus bridge is installed, the queue has items,
+    // but the sequence has never advanced — the exact pathology from
+    // the May 2026 broadcast-v2 boot-resilience incident. Empty-queue
+    // sequence:0 is NOT stuck; an unbooted process is NOT stuck.
+    const stuck =
+      sequence === 0 &&
+      uptimeMs > 30_000 &&
+      itemCount > 0 &&
+      boot.busBridgeInstalled === true &&
+      boot.started === true;
     return {
-      ok: true,
+      ok: !stuck,
+      stuck,
       channelId: broadcastOrchestrator.channelId,
-      sequence: broadcastOrchestrator.getSequence(),
+      sequence,
       mode: snap.mode,
       hasCurrent: snap.current !== null,
       hasOverride: snap.override !== null,
       failoverActive: snap.failover.active,
-      itemCount: broadcastOrchestrator.getItemCount(),
-      uptimeMs: Date.now() - PROCESS_BOOTED_AT_MS,
+      itemCount,
+      uptimeMs,
       serverTimeMs: Date.now(),
       boot,
       reload,

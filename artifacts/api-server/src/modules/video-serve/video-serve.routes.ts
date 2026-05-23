@@ -125,13 +125,27 @@ export async function videoServeRoutes(app: FastifyInstance) {
       webm: "video/webm",
       m4v: "video/x-m4v",
       ts: "video/mp2t",
+      // Mirror the extensions the upload pipeline accepts (`safeExt` in
+      // chunked-upload.routes.ts). Without these, an `.mts` or `.flv`
+      // upload comes back as `application/octet-stream`, which most
+      // browsers refuse to play in <video> even though the bytes are valid.
+      mts: "video/mp2t",
+      m2ts: "video/mp2t",
+      flv: "video/x-flv",
+      wmv: "video/x-ms-wmv",
       jpg: "image/jpeg",
       jpeg: "image/jpeg",
       png: "image/png",
       webp: "image/webp",
       m3u8: "application/vnd.apple.mpegurl",
     };
-    return storedContentType ?? mimeMap[ext] ?? "application/octet-stream";
+    // Prefer the stored Content-Type only if it's specific; some legacy
+    // uploads landed in storage with `application/octet-stream` which we
+    // should override using the extension-derived guess so playback works.
+    if (storedContentType && storedContentType !== "application/octet-stream") {
+      return storedContentType;
+    }
+    return mimeMap[ext] ?? "application/octet-stream";
   }
 
   function setUploadCorsHeaders(reply: import("fastify").FastifyReply, isImage: boolean): void {
