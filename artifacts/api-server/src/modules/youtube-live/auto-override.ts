@@ -193,10 +193,15 @@ export function installYouTubeAutoOverride(): void {
     logger.info("[yt-auto-override] disabled via YOUTUBE_AUTO_OVERRIDE_DISABLE");
     return;
   }
-  if (!process.env["YOUTUBE_CHANNEL_ID"]) {
-    logger.warn("[yt-auto-override] YOUTUBE_CHANNEL_ID not set — bridge inactive");
-    return;
-  }
+  // Channel ID resolution: prefer the explicit env var so operators can
+  // point the bridge at a different channel without a code change, but
+  // fall back to the canonical Temple TV channel ID baked into the
+  // youtube-sync module. Without this fallback the bridge was inactive
+  // in every production deploy that hadn't set the env var — exactly the
+  // production state observed via /api/broadcast-v2/health
+  // (`youtubeAutoOverride.enabled: false`) despite the bridge being shipped.
+  const DEFAULT_TEMPLE_TV_CHANNEL_ID = "UCPFFvkE-KGpR37qJgvYriJg";
+  const channelId = process.env["YOUTUBE_CHANNEL_ID"] || DEFAULT_TEMPLE_TV_CHANNEL_ID;
 
   installed = true;
   stats.enabled = true;
@@ -209,7 +214,7 @@ export function installYouTubeAutoOverride(): void {
   unsubscribe = ytPoller.subscribe(onPollerState);
 
   logger.info(
-    { channelId: process.env["YOUTUBE_CHANNEL_ID"] },
+    { channelId, source: process.env["YOUTUBE_CHANNEL_ID"] ? "env" : "default" },
     "[yt-auto-override] installed — watching YouTube channel for live transitions",
   );
 }
