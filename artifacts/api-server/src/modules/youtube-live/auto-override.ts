@@ -200,8 +200,18 @@ export function installYouTubeAutoOverride(): void {
   // in every production deploy that hadn't set the env var — exactly the
   // production state observed via /api/broadcast-v2/health
   // (`youtubeAutoOverride.enabled: false`) despite the bridge being shipped.
+  //
+  // CRITICAL: ytPoller reads `process.env.YOUTUBE_CHANNEL_ID` lazily inside
+  // `poll()` / `start()`, so we must MUTATE process.env (not just compute a
+  // local variable) for the fallback to take effect. Computing it locally
+  // and only logging it — as a prior revision did — left the poller bailing
+  // with `no-channel-configured`, so the bridge appeared enabled in stats
+  // but never received a live-state event.
   const DEFAULT_TEMPLE_TV_CHANNEL_ID = "UCPFFvkE-KGpR37qJgvYriJg";
-  const channelId = process.env["YOUTUBE_CHANNEL_ID"] || DEFAULT_TEMPLE_TV_CHANNEL_ID;
+  if (!process.env["YOUTUBE_CHANNEL_ID"]) {
+    process.env["YOUTUBE_CHANNEL_ID"] = DEFAULT_TEMPLE_TV_CHANNEL_ID;
+  }
+  const channelId = process.env["YOUTUBE_CHANNEL_ID"];
 
   installed = true;
   stats.enabled = true;

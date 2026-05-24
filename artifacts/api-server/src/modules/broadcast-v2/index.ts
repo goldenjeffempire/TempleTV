@@ -11,6 +11,7 @@ import { orphanCleanupWorker } from "./engine/orphan-cleanup.js";
 import { workerSupervisor } from "./engine/worker-supervisor.js";
 import { broadcastFanout } from "./io/broadcast-fanout.js";
 import { installYouTubeAutoOverride } from "../youtube-live/auto-override.js";
+import { faststartRecoveryWorker } from "./engine/faststart-recovery.js";
 
 /**
  * Broadcast v2 — server-authoritative streaming control plane.
@@ -157,6 +158,21 @@ function startSupervisedWorkers(): void {
     intervalMs: 10 * 60_000,
     initialDelayMs: 30_000,
     backoffMs: [5_000, 15_000, 30_000],
+  });
+
+  // Faststart recovery: detects active queue items whose joined video is
+  // local-source + faststart_applied=false + status in (none/queued/encoding)
+  // — exactly the rows that v2.loadActive() rejects from broadcast. Triggers
+  // runFaststart() with an in-memory attempt cap so the orchestrator can
+  // admit them on the next reload. Closes the v1/v2 admission gap that
+  // produced "Off Air" despite a playable MP4 in the queue.
+  faststartRecoveryWorker.markEnabled();
+  workerSupervisor.spawn({
+    name: "faststart-recovery",
+    fn: () => faststartRecoveryWorker.sweep(),
+    intervalMs: 60_000,
+    initialDelayMs: 15_000,
+    backoffMs: [5_000, 15_000, 30_000, 60_000],
   });
 
   // Viewer-count metrics updater: mirrors the v1 broadcastEngine viewer count

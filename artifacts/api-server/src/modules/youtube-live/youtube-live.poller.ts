@@ -35,8 +35,12 @@ export interface YtLiveState {
 
 type Listener = (state: YtLiveState) => void;
 
-const YOUTUBE_API_KEY = process.env["YOUTUBE_API_KEY"] ?? "";
-const YOUTUBE_CHANNEL_ID = process.env["YOUTUBE_CHANNEL_ID"] ?? "";
+// Read env lazily on each call. The auto-override bridge mutates
+// `process.env.YOUTUBE_CHANNEL_ID` at install-time to inject a default
+// channel ID when the operator did not set one — that mutation must be
+// visible here, so we cannot snapshot the value at module-load.
+function ytApiKey(): string { return process.env["YOUTUBE_API_KEY"] ?? ""; }
+function ytChannelId(): string { return process.env["YOUTUBE_CHANNEL_ID"] ?? ""; }
 
 const API_POLL_INTERVAL_MS = 90_000;  // 90s — 100 quota units per call
 const RSS_POLL_INTERVAL_MS = 60_000;  // 60s — quota-free
@@ -145,7 +149,7 @@ class YtLivePoller extends EventEmitter {
 
   start(): void {
     if (this.running) return;
-    if (!YOUTUBE_CHANNEL_ID) {
+    if (!ytChannelId()) {
       this.setState({
         isLive: false,
         videoId: null,
@@ -158,7 +162,7 @@ class YtLivePoller extends EventEmitter {
     }
     this.running = true;
     this.poll();
-    const interval = YOUTUBE_API_KEY ? API_POLL_INTERVAL_MS : RSS_POLL_INTERVAL_MS;
+    const interval = ytApiKey() ? API_POLL_INTERVAL_MS : RSS_POLL_INTERVAL_MS;
     this.timer = setInterval(() => { this.poll(); }, interval);
   }
 
@@ -172,9 +176,11 @@ class YtLivePoller extends EventEmitter {
 
   private async poll(): Promise<void> {
     let result: Omit<YtLiveState, "checkedAt">;
-    if (YOUTUBE_API_KEY && YOUTUBE_CHANNEL_ID) {
+    const apiKey = ytApiKey();
+    const channelId = ytChannelId();
+    if (apiKey && channelId) {
       result = await this.pollApi();
-    } else if (YOUTUBE_CHANNEL_ID) {
+    } else if (channelId) {
       result = await this.pollRss();
     } else {
       result = { isLive: false, videoId: null, title: null, viewerCount: null, detectionMethod: "no-channel-configured" };
@@ -184,7 +190,7 @@ class YtLivePoller extends EventEmitter {
 
   private async pollApi(): Promise<Omit<YtLiveState, "checkedAt">> {
     try {
-      const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${encodeURIComponent(YOUTUBE_CHANNEL_ID)}&eventType=live&type=video&key=${encodeURIComponent(YOUTUBE_API_KEY)}`;
+      const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${encodeURIComponent(ytChannelId())}&eventType=live&type=video&key=${encodeURIComponent(ytApiKey())}`;
       const body = await httpsGet(url, 12_000);
       return parseApiResponse(body);
     } catch {
@@ -194,7 +200,7 @@ class YtLivePoller extends EventEmitter {
 
   private async pollRss(): Promise<Omit<YtLiveState, "checkedAt">> {
     try {
-      const url = `https://www.youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(YOUTUBE_CHANNEL_ID)}`;
+      const url = `https://www.youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(ytChannelId())}`;
       const body = await httpsGet(url, 12_000);
       return parseRssResponse(body);
     } catch {
