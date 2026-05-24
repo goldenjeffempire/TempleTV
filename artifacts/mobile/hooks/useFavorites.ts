@@ -1,13 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { STORAGE_KEYS } from "@/constants/config";
+import { STORAGE_KEYS, SECURE_KEYS } from "@/constants/config";
+import { secureStorage } from "@/lib/secureStorage";
 import { apiSyncFavorite, apiGetFavorites } from "@/services/authApi";
 import { useAuth } from "@/context/AuthContext";
 import type { Sermon, SermonCategory } from "@/types";
 
+// Auth tokens live in SecureStore under SECURE_KEYS (safe-char keys).
+// Fall back to the legacy AsyncStorage key for one release so any user that
+// hadn't yet hit AuthContext's migration block still gets cloud sync.
 async function hasAuthToken(): Promise<boolean> {
-  const token = await AsyncStorage.getItem(STORAGE_KEYS.authToken);
-  return !!token;
+  const secure = await secureStorage.getItem(SECURE_KEYS.authToken);
+  if (secure) return true;
+  const legacy = await AsyncStorage.getItem(STORAGE_KEYS.authToken);
+  return !!legacy;
 }
 
 function cloudCategoryToSermonCategory(raw: string): SermonCategory {

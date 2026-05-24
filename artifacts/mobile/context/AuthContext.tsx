@@ -3,7 +3,7 @@ import { AppState, type AppStateStatus } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { router } from "expo-router";
 import { secureStorage } from "@/lib/secureStorage";
-import { STORAGE_KEYS } from "@/constants/config";
+import { STORAGE_KEYS, SECURE_KEYS } from "@/constants/config";
 import {
   apiGetMe,
   apiLogout,
@@ -83,19 +83,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Migration: legacy AsyncStorage token → SecureStore (one-time).
         const legacyToken = await AsyncStorage.getItem(STORAGE_KEYS.authToken);
         if (legacyToken) {
-          await secureStorage.setItem(STORAGE_KEYS.authToken, legacyToken);
+          await secureStorage.setItem(SECURE_KEYS.authToken, legacyToken);
           await AsyncStorage.removeItem(STORAGE_KEYS.authToken);
+        }
+        const legacyRefresh = await AsyncStorage.getItem(STORAGE_KEYS.authRefreshToken);
+        if (legacyRefresh) {
+          await secureStorage.setItem(SECURE_KEYS.authRefreshToken, legacyRefresh);
+          await AsyncStorage.removeItem(STORAGE_KEYS.authRefreshToken);
         }
         const legacyUser = await AsyncStorage.getItem(STORAGE_KEYS.authUser);
         if (legacyUser) {
-          await secureStorage.setItem(STORAGE_KEYS.authUser, legacyUser);
+          await secureStorage.setItem(SECURE_KEYS.authUser, legacyUser);
           await AsyncStorage.removeItem(STORAGE_KEYS.authUser);
         }
 
         const [storedToken, storedRefresh, storedUser] = await Promise.all([
-          secureStorage.getItem(STORAGE_KEYS.authToken),
-          secureStorage.getItem(STORAGE_KEYS.authRefreshToken),
-          secureStorage.getItem(STORAGE_KEYS.authUser),
+          secureStorage.getItem(SECURE_KEYS.authToken),
+          secureStorage.getItem(SECURE_KEYS.authRefreshToken),
+          secureStorage.getItem(SECURE_KEYS.authUser),
         ]);
 
         const hasCredential = !!(storedToken || storedRefresh);
@@ -122,7 +127,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         apiGetMe()
           .then((freshUser) => {
             setUser(freshUser);
-            secureStorage.setItem(STORAGE_KEYS.authUser, JSON.stringify(freshUser)).catch(() => {});
+            secureStorage.setItem(SECURE_KEYS.authUser, JSON.stringify(freshUser)).catch(() => {});
           })
           .catch(async (err: unknown) => {
             if (err instanceof UserNotFoundError) {
@@ -143,9 +148,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const clearLocal = useCallback(async () => {
     await Promise.all([
-      secureStorage.removeItem(STORAGE_KEYS.authToken),
-      secureStorage.removeItem(STORAGE_KEYS.authRefreshToken),
-      secureStorage.removeItem(STORAGE_KEYS.authUser),
+      secureStorage.removeItem(SECURE_KEYS.authToken),
+      secureStorage.removeItem(SECURE_KEYS.authRefreshToken),
+      secureStorage.removeItem(SECURE_KEYS.authUser),
       clearUserScopedCaches(),
     ]);
     setToken(null);
@@ -196,7 +201,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // when given an AuthResponse; we only need to mirror state and the user.
     const accessToken = typeof resp === "string" ? resp : (resp.accessToken ?? resp.token);
     if (typeof resp === "string") {
-      await secureStorage.setItem(STORAGE_KEYS.authToken, resp);
+      await secureStorage.setItem(SECURE_KEYS.authToken, resp);
     }
     // Normalize the user object so a freshly-logged-in user has the EXACT
     // same shape as a user restored from /me on cold-start. The server's
@@ -214,7 +219,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       avatarUrl: newUser.avatarUrl ?? null,
       emailVerified: newUser.emailVerified ?? false,
     };
-    await secureStorage.setItem(STORAGE_KEYS.authUser, JSON.stringify(normalizedUser));
+    await secureStorage.setItem(SECURE_KEYS.authUser, JSON.stringify(normalizedUser));
     setToken(accessToken);
     setUser(normalizedUser);
     setSessionExpiredAt(null);
@@ -238,7 +243,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const updateUser = useCallback((updated: AuthUser) => {
     setUser(updated);
-    secureStorage.setItem(STORAGE_KEYS.authUser, JSON.stringify(updated)).catch(() => {});
+    secureStorage.setItem(SECURE_KEYS.authUser, JSON.stringify(updated)).catch(() => {});
   }, []);
 
   const openAuthGate = useCallback((target: PendingPlayback) => {

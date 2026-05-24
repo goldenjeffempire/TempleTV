@@ -2,7 +2,7 @@
   "expo": {
     "name": "Temple TV",
     "slug": "temple-tv-mobile",
-    "version": "1.0.9",
+    "version": "1.0.10",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "templetv",
@@ -27,7 +27,7 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.templetv.app",
       "googleServicesFile": "./GoogleService-Info.plist",
-      "buildNumber": "202605240905",
+      "buildNumber": "202605241125",
       "requireFullScreen": false,
       "config": {
         "usesNonExemptEncryption": false
@@ -90,7 +90,7 @@
     },
     "android": {
       "package": "com.templetv.jctm",
-      "versionCode": 32,
+      "versionCode": 33,
       "allowBackup": false,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon-foreground.png",

@@ -1,6 +1,6 @@
 import { Platform } from "react-native";
 import { secureStorage } from "@/lib/secureStorage";
-import { STORAGE_KEYS } from "@/constants/config";
+import { STORAGE_KEYS, SECURE_KEYS } from "@/constants/config";
 import { getApiBase } from "@/lib/apiBase";
 import { fetchWithRetry } from "@/lib/fetchWithRetry";
 
@@ -152,7 +152,7 @@ export function setOnSessionExpired(handler: (() => void) | null): void {
 }
 
 async function attemptRefresh(): Promise<string | null> {
-  const refreshToken = await secureStorage.getItem(STORAGE_KEYS.authRefreshToken);
+  const refreshToken = await secureStorage.getItem(SECURE_KEYS.authRefreshToken);
   if (!refreshToken) return null;
   try {
     const res = await fetchWithRetry(
@@ -172,8 +172,8 @@ async function attemptRefresh(): Promise<string | null> {
       // should NOT wipe the stored session; the next request will retry.
       if (res.status === 401) {
         await Promise.all([
-          secureStorage.removeItem(STORAGE_KEYS.authToken),
-          secureStorage.removeItem(STORAGE_KEYS.authRefreshToken),
+          secureStorage.removeItem(SECURE_KEYS.authToken),
+          secureStorage.removeItem(SECURE_KEYS.authRefreshToken),
         ]);
         onSessionExpired?.();
       }
@@ -181,8 +181,8 @@ async function attemptRefresh(): Promise<string | null> {
     }
     const data = (await res.json()) as { accessToken: string; refreshToken: string };
     await Promise.all([
-      secureStorage.setItem(STORAGE_KEYS.authToken, data.accessToken),
-      secureStorage.setItem(STORAGE_KEYS.authRefreshToken, data.refreshToken),
+      secureStorage.setItem(SECURE_KEYS.authToken, data.accessToken),
+      secureStorage.setItem(SECURE_KEYS.authRefreshToken, data.refreshToken),
     ]);
     return data.accessToken;
   } catch {
@@ -201,7 +201,7 @@ async function refreshAccessToken(): Promise<string | null> {
 
 /** Public hook used by AuthContext to force a refresh on app resume. */
 export async function ensureFreshAccessToken(): Promise<string | null> {
-  const current = await secureStorage.getItem(STORAGE_KEYS.authToken);
+  const current = await secureStorage.getItem(SECURE_KEYS.authToken);
   if (current && !isAccessTokenNearExpiry(current)) return current;
   return refreshAccessToken();
 }
@@ -216,7 +216,7 @@ export async function ensureFreshAccessToken(): Promise<string | null> {
  * single-flight inflightRefresh deduplication.
  */
 export async function authFetch(path: string, options: RequestInit = {}): Promise<Response> {
-  let token = await secureStorage.getItem(STORAGE_KEYS.authToken);
+  let token = await secureStorage.getItem(SECURE_KEYS.authToken);
   // Proactive refresh: if we already know the token is about to expire,
   // swap it for a fresh one BEFORE making the call. Eliminates the
   // 401-then-retry round-trip in the steady state.
@@ -249,9 +249,9 @@ export async function authFetch(path: string, options: RequestInit = {}): Promis
 
 async function persistAuthResponse(data: AuthResponse): Promise<void> {
   await Promise.all([
-    secureStorage.setItem(STORAGE_KEYS.authToken, data.accessToken ?? data.token),
+    secureStorage.setItem(SECURE_KEYS.authToken, data.accessToken ?? data.token),
     data.refreshToken
-      ? secureStorage.setItem(STORAGE_KEYS.authRefreshToken, data.refreshToken)
+      ? secureStorage.setItem(SECURE_KEYS.authRefreshToken, data.refreshToken)
       : Promise.resolve(),
   ]);
 }
@@ -327,7 +327,7 @@ export async function apiLogin(
 }
 
 export async function apiLogout(everywhere = false): Promise<void> {
-  const refreshToken = await secureStorage.getItem(STORAGE_KEYS.authRefreshToken);
+  const refreshToken = await secureStorage.getItem(SECURE_KEYS.authRefreshToken);
   // Best-effort server revocation; never block local sign-out on network
   // failure. Use a tight 4 s timeout — we never want the user staring at a
   // spinner on the way OUT of the app.
@@ -346,8 +346,8 @@ export async function apiLogout(everywhere = false): Promise<void> {
     /* swallow */
   }
   await Promise.all([
-    secureStorage.removeItem(STORAGE_KEYS.authToken),
-    secureStorage.removeItem(STORAGE_KEYS.authRefreshToken),
+    secureStorage.removeItem(SECURE_KEYS.authToken),
+    secureStorage.removeItem(SECURE_KEYS.authRefreshToken),
   ]);
 }
 
@@ -522,7 +522,7 @@ export async function apiDeleteAccount(currentPassword: string): Promise<void> {
   // Wipe local credentials immediately — the server already revoked the
   // refresh tokens via cascade delete, but we must not leave them on disk.
   await Promise.all([
-    secureStorage.removeItem(STORAGE_KEYS.authToken),
-    secureStorage.removeItem(STORAGE_KEYS.authRefreshToken),
+    secureStorage.removeItem(SECURE_KEYS.authToken),
+    secureStorage.removeItem(SECURE_KEYS.authRefreshToken),
   ]);
 }

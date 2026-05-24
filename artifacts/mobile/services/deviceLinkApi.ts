@@ -1,5 +1,5 @@
 import { secureStorage } from "@/lib/secureStorage";
-import { STORAGE_KEYS } from "@/constants/config";
+import { SECURE_KEYS } from "@/constants/config";
 import { getApiBase } from "@/lib/apiBase";
 import { fetchWithRetry } from "@/lib/fetchWithRetry";
 
@@ -12,7 +12,7 @@ import { fetchWithRetry } from "@/lib/fetchWithRetry";
  * the public /link route without depending on a refresh-token rotation.
  */
 export async function apiClaimDeviceCode(code: string): Promise<{ ok: true }> {
-  const token = await secureStorage.getItem(STORAGE_KEYS.authToken);
+  const token = await secureStorage.getItem(SECURE_KEYS.authToken);
   if (!token) {
     throw new Error("You need to be signed in to link a TV.");
   }

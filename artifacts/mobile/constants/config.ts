@@ -21,3 +21,15 @@ export const STORAGE_KEYS = {
   authRefreshToken: "@temple_tv/auth_refresh_token",
   authUser: "@temple_tv/auth_user",
 };
+
+// expo-secure-store rejects any key containing characters outside of
+// [A-Za-z0-9._-]. The legacy STORAGE_KEYS use "@" and "/" which work fine for
+// AsyncStorage (web) but throw "Invalid key provided to SecureStore" on
+// native, blocking login/signup entirely. These safe-character mirrors are
+// used by every native SecureStore call. AuthContext migrates any previously
+// stored AsyncStorage auth values from the legacy keys to these on cold start.
+export const SECURE_KEYS = {
+  authToken: "temple_tv.auth_token",
+  authRefreshToken: "temple_tv.auth_refresh_token",
+  authUser: "temple_tv.auth_user",
+};
