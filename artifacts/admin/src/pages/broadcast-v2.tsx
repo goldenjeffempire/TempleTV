@@ -60,9 +60,14 @@ interface SourceHealthEntry {
 }
 
 interface QueueSyncStatus {
+  // Capped at 100 — kept for back-compat with badge tooltip & sample list.
   missingCount: number;
   missingReadyCount: number;
   sample: Array<{ id: string; title: string; videoSource: string; reason: string }>;
+  // Uncapped totals — use these when displaying counts to the operator.
+  libraryTotal?: number;
+  libraryPlayable?: number;
+  missingPlayable?: number;
 }
 
 interface EngineHealth {
@@ -1554,49 +1559,104 @@ export default function BroadcastV2Page() {
       <TranscodingProgressPanel />
 
       {/* ── OFF_AIR status card — visible only when queue is empty ─────────── */}
-      {!queueLoading && queueItems.length === 0 && (
-        <Card className="border-destructive/40 bg-destructive/5">
-          <CardContent className="flex flex-col items-center gap-5 py-10 text-center sm:flex-row sm:text-left sm:gap-8 sm:py-8 sm:px-8">
-            {/* Icon block */}
-            <div className="flex-shrink-0 flex h-16 w-16 items-center justify-center rounded-full bg-destructive/10 ring-1 ring-destructive/30">
-              <Radio className="h-8 w-8 text-destructive" />
-            </div>
+      {/*                                                                       */}
+      {/* Three distinct off-air situations, each with different operator       */}
+      {/* guidance. The right message matters: telling someone "upload videos"  */}
+      {/* when they have 400+ uploaded but unplayable rows is misleading and    */}
+      {/* triggers "rebuild everything" panic. We use queueSyncStatus to        */}
+      {/* distinguish:                                                          */}
+      {/*   A. missingCount === 0   → library is empty. Upload videos.          */}
+      {/*   B. missingReadyCount > 0 → library has playable content not yet     */}
+      {/*       in the queue. Click "Sync library" (right-side button above).   */}
+      {/*   C. missingCount > 0 && missingReadyCount === 0 → library has        */}
+      {/*       content but none of it is broadcastable. Almost always means    */}
+      {/*       the entire library is YouTube-synced metadata (which by design  */}
+      {/*       cannot air — no native player on TV/mobile) and there are no    */}
+      {/*       uploaded MP4/HLS sources behind it.                             */}
+      {!queueLoading && queueItems.length === 0 && (() => {
+        // Prefer the uncapped server-side totals (libraryTotal / missingPlayable)
+        // over the legacy capped fields. Until queueSyncStatus has loaded we
+        // show a neutral "checking…" state instead of asserting upload guidance
+        // that may be wrong when the library actually has unplayable content.
+        const statusReady = queueSyncStatus !== undefined;
+        const libTotal = queueSyncStatus?.libraryTotal ?? null;
+        const libPlayable = queueSyncStatus?.libraryPlayable ?? null;
+        const missingPlayable = queueSyncStatus?.missingPlayable ?? null;
+        const onlyUnplayable =
+          libTotal !== null && libPlayable !== null && libTotal > 0 && libPlayable === 0;
+        const hasPlayableNotQueued =
+          missingPlayable !== null && missingPlayable > 0;
 
-            {/* Text block */}
-            <div className="flex-1 space-y-1.5">
-              <div className="flex items-center justify-center gap-2 sm:justify-start">
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-destructive px-2.5 py-0.5 text-xs font-bold uppercase tracking-widest text-destructive-foreground">
-                  <span className="relative flex h-1.5 w-1.5">
-                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-destructive-foreground opacity-75" />
-                    <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-destructive-foreground" />
-                  </span>
-                  Off Air
-                </span>
-                <span className="text-sm font-medium text-foreground">Broadcast queue is empty</span>
+        let headline = "Broadcast queue is empty";
+        let body =
+          "Nothing is scheduled to air. Upload your sermon videos, then add them to the broadcast queue to go live.";
+        if (!statusReady) {
+          headline = "Checking library…";
+          body = "Determining what's available to broadcast.";
+        } else if (onlyUnplayable) {
+          headline = "No playable content in library";
+          body =
+            `Library has ${libTotal} video${libTotal === 1 ? "" : "s"}, but none can be broadcast — they all lack a playable video file (likely YouTube-only metadata, which by design never airs on TV or mobile). Upload local video files (MP4/MOV) or activate an HLS live source override to go on air.`;
+        } else if (hasPlayableNotQueued) {
+          headline = `${missingPlayable} playable video${missingPlayable === 1 ? "" : "s"} ready to broadcast`;
+          body =
+            `Your library has ${missingPlayable} broadcastable video${missingPlayable === 1 ? "" : "s"} that ${missingPlayable === 1 ? "is" : "are"} not in the queue. Click "Sync library now" below to add ${missingPlayable === 1 ? "it" : "them"} and go live.`;
+        }
+
+        return (
+          <Card className="border-destructive/40 bg-destructive/5">
+            <CardContent className="flex flex-col items-center gap-5 py-10 text-center sm:flex-row sm:text-left sm:gap-8 sm:py-8 sm:px-8">
+              <div className="flex-shrink-0 flex h-16 w-16 items-center justify-center rounded-full bg-destructive/10 ring-1 ring-destructive/30">
+                <Radio className="h-8 w-8 text-destructive" />
               </div>
-              <p className="text-sm text-muted-foreground max-w-md">
-                Nothing is scheduled to air. Upload your sermon videos, then add them to the broadcast queue to go live.
-              </p>
-            </div>
 
-            {/* Action buttons */}
-            <div className="flex flex-shrink-0 flex-col gap-2 sm:flex-row">
-              <Link href="/videos">
-                <Button className="gap-2 w-full sm:w-auto">
-                  <Upload className="h-4 w-4" />
-                  Upload Videos
-                </Button>
-              </Link>
-              <Link href="/broadcast">
-                <Button variant="outline" className="gap-2 w-full sm:w-auto">
-                  <ListPlus className="h-4 w-4" />
-                  Edit Queue
-                </Button>
-              </Link>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+              <div className="flex-1 space-y-1.5">
+                <div className="flex items-center justify-center gap-2 sm:justify-start">
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-destructive px-2.5 py-0.5 text-xs font-bold uppercase tracking-widest text-destructive-foreground">
+                    <span className="relative flex h-1.5 w-1.5">
+                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-destructive-foreground opacity-75" />
+                      <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-destructive-foreground" />
+                    </span>
+                    Off Air
+                  </span>
+                  <span className="text-sm font-medium text-foreground">{headline}</span>
+                </div>
+                <p className="text-sm text-muted-foreground max-w-xl">{body}</p>
+              </div>
+
+              <div className="flex flex-shrink-0 flex-col gap-2 sm:flex-row">
+                {hasPlayableNotQueued ? (
+                  <Button
+                    className="gap-2 w-full sm:w-auto"
+                    onClick={() => syncLibraryMutation.mutate()}
+                    disabled={syncLibraryMutation.isPending}
+                  >
+                    {syncLibraryMutation.isPending ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <ListPlus className="h-4 w-4" />
+                    )}
+                    Sync library now
+                  </Button>
+                ) : (
+                  <Link href="/videos">
+                    <Button className="gap-2 w-full sm:w-auto">
+                      <Upload className="h-4 w-4" />
+                      Upload Videos
+                    </Button>
+                  </Link>
+                )}
+                <Link href="/broadcast">
+                  <Button variant="outline" className="gap-2 w-full sm:w-auto">
+                    <ListPlus className="h-4 w-4" />
+                    Edit Queue
+                  </Button>
+                </Link>
+              </div>
+            </CardContent>
+          </Card>
+        );
+      })()}
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2">
@@ -1642,7 +1702,7 @@ export default function BroadcastV2Page() {
           ) : queueItems.length === 0 ? (
             <p className="flex items-center gap-2 text-sm text-muted-foreground py-2">
               <Video className="h-4 w-4 flex-shrink-0 opacity-50" />
-              Queue is empty — use the card above to upload videos and go live.
+              Queue is empty — see the card above for the next step.
             </p>
           ) : (
             <ul className="divide-y rounded-md border">

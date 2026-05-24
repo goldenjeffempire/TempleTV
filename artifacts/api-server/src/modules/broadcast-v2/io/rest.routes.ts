@@ -16,7 +16,7 @@ import { broadcastService } from "../../broadcast/broadcast.service.js";
 import { scanLibraryAndEnqueue, listMissingFromQueue } from "../../broadcast/auto-enqueue.service.js";
 import { markBadUrl, clearAllBadUrls, getItemsHealth, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, getRecentlySuspended } from "../repository/queue.repo.js";
 import { db, schema } from "../../../infrastructure/db.js";
-import { eq, and, isNull, isNotNull } from "drizzle-orm";
+import { eq, and, isNull, isNotNull, sql } from "drizzle-orm";
 import { enqueueTranscode, boostTranscodePriority } from "../../transcoder/transcoder.queue.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { mediaIntegrityScanner } from "../engine/media-integrity-scanner.js";
@@ -690,12 +690,71 @@ export async function restRoutes(app: FastifyInstance) {
     config: { rateLimit: { max: 12, timeWindow: "1 minute" } },
   }, async (_req, reply) => {
     reply.header("Cache-Control", "no-store, max-age=0");
-    const missing = await listMissingFromQueue(100);
+
+    // listMissingFromQueue is capped (returns first N rows) — fine for the
+    // `sample` and per-row reason breakdown, but its `.length` is an UNDERCOUNT
+    // for any library with >100 missing rows. The off-air diagnostic card in
+    // the admin shows these numbers verbatim ("Library has X videos…"), so an
+    // undercount actively misleads operators. Run two cheap COUNT(*) queries
+    // alongside the sample fetch to return uncapped, authoritative totals.
+    //
+    // libraryTotal      — every managed_video row regardless of source/state
+    // libraryPlayable   — rows that satisfy isPlayableForBroadcast (hls OR
+    //                     local+faststart, excluding YouTube). This is the
+    //                     true ceiling on what auto-enqueue could ever add.
+    // missingCountExact — playable rows NOT yet in broadcast_queue. Replaces
+    //                     the capped missingCount for the diagnostic card.
+    const [missing, totals] = await Promise.all([
+      listMissingFromQueue(100),
+      (async () => {
+        const rows = await db.execute<{
+          library_total: string;
+          library_playable: string;
+          missing_playable: string;
+        }>(sql`
+          SELECT
+            COUNT(*)::text AS library_total,
+            COUNT(*) FILTER (
+              WHERE video_source <> 'youtube'
+                AND (
+                  (hls_master_url IS NOT NULL AND hls_master_url <> '')
+                  OR (local_video_url IS NOT NULL AND local_video_url <> ''
+                      AND faststart_applied = true)
+                )
+            )::text AS library_playable,
+            COUNT(*) FILTER (
+              WHERE video_source <> 'youtube'
+                AND (
+                  (hls_master_url IS NOT NULL AND hls_master_url <> '')
+                  OR (local_video_url IS NOT NULL AND local_video_url <> ''
+                      AND faststart_applied = true)
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM broadcast_queue bq
+                  WHERE bq.video_id = managed_videos.id
+                )
+            )::text AS missing_playable
+          FROM managed_videos
+        `);
+        const r = rows.rows[0] ?? { library_total: "0", library_playable: "0", missing_playable: "0" };
+        return {
+          libraryTotal: Number(r.library_total) || 0,
+          libraryPlayable: Number(r.library_playable) || 0,
+          missingPlayable: Number(r.missing_playable) || 0,
+        };
+      })(),
+    ]);
     const missingReady = missing.filter((m) => m.reason === "ready");
     return {
+      // Back-compat fields (capped at 100).
       missingCount: missing.length,
       missingReadyCount: missingReady.length,
       sample: missing.slice(0, 10),
+      // Authoritative uncapped totals — use these for any UI that displays
+      // a number to the operator.
+      libraryTotal: totals.libraryTotal,
+      libraryPlayable: totals.libraryPlayable,
+      missingPlayable: totals.missingPlayable,
     };
   });
 
