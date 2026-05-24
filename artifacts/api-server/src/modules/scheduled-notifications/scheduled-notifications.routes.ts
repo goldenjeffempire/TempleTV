@@ -95,6 +95,9 @@ export async function scheduledNotificationsRoutes(app: FastifyInstance) {
     "/notifications/schedule",
     {
       preHandler: requireAuth("editor"),
+      // Scheduling writes a DB row and will fan-out to thousands of devices
+      // when the time arrives. 20/min matches the send endpoint's limit.
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Schedule a push notification for a future timestamp",
@@ -185,6 +188,7 @@ export async function scheduledNotificationsRoutes(app: FastifyInstance) {
     "/notifications/scheduled/:id",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Cancel (delete) a pending scheduled notification",

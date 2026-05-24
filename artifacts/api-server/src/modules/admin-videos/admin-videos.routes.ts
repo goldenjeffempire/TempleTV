@@ -328,6 +328,9 @@ export async function adminVideosRoutes(app: FastifyInstance) {
     "/videos/:id",
     {
       preHandler: requireAuth("editor"),
+      // Hard delete removes the DB row AND purges storage blobs.
+      // 10/min prevents a runaway script from wiping the library in bulk.
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Delete a video from the library",

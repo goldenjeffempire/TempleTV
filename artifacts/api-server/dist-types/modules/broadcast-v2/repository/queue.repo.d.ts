@@ -6,7 +6,7 @@ import type { V2Item } from "../domain/types.js";
  * proxy as an open relay.
  */
 export declare function makeMediaProxyUrl(externalUrl: string, ownBase?: string): string;
-export declare const BAD_URL_TTL_MS = 15000;
+export declare const BAD_URL_TTL_MS = 90000;
 /** Mark a source URL as recently confirmed unreachable. */
 export declare function markBadUrl(url: string): void;
 /** Clear a URL from the bad cache (e.g. after a queue reload with new sources). */

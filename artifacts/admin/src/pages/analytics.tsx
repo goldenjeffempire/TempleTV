@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { Component, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, isTransientError} from "@/lib/api";
 import { PageHeader } from "@/components/shared/page-header";
@@ -26,6 +27,43 @@ import {
   CartesianGrid,
 } from "@/lib/recharts-shim";
 import { format, parseISO } from "date-fns";
+
+// ── Chart-level error boundary ─────────────────────────────────────────────
+// Prevents a Recharts render error (e.g. bad data shape, SVG bug) from
+// crashing the entire analytics page. Each chart section is wrapped
+// independently so the rest of the page stays functional.
+interface ChartEBState { failed: boolean; message: string }
+class ChartErrorBoundary extends Component<{ children: ReactNode; label?: string }, ChartEBState> {
+  state: ChartEBState = { failed: false, message: "" };
+
+  static getDerivedStateFromError(err: Error): ChartEBState {
+    return { failed: true, message: err.message };
+  }
+
+  componentDidCatch(err: Error) {
+    console.error("[ChartErrorBoundary]", err);
+  }
+
+  render() {
+    if (this.state.failed) {
+      return (
+        <div className="flex flex-col items-center justify-center h-56 gap-2 text-sm text-muted-foreground">
+          <span className="text-xs text-destructive/80">
+            {this.props.label ?? "Chart"} failed to render
+          </span>
+          <button
+            type="button"
+            className="text-xs text-primary underline underline-offset-2"
+            onClick={() => this.setState({ failed: false, message: "" })}
+          >
+            Retry
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 type RangeKey = "7d" | "30d" | "90d";
 
@@ -210,6 +248,7 @@ export default function AnalyticsPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
+            <ChartErrorBoundary label="Daily views chart">
             {isLoading ? (
               <Skeleton className="h-56 w-full" />
             ) : chartData.length > 0 ? (
@@ -244,6 +283,7 @@ export default function AnalyticsPage() {
                 No session data for this period yet
               </div>
             )}
+            </ChartErrorBoundary>
           </CardContent>
         </Card>
 
@@ -255,6 +295,7 @@ export default function AnalyticsPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
+            <ChartErrorBoundary label="Platform breakdown chart">
             {isLoading ? (
               <Skeleton className="h-56 w-full" />
             ) : (data?.platformBreakdown?.length ?? 0) > 0 ? (
@@ -314,6 +355,7 @@ export default function AnalyticsPage() {
                 No platform data yet
               </div>
             )}
+            </ChartErrorBoundary>
           </CardContent>
         </Card>
       </div>
@@ -326,6 +368,7 @@ export default function AnalyticsPage() {
           </CardTitle>
         </CardHeader>
         <CardContent>
+          <ChartErrorBoundary label="Top videos chart">
           {isLoading ? (
             <Skeleton className="h-56 w-full" />
           ) : topVideosChart.length > 0 ? (
@@ -350,6 +393,7 @@ export default function AnalyticsPage() {
               No video data yet
             </div>
           )}
+          </ChartErrorBoundary>
         </CardContent>
       </Card>
 

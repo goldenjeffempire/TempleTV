@@ -1098,6 +1098,10 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     "/diagnostics/gc",
     {
       preHandler: requireAuth("editor"),
+      // GC is a stop-the-world operation that pauses all JS execution.
+      // Capped at 4/hour to prevent malicious or runaway scripts from
+      // continuously stalling the event loop.
+      config: { rateLimit: { max: 4, timeWindow: "1 hour" } },
       schema: {
         tags: ["admin-ops"],
         summary: "Force a synchronous GC cycle (501 if --expose-gc not set)",
@@ -1143,6 +1147,10 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     "/diagnostics/heap-snapshot",
     {
       preHandler: requireAuth("editor"),
+      // Heap snapshots can be hundreds of MiB; streaming them pins Node
+      // memory for seconds. Limit to 2/hour so a compromised editor
+      // account cannot use this to OOM the server.
+      config: { rateLimit: { max: 2, timeWindow: "1 hour" } },
       schema: {
         tags: ["admin-ops"],
         summary: "v8.getHeapSnapshot() streamed as application/octet-stream",

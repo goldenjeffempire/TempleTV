@@ -1,6 +1,21 @@
 import { EventEmitter } from "node:events";
 import type { V2Override, V2ServerFrame, V2Snapshot } from "../domain/types.js";
 /**
+ * One entry in the orchestrator's airing history ring buffer.
+ * Exposed via getAiringHistory() and the /health endpoint so operators can
+ * review what has been on air without parsing server logs.
+ */
+export interface AiringEntry {
+    itemId: string;
+    title: string | null;
+    /** Resolved source URL that was served to players. */
+    sourceUrl: string | null;
+    /** Wall-clock ms when this item started airing. */
+    startedAtMs: number;
+    /** Wall-clock ms when this item stopped airing. null = currently on air. */
+    endedAtMs: number | null;
+}
+/**
  * Server-authoritative broadcast orchestrator.
  *
  * Single source of truth for what's airing on each channel. The in-memory
@@ -69,6 +84,16 @@ declare class BroadcastOrchestrator extends EventEmitter {
      */
     private checkpointDirty;
     private lastCurrentItemId;
+    /**
+     * Ring buffer of recently-aired items (newest-first, capped at AIRING_HISTORY_MAX).
+     * Populated by tickInner() on every item advance.
+     */
+    private airingHistory;
+    /**
+     * Open airing entry for the item currently on air (endedAtMs = null).
+     * Closed and pushed to airingHistory on the next advance.
+     */
+    private currentAiringEntry;
     /**
      * The startsAtMs value from the last tick in which the current item was
      * identified. Used to detect single-item queue loop wrap-arounds: when the
@@ -148,6 +173,12 @@ declare class BroadcastOrchestrator extends EventEmitter {
      * "still booting" from "stuck at sequence 0".
      */
     private startedAtWallMs;
+    /**
+     * Tracks the last time a "stuck broadcast" Sentry alert was fired so we
+     * don't spam Sentry on every 30 s reload while the condition persists.
+     * Throttled to at most once per 5 minutes.
+     */
+    private lastStuckAlertMs;
     constructor();
     /**
      * Boot the orchestrator. NEVER throws — any failure falls back to a safe
@@ -401,6 +432,13 @@ declare class BroadcastOrchestrator extends EventEmitter {
         allBlockedSinceMs: number | null;
         allBlockedDurationMs: number | null;
     };
+    /**
+     * Returns the airing history ring buffer: the last AIRING_HISTORY_MAX items
+     * that aired on this channel (newest first) plus the currently-airing item
+     * as the head entry (endedAtMs = null). Returns [] before the first item
+     * ever advances. Safe to call at any time — never throws.
+     */
+    getAiringHistory(): AiringEntry[];
     /**
      * Wall-clock timestamp (ms) of the moment `start()` last transitioned the
      * orchestrator from stopped → started.  Returns 0 before the first

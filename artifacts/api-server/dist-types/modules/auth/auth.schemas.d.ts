@@ -43,22 +43,22 @@ export declare const AuthTokensSchema: z.ZodObject<{
         role: z.ZodEnum<["admin", "editor", "user", "system"]>;
         displayName: z.ZodString;
     }, "strip", z.ZodTypeAny, {
-        id: string;
         email: string;
         displayName: string;
-        role: "system" | "admin" | "editor" | "user";
+        id: string;
+        role: "admin" | "editor" | "user" | "system";
     }, {
-        id: string;
         email: string;
         displayName: string;
-        role: "system" | "admin" | "editor" | "user";
+        id: string;
+        role: "admin" | "editor" | "user" | "system";
     }>;
 }, "strip", z.ZodTypeAny, {
     user: {
-        id: string;
         email: string;
         displayName: string;
-        role: "system" | "admin" | "editor" | "user";
+        id: string;
+        role: "admin" | "editor" | "user" | "system";
     };
     accessToken: string;
     refreshToken: string;
@@ -66,10 +66,10 @@ export declare const AuthTokensSchema: z.ZodObject<{
     refreshTokenExpiresIn: number;
 }, {
     user: {
-        id: string;
         email: string;
         displayName: string;
-        role: "system" | "admin" | "editor" | "user";
+        id: string;
+        role: "admin" | "editor" | "user" | "system";
     };
     accessToken: string;
     refreshToken: string;
@@ -86,11 +86,11 @@ export declare const MfaChallengeSchema: z.ZodObject<{
     mfaRequired: z.ZodLiteral<true>;
     mfaToken: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    mfaToken: string;
     mfaRequired: true;
+    mfaToken: string;
 }, {
-    mfaToken: string;
     mfaRequired: true;
+    mfaToken: string;
 }>;
 export type MfaChallenge = z.infer<typeof MfaChallengeSchema>;
 /** Discriminated union: either full auth tokens or an MFA challenge. */
@@ -105,22 +105,22 @@ export declare const LoginResponseSchema: z.ZodUnion<[z.ZodObject<{
         role: z.ZodEnum<["admin", "editor", "user", "system"]>;
         displayName: z.ZodString;
     }, "strip", z.ZodTypeAny, {
-        id: string;
         email: string;
         displayName: string;
-        role: "system" | "admin" | "editor" | "user";
+        id: string;
+        role: "admin" | "editor" | "user" | "system";
     }, {
-        id: string;
         email: string;
         displayName: string;
-        role: "system" | "admin" | "editor" | "user";
+        id: string;
+        role: "admin" | "editor" | "user" | "system";
     }>;
 }, "strip", z.ZodTypeAny, {
     user: {
-        id: string;
         email: string;
         displayName: string;
-        role: "system" | "admin" | "editor" | "user";
+        id: string;
+        role: "admin" | "editor" | "user" | "system";
     };
     accessToken: string;
     refreshToken: string;
@@ -128,10 +128,10 @@ export declare const LoginResponseSchema: z.ZodUnion<[z.ZodObject<{
     refreshTokenExpiresIn: number;
 }, {
     user: {
-        id: string;
         email: string;
         displayName: string;
-        role: "system" | "admin" | "editor" | "user";
+        id: string;
+        role: "admin" | "editor" | "user" | "system";
     };
     accessToken: string;
     refreshToken: string;
@@ -141,11 +141,11 @@ export declare const LoginResponseSchema: z.ZodUnion<[z.ZodObject<{
     mfaRequired: z.ZodLiteral<true>;
     mfaToken: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    mfaToken: string;
     mfaRequired: true;
+    mfaToken: string;
 }, {
-    mfaToken: string;
     mfaRequired: true;
+    mfaToken: string;
 }>]>;
 export type LoginResponse = z.infer<typeof LoginResponseSchema>;
 export declare const MfaSetupResponseSchema: z.ZodObject<{
@@ -215,18 +215,18 @@ export declare const MeResponseSchema: z.ZodObject<{
     createdAt: z.ZodString;
     mfaEnabled: z.ZodBoolean;
 }, "strip", z.ZodTypeAny, {
-    id: string;
-    createdAt: string;
     email: string;
     displayName: string;
-    role: "system" | "admin" | "editor" | "user";
+    id: string;
+    role: "admin" | "editor" | "user" | "system";
+    createdAt: string;
     mfaEnabled: boolean;
 }, {
-    id: string;
-    createdAt: string;
     email: string;
     displayName: string;
-    role: "system" | "admin" | "editor" | "user";
+    id: string;
+    role: "admin" | "editor" | "user" | "system";
+    createdAt: string;
     mfaEnabled: boolean;
 }>;
 /**
@@ -272,10 +272,10 @@ export declare const ResetPasswordBodySchema: z.ZodObject<{
     token: z.ZodString;
     password: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    token: string;
     password: string;
+    token: string;
 }, {
-    token: string;
     password: string;
+    token: string;
 }>;
 export type ResetPasswordBody = z.infer<typeof ResetPasswordBodySchema>;

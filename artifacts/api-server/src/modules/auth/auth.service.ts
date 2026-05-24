@@ -467,15 +467,21 @@ export const authService = {
 
     const newHash = await hashPassword(body.password);
 
-    // Execute atomically: mark token used + update password in parallel.
+    const now = new Date();
+
+    // Execute atomically: mark token used + update password + bump
+    // sessionsValidAfter in parallel.  sessionsValidAfter must be set so that
+    // any in-flight access tokens (which are validated in-process against a
+    // 30 s cache of this column) are immediately rejected — matching the
+    // behaviour of changePassword(), which already does this.
     await Promise.all([
       db
         .update(passwordResetTokensTable)
-        .set({ usedAt: new Date() })
+        .set({ usedAt: now })
         .where(eq(passwordResetTokensTable.id, tokenRow.id)),
       db
         .update(usersTable)
-        .set({ passwordHash: newHash })
+        .set({ passwordHash: newHash, sessionsValidAfter: now, updatedAt: now })
         .where(eq(usersTable.id, tokenRow.userId)),
     ]);
 
@@ -483,7 +489,7 @@ export const authService = {
     // invalidated — standard security practice after a password change.
     await db
       .update(refreshTokensTable)
-      .set({ revokedAt: new Date() })
+      .set({ revokedAt: now })
       .where(
         and(
           eq(refreshTokensTable.userId, tokenRow.userId),

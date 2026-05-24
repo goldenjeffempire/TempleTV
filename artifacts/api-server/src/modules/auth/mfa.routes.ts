@@ -22,6 +22,7 @@ import { verifyPassword } from "./password.js";
 import { signAccessToken, signRefreshToken } from "./jwt.js";
 import { nanoid } from "nanoid";
 import { UnauthorizedError, BadRequestError } from "../../shared/errors.js";
+import { checkBruteForce, recordFailedAttempt } from "./brute-force-guard.js";
 import {
   MfaSetupResponseSchema,
   MfaEnableBodySchema,
@@ -313,16 +314,32 @@ export async function mfaRoutes(app: FastifyInstance) {
         throw new UnauthorizedError("MFA token mismatch — account state changed");
       }
 
+      // Brute-force guard keyed on both IP and user email.  The /verify
+      // endpoint is rate-limited (20 req/min) but an attacker with multiple
+      // IPs could still brute-force TOTP's 10⁶ space within the 30-second
+      // window.  Using the same guard as /login gives us a shared per-IP
+      // counter so the window stays tight.
+      const bfCheck = checkBruteForce(req.ip, user.email, undefined);
+      if (bfCheck.blocked) {
+        throw new UnauthorizedError(
+          `Too many failed attempts — try again in ${Math.ceil(bfCheck.retryAfterSecs / 60)} min`,
+        );
+      }
+
       const { code, backupCode } = req.body;
 
       if (code) {
         if (!verifyTotpCode(code, user.totpSecret)) {
+          recordFailedAttempt(req.ip, user.email);
           throw new UnauthorizedError("TOTP code is incorrect or expired");
         }
       } else if (backupCode) {
         const hashed = user.totpBackupCodes ? (JSON.parse(user.totpBackupCodes) as string[]) : [];
         const { valid, remaining } = consumeBackupCode(backupCode, hashed);
-        if (!valid) throw new UnauthorizedError("Backup code is invalid");
+        if (!valid) {
+          recordFailedAttempt(req.ip, user.email);
+          throw new UnauthorizedError("Backup code is invalid");
+        }
         await db
           .update(usersTable)
           .set({ totpBackupCodes: JSON.stringify(remaining), updatedAt: new Date() })

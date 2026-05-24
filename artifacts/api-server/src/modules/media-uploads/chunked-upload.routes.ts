@@ -689,6 +689,9 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
     "/videos/upload/:sessionId/finalize",
     {
       preHandler: requireAuth("editor"),
+      // Finalize triggers DB assembly + transcoding job insertion. Same
+      // limit as /init (30/min) since both create durable server-side work.
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["uploads"],
         summary: "Complete the upload, insert the video row, and queue HLS transcoding",

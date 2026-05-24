@@ -101,11 +101,15 @@ export async function authRoutes(app: FastifyInstance) {
       const bfCheck = checkBruteForce(req.ip, req.body.email, bypass);
       if (bfCheck.blocked) {
         reply.header("Retry-After", String(bfCheck.retryAfterSecs));
-        return reply.code(429).send({
+        // The route schema only declares `200` but we legitimately send 429.
+        // Cast through unknown so TypeScript does not widen the response union.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        void (reply as any).code(429).send({
           error: "Too many failed login attempts. Please try again later.",
           retryAfterSecs: bfCheck.retryAfterSecs,
           lockedBy: bfCheck.reason,
         });
+        return;
       }
       try {
         const result = await authService.login(req.body);

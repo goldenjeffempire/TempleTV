@@ -193,6 +193,14 @@ export const adminService = {
   },
 
   async getAnalyticsOverview(range: "7d" | "30d" | "90d" = "30d") {
+    const CACHE_KEY = `admin:analytics:overview:${range}:v1`;
+    const cached = await cache().get<Awaited<ReturnType<typeof buildOverview>>>(CACHE_KEY);
+    if (cached) return cached;
+    const result = await buildOverview(range);
+    await cache().set(CACHE_KEY, result, 60); // 60-second TTL
+    return result;
+
+    async function buildOverview(range: "7d" | "30d" | "90d") {
     const sessions = schema.viewerSessionsTable;
     const rangeDays = range === "7d" ? 7 : range === "30d" ? 30 : 90;
     const since = new Date(Date.now() - rangeDays * 24 * 60 * 60 * 1000);
@@ -265,6 +273,7 @@ export const adminService = {
       })),
       generatedAt: new Date().toISOString(),
     };
+    } // end buildOverview
   },
 
   async deleteUser(id: string) {

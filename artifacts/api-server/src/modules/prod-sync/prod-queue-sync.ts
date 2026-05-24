@@ -13,7 +13,15 @@ import { env } from "../../config/env.js";
  * null → probe already attempted but failed (don't retry until TTL expires).
  */
 const durationProbeCache = new Map<string, { secs: number | null; at: number }>();
-const DURATION_PROBE_TTL_MS = 24 * 60 * 60 * 1000;
+/**
+ * Successful probe results are cached for 24 h — the real duration of a
+ * server-side video file never changes.
+ * Failed probe results (null) are cached for only 5 min so a transient
+ * network hiccup or a temporarily-offline CDN doesn't lock the item into
+ * a 30-minute placeholder for an entire process lifetime.
+ */
+const DURATION_PROBE_TTL_SUCCESS_MS = 24 * 60 * 60 * 1000;
+const DURATION_PROBE_TTL_FAILURE_MS =  5 * 60 * 1000;
 const DURATION_PROBE_TIMEOUT_MS = 20_000;
 
 /**
@@ -29,7 +37,10 @@ const DURATION_PROBE_TIMEOUT_MS = 20_000;
  */
 async function probeDurationSecs(url: string): Promise<number | null> {
   const cached = durationProbeCache.get(url);
-  if (cached && Date.now() - cached.at < DURATION_PROBE_TTL_MS) return cached.secs;
+  if (cached) {
+    const ttl = cached.secs !== null ? DURATION_PROBE_TTL_SUCCESS_MS : DURATION_PROBE_TTL_FAILURE_MS;
+    if (Date.now() - cached.at < ttl) return cached.secs;
+  }
 
   return new Promise<number | null>((resolve) => {
     let output = "";

@@ -25,6 +25,10 @@ export interface AccessTokenPayload {
   email: string;
   role: Role;
   type: "access";
+  /** Standard JWT "issued at" claim — seconds since epoch. Present on all
+   *  tokens we issue (SignJWT sets it automatically) but typed optional so
+   *  the interface stays forward-compatible if a token omits it. */
+  iat?: number;
 }
 
 export interface RefreshTokenPayload {

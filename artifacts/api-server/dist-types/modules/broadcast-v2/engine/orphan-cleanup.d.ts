@@ -3,11 +3,13 @@ export interface CleanupStats {
     lastRunDurationMs: number | null;
     totalRuns: number;
     lastOrphanedRefCount: number;
+    lastOrphanedRefsDeactivated: number;
     orphanedRefCandidates: Array<{
         id: string;
         title: string;
         videoId: string;
     }>;
+    lastStaleSessiosClosed: number;
     lastError: string | null;
     nextRunAtMs: number | null;
 }

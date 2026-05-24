@@ -1,6 +1,12 @@
 import type { FastifyRequest, preHandlerHookHandler } from "fastify";
 import type { Role } from "../shared/types.js";
 /**
+ * Call this after a password change or logout-everywhere so the next request
+ * from any session re-fetches sessions_valid_after rather than serving a
+ * stale cached value.
+ */
+export declare function invalidateSessionsValidAfterCache(userId: string): void;
+/**
  * Constant-time string comparison. Length difference is leaked
  * (unavoidable without padding) but byte content is not.
  */

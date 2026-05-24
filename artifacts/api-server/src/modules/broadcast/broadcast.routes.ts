@@ -365,6 +365,9 @@ export async function broadcastRoutes(app: FastifyInstance) {
     "/queue/reorder",
     {
       preHandler: requireAuth("editor"),
+      // Reorder writes to the DB on every call. 30/min lets drag-and-drop
+      // save debounce freely while bounding damage from a runaway client.
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["broadcast"],
         summary: "Admin: reorder the active queue",
@@ -379,6 +382,9 @@ export async function broadcastRoutes(app: FastifyInstance) {
     "/skip",
     {
       preHandler: requireAuth("editor"),
+      // Skip advances the on-air item — a rapid burst could skip through
+      // the entire queue in seconds. 10/min is ample for legitimate use.
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["broadcast"],
         summary: "Admin: skip the currently playing queue item and advance to the next",
