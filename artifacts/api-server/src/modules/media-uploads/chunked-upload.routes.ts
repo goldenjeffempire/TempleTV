@@ -333,6 +333,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
     "/videos/upload/init",
     {
       preHandler: requireAuth("editor"),
+      // Tighter limit than the global 120/min — init creates a DB session row
+      // and reserves an upload slot, so a burst is more expensive than a
+      // typical read. 30/min is enough for any realistic bulk-upload workflow
+      // (3 concurrent uploads × 10 retries per minute) without leaving room
+      // for a runaway loop to churn DB rows. (P2 fix)
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["uploads"],
         summary: "Initialize a resumable chunked upload session (server-relay path)",

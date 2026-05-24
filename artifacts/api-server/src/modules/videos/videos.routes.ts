@@ -316,7 +316,16 @@ export async function videosRoutes(app: FastifyInstance) {
         limit,
       };
 
-      const etag = `"${createHash("sha1").update(JSON.stringify(result)).digest("hex").slice(0, 16)}"`;
+      // ETag fingerprint — hash a compact, deterministic projection of the
+      // response rather than the full JSON payload. With limit up to 2,000
+      // items, JSON.stringify on the full result (descriptions, thumbnail URLs,
+      // etc.) was blocking the event loop for hundreds of ms per cache miss
+      // and spiking RSS. The fingerprint changes whenever rows, order, count,
+      // or pagination changes — sufficient for HTTP cache correctness. (P0 fix)
+      const fingerprint = `${total}|${page}|${limit}|${rows.length}|${rows
+        .map((r) => `${r.id}:${r.importedAt instanceof Date ? r.importedAt.getTime() : r.importedAt}`)
+        .join(",")}`;
+      const etag = `"${createHash("sha1").update(fingerprint).digest("hex").slice(0, 16)}"`;
 
       // Cache unfiltered responses (payload + pre-computed etag).
       if (!isFiltered) {

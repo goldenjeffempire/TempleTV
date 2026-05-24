@@ -39,19 +39,29 @@ const Env = z.object({
   JWT_ALGORITHM: z.enum(["HS256", "RS256"]).default("HS256"),
   // F22: when true, a refresh token presented from a different IP than the
   // one it was issued from is hard-rejected instead of soft-warned.
-  // Default false because mobile IP changes are common and legitimate.
+  // Default is environment-aware: explicit "true"/"false" overrides; unset
+  // defaults to STRICT in production (admin/system surfaces benefit from
+  // strict replay protection) and LENIENT in dev (mobile IP changes during
+  // testing are common and legitimate).
   REFRESH_TOKEN_STRICT_IP_CHECK: z
     .union([z.boolean(), z.string()])
-    .transform((v) => v === true || v === "true")
-    .default(false),
+    .optional()
+    .transform((v) => {
+      if (v === true || v === "true") return true;
+      if (v === false || v === "false") return false;
+      // Unset: default to strict in production, lenient elsewhere.
+      return process.env["NODE_ENV"] === "production";
+    }),
 
   ADMIN_API_TOKEN: z.string().min(16).optional(),
   // F01: Role granted to ADMIN_API_TOKEN bearer requests. Defaults to "editor"
   // so the static long-lived key can no longer elevate to "system" accidentally.
-  // Set to "system" only for machine-to-machine internal service calls that
-  // genuinely need system-level RBAC (e.g. a migration script).
+  // Capped at "admin" — "system" is intentionally excluded so a single leaked
+  // static token can never grant the unrestricted system-level RBAC tier
+  // (used for internal worker-only operations). For genuine machine-to-machine
+  // system calls, use a short-lived signed JWT minted by an internal service.
   ADMIN_API_TOKEN_ROLE: z
-    .enum(["system", "admin", "editor", "moderator", "user"])
+    .enum(["admin", "editor", "moderator", "user"])
     .default("editor"),
   // F11: Comma-separated list of IPv4/IPv6 addresses allowed to use
   // ADMIN_API_TOKEN. Empty = allow any IP (default; keeps existing behaviour).

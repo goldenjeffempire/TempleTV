@@ -64,6 +64,12 @@ class MemoryCache implements Cache {
   }
 }
 
+// Hard cap on a single Redis value's payload size before we JSON.parse it.
+// Prevents a misbehaving / hostile cache value from OOM-ing the API process
+// before the try/catch around JSON.parse can fire. 8 MiB is well above the
+// largest legitimate cached payload (catalog ≈ 500 KiB, broadcast guide ≈ 50 KiB).
+const REDIS_MAX_VALUE_BYTES = 8 * 1024 * 1024;
+
 class RedisCache implements Cache {
   readonly backend = "redis" as const;
   constructor(private readonly client: ReturnType<typeof getRedis> & {}) {}
@@ -71,6 +77,15 @@ class RedisCache implements Cache {
   async get<T>(key: string): Promise<T | null> {
     const raw = await this.client.get(key);
     if (raw === null) return null;
+    if (raw.length > REDIS_MAX_VALUE_BYTES) {
+      logger.warn(
+        { key, bytes: raw.length, cap: REDIS_MAX_VALUE_BYTES },
+        "cache: Redis value exceeds JSON.parse safety cap — discarding",
+      );
+      // Evict the oversized entry so it does not keep getting fetched.
+      await this.client.del(key).catch(() => {});
+      return null;
+    }
     try {
       return JSON.parse(raw) as T;
     } catch {

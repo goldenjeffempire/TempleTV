@@ -365,6 +365,16 @@ export async function authRoutes(app: FastifyInstance) {
       },
     },
     async (req, _reply) => {
+      // Defense-in-depth: even with a valid ADMIN_API_TOKEN, refuse to mint
+      // admin accounts in production. Production seeding must go through the
+      // SEED_ADMIN_EMAIL/SEED_ADMIN_PASSWORD env-based path which is gated
+      // by a deploy-time secret rotation, not a long-lived token that could
+      // leak via logs or backups. (P0 — audit finding F-seed)
+      if (env.NODE_ENV === "production") {
+        throw new UnauthorizedError(
+          "POST /auth/seed is disabled in production — use SEED_ADMIN_EMAIL/PASSWORD env vars",
+        );
+      }
       // Only the static ADMIN_API_TOKEN may call this endpoint.
       const authHeader = req.headers.authorization ?? "";
       const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";

@@ -24,6 +24,13 @@ export async function adminRoutes(app: FastifyInstance) {
     "/stats",
     {
       preHandler: requireAuth("editor"),
+      // /stats fans out into 8+ COUNT(*) queries against the largest tables.
+      // The 30s in-process cache absorbs most reads, but a polling tab loop
+      // (admin dashboard) can still drive cache misses on every TTL boundary.
+      // 60/min is enough for a 1-second poller plus a few simultaneous tabs;
+      // beyond that the cache is doing its job and there is no reason to
+      // touch the DB. (P2 fix)
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Aggregate dashboard counts (videos, users, queue, schedule)",

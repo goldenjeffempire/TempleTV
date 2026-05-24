@@ -47,11 +47,15 @@ export function registerErrorHandler(app: FastifyInstance) {
     } else {
       req.log.warn({ err: { message: err.message, name: err.name } }, "client error");
     }
+    // Never leak the raw Fastify/Node `err.code` on 500 — some libraries
+    // ship error codes that reveal internal state (PG codes, fs paths in
+    // SQLite codes, fetch URLs in undici codes). Use a generic constant
+    // so external monitors get a stable signal without information leak.
     const body: ProblemDetails = {
       type: "https://templetv.api/errors/internal",
       title: status >= 500 ? "Internal server error" : err.message,
       status,
-      code: (err as FastifyError).code ?? "INTERNAL",
+      code: status >= 500 ? "INTERNAL" : ((err as FastifyError).code ?? "INTERNAL"),
       detail: status >= 500 ? undefined : err.message,
       requestId,
     };
