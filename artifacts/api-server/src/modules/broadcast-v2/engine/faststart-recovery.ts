@@ -180,10 +180,17 @@ async function dispatchOne(c: Candidate): Promise<boolean> {
     if (prev === MAX_ATTEMPTS) {
       stats.totalGivenUp += 1;
       attemptCounts.set(c.videoId, prev + 1); // bump so we only count once
-      logger.warn(
+      logger.error(
         { videoId: c.videoId, title: c.title, attempts: prev },
-        "faststart-recovery: max attempts reached — giving up until process restart",
+        "faststart-recovery: max attempts reached — giving up until process restart; video excluded from broadcast",
       );
+      void import("../../../infrastructure/sentry.js").then(({ captureEvent }) =>
+        captureEvent(
+          `Faststart recovery gave up on "${c.title ?? c.videoId}" after ${prev} attempts — video excluded from broadcast until process restart`,
+          "error",
+          { videoId: c.videoId, title: c.title, attempts: prev, maxAttempts: MAX_ATTEMPTS },
+        ),
+      ).catch(() => {});
     }
     return false;
   }

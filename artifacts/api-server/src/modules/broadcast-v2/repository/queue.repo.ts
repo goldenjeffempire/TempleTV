@@ -290,10 +290,17 @@ export async function autoSuspendQueueItem(
     badUrlSkipCounts.delete(itemId);
     recentlySuspended.push({ itemId, title, failCount, suspendedAtMs: Date.now() });
     if (recentlySuspended.length > 50) recentlySuspended.shift();
-    logger.warn(
+    logger.error(
       { itemId, title, failCount, threshold: BAD_URL_SKIP_THRESHOLD },
       "[broadcast-v2] queue item auto-suspended: URL failed repeatedly — deactivated until operator re-enables",
     );
+    void import("../../../infrastructure/sentry.js").then(({ captureEvent }) =>
+      captureEvent(
+        `[broadcast-v2] Queue item auto-suspended: "${title ?? itemId}" failed ${failCount} times — deactivated until operator re-enables`,
+        "error",
+        { itemId, title, failCount, threshold: BAD_URL_SKIP_THRESHOLD },
+      ),
+    ).catch(() => {});
   } catch (err) {
     logger.error(
       { err, itemId, title, failCount },

@@ -261,6 +261,12 @@ class BroadcastOrchestrator extends EventEmitter {
    * "still booting" from "stuck at sequence 0".
    */
   private startedAtWallMs = 0;
+  /**
+   * Tracks the last time a "stuck broadcast" Sentry alert was fired so we
+   * don't spam Sentry on every 30 s reload while the condition persists.
+   * Throttled to at most once per 5 minutes.
+   */
+  private lastStuckAlertMs = 0;
 
   constructor() {
     super();
@@ -663,6 +669,23 @@ class BroadcastOrchestrator extends EventEmitter {
       startedAtMs > 0 &&
       Date.now() - startedAtMs > 30_000;
     broadcastQueueStuck.set({ channel: this.channelId, ...SERVICE_LABELS }, stuck ? 1 : 0);
+    // Fire a Sentry alert the first time the stuck condition is detected (and
+    // at most once per 5 minutes while it persists) so on-call engineers are
+    // paged even when no one is watching the Grafana dashboard.
+    if (stuck && Date.now() - this.lastStuckAlertMs > 5 * 60_000) {
+      this.lastStuckAlertMs = Date.now();
+      logger.error(
+        { channel: this.channelId, sequence: this.sequence, itemCount: this.items.length },
+        "[broadcast-v2] STUCK: queue has items but playback sequence has not advanced past 0 for >30 s — broadcast may be OFF_AIR",
+      );
+      void import("../../../infrastructure/sentry.js").then(({ captureEvent }) =>
+        captureEvent(
+          `Broadcast stuck on channel "${this.channelId}": ${this.items.length} items loaded but no sequence advance for >30 s`,
+          "error",
+          { channel: this.channelId, sequence: this.sequence, itemCount: this.items.length, uptimeMs: Date.now() - startedAtMs },
+        ),
+      ).catch(() => {});
+    }
 
     if (prevCurrentId && this.items.length > 0) {
       const idx = this.items.findIndex((i) => i.id === prevCurrentId);

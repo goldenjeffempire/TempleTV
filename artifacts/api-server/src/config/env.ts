@@ -109,7 +109,17 @@ const Env = z.object({
   // pg connection pool maximum. Each replica holds at most this many live
   // connections to Postgres/Neon. 20 is safe for a 2 GiB / 1-vCPU container.
   // Raise if you move to a larger dyno or see connection-timeout spikes.
-  DB_POOL_MAX: z.coerce.number().int().positive().default(20),
+  // Tuned down to 10 for Replit's constrained environment.
+  DB_POOL_MAX: z.coerce.number().int().positive().default(10),
+
+  // Maximum wall-clock time (ms) a single SQL statement may run before
+  // PostgreSQL cancels it. Protects the pool from runaway full-table-scans,
+  // unindexed joins, and stalled transactions that would otherwise hold a
+  // connection indefinitely and exhaust the pool under concurrent load.
+  // 0 = disabled (not recommended in production).
+  // 30 000 ms (30 s) is well above the 99th-percentile of expected queries
+  // (FTS, large metadata joins) while catching genuine runaway cases.
+  DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(30_000),
 
   SENTRY_DSN: z.string().optional(),
 

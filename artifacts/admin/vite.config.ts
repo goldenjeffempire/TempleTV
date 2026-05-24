@@ -2,7 +2,22 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
+import { createRequire } from "module";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
+
+// Resolve d3-format to its pre-built CJS/UMD bundle so Vite/Rolldown can
+// consume it without needing to rewrite the package's ESM export map.
+// Using createRequire instead of a hard-coded pnpm store path makes this
+// version-agnostic and portable across environments.
+const _require = createRequire(import.meta.url);
+const d3FormatDist = (() => {
+  try {
+    return _require.resolve("d3-format/dist/d3-format.js");
+  } catch {
+    // Fallback: walk up from the config file to the workspace root
+    return path.resolve(import.meta.dirname, "../../node_modules/d3-format/dist/d3-format.js");
+  }
+})();
 
 // Port 23744 is the Replit-assigned local port for the "artifacts/admin: web"
 // workflow (mapped to external port 3002). The primary "Start application"
@@ -43,7 +58,7 @@ export default defineConfig({
     alias: {
       "@": path.resolve(import.meta.dirname, "src"),
       "@assets": path.resolve(import.meta.dirname, "..", "..", "attached_assets"),
-      "d3-format": path.resolve(import.meta.dirname, "../../node_modules/.pnpm/d3-format@3.1.2/node_modules/d3-format/dist/d3-format.js"),
+      "d3-format": d3FormatDist,
     },
     dedupe: ["react", "react-dom"],
   },

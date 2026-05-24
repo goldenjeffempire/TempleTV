@@ -115,6 +115,13 @@ function sample() {
       { rssMb, thresholdMb, consecutiveRssOver },
       "[memory-watchdog] RSS threshold exceeded — emitting ops-alert",
     );
+    void import("./sentry.js").then(({ captureEvent }) =>
+      captureEvent(
+        `[memory-watchdog] RSS sustained above ${thresholdMb} MB (current: ${rssMb} MB) — OOM risk elevated`,
+        "warning",
+        { rssMb, thresholdMb, consecutiveSamples: consecutiveRssOver },
+      ),
+    ).catch(() => {});
     _emit?.({
       type: "ops-alert",
       data: {
@@ -158,6 +165,13 @@ function sample() {
       { rssMb, thresholdMb, consecutiveRssOver, criticalThreshold: CRITICAL_SAMPLES_FOR_EXIT },
       "[memory-watchdog] CRITICAL: sustained memory pressure — initiating graceful exit (supervisor will restart)",
     );
+    void import("./sentry.js").then(({ captureEvent }) =>
+      captureEvent(
+        `[memory-watchdog] CRITICAL: RSS sustained above ${thresholdMb} MB for ${consecutiveRssOver} samples — forcing graceful exit`,
+        "fatal",
+        { rssMb, thresholdMb, consecutiveRssOver, graceMs: FORCE_EXIT_GRACE_MS },
+      ),
+    ).catch(() => {});
     _emit?.({
       type: "ops-alert",
       data: {

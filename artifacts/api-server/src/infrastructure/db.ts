@@ -39,7 +39,18 @@ function updatePoolMetrics(): void {
     env.DB_POOL_MAX > 0 ? active / env.DB_POOL_MAX : 0,
   );
 }
-pool.on("connect", updatePoolMetrics);
+pool.on("connect", (client) => {
+  // Set a statement-level timeout on every fresh connection so runaway
+  // queries cannot hold a connection indefinitely and exhaust the pool.
+  // DB_STATEMENT_TIMEOUT_MS = 0 disables the timeout (not recommended).
+  const timeoutMs = env.DB_STATEMENT_TIMEOUT_MS;
+  if (timeoutMs > 0) {
+    client.query(`SET statement_timeout = ${timeoutMs}`).catch((err) => {
+      logger.warn({ err, timeoutMs }, "db: failed to set statement_timeout on new connection (non-fatal)");
+    });
+  }
+  updatePoolMetrics();
+});
 pool.on("acquire", updatePoolMetrics);
 pool.on("remove", updatePoolMetrics);
 

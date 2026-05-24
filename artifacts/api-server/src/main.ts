@@ -388,7 +388,13 @@ async function main() {
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("unhandledRejection", (reason) => {
-    logger.error({ reason }, "unhandledRejection");
+    // Treat unhandled rejections the same as uncaught exceptions: log, then
+    // exit so the supervisor restarts with a clean slate. Continuing after an
+    // unhandled rejection risks corrupted state (uncommitted transactions,
+    // dangling SSE connections, broken invariants) that silently degrades the
+    // service without any visible crash to alert on.
+    logger.fatal({ reason }, "unhandledRejection — exiting");
+    process.exit(1);
   });
   process.on("uncaughtException", (err) => {
     logger.fatal({ err }, "uncaughtException — exiting");
