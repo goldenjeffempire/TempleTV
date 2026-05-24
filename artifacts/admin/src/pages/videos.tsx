@@ -660,7 +660,7 @@ export default function VideosPage() {
                   {/* Actions — always visible on touch, hover-only on pointer devices */}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100">
+                      <Button aria-label={`Actions for ${v.title}`} variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100">
                         <MoreVertical size={14} />
                       </Button>
                     </DropdownMenuTrigger>

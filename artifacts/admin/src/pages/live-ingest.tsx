@@ -333,7 +333,7 @@ export default function LiveIngestPage() {
                         </code>
                         <Tooltip>
                           <TooltipTrigger asChild>
-                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setRevealKey(r => r === ep.id ? null : ep.id)}>
+                            <Button aria-label={revealKey === ep.id ? "Hide stream key" : "Reveal stream key"} variant="ghost" size="icon" className="h-7 w-7" onClick={() => setRevealKey(r => r === ep.id ? null : ep.id)}>
                               {revealKey === ep.id ? <EyeOff size={12} /> : <Eye size={12} />}
                             </Button>
                           </TooltipTrigger>

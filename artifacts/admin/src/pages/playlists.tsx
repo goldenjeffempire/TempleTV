@@ -147,12 +147,12 @@ export default function PlaylistsPage() {
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label>Title *</Label>
-              <Input placeholder="Playlist name" value={form.title} onChange={(e) => setForm(f => ({ ...f, title: e.target.value }))} />
+              <Label htmlFor="playlist-title">Title *</Label>
+              <Input id="playlist-title" placeholder="Playlist name" value={form.title ?? ""} onChange={(e) => setForm(f => ({ ...f, title: e.target.value }))} />
             </div>
             <div className="space-y-2">
-              <Label>Description</Label>
-              <Textarea rows={3} placeholder="Optional description" value={form.description} onChange={(e) => setForm(f => ({ ...f, description: e.target.value }))} />
+              <Label htmlFor="playlist-description">Description</Label>
+              <Textarea id="playlist-description" rows={3} placeholder="Optional description" value={form.description ?? ""} onChange={(e) => setForm(f => ({ ...f, description: e.target.value }))} />
             </div>
           </div>
           <DialogFooter>
