@@ -56,6 +56,9 @@ export async function youtubeSyncRoutes(app: FastifyInstance) {
     "/youtube/sync",
     {
       preHandler: requireAuth("editor"),
+      // Each manual sync consumes YouTube Data API v3 quota (up to ~100 units).
+      // 5/min caps burn rate even if the module-level in-progress guard is bypassed.
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Trigger a manual YouTube channel sync",

@@ -49,6 +49,9 @@ export async function liveOverridesRoutes(app: FastifyInstance) {
     "/start",
     {
       preHandler: requireAuth("editor"),
+      // Fans out an SSE/WS PROGRAM_CHANGED signal to every connected client.
+      // 5/min is ample for legitimate use; rapid starts would confuse viewers.
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
       schema: {
         tags: ["live"],
         summary: "Admin: start a live override (deactivates any prior)",
@@ -78,6 +81,7 @@ export async function liveOverridesRoutes(app: FastifyInstance) {
     "/stop",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["live"],
         summary: "Admin: stop the currently active live override",
@@ -98,10 +102,13 @@ export async function liveOverridesRoutes(app: FastifyInstance) {
     "/extend",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["live"],
         summary: "Admin: extend the active live override's end time",
-        body: z.object({ extraMinutes: z.number().int().positive() }),
+        // Cap at 12 h (720 min) — prevents a typo from scheduling an
+        // override that will never auto-expire in any meaningful timeframe.
+        body: z.object({ extraMinutes: z.number().int().positive().max(720) }),
         response: { 200: LiveOverrideSchema },
         security: [{ bearerAuth: [] }],
       },
@@ -140,6 +147,7 @@ export async function liveOverridesRoutes(app: FastifyInstance) {
     "/schedule",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["live"],
         summary: "Admin: schedule a future live override",
@@ -159,6 +167,7 @@ export async function liveOverridesRoutes(app: FastifyInstance) {
     "/scheduled/:id",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["live"],
         summary: "Admin: cancel a scheduled (not yet active) override",

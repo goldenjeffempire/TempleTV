@@ -306,6 +306,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
     "/queue",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["broadcast"],
         summary: "Admin: append a program to the queue",
@@ -351,6 +352,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
     "/queue/:id",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["broadcast"],
         summary: "Admin: remove a program from the queue",
@@ -411,6 +413,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
     "/queue/:id/active",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["broadcast"],
         summary: "Admin: toggle whether a queue item is in rotation",
@@ -585,6 +588,10 @@ export async function broadcastRoutes(app: FastifyInstance) {
   r.post(
     "/playback-telemetry",
     {
+      // High-volume telemetry from TV/mobile fleet. 120/min per IP is
+      // generous enough for the 5 s reporting interval while bounding
+      // log-flood attacks from malicious clients.
+      config: { rateLimit: { max: 120, timeWindow: "1 minute" } },
       schema: {
         tags: ["broadcast"],
         summary: "Ingest a playback-quality sample from a TV/mobile client",
@@ -747,6 +754,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
     "/playback/state",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["broadcast"],
         summary: "Admin: update playback engine configuration",

@@ -74,7 +74,10 @@ const CreateBodySchema = z.object({
   isActive: z.boolean().optional(),
   priority: z.number().int().min(0).max(10_000).optional(),
   notes: z.string().max(2000).nullable().optional(),
-  metadata: z.record(z.string(), z.unknown()).nullable().optional(),
+  // metadata: arbitrary key→value for encoder settings, tagging etc.
+  // Keys capped at 64 chars and values at 512 chars each to prevent
+  // storing arbitrarily large blobs (no DB column-level size cap).
+  metadata: z.record(z.string().max(64), z.string().max(512)).nullable().optional(),
 });
 
 const PatchBodySchema = z.object({
@@ -86,7 +89,7 @@ const PatchBodySchema = z.object({
   isActive: z.boolean().optional(),
   priority: z.number().int().min(0).max(10_000).optional(),
   notes: z.string().max(2000).nullable().optional(),
-  metadata: z.record(z.string(), z.unknown()).nullable().optional(),
+  metadata: z.record(z.string().max(64), z.string().max(512)).nullable().optional(),
 });
 
 function generateStreamKey(): string {
@@ -224,6 +227,7 @@ export async function liveIngestRoutes(app: FastifyInstance) {
     "/live-ingest/endpoints",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Create a new live-ingest endpoint",
@@ -279,6 +283,7 @@ export async function liveIngestRoutes(app: FastifyInstance) {
     "/live-ingest/endpoints/:id",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Update mutable fields on a live-ingest endpoint",
@@ -309,6 +314,11 @@ export async function liveIngestRoutes(app: FastifyInstance) {
     "/live-ingest/endpoints/:id",
     {
       preHandler: requireAuth("editor"),
+      // Deleting the primary ingest endpoint while others exist is already
+      // blocked, but rate-limit independently so a compromised token can't
+      // rapidly cycle through endpoints faster than the promote-then-delete
+      // guard can catch.
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Remove a live-ingest endpoint",
@@ -350,6 +360,9 @@ export async function liveIngestRoutes(app: FastifyInstance) {
     "/live-ingest/endpoints/:id/rotate-key",
     {
       preHandler: requireAuth("editor"),
+      // Key rotation is an infrequent admin action. 5/min is enough for
+      // any accidental double-click; tighter than default to limit exposure.
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Generate a fresh stream key for an endpoint",
@@ -375,6 +388,7 @@ export async function liveIngestRoutes(app: FastifyInstance) {
     "/live-ingest/endpoints/:id/promote",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Make this endpoint the primary (sole) ingest source",
@@ -417,6 +431,10 @@ export async function liveIngestRoutes(app: FastifyInstance) {
     "/live-ingest/endpoints/:id/probe",
     {
       preHandler: requireAuth("editor"),
+      // Makes an outbound TCP/HTTP probe to the ingest URL. 10/min
+      // prevents an editor from using this as an SSRF relay or
+      // accidentally hammering the upstream encoder.
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Run a one-shot HLS playback probe and persist the result",
@@ -480,6 +498,7 @@ export async function liveIngestRoutes(app: FastifyInstance) {
     "/live-ingest/stop",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Stop the active live override (delegates to live-overrides)",
@@ -504,6 +523,7 @@ export async function liveIngestRoutes(app: FastifyInstance) {
     "/live-ingest/sweep",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Mark endpoints with no recent successful probe as unhealthy",
@@ -553,6 +573,7 @@ export async function liveIngestRoutes(app: FastifyInstance) {
     "/live-ingest/validate-key",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Check if a candidate stream key collides with an existing one",

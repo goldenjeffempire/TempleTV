@@ -131,6 +131,7 @@ export async function channelsRoutes(app: FastifyInstance) {
     "/admin/channels",
     {
       preHandler: requireAuth("admin"),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["channels"],
         summary: "Create a new broadcast channel",
@@ -161,6 +162,7 @@ export async function channelsRoutes(app: FastifyInstance) {
     "/admin/channels/:id",
     {
       preHandler: requireAuth("admin"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["channels"],
         summary: "Update channel metadata",
@@ -185,6 +187,9 @@ export async function channelsRoutes(app: FastifyInstance) {
     "/admin/channels/:id",
     {
       preHandler: requireAuth("admin"),
+      // Deletes the channel and cascades to its queue. 5/min prevents
+      // accidental rapid deletion of multiple channels.
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
       schema: {
         tags: ["channels"],
         summary: "Delete a non-primary channel",
@@ -235,6 +240,7 @@ export async function channelsRoutes(app: FastifyInstance) {
     "/admin/channels/:id/queue",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["channels"],
         summary: "Add a video to a channel's broadcast queue",
@@ -269,6 +275,7 @@ export async function channelsRoutes(app: FastifyInstance) {
     "/admin/channels/:channelId/queue/:itemId",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["channels"],
         summary: "Remove an item from a channel's queue",
@@ -295,6 +302,7 @@ export async function channelsRoutes(app: FastifyInstance) {
     "/admin/channels/:channelId/queue/:itemId/active",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["channels"],
         summary: "Toggle active status of a channel queue item",

@@ -49,6 +49,7 @@ export async function scheduleRoutes(app: FastifyInstance) {
     "/",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["schedule"],
         summary: "Create a schedule entry",
@@ -69,6 +70,7 @@ export async function scheduleRoutes(app: FastifyInstance) {
     "/:id",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["schedule"],
         summary: "Update a schedule entry",
@@ -88,6 +90,7 @@ export async function scheduleRoutes(app: FastifyInstance) {
     "/:id",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["schedule"],
         summary: "Delete a schedule entry",

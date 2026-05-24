@@ -242,6 +242,7 @@ export async function adminVideosRoutes(app: FastifyInstance) {
     "/videos/:id",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Update video metadata (title, description, category, preacher, featured, metadataLocked)",
@@ -436,6 +437,9 @@ export async function adminVideosRoutes(app: FastifyInstance) {
     "/videos/:id/transcode",
     {
       preHandler: requireAuth("editor"),
+      // Spawns a real FFmpeg process. 10/min prevents editors from
+      // flooding the transcoder queue via the UI.
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Queue a locally-uploaded video for HLS transcoding",
@@ -494,6 +498,7 @@ export async function adminVideosRoutes(app: FastifyInstance) {
     "/videos/:id/faststart",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Re-apply MP4 faststart optimisation to a locally-uploaded video",
@@ -563,6 +568,9 @@ export async function adminVideosRoutes(app: FastifyInstance) {
     "/videos/bulk-transcode",
     {
       preHandler: requireAuth("admin"),
+      // Bulk queuing can pin CPU for extended periods. 2/min is a hard
+      // guard — the UI's "Transcode All" button has its own confirm dialog.
+      config: { rateLimit: { max: 2, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Queue all local videos without HLS for transcoding",

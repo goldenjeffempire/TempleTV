@@ -1225,6 +1225,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     "/videos/upload/:sessionId",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin-ops"],
         summary: "Cancel an active multipart upload session",
@@ -1380,6 +1381,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     "/transcoding/:id",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin-ops"],
         summary: "Delete a transcoding job row (does not touch the source video)",
@@ -1405,6 +1407,9 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     "/transcoding/requeue/:videoId",
     {
       preHandler: requireAuth("editor"),
+      // Submitting a requeue spawns a real FFmpeg process. 10/min prevents
+      // editors from accidentally flooding the transcoder queue.
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin-ops"],
         summary: "Re-queue a video for transcoding (idempotent on existing jobs)",
@@ -1461,6 +1466,8 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     "/transcoding/clear",
     {
       preHandler: requireAuth("editor"),
+      // Bulk delete — 3/min keeps it operator-controlled only.
+      config: { rateLimit: { max: 3, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin-ops"],
         summary: "Bulk-delete transcoding jobs by status",
@@ -1692,17 +1699,20 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     "/playback/config",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin-ops"],
         summary: "Update HLS/CDN/ABR playback configuration",
         body: z.object({
-          mode: z.string().optional(),
+          mode: z.string().max(64).optional(),
           cdnEnabled: z.boolean().optional(),
           adaptiveBitrate: z.boolean().optional(),
-          maxBitrate: z.number().optional(),
-          defaultQuality: z.string().optional(),
+          // Cap at 100 Mbps — above that no HLS player can consume it anyway.
+          maxBitrate: z.number().int().positive().max(100_000_000).optional(),
+          defaultQuality: z.string().max(32).optional(),
           cacheEnabled: z.boolean().optional(),
-          hlsSegmentDuration: z.number().optional(),
+          // HLS segment duration: 1–60 s is the valid range for all players.
+          hlsSegmentDuration: z.number().int().positive().max(60).optional(),
         }),
         response: {
           200: z.object({
@@ -1769,6 +1779,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     "/alerts/test",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin-ops"],
         summary: "Send a test alert (no-op: dispatcher not configured)",
@@ -1831,6 +1842,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     "/alerts/:id/resolve",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin-ops"],
         summary: "Dismiss/resolve an emergency alert by ID",
@@ -1969,6 +1981,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     "/live/override/start",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin-ops"],
         summary: "Start a live override (HLS URL or YouTube video ID)",
@@ -1988,6 +2001,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     "/live/override/stop",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin-ops"],
         summary: "Stop the currently-active live override",
@@ -2002,10 +2016,11 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     "/live/override/extend",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin-ops"],
         summary: "Extend the active live override's end time by N minutes",
-        body: z.object({ extraMinutes: z.number().int().positive() }),
+        body: z.object({ extraMinutes: z.number().int().positive().max(720) }),
         response: { 200: LiveOverrideShape },
         security: [{ bearerAuth: [] }],
       },
@@ -2017,10 +2032,13 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     "/live/override/preview-youtube",
     {
       preHandler: requireAuth("editor"),
+      // Makes an outbound HTTP probe to YouTube. 20/min prevents editors
+      // from using this as a SSRF relay or hammering YouTube's API.
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin-ops"],
         summary: "Validate a YouTube URL and return metadata (lightweight probe)",
-        body: z.object({ url: z.string() }),
+        body: z.object({ url: z.string().max(2048) }),
         response: {
           200: z.object({
             ok: z.boolean(),
@@ -2069,6 +2087,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     "/live/override/schedule",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin-ops"],
         summary: "Schedule a future live override (sets scheduledFor, isActive=false)",
@@ -2102,6 +2121,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     "/live/override/schedule/:id",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin-ops"],
         summary: "Cancel a scheduled live override",
@@ -2349,7 +2369,10 @@ export async function adminOpsRoutes(app: FastifyInstance) {
   // Returns 503 when ADMIN_API_TOKEN is not configured in the environment.
   // The auth gate surfaces this as a "misconfigured" error rather than
   // prompting for a key, so operators know to set the env var.
-  app.post("/session/auto", async (req, reply) => {
+  // Rate-limit session/auto even though it's protected by the X-Admin-CSRF
+  // header — double-protection against bots that forge the header value.
+  // 10/min matches the manually-keyed /session endpoint.
+  app.post("/session/auto", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const csrfHeader = req.headers["x-admin-csrf"];
     if (csrfHeader !== "1") {
       reply.code(403).send({ error: "CSRF check failed" });
@@ -2396,10 +2419,13 @@ export async function adminOpsRoutes(app: FastifyInstance) {
   // instead of localStorage means an XSS payload in any admin page
   // (chat messages, prayer bodies, display names) can no longer read
   // the admin credential and exfiltrate it to an attacker's server.
-  const SessionBodySchema = z.object({ token: z.string().min(1) });
+  const SessionBodySchema = z.object({ token: z.string().min(1).max(2048) });
   r.post(
     "/session",
     {
+      // Accepts a bearer token and issues an HttpOnly cookie.
+      // Rate-limit tightly — same surface as login, same abuse model.
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         body: SessionBodySchema,
         response: { 200: z.object({ ok: z.literal(true) }) },
@@ -2468,8 +2494,10 @@ export async function adminOpsRoutes(app: FastifyInstance) {
   r.post(
     "/session/refresh",
     {
+      // Refresh is effectively a token-exchange — rate-limit like a login.
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
-        body: z.object({ refreshToken: z.string().optional() }),
+        body: z.object({ refreshToken: z.string().max(2048).optional() }),
         response: {
           200: z.object({ ok: z.literal(true), method: z.string(), expiresIn: z.number().optional() }),
           401: z.object({ error: z.string() }),
@@ -2518,7 +2546,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
   // ── DELETE /admin/session ────────────────────────────────────────────────
   // Clear the admin_session cookie (logout). No auth required — clearing
   // a cookie you may or may not have is always safe.
-  app.delete("/session", async (_req, reply) => {
+  app.delete("/session", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (_req, reply) => {
     void reply.clearCookie("admin_session", { path: "/" });
     return { ok: true };
   });
@@ -2529,7 +2557,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
   // Requires a valid Bearer admin token in the Authorization header.
   app.post(
     "/sse-token",
-    { preHandler: [requireAuth("editor")] },
+    { preHandler: [requireAuth("editor")], config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
     async (_req, reply) => {
       const subToken = crypto.randomUUID();
       // F04: persist sub-token in Redis (when available) so it survives across
@@ -2759,6 +2787,9 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     "/purge",
     {
       preHandler: requireAuth("admin"),
+      // Irreversible bulk delete — 2/min is a hard stop against
+      // accidental double-submit or a script hammering this endpoint.
+      config: { rateLimit: { max: 2, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Bulk purge content (irreversible)",

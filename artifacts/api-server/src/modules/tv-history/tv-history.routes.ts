@@ -56,6 +56,10 @@ export async function tvHistoryRoutes(app: FastifyInstance) {
   r.post(
     "/tv/history",
     {
+      // Called fire-and-forget every ~5 s during TV playback.
+      // 120/min covers bursts on fast-forward/seek while preventing
+      // a misconfigured TV client from hammering the DB.
+      config: { rateLimit: { max: 120, timeWindow: "1 minute" } },
       schema: {
         tags: ["tv"],
         summary: "Upsert a device watch-history entry",
@@ -142,6 +146,7 @@ export async function tvHistoryRoutes(app: FastifyInstance) {
   r.delete(
     "/tv/history/:deviceId",
     {
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
       schema: {
         tags: ["tv"],
         summary: "Clear all watch history for a device",

@@ -523,7 +523,7 @@ export async function authRoutes(app: FastifyInstance) {
       schema: {
         tags: ["auth"],
         summary: "TV polls to exchange a claimed code for tokens",
-        body: z.object({ code: z.string() }),
+        body: z.object({ code: z.string().min(1).max(32) }),
       },
     },
     async (req, reply) => {
@@ -585,7 +585,7 @@ export async function authRoutes(app: FastifyInstance) {
       schema: {
         tags: ["auth"],
         summary: "Authenticated user claims a device-link code (mobile/web side)",
-        body: z.object({ code: z.string() }),
+        body: z.object({ code: z.string().min(1).max(32) }),
         security: [{ bearerAuth: [] }],
       },
     },

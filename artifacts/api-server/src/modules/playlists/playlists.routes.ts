@@ -52,6 +52,7 @@ export async function playlistsRoutes(app: FastifyInstance) {
     "/",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["playlists"],
         summary: "Create a new playlist",
@@ -71,6 +72,7 @@ export async function playlistsRoutes(app: FastifyInstance) {
     "/:id",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["playlists"],
         summary: "Update playlist metadata",
@@ -87,6 +89,7 @@ export async function playlistsRoutes(app: FastifyInstance) {
     "/:id",
     {
       preHandler: requireAuth("admin"),
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["playlists"],
         summary: "Delete a playlist (cascades to its videos)",
@@ -101,6 +104,7 @@ export async function playlistsRoutes(app: FastifyInstance) {
     "/:id/videos",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["playlists"],
         summary: "Append a catalog video to a playlist",
@@ -121,6 +125,7 @@ export async function playlistsRoutes(app: FastifyInstance) {
     "/:id/videos/:videoId",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["playlists"],
         summary: "Remove a video entry from a playlist",
@@ -135,6 +140,7 @@ export async function playlistsRoutes(app: FastifyInstance) {
     "/:id/reorder",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["playlists"],
         summary: "Reorder a playlist's videos by id",

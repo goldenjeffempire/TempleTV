@@ -182,6 +182,7 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
     "/broadcast",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Admin alias: append an item to the queue",
@@ -324,6 +325,7 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
     "/broadcast/:id",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Admin alias: update durationSecs / isActive on a queue item",
@@ -374,6 +376,7 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
     "/broadcast/:id",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Admin alias: remove a queue item",
@@ -403,6 +406,7 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
     "/broadcast/reorder",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Admin alias: reorder the queue by item-id list",

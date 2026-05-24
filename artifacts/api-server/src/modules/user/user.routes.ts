@@ -113,6 +113,7 @@ export async function userRoutes(app: FastifyInstance) {
     "/favorites",
     {
       preHandler: requireAuth(),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["user"],
         summary: "Add a video to the authenticated user's favorites",
@@ -176,6 +177,7 @@ export async function userRoutes(app: FastifyInstance) {
     "/favorites/:videoId",
     {
       preHandler: requireAuth(),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["user"],
         summary: "Remove a video from the authenticated user's favorites",
@@ -271,6 +273,9 @@ export async function userRoutes(app: FastifyInstance) {
     "/history",
     {
       preHandler: requireAuth(),
+      // Called ~every 30 s during active playback — 120/min gives a generous
+      // buffer while preventing a runaway client from hammering the DB.
+      config: { rateLimit: { max: 120, timeWindow: "1 minute" } },
       schema: {
         tags: ["user"],
         summary: "Upsert a watch-history entry (updates watchedAt + progress on re-watch)",
@@ -337,6 +342,8 @@ export async function userRoutes(app: FastifyInstance) {
     "/history",
     {
       preHandler: requireAuth(),
+      // Bulk clears all history — deliberate destructive action, 5/min is plenty.
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
       schema: {
         tags: ["user"],
         summary: "Clear entire watch history for the authenticated user",

@@ -126,7 +126,10 @@ export async function youtubeWebhookRoutes(app: FastifyInstance): Promise<void> 
   // ── POST /youtube/webhook — new video Atom notification ──────────────────
   app.post("/webhook", {
     // Increase body limit for XML payloads (usually < 4 KB but safety margin).
-    config: { bodyLimit: 64 * 1024 },
+    // Rate-limit to 60/min — YouTube PubSubHubbub hubs send at most a few
+    // notifications per minute, so this is generous while bounding replay
+    // attacks that could spam the sync dispatcher.
+    config: { bodyLimit: 64 * 1024, rateLimit: { max: 60, timeWindow: "1 minute" } },
   }, async (req, reply) => {
     // Extract YouTube video ID from the Atom XML body.
     const body = typeof req.body === "string"

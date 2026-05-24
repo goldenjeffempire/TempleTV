@@ -32,14 +32,14 @@ export const BroadcastSnapshotSchema = z.object({
 
 export const AddQueueItemSchema = z
   .object({
-    videoId: z.string().nullable().optional(),
-    youtubeId: z.string().min(1).nullable().optional(),
+    videoId: z.string().min(1).max(128).nullable().optional(),
+    youtubeId: z.string().min(1).max(20).nullable().optional(),
     title: z.string().min(1).max(200),
-    thumbnailUrl: z.string().default(""),
+    thumbnailUrl: z.string().max(2048).default(""),
     durationSecs: z.number().int().positive().max(60 * 60 * 12).default(1800),
-    localVideoUrl: z.string().nullable().optional(),
+    localVideoUrl: z.string().max(2048).nullable().optional(),
     videoSource: z.enum(["youtube", "local", "hls"]).default("youtube"),
-    sortOrder: z.number().int().optional(),
+    sortOrder: z.number().int().min(0).max(1_000_000).optional(),
   })
   .superRefine((data, ctx) => {
     if (data.videoSource === "youtube") {
@@ -76,7 +76,10 @@ export const AddQueueItemSchema = z
   });
 
 export const ReorderQueueSchema = z.object({
-  itemIds: z.array(z.string()).min(1),
+  // Cap at 1 000 items — well above any realistic queue size — to prevent
+  // a client from constructing an array large enough to cause a DB
+  // CASE/WHEN clause that exceeds statement-level memory limits.
+  itemIds: z.array(z.string().min(1).max(128)).min(1).max(1_000),
 });
 
 /**

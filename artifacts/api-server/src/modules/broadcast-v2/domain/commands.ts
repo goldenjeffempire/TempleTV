@@ -1,19 +1,24 @@
 import { z } from "zod/v4";
 
+// Shared bound for all idempotency key fields. Keys are UUIDs or short
+// client-chosen strings — 128 chars is generous while preventing large
+// keys from inflating the in-process dedup Map entries.
+const IdempotencyKey = z.string().min(1).max(128);
+
 export const EnqueueCommand = z.object({
-  videoId: z.string().min(1),
+  videoId: z.string().min(1).max(128),
   position: z.enum(["end", "next"]).optional().default("end"),
-  idempotencyKey: z.string().min(1),
+  idempotencyKey: IdempotencyKey,
 });
 
 export const ReorderCommand = z.object({
-  orderedIds: z.array(z.string().min(1)).min(1).max(500),
-  idempotencyKey: z.string().min(1),
+  orderedIds: z.array(z.string().min(1).max(128)).min(1).max(500),
+  idempotencyKey: IdempotencyKey,
 });
 
 export const SkipCommand = z.object({
-  itemId: z.string().min(1).optional(),
-  idempotencyKey: z.string().min(1),
+  itemId: z.string().min(1).max(128).optional(),
+  idempotencyKey: IdempotencyKey,
 });
 
 export const StartOverrideCommand = z.object({
@@ -22,16 +27,16 @@ export const StartOverrideCommand = z.object({
   title: z.string().min(1).max(256),
   endsAtMs: z.number().int().positive().nullable().optional(),
   resumeQueueOnEnd: z.boolean().default(true),
-  idempotencyKey: z.string().min(1),
+  idempotencyKey: IdempotencyKey,
 });
 
 export const StopOverrideCommand = z.object({
-  idempotencyKey: z.string().min(1),
+  idempotencyKey: IdempotencyKey,
 });
 
 export const ForceFailoverCommand = z.object({
   reason: z.string().min(1).max(256),
-  idempotencyKey: z.string().min(1),
+  idempotencyKey: IdempotencyKey,
 });
 
 /**
@@ -40,7 +45,7 @@ export const ForceFailoverCommand = z.object({
  * auto-skips so a broken URL never leaves every viewer on a black screen.
  */
 export const ReportStallCommand = z.object({
-  itemId: z.string().min(1),
+  itemId: z.string().min(1).max(128),
 });
 
 /**
@@ -50,6 +55,6 @@ export const ReportStallCommand = z.object({
  * reorder and the skip.
  */
 export const PlayNowCommand = z.object({
-  queueItemId: z.string().min(1),
-  idempotencyKey: z.string().min(1),
+  queueItemId: z.string().min(1).max(128),
+  idempotencyKey: IdempotencyKey,
 });

@@ -175,7 +175,7 @@ export async function restRoutes(app: FastifyInstance) {
   // Authz piggybacks on the existing /admin RBAC chain — these routes get
   // mounted under both /broadcast-v2 (public read) and /admin/broadcast-v2
   // (full command surface) by the parent plugin.
-  app.post("/skip", adminGuard, async (req, reply) => {
+  app.post("/skip", { ...adminGuard, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const parsed = SkipCommand.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     if (!checkIdempotency(parsed.data.idempotencyKey)) {
@@ -185,7 +185,7 @@ export async function restRoutes(app: FastifyInstance) {
     return { ok: true, sequence: broadcastOrchestrator.getSequence() };
   });
 
-  app.post("/override/start", adminOnlyGuard, async (req, reply) => {
+  app.post("/override/start", { ...adminOnlyGuard, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const parsed = StartOverrideCommand.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     if (!checkIdempotency(parsed.data.idempotencyKey)) {
@@ -201,7 +201,7 @@ export async function restRoutes(app: FastifyInstance) {
     return { ok: true, override: ov };
   });
 
-  app.post("/override/stop", adminOnlyGuard, async (req, reply) => {
+  app.post("/override/stop", { ...adminOnlyGuard, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const parsed = StopOverrideCommand.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     if (!checkIdempotency(parsed.data.idempotencyKey)) return { ok: true, duplicate: true };
@@ -209,7 +209,10 @@ export async function restRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
-  app.post("/force-failover", adminOnlyGuard, async (req, reply) => {
+  // Force-failover switches to the failover source immediately.
+  // 5/min — a rapid loop could cycle through sources faster than the
+  // orchestrator can establish a stable stream.
+  app.post("/force-failover", { ...adminOnlyGuard, config: { rateLimit: { max: 5, timeWindow: "1 minute" } } }, async (req, reply) => {
     const parsed = ForceFailoverCommand.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     if (!checkIdempotency(parsed.data.idempotencyKey)) return { ok: true, duplicate: true };
@@ -224,7 +227,7 @@ export async function restRoutes(app: FastifyInstance) {
   // reload (one POST per queue mutation) and the operator's "Reload"
   // button could race and apply twice — harmless for `reload()` today
   // but a contract violation that future engine refactors could exploit.
-  app.post("/clear-failover", adminOnlyGuard, async (req, reply) => {
+  app.post("/clear-failover", { ...adminOnlyGuard, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const parsed = StopOverrideCommand.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     if (!checkIdempotency(parsed.data.idempotencyKey)) return { ok: true, duplicate: true };
@@ -233,7 +236,9 @@ export async function restRoutes(app: FastifyInstance) {
   });
 
   // Reload queue from DB (used after admin queue mutations on v1 routes).
-  app.post("/reload", adminGuard, async (req, reply) => {
+  // 30/min — called automatically on every queue mutation via the SSE bus
+  // bridge, but the bridge already deduplicates; this caps any runaway clients.
+  app.post("/reload", { ...adminGuard, config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (req, reply) => {
     const parsed = StopOverrideCommand.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     if (!checkIdempotency(parsed.data.idempotencyKey)) {
@@ -444,7 +449,7 @@ export async function restRoutes(app: FastifyInstance) {
   //   3. Skips the orchestrator to advance to the (now first) item.
   // Combining all three in one endpoint eliminates the race window that
   // exists when callers do reorder + skip as two sequential API calls.
-  app.post("/play-now", adminGuard, async (req, reply) => {
+  app.post("/play-now", { ...adminGuard, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const parsed = PlayNowCommand.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     if (!checkIdempotency(parsed.data.idempotencyKey)) {
@@ -497,7 +502,7 @@ export async function restRoutes(app: FastifyInstance) {
   // on the next playback cycle. Useful when an operator has fixed a
   // broken stream or replaced a bad file and wants immediate retry
   // without waiting for the 2-minute TTL to expire.
-  app.post("/clear-bad-urls", adminGuard, async (req, reply) => {
+  app.post("/clear-bad-urls", { ...adminGuard, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const parsed = StopOverrideCommand.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     if (!checkIdempotency(parsed.data.idempotencyKey)) return { ok: true, duplicate: true };
@@ -538,7 +543,9 @@ export async function restRoutes(app: FastifyInstance) {
   // boostTranscodePriority promotes any already-queued job to priority=10.
   // Useful when videos were added to the queue before the transcoder was
   // running, or after a failed transcoding run that left items as raw MP4.
-  app.post("/prepare-hls", adminGuard, async (req, reply) => {
+  // Scans all active queue items and enqueues HLS transcoding for each one
+  // that's missing an hlsMasterUrl. 3/min — spawns real FFmpeg processes.
+  app.post("/prepare-hls", { ...adminGuard, config: { rateLimit: { max: 3, timeWindow: "1 minute" } } }, async (req, reply) => {
     reply.header("Cache-Control", "no-store, max-age=0");
     const parsed = StopOverrideCommand.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });

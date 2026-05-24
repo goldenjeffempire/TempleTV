@@ -209,6 +209,9 @@ export async function chatRoutes(app: FastifyInstance) {
     "/:channelId/messages",
     {
       preHandler: requireAuth("user"),
+      // 20/min per user prevents chat spam while staying comfortable for
+      // legitimate rapid-fire responses during a live service.
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["chat"],
         summary: "Post a chat message to a channel",

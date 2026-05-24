@@ -16,10 +16,10 @@ const WatchEventBodySchema = z.object({
   deviceId: z.string().min(1).max(128).optional(),
   platform: z.enum(["tv", "mobile", "web"]),
   eventType: z.enum(["started", "heartbeat", "completed", "abandoned"]),
-  videoId: z.string().min(1),
-  videoTitle: z.string().optional(),
-  positionSecs: z.number().nonnegative().optional(),
-  durationSecs: z.number().positive().optional(),
+  videoId: z.string().min(1).max(256),
+  videoTitle: z.string().max(500).optional(),
+  positionSecs: z.number().nonnegative().max(86_400).optional(),
+  durationSecs: z.number().positive().max(86_400).optional(),
   isLive: z.boolean().optional(),
   channelId: z.string().max(100).optional(),
 });
@@ -30,6 +30,10 @@ export async function analyticsRoutes(app: FastifyInstance) {
   r.post(
     "/watch-event",
     {
+      // Watch heartbeats fire every 30 s per viewer. 10/min per IP is
+      // enough for up to 5 simultaneous sessions; prevents event floods
+      // from malfunctioning clients or synthetic traffic.
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["analytics"],
         summary:

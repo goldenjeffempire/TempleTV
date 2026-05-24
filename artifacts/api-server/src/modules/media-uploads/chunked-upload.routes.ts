@@ -459,6 +459,10 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       // chunk size plus HTTP framing headroom. The previous 110 MiB limit
       // was unnecessarily large (the adaptive max is capped at 8 MiB client-side).
       bodyLimit: 12 * 1024 * 1024,
+      // Chunk uploads: adaptive chunk size is 1–8 MiB, max concurrency=4.
+      // 600/min per IP covers 3 concurrent uploads × 4 parallel chunks
+      // at the maximum speed, with headroom for retries.
+      config: { rateLimit: { max: 600, timeWindow: "1 minute" } },
     },
     async (req: FastifyRequest, reply: FastifyReply) => {
       // Disable proxy buffering so Nginx/Replit proxy streams bytes through
@@ -641,6 +645,9 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
     {
       preHandler: requireAuth("editor") as any,
       bodyLimit: 20 * 1024 * 1024,
+      // One thumbnail per upload session; 10/min covers retries and
+      // multi-file batches.
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
     },
     async (req: FastifyRequest, reply: FastifyReply) => {
       const { sessionId } = req.params as { sessionId: string };

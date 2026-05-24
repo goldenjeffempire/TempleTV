@@ -169,6 +169,7 @@ export async function seriesRoutes(app: FastifyInstance) {
     "/admin/series",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["series"],
         summary: "Create a new sermon series",
@@ -203,6 +204,7 @@ export async function seriesRoutes(app: FastifyInstance) {
     "/admin/series/:id",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["series"],
         summary: "Update series metadata",
@@ -234,6 +236,8 @@ export async function seriesRoutes(app: FastifyInstance) {
     "/admin/series/:id",
     {
       preHandler: requireAuth("admin"),
+      // Cascade deletes all episodes. 5/min prevents bulk wipes.
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
       schema: {
         tags: ["series"],
         summary: "Delete a series (removes episodes too via cascade)",
@@ -256,6 +260,7 @@ export async function seriesRoutes(app: FastifyInstance) {
     "/admin/series/:id/episodes",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["series"],
         summary: "Add a video as an episode in a series",
@@ -316,6 +321,7 @@ export async function seriesRoutes(app: FastifyInstance) {
     "/admin/series/:id/episodes/:episodeId",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["series"],
         summary: "Remove an episode from a series",

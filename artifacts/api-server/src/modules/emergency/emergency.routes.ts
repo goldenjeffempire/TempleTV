@@ -127,6 +127,10 @@ export async function emergencyRoutes(app: FastifyInstance) {
     "/admin/emergency",
     {
       preHandler: requireAuth("editor"),
+      // Each create fans out an SSE/WS EMERGENCY_BROADCAST signal to every
+      // connected client. 5/min prevents alert-storm abuse from a compromised
+      // editor account; legitimate use is always a deliberate manual action.
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
       schema: {
         tags: ["emergency"],
         summary: "Broadcast an emergency alert to all connected clients",
@@ -211,6 +215,7 @@ export async function emergencyRoutes(app: FastifyInstance) {
     "/admin/emergency/:id",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["emergency"],
         summary: "Dismiss an active emergency alert",

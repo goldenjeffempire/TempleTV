@@ -67,6 +67,9 @@ export async function settingsRoutes(app: FastifyInstance) {
     "/system-settings",
     {
       preHandler: requireAuth("admin"),
+      // System settings are global runtime flags that apply immediately.
+      // 20/min lets bulk import flows work while bounding write storms.
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Create or update a system setting",
@@ -110,6 +113,7 @@ export async function settingsRoutes(app: FastifyInstance) {
     "/system-settings/:key",
     {
       preHandler: requireAuth("admin"),
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Delete a system setting by key",

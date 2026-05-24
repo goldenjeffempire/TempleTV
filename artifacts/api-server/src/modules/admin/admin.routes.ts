@@ -77,6 +77,9 @@ export async function adminRoutes(app: FastifyInstance) {
     "/users/:id",
     {
       preHandler: requireAuth("admin"),
+      // Hard-deletes user + all PII. 5/min prevents bulk account wipes via
+      // a compromised admin token — each delete should be a deliberate act.
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Permanently delete a user account and all associated data",
@@ -120,6 +123,7 @@ export async function adminRoutes(app: FastifyInstance) {
     "/users/:id/ban",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Ban a user from chat (creates indefinite chat_moderation ban record)",
@@ -168,6 +172,9 @@ export async function adminRoutes(app: FastifyInstance) {
     "/users/:id/role",
     {
       preHandler: requireAuth("admin"),
+      // Role escalation to admin/system is high privilege. 10/min is ample
+      // for legitimate use while blocking automated privilege-escalation loops.
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Update a user's role",

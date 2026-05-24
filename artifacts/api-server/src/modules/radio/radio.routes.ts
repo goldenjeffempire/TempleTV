@@ -118,6 +118,7 @@ export async function radioRoutes(app: FastifyInstance) {
     "/admin/radio",
     {
       onRequest: [requireAuth("admin")],
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["radio"],
         summary: "Update radio station config (admin)",

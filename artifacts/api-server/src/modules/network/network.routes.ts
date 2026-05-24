@@ -207,6 +207,9 @@ export async function networkRoutes(app: FastifyInstance) {
     "/broadcast/command",
     {
       preHandler: requireAuth("admin"),
+      // High-impact NOC commands that mutate live broadcast state. 10/min
+      // gives operators plenty of headroom while bounding accidental loops.
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["network"],
         summary: "OMEGA NOC: dispatch a broadcast command (GO_LIVE, SWITCH, SYNC, EMERGENCY, FAILOVER, LOCK, UNLOCK, STOP)",

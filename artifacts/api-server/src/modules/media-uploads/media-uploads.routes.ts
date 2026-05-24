@@ -223,6 +223,10 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
     "/videos/upload/s3-multipart-init",
     {
       preHandler: requireAuth("editor"),
+      // Creates an S3 multipart session (external API call + DB row).
+      // 10/min allows uploading 10 new files per minute which exceeds
+      // the UI's MAX_CONCURRENT_FILES=3 cap with generous headroom.
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["uploads"],
         summary: "Begin an S3 multipart upload session",
@@ -288,6 +292,7 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
     "/videos/upload/s3-multipart-sign",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["uploads"],
         summary: "Presign a batch of multipart-upload PUT URLs (not supported — use chunked relay path)",
@@ -309,6 +314,9 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
     "/videos/upload/s3-multipart-complete",
     {
       preHandler: requireAuth("editor"),
+      // Assembles multipart parts in DB — CPU + I/O intensive. 10/min
+      // matches the init endpoint cap.
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["uploads"],
         summary: "Complete the multipart upload and register the video row",
@@ -502,6 +510,7 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
     "/videos/upload/s3-multipart-abort",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["uploads"],
         summary: "Abort an in-flight multipart upload",
@@ -533,6 +542,7 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
     "/videos/upload/s3-init",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["uploads"],
         summary: "Not supported — use the chunked server-relay path instead",
@@ -558,6 +568,7 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
     "/videos/upload/s3-finalize",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["uploads"],
         summary: "Finalize a single-PUT upload and register the video row",

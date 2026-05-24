@@ -44,7 +44,9 @@ export async function graphicsRoutes(app: FastifyInstance) {
     type: z.enum(["ticker", "lower_third", "bug_text"]),
     content: z.string().min(1).max(1000),
     subContent: z.string().max(200).optional().nullable(),
-    durationSecs: z.number().int().positive().optional().nullable(),
+    // Cap at 24 h — prevents a rogue editor from scheduling a setTimeout
+    // callback that fires weeks in the future and pins a closed-over reference.
+    durationSecs: z.number().int().positive().max(86400).optional().nullable(),
   });
 
   // ── Public: get active graphics for a channel ──────────────────────────────
@@ -168,6 +170,10 @@ export async function graphicsRoutes(app: FastifyInstance) {
     "/admin/graphics",
     {
       preHandler: requireAuth("editor"),
+      // Each activation fans out an SSE graphic-activated event to all
+      // connected clients. 10/min prevents a compromised editor account
+      // from flooding every viewer's overlay in a tight loop.
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["graphics"],
         summary: "Activate an on-air graphic overlay",
@@ -254,6 +260,7 @@ export async function graphicsRoutes(app: FastifyInstance) {
     "/admin/graphics/:id",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["graphics"],
         summary: "Deactivate an on-air graphic",
@@ -295,6 +302,8 @@ export async function graphicsRoutes(app: FastifyInstance) {
     "/admin/graphics/channel/:channelId",
     {
       preHandler: requireAuth("editor"),
+      // Bulk-deactivate all graphics for a channel + fans out a snapshot SSE.
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["graphics"],
         summary: "Clear all active on-air graphics for a channel",
