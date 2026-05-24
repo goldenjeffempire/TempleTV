@@ -791,6 +791,34 @@ class BroadcastOrchestrator extends EventEmitter {
       this.queueCheckpoint = null;
     }
 
+    // Skip-forward guard: if the restored/calculated cycle anchor leaves the
+    // current item slot with < MIN_SKIP_REMAINING_MS (3 s) remaining, advance
+    // past it immediately.  This prevents "micro-play" entries in the airing
+    // history (items logged for 2 s) when anchor restoration lands near the
+    // tail of a slot — a common occurrence after server restarts with
+    // long-duration queues.  Only applied when the anchor was not a fresh-start
+    // (fresh starts begin at elapsed=0 so no slot can be near its end).
+    if (this.items.length > 0 && this.cycleDurationMs > 0) {
+      const MIN_SKIP_REMAINING_MS = TICK_MS + 1_000; // 3 s — one tick + margin
+      const elapsedNow = ((reloadNow - this.cycleStartedAtMs) % this.cycleDurationMs + this.cycleDurationMs) % this.cycleDurationMs;
+      let acc = 0;
+      for (let i = 0; i < this.items.length; i++) {
+        const span = this.items[i]!.durationSecs * 1000;
+        if (elapsedNow < acc + span) {
+          const remaining = (acc + span) - elapsedNow;
+          if (remaining < MIN_SKIP_REMAINING_MS) {
+            this.cycleStartedAtMs -= remaining; // advance anchor past this slot
+            logger.info(
+              { itemId: this.items[i]!.id, remainingMs: Math.round(remaining) },
+              "[broadcast-v2] reloadInner: skipping near-end slot to prevent micro-play",
+            );
+          }
+          break;
+        }
+        acc += span;
+      }
+    }
+
     // Only emit queue.changed (and the associated sequence bump + WS/SSE
     // snapshot blast) when the item set genuinely changed. For routine
     // drift-poll reloads that produced the same items, silently persist the

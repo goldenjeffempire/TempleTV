@@ -125,6 +125,24 @@ class QueueIntegrityValidatorImpl {
           }
         }
 
+        // Detect suspiciously short probe results — likely a probe-failure from
+        // the moov-atom upload race (ffprobe ran before faststart flushed the
+        // atom to the start of the file).  loadActive() treats < 10 s as a
+        // probe failure and falls back to the queue row's durationSecs, but the
+        // corrupted value should still be surfaced here so operators can see it.
+        if (row.vDuration) {
+          const vDur = parseFloat(row.vDuration);
+          if (!isNaN(vDur) && vDur > 0 && vDur < 10) {
+            issues.push({
+              severity: "warn",
+              itemId: row.id,
+              itemTitle: row.title,
+              code: "SUSPICIOUS_DURATION",
+              message: `video.duration='${row.vDuration}' is < 10 s — likely a probe failure from an upload race; re-process video to fix`,
+            });
+          }
+        }
+
         if (row.durationSecs > 12 * 3_600) {
           issues.push({
             severity: "warn",

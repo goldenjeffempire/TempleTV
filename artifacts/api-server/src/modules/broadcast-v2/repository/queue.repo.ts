@@ -613,18 +613,26 @@ export const queueRepo = {
       // means item-transition timing is accurate from the very first playback
       // — naturalItemEnd write-back and the transcoder also update the queue
       // row, but those are async; this coalesce is the primary defence.
+      //
+      // MIN_BROADCAST_SECS guards against probe-failure artifacts: the upload
+      // race condition (moov atom not yet flushed when ffprobe ran) produces a
+      // near-zero duration.  In that case fall back to the queue row's
+      // durationSecs (typically the 1800 s upload-time placeholder), which will
+      // be corrected once faststart/naturalItemEnd writes the real value.
+      const MIN_BROADCAST_SECS = 10;
       const parsedVideoDuration = r.videoDuration ? Math.round(parseFloat(r.videoDuration)) : 0;
-      const effectiveDurationSecs = parsedVideoDuration > 0 ? parsedVideoDuration : r.durationSecs;
-      if (effectiveDurationSecs <= 0) {
-        // Duration is unknown (ffprobe hasn't run yet, or the video row is
-        // not joined). Use a 30-minute placeholder so the item still airs
-        // rather than being silently discarded. The placeholder matches the
-        // value written at upload-time before probing completes; the queue
-        // row's duration_secs will be corrected by updateDurationSecs() once
-        // the transcoder or naturalItemEnd writes the real value.
+      const effectiveDurationSecs = parsedVideoDuration >= MIN_BROADCAST_SECS
+        ? parsedVideoDuration
+        : r.durationSecs;
+      if (effectiveDurationSecs < MIN_BROADCAST_SECS) {
+        // Duration is unknown, zero, or suspiciously short on both sources.
+        // Use a 30-minute placeholder so the item still airs rather than being
+        // silently discarded or cycling every few seconds.  The queue row's
+        // duration_secs will be corrected by updateDurationSecs() once the
+        // transcoder or naturalItemEnd writes the real value.
         logger.warn(
           { itemId: r.id, title: r.title, durationSecs: r.durationSecs, videoDuration: r.videoDuration },
-          "[broadcast-v2] queue item has zero/unknown duration — using 1800 s placeholder (will self-correct after probe)",
+          "[broadcast-v2] queue item has zero/unknown/suspicious duration — using 1800 s placeholder (will self-correct after probe)",
         );
         validated.push({ ...r, durationSecs: 1800 });
         continue;
