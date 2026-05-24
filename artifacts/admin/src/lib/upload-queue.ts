@@ -758,7 +758,13 @@ class UploadQueueEngine {
       // is called before every chunk but was never called before the init
       // request — an expired token at upload-start caused an immediate 401
       // with no recovery path.
-      await ensureFreshToken().catch(() => {});
+      console.log("[upload-queue] start item", { id, sessionId, fileName: file.name, size: file.size, totalChunks });
+      const tokenResult = await ensureFreshToken().then(
+        () => "ok",
+        (e) => `error: ${(e as Error)?.message ?? String(e)}`,
+      );
+      console.log("[upload-queue] ensureFreshToken →", tokenResult);
+      console.log("[upload-queue] authHeaders presence:", Object.keys(authHeaders()));
 
       const initBody = JSON.stringify({
         sessionId,
@@ -784,17 +790,26 @@ class UploadQueueEngine {
         );
       });
 
-      let initResp = await Promise.race([
-        fetch(`${base}/v1/admin/videos/upload/init`, {
-          method: "POST",
-          headers: { ...authHeaders(), "Content-Type": "application/json" },
-          body: initBody,
-          signal,
-        }),
-        initTimeoutPromise,
-      ]).finally(() => {
-        if (initTimeoutId !== null) clearTimeout(initTimeoutId);
-      });
+      const initUrl = `${base}/v1/admin/videos/upload/init`;
+      console.log("[upload-queue] POST", initUrl);
+      let initResp: Response;
+      try {
+        initResp = await Promise.race([
+          fetch(initUrl, {
+            method: "POST",
+            headers: { ...authHeaders(), "Content-Type": "application/json" },
+            body: initBody,
+            signal,
+          }),
+          initTimeoutPromise,
+        ]).finally(() => {
+          if (initTimeoutId !== null) clearTimeout(initTimeoutId);
+        });
+        console.log("[upload-queue] init response", { status: initResp.status, ok: initResp.ok });
+      } catch (err) {
+        console.error("[upload-queue] init FETCH THREW", err);
+        throw err;
+      }
 
       // On 401 at init, force-refresh and retry once — mirrors the per-chunk
       // recovery path. The server session does not exist yet so the retry is
