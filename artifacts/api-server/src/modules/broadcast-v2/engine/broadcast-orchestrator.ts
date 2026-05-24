@@ -17,6 +17,25 @@ import type {
   V2Source,
 } from "../domain/types.js";
 
+/** Maximum entries retained in the per-channel airing history ring buffer. */
+const AIRING_HISTORY_MAX = 50;
+
+/**
+ * One entry in the orchestrator's airing history ring buffer.
+ * Exposed via getAiringHistory() and the /health endpoint so operators can
+ * review what has been on air without parsing server logs.
+ */
+export interface AiringEntry {
+  itemId: string;
+  title: string | null;
+  /** Resolved source URL that was served to players. */
+  sourceUrl: string | null;
+  /** Wall-clock ms when this item started airing. */
+  startedAtMs: number;
+  /** Wall-clock ms when this item stopped airing. null = currently on air. */
+  endedAtMs: number | null;
+}
+
 /**
  * How far ahead the orchestrator fires a `preload` frame to clients.
  * 60 s gives the B buffer enough time to download a significant portion of
@@ -178,6 +197,16 @@ class BroadcastOrchestrator extends EventEmitter {
    */
   private checkpointDirty = false;
   private lastCurrentItemId: string | null = null;
+  /**
+   * Ring buffer of recently-aired items (newest-first, capped at AIRING_HISTORY_MAX).
+   * Populated by tickInner() on every item advance.
+   */
+  private airingHistory: AiringEntry[] = [];
+  /**
+   * Open airing entry for the item currently on air (endedAtMs = null).
+   * Closed and pushed to airingHistory on the next advance.
+   */
+  private currentAiringEntry: AiringEntry | null = null;
   /**
    * The startsAtMs value from the last tick in which the current item was
    * identified. Used to detect single-item queue loop wrap-arounds: when the
@@ -1097,6 +1126,22 @@ class BroadcastOrchestrator extends EventEmitter {
     // Detect advance (different item ID) or single-item loop wrap-around.
     if (this.lastCurrentItemId !== snap.current.id) {
       // Different item — straightforward advance.
+      // Close the airing entry for the item that just finished before updating
+      // lastCurrentItemId, so we record the correct previous item.
+      const advanceNow = Date.now();
+      if (this.currentAiringEntry !== null) {
+        this.currentAiringEntry.endedAtMs = advanceNow;
+        this.airingHistory.unshift({ ...this.currentAiringEntry });
+        if (this.airingHistory.length > AIRING_HISTORY_MAX) this.airingHistory.pop();
+      }
+      // Open a fresh entry for the item now starting.
+      this.currentAiringEntry = {
+        itemId: snap.current.id,
+        title: snap.current.title,
+        sourceUrl: snap.current.source.url,
+        startedAtMs: advanceNow,
+        endedAtMs: null,
+      };
       this.lastCurrentItemId = snap.current.id;
       this.preloadFiredForId = null;
 
@@ -1705,6 +1750,23 @@ class BroadcastOrchestrator extends EventEmitter {
       allBlockedSinceMs: this.allBlockedSinceMs,
       allBlockedDurationMs: blocked ? Date.now() - this.allBlockedSinceMs! : null,
     };
+  }
+
+  /**
+   * Returns the airing history ring buffer: the last AIRING_HISTORY_MAX items
+   * that aired on this channel (newest first) plus the currently-airing item
+   * as the head entry (endedAtMs = null). Returns [] before the first item
+   * ever advances. Safe to call at any time — never throws.
+   */
+  getAiringHistory(): AiringEntry[] {
+    const result: AiringEntry[] = [];
+    if (this.currentAiringEntry !== null) {
+      result.push({ ...this.currentAiringEntry });
+    }
+    for (const entry of this.airingHistory) {
+      result.push(entry);
+    }
+    return result;
   }
 
   /**

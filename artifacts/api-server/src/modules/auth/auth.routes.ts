@@ -24,6 +24,11 @@ import { requireAuth } from "../../middleware/auth.js";
 import { env } from "../../config/env.js";
 import { db, schema } from "../../infrastructure/db.js";
 import { nanoid } from "nanoid";
+import {
+  checkBruteForce,
+  recordFailedAttempt,
+  resetAttempts,
+} from "./brute-force-guard.js";
 
 // Stricter per-route rate limit for credential-bearing endpoints.
 // Defaults to 20/min/IP — enough for a real user fat-fingering their
@@ -89,7 +94,34 @@ export async function authRoutes(app: FastifyInstance) {
         response: { 200: LoginResponseSchema },
       },
     },
-    async (req) => authService.login(req.body),
+    async (req, reply) => {
+      // Brute-force guard: check before reaching the password-hash comparison
+      // so a locked-out key never burns bcrypt work-factor CPU cycles.
+      const bypass = req.headers["x-bypass-rate-limit"] as string | undefined;
+      const bfCheck = checkBruteForce(req.ip, req.body.email, bypass);
+      if (bfCheck.blocked) {
+        reply.header("Retry-After", String(bfCheck.retryAfterSecs));
+        return reply.code(429).send({
+          error: "Too many failed login attempts. Please try again later.",
+          retryAfterSecs: bfCheck.retryAfterSecs,
+          lockedBy: bfCheck.reason,
+        });
+      }
+      try {
+        const result = await authService.login(req.body);
+        // Successful auth — clear attempt counters so the user is not
+        // punished for earlier fat-finger failures.
+        resetAttempts(req.ip, req.body.email);
+        return result;
+      } catch (err) {
+        // Record only credential errors (wrong password / unknown email).
+        // Unexpected server errors (DB down, etc.) must not lock users out.
+        if (err instanceof UnauthorizedError) {
+          recordFailedAttempt(req.ip, req.body.email);
+        }
+        throw err;
+      }
+    },
   );
 
   // MFA / TOTP sub-routes — mounted at /auth/mfa/*

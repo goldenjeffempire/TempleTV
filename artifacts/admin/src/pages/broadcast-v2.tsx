@@ -123,6 +123,15 @@ interface EngineHealth {
     allBlockedSinceMs: number | null;
     allBlockedDurationMs: number | null;
   };
+  airingHistory?: AiringEntry[];
+}
+
+interface AiringEntry {
+  itemId: string;
+  title: string | null;
+  sourceUrl: string | null;
+  startedAtMs: number;
+  endedAtMs: number | null;
 }
 
 interface WorkerHealth {
@@ -1211,6 +1220,8 @@ export default function BroadcastV2Page() {
         </CardContent>
       </Card>
 
+      <AirHistoryCard history={engineHealth?.airingHistory} />
+
       {/* ── Engine Diagnostics panel ────────────────────────────────────────── */}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between pb-3">
@@ -1921,6 +1932,63 @@ function SnapshotSlot({
         </div>
       )}
     </div>
+  );
+}
+
+// ── Air History Card ─────────────────────────────────────────────────────────
+
+function AirHistoryCard({ history }: { history?: AiringEntry[] }) {
+  if (!history || history.length === 0) return null;
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Clock className="h-4 w-4 text-muted-foreground" />
+          Air History
+          <Badge variant="secondary" className="ml-auto text-[10px]">
+            {history.length} item{history.length !== 1 ? "s" : ""}
+          </Badge>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="p-0">
+        <div className="divide-y text-xs">
+          {history.slice(0, 20).map((entry, i) => {
+            const durationMs =
+              entry.endedAtMs != null
+                ? entry.endedAtMs - entry.startedAtMs
+                : Date.now() - entry.startedAtMs;
+            return (
+              <div
+                key={`${entry.itemId}-${entry.startedAtMs}`}
+                className="flex items-start gap-3 px-4 py-2.5"
+              >
+                <div className="flex-1 min-w-0 space-y-0.5">
+                  <div className="flex items-center gap-2">
+                    {entry.endedAtMs === null ? (
+                      <Badge variant="default" className="h-4 px-1.5 text-[9px] font-bold shrink-0">
+                        ON AIR
+                      </Badge>
+                    ) : (
+                      <span className="text-muted-foreground tabular-nums shrink-0">#{i}</span>
+                    )}
+                    <span className="font-medium truncate">{entry.title ?? entry.itemId}</span>
+                  </div>
+                  {entry.sourceUrl && (
+                    <div className="truncate text-muted-foreground font-mono text-[10px]">
+                      {entry.sourceUrl}
+                    </div>
+                  )}
+                </div>
+                <div className="shrink-0 text-right text-muted-foreground space-y-0.5 tabular-nums pl-2">
+                  <div className="font-medium">{formatDuration(durationMs)}</div>
+                  <div className="text-[10px]">{formatAgo(entry.startedAtMs)}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 

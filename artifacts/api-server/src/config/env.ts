@@ -85,6 +85,19 @@ const Env = z.object({
   RATE_LIMIT_DEFAULT_PER_MINUTE: z.coerce.number().int().positive().default(120),
   RATE_LIMIT_AUTH_PER_MINUTE: z.coerce.number().int().positive().default(20),
 
+  // ── Auth brute-force guard ────────────────────────────────────────────────
+  // Maximum failed login attempts from a single IP or against a single account
+  // within AUTH_BF_WINDOW_MS before that key is locked for the same window.
+  AUTH_BF_MAX_ATTEMPTS: z.coerce.number().int().positive().default(10),
+  // Sliding-window duration in ms. Attempts older than this are forgotten, and
+  // the lockout (once triggered) lasts for this duration.
+  // Default: 15 minutes (900 000 ms).
+  AUTH_BF_WINDOW_MS: z.coerce.number().int().positive().default(900_000),
+  // Optional secret token accepted in the X-Bypass-Rate-Limit request header
+  // to skip the brute-force check entirely. Intended for server-to-server
+  // admin tooling and integration tests. Keep out of client-side code.
+  AUTH_BF_BYPASS_TOKEN: z.string().optional(),
+
   // Maximum concurrent SSE connections allowed per source IP.
   // Generous default covers one TV + mobile + web + admin tab per household.
   // Tune down on memory-constrained containers (free-tier).

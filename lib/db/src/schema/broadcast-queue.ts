@@ -39,15 +39,24 @@ export const broadcastQueueTable = pgTable("broadcast_queue", {
   //   • a future second API replica behind a load balancer
   // Each path does a read-then-insert dedupe in application code, but two
   // concurrent paths can both pass the read and both insert, producing
-  // duplicate queue rows that air back-to-back. A partial unique index on
-  // `video_id` (excluding NULL — prod-sync upserts use videoId=NULL with
-  // youtube_id as the dedupe key) eliminates that race authoritatively:
-  // the second insert raises a unique-violation that the app already
-  // swallows in enqueueIfMissing's try/catch. Partial so existing rows
-  // with NULL video_id (legacy prod-sync) stay untouched.
+  // duplicate queue rows that air back-to-back.
+  //
+  // Partial unique index on (video_id) WHERE video_id IS NOT NULL AND is_active = true:
+  //   • The `is_active = true` predicate is critical: without it, deactivating a
+  //     video and re-adding it to the queue would fail with a unique violation
+  //     because the old inactive row still holds the unique slot.
+  //   • The `video_id IS NOT NULL` predicate preserves existing rows with NULL
+  //     video_id (legacy prod-sync items that use youtube_id as the dedupe key).
+  //   • The second insert raises a unique-violation that enqueueIfMissing's
+  //     try/catch already swallows, so the race is handled without extra locking.
   uniqueIndex("uq_broadcast_queue_video_id_active")
     .on(table.videoId)
-    .where(sql`${table.videoId} IS NOT NULL`),
+    .where(sql`${table.videoId} IS NOT NULL AND ${table.isActive} = true`),
+  // Sort order must be non-negative. The default is 0 (first position); the
+  // orchestrator loads items ORDER BY sort_order ASC, so negative values would
+  // place items before the natural first position, which is semantically invalid
+  // and an easy source of off-by-one bugs in admin tooling.
+  check("chk_broadcast_queue_sort_order_nonneg", sql`${table.sortOrder} >= 0`),
 ]);
 
 export type BroadcastQueueItem = typeof broadcastQueueTable.$inferSelect;

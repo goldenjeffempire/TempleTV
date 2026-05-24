@@ -120,6 +120,7 @@ export async function restRoutes(app: FastifyInstance) {
         connected: broadcastFanout.isConnected(),
         role: broadcastFanout.getRole(),
       },
+      airingHistory: broadcastOrchestrator.getAiringHistory(),
       youtubeAutoOverride: getYouTubeAutoOverrideStats(),
     };
   });
