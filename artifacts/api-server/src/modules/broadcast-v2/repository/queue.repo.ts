@@ -155,7 +155,7 @@ function proxyExternalSource<T extends Pick<V2Source, "kind" | "url">>(
 // which is acceptable. Persistent blacklisting belongs in the DB layer and is
 // future work.
 
-export const BAD_URL_TTL_MS = 15_000; // 15 seconds — fast dead-air recovery
+export const BAD_URL_TTL_MS = 90_000; // 90 seconds — reduces thrashing on transient network errors
 
 // url → expiresAtMs
 const badUrlCache = new Map<string, number>();

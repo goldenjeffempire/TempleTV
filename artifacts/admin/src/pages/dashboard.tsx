@@ -74,6 +74,7 @@ export default function Dashboard() {
   const { data: stats, isLoading: statsLoading, error: statsError, refetch: refetchStats } = useQuery({
     queryKey: ["admin-stats"],
     queryFn: () => api.get<AdminStats>("/admin/stats"),
+    staleTime: 60_000,
   });
 
   const { data: readyz } = useQuery({

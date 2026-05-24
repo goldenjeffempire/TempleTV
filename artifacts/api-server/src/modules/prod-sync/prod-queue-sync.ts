@@ -376,7 +376,11 @@ async function pollOnce(): Promise<void> {
             durationSecs: newState.durationSecs,
             localVideoUrl: newState.localUrl,
             videoSource: newState.videoSource,
-            isActive: newState.isActive,
+            // Only deactivate when upstream marks an item unreachable (isActive=false).
+            // Never re-activate a row that an admin has manually deactivated —
+            // prod-sync owns reachability state, not administrative intent.
+            // SQL: if upstream says false → deactivate; otherwise keep current DB value.
+            isActive: sql`CASE WHEN excluded.is_active = false THEN false ELSE broadcast_queue.is_active END`,
             sortOrder: newState.sortOrder,
           },
         });

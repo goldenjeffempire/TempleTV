@@ -20,7 +20,7 @@ import { mfaRoutes } from "./mfa.routes.js";
 import { signAccessToken, signRefreshToken } from "./jwt.js";
 import { hashPassword } from "./password.js";
 import { UnauthorizedError } from "../../shared/errors.js";
-import { requireAuth } from "../../middleware/auth.js";
+import { requireAuth, invalidateSessionsValidAfterCache } from "../../middleware/auth.js";
 import { env } from "../../config/env.js";
 import { db, schema } from "../../infrastructure/db.js";
 import { nanoid } from "nanoid";
@@ -320,6 +320,9 @@ export async function authRoutes(app: FastifyInstance) {
     },
     async (req) => {
       await authService.changePassword(req.principal!.id, req.body);
+      // Invalidate the in-process sessionsValidAfter cache so the next request
+      // from any existing session is immediately rejected (no stale 30 s window).
+      invalidateSessionsValidAfterCache(req.principal!.id);
       return { message: "Password updated successfully" };
     },
   );

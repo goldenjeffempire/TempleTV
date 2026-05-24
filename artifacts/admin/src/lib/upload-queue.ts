@@ -223,6 +223,18 @@ class UploadQueueEngine {
 
   /** IDs of items that were auto-paused because the network went offline. */
   private networkPausedIds = new Set<string>();
+  private _beforeUnloadInstalled = false;
+
+  /**
+   * Stored as an arrow property so the same function reference is used for
+   * both addEventListener and removeEventListener (required for removal to work).
+   * Setting returnValue is the legacy cross-browser pattern; modern browsers
+   * also respect the return value from the handler.
+   */
+  private readonly _beforeUnloadHandler = (e: BeforeUnloadEvent): void => {
+    e.preventDefault();
+    e.returnValue = "Uploads are in progress. Leaving will cancel them.";
+  };
 
   constructor() {
     if (typeof window !== "undefined") {
@@ -265,6 +277,19 @@ class UploadQueueEngine {
     try {
       const summary = this.getSummary();
       setUploadActive(summary.active > 0 || summary.pending > 0);
+
+      // Install/uninstall the beforeunload guard so the browser prompts
+      // before navigation when uploads are in flight or pending.
+      if (typeof window !== "undefined") {
+        const hasActive = summary.active > 0 || summary.pending > 0;
+        if (hasActive && !this._beforeUnloadInstalled) {
+          window.addEventListener("beforeunload", this._beforeUnloadHandler);
+          this._beforeUnloadInstalled = true;
+        } else if (!hasActive && this._beforeUnloadInstalled) {
+          window.removeEventListener("beforeunload", this._beforeUnloadHandler);
+          this._beforeUnloadInstalled = false;
+        }
+      }
     } catch { /* never let session wiring break the queue */ }
     for (const cb of this.listeners) cb();
   }

@@ -1,11 +1,53 @@
 import { Buffer } from "node:buffer";
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyReply, FastifyRequest, preHandlerHookHandler } from "fastify";
+import { eq } from "drizzle-orm";
 import { verifyAccessToken } from "../modules/auth/jwt.js";
 import { requireRole } from "../modules/auth/rbac.js";
 import type { Role } from "../shared/types.js";
 import { env } from "../config/env.js";
 import { UnauthorizedError, ForbiddenError } from "../shared/errors.js";
+import { db, schema } from "../infrastructure/db.js";
+
+/**
+ * Short-lived in-process cache for users.sessions_valid_after.
+ * Keyed by userId → { validAfter: Date | null, cachedAt: ms }.
+ * TTL: 30 s — short enough to detect password-change / logout-all within
+ * a single request cadence, long enough to keep DB round-trips minimal.
+ */
+const _svaCache = new Map<string, { validAfter: Date | null; cachedAt: number }>();
+const _SVA_TTL_MS = 30_000;
+
+/**
+ * Return the sessions_valid_after timestamp for a user, using the in-process
+ * cache. Falls back to null (= allow all tokens) on any DB error so that a
+ * transient PG failure never causes an auth lockout.
+ */
+async function getCachedSessionsValidAfter(userId: string): Promise<Date | null> {
+  const cached = _svaCache.get(userId);
+  if (cached && Date.now() - cached.cachedAt < _SVA_TTL_MS) return cached.validAfter;
+  try {
+    const [row] = await db
+      .select({ sessionsValidAfter: schema.usersTable.sessionsValidAfter })
+      .from(schema.usersTable)
+      .where(eq(schema.usersTable.id, userId))
+      .limit(1);
+    const validAfter = row?.sessionsValidAfter ?? null;
+    _svaCache.set(userId, { validAfter, cachedAt: Date.now() });
+    return validAfter;
+  } catch {
+    return null; // fail open — never lock out users due to a DB glitch
+  }
+}
+
+/**
+ * Call this after a password change or logout-everywhere so the next request
+ * from any session re-fetches sessions_valid_after rather than serving a
+ * stale cached value.
+ */
+export function invalidateSessionsValidAfterCache(userId: string): void {
+  _svaCache.delete(userId);
+}
 
 /**
  * Parse ADMIN_API_TOKEN_IP_ALLOWLIST into a Set of trimmed IP strings.
@@ -175,6 +217,21 @@ export function requireAuth(minRole: Role = "user"): preHandlerHookHandler {
       req.principal = adminPrincipal;
     } else {
       const decoded = await verifyAccessToken(token);
+
+      // SEC-REVOKE: check that the token was issued AFTER the user's global
+      // session-invalidation timestamp (bumped on password change / logout-all).
+      // `decoded.iat` is in seconds; sessionsValidAfter is a Date (milliseconds).
+      if (decoded.iat !== undefined) {
+        const validAfter = await getCachedSessionsValidAfter(decoded.sub);
+        if (validAfter && decoded.iat * 1000 < validAfter.getTime()) {
+          req.log.warn(
+            { principalId: decoded.sub, tokenIatMs: decoded.iat * 1000, validAfterMs: validAfter.getTime() },
+            "[auth] token predates sessionsValidAfter — rejecting (password changed or logout-all)",
+          );
+          throw new UnauthorizedError("Session expired — please sign in again");
+        }
+      }
+
       req.principal = { id: decoded.sub, email: decoded.email, role: decoded.role };
       req.log.info(
         {

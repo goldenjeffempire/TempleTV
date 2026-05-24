@@ -36,6 +36,7 @@ export interface RefreshTokenPayload {
 export async function signAccessToken(p: Omit<AccessTokenPayload, "type">): Promise<string> {
   return new SignJWT({ ...p, type: "access" } satisfies AccessTokenPayload)
     .setProtectedHeader({ alg: "HS256" })
+    .setIssuedAt()
     .setExpirationTime(Math.floor(Date.now() / 1000) + env.JWT_ACCESS_TTL_SECONDS)
     .sign(accessSecret);
 }

@@ -265,6 +265,16 @@ export async function ensureRuntimeIndexes(): Promise<void> {
           AND transcoding_status = 'queued'
           AND hls_master_url IS NULL
     `);
+    // Partial composite index for the default YouTube catalogue view.
+    // Supports: WHERE video_source = 'youtube' AND COALESCE(broadcast_only,false) = false
+    //           ORDER BY published_at DESC
+    // This is the hot path for /api/videos and the TV catalogue page.
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_youtube_catalog
+        ON managed_videos (published_at DESC)
+        WHERE video_source = 'youtube'
+          AND COALESCE(broadcast_only, false) = false
+    `);
     logger.info("db: functional and partial indexes ensured");
   } catch (err) {
     // Non-fatal — the search falls back to plainto_tsquery without the index

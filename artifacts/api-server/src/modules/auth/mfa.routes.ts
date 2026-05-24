@@ -94,7 +94,7 @@ export async function mfaRoutes(app: FastifyInstance) {
       },
     },
     async (req) => {
-      const userId = (req as any).user.id as string;
+      const userId = req.principal!.id;
       const rows = await db
         .select({
           totpEnabled: usersTable.totpEnabled,
@@ -141,7 +141,7 @@ export async function mfaRoutes(app: FastifyInstance) {
       },
     },
     async (req) => {
-      const userId = (req as any).user.id as string;
+      const userId = req.principal!.id;
       const rows = await db
         .select({ email: usersTable.email })
         .from(usersTable)
@@ -190,7 +190,7 @@ export async function mfaRoutes(app: FastifyInstance) {
       },
     },
     async (req) => {
-      const userId = (req as any).user.id as string;
+      const userId = req.principal!.id;
       const rows = await db
         .select({ totpSecret: usersTable.totpSecret, totpEnabled: usersTable.totpEnabled })
         .from(usersTable)
@@ -231,7 +231,7 @@ export async function mfaRoutes(app: FastifyInstance) {
       },
     },
     async (req) => {
-      const userId = (req as any).user.id as string;
+      const userId = req.principal!.id;
       const rows = await db
         .select({
           totpSecret: usersTable.totpSecret,
@@ -384,7 +384,7 @@ export async function mfaRoutes(app: FastifyInstance) {
       },
     },
     async (req) => {
-      const userId = (req as any).user.id as string;
+      const userId = req.principal!.id;
       const rows = await db
         .select({ totpSecret: usersTable.totpSecret, totpEnabled: usersTable.totpEnabled })
         .from(usersTable)

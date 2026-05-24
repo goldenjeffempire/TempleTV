@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect } from "react";
+import { lazy, Suspense, useEffect, Component, type ReactNode } from "react";
 import { Router as WouterRouter, Route, Switch, useLocation, Redirect } from "wouter";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAuth } from "@/contexts/use-auth";
@@ -60,6 +60,56 @@ const SystemSettings  = lazyPage(() => import("@/pages/settings"));
 const NotFound        = lazyPage(() => import("@/pages/not-found"));
 const RadioAdmin      = lazyPage(() => import("@/pages/radio"));
 const SecurityPage    = lazyPage(() => import("@/pages/security"));
+
+// ── Error Boundary ────────────────────────────────────────────────────────────
+
+interface EBState { error: Error | null }
+
+class ErrorBoundary extends Component<{ children: ReactNode }, EBState> {
+  state: EBState = { error: null };
+
+  static getDerivedStateFromError(error: Error): EBState {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error("[ErrorBoundary] Uncaught render error:", error, info.componentStack);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-background p-6">
+          <div className="w-full max-w-md flex flex-col items-center gap-5 text-center">
+            <div className="w-12 h-12 rounded-full bg-destructive/15 border border-destructive/30 flex items-center justify-center">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="text-destructive" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="8" x2="12" y2="12" />
+                <line x1="12" y1="16" x2="12.01" y2="16" />
+              </svg>
+            </div>
+            <div className="space-y-1.5">
+              <h1 className="text-base font-semibold tracking-tight">Something went wrong</h1>
+              <p className="text-sm text-muted-foreground leading-relaxed font-mono text-xs">
+                {this.state.error.message}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => { this.setState({ error: null }); window.location.reload(); }}
+              className="h-9 px-6 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity"
+            >
+              Reload page
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 function PageLoader() {
   return (
@@ -242,10 +292,12 @@ function AppRoutes() {
 
 export default function App() {
   return (
-    <TooltipProvider>
-      <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-        <AppRoutes />
-      </WouterRouter>
-    </TooltipProvider>
+    <ErrorBoundary>
+      <TooltipProvider>
+        <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
+          <AppRoutes />
+        </WouterRouter>
+      </TooltipProvider>
+    </ErrorBoundary>
   );
 }
