@@ -17,13 +17,24 @@ const { Pool } = pg;
  * Single shared pg pool. Pool sizing tuned for a 2 GiB container
  * with ~50 concurrent in-flight requests (each request usually
  * holds 0–1 connections); raise `max` if you scale the dyno up.
+ *
+ * statement_timeout is injected as a PostgreSQL startup parameter so it is
+ * applied during connection negotiation — before any query is ever sent.
+ * This avoids the pg@9 deprecation warning that fires when client.query()
+ * is called inside the pool's "connect" event handler (which fires while
+ * the client is still in its startup sequence).
  */
+const stmtTimeoutOption =
+  env.DB_STATEMENT_TIMEOUT_MS > 0
+    ? `-c statement_timeout=${env.DB_STATEMENT_TIMEOUT_MS}`
+    : "";
 const pool = new Pool({
   connectionString: env.DATABASE_URL,
   max: env.DB_POOL_MAX,
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 10_000,
   application_name: "temple-tv-api",
+  ...(stmtTimeoutOption ? { options: stmtTimeoutOption } : {}),
 });
 
 pool.on("error", (err) => {
@@ -39,18 +50,7 @@ function updatePoolMetrics(): void {
     env.DB_POOL_MAX > 0 ? active / env.DB_POOL_MAX : 0,
   );
 }
-pool.on("connect", (client) => {
-  // Set a statement-level timeout on every fresh connection so runaway
-  // queries cannot hold a connection indefinitely and exhaust the pool.
-  // DB_STATEMENT_TIMEOUT_MS = 0 disables the timeout (not recommended).
-  const timeoutMs = env.DB_STATEMENT_TIMEOUT_MS;
-  if (timeoutMs > 0) {
-    client.query(`SET statement_timeout = ${timeoutMs}`).catch((err) => {
-      logger.warn({ err, timeoutMs }, "db: failed to set statement_timeout on new connection (non-fatal)");
-    });
-  }
-  updatePoolMetrics();
-});
+pool.on("connect", updatePoolMetrics);
 pool.on("acquire", updatePoolMetrics);
 pool.on("remove", updatePoolMetrics);
 
