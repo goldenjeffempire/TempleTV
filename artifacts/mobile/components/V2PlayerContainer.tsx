@@ -20,6 +20,11 @@ import { ResizeMode, Video, type AVPlaybackStatus } from "expo-av";
 import { useV2BroadcastNative } from "@workspace/player-core/react-native";
 import type { MobileBufferState } from "@workspace/player-core/adapters/mobile";
 
+// Audio session (playsInSilentModeIOS, staysActiveInBackground, DoNotMix
+// interruption mode) is configured globally in app/_layout.tsx at app boot.
+// Do NOT call Audio.setAudioModeAsync here — it is a global API and would
+// override the app-wide policy on every player mount.
+
 interface Props {
   baseUrl: string;
   channelId?: string;

@@ -64,19 +64,6 @@ function extractYouTubeVideoId(url: string): string | null {
   }
 }
 
-/**
- * Send a command to an embedded YouTube iframe via the IFrame API postMessage
- * protocol so we can mute/unmute without reloading the player.
- */
-function postYouTubeCommand(iframe: HTMLIFrameElement, func: "mute" | "unMute") {
-  try {
-    iframe.contentWindow?.postMessage(
-      JSON.stringify({ event: "command", func, args: [] }),
-      "https://www.youtube.com",
-    );
-  } catch { /* ignore cross-origin errors in strict CSP environments */ }
-}
-
 interface Props {
   className?: string;
 }
@@ -208,7 +195,7 @@ function classifySourceFailure(
       reason:
         "YouTube content cannot be loaded as a raw video element in the admin browser. This is expected browser behaviour.",
       viewerNote:
-        "Real viewers use the embedded YouTube player and are completely unaffected by this preview failure.",
+        "YouTube sources cannot air on TV/mobile (no native YouTube playback path). This preview shows a static placeholder; operators should verify the override directly on YouTube.",
       urlHint: url,
       typeLabel: "YouTube",
     };
@@ -294,95 +281,6 @@ export function BroadcastPreviewV2({ className }: Props) {
   const [muted, setMuted] = useState(true);
   const aRef = useRef<HTMLVideoElement>(null);
   const bRef = useRef<HTMLVideoElement>(null);
-  const ytIframeRef = useRef<HTMLIFrameElement>(null);
-
-  // YouTube IFrame API error code (null = no error, number = YT error code).
-  // Error 100 = video not found / private.
-  // Error 101/150 = embedding not allowed.
-  // NOTE: Error 153 ("Video player configuration error") is a pre-init failure
-  // that YouTube shows in the player UI but NEVER sends via postMessage onError
-  // because the IFrame API never finishes initializing. It is detected instead
-  // via the onReady timeout below.
-  const [ytEmbedError, setYtEmbedError] = useState<number | null>(null);
-
-  // True when the YouTube IFrame API's onReady event does not arrive within
-  // YOUTUBE_READY_TIMEOUT_MS. This is the reliable signal for Error 153
-  // (embedding disabled / video player configuration error) because that error
-  // occurs before the IFrame API initializes and therefore never sends onError.
-  const [ytTimedOut, setYtTimedOut] = useState(false);
-  const ytTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // True during the detection window (between iframe mount and onReady/timeout).
-  // A loading overlay is rendered over the iframe during this window so that
-  // YouTube's own "Error 153 · Video player configuration error" screen is never
-  // visible to the operator — they see a neutral spinner instead.
-  const [ytChecking, setYtChecking] = useState(false);
-
-  // Persistent cross-reconnect cache of YouTube video IDs whose embedding is
-  // confirmed blocked (timeout fired or onError 101/150 received). A Set ref
-  // so it survives React re-renders and SSE reconnects without resetting.
-  // When the SSE drops and reconnects, the server may re-send the same video ID;
-  // without this cache the 4-second exposure window restarts for every reconnect,
-  // causing the raw Error 153 screen to flash repeatedly.
-  const ytBlockedIdsRef = useRef<Set<string>>(new Set());
-
-  // Ref mirror of the active YouTube video ID, used inside message-event
-  // closures to add to ytBlockedIdsRef without a stale closure.
-  const currentYtVideoIdRef = useRef<string | null>(null);
-
-  // How long to wait for YouTube onReady before assuming embedding is blocked.
-  // 4 s is generous for slow connections (working embeds fire onReady in ~1 s)
-  // while still being fast enough to avoid a long exposure of the error screen
-  // on the rare occasion a new, not-yet-cached video ID is encountered.
-  const YOUTUBE_READY_TIMEOUT_MS = 4000;
-
-  // Listen for YouTube IFrame API postMessage events so we can detect:
-  //   onReady   → player initialized → cancel timeout, hide loading overlay
-  //   onError   → post-init error (100 / 101 / 150) → cache + show fallback
-  useEffect(() => {
-    function handleMessage(ev: MessageEvent) {
-      if (ev.origin !== "https://www.youtube.com") return;
-      let data: unknown;
-      try {
-        data = typeof ev.data === "string" ? JSON.parse(ev.data) : ev.data;
-      } catch {
-        return;
-      }
-      if (!data || typeof data !== "object" || !("event" in data)) return;
-      const evt = (data as Record<string, unknown>).event;
-
-      if (evt === "onReady") {
-        // Player initialized — embedding is allowed. Cancel the detection window.
-        if (ytTimeoutRef.current) {
-          clearTimeout(ytTimeoutRef.current);
-          ytTimeoutRef.current = null;
-        }
-        setYtTimedOut(false);
-        setYtChecking(false);
-        return;
-      }
-
-      if (evt === "onError" && "info" in data) {
-        const code = (data as Record<string, unknown>).info;
-        if (typeof code === "number") {
-          // Cancel any pending timeout — the error is already known.
-          if (ytTimeoutRef.current) {
-            clearTimeout(ytTimeoutRef.current);
-            ytTimeoutRef.current = null;
-          }
-          // Cache embedding-disabled errors (101/150) so subsequent reconnects
-          // skip the detection window entirely for this video ID.
-          if ((code === 101 || code === 150) && currentYtVideoIdRef.current) {
-            ytBlockedIdsRef.current.add(currentYtVideoIdRef.current);
-          }
-          setYtEmbedError(code);
-          setYtChecking(false);
-        }
-      }
-    }
-    window.addEventListener("message", handleMessage);
-    return () => window.removeEventListener("message", handleMessage);
-  }, []);
 
   // Keep DOM `muted` in sync — the FSM owns play/pause but volume is admin-local.
   useEffect(() => {
@@ -390,16 +288,25 @@ export function BroadcastPreviewV2({ className }: Props) {
     if (bRef.current) bRef.current.muted = muted;
   }, [muted]);
 
-  // Keep YouTube player mute in sync via IFrame API postMessage.
-  useEffect(() => {
-    if (ytIframeRef.current) {
-      postYouTubeCommand(ytIframeRef.current, muted ? "mute" : "unMute");
-    }
-  }, [muted]);
-
   const server = snapshot.lastServerSnapshot;
 
-  // Resolve the active YouTube video ID, if the current or override source is YouTube.
+  // Resolve the YouTube video ID for the current/override source, if any.
+  //
+  // YouTube iframe embedding has been REMOVED from this preview entirely
+  // (replaced by a static placeholder card). Rationale:
+  //   • YouTube Error 153 ("Video player configuration error") is a pre-init
+  //     embed failure that doesn't propagate through the IFrame API, requiring
+  //     a brittle onReady-timeout detection scheme that flashed the raw error
+  //     screen on every SSE reconnect.
+  //   • TV (LiveBroadcastV2) and mobile (V2PlayerContainer) cannot play YouTube
+  //     URLs through their native players, so the iframe preview was misleading
+  //     operators about what real viewers actually see.
+  //   • The broadcast_queue table has a CHECK constraint (no_youtube_in_queue)
+  //     that prevents YouTube sources from ever entering the queue. YouTube
+  //     can only appear via live-override, which is rare.
+  //
+  // The video ID is still extracted so the placeholder can show a thumbnail
+  // and a "Watch on YouTube" link.
   const youtubeVideoId = useMemo<string | null>(() => {
     const overrideKind = server?.override?.kind;
     const overrideUrl  = server?.override?.url;
@@ -409,53 +316,6 @@ export function BroadcastPreviewV2({ className }: Props) {
     if (currentKind === "youtube" && currentUrl) return extractYouTubeVideoId(currentUrl);
     return null;
   }, [server]);
-
-  // Reset embed error + timeout state whenever the active YouTube video changes.
-  // Checks the blocked-IDs cache first so SSE reconnects never re-expose the
-  // raw YouTube error screen for a video that was already confirmed blocked.
-  useEffect(() => {
-    // Keep the closure-ref in sync.
-    currentYtVideoIdRef.current = youtubeVideoId;
-
-    setYtEmbedError(null);
-
-    if (ytTimeoutRef.current) {
-      clearTimeout(ytTimeoutRef.current);
-      ytTimeoutRef.current = null;
-    }
-
-    if (!youtubeVideoId) {
-      setYtTimedOut(false);
-      setYtChecking(false);
-      return;
-    }
-
-    // Already confirmed blocked in a previous detection cycle — show the
-    // fallback immediately without any exposure of the YouTube error screen.
-    if (ytBlockedIdsRef.current.has(youtubeVideoId)) {
-      setYtTimedOut(true);
-      setYtChecking(false);
-      return;
-    }
-
-    // New (uncached) video — start the detection window with a loading overlay.
-    setYtTimedOut(false);
-    setYtChecking(true);
-
-    ytTimeoutRef.current = setTimeout(() => {
-      // Timeout fired — embedding is blocked. Cache it so reconnects are instant.
-      ytBlockedIdsRef.current.add(youtubeVideoId);
-      setYtTimedOut(true);
-      setYtChecking(false);
-    }, YOUTUBE_READY_TIMEOUT_MS);
-
-    return () => {
-      if (ytTimeoutRef.current) {
-        clearTimeout(ytTimeoutRef.current);
-        ytTimeoutRef.current = null;
-      }
-    };
-  }, [youtubeVideoId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const overlay = useMemo(() => {
     if (snapshot.state === "OFFLINE_HOLD") {
@@ -483,10 +343,11 @@ export function BroadcastPreviewV2({ className }: Props) {
       return { kind: "tuning" as const, label: "Retrying source…" };
     }
     if (snapshot.state === "SKIP_PENDING") {
-      // When the active source is YouTube the SKIP_PENDING state is an expected
-      // browser-side artefact — the <video> element can't load YouTube URLs, but
-      // the iframe embed above is playing correctly. Suppress the "skipping"
-      // overlay so it doesn't cover the working YouTube player.
+      // When the active source is YouTube the SKIP_PENDING state is expected —
+      // the <video> element can't load YouTube URLs and the iframe path has been
+      // removed. The static YouTube placeholder card is rendered separately
+      // (z-index 5) and is the only meaningful UI for that case; suppress the
+      // "skipping" overlay so it doesn't cover the placeholder.
       if (youtubeVideoId) return null;
       return { kind: "skipping" as const, label: "Skipping to next item…" };
     }
@@ -609,55 +470,16 @@ export function BroadcastPreviewV2({ className }: Props) {
         style={{ zIndex: 1 }}
       />
 
-      {/* YouTube embed — shown on top of the video buffers when the active source is YouTube.
-          Uses the IFrame API (enablejsapi=1) so mute/unmute works via postMessage without
-          reloading the player. Starts muted to match the default admin mute state.
-          Hidden (replaced by the fallback card) once:
-            - ytTimedOut: onReady never arrived → embedding disabled / Error 153
-            - ytEmbedError: post-init onError code (100 / 101 / 150)
-          A loading overlay (ytChecking) covers the iframe during the detection window
-          so YouTube's own "Error 153" screen is never visible — the operator sees a
-          neutral spinner until onReady fires (embed works) or the timeout fires (blocked). */}
-      {youtubeVideoId && !ytEmbedError && !ytTimedOut && (
-        <div className="absolute inset-0" style={{ zIndex: 5 }}>
-          <iframe
-            key={youtubeVideoId}
-            ref={ytIframeRef}
-            className="absolute inset-0 w-full h-full"
-            src={`https://www.youtube.com/embed/${youtubeVideoId}?autoplay=1&mute=1&enablejsapi=1&rel=0&modestbranding=1&playsinline=1`}
-            allow="autoplay; encrypted-media; picture-in-picture"
-            allowFullScreen
-            title="YouTube broadcast preview"
-            style={{ border: "none" }}
-            onLoad={() => {
-              if (ytIframeRef.current) {
-                postYouTubeCommand(ytIframeRef.current, muted ? "mute" : "unMute");
-              }
-            }}
-          />
-          {/* Detection-window overlay: blocks YouTube's raw error UI from showing.
-              Fades out the moment onReady fires (embed confirmed working). */}
-          {ytChecking && (
-            <div className="absolute inset-0 bg-black flex items-center justify-center pointer-events-none">
-              <Loader2 size={16} className="animate-spin text-white/30" />
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* YouTube embed error fallback — shown when:
-            - ytTimedOut: onReady never fired within 4 s → embedding disabled (Error 153
-              "Video player configuration error"). YouTube shows this in-player error BEFORE
-              the IFrame API initializes, so it is never propagated via postMessage onError.
-              The timeout is the only reliable detection path.
-            - ytEmbedError: post-init onError code (100 = unavailable, 101/150 = no embed).
-          Shows the video thumbnail, a direct watch link, and instructions for the operator. */}
-      {youtubeVideoId && (ytEmbedError !== null || ytTimedOut) && (
+      {/* YouTube override placeholder.
+          YouTube iframe embedding was removed (see useMemo comment above).
+          When a live-override points at a YouTube URL, the native HLS buffers
+          above cannot play it, so we show a static thumbnail + open-in-YouTube
+          link instead. No detection window, no Error 153, no postMessage races. */}
+      {youtubeVideoId && (
         <div
           className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-4 text-center"
           style={{ zIndex: 5 }}
         >
-          {/* Blurred thumbnail as background */}
           <div
             className="absolute inset-0 bg-cover bg-center opacity-15"
             style={{
@@ -665,36 +487,22 @@ export function BroadcastPreviewV2({ className }: Props) {
               filter: "blur(4px)",
             }}
           />
-
-          {/* Thumbnail */}
           <img
             src={`https://img.youtube.com/vi/${youtubeVideoId}/mqdefault.jpg`}
             alt="Video thumbnail"
             className="relative z-10 w-28 rounded shadow-lg object-cover"
             draggable={false}
           />
-
-          {/* Error message */}
-          <div className="relative z-10 space-y-1.5 max-w-[240px]">
+          <div className="relative z-10 space-y-1.5 max-w-[260px]">
             <p className="text-white text-[11px] font-semibold leading-snug">
-              {ytEmbedError === 100
-                ? "Video unavailable or private"
-                : "Embedding disabled for this video"}
+              YouTube override active
             </p>
             <p className="text-white/60 text-[10px] leading-relaxed">
-              {ytEmbedError === 100
-                ? "This video may have been deleted or set to private on YouTube."
-                : "The video owner has disabled embedding. Go to YouTube Studio → Content → select the video → Edit → More options → Distribution → enable \"Allow embedding\"."}
-            </p>
-            <p className="text-white/40 text-[9px] font-mono">
-              {ytEmbedError !== null
-                ? `YouTube Error ${ytEmbedError}`
-                : "YouTube Error 153"}{" "}
-              · preview only · viewers unaffected
+              This live-override points at a YouTube URL. The native HLS preview
+              below cannot render YouTube content. TV and mobile viewers see this
+              same item; verify playback directly on YouTube.
             </p>
           </div>
-
-          {/* Actions */}
           <div className="relative z-10 flex items-center gap-2 flex-wrap justify-center">
             <a
               href={`https://www.youtube.com/watch?v=${youtubeVideoId}`}
@@ -705,16 +513,6 @@ export function BroadcastPreviewV2({ className }: Props) {
               <ExternalLink size={10} />
               Watch on YouTube
             </a>
-            {ytEmbedError !== 100 && (
-              <a
-                href={`https://studio.youtube.com/video/${youtubeVideoId}/edit`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1.5 text-[11px] font-medium text-white/80 hover:text-white bg-white/10 hover:bg-white/20 transition-colors px-2.5 py-1 rounded"
-              >
-                Open in Studio
-              </a>
-            )}
           </div>
         </div>
       )}
