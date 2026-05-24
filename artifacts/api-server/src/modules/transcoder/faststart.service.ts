@@ -17,7 +17,7 @@
 
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { mkdir, open, rm, stat } from "node:fs/promises";
+import { mkdir, open, readFile, rm, stat } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
 import os from "node:os";
@@ -29,6 +29,7 @@ import { logger as rootLogger } from "../../infrastructure/logger.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
+import { boostTranscodePriority } from "./transcoder.queue.js";
 
 const videos = schema.videosTable;
 
@@ -42,6 +43,114 @@ const PROBE_TIMEOUT_MS = 30_000;
  * threshold (~1 GiB) even on Node.js versions that enforce a 512 MiB cap.
  */
 const FASTSTART_CHUNK_SIZE = 8 * 1024 * 1024; // 8 MiB
+
+/**
+ * Timeout for the poster-frame ffmpeg extraction subprocess.
+ * Much shorter than FASTSTART_TIMEOUT_MS — a single -vframes 1 seek + decode
+ * should never take more than 30 s even on the largest files.
+ */
+const THUMB_EXTRACT_TIMEOUT_MS = 30_000;
+
+/**
+ * Extract a single poster frame from a local MP4 file.
+ *
+ * Uses `-ss seek → -vframes 1` (same pattern as the HLS transcoder's
+ * generateThumbnail) so output format is compatible with thumbnails set by
+ * the full HLS transcode. The frame is letterboxed/pillarboxed to 640×360
+ * so all aspect ratios produce a consistent thumbnail shape.
+ *
+ * Returns true on success, false on any ffmpeg error (non-throwing so a
+ * corrupt input frame doesn't abort the parent faststart flow).
+ */
+async function extractPosterFrame(
+  inputPath: string,
+  outputPath: string,
+  targetSecs: number,
+  log: ReturnType<typeof rootLogger.child>,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    const args = [
+      "-y",
+      "-ss", String(targetSecs),
+      "-i", inputPath,
+      "-vframes", "1",
+      "-vf", "scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2",
+      "-f", "image2",
+      outputPath,
+    ];
+    const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
+    const timer = setTimeout(() => {
+      proc.kill("SIGKILL");
+      log.debug({ targetSecs }, "faststart: thumbnail extraction timed out — skipping");
+      resolve(false);
+    }, THUMB_EXTRACT_TIMEOUT_MS);
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      resolve(code === 0);
+    });
+    proc.on("error", (err) => {
+      clearTimeout(timer);
+      log.debug({ err }, "faststart: thumbnail extraction spawn failed — skipping");
+      resolve(false);
+    });
+  });
+}
+
+/**
+ * Extract and persist an early poster-frame thumbnail after faststart
+ * completes (while the faststarted MP4 is still on disk in scratchDir).
+ *
+ * Only runs when the video's thumbnailUrl is currently empty — preserves
+ * any thumbnail already set by a previous HLS transcode or manual edit.
+ * Fires-and-forgets: any error is logged at debug level and swallowed so
+ * the caller (runFaststart) is never blocked or failed by thumbnail work.
+ *
+ * The thumbnail is stored at `uploads/thumbs/{videoId}.jpg` so it is served
+ * by the same /api/v1/uploads/* route that serves raw uploads.
+ */
+function scheduleEarlyThumbnail(opts: {
+  videoId: string;
+  outputPath: string;
+  durationSecs: number | null;
+  log: ReturnType<typeof rootLogger.child>;
+}): void {
+  void (async () => {
+    try {
+      const { videoId, outputPath, durationSecs, log } = opts;
+
+      // Only extract when thumbnailUrl is empty — don't overwrite a
+      // thumbnail that already exists from a prior HLS transcode or edit.
+      const [row] = await db
+        .select({ thumbnailUrl: videos.thumbnailUrl })
+        .from(videos)
+        .where(eq(videos.id, videoId))
+        .limit(1);
+      if (row?.thumbnailUrl) return;
+
+      const targetSecs = Math.max(1, Math.round((durationSecs ?? 10) * 0.1));
+      const thumbPath = outputPath.replace(/\.mp4$/i, ".thumb.jpg");
+      const ok = await extractPosterFrame(outputPath, thumbPath, targetSecs, log);
+      if (!ok) return;
+
+      const thumbKey = `uploads/thumbs/${videoId}.jpg`;
+      const thumbBytes = await readFile(thumbPath);
+      await storage().putObject({ key: thumbKey, body: thumbBytes, contentType: "image/jpeg" });
+
+      // Only write thumbnailUrl when it is still empty — guard against a
+      // concurrent HLS transcode that finished while we were running ffmpeg.
+      const thumbUrl = `/api/v1/uploads/thumbs/${videoId}.jpg`;
+      await db
+        .update(videos)
+        .set({ thumbnailUrl: thumbUrl })
+        .where(and(eq(videos.id, videoId), eq(videos.thumbnailUrl, "")));
+
+      log.info({ targetSecs, thumbKey }, "faststart: early poster-frame thumbnail saved");
+      adminEventBus.push("videos-library-updated", { videoId, reason: "thumbnail-extracted" });
+    } catch (err) {
+      opts.log.debug({ err }, "faststart: early thumbnail extraction failed (non-fatal)");
+    }
+  })();
+}
 
 export interface FaststartResult {
   elapsedMs: number;
@@ -134,6 +243,12 @@ export async function runFaststart(
 
     log.info("faststart: probing duration");
     const durationSecs = await probeDuration(outputPath, log);
+
+    // ── Early poster-frame thumbnail ──────────────────────────────────────────
+    // Fire-and-forget: extract a thumbnail while outputPath is on disk so the
+    // video library shows an image immediately — before HLS transcoding (which
+    // can take 20-60 min on large files). Non-blocking; any error is swallowed.
+    scheduleEarlyThumbnail({ videoId, outputPath, durationSecs, log });
 
     // ── Atomic multipart re-upload ────────────────────────────────────────────
     // Replace the storage blob using the multipart path so that:
@@ -259,6 +374,15 @@ export async function runFaststart(
     } else {
       log.debug({ videoId, skipReason: enqueueResult.skipReason }, "faststart: enqueueIfMissing skipped");
     }
+
+    // Boost transcoding priority for videos now in the broadcast queue.
+    // The video is either just-enqueued or was already queued before faststart
+    // ran. Either way, HLS transcoding (if pending) should jump ahead of
+    // unrelated library jobs so it becomes broadcast-ready ASAP.
+    // boostTranscodePriority is a no-op when no pending job exists (non-fatal).
+    void boostTranscodePriority(videoId, 100).catch((err) =>
+      log.debug({ err }, "faststart: boostTranscodePriority failed (non-fatal)"),
+    );
 
     const elapsedMs = Date.now() - startMs;
     log.info({ elapsedMs, outputSizeBytes, durationSecs }, "faststart: complete");

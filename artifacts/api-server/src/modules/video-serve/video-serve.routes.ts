@@ -204,7 +204,7 @@ export async function videoServeRoutes(app: FastifyInstance) {
         const isImage = ["jpg", "jpeg", "png", "webp"].includes(ext);
         const cacheControl = isImage
           ? "public, max-age=2592000, immutable"
-          : "public, max-age=3600";
+          : "public, max-age=3600, stale-while-revalidate=86400";
         const contentType = resolveUploadMime(key, head.contentType);
         reply
           .header("Content-Type", contentType)
@@ -247,7 +247,7 @@ export async function videoServeRoutes(app: FastifyInstance) {
       const isImage = ["jpg", "jpeg", "png", "webp"].includes(ext);
       const cacheControl = isImage
         ? "public, max-age=2592000, immutable"
-        : "public, max-age=3600";
+        : "public, max-age=3600, stale-while-revalidate=86400";
 
       // ── Range request path ────────────────────────────────────────────
       const rangeHeader = typeof req.headers["range"] === "string"

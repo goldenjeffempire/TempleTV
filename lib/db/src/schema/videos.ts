@@ -91,6 +91,16 @@ export const videosTable = pgTable("managed_videos", {
   // WHERE video_source='local' AND hls_master_url IS NULL query with a
   // tighter scan than two individual indexes.
   index("idx_managed_videos_source_transcoding").on(table.videoSource, table.transcodingStatus),
+  // faststart_applied: broadcast-v2 loadActive() filters on this boolean on
+  // every orchestrator reload (10-30 s cadence). Without an index the query
+  // full-scans managed_videos via the JOIN; with it Postgres can use a bitmap
+  // index scan to narrow rows before evaluating the heavier OR conditions.
+  index("idx_managed_videos_faststart_applied").on(table.faststartApplied),
+  // Composite broadcast-admission index: mirrors the exact admission predicate
+  // in loadActive() — (video_source, transcoding_status, faststart_applied).
+  // Replaces a full managed_videos scan with a tight composite range scan on
+  // every orchestrator reload; critical for libraries with many videos.
+  index("idx_managed_videos_broadcast_admission").on(table.videoSource, table.transcodingStatus, table.faststartApplied),
   // NOTE: The GIN full-text search index (idx_managed_videos_fts) is created via
   // raw SQL at API startup in infrastructure/db.ts using CREATE INDEX IF NOT EXISTS.
   // Drizzle Kit does not support expression GIN indexes in the schema DSL,
