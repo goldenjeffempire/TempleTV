@@ -43,6 +43,7 @@ export default defineConfig({
     alias: {
       "@": path.resolve(import.meta.dirname, "src"),
       "@assets": path.resolve(import.meta.dirname, "..", "..", "attached_assets"),
+      "d3-format": path.resolve(import.meta.dirname, "../../node_modules/.pnpm/d3-format@3.1.2/node_modules/d3-format/dist/d3-format.js"),
     },
     dedupe: ["react", "react-dom"],
   },
