@@ -16,6 +16,7 @@ import { requireAuth } from "../../../middleware/auth.js";
 import { broadcastService } from "../../broadcast/broadcast.service.js";
 import { scanLibraryAndEnqueue, listMissingFromQueue } from "../../broadcast/auto-enqueue.service.js";
 import { markBadUrl, clearAllBadUrls, getItemsHealth, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, getRecentlySuspended, reEnableAllSuspended } from "../repository/queue.repo.js";
+import { faststartRecoveryWorker } from "../engine/faststart-recovery.js";
 import { db, schema } from "../../../infrastructure/db.js";
 import { eq, and, isNull, isNotNull, sql } from "drizzle-orm";
 import { enqueueTranscode, boostTranscodePriority } from "../../transcoder/transcoder.queue.js";
@@ -255,6 +256,10 @@ export async function restRoutes(app: FastifyInstance) {
       logger.info({ reEnabled }, "[broadcast-v2] reload: re-enabled suspended queue items before reload");
     }
     clearAllBadUrls();
+    faststartRecoveryWorker.resetAttempts();
+    void faststartRecoveryWorker.sweep().catch((err) =>
+      logger.warn({ err }, "[broadcast-v2] reload: faststart-recovery sweep failed (non-fatal)"),
+    );
     await broadcastOrchestrator.reload();
     return { ok: true, sequence: broadcastOrchestrator.getSequence(), reEnabled };
   });

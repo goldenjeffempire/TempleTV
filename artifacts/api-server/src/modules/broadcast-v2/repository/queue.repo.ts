@@ -437,6 +437,31 @@ export interface RawQueueRow {
   videoDuration: string | null;
 }
 
+/**
+ * Count broadcast_queue rows that are `is_active = true`, regardless of
+ * whether the joined managed_videos row satisfies the faststart / transcoding
+ * admission policy enforced by `loadActive()`.
+ *
+ * Used by the dead-air watchdog in the orchestrator to distinguish two
+ * otherwise-identical states:
+ *   A) "Truly empty" — no active rows in the DB → library-scan backstop
+ *      is the right recovery path.
+ *   B) "Filtered out" — active rows exist but are excluded by the strict
+ *      broadcast policy (faststart_applied=false, status='processing', etc.)
+ *      → re-enabling suspended items + triggering faststart recovery is the
+ *      right path. Library scan would find nothing new to add, so running
+ *      it alone doesn't help.
+ *
+ * Never throws — callers treat 0 as a safe fallback.
+ */
+export async function countActiveRaw(): Promise<number> {
+  const [row] = await db
+    .select({ n: sql<number>`COUNT(*)::int` })
+    .from(q)
+    .where(eq(q.isActive, true));
+  return row?.n ?? 0;
+}
+
 export const queueRepo = {
   async loadActive(): Promise<RawQueueRow[]> {
     // STRICT BROADCAST POLICY: only uploaded / local platform videos

@@ -4,7 +4,8 @@ import { broadcastSequence, broadcastQueueDepth, broadcastQueueStuck, setBroadca
 import { eventLogRepo } from "../repository/event-log.repo.js";
 import { runtimeRepo } from "../repository/runtime.repo.js";
 import { checkpointRepo } from "../repository/checkpoint.repo.js";
-import { queueRepo, isKnownBadUrl, markBadUrl, clearAllBadUrls, clearBadUrl, BAD_URL_TTL_MS, incrementBadUrlSkipCount, resetBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, type RawQueueRow } from "../repository/queue.repo.js";
+import { queueRepo, countActiveRaw, isKnownBadUrl, markBadUrl, clearAllBadUrls, clearBadUrl, BAD_URL_TTL_MS, incrementBadUrlSkipCount, resetBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, reEnableAllSuspended, type RawQueueRow } from "../repository/queue.repo.js";
+import { faststartRecoveryWorker } from "./faststart-recovery.js";
 import { playbackAnalytics } from "./playback-analytics.js";
 import { scanLibraryAndEnqueue } from "../../broadcast/auto-enqueue.service.js";
 import type {
@@ -104,6 +105,33 @@ const SELF_HEAL_STALE_MS  = 30_000;
 const EMPTY_POLLS_BEFORE_LIBRARY_SCAN = 6;
 
 /**
+ * After this many consecutive empty-queue polls (10 s × 3 = 30 s default),
+ * the orchestrator checks the raw DB count to distinguish a "truly empty
+ * queue" from a "filtered-out queue" (items exist in DB but are excluded by
+ * the faststart / transcoding admission policy in loadActive()).
+ *
+ * If the DB has active items that are being filtered out, a targeted recovery
+ * cycle runs: re-enable any DB-suspended items, clear the in-memory bad-URL
+ * cache, and trigger an immediate faststart-recovery sweep so items with
+ * faststart_applied=false can be fast-started and re-admitted.
+ *
+ * This fires before the library-scan backstop (EMPTY_POLLS_BEFORE_LIBRARY_SCAN)
+ * and is complementary to it: the library scan promotes missing videos, the
+ * escalation unblocks videos that are already in the queue.
+ */
+const EMPTY_POLLS_BEFORE_ESCALATION = 3;
+
+/**
+ * Minimum gap between consecutive dead-air escalation attempts.
+ * Prevents re-entering the reEnableAllSuspended + clearAllBadUrls +
+ * faststart-sweep cycle on every 10 s poll when the root cause (corrupt file,
+ * missing objectPath, exhausted faststart attempts) is not immediately fixable.
+ * 5 min matches the SUSPENSION_TTL_MS so a previously-suspended item will have
+ * auto-expired by the time the cooldown lifts.
+ */
+const DEAD_AIR_ESCALATION_COOLDOWN_MS = 5 * 60_000;
+
+/**
  * Pre-resolved queue item stored in the orchestrator's in-memory items array.
  *
  * Source resolution (resolveSource + allowlist check) runs ONCE per item at
@@ -189,6 +217,15 @@ class BroadcastOrchestrator extends EventEmitter {
    * continuity backstop, then reset to 0 so we don't re-scan every tick.
    */
   private consecutiveEmptyPolls = 0;
+  /**
+   * Wall-clock ms of the last dead-air escalation attempt. Zero = never.
+   * Guards against stampeding reEnableAllSuspended / faststart-sweep on
+   * every poll when the root cause (corrupt file, missing objectPath, or
+   * exhausted faststart attempts) is not fixable within a single cycle.
+   * Reset to 0 when items successfully load so subsequent outages get a
+   * fresh escalation immediately rather than waiting for the cooldown.
+   */
+  private lastDeadAirEscalationMs = 0;
   /**
    * Dirty flag for the position checkpoint.  Set whenever the orchestrator
    * emits a snapshot (state has changed).  persistCheckpoint() returns
@@ -405,6 +442,18 @@ class BroadcastOrchestrator extends EventEmitter {
       if (this.items.length === 0) {
         this.scheduleSelfHealReload("empty-queue-poll");
         this.consecutiveEmptyPolls += 1;
+
+        // ── Dead-air escalation (fires at 30 s, before library scan at 60 s) ──
+        // After EMPTY_POLLS_BEFORE_ESCALATION consecutive empty polls, check
+        // whether the DB has active items that loadActive() is filtering out
+        // (e.g. faststart_applied=false, still processing). If so, run the
+        // targeted recovery path: re-enable suspended items, clear bad-URL
+        // cache, and trigger an immediate faststart-recovery sweep. This
+        // directly addresses the root cause rather than adding more items.
+        if (this.consecutiveEmptyPolls >= EMPTY_POLLS_BEFORE_ESCALATION) {
+          this.escalateDeadAir();
+        }
+
         if (this.consecutiveEmptyPolls >= EMPTY_POLLS_BEFORE_LIBRARY_SCAN) {
           this.consecutiveEmptyPolls = 0;
           void scanLibraryAndEnqueue({
@@ -429,6 +478,10 @@ class BroadcastOrchestrator extends EventEmitter {
         }
       } else {
         this.consecutiveEmptyPolls = 0;
+        // Reset the escalation cooldown now that items are loaded, so a future
+        // outage gets an immediate escalation rather than waiting for the
+        // remaining cooldown from a previous outage.
+        this.lastDeadAirEscalationMs = 0;
       }
     }, SELF_HEAL_EMPTY_MS);
     this.selfHealEmptyTimer.unref?.();
@@ -1048,6 +1101,83 @@ class BroadcastOrchestrator extends EventEmitter {
           "[broadcast-v2] self-heal reload failed — backing off",
         );
       });
+  }
+
+  /**
+   * Dead-air escalation: called by the self-heal empty timer after
+   * EMPTY_POLLS_BEFORE_ESCALATION consecutive empty-queue polls (30 s
+   * by default) when the orchestrator still has 0 items loaded.
+   *
+   * The key distinction this method makes: was loadActive() returning 0
+   * because the queue is *truly empty* (no active rows in the DB), or
+   * because active rows exist but are being *filtered out* by the strict
+   * admission policy (faststart_applied=false, status='processing', etc.)?
+   *
+   * - Truly empty  → library scan backstop handles it (already wired).
+   * - Filtered out → targeted recovery:
+   *     1. reEnableAllSuspended()      — clears any lingering is_active=false
+   *                                      rows left by older server versions.
+   *     2. clearAllBadUrls()           — removes in-memory 90 s / 5 min TTL
+   *                                      blocks so items can be re-probed.
+   *     3. faststartRecoveryWorker.sweep() — immediately triggers faststart
+   *                                      for items with faststart_applied=false;
+   *                                      on success the worker fires
+   *                                      broadcast-queue-updated → reload().
+   *     4. scheduleSelfHealReload()    — belt-and-suspenders reload that
+   *                                      picks up any items re-enabled by (1).
+   *
+   * Rate-limited by DEAD_AIR_ESCALATION_COOLDOWN_MS (5 min) to prevent
+   * hammering the DB and ffmpeg when the underlying cause is not fixable
+   * within a single cycle (e.g. permanently corrupt file, no objectPath).
+   * The cooldown is reset to 0 whenever the orchestrator successfully loads
+   * items, so the next outage always gets an immediate first escalation.
+   */
+  private escalateDeadAir(): void {
+    const now = Date.now();
+    if (now - this.lastDeadAirEscalationMs < DEAD_AIR_ESCALATION_COOLDOWN_MS) return;
+    this.lastDeadAirEscalationMs = now;
+
+    void (async () => {
+      try {
+        const dbCount = await countActiveRaw();
+        if (dbCount === 0) {
+          // Truly empty — nothing for escalation to unblock; library scan
+          // (fired at EMPTY_POLLS_BEFORE_LIBRARY_SCAN) is the right path.
+          logger.debug(
+            { channel: this.channelId },
+            "[broadcast-v2] dead-air: DB queue is truly empty — deferring to library scan",
+          );
+          return;
+        }
+
+        // Items exist in DB but are filtered out — targeted recovery.
+        logger.warn(
+          { channel: this.channelId, dbActiveCount: dbCount, orchestratorItemCount: this.items.length },
+          "[broadcast-v2] dead-air escalation: DB has active queue items but orchestrator loaded 0 " +
+          "— re-enabling suspended items, clearing bad-URL cache, triggering faststart recovery",
+        );
+
+        const reEnabled = await reEnableAllSuspended().catch((err: unknown) => {
+          logger.warn({ err }, "[broadcast-v2] dead-air: reEnableAllSuspended failed (non-fatal)");
+          return 0;
+        });
+
+        clearAllBadUrls();
+
+        void faststartRecoveryWorker.sweep().catch((err: unknown) =>
+          logger.warn({ err }, "[broadcast-v2] dead-air: faststart-recovery sweep failed (non-fatal)"),
+        );
+
+        logger.info(
+          { channel: this.channelId, dbActiveCount: dbCount, reEnabled },
+          "[broadcast-v2] dead-air escalation: recovery dispatched — scheduling reload",
+        );
+
+        this.scheduleSelfHealReload("dead-air-escalation");
+      } catch (err: unknown) {
+        logger.warn({ err }, "[broadcast-v2] dead-air escalation: unexpected error (non-fatal)");
+      }
+    })();
   }
 
   /**
