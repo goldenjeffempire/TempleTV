@@ -85,6 +85,16 @@ function toDto(row: EnrichedQueueRow): z.infer<typeof QueueRowSchema> {
 const AddByVideoIdSchema = z.object({
   videoId: z.string().min(1),
   durationSecs: z.number().int().positive().max(60 * 60 * 12).optional(),
+  /**
+   * When true, skip the "transcoding in flight" rejection. The row is
+   * inserted immediately; the v2 orchestrator's loadActive() WHERE clause
+   * will silently exclude it until HLS lands, at which point the
+   * transcoder's `broadcast-queue-updated` event triggers a reload that
+   * picks it up. Used by the upload-and-auto-queue flow on the broadcast
+   * page so freshly uploaded videos appear in the admin queue list right
+   * away instead of failing with a "wait for transcoding" error.
+   */
+  allowPending: z.boolean().optional(),
 });
 
 const AddExplicitSchema = z.object({
@@ -185,7 +195,12 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
 
       // Convenience form: hydrate from `managed_videos` so the SPA can
       // post just `{ videoId }` and the server fills title / source / etc.
-      if ("videoId" in body && Object.keys(body).every((k) => k === "videoId" || k === "durationSecs")) {
+      if (
+        "videoId" in body &&
+        Object.keys(body).every(
+          (k) => k === "videoId" || k === "durationSecs" || k === "allowPending",
+        )
+      ) {
         const slim = body as z.infer<typeof AddByVideoIdSchema>;
         const [video] = await db
           .select()
@@ -194,6 +209,26 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
           .limit(1);
         if (!video) throw new NotFoundError(`videoId ${slim.videoId} not found in managed_videos`);
 
+        // ── Dedupe ───────────────────────────────────────────────────────
+        // If this videoId is already in the queue, return the existing row
+        // instead of creating a duplicate. The admin UI sees a normal 200
+        // response and refreshes — exactly what they'd want either way.
+        // Prevents accidental dup-add from rapid double-clicks, retries of
+        // the upload auto-queue path, or re-adding from the library picker.
+        const [existing] = await db
+          .select()
+          .from(queueTable)
+          .where(eq(queueTable.videoId, slim.videoId))
+          .limit(1);
+        if (existing) {
+          const existingHls = await db
+            .select({ transcodingStatus: videosTable.transcodingStatus, hlsMasterUrl: videosTable.hlsMasterUrl })
+            .from(videosTable)
+            .where(eq(videosTable.id, slim.videoId))
+            .then((r) => r[0]);
+          return toDto({ ...existing, ...existingHls });
+        }
+
         // Enforce strict READY-only broadcast pipeline: block any video whose
         // asset is in an in-flight transcoding state AND has no HLS master URL.
         // During 'queued' the raw blob is pre-faststart (not seekable from byte 0).
@@ -201,8 +236,15 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
         // During 'processing' the moov-atom relocation causes a transient 404.
         // The v2 orchestrator's loadActive() WHERE clause would silently exclude
         // the item anyway — we surface the error here so the admin knows immediately.
+        //
+        // Exception: `allowPending` bypasses this guard. Used by the
+        // upload-and-auto-queue flow where we *want* the row to appear in
+        // the queue list immediately. The transcoder will fire
+        // `broadcast-queue-updated` when HLS lands, which triggers an
+        // orchestrator reload that starts airing it.
         const inFlightStates = ["queued", "encoding", "processing"] as const;
         if (
+          !slim.allowPending &&
           video.videoSource !== "youtube" &&
           inFlightStates.includes(video.transcodingStatus as (typeof inFlightStates)[number]) &&
           !video.hlsMasterUrl

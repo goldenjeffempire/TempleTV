@@ -237,13 +237,19 @@ function ensureAutoQueueSubscriber(
 
       void (async () => {
         try {
-          await api.post("/admin/broadcast", { videoId });
+          // `allowPending: true` lets the row land in the queue even though
+          // the just-uploaded video is still transcoding. The v2 orchestrator
+          // skips non-HLS items, then auto-picks-up the row when the
+          // transcoder fires `broadcast-queue-updated` on HLS completion.
+          await api.post("/admin/broadcast", { videoId, allowPending: true });
           await api
             .post("/broadcast-v2/reload", { idempotencyKey: crypto.randomUUID() })
             .catch(() => {});
           autoQueueHandled.add(uploadId);
           autoQueuePending.delete(uploadId);
-          toast.success(`"${title}" uploaded and added to broadcast queue`);
+          toast.success(
+            `"${title}" added to broadcast queue — will start airing as soon as transcoding finishes`,
+          );
           void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
           void qc.invalidateQueries({ queryKey: ["broadcast-v2-state"] });
           void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
