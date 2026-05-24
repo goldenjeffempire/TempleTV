@@ -14,6 +14,30 @@ import {
 const { Pool } = pg;
 
 /**
+ * Returns true when the DATABASE_URL points at a connection pooler
+ * (Neon "-pooler." hostname, Supabase pooler, PgBouncer via query param).
+ *
+ * Poolers forward startup parameters directly to individual backend
+ * connections, and PgBouncer in session/transaction mode rejects unknown
+ * parameters such as `statement_timeout` with a fatal error, crashing the
+ * process before any query is executed. We therefore skip the `options`
+ * startup-parameter path for pooler URLs and rely instead on the
+ * connectionTimeoutMillis / query-level guards for safety.
+ */
+function isPoolerUrl(url: string): boolean {
+  try {
+    const { hostname, searchParams } = new URL(url);
+    if (searchParams.get("pgbouncer") === "true") return true;
+    // Neon: "ep-xxx-pooler.region.aws.neon.tech"
+    // Supabase: "aws-0-region.pooler.supabase.com"
+    if (hostname.includes("-pooler.") || hostname.includes(".pooler.")) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Single shared pg pool. Pool sizing tuned for a 2 GiB container
  * with ~50 concurrent in-flight requests (each request usually
  * holds 0–1 connections); raise `max` if you scale the dyno up.
@@ -21,13 +45,25 @@ const { Pool } = pg;
  * statement_timeout is injected as a PostgreSQL startup parameter so it is
  * applied during connection negotiation — before any query is ever sent.
  * This avoids the pg@9 deprecation warning that fires when client.query()
- * is called inside the pool's "connect" event handler (which fires while
- * the client is still in its startup sequence).
+ * is called inside the pool's "connect" event handler.
+ *
+ * POOLER EXCEPTION: PgBouncer (Neon, Supabase, etc.) rejects unknown startup
+ * parameters with a fatal error. When the DATABASE_URL is identified as a
+ * pooler URL the `options` key is omitted entirely.
  */
+const usingPooler = isPoolerUrl(env.DATABASE_URL);
 const stmtTimeoutOption =
-  env.DB_STATEMENT_TIMEOUT_MS > 0
+  !usingPooler && env.DB_STATEMENT_TIMEOUT_MS > 0
     ? `-c statement_timeout=${env.DB_STATEMENT_TIMEOUT_MS}`
     : "";
+
+if (usingPooler) {
+  logger.info(
+    { url: env.DATABASE_URL.replace(/:[^:@]+@/, ":***@") },
+    "db: pooler URL detected — statement_timeout startup parameter omitted (PgBouncer compatibility)",
+  );
+}
+
 const pool = new Pool({
   connectionString: env.DATABASE_URL,
   max: env.DB_POOL_MAX,
