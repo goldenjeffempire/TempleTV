@@ -62,11 +62,14 @@ const THUMB_EXTRACT_TIMEOUT_MS = 30_000;
  * Returns true on success, false on any ffmpeg error (non-throwing so a
  * corrupt input frame doesn't abort the parent faststart flow).
  */
+/** Minimal logger interface used by the thumbnail helpers below. */
+type ThumbnailLog = Pick<ReturnType<typeof rootLogger.child>, "debug" | "info">;
+
 async function extractPosterFrame(
   inputPath: string,
   outputPath: string,
   targetSecs: number,
-  log: ReturnType<typeof rootLogger.child>,
+  log: ThumbnailLog,
 ): Promise<boolean> {
   return new Promise((resolve) => {
     const args = [
@@ -112,7 +115,7 @@ function scheduleEarlyThumbnail(opts: {
   videoId: string;
   outputPath: string;
   durationSecs: number | null;
-  log: ReturnType<typeof rootLogger.child>;
+  log: ThumbnailLog;
 }): void {
   void (async () => {
     try {

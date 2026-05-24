@@ -95,7 +95,7 @@ export async function sseRoutes(app: FastifyInstance) {
     // the snapshot frame above (which always reflects current state).
     if (lastSeq > 0) {
       try {
-        const missed = await eventLogRepo.replayFrom(broadcastOrchestrator.channelId, lastSeq, 200);
+        const missed = await eventLogRepo.replayFrom(broadcastOrchestrator.channelId, lastSeq, 500);
         for (const e of missed) {
           send({
             type: "event" as const,

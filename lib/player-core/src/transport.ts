@@ -17,21 +17,19 @@ export interface TransportConfig {
   onConnectionChange?: (connected: boolean) => void;
 }
 
-const MAX_BACKOFF_MS = 6_000;
+/**
+ * Maximum reconnect backoff cap.
+ *
+ * 30 s is deliberately higher than the previous 6 s for extended outages.
+ * With ±25 % full-jitter the effective window at max backoff is 22–37 s,
+ * which smooths a fleet of hundreds of clients into a gentle ramp rather than
+ * a synchronised thundering herd on a restarting server. Brief disconnects
+ * (tab-switch, single missed heartbeat) are unaffected — they reconnect at
+ * INITIAL_BACKOFF_MS via forceReconnect() before backoff ever accumulates.
+ */
+const MAX_BACKOFF_MS = 30_000;
 const INITIAL_BACKOFF_MS = 300;
 
-/**
- * Maximum reconnect backoff. Previously this function returned 10_000 ms for
- * slow-2g/2g links — which was actually *higher* than the 6 000 ms default,
- * making slow links wait longer between reconnects (the comment claimed the
- * opposite). The original intent (cap below a hypothetical 30 s default) was
- * stale: MAX_BACKOFF_MS has been 6 s since the v2 cutover, so the special-
- * case branch made slow connections strictly worse than fast ones.
- *
- * The 6 s cap is already aggressive and works well for slow links — the
- * server's rate-limiter easily absorbs that cadence — so we simply return
- * the constant.
- */
 function effectiveMaxBackoffMs(): number {
   return MAX_BACKOFF_MS;
 }
@@ -62,7 +60,16 @@ const WS_FAIL_STREAK_SSE_FALLBACK = 2;
 // when the server confirms the same item is still playing.
 
 const SESSION_STORAGE_KEY = "ttv:broadcast:seq:v1";
-const SESSION_TTL_MS = 5 * 60 * 1000; // 5 minutes
+/**
+ * Extended from 5 min to 15 min for 24/7 broadcast reliability.
+ *
+ * A viewer who steps away for 6-10 minutes (common during service breaks,
+ * announcements, offering) previously lost their sequence position on return,
+ * forcing a full BOOTSTRAP cycle instead of the instant event-log replay that
+ * avoids the BOOTSTRAP state entirely. 15 min covers most real-world tab-
+ * background / device-sleep gaps at typical church streaming events.
+ */
+const SESSION_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
 function loadStoredSequence(): number {
   try {
@@ -523,7 +530,21 @@ export class V2Transport {
         }
         break;
       case "hello":
+        break;
       case "heartbeat":
+        // Respond with an app-level pong so the server's dead-connection
+        // detector sees activity and does not terminate the socket.
+        // WS only — SSE is unidirectional; `this.ws` will be null on SSE.
+        // readyState 1 === WebSocket.OPEN (avoid referencing the constructor
+        // to stay compatible with RN polyfills that don't expose the static).
+        if (this.ws && this.ws.readyState === 1) {
+          try {
+            this.ws.send(JSON.stringify({ type: "pong" }));
+          } catch {
+            /* socket may have closed between the heartbeat and the pong */
+          }
+        }
+        break;
       case "error":
       default:
         break;
@@ -575,6 +596,17 @@ export class V2Transport {
   private scheduleReconnect(): void {
     if (this.stopped) return;
     if (this.reconnectTimer) return;
+    // Offline-aware throttle: if the browser / device reports no network
+    // connectivity, skip scheduling a reconnect timer entirely. The web hook
+    // already listens for the `online` event and calls forceReconnect() the
+    // moment connectivity returns, so no state is lost by skipping here.
+    // This eliminates pointless WS construction attempts (and the wsFailStreak
+    // increments they cause) during airplane mode / tunnel / sleep periods.
+    // RN exposes navigator.onLine unreliably — the check is a no-op when the
+    // property is absent or truthy, keeping mobile behaviour unchanged.
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      return;
+    }
     // Apply ±25 % full-jitter to the base delay so a fleet of clients
     // that all lost the connection at the same time (server restart,
     // load-balancer failover, Cloudflare blip) don't pile into the new

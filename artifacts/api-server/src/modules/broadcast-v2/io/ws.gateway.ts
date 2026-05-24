@@ -84,14 +84,39 @@ export async function wsRoutes(app: FastifyInstance) {
 
     const heartbeat = setInterval(() => {
       send({ type: "heartbeat", serverTimeMs: Date.now(), sequence: broadcastOrchestrator.getSequence() });
-      // Detect dead connections: if no pong received in 2× heartbeat interval
-      // (20 s), log a warning. The TCP stack / WS ping/pong at the transport
-      // layer will eventually close truly dead sockets; this is for observability.
-      if (Date.now() - lastPongAtMs > 20_000) {
-        logger.debug({ ip, sessionAgeMs: Date.now() - sessionOpenAtMs }, "[broadcast-v2/ws] session may be dead — no pong for 20 s");
+
+      // Native WS-level ping frame. This serves two purposes:
+      //   1. Load balancers (AWS ALB, Nginx, Cloudflare) keep the upstream
+      //      WebSocket connection alive — they typically drop idle WS connections
+      //      after 60-120 s of no WS-level traffic, even if TCP is alive.
+      //   2. The `ws` library uses these pings to detect dead TCP connections
+      //      at the OS level; the peer's WS stack auto-responds with a native
+      //      pong frame without any application code involvement.
+      try { socket.ping(); } catch { /* client already gone */ }
+
+      // Terminate zombie sessions: if neither an app-level pong (from the
+      // client's heartbeat response) nor a native WS pong has arrived within
+      // 3× the heartbeat interval (30 s = 3 missed beats), the session is dead
+      // at the application layer. `terminate()` skips the WS close handshake
+      // and immediately frees the file descriptor — the `close` event fires
+      // normally so the cleanup below (clearInterval, off("frame"), releaseCounter)
+      // still executes in full.
+      if (Date.now() - lastPongAtMs > 30_000) {
+        logger.debug(
+          { ip, sessionAgeMs: Date.now() - sessionOpenAtMs },
+          "[broadcast-v2/ws] terminating zombie session — no pong for 30 s",
+        );
+        try { socket.terminate(); } catch { /* already closed */ }
       }
     }, 10_000);
     heartbeat.unref?.();
+
+    // Native WS pong handler — fires automatically when the client's WS
+    // stack responds to our socket.ping() calls above. Update lastPongAtMs
+    // so the terminate check above sees this as a live session.
+    socket.on("pong", () => {
+      lastPongAtMs = Date.now();
+    });
 
     socket.on("message", async (raw: Buffer | string) => {
       let msg: V2ClientFrame;
@@ -107,7 +132,7 @@ export async function wsRoutes(app: FastifyInstance) {
       }
       if (msg.type === "resume") {
         try {
-          const events = await eventLogRepo.replayFrom(broadcastOrchestrator.channelId, msg.lastSequence, 200);
+          const events = await eventLogRepo.replayFrom(broadcastOrchestrator.channelId, msg.lastSequence, 500);
           send({
             type: "recover",
             fromSequence: msg.lastSequence,
