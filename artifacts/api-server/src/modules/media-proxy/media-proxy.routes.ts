@@ -52,9 +52,16 @@ function isAllowedHost(url: string): boolean {
   }
   if (!/^https?:$/.test(parsed.protocol)) return false;
   const host = parsed.hostname.toLowerCase();
-  return ALLOWED_HOST_SUFFIXES.some(
-    (suf) => host === suf.replace(/^\./, "") || host.endsWith(suf),
-  );
+  return ALLOWED_HOST_SUFFIXES.some((suf) => {
+    if (suf.startsWith(".")) {
+      // Suffix like ".cloudfront.net" — bare host or any subdomain
+      return host === suf.slice(1) || host.endsWith(suf);
+    }
+    // Bare domain like "youtube.com" — exact host or subdomain with explicit dot
+    // Using `host.endsWith(suf)` alone would also match "evilyoutube.com", so
+    // we require the dot anchor for subdomain checks.
+    return host === suf || host.endsWith("." + suf);
+  });
 }
 
 /**

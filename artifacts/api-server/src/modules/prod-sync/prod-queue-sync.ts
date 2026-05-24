@@ -35,22 +35,22 @@ const DURATION_PROBE_TIMEOUT_MS = 20_000;
  * Returns null if ffprobe is unavailable, the URL is unreachable, or the
  * probe times out. The caller falls back to the upstream-provided value.
  */
-async function probeDurationSecs(url: string): Promise<number | null> {
+async function probeDurationSecs(url: string): Promise<{ secs: number | null; fresh: boolean }> {
   const cached = durationProbeCache.get(url);
   if (cached) {
     const ttl = cached.secs !== null ? DURATION_PROBE_TTL_SUCCESS_MS : DURATION_PROBE_TTL_FAILURE_MS;
-    if (Date.now() - cached.at < ttl) return cached.secs;
+    if (Date.now() - cached.at < ttl) return { secs: cached.secs, fresh: false };
   }
 
-  return new Promise<number | null>((resolve) => {
+  const secs = await new Promise<number | null>((resolve) => {
     let output = "";
     let settled = false;
 
-    const done = (secs: number | null): void => {
+    const done = (result: number | null): void => {
       if (settled) return;
       settled = true;
-      durationProbeCache.set(url, { secs, at: Date.now() });
-      resolve(secs);
+      durationProbeCache.set(url, { secs: result, at: Date.now() });
+      resolve(result);
     };
 
     const timer = setTimeout(() => done(null), DURATION_PROBE_TIMEOUT_MS);
@@ -84,6 +84,8 @@ async function probeDurationSecs(url: string): Promise<number | null> {
     });
     child.on("error", () => { clearTimeout(timer); done(null); });
   });
+
+  return { secs, fresh: true };
 }
 
 /**
@@ -287,14 +289,19 @@ async function pollOnce(): Promise<void> {
         item.videoSource === "youtube" && !localUrl && !hlsUrl ? "youtube" : "local";
 
       // Probe the real duration for reachable MP4-only items whose upstream
-      // durationSecs is the default 1800-second placeholder. HLS sources
-      // self-report duration via EXT-X-TARGETDURATION; youtube items have no
-      // local file to probe. The result is cached per-URL for the process
-      // lifetime so subsequent poll cycles are instant.
+      // durationSecs is EXACTLY the 1800-second placeholder sentinel. HLS
+      // sources self-report duration via EXT-X-TARGETDURATION; youtube items
+      // have no local file to probe. Items with a real (non-placeholder)
+      // duration — even if short, e.g. a 4-minute sermon clip — are skipped.
+      // The result is cached per-URL for 24 h so subsequent poll cycles are
+      // instant (no ffprobe spawned after the first successful probe).
       let probedDurationSecs: number | null = null;
-      if (reachable && localUrl && !hlsUrl && safeSource === "local" && Number(item.durationSecs) <= 1800) {
-        probedDurationSecs = await probeDurationSecs(localUrl);
-        if (probedDurationSecs !== null) {
+      if (reachable && localUrl && !hlsUrl && safeSource === "local" && Number(item.durationSecs) === 1800) {
+        const probeResult = await probeDurationSecs(localUrl);
+        probedDurationSecs = probeResult.secs;
+        // Only log when a fresh ffprobe was actually run — cache hits are silent
+        // to avoid "ffprobe resolved…" appearing on every 30 s poll cycle.
+        if (probeResult.fresh && probedDurationSecs !== null) {
           logger.info(
             { itemId: item.id, probedDurationSecs, placeholder: item.durationSecs, url: localUrl },
             "[prod-sync] ffprobe resolved real duration for queue item",

@@ -43,6 +43,10 @@ export const chatMessagesTable = pgTable("chat_messages", {
     table.channelId,
     table.createdAt.desc(),
   ),
+  // Moderation lookups: ban/mute checks filter by userId or ipHash to determine
+  // whether a sender is blocked before their message is accepted.
+  index("idx_chat_messages_user_id").on(table.userId),
+  index("idx_chat_messages_ip_hash").on(table.ipHash),
 ]);
 
 export type ChatMessageRow = typeof chatMessagesTable.$inferSelect;

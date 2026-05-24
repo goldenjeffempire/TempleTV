@@ -46,6 +46,8 @@ export interface ValidationReport {
 class QueueIntegrityValidatorImpl {
   private lastReport: ValidationReport | null = null;
   private validating = false;
+  /** Fingerprint of the last logged issue set — used to suppress duplicate WARN spam. */
+  private lastIssueSig = "";
 
   async validate(): Promise<ValidationReport> {
     if (this.validating) return this.lastReport ?? this.empty();
@@ -188,13 +190,23 @@ class QueueIntegrityValidatorImpl {
       };
 
       this.lastReport = report;
+
+      // Build a lightweight fingerprint so repeated runs with identical issues
+      // don't spam WARN every 2 minutes.  Only log when the issue set changes.
+      const sig = issues.map((i) => `${i.code}:${i.itemId ?? ""}:${i.message}`).sort().join("|");
       if (issues.length > 0) {
-        logger.warn(
-          { errors: report.summary.errors, warnings: report.summary.warnings, total: rows.length },
-          "[queue-validator] validation found issues",
-        );
+        if (sig !== this.lastIssueSig) {
+          logger.warn(
+            { errors: report.summary.errors, warnings: report.summary.warnings, total: rows.length },
+            "[queue-validator] validation found issues",
+          );
+          this.lastIssueSig = sig;
+        }
       } else {
-        logger.info({ total: rows.length }, "[queue-validator] all queue items healthy");
+        if (this.lastIssueSig !== "") {
+          logger.info({ total: rows.length }, "[queue-validator] all queue items healthy");
+          this.lastIssueSig = "";
+        }
       }
       return report;
     } catch (err) {

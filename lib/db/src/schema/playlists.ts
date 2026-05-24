@@ -29,6 +29,8 @@ export const playlistVideosTable = pgTable(
   (t) => ({
     playlistIdx: index("playlist_videos_playlist_id_idx").on(t.playlistId),
     playlistOrderIdx: index("playlist_videos_playlist_order_idx").on(t.playlistId, t.sortOrder),
+    // Allows efficient reverse lookups: "which playlists contain this video?"
+    videoIdx: index("playlist_videos_video_id_idx").on(t.videoId),
   }),
 );
 

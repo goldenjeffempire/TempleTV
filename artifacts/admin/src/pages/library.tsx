@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, isTransientError} from "@/lib/api";
 import { PageHeader } from "@/components/shared/page-header";
@@ -143,12 +143,22 @@ export default function LibraryPage() {
   const [showHistory, setShowHistory] = useState(false);
   const LIMIT = 24;
 
-  // Debounce search
+  // Debounce search — use a ref so the pending timer is always cleared on
+  // unmount and never calls setDebouncedSearch on an unmounted component.
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (searchTimerRef.current !== null) clearTimeout(searchTimerRef.current);
+    };
+  }, []);
+
   const handleSearchChange = useCallback((val: string) => {
     setSearch(val);
     setPage(1);
-    clearTimeout((window as unknown as Record<string, number>).__libSearchTimer);
-    (window as unknown as Record<string, number>).__libSearchTimer = window.setTimeout(() => {
+    if (searchTimerRef.current !== null) clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(() => {
+      searchTimerRef.current = null;
       setDebouncedSearch(val);
     }, 350);
   }, []);

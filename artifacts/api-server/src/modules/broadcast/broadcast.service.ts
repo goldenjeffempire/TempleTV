@@ -35,29 +35,34 @@ export const broadcastService = {
       }
     }
 
-    let sortOrder = item.sortOrder;
-    if (sortOrder === undefined) {
-      const last = await db
-        .select({ s: max(queueTable.sortOrder) })
-        .from(queueTable)
-        .limit(1);
-      sortOrder = (last[0]?.s ?? 0) + 10;
-    }
-    const inserted = await db
-      .insert(queueTable)
-      .values({
-        id: nanoid(),
-        videoId: item.videoId ?? null,
-        youtubeId: item.youtubeId ?? "",
-        title: item.title,
-        thumbnailUrl: item.thumbnailUrl,
-        durationSecs: item.durationSecs,
-        localVideoUrl: item.localVideoUrl ?? null,
-        videoSource: item.videoSource,
-        isActive: true,
-        sortOrder,
-      })
-      .returning();
+    // Wrap the max(sortOrder) read and the INSERT in a transaction so two
+    // concurrent addToQueue calls can't read the same MAX value and produce
+    // duplicate sort_order entries (the DUPLICATE_SORT_ORDER validator warning).
+    const inserted = await db.transaction(async (tx) => {
+      let sortOrder = item.sortOrder;
+      if (sortOrder === undefined) {
+        const last = await tx
+          .select({ s: max(queueTable.sortOrder) })
+          .from(queueTable)
+          .limit(1);
+        sortOrder = (last[0]?.s ?? 0) + 10;
+      }
+      return tx
+        .insert(queueTable)
+        .values({
+          id: nanoid(),
+          videoId: item.videoId ?? null,
+          youtubeId: item.youtubeId ?? "",
+          title: item.title,
+          thumbnailUrl: item.thumbnailUrl,
+          durationSecs: item.durationSecs,
+          localVideoUrl: item.localVideoUrl ?? null,
+          videoSource: item.videoSource,
+          isActive: true,
+          sortOrder,
+        })
+        .returning();
+    });
     await broadcastEngine.reload();
     adminEventBus.push("broadcast-queue-updated", { reason: "item-added", id: inserted[0]!.id });
     return inserted[0]!;
