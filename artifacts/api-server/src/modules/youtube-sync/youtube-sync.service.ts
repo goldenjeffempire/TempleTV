@@ -11,8 +11,8 @@ const CHANNEL_ID = "UCPFFvkE-KGpR37qJgvYriJg";
 const YT_API_BASE = "https://www.googleapis.com/youtube/v3";
 const RSS_URL = `https://www.youtube.com/feeds/videos.xml?channel_id=${CHANNEL_ID}`;
 
-// ── 2-year content window ─────────────────────────────────────────────────────
-const CONTENT_WINDOW_DAYS = Number(process.env.YOUTUBE_CONTENT_WINDOW_DAYS ?? 730);
+// ── 4-year content window ─────────────────────────────────────────────────────
+const CONTENT_WINDOW_DAYS = Number(process.env.YOUTUBE_CONTENT_WINDOW_DAYS ?? 1460);
 const CONTENT_WINDOW_MS   = CONTENT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 
 function cutoffDate(): Date {
@@ -1014,7 +1014,7 @@ export async function syncYouTubeChannel(triggeredBy: "scheduler" | "manual" = "
       );
     }
 
-    // ── 2-year cleanup pass ──────────────────────────────────────────────────
+    // ── 4-year cleanup pass ──────────────────────────────────────────────────
     // Delete YouTube rows that aged out of the rolling window.
     // Regex guard on the ::timestamptz cast prevents malformed published_at
     // values from throwing and falsely marking the sync as "failed".
@@ -1038,7 +1038,7 @@ export async function syncYouTubeChannel(triggeredBy: "scheduler" | "manual" = "
               AND ${videos_.publishedAt} ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
               AND ${videos_.publishedAt}::timestamptz < ${cutoffIso}::timestamptz`,
         );
-        logger.info({ deleted: deletedCount, cutoff: cutoffIso }, "youtube-sync: removed stale videos outside 2-year window");
+        logger.info({ deleted: deletedCount, cutoff: cutoffIso }, "youtube-sync: removed stale videos outside 4-year window");
       }
     } catch (cleanupErr) {
       // Non-fatal: all inserts already committed independently.
