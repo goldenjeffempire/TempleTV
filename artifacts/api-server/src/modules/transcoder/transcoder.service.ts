@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
 import os from "node:os";
@@ -260,10 +260,140 @@ async function probeResolution(inputPath: string): Promise<{ width: number; heig
  * Download a source object from object storage to a local temp file.
  * All ffprobe/ffmpeg calls go against the local path so they work without
  * any special network access or auth tokens.
+ *
+ * Verifies the downloaded file's byte count matches storage's HEAD. A
+ * truncated download (network glitch, storage hiccup, partial read) leaves
+ * an MP4 with a missing tail — and since the moov atom is often at EOF,
+ * ffmpeg fails with the misleading "moov atom not found" instead of a
+ * size-mismatch error. Failing here forces the dispatcher's retry loop to
+ * re-download the source instead of running ffmpeg against bad bytes.
  */
 async function downloadSourceToTempFile(objectKey: string, destPath: string): Promise<void> {
+  const head = await storage().headObject(objectKey).catch(() => null);
   const { body } = await storage().getObject(objectKey);
   await pipeline(body, createWriteStream(destPath));
+
+  const expected = head?.contentLength;
+  if (expected != null && expected > 0) {
+    const actual = (await stat(destPath)).size;
+    if (actual !== expected) {
+      throw new Error(
+        `transcoder: source download truncated — expected ${expected} bytes from storage, ` +
+          `got ${actual} bytes on disk (objectKey=${objectKey}). ` +
+          `This typically presents as "moov atom not found" when ffmpeg runs. ` +
+          `The job will retry and re-download the source.`,
+      );
+    }
+  }
+}
+
+/**
+ * Pre-flight probe to detect MP4 container damage BEFORE running HLS encode.
+ *
+ * Validity = ffprobe can enumerate at least one stream AND its stderr does
+ * NOT contain a moov-atom / container-parse failure signature. We deliberately
+ * do NOT require duration metadata to be present — some valid containers
+ * (e.g. fragmented MP4, growing files, certain camera exports) report no
+ * format-level duration but still transcode cleanly. The previous
+ * format=duration check forced unnecessary remux passes on those inputs.
+ *
+ * Returns true on a clean probe; false only when ffprobe fails outright OR
+ * its stderr signals a real container error (moov not found, invalid data
+ * found, EOF before frame, etc.) — the exact patterns FFmpeg emits for the
+ * production failure class we're fixing.
+ */
+async function probeContainerIsValid(inputPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const proc = spawn("ffprobe", [
+      "-v", "error",
+      "-select_streams", "v:0",
+      "-show_entries", "stream=codec_type",
+      "-of", "default=noprint_wrappers=1:nokey=1",
+      inputPath,
+    ]);
+    let out = "";
+    let err = "";
+    let settled = false;
+    const settle = (val: boolean) => {
+      if (settled) return;
+      settled = true;
+      resolve(val);
+    };
+    const timer = setTimeout(() => {
+      try { proc.kill("SIGKILL"); } catch { /* noop */ }
+      settle(false);
+    }, PROBE_TIMEOUT_MS);
+    proc.stdout.on("data", (b: Buffer) => { out += b.toString(); });
+    proc.stderr.on("data", (b: Buffer) => { err = (err + b.toString()).slice(-2000); });
+    proc.on("error", () => { clearTimeout(timer); settle(false); });
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      // Hard fail when ffprobe exits non-zero OR stderr emits one of the
+      // container-corruption signatures that ALSO break the HLS muxer.
+      const containerErrorPattern = /moov atom not found|invalid data found|partial file|EOF before frame|error reading header/i;
+      if (code !== 0 || containerErrorPattern.test(err)) {
+        settle(false);
+        return;
+      }
+      // Clean exit + at least one video stream detected = safe to encode.
+      settle(out.includes("video"));
+    });
+  });
+}
+
+/**
+ * Recovery pass for MP4 files where the moov atom is at EOF, fragmented,
+ * or otherwise unreadable by ffmpeg's HLS muxer. Performs a stream-copy
+ * remux with `+faststart` which:
+ *   • Rebuilds the moov atom and places it at the front of the file.
+ *   • Does NOT re-encode (completes in seconds even for 1+ GiB files).
+ *   • Produces a clean, playable MP4 that the HLS encoder can consume.
+ *
+ * Returns the path to the remuxed file on success, or null on any failure
+ * (the caller treats null as a hard error — there's nothing else to try).
+ */
+async function remuxForFaststart(
+  inputPath: string,
+  outputPath: string,
+  videoId: string,
+): Promise<string | null> {
+  return new Promise((resolve) => {
+    const proc = spawn("ffmpeg", [
+      "-y",
+      "-hide_banner",
+      "-loglevel", "error",
+      "-i", inputPath,
+      "-c", "copy",
+      "-movflags", "+faststart",
+      outputPath,
+    ], { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    let settled = false;
+    const settle = (val: string | null) => {
+      if (settled) return;
+      settled = true;
+      resolve(val);
+    };
+    const timer = setTimeout(() => {
+      try { proc.kill("SIGKILL"); } catch { /* noop */ }
+      logger.warn({ videoId }, "transcoder: remux-recovery timed out");
+      settle(null);
+    }, 15 * 60_000);
+    proc.stderr?.on("data", (chunk: Buffer) => {
+      stderr = (stderr + chunk.toString()).slice(-2000);
+    });
+    proc.on("error", () => { clearTimeout(timer); settle(null); });
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        logger.info({ videoId }, "transcoder: remux-recovery succeeded — moov atom rebuilt at file head");
+        settle(outputPath);
+      } else {
+        logger.warn({ videoId, exitCode: code, stderr: stderr.slice(-500) }, "transcoder: remux-recovery failed");
+        settle(null);
+      }
+    });
+  });
 }
 
 function contentTypeFor(name: string): string {
@@ -424,13 +554,48 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
     const sourceTempPath = path.join(scratchDir, `source${srcExt}`);
 
     // Download source first (may throw — scratch dir cleanup still runs).
+    // downloadSourceToTempFile verifies the local byte count matches the
+    // storage HEAD so a truncated download fails fast here instead of
+    // surfacing later as a misleading "moov atom not found" from ffmpeg.
     await downloadSourceToTempFile(req.sourceObjectKey, sourceTempPath);
+
+    // Pre-flight container validation.
+    //
+    // Detects MP4s where the moov atom is at EOF, fragmented, or otherwise
+    // unreachable by ffmpeg's HLS muxer (the #1 cause of "moov atom not
+    // found" job failures in production). When the source is bad, run a
+    // stream-copy remux with +faststart to rebuild a clean container BEFORE
+    // entering the HLS encode loop. This turns previously hard failures
+    // into a ~few-second recovery pass with no re-encoding cost.
+    //
+    // The remux output replaces sourceTempPath for the remainder of the
+    // pipeline — all subsequent probes and ffmpeg invocations consume the
+    // healed file. We intentionally do NOT re-upload the remuxed file to
+    // storage here: the orchestrator's faststart pipeline (runFaststart)
+    // owns the canonical re-upload. This is a per-job temp-disk repair.
+    let activeSourcePath = sourceTempPath;
+    const containerValid = await probeContainerIsValid(sourceTempPath);
+    if (!containerValid) {
+      logger.warn(
+        { videoId: req.videoId, jobId: req.jobId, sourceObjectKey: req.sourceObjectKey },
+        "transcoder: source container appears damaged (likely moov-at-EOF or truncated) — attempting remux recovery",
+      );
+      const remuxedPath = path.join(scratchDir, "source.remuxed.mp4");
+      const recovered = await remuxForFaststart(sourceTempPath, remuxedPath, req.videoId);
+      if (!recovered) {
+        throw new Error(
+          "transcoder: source MP4 container is unrepairable (moov atom missing and stream-copy remux failed). " +
+            "The upload may be corrupt — re-upload required.",
+        );
+      }
+      activeSourcePath = recovered;
+    }
 
     // Run duration, resolution, and audio probes in parallel (all are ffprobe calls).
     const [durationSecs, srcResolution, hasAudio] = await Promise.all([
-      probeDurationSecs(sourceTempPath),
-      probeResolution(sourceTempPath),
-      probeHasAudio(sourceTempPath),
+      probeDurationSecs(activeSourcePath),
+      probeResolution(activeSourcePath),
+      probeHasAudio(activeSourcePath),
     ]);
     if (!hasAudio) {
       logger.info(
@@ -463,7 +628,7 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
       await mkdir(path.join(scratchDir, `v${i}`), { recursive: true });
     }
 
-    const args = buildFfmpegArgs(sourceTempPath, scratchDir, renditionsToUse, hasAudio);
+    const args = buildFfmpegArgs(activeSourcePath, scratchDir, renditionsToUse, hasAudio);
 
     // Run HLS transcoding and thumbnail extraction in parallel.
     const hlsPromise = new Promise<void>((resolve, reject) => {
@@ -516,7 +681,7 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
 
     const [, thumbLocalPath] = await Promise.all([
       hlsPromise,
-      generateThumbnail(sourceTempPath, scratchDir),
+      generateThumbnail(activeSourcePath, scratchDir),
     ]);
 
     const keyPrefix = `transcoded/${req.videoId}`;
