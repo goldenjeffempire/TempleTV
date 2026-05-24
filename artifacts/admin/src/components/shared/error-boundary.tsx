@@ -21,7 +21,14 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error("[ErrorBoundary] Uncaught render error:", error, info.componentStack);
+    // Forward to Sentry when configured; fall back to console only in dev so
+    // production builds don't spam the user's browser console.
+    const S = (window as unknown as { Sentry?: { captureException?: (e: unknown, ctx?: unknown) => void } }).Sentry;
+    if (S?.captureException) {
+      S.captureException(error, { contexts: { react: { componentStack: info.componentStack } } });
+    } else if (import.meta.env.DEV) {
+      console.error("[ErrorBoundary] Uncaught render error:", error, info.componentStack);
+    }
   }
 
   render() {

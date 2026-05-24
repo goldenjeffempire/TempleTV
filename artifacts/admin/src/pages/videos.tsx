@@ -606,7 +606,7 @@ export default function VideosPage() {
                   {/* Thumbnail */}
                   <div className="flex-shrink-0 w-20 h-12 rounded overflow-hidden bg-black">
                     {v.thumbnailUrl ? (
-                      <img src={v.thumbnailUrl} alt="" className="w-full h-full object-contain" loading="lazy" decoding="async" />
+                      <img src={v.thumbnailUrl} alt={`Thumbnail for ${v.title}`} className="w-full h-full object-contain" loading="lazy" decoding="async" />
                     ) : (
                       <div className="w-full h-full flex items-center justify-center">
                         <Video size={18} className="text-muted-foreground/30" />

@@ -38,7 +38,7 @@ interface RenditionSpec {
  * Build the FFmpeg filter_complex + per-rendition output args for multi-rendition HLS.
  * Accepts the specific renditions to encode so the caller can filter for upscaling.
  */
-declare function buildFfmpegArgs(input: string, outDir: string, renditions: RenditionSpec[]): string[];
+declare function buildFfmpegArgs(input: string, outDir: string, renditions: RenditionSpec[], hasAudio?: boolean): string[];
 /**
  * FFmpeg-based HLS transcoder.
  *
