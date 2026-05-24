@@ -285,6 +285,7 @@
       "./plugins/android-tv.js",
       "./plugins/with-kotlin-version.js",
       "./plugins/with-foreground-service-type.js",
+      "./plugins/with-android-activity-flags.js",
       "expo-screen-orientation"
     ],
     "extra": {

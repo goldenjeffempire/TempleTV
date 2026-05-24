@@ -1,0 +1,54 @@
+// Expo Config Plugin — Android Activity Compliance Flags
+//
+// Adds attributes to MainActivity required for:
+//   1. Google Play "Large screen / foldable compatibility" warnings
+//      (android:resizeableActivity="true")
+//   2. Picture-in-Picture support at the manifest level
+//      (android:supportsPictureInPicture="true")
+//
+// Note: setting supportsPictureInPicture only declares capability. The
+// actual PiP entry must be triggered from native (enterPictureInPictureMode)
+// or via a player library that wraps it (expo-video has built-in support;
+// the legacy expo-av does NOT auto-enter PiP on Android). See README.
+
+const { withAndroidManifest } = require("@expo/config-plugins");
+
+/** @param {import('@expo/config-plugins').ExpoConfig} config */
+module.exports = function withAndroidActivityFlags(config) {
+  return withAndroidManifest(config, (mod) => {
+    const manifest = mod.modResults;
+    const application = manifest.manifest.application?.[0];
+    if (!application) return mod;
+
+    const activities = application.activity ?? [];
+    const mainActivity = activities.find(
+      (a) => a.$?.["android:name"] === ".MainActivity",
+    );
+    if (!mainActivity || !mainActivity.$) return mod;
+
+    // Large-screen / foldable / multi-window compatibility.
+    mainActivity.$["android:resizeableActivity"] = "true";
+
+    // Picture-in-Picture capability declaration.
+    mainActivity.$["android:supportsPictureInPicture"] = "true";
+
+    // Ensure config-change handling covers the PiP lifecycle. Without
+    // screenLayout + smallestScreenSize + screenSize, Android recreates
+    // the activity on every PiP enter/exit which destroys playback state.
+    const existingConfigChanges = mainActivity.$["android:configChanges"] || "";
+    const required = [
+      "keyboard",
+      "keyboardHidden",
+      "orientation",
+      "screenLayout",
+      "screenSize",
+      "smallestScreenSize",
+      "uiMode",
+    ];
+    const present = new Set(existingConfigChanges.split("|").filter(Boolean));
+    for (const flag of required) present.add(flag);
+    mainActivity.$["android:configChanges"] = Array.from(present).join("|");
+
+    return mod;
+  });
+};
