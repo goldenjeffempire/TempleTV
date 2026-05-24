@@ -1570,10 +1570,11 @@ class BroadcastOrchestrator extends EventEmitter {
       );
       this.emitSnapshot(); // push new state to all clients immediately
       // Increment the per-item failure counter. If it reaches the threshold,
-      // deactivate the item in DB and reload so it is removed from the cycle.
+      // temporarily suspend the item (5-min in-memory TTL via bad-URL cache)
+      // and reload so the orchestrator advances to the next item immediately.
       const failCount = incrementBadUrlSkipCount(item.id);
       if (failCount >= BAD_URL_SKIP_THRESHOLD) {
-        await autoSuspendQueueItem(item.id, item.title ?? null, failCount);
+        autoSuspendQueueItem(item.id, item.title ?? null, failCount, url ?? undefined);
         void this.reload();
       }
     })();

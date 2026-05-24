@@ -157,6 +157,15 @@ function proxyExternalSource<T extends Pick<V2Source, "kind" | "url">>(
 
 export const BAD_URL_TTL_MS = 90_000; // 90 seconds — reduces thrashing on transient network errors
 
+/**
+ * How long a repeatedly-failing item is kept out of broadcast rotation.
+ * Longer than BAD_URL_TTL_MS so the standard per-snapshot check doesn't
+ * clear the block before the suspension window has elapsed.
+ * After this TTL the item automatically re-enters rotation — no operator
+ * action required, preventing permanent Off Air states from transient failures.
+ */
+export const SUSPENSION_TTL_MS = 5 * 60_000; // 5 minutes
+
 // url → expiresAtMs
 const badUrlCache = new Map<string, number>();
 
@@ -199,13 +208,13 @@ export function isKnownBadUrl(url: string): boolean {
 //
 // Each time a queue item's source URL is confirmed unreachable (via stall
 // report or proactive probe), its failure counter is incremented.  When
-// the counter reaches BAD_URL_SKIP_THRESHOLD the item is automatically
-// deactivated in the DB (is_active = false) so it stops consuming retry
-// cycles and causing dead air on air.
+// the counter reaches BAD_URL_SKIP_THRESHOLD the item's primary URL is
+// extended in the bad-URL cache to SUSPENSION_TTL_MS (5 min) so the item
+// is kept out of rotation without permanently disabling it in the DB.
+// After the TTL the item auto-recovers — no operator action needed.
 //
-// The counter lives in memory only; it resets on server restart.  This is
-// intentional — a restart implies operator intervention and the item gets
-// a fresh chance before suspension kicks in again.
+// The counter lives in memory only; it resets on server restart, giving
+// every item a fresh chance after operator intervention.
 //
 // Counter reset path: `resetBadUrlSkipCount()` is called by the
 // orchestrator when `naturalItemEnd()` fires — a successful natural
@@ -266,46 +275,85 @@ export function getRecentlySuspended(): ReadonlyArray<{
 }
 
 /**
- * Deactivate a queue item that has exceeded the bad-URL skip threshold.
+ * Temporarily suspend a queue item that has exceeded the bad-URL skip threshold.
  *
- * Sets `is_active = false` in the DB so the item is excluded from every
- * future orchestrator reload until an operator re-enables it manually.
- * Records the suspension in `recentlySuspended` for the /diagnostics
- * endpoint.
+ * CHANGED from permanent DB deactivation (is_active = false) to time-limited
+ * in-memory suspension via extended bad-URL cache TTL. This prevents the
+ * permanent Off Air state that occurred when all queue items were auto-suspended
+ * and no operator action was available to recover them.
  *
- * Non-throwing: DB errors are logged and swallowed so a suspension
- * failure never crashes the broadcast loop.
+ * Mechanism:
+ *  • The item's primary URL is extended in the bad-URL cache to SUSPENSION_TTL_MS
+ *    (5 min). The orchestrator's snapshot() already skips bad-URL items, so the
+ *    item stays out of rotation for 5 minutes without touching the DB.
+ *  • After the TTL expires the item auto-recovers and re-enters rotation.
+ *  • The skip counter is reset so the item gets a fresh set of probe attempts.
+ *  • The suspension is recorded in recentlySuspended for the /diagnostics endpoint.
+ *
+ * Non-throwing: errors are logged and swallowed so a suspension failure never
+ * crashes the broadcast loop.
  */
-export async function autoSuspendQueueItem(
+export function autoSuspendQueueItem(
   itemId: string,
   title: string | null,
   failCount: number,
-): Promise<void> {
+  primaryUrl?: string,
+): void {
+  // Extend the bad-URL TTL to SUSPENSION_TTL_MS for this item's URL.
+  // markBadUrl() already set a 90 s TTL; we overwrite it with 5 min.
+  if (primaryUrl) {
+    badUrlCache.set(primaryUrl, Date.now() + SUSPENSION_TTL_MS);
+    logger.info(
+      { url: primaryUrl, ttlMs: SUSPENSION_TTL_MS },
+      "[broadcast-v2] URL suspension TTL extended — will auto-recover",
+    );
+  }
+  // Reset counter so the item starts fresh after recovery.
+  badUrlSkipCounts.delete(itemId);
+  recentlySuspended.push({ itemId, title, failCount, suspendedAtMs: Date.now() });
+  if (recentlySuspended.length > 50) recentlySuspended.shift();
+  logger.error(
+    { itemId, title, failCount, threshold: BAD_URL_SKIP_THRESHOLD, suspensionTtlMs: SUSPENSION_TTL_MS },
+    "[broadcast-v2] queue item temporarily suspended: URL failed repeatedly — will auto-recover after suspension TTL",
+  );
+  void import("../../../infrastructure/sentry.js").then(({ captureEvent }) =>
+    captureEvent(
+      `[broadcast-v2] Queue item temporarily suspended: "${title ?? itemId}" failed ${failCount} times — auto-recovery in ${SUSPENSION_TTL_MS / 60_000} min`,
+      "error",
+      { itemId, title, failCount, threshold: BAD_URL_SKIP_THRESHOLD, suspensionTtlMs: SUSPENSION_TTL_MS },
+    ),
+  ).catch(() => {});
+}
+
+/**
+ * Re-enable all queue items that are currently inactive (is_active = false).
+ *
+ * Called on server startup to recover items that were permanently deactivated
+ * by the old auto-suspension logic (which wrote is_active=false to the DB).
+ * The new autoSuspendQueueItem no longer touches the DB, but items suspended by
+ * a previous server version need a one-time recovery pass.
+ *
+ * Returns the number of items re-enabled.
+ * Non-throwing: errors are logged and swallowed.
+ */
+export async function reEnableAllSuspended(): Promise<number> {
   try {
-    await db
+    const result = await db
       .update(schema.broadcastQueueTable)
-      .set({ isActive: false })
-      .where(eq(schema.broadcastQueueTable.id, itemId));
-    // Reset counter so if the operator re-activates the item it starts fresh.
-    badUrlSkipCounts.delete(itemId);
-    recentlySuspended.push({ itemId, title, failCount, suspendedAtMs: Date.now() });
-    if (recentlySuspended.length > 50) recentlySuspended.shift();
-    logger.error(
-      { itemId, title, failCount, threshold: BAD_URL_SKIP_THRESHOLD },
-      "[broadcast-v2] queue item auto-suspended: URL failed repeatedly — deactivated until operator re-enables",
-    );
-    void import("../../../infrastructure/sentry.js").then(({ captureEvent }) =>
-      captureEvent(
-        `[broadcast-v2] Queue item auto-suspended: "${title ?? itemId}" failed ${failCount} times — deactivated until operator re-enables`,
-        "error",
-        { itemId, title, failCount, threshold: BAD_URL_SKIP_THRESHOLD },
-      ),
-    ).catch(() => {});
+      .set({ isActive: true })
+      .where(eq(schema.broadcastQueueTable.isActive, false))
+      .returning({ id: schema.broadcastQueueTable.id });
+    const count = result.length;
+    if (count > 0) {
+      logger.info(
+        { count },
+        "[broadcast-v2] startup: re-enabled previously-suspended queue items — broadcast queue restored",
+      );
+    }
+    return count;
   } catch (err) {
-    logger.error(
-      { err, itemId, title, failCount },
-      "[broadcast-v2] autoSuspendQueueItem: DB update failed (item stays in rotation)",
-    );
+    logger.warn({ err }, "[broadcast-v2] startup: reEnableAllSuspended failed (non-fatal)");
+    return 0;
   }
 }
 

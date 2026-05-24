@@ -12,6 +12,7 @@ import { workerSupervisor } from "./engine/worker-supervisor.js";
 import { broadcastFanout } from "./io/broadcast-fanout.js";
 import { installYouTubeAutoOverride } from "../youtube-live/auto-override.js";
 import { faststartRecoveryWorker } from "./engine/faststart-recovery.js";
+import { reEnableAllSuspended } from "./repository/queue.repo.js";
 
 /**
  * Broadcast v2 — server-authoritative streaming control plane.
@@ -235,8 +236,11 @@ export function ensureBroadcastV2Started(): Promise<void> {
     // Without this gate, two routes calling ensureBroadcastV2Started()
     // during a cold start jumped straight to the 60 s ceiling.
     lastStartAttemptAtMs = Date.now();
-    bootInFlight = broadcastOrchestrator
-      .start()
+    bootInFlight = reEnableAllSuspended()
+      .catch((err) =>
+        logger.warn({ err }, "[broadcast-v2] startup: reEnableAllSuspended failed (non-fatal)"),
+      )
+      .then(() => broadcastOrchestrator.start())
       .then(() => {
         lastStartError = null;
         // Run an initial queue integrity validation on successful boot

@@ -44,7 +44,6 @@ import { runFaststart } from "../transcoder/faststart.service.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { env } from "../../config/env.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
-import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { ServiceUnavailableError } from "../../shared/errors.js";
 
@@ -1122,17 +1121,6 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 capturedLog.warn({ err, sessionId }, "[finalize:bg] chunk cleanup failed (non-fatal)"),
               );
 
-            // Enqueue HLS transcoding now that the source blob is confirmed to exist.
-            try {
-              await enqueueTranscode({ videoId, videoPath: objectKey });
-              capturedLog.info({ sessionId, videoId }, "[finalize:bg] HLS transcode job queued");
-            } catch (err) {
-              capturedLog.warn(
-                { err, videoId },
-                "[finalize:bg] enqueueTranscode failed (non-fatal) — video saved, re-queue manually",
-              );
-            }
-
             // Post-upload probes: thumbnail extraction + duration probe.
             // Must run BEFORE faststart because faststart replaces the blob.
             const clientDuration = Number(row.duration ?? "0");
@@ -1161,51 +1149,36 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               capturedLog.warn({ err, videoId }, "[finalize:bg] post-upload probes failed (non-fatal)");
             }
 
-            // MP4 faststart — moov atom relocation for instant byte-0 playback.
-            // On success faststart auto-adds the video to the broadcast queue.
-            // On failure (most commonly: ffmpeg not on PATH in the Render free-tier
-            // Node runtime — see render.yaml TRANSCODER_DISABLE comment) the
-            // auto-queue inside faststart never runs and the upload is orphaned
-            // in the library forever. The defensive block below handles that:
-            // a raw MP4 with moov-at-EOF still plays, it just needs an extra
-            // HTTP Range round-trip before playback — far better than silently
-            // dropping the upload from the broadcast pipeline.
-            let faststartOk = false;
+            // CRITICAL ORDERING: faststart MUST complete before enqueueTranscode.
+            //
+            // faststart.service.ts replaces the source blob via
+            // completeMultipartUpload (multipart re-upload built from 8 MiB
+            // READ chunks of the original). If the transcoder dispatcher
+            // downloads the source while that assembly is still in progress,
+            // it fetches a partial/truncated file that passes the size check
+            // (headObject returns the in-flight size) but causes ffprobe to
+            // report "moov atom not found" — killing the transcode job.
+            //
+            // Running enqueueTranscode AFTER faststart here guarantees the
+            // transcoder always downloads the complete, fully-assembled file.
+            // If faststart fails the original blob is still intact; the
+            // transcoder's own remuxForFaststart recovery handles moov-at-EOF.
             try {
-              await runFaststart(videoId, objectKey, { skipStatusUpdate: !env.TRANSCODER_DISABLE });
-              faststartOk = true;
+              await runFaststart(videoId, objectKey, { skipStatusUpdate: false });
               capturedLog.info({ sessionId, videoId }, "[finalize:bg] faststart done");
             } catch (err) {
               capturedLog.warn({ err, videoId }, "[finalize:bg] faststart failed (non-fatal)");
-              if (env.TRANSCODER_DISABLE) {
-                adminEventBus.push("broadcast-queue-updated", { reason: "faststart-failed-fallback", videoId });
-              }
             }
 
-            // Defensive auto-queue: if faststart didn't run (ffmpeg missing,
-            // timeout, etc.) attempt to enqueue via the centralized pipeline.
-            // enqueueIfMissing enforces the playability contract — it will only
-            // insert a queue row when the video has a seekable source (HLS or
-            // faststart-applied MP4). If neither is available yet the video
-            // will enter the queue once HLS transcoding completes or the
-            // orchestrator's self-heal scanner runs (~60 s cadence).
-            if (!faststartOk) {
-              try {
-                const enqRes = await enqueueIfMissing({ videoId, reason: "upload-finalize" });
-                if (enqRes.enqueued) {
-                  capturedLog.info(
-                    { videoId, queueItemId: enqRes.queueItemId },
-                    "[finalize:bg] faststart unavailable — auto-enqueued via enqueueIfMissing",
-                  );
-                } else {
-                  capturedLog.debug(
-                    { videoId, skipReason: enqRes.skipReason },
-                    "[finalize:bg] faststart unavailable — enqueueIfMissing deferred (will retry via HLS completion or self-heal)",
-                  );
-                }
-              } catch (autoQueueErr) {
-                capturedLog.warn({ err: autoQueueErr, videoId }, "[finalize:bg] defensive enqueueIfMissing failed (non-fatal)");
-              }
+            // Enqueue HLS transcoding AFTER faststart is complete.
+            try {
+              await enqueueTranscode({ videoId, videoPath: objectKey });
+              capturedLog.info({ sessionId, videoId }, "[finalize:bg] HLS transcode job queued");
+            } catch (err) {
+              capturedLog.warn(
+                { err, videoId },
+                "[finalize:bg] enqueueTranscode failed (non-fatal) — faststart-applied video is still broadcast-ready",
+              );
             }
 
             capturedLog.info(
