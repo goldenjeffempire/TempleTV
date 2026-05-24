@@ -19,6 +19,13 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { api, HttpError } from "@/lib/api";
+import {
+  uploadQueue,
+  useUploadQueue,
+  titleFromFilename,
+  formatBytes,
+  type UploadItem,
+} from "@/lib/upload-queue";
 import { useSSEEvent } from "@/contexts/sse-context";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
@@ -78,6 +85,9 @@ import {
   AlertCircle,
   Siren,
   Square,
+  UploadCloud,
+  X,
+  FileVideo,
   Tv2,
   Link,
   TriangleAlert,
@@ -187,6 +197,68 @@ interface LocalVideo {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
+
+// ── Module-level auto-queue tracking ─────────────────────────────────────────
+// These live OUTSIDE the React component so they survive navigation. The
+// uploadQueue singleton keeps uploading bytes after the user leaves /broadcast,
+// and we still want completed items to auto-append to the broadcast queue.
+const autoQueuePending = new Set<string>();
+const autoQueueHandled = new Set<string>();
+const autoQueueInFlight = new Set<string>();
+let autoQueueSubscribed = false;
+
+/** Tag an upload item to be appended to the broadcast queue on completion. */
+function markForAutoQueue(uploadId: string): void {
+  autoQueuePending.add(uploadId);
+}
+
+/**
+ * Install a single uploadQueue subscriber that watches for tagged uploads to
+ * reach status=completed with a videoId, then POSTs them to /admin/broadcast.
+ * On failure the id stays in `autoQueuePending` so the next notify retries it.
+ * `autoQueueInFlight` prevents duplicate POSTs while a request is pending.
+ */
+function ensureAutoQueueSubscriber(
+  qc: ReturnType<typeof useQueryClient>,
+): void {
+  if (autoQueueSubscribed) return;
+  autoQueueSubscribed = true;
+  uploadQueue.subscribe(() => {
+    for (const it of uploadQueue.getItems()) {
+      if (!autoQueuePending.has(it.id)) continue;
+      if (autoQueueHandled.has(it.id)) continue;
+      if (autoQueueInFlight.has(it.id)) continue;
+      if (it.status !== "completed" || !it.videoId) continue;
+
+      autoQueueInFlight.add(it.id);
+      const uploadId = it.id;
+      const videoId = it.videoId;
+      const title = it.title;
+
+      void (async () => {
+        try {
+          await api.post("/admin/broadcast", { videoId });
+          await api
+            .post("/broadcast-v2/reload", { idempotencyKey: crypto.randomUUID() })
+            .catch(() => {});
+          autoQueueHandled.add(uploadId);
+          autoQueuePending.delete(uploadId);
+          toast.success(`"${title}" uploaded and added to broadcast queue`);
+          void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+          void qc.invalidateQueries({ queryKey: ["broadcast-v2-state"] });
+          void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+        } catch (e) {
+          const msg = e instanceof HttpError ? e.message : String(e);
+          toast.error(
+            `"${title}" uploaded but auto-queue failed: ${msg} — will retry on next upload activity, or use "Add to Queue" to add it manually`,
+          );
+        } finally {
+          autoQueueInFlight.delete(uploadId);
+        }
+      })();
+    }
+  });
+}
 
 function formatDuration(secs: number): string {
   if (!secs || secs <= 0) return "—";
@@ -1282,6 +1354,18 @@ export default function BroadcastPage() {
   // by handleDragEnd (the reorder mutation owns isSyncing from drop on).
   const [isDragging, setIsDragging] = useState(false);
 
+  // ── Upload-and-auto-queue state ───────────────────────────────────────────
+  // `uploadQueue` is a shared module singleton; auto-queue tracking is held at
+  // module-level (see `markForAutoQueue` / `ensureAutoQueueSubscriber` above)
+  // so the intent survives navigation, retries on transient POST failure, and
+  // doesn't accidentally re-queue uploads started from /videos.
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [uploadFiles, setUploadFiles] = useState<
+    { id: string; file: File; title: string }[]
+  >([]);
+  const [uploadDragOver, setUploadDragOver] = useState(false);
+  const { summary: uploadSummary } = useUploadQueue();
+
   // ── Data queries ──────────────────────────────────────────────────────────
 
   const {
@@ -1480,6 +1564,12 @@ export default function BroadcastPage() {
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to add"),
   });
 
+  // Install the module-level auto-queue subscriber once. Safe to call on
+  // every render — it self-guards via `autoQueueSubscribed`.
+  useEffect(() => {
+    ensureAutoQueueSubscriber(qc);
+  }, [qc]);
+
   const removeMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/admin/broadcast/${id}`),
     onSuccess: () => {
@@ -1600,6 +1690,15 @@ export default function BroadcastPage() {
               className="gap-1.5 border-violet-200 text-violet-700 hover:bg-violet-50 hover:text-violet-800 dark:border-violet-700 dark:text-violet-400 dark:hover:bg-violet-950/30"
             >
               <FlaskConical size={14} /> Test
+            </Button>
+
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setUploadOpen(true)}
+              className="gap-1.5"
+            >
+              <UploadCloud size={14} /> Upload &amp; Queue
             </Button>
 
             <Button size="sm" onClick={() => setAddOpen(true)} className="gap-1.5">
@@ -1984,6 +2083,205 @@ export default function BroadcastPage() {
           />
         </div>
       </div>
+
+      {/* ── Upload & Queue Dialog ── */}
+      <Dialog
+        open={uploadOpen}
+        onOpenChange={(o) => {
+          setUploadOpen(o);
+          if (!o) {
+            setUploadFiles([]);
+            setUploadDragOver(false);
+          }
+        }}
+      >
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Upload &amp; Add to Broadcast Queue</DialogTitle>
+            <DialogDescription>
+              Pick one or more video files. They'll upload in the background and
+              auto-append to the broadcast queue the moment each one finishes —
+              no manual step required.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div
+            className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
+              uploadDragOver
+                ? "border-primary bg-primary/5"
+                : "border-muted-foreground/25 hover:border-muted-foreground/40"
+            }`}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setUploadDragOver(true);
+            }}
+            onDragLeave={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                setUploadDragOver(false);
+              }
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              setUploadDragOver(false);
+              const files = Array.from(e.dataTransfer.files).filter((f) =>
+                f.type.startsWith("video/") || /\.(mp4|mov|mkv|avi|webm|m4v|flv|wmv|ts|mts|m2ts)$/i.test(f.name),
+              );
+              if (files.length === 0) {
+                toast.error("Drop video files only");
+                return;
+              }
+              setUploadFiles((prev) => [
+                ...prev,
+                ...files.map((f) => ({
+                  id: crypto.randomUUID(),
+                  file: f,
+                  title: titleFromFilename(f.name),
+                })),
+              ]);
+            }}
+          >
+            <UploadCloud
+              size={36}
+              className="mx-auto text-muted-foreground/60 mb-2"
+            />
+            <p className="text-sm font-medium">Drop video files here</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              or click below to browse — multiple files supported
+            </p>
+            <label className="inline-block mt-3">
+              <input
+                type="file"
+                accept="video/*,.mp4,.mov,.mkv,.avi,.webm,.m4v,.flv,.wmv,.ts,.mts,.m2ts"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  const files = Array.from(e.target.files ?? []);
+                  if (files.length === 0) return;
+                  setUploadFiles((prev) => [
+                    ...prev,
+                    ...files.map((f) => ({
+                      id: crypto.randomUUID(),
+                      file: f,
+                      title: titleFromFilename(f.name),
+                    })),
+                  ]);
+                  e.target.value = "";
+                }}
+              />
+              <span className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border bg-background hover:bg-muted cursor-pointer">
+                <Plus size={12} /> Choose files
+              </span>
+            </label>
+          </div>
+
+          {uploadFiles.length > 0 && (
+            <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+              {uploadFiles.map((uf) => (
+                <div
+                  key={uf.id}
+                  className="flex items-start gap-2 p-2 border rounded-md bg-muted/30"
+                >
+                  <FileVideo
+                    size={16}
+                    className="text-muted-foreground flex-shrink-0 mt-2"
+                  />
+                  <div className="flex-1 min-w-0 space-y-1">
+                    <Input
+                      placeholder="Video title (required)"
+                      value={uf.title}
+                      onChange={(e) =>
+                        setUploadFiles((prev) =>
+                          prev.map((f) =>
+                            f.id === uf.id ? { ...f, title: e.target.value } : f,
+                          ),
+                        )
+                      }
+                      className="h-8 text-sm"
+                    />
+                    <p className="text-[11px] text-muted-foreground truncate">
+                      {uf.file.name} · {formatBytes(uf.file.size)}
+                    </p>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 w-7 p-0 flex-shrink-0"
+                    onClick={() =>
+                      setUploadFiles((prev) => prev.filter((f) => f.id !== uf.id))
+                    }
+                    aria-label="Remove file"
+                  >
+                    <X size={14} />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {uploadSummary.hasActive && (
+            <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+              <Loader2 size={11} className="animate-spin" />
+              {uploadSummary.active + uploadSummary.pending} upload
+              {uploadSummary.active + uploadSummary.pending === 1 ? "" : "s"} in
+              progress · finished items auto-append to the queue
+            </p>
+          )}
+
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setUploadOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={uploadFiles.length === 0}
+              onClick={() => {
+                const missing = uploadFiles.filter((f) => !f.title.trim());
+                if (missing.length > 0) {
+                  toast.error(
+                    `${missing.length} file${missing.length > 1 ? "s are" : " is"} missing a title`,
+                  );
+                  return;
+                }
+
+                // Make sure the global completion-watcher is installed before
+                // we enqueue, so the first notify is observed.
+                ensureAutoQueueSubscriber(qc);
+
+                // Snapshot existing IDs so we can identify the new ones the
+                // engine just generated. (uploadQueue.enqueue returns void.)
+                const beforeIds = new Set(
+                  uploadQueue.getItems().map((i: UploadItem) => i.id),
+                );
+
+                uploadQueue.enqueue(
+                  uploadFiles.map((uf) => ({
+                    file: uf.file,
+                    title: uf.title.trim(),
+                    description: "",
+                    category: "sermon",
+                    preacher: "",
+                    featured: false,
+                  })),
+                );
+
+                for (const it of uploadQueue.getItems()) {
+                  if (!beforeIds.has(it.id)) {
+                    markForAutoQueue(it.id);
+                  }
+                }
+
+                toast.success(
+                  `${uploadFiles.length} file${uploadFiles.length > 1 ? "s" : ""} uploading — will auto-queue when done`,
+                );
+                setUploadFiles([]);
+                setUploadOpen(false);
+              }}
+            >
+              <UploadCloud size={14} className="mr-1.5" />
+              Start Upload
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* ── Add to Queue Dialog ── */}
       <Dialog
