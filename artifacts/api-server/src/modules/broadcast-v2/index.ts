@@ -10,6 +10,7 @@ import { queueIntegrityValidator } from "./engine/queue-integrity-validator.js";
 import { orphanCleanupWorker } from "./engine/orphan-cleanup.js";
 import { workerSupervisor } from "./engine/worker-supervisor.js";
 import { broadcastFanout } from "./io/broadcast-fanout.js";
+import { installYouTubeAutoOverride } from "../youtube-live/auto-override.js";
 
 /**
  * Broadcast v2 — server-authoritative streaming control plane.
@@ -227,6 +228,15 @@ export function ensureBroadcastV2Started(): Promise<void> {
         void queueIntegrityValidator.validate().catch((err) =>
           logger.warn({ err }, "[broadcast-v2] post-boot queue validation failed (non-fatal)"),
         );
+        // Install the YouTube live auto-override bridge once the orchestrator
+        // is started. Idempotent + safe to call multiple times. Gated by the
+        // YOUTUBE_AUTO_OVERRIDE_DISABLE env var and the presence of
+        // YOUTUBE_CHANNEL_ID — both checks live in the bridge itself.
+        try {
+          installYouTubeAutoOverride();
+        } catch (err) {
+          logger.warn({ err }, "[broadcast-v2] YouTube auto-override install failed (non-fatal)");
+        }
       })
       .catch((err) => {
         startAttempts += 1;

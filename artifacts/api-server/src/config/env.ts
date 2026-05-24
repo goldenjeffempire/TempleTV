@@ -231,6 +231,15 @@ const Env = z.object({
     .union([z.boolean(), z.string()])
     .transform((v) => v === true || v === "true" || v === "1")
     .default(false),
+  // Set to "1" or "true" to disable the YouTube live auto-override bridge.
+  // When disabled, the ytPoller still runs (for /api/youtube/live SSE/REST
+  // and client-side soft switching), but the server-side broadcast-v2
+  // orchestrator will not be driven into `override` mode automatically.
+  // Manual Emergency Override from the admin panel continues to work.
+  YOUTUBE_AUTO_OVERRIDE_DISABLE: z
+    .union([z.boolean(), z.string()])
+    .transform((v) => v === true || v === "true" || v === "1")
+    .default(false),
 
   // ── Cross-environment broadcast queue sync ───────────────────────────────
   // When set, this server periodically pulls the broadcast queue from an
