@@ -15,7 +15,7 @@ import {
 import { requireAuth } from "../../../middleware/auth.js";
 import { broadcastService } from "../../broadcast/broadcast.service.js";
 import { scanLibraryAndEnqueue, listMissingFromQueue } from "../../broadcast/auto-enqueue.service.js";
-import { markBadUrl, clearAllBadUrls, getItemsHealth, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, getRecentlySuspended } from "../repository/queue.repo.js";
+import { markBadUrl, clearAllBadUrls, getItemsHealth, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, getRecentlySuspended, reEnableAllSuspended } from "../repository/queue.repo.js";
 import { db, schema } from "../../../infrastructure/db.js";
 import { eq, and, isNull, isNotNull, sql } from "drizzle-orm";
 import { enqueueTranscode, boostTranscodePriority } from "../../transcoder/transcoder.queue.js";
@@ -238,14 +238,25 @@ export async function restRoutes(app: FastifyInstance) {
   // Reload queue from DB (used after admin queue mutations on v1 routes).
   // 30/min — called automatically on every queue mutation via the SSE bus
   // bridge, but the bridge already deduplicates; this caps any runaway clients.
+  //
+  // Self-healing: before reloading, re-enable any items that were auto-suspended
+  // in a previous server session (old code wrote is_active=false to the DB) and
+  // clear the in-process bad-URL cache so previously-failing items get a fresh
+  // attempt. This turns the operator "Reload from queue" button into a full
+  // recovery action that rescues a permanently Off Air broadcast without a deploy.
   app.post("/reload", { ...adminGuard, config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (req, reply) => {
     const parsed = StopOverrideCommand.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     if (!checkIdempotency(parsed.data.idempotencyKey)) {
       return { ok: true, sequence: broadcastOrchestrator.getSequence(), duplicate: true };
     }
+    const reEnabled = await reEnableAllSuspended();
+    if (reEnabled > 0) {
+      logger.info({ reEnabled }, "[broadcast-v2] reload: re-enabled suspended queue items before reload");
+    }
+    clearAllBadUrls();
     await broadcastOrchestrator.reload();
-    return { ok: true, sequence: broadcastOrchestrator.getSequence() };
+    return { ok: true, sequence: broadcastOrchestrator.getSequence(), reEnabled };
   });
 
   // ── Unauthenticated: client stall report ─────────────────────────────

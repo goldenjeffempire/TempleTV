@@ -1569,6 +1569,51 @@ export default function BroadcastV2Page() {
 
       <TranscodingProgressPanel />
 
+      {/* ── SUSPENDED / UNPLAYABLE recovery card ────────────────────────────── */}
+      {/* Shown when the queue has items but the orchestrator loaded 0 of them. */}
+      {/* This happens when old server code wrote is_active=false to the DB     */}
+      {/* (auto-suspension bug) or when all items fail the playability check    */}
+      {/* (faststart not applied, bad URL, etc.). "Recover broadcast" calls     */}
+      {/* POST /reload which now re-enables all suspended items + clears the    */}
+      {/* bad-URL cache before reloading, giving every item a fresh attempt.    */}
+      {!queueLoading &&
+        queueItems.length > 0 &&
+        engineHealth &&
+        engineHealth.itemCount === 0 &&
+        !engineHealth.hasCurrent && (
+          <Card className="border-amber-400/50 bg-amber-50/60 dark:bg-amber-950/20">
+            <CardContent className="flex flex-col items-center gap-5 py-8 text-center sm:flex-row sm:text-left sm:gap-8 sm:px-8">
+              <div className="flex-shrink-0 flex h-14 w-14 items-center justify-center rounded-full bg-amber-100 ring-1 ring-amber-300 dark:bg-amber-900/40 dark:ring-amber-700">
+                <AlertTriangle className="h-7 w-7 text-amber-600 dark:text-amber-400" />
+              </div>
+              <div className="flex-1 space-y-1">
+                <p className="font-semibold text-foreground">
+                  Orchestrator loaded 0 items — broadcast is Off Air
+                </p>
+                <p className="text-sm text-muted-foreground max-w-xl">
+                  The queue has {queueItems.length} item{queueItems.length !== 1 ? "s" : ""} but none
+                  were accepted by the orchestrator. Items may have been auto-suspended after repeated
+                  playback failures, or their video files may not yet have a playable source (MP4
+                  faststart / HLS). Click <strong>Recover broadcast</strong> to re-enable all suspended
+                  items, clear blocked sources, and reload the queue.
+                </p>
+              </div>
+              <Button
+                className="flex-shrink-0 gap-2"
+                onClick={() => adminPost("/broadcast-v2/reload")}
+                disabled={busy !== null}
+              >
+                {busy === "/broadcast-v2/reload" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
+                Recover broadcast
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+
       {/* ── OFF_AIR status card — visible only when queue is empty ─────────── */}
       {/*                                                                       */}
       {/* Three distinct off-air situations, each with different operator       */}
