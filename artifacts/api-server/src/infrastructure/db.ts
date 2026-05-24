@@ -422,6 +422,29 @@ export async function ensureUserSchemaColumns(): Promise<void> {
         ADD COLUMN IF NOT EXISTS broadcast_only BOOLEAN NOT NULL DEFAULT false
     `);
 
+    // ── Data self-heal: broadcast_queue placeholder duration ──────────────
+    // Queue rows are inserted at upload-finalize time with a 1800-second
+    // placeholder when ffprobe hasn't run yet. Once faststart/ffprobe
+    // completes it writes the real duration to managed_videos.duration and
+    // (from this release onwards) also to broadcast_queue.duration_secs.
+    // Any rows that were created before that fix is deployed remain stuck
+    // at 1800 s in the DB (loadActive() uses the joined video row at runtime,
+    // so timing is already correct — this is purely a DB hygiene fix that
+    // also eliminates the queue-validator PLACEHOLDER_DURATION warnings).
+    await client.query(`
+      UPDATE broadcast_queue bq
+      SET    duration_secs = ROUND(mv.duration::numeric)
+      FROM   managed_videos mv
+      WHERE  bq.video_id    = mv.id
+        AND  bq.duration_secs = 1800
+        AND  mv.duration IS NOT NULL
+        AND  mv.duration <> ''
+        AND  mv.duration ~ '^[0-9]+(\\.[0-9]+)?$'
+        AND  mv.duration::numeric > 10
+    `).catch((err) => {
+      logger.warn({ err }, "db: placeholder-duration self-heal failed (non-fatal)");
+    });
+
     logger.info("db: user/auth schema columns ensured (all IF NOT EXISTS — idempotent)");
   } catch (err) {
     // Non-fatal so a partial-failure (e.g. permission denied on one column)

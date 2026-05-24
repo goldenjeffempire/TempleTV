@@ -219,6 +219,26 @@ export async function runFaststart(
           : and(eq(videos.id, videoId), ne(videos.transcodingStatus, "hls_ready")),
       );
 
+    // Sync the real duration to any broadcast_queue rows that reference this
+    // video. Queue rows are created at upload-finalize time with a 1800-second
+    // placeholder (before ffprobe runs); this corrects them so orchestrator
+    // cycle timing matches the actual video length. Non-fatal — a failure here
+    // does not block the faststart result; loadActive() reads the real duration
+    // from the joined video row at runtime as a belt-and-suspenders fallback.
+    if (durationSecs != null && durationSecs > 10) {
+      const roundedDuration = Math.round(durationSecs);
+      await db
+        .update(schema.broadcastQueueTable)
+        .set({ durationSecs: roundedDuration })
+        .where(eq(schema.broadcastQueueTable.videoId, videoId))
+        .catch((err) => {
+          log.warn(
+            { err, videoId, durationSecs: roundedDuration },
+            "faststart: broadcast_queue duration sync failed (non-fatal)",
+          );
+        });
+    }
+
     void invalidateVideosCatalogCache();
     adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-complete" });
     // Trigger an orchestrator reload so the broadcast queue picks up the

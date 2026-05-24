@@ -268,7 +268,21 @@ export async function extractAndValidateCookieToken(
     return { token: cookie };
   }
   try {
-    await verifyAccessToken(cookie);
+    const decoded = await verifyAccessToken(cookie);
+    // Apply the same session-revocation check as requireAuth() so that a
+    // password change or logout-all also stops SSE streams on the next
+    // reconnect attempt. Read-only path — fail open on any DB error so a
+    // transient PG blip never silently disconnects all event listeners.
+    if (decoded.iat !== undefined) {
+      const validAfter = await getCachedSessionsValidAfter(decoded.sub);
+      if (validAfter && decoded.iat * 1000 < validAfter.getTime()) {
+        req.log?.warn(
+          { principalId: decoded.sub, tokenIatMs: decoded.iat * 1000, validAfterMs: validAfter.getTime() },
+          "[auth] SSE inline-auth: token predates sessionsValidAfter — denying stream access",
+        );
+        return null;
+      }
+    }
     return { token: cookie };
   } catch {
     return null;
