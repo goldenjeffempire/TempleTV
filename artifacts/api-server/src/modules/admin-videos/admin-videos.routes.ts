@@ -540,7 +540,12 @@ export async function adminVideosRoutes(app: FastifyInstance) {
         } catch (err) {
           req.log.warn({ err, videoId: id }, "admin: manual faststart failed (non-fatal)");
         }
-      })();
+      })().catch((err) => {
+        // Defensive: ensures the void promise never escapes as an
+        // unhandledRejection if the inner try/catch itself faults
+        // (e.g. logger.warn throws during shutdown).
+        req.log.error({ err, videoId: id }, "admin: faststart task crashed outside inner handler");
+      });
 
       req.log.info({ videoId: id, objectPath: row.objectPath }, "admin: manual faststart triggered");
       return reply.code(202).send({ ok: true as const, videoId: id });

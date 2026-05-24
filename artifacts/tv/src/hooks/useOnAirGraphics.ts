@@ -24,6 +24,14 @@ export function useOnAirGraphics(channelId = "temple-tv-live") {
 
     function connect() {
       if (!active) return;
+      // Close any prior connection before opening a new one. Without this,
+      // a reconnect after a network flap leaves the previous EventSource
+      // (and its server-side SSE handler) alive — a slow leak over the
+      // course of a TV's day-long uptime.
+      if (esRef.current) {
+        try { esRef.current.close(); } catch { /* ignore */ }
+        esRef.current = null;
+      }
       const url = `${resolveApiOrigin()}/api/graphics/events?channelId=${channelId}`;
       const es = new EventSource(url);
       esRef.current = es;

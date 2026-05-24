@@ -216,6 +216,13 @@ export function useVideos(): UseVideosResult {
       // Fetch full catalog (limit=2000) so home-screen category grids
       // show the complete Temple TV library, not just the newest 500.
       const resp = await fetchVideos({ limit: 2000, sort: "newest" });
+      // Defensive: API contract says `videos` is always an array, but a 200
+      // with a malformed body (proxy injecting HTML, partial CDN response)
+      // should NOT silently wipe the catalog. Throw so the existing catch
+      // path below preserves cached/prior data and surfaces the stale banner.
+      if (!Array.isArray(resp?.videos)) {
+        throw new Error("Malformed videos response: expected array");
+      }
       const mapped = resp.videos.map((v, i) => apiVideoToSermon(v, i));
       setSermons(mapped);
       hasDataRef.current = true;

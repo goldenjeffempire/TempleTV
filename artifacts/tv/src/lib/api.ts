@@ -23,9 +23,14 @@ export function resolveApiOrigin(): string {
     return override.replace(/\/+$/, "").replace(/\/api$/, "");
   }
   // Packaged TV apps loaded via file:// have window.location.origin === "null".
-  // Fall back to a local dev server rather than sending requests to "null/api/…".
+  // In that case the only correct fallback is the production API origin —
+  // localhost would silently break every Samsung/LG/FireTV install in the
+  // wild. Dev builds should always set VITE_API_URL at build time.
   const origin = window.location.origin;
-  if (!origin || origin === "null") return "http://localhost:5000";
+  if (!origin || origin === "null" || origin.startsWith("file:")) {
+    if (import.meta.env.DEV) return "http://localhost:5000";
+    return "https://api.templetv.org.ng";
+  }
   return origin;
 }
 

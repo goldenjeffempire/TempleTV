@@ -127,6 +127,9 @@ function scheduleProactiveRefresh(): void {
   const expiryStr = safeGet(STORAGE_KEYS.accessTokenExpiry);
   if (!expiryStr) return;
   const expiryMs = parseInt(expiryStr, 10);
+  // Guard against corrupted storage: NaN here would make Math.max return NaN
+  // and setTimeout fire immediately in a tight refresh loop.
+  if (!Number.isFinite(expiryMs)) return;
   const delay = Math.max(0, expiryMs - Date.now() - PROACTIVE_REFRESH_BEFORE_MS);
   proactiveRefreshTimer = setTimeout(() => {
     proactiveRefreshTimer = null;
