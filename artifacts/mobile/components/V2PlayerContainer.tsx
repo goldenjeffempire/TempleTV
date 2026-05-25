@@ -11,6 +11,18 @@
  *     piped back into the FSM as `buffer-ready` / `buffer-ended` /
  *     `buffer-error` so the machine stays in sync with reality.
  *
+ * Offline resilience (added May 2026):
+ *   • isBuffering watchdog: if expo-av's `isBuffering` flag stays true for
+ *     >20 s while the buffer should be active and playing, the watchdog fires
+ *     `buffer-error` so the FSM can attempt recovery instead of silently
+ *     stalling on a weak-network segment fetch.
+ *   • Network recovery: `useNetworkContext()` drives an immediate
+ *     `forceReconnect()` + `notifyOnline()` the moment connectivity is
+ *     detected — complementing the AppState-based foreground reconnect.
+ *   • Network-aware banner: "You're offline" vs "Reconnecting to broadcast…"
+ *     depending on whether the device has no signal or just a dead WS socket.
+ *   • progressUpdateIntervalMillis=500 for sub-second stall detection.
+ *
  * Used by `app/player.tsx` for the live HLS path (v2 broadcast).
  */
 
@@ -19,11 +31,28 @@ import { ActivityIndicator, AppState, Image, StyleSheet, Text, View } from "reac
 import { ResizeMode, Video, type AVPlaybackStatus } from "expo-av";
 import { useV2BroadcastNative } from "@workspace/player-core/react-native";
 import type { MobileBufferState } from "@workspace/player-core/adapters/mobile";
+import { useNetworkContext } from "@/context/NetworkContext";
 
 // Audio session (playsInSilentModeIOS, staysActiveInBackground, DoNotMix
 // interruption mode) is configured globally in app/_layout.tsx at app boot.
 // Do NOT call Audio.setAudioModeAsync here — it is a global API and would
 // override the app-wide policy on every player mount.
+
+/**
+ * How long (ms) expo-av's `isBuffering` flag must stay true on the active
+ * playing buffer before the watchdog declares a network stall and fires
+ * `buffer-error`. This triggers the FSM's recovery path (rebind → failover →
+ * skip) rather than waiting indefinitely for segment data that may never
+ * arrive on a very weak or interrupted connection.
+ *
+ * 20 s balances:
+ *   • HLS: enough time for a slow connection to fetch the next segment (5–10 s
+ *     on a 2G link loading a 2 MB 6-second segment)
+ *   • Transient rebuffer pauses on a healthy connection (usually <3 s)
+ *   • Avoidance of false-positives during the very first load of a new item
+ *     (moov-atom seek on MP4, first manifest parse on HLS)
+ */
+const BUFFERING_STALL_THRESHOLD_MS = 20_000;
 
 interface Props {
   baseUrl: string;
@@ -78,6 +107,7 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
 }: BufferProps) {
   const ref = useRef<Video>(null);
   const url = sourceUrl(state, excludeYouTube);
+
   // Track the last bind revision that produced a buffer-ready report rather
   // than the URL string. URL-based dedup caused RECOVERING_PRIMARY to silently
   // swallow the onLoad event when the same URL was rebound after a failure,
@@ -94,10 +124,31 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
   // when onLoad fires and sets the loaded revision.
   const [loadedRevision, setLoadedRevision] = useState(-1);
 
-  // Reset loaded state whenever a new source is bound.
+  // ── isBuffering stall watchdog ──────────────────────────────────────────
+  // expo-av sets isBuffering=true whenever the player is waiting for the
+  // network to deliver enough data to resume playback. On weak or
+  // interrupted connections this can stall indefinitely without ever
+  // surfacing an error event. The watchdog converts a prolonged buffering
+  // state into an explicit buffer-error so the FSM can recover.
+  const bufferingWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function clearBufferingWatchdog() {
+    if (bufferingWatchdogRef.current) {
+      clearTimeout(bufferingWatchdogRef.current);
+      bufferingWatchdogRef.current = null;
+    }
+  }
+
+  // Reset watchdog when a new source is bound (new bindRevision).
   useEffect(() => {
+    clearBufferingWatchdog();
     setLoadedRevision(-1);
   }, [state.bindRevision]);
+
+  // Cancel watchdog on unmount.
+  useEffect(() => {
+    return () => { clearBufferingWatchdog(); };
+  }, []);
 
   // Drive playback against the imperative expo-av API.
   // Guard: only call playFromPositionAsync once onLoad has confirmed the
@@ -136,6 +187,7 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
       resizeMode={ResizeMode.CONTAIN}
       shouldPlay={false}
       isMuted={effectiveMuted}
+      progressUpdateIntervalMillis={500}
       onLoad={() => {
         // Mark this bind revision as loaded so the play useEffect can
         // proceed (it guards on loadedRevision === state.bindRevision).
@@ -144,19 +196,44 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
           lastReportedRevision.current = state.bindRevision;
           reportBufferEvent({ type: "buffer-ready", bufferId });
         }
+        // Source loaded successfully — clear any lingering buffering watchdog.
+        clearBufferingWatchdog();
       }}
       onPlaybackStatusUpdate={(status: AVPlaybackStatus) => {
         if (!status.isLoaded) {
           if (status.error) {
             reportBufferEvent({ type: "buffer-error", bufferId, error: status.error });
           }
+          clearBufferingWatchdog();
           return;
         }
         if (status.didJustFinish) {
           reportBufferEvent({ type: "buffer-ended", bufferId });
+          clearBufferingWatchdog();
+          return;
+        }
+        // ── isBuffering watchdog ──────────────────────────────────────
+        // Only arm the watchdog when this buffer is the active one AND the
+        // adapter wants it to be playing. Inactive preload buffers buffering
+        // in the background is expected and desirable — don't interfere.
+        if (status.isBuffering && state.playing && state.active) {
+          if (!bufferingWatchdogRef.current) {
+            bufferingWatchdogRef.current = setTimeout(() => {
+              bufferingWatchdogRef.current = null;
+              reportBufferEvent({
+                type: "buffer-error",
+                bufferId,
+                error: "buffering-timeout",
+              });
+            }, BUFFERING_STALL_THRESHOLD_MS);
+          }
+        } else {
+          // Not buffering (or not the active playing buffer) — disarm.
+          clearBufferingWatchdog();
         }
       }}
       onError={(error) => {
+        clearBufferingWatchdog();
         reportBufferEvent({
           type: "buffer-error",
           bufferId,
@@ -222,6 +299,10 @@ export function V2PlayerContainer({
   const { snapshot, connected, buffers, reportBufferEvent, forceReconnect, notifyOnline } =
     useV2BroadcastNative({ baseUrl: effectiveBaseUrl });
 
+  // Network context — drives network-aware banner text and immediate
+  // reconnect on signal recovery (complements the AppState-based nudge).
+  const { isOnline, justRecovered } = useNetworkContext();
+
   const fatalFiredRef = useRef(false);
   useEffect(() => {
     if (snapshot.state === "FATAL" && !fatalFiredRef.current) {
@@ -260,6 +341,18 @@ export function V2PlayerContainer({
       sub.remove();
     };
   }, [forceReconnect, notifyOnline]);
+
+  // Network recovery bridge: when NetworkContext detects the device has
+  // regained connectivity (justRecovered flips true for ~2.5 s), immediately
+  // reconnect the transport and notify the FSM. This fires even when the app
+  // stays in the foreground during a brief signal drop — the AppState handler
+  // above only catches foreground re-entry, not mid-session recovery.
+  useEffect(() => {
+    if (justRecovered) {
+      notifyOnline();
+      forceReconnect();
+    }
+  }, [justRecovered, notifyOnline, forceReconnect]);
 
   const server = snapshot.lastServerSnapshot;
   const overlay = useMemo(() => {
@@ -310,6 +403,13 @@ export function V2PlayerContainer({
   }, [server]);
   const showPoster = !!overlay && !!posterUrl;
 
+  // Banner text: distinguish "no signal" from "WS disconnected" so viewers
+  // understand whether to wait for auto-reconnect (WS) or move somewhere
+  // with better coverage (no signal).
+  const bannerText = isOnline
+    ? "Reconnecting to broadcast…"
+    : "You're offline — will reconnect automatically";
+
   return (
     <View style={styles.root}>
       {/* ── Cinematic ambient background ────────────────────────────────────
@@ -353,8 +453,8 @@ export function V2PlayerContainer({
       />
 
       {!connected && !minimal && (
-        <View style={styles.banner}>
-          <Text style={styles.bannerText}>Reconnecting to broadcast…</Text>
+        <View style={[styles.banner, !isOnline && styles.bannerOffline]}>
+          <Text style={styles.bannerText}>{bannerText}</Text>
         </View>
       )}
 
@@ -417,6 +517,9 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(217, 119, 6, 0.92)",
     paddingVertical: 6,
     zIndex: 30,
+  },
+  bannerOffline: {
+    backgroundColor: "rgba(100, 100, 100, 0.92)",
   },
   bannerText: {
     color: "#000",

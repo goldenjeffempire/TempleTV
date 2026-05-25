@@ -44,35 +44,35 @@ export declare const AuthTokensSchema: z.ZodObject<{
         displayName: z.ZodString;
     }, "strip", z.ZodTypeAny, {
         email: string;
-        displayName: string;
-        id: string;
         role: "admin" | "editor" | "user" | "system";
+        id: string;
+        displayName: string;
     }, {
         email: string;
-        displayName: string;
-        id: string;
         role: "admin" | "editor" | "user" | "system";
+        id: string;
+        displayName: string;
     }>;
 }, "strip", z.ZodTypeAny, {
     user: {
         email: string;
-        displayName: string;
-        id: string;
         role: "admin" | "editor" | "user" | "system";
+        id: string;
+        displayName: string;
     };
-    accessToken: string;
     refreshToken: string;
+    accessToken: string;
     accessTokenExpiresIn: number;
     refreshTokenExpiresIn: number;
 }, {
     user: {
         email: string;
-        displayName: string;
-        id: string;
         role: "admin" | "editor" | "user" | "system";
+        id: string;
+        displayName: string;
     };
-    accessToken: string;
     refreshToken: string;
+    accessToken: string;
     accessTokenExpiresIn: number;
     refreshTokenExpiresIn: number;
 }>;
@@ -106,35 +106,35 @@ export declare const LoginResponseSchema: z.ZodUnion<[z.ZodObject<{
         displayName: z.ZodString;
     }, "strip", z.ZodTypeAny, {
         email: string;
-        displayName: string;
-        id: string;
         role: "admin" | "editor" | "user" | "system";
+        id: string;
+        displayName: string;
     }, {
         email: string;
-        displayName: string;
-        id: string;
         role: "admin" | "editor" | "user" | "system";
+        id: string;
+        displayName: string;
     }>;
 }, "strip", z.ZodTypeAny, {
     user: {
         email: string;
-        displayName: string;
-        id: string;
         role: "admin" | "editor" | "user" | "system";
+        id: string;
+        displayName: string;
     };
-    accessToken: string;
     refreshToken: string;
+    accessToken: string;
     accessTokenExpiresIn: number;
     refreshTokenExpiresIn: number;
 }, {
     user: {
         email: string;
-        displayName: string;
-        id: string;
         role: "admin" | "editor" | "user" | "system";
+        id: string;
+        displayName: string;
     };
-    accessToken: string;
     refreshToken: string;
+    accessToken: string;
     accessTokenExpiresIn: number;
     refreshTokenExpiresIn: number;
 }>, z.ZodObject<{
@@ -216,17 +216,17 @@ export declare const MeResponseSchema: z.ZodObject<{
     mfaEnabled: z.ZodBoolean;
 }, "strip", z.ZodTypeAny, {
     email: string;
-    displayName: string;
-    id: string;
     role: "admin" | "editor" | "user" | "system";
+    id: string;
     createdAt: string;
+    displayName: string;
     mfaEnabled: boolean;
 }, {
     email: string;
-    displayName: string;
-    id: string;
     role: "admin" | "editor" | "user" | "system";
+    id: string;
     createdAt: string;
+    displayName: string;
     mfaEnabled: boolean;
 }>;
 /**
@@ -272,10 +272,10 @@ export declare const ResetPasswordBodySchema: z.ZodObject<{
     token: z.ZodString;
     password: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    password: string;
     token: string;
+    password: string;
 }, {
-    password: string;
     token: string;
+    password: string;
 }>;
 export type ResetPasswordBody = z.infer<typeof ResetPasswordBodySchema>;

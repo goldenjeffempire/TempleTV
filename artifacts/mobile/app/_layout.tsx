@@ -6,6 +6,7 @@ import {
   Inter_700Bold,
   useFonts,
 } from "@expo-google-fonts/inter";
+
 import { Feather } from "@expo/vector-icons";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Constants from "expo-constants";
@@ -15,6 +16,16 @@ import React, { useEffect, useRef, useState } from "react";
 import { Linking, Platform, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import { setupMobileBroadcastStorage } from "@/lib/mobileBroadcastStorage";
+
+// ── Mobile broadcast storage ──────────────────────────────────────────────────
+// Wire the AsyncStorage-backed storage adapter for player-core's transport.
+// Runs at module-load time — before any React component mounts — so every
+// V2Transport constructed by useV2BroadcastNative has the adapter in place.
+// The call itself is synchronous (configureMobileStorage sets a module-level
+// variable in transport.ts); AsyncStorage hydration is kicked off async in the
+// background and completes well within the splash-screen window on real devices.
+setupMobileBroadcastStorage();
 
 // ── Sentry crash reporting ────────────────────────────────────────────────────
 // Sentry.init() is performed exactly once in `index.ts` (the true entry point)

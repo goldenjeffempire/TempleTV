@@ -10,6 +10,42 @@ import type { PlayerEvent, V2ServerFrame, V2Snapshot } from "./types.js";
  * mechanism for replay on reconnect.
  */
 
+/**
+ * Pluggable synchronous key-value storage adapter.
+ *
+ * The transport's snapshot cache and sequence persistence default to
+ * `localStorage` / `sessionStorage` on the web. On React Native those APIs
+ * are `undefined`, so the cache silently no-ops and every app wake starts
+ * from BOOTSTRAP. Calling `configureMobileStorage()` once at app boot
+ * (before any V2Transport is constructed) redirects all storage I/O through
+ * this adapter — typically an in-memory Map backed by AsyncStorage writes.
+ *
+ * Design constraints:
+ *   • Reads MUST be synchronous (called from the Transport constructor and
+ *     `loadStoredSequence`).
+ *   • Writes may fire-and-forget async side-effects (the adapter itself keeps
+ *     an in-memory copy that is the source of truth for reads).
+ */
+export interface StorageAdapter {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+}
+
+/** Module-level adapter override — null = use browser localStorage/sessionStorage. */
+let _mobileStorage: StorageAdapter | null = null;
+
+/**
+ * Override the transport's storage backend before creating any transport.
+ * Intended for React Native: call once at app startup (e.g. in the root
+ * _layout module) with an in-memory adapter backed by AsyncStorage.
+ *
+ * Safe to call multiple times — the last call wins.
+ */
+export function configureMobileStorage(adapter: StorageAdapter): void {
+  _mobileStorage = adapter;
+}
+
 export interface TransportConfig {
   baseUrl: string;
   channel?: string;
@@ -73,13 +109,16 @@ const SESSION_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
 function loadStoredSequence(): number {
   try {
-    if (typeof sessionStorage === "undefined") return 0;
-    const raw = sessionStorage.getItem(SESSION_STORAGE_KEY);
+    // Prefer the injected mobile adapter (in-memory + AsyncStorage on RN),
+    // fall back to sessionStorage on web/TV.
+    const store = _mobileStorage ?? (typeof sessionStorage !== "undefined" ? sessionStorage : null);
+    if (!store) return 0;
+    const raw = store.getItem(SESSION_STORAGE_KEY);
     if (!raw) return 0;
     const parsed = JSON.parse(raw) as { seq?: unknown; expiresAt?: unknown };
     if (typeof parsed.seq !== "number" || typeof parsed.expiresAt !== "number") return 0;
     if (Date.now() > parsed.expiresAt) {
-      sessionStorage.removeItem(SESSION_STORAGE_KEY);
+      store.removeItem(SESSION_STORAGE_KEY);
       return 0;
     }
     return parsed.seq;
@@ -90,13 +129,14 @@ function loadStoredSequence(): number {
 
 function saveStoredSequence(seq: number): void {
   try {
-    if (typeof sessionStorage === "undefined") return;
-    sessionStorage.setItem(
+    const store = _mobileStorage ?? (typeof sessionStorage !== "undefined" ? sessionStorage : null);
+    if (!store) return;
+    store.setItem(
       SESSION_STORAGE_KEY,
       JSON.stringify({ seq, expiresAt: Date.now() + SESSION_TTL_MS }),
     );
   } catch {
-    // sessionStorage may be unavailable in some TV / sandboxed environments
+    // storage may be unavailable in some TV / sandboxed environments
   }
 }
 
@@ -116,25 +156,28 @@ const SNAPSHOT_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 function saveSnapshotCache(snapshot: V2Snapshot): void {
   try {
-    if (typeof localStorage === "undefined") return;
-    localStorage.setItem(
+    // Prefer the injected mobile adapter, fall back to localStorage on web/TV.
+    const store = _mobileStorage ?? (typeof localStorage !== "undefined" ? localStorage : null);
+    if (!store) return;
+    store.setItem(
       SNAPSHOT_CACHE_KEY,
       JSON.stringify({ v: 1, snapshot, cachedAt: Date.now() }),
     );
   } catch {
-    // localStorage may be full or unavailable — cache is best-effort
+    // storage may be full or unavailable — cache is best-effort
   }
 }
 
 function loadSnapshotCache(): V2Snapshot | null {
   try {
-    if (typeof localStorage === "undefined") return null;
-    const raw = localStorage.getItem(SNAPSHOT_CACHE_KEY);
+    const store = _mobileStorage ?? (typeof localStorage !== "undefined" ? localStorage : null);
+    if (!store) return null;
+    const raw = store.getItem(SNAPSHOT_CACHE_KEY);
     if (!raw) return null;
     const env = JSON.parse(raw) as { v?: number; snapshot?: unknown; cachedAt?: number };
     if (env.v !== 1 || !env.snapshot || typeof env.cachedAt !== "number") return null;
     if (Date.now() - env.cachedAt > SNAPSHOT_CACHE_TTL_MS) {
-      localStorage.removeItem(SNAPSHOT_CACHE_KEY);
+      store.removeItem(SNAPSHOT_CACHE_KEY);
       return null;
     }
     return env.snapshot as V2Snapshot;

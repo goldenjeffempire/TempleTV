@@ -16,8 +16,8 @@ export declare const NotificationSchema: z.ZodObject<{
     type: string;
     status: string;
     body: string;
-    id: string;
     title: string;
+    id: string;
     createdAt: string;
     videoId: string | null;
     sentAt: string;
@@ -29,8 +29,8 @@ export declare const NotificationSchema: z.ZodObject<{
     type: string;
     status: string;
     body: string;
-    id: string;
     title: string;
+    id: string;
     createdAt: string;
     videoId: string | null;
     sentAt: string;
@@ -67,8 +67,8 @@ export declare const ListNotificationsResponseSchema: z.ZodObject<{
         type: string;
         status: string;
         body: string;
-        id: string;
         title: string;
+        id: string;
         createdAt: string;
         videoId: string | null;
         sentAt: string;
@@ -80,8 +80,8 @@ export declare const ListNotificationsResponseSchema: z.ZodObject<{
         type: string;
         status: string;
         body: string;
-        id: string;
         title: string;
+        id: string;
         createdAt: string;
         videoId: string | null;
         sentAt: string;
@@ -96,13 +96,12 @@ export declare const ListNotificationsResponseSchema: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     limit: number;
     offset: number;
-    total: number;
     items: {
         type: string;
         status: string;
         body: string;
-        id: string;
         title: string;
+        id: string;
         createdAt: string;
         videoId: string | null;
         sentAt: string;
@@ -111,16 +110,16 @@ export declare const ListNotificationsResponseSchema: z.ZodObject<{
         scheduledAt: string;
         errorMessage: string | null;
     }[];
+    total: number;
 }, {
     limit: number;
     offset: number;
-    total: number;
     items: {
         type: string;
         status: string;
         body: string;
-        id: string;
         title: string;
+        id: string;
         createdAt: string;
         videoId: string | null;
         sentAt: string;
@@ -129,6 +128,7 @@ export declare const ListNotificationsResponseSchema: z.ZodObject<{
         scheduledAt: string;
         errorMessage: string | null;
     }[];
+    total: number;
 }>;
 export declare const SendPushBodySchema: z.ZodObject<{
     title: z.ZodString;
@@ -170,8 +170,8 @@ export declare const SendPushResponseSchema: z.ZodObject<{
     type: string;
     status: string;
     body: string;
-    id: string;
     title: string;
+    id: string;
     createdAt: string;
     videoId: string | null;
     sentAt: string;
@@ -186,8 +186,8 @@ export declare const SendPushResponseSchema: z.ZodObject<{
     type: string;
     status: string;
     body: string;
-    id: string;
     title: string;
+    id: string;
     createdAt: string;
     videoId: string | null;
     sentAt: string;

@@ -6,9 +6,17 @@
  * (the hook in hooks/useNetworkStatus.ts) which reads from this context.
  *
  * Exposes:
- *   isOnline     — current connectivity state
- *   justRecovered — true for ~2 s after the connection comes back (drives the
- *                   green "Back online" flash in NetworkBanner)
+ *   isOnline      — current connectivity state
+ *   justRecovered — true for ~2.5 s after the connection comes back (drives
+ *                   the green "Back online" flash in NetworkBanner)
+ *
+ * Adaptive polling:
+ *   • Online  → poll every 30 s (battery-friendly)
+ *   • Offline → poll every 8 s (detect recovery within ~10 s)
+ *   • AppState foreground transition → immediate check (catches the most
+ *     common case: user locks phone, walks away, returns with connectivity
+ *     restored — the 30 s timer would delay recovery for up to 30 s without
+ *     this nudge)
  */
 
 import React, {
@@ -18,7 +26,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { Platform } from "react-native";
+import { AppState, Platform } from "react-native";
 import { fetchWithRetry } from "@/lib/fetchWithRetry";
 
 // ── Connectivity probe ────────────────────────────────────────────────────────
@@ -29,7 +37,8 @@ const PING_ENDPOINTS = [
   "https://connectivity-check.ubuntu.com",
 ];
 
-const POLL_INTERVAL_MS = 30_000;
+const POLL_ONLINE_MS  = 30_000;
+const POLL_OFFLINE_MS =  8_000;
 const RECOVERY_FLASH_MS = 2_500;
 
 async function checkConnectivity(): Promise<boolean> {
@@ -76,12 +85,14 @@ export function NetworkProvider({ children }: { children: React.ReactNode }) {
   const [isOnline, setIsOnline] = useState(true);
   const [justRecovered, setJustRecovered] = useState(false);
 
-  const prevOnlineRef = useRef(true);
+  const prevOnlineRef    = useRef(true);
   const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const intervalRef      = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  function applyStatus(online: boolean) {
+  function applyStatus(online: boolean): void {
     const wasOffline = !prevOnlineRef.current;
     prevOnlineRef.current = online;
+    isOnlineRef.current = online;
     setIsOnline(online);
 
     if (online && wasOffline) {
@@ -92,36 +103,64 @@ export function NetworkProvider({ children }: { children: React.ReactNode }) {
         setJustRecovered(false);
       }, RECOVERY_FLASH_MS);
     }
+
+    // Adaptive poll rate: fast polling while offline so recovery is detected
+    // quickly; slow polling while online to preserve battery.
+    const newRate = online ? POLL_ONLINE_MS : POLL_OFFLINE_MS;
+    restartInterval(newRate);
+  }
+
+  function restartInterval(ms: number): void {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    intervalRef.current = setInterval(() => {
+      checkConnectivity()
+        .then((online) => applyStatus(online))
+        .catch(() => {});
+    }, ms);
   }
 
   useEffect(() => {
+    // ── Web: use native online/offline events ────────────────────────────
     if (Platform.OS === "web") {
-      const handleOnline = () => applyStatus(true);
+      const handleOnline  = () => applyStatus(true);
       const handleOffline = () => applyStatus(false);
-      window.addEventListener("online", handleOnline);
+      window.addEventListener("online",  handleOnline);
       window.addEventListener("offline", handleOffline);
       applyStatus(navigator.onLine);
       return () => {
-        window.removeEventListener("online", handleOnline);
+        window.removeEventListener("online",  handleOnline);
         window.removeEventListener("offline", handleOffline);
         if (recoveryTimerRef.current) clearTimeout(recoveryTimerRef.current);
       };
     }
 
+    // ── Native: poll + AppState foreground nudge ─────────────────────────
     let cancelled = false;
 
-    const check = async () => {
-      const online = await checkConnectivity();
-      if (!cancelled) applyStatus(online);
+    const runCheck = () => {
+      checkConnectivity()
+        .then((online) => { if (!cancelled) applyStatus(online); })
+        .catch(() => {});
     };
 
-    check();
-    const interval = setInterval(check, POLL_INTERVAL_MS);
+    // Immediate check on mount
+    runCheck();
+    // Start interval at the online rate (optimistic initial assumption)
+    restartInterval(POLL_ONLINE_MS);
+
+    // When the app returns to the foreground, run an immediate probe instead
+    // of waiting for the next scheduled poll tick. This covers the common
+    // "locked phone → walk outside → return" scenario where connectivity may
+    // have changed while the JS runtime was suspended.
+    const appStateSub = AppState.addEventListener("change", (state) => {
+      if (state === "active") runCheck();
+    });
 
     return () => {
       cancelled = true;
-      clearInterval(interval);
+      if (intervalRef.current) clearInterval(intervalRef.current);
       if (recoveryTimerRef.current) clearTimeout(recoveryTimerRef.current);
+      appStateSub.remove();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
