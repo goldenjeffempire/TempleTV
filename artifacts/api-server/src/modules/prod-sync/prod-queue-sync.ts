@@ -222,8 +222,33 @@ async function isReachable(url: string): Promise<boolean> {
 
 function absolutizeUrl(rawUrl: string | null, base: string): string | null {
   if (!rawUrl) return null;
-  if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) return rawUrl;
-  // base is like "https://api.templetv.org.ng" — strip trailing slash, append
+  if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) {
+    // Rewrite legacy *.onrender.com absolute URLs to the canonical upstream host.
+    // Production DB rows may still carry HLS/upload URLs that point to the raw
+    // Render service hostname (e.g. temple-tv-api-uaor.onrender.com) from before
+    // a custom domain was configured. Attempting to load those URLs from the
+    // admin preview browser in a Replit dev environment fails because:
+    //   1. CORS: the Render server doesn't include *.worf.replit.dev in its
+    //      Access-Control-Allow-Origin header.
+    //   2. Render free-tier spin-down: the service may be sleeping.
+    // Rewriting to the canonical upstream host (PROD_SYNC_API_URL) fixes both —
+    // the HLS segments are served from the same origin that already has CORS
+    // configured for all known client origins.
+    try {
+      const parsed = new URL(rawUrl);
+      if (parsed.hostname.endsWith(".onrender.com")) {
+        const upstreamParsed = new URL(base);
+        parsed.protocol = upstreamParsed.protocol;
+        parsed.hostname = upstreamParsed.hostname;
+        parsed.port = upstreamParsed.port;
+        return parsed.toString();
+      }
+    } catch {
+      // If either URL is malformed, fall through and return as-is.
+    }
+    return rawUrl;
+  }
+  // Relative URL — absolutize against the upstream base
   const cleanBase = base.replace(/\/+$/, "");
   const cleanPath = rawUrl.startsWith("/") ? rawUrl : `/${rawUrl}`;
   return `${cleanBase}${cleanPath}`;

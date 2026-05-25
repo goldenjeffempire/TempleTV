@@ -252,6 +252,34 @@ function classifySourceFailure(
   // ── HLS / DASH ────────────────────────────────────────────────────────────
   if (kind === "hls" || kind === "dash") {
     const label = kind.toUpperCase();
+
+    // Detect legacy *.onrender.com URLs — these are absolute HLS/upload URLs
+    // stored in the production DB before a custom domain was configured. They
+    // fail in the admin preview browser because:
+    //   1. CORS: the Render service doesn't allow *.worf.replit.dev origins.
+    //   2. Render free-tier sleep: the service may be spun down.
+    // Real viewers on TV/mobile are unaffected — the production API rewrites
+    // these to the canonical host before emitting broadcast snapshots.
+    // prod-sync now rewrites them locally too; this branch covers any items
+    // already synced before the fix and clears operator concern.
+    let isRenderHost = false;
+    try {
+      isRenderHost = new URL(url).hostname.endsWith(".onrender.com");
+    } catch { /* malformed URL — treat as normal */ }
+
+    if (isRenderHost) {
+      return {
+        scope: "preview-only",
+        headline: "Preview-only failure (old Render URL)",
+        reason:
+          `This ${label} stream URL still points to an old Render service hostname. The admin preview browser cannot load it due to CORS restrictions or the Render server being asleep. The production API serves this stream from the canonical domain, so real viewers are unaffected.`,
+        viewerNote:
+          "Real viewers on TV, mobile, and web receive the stream from the canonical production domain and are not affected by this preview failure. No action is needed.",
+        urlHint: url,
+        typeLabel: `${label} stream`,
+      };
+    }
+
     return {
       scope: "likely-all-surfaces",
       headline: "May affect real viewers",
