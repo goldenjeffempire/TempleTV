@@ -650,6 +650,14 @@ class UploadQueueEngine {
             responseText: string;
           }>((resolve, reject) => {
             const xhr = new XMLHttpRequest();
+
+            // Hard deadline per attempt: 2 minutes. Without this, a stalled
+            // XHR hangs indefinitely (the OS may not close the TCP connection
+            // for 10–20+ minutes), then fires onerror as "Network error" only
+            // after a very long silent wait. With a hard timeout the XHR fails
+            // quickly and the retry loop's exponential backoff takes over.
+            xhr.timeout = 120_000;
+
             xhr.open(
               "POST",
               `${base}/v1/admin/videos/upload/${this.items.get(id)!.sessionId}/chunk`,
@@ -663,11 +671,38 @@ class UploadQueueEngine {
             };
             for (const [k, v] of Object.entries(hdrs)) xhr.setRequestHeader(k, v);
 
+            // Upload-stall watchdog: if no bytes are sent to the network for
+            // 60 seconds the TCP connection is effectively dead (e.g. a flaky
+            // WiFi link that stays connected but drops all traffic). Abort and
+            // retry rather than waiting for the full 2-minute xhr.timeout.
+            const STALL_MS = 60_000;
+            let stallTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+              stallTimer = null;
+              clearInFlight(chunkIndex);
+              scheduleUpdate();
+              xhr.abort();
+              reject(new Error(`Chunk ${chunkIndex} upload stalled — no progress for ${STALL_MS / 1000} s`));
+            }, STALL_MS);
+            const resetStall = () => {
+              if (stallTimer !== null) clearTimeout(stallTimer);
+              stallTimer = setTimeout(() => {
+                stallTimer = null;
+                clearInFlight(chunkIndex);
+                scheduleUpdate();
+                xhr.abort();
+                reject(new Error(`Chunk ${chunkIndex} upload stalled — no progress for ${STALL_MS / 1000} s`));
+              }, STALL_MS);
+            };
+            const clearStall = () => {
+              if (stallTimer !== null) { clearTimeout(stallTimer); stallTimer = null; }
+            };
+
             // XHR upload progress — fires as bytes are written to the network.
             // e.loaded is cumulative within this XHR attempt; compute delta vs
             // current inFlightMap to avoid double-counting.
             xhr.upload.addEventListener("progress", (e) => {
               if (e.loaded > 0) {
+                resetStall(); // bytes are flowing — reset the stall watchdog
                 const prev = inFlightMap.get(chunkIndex) ?? 0;
                 const delta = e.loaded - prev;
                 if (delta > 0) {
@@ -679,6 +714,7 @@ class UploadQueueEngine {
             });
 
             xhr.addEventListener("load", () => {
+              clearStall();
               // Flush any bytes that weren't fired by progress events
               // (some browsers skip the final progress event)
               const prev = inFlightMap.get(chunkIndex) ?? 0;
@@ -696,19 +732,46 @@ class UploadQueueEngine {
             });
 
             xhr.addEventListener("error", () => {
+              clearStall();
               clearInFlight(chunkIndex);
               scheduleUpdate();
               reject(new Error("Network error during chunk upload"));
             });
 
             xhr.addEventListener("abort", () => {
+              clearStall();
               clearInFlight(chunkIndex);
               scheduleUpdate();
+              // Distinguish a stall-watchdog abort (already rejected above with
+              // a stall message) from a user-initiated cancel. If the promise
+              // has already been settled by the stall watchdog the second
+              // reject() call here is a no-op (Promise contract).
               reject(new DOMException("Upload aborted", "AbortError"));
             });
 
-            signal.addEventListener("abort", () => xhr.abort(), { once: true });
-            xhr.send(buffer);
+            // xhr.timeout fires when the 2-minute hard deadline elapses.
+            xhr.addEventListener("timeout", () => {
+              clearStall();
+              clearInFlight(chunkIndex);
+              scheduleUpdate();
+              reject(new Error(`Chunk ${chunkIndex} upload timed out (${xhr.timeout / 1000} s)`));
+            });
+
+            // Register the cancel handler then immediately check whether the
+            // signal was already aborted (race: AbortController.abort() could
+            // have fired between the retry-loop guard above and here).
+            // NOTE: xhr.abort() only fires the "abort" event if send() was
+            // already called. If the signal is already set, reject directly
+            // instead of relying on the "abort" event handler below.
+            const abortHandler = () => xhr.abort();
+            signal.addEventListener("abort", abortHandler, { once: true });
+            if (signal.aborted) {
+              signal.removeEventListener("abort", abortHandler);
+              clearStall();
+              reject(new DOMException("Upload aborted", "AbortError"));
+            } else {
+              xhr.send(buffer);
+            }
           });
 
           if (status === 409) {

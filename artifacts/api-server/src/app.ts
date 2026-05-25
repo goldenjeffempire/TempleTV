@@ -391,9 +391,10 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   // Extend the underlying HTTP server's request timeout for long-running
   // uploads. Node.js 18+ defaults to 300_000 ms (5 minutes) which is too
-  // short for a 64 MiB chunk on a slow link (~250 KB/s ≈ 4.4 min). The
-  // client stall watchdog already kills truly dead connections; this only
-  // guards against the server-side ejection of legitimately slow transfers.
+  // short for a 64 MiB chunk on a slow link (~250 KB/s ≈ 4.4 min).
+  // The client-side upload stall watchdog (60 s inactivity timeout + 2-min
+  // hard XHR timeout in upload-queue.ts) detects dead connections and retries;
+  // this server-side value is the last-resort ejection of truly runaway requests.
   app.server.requestTimeout = 20 * 60 * 1000; // 20 minutes
 
   // CSRF protection (SEC-05): reject cookie-authenticated state-mutating

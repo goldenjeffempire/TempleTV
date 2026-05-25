@@ -509,7 +509,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         .then((r) => r[0]);
 
       if (existingChunk) {
-        return reply.send({ ok: true, chunkIndex, storageBackend: existingChunk.storageBackend });
+        return reply.code(409).send({ ok: true, chunkIndex, storageBackend: existingChunk.storageBackend });
       }
 
       const body = req.body as Buffer;
