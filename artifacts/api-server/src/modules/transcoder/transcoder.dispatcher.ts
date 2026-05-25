@@ -60,14 +60,7 @@ class TranscoderDispatcher {
     // touching anything belonging to a job in-flight in another replica.
     void this.purgeOrphanedScratchDirs();
 
-    const tick = () => {
-      if (this.stopped) return;
-      void this.runOnce().finally(() => {
-        if (this.stopped) return;
-        this.timer = setTimeout(tick, env.TRANSCODER_POLL_MS);
-      });
-    };
-    this.timer = setTimeout(tick, env.TRANSCODER_POLL_MS);
+    this.timer = setTimeout(() => this.tick(), env.TRANSCODER_POLL_MS);
     logger.info({ pollMs: env.TRANSCODER_POLL_MS }, "transcoder dispatcher started");
 
     // Verify the ffmpeg binary is reachable so we surface a clear error
@@ -161,6 +154,38 @@ class TranscoderDispatcher {
       this.timer = null;
     }
     logger.info("transcoder dispatcher stopped");
+  }
+
+  /**
+   * Shared tick used by start() and nudge(). Runs one dispatch cycle then
+   * re-arms the timer at the normal TRANSCODER_POLL_MS cadence.
+   */
+  private tick(): void {
+    if (this.stopped) return;
+    void this.runOnce().finally(() => {
+      if (this.stopped) return;
+      this.timer = setTimeout(() => this.tick(), env.TRANSCODER_POLL_MS);
+    });
+  }
+
+  /**
+   * Immediately trigger a dispatch cycle without waiting for the next poll
+   * timer. Safe to call from any context — if a job is already running the
+   * call is a no-op (runOnce() guards with `this.running`). Cancels any
+   * pending timer and re-arms after the immediate run so the regular cadence
+   * is preserved.
+   *
+   * Call this whenever a new transcoding job is enqueued so HLS encoding
+   * starts within milliseconds of the job being created rather than waiting
+   * up to TRANSCODER_POLL_MS (10 s) for the next scheduled tick.
+   */
+  nudge(): void {
+    if (this.stopped) return;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.tick();
   }
 
   /**

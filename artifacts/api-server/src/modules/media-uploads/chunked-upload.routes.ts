@@ -39,6 +39,7 @@ import { db, schema } from "../../infrastructure/db.js";
 import { storage } from "../../infrastructure/storage.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { enqueueTranscode } from "../transcoder/transcoder.queue.js";
+import { transcoderDispatcher } from "../transcoder/transcoder.dispatcher.js";
 import { generateQuickThumbnail, normalizeThumbnailBuffer, probeUploadedDuration } from "../transcoder/transcoder.service.js";
 import { runFaststart } from "../transcoder/faststart.service.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
@@ -1214,6 +1215,11 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               try {
                 await enqueueTranscode({ videoId, videoPath: objectKey });
                 capturedLog.info({ sessionId, videoId }, "[finalize:bg] HLS transcode job queued");
+                // Immediately wake the dispatcher so encoding starts within
+                // milliseconds rather than waiting for the next poll tick
+                // (up to TRANSCODER_POLL_MS = 10 s). This eliminates the
+                // visible "HLS queued" window in the broadcast queue UI.
+                transcoderDispatcher.nudge();
               } catch (err) {
                 capturedLog.warn(
                   { err, videoId },

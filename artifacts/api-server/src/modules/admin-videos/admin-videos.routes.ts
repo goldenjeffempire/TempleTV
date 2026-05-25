@@ -8,6 +8,7 @@ import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { storage } from "../../infrastructure/storage.js";
 import { enqueueTranscode } from "../transcoder/transcoder.queue.js";
+import { transcoderDispatcher } from "../transcoder/transcoder.dispatcher.js";
 import { runFaststart } from "../transcoder/faststart.service.js";
 import { isUndefinedColumnError, SAFE_VIDEO_COLS } from "../../infrastructure/db-schema-guard.js";
 
@@ -486,6 +487,7 @@ export async function adminVideosRoutes(app: FastifyInstance) {
       });
 
       req.log.info({ videoId: id, jobId, reused }, "admin: manually queued HLS transcode job");
+      transcoderDispatcher.nudge();
       return { jobId, reused };
     },
   );
@@ -612,6 +614,7 @@ export async function adminVideosRoutes(app: FastifyInstance) {
         }
       }
 
+      if (queued > 0) transcoderDispatcher.nudge();
       req.log.info({ queued, skipped }, "admin: bulk HLS transcode queued");
       return {
         queued,

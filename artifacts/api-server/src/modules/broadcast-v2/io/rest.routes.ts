@@ -20,6 +20,7 @@ import { faststartRecoveryWorker } from "../engine/faststart-recovery.js";
 import { db, schema } from "../../../infrastructure/db.js";
 import { eq, and, isNull, isNotNull, sql } from "drizzle-orm";
 import { enqueueTranscode, boostTranscodePriority } from "../../transcoder/transcoder.queue.js";
+import { transcoderDispatcher } from "../../transcoder/transcoder.dispatcher.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { mediaIntegrityScanner } from "../engine/media-integrity-scanner.js";
 import { queueIntegrityValidator } from "../engine/queue-integrity-validator.js";
@@ -604,6 +605,7 @@ export async function restRoutes(app: FastifyInstance) {
     }
     if (triggered > 0) {
       void broadcastOrchestrator.reload();
+      transcoderDispatcher.nudge();
     }
     logger.info({ triggered }, "[broadcast-v2] prepare-hls: triggered HLS jobs for queue items");
     return { ok: true as const, triggered };
