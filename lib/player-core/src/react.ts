@@ -93,6 +93,46 @@ interface BroadcastSession {
  */
 const sessions = new Map<string, { session: BroadcastSession; lastIdleAtMs: number | null }>();
 
+/**
+ * Immediately pause and unload every active broadcast session's video elements.
+ *
+ * Call this synchronously in the same event-loop tick as any SPA navigation
+ * that moves to a full-screen player (or away from one). Because the call
+ * runs BEFORE `setState` / React's render cycle, the background player is
+ * silenced before the first paint of the new surface — eliminating the
+ * overlapping-audio window that exists while React schedules its unmount
+ * cleanup effects.
+ *
+ * The session transport and FSM continue running so navigating back to the
+ * hero reconnects at the exact wall-clock broadcast position without going
+ * through BOOTSTRAP again.
+ *
+ * This is the symmetric complement to `attachElements`: just as attaching
+ * must happen before playback starts, pausing all sessions must happen
+ * before a new surface can safely start its own playback.
+ */
+export function pauseAllBroadcastSessions(): void {
+  for (const [, entry] of sessions) {
+    const { session } = entry;
+    const { adapter } = session;
+    if (!adapter) continue;
+    // Destroy the adapter first: removes all DOM event listeners via the
+    // AbortController so stale buffer-ready / buffer-error events cannot
+    // fire into the FSM after the elements are detached. Then unbind both
+    // buffers: each unbind() call pauses the video element, destroys any
+    // attached HLS/DASH instance, and removes the src attribute — fully
+    // stopping network activity and audio output.
+    try {
+      adapter.destroy();
+      adapter.apply({ type: "unbind", bufferId: "A" });
+      adapter.apply({ type: "unbind", bufferId: "B" });
+    } catch { /* ignore — element may already be detached */ }
+    session.adapter = null;
+    session.bufA   = null;
+    session.bufB   = null;
+  }
+}
+
 /** Sessions idle this long with zero subscribers are torn down. */
 const SESSION_IDLE_EVICT_MS = 5 * 60 * 1000;
 let janitorInterval: ReturnType<typeof setInterval> | null = null;
@@ -577,20 +617,33 @@ export function useV2Broadcast(opts: UseV2BroadcastOptions): UseV2BroadcastResul
     attachElements(session, a, b, optsRef.current.attachHls);
   }, [session, enabled]);
 
+  // Stable ref callbacks — defined with useCallback so React sees the same
+  // function identity across renders and does NOT null-then-reset the ref on
+  // every parent re-render. Without this, every re-render of any ancestor
+  // triggers React to call attach.A(null) then attach.A(el), which in turn
+  // calls detachElements + attachElements on each re-render, causing a
+  // brief HLS teardown / black-frame flash each time and producing spurious
+  // "buffer-error" events in the FSM.
+  const attachA = useCallback(
+    (el: HTMLVideoElement | null) => {
+      elsRef.current.A = el;
+      if (el) tryAttach();
+      else if (session) detachElements(session);
+    },
+    [session, tryAttach],
+  );
+  const attachB = useCallback(
+    (el: HTMLVideoElement | null) => {
+      elsRef.current.B = el;
+      if (el) tryAttach();
+      else if (session) detachElements(session);
+    },
+    [session, tryAttach],
+  );
+
   return {
     snapshot,
     connected,
-    attach: {
-      A: (el) => {
-        elsRef.current.A = el;
-        if (el) tryAttach();
-        else if (session) detachElements(session);
-      },
-      B: (el) => {
-        elsRef.current.B = el;
-        if (el) tryAttach();
-        else if (session) detachElements(session);
-      },
-    },
+    attach: { A: attachA, B: attachB },
   };
 }

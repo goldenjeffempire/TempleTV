@@ -1,4 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
+import { pauseAllBroadcastSessions } from "@workspace/player-core/react";
 import type { VideoItem } from "./lib/api";
 import type { SeriesItem } from "./hooks/useSeries";
 import { saveProgress, getProgress } from "./lib/watchProgress";
@@ -160,6 +161,10 @@ export default function App() {
           updatedAt: Date.now(),
         });
       }
+      // Stop the player audio synchronously before React unmounts the player
+      // and mounts the hero — prevents the player audio from bleeding into the
+      // first frames of the hero transition (symmetric to the play() call below).
+      pauseAllBroadcastSessions();
       setPlayer(null);
       lastProgressRef.current = null;
     },
@@ -205,6 +210,12 @@ export default function App() {
       isLive?: boolean,
       thumbnailUrl?: string,
     ) => {
+      // Stop any active broadcast sessions (hero, background players) in the
+      // same event-loop tick as the navigation — before React re-renders or
+      // runs any effect cleanup. This eliminates the overlapping-audio window
+      // that would otherwise persist until React's passive effect cleanup cycle
+      // (which runs after the next paint).
+      pauseAllBroadcastSessions();
       lastProgressRef.current = null;
       setPlayer({ videoId, title, thumbnailUrl: thumbnailUrl ?? "", hlsUrl, hlsMasterUrl: hlsUrl, startPositionSecs, isLive });
       pushHistory();
