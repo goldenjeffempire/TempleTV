@@ -130,13 +130,28 @@ export default defineConfig({
           // exponential-backoff reconnect timer.
           ws: true,
         },
+        "/.well-known": {
+          // Forward Android App Links / iOS Universal Links verification GETs
+          // to the API server so the well-known endpoints work even when
+          // testing deep-link verification against the Vite dev server.
+          // The Vite fs.deny no longer blocks .well-known/ (see below), but
+          // the API server's dynamic response (env-var fingerprints) is the
+          // authoritative source in dev so the proxy takes precedence.
+          target,
+          changeOrigin: true,
+          secure: false,
+        },
         "/healthz": { target, changeOrigin: true, secure: false },
         "/readyz": { target, changeOrigin: true, secure: false },
       };
     })(),
     fs: {
       strict: true,
-      deny: ["**/.*"],
+      // Deny sensitive dotfiles but explicitly allow .well-known/ so that
+      // /.well-known/assetlinks.json (Android App Links) and
+      // /.well-known/apple-app-site-association (iOS Universal Links) are
+      // served correctly from the public/ directory in development.
+      deny: ["**/.git/**", "**/.env", "**/.env.*", "**/.npmrc", "**/.gitignore"],
     },
   },
   preview: {

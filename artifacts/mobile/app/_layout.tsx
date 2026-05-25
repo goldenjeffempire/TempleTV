@@ -177,6 +177,8 @@ const KNOWN_APP_PATH_PREFIXES = [
   "/channels",
   "/library",
   "/player",
+  "/live",
+  "/video",
   "/search",
   "/playlists",
   "/series",
@@ -189,6 +191,8 @@ const KNOWN_APP_PATH_PREFIXES = [
   "/radio",
   "/account",
   "/change-password",
+  "/forgot-password",
+  "/reset-password",
   "/link",
 ];
 

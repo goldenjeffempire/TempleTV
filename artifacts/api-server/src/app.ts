@@ -63,6 +63,7 @@ import { settingsRoutes } from "./modules/admin/settings.routes.js";
 import { tvHistoryRoutes } from "./modules/tv-history/tv-history.routes.js";
 import { radioRoutes } from "./modules/radio/radio.routes.js";
 import { seoRoutes } from "./modules/seo/seo.routes.js";
+import { wellKnownRoutes } from "./modules/well-known/well-known.routes.js";
 import { metricsRoutes } from "./modules/metrics/metrics.routes.js";
 import { httpRequestDuration, httpRequestTotal, SERVICE_LABELS } from "./infrastructure/metrics.js";
 const API_PREFIX = "/api/v1";
@@ -653,6 +654,15 @@ export async function buildApp(): Promise<FastifyInstance> {
   // available directly at https://api.templetv.org.ng/sitemap-sermons.xml
   // and https://api.templetv.org.ng/podcast.xml as referenced in sitemap.xml.
   await app.register(seoRoutes);
+
+  // ── Well-known verification files ─────────────────────────────────────────
+  // Android App Links:  GET /.well-known/assetlinks.json
+  // iOS Universal Links: GET /.well-known/apple-app-site-association
+  // Registered at root (no /api prefix) — OS verification daemons fetch these
+  // directly from the domain root.  Must respond 200 with no redirects.
+  // Configure fingerprints via env var ANDROID_APP_SIGNING_FINGERPRINTS
+  // (comma-separated SHA-256 values from Google Play Console → App integrity).
+  await app.register(wellKnownRoutes);
 
   // ── Dev-only TV app proxy ─────────────────────────────────────────────────
   // In development the TV Vite dev server runs on port 23876 (mapped from the

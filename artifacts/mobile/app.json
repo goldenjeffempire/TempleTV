@@ -117,53 +117,22 @@
             {
               "scheme": "https",
               "host": "templetv.org.ng",
-              "pathPrefix": "/channels"
-            },
-            {
-              "scheme": "https",
-              "host": "templetv.org.ng",
-              "pathPrefix": "/library"
-            },
-            {
-              "scheme": "https",
-              "host": "templetv.org.ng",
-              "pathPrefix": "/player"
-            },
-            {
-              "scheme": "https",
-              "host": "templetv.org.ng",
-              "pathPrefix": "/search"
-            },
-            {
-              "scheme": "https",
-              "host": "templetv.org.ng",
-              "pathPrefix": "/playlists"
-            },
-            {
-              "scheme": "https",
-              "host": "templetv.org.ng",
-              "pathPrefix": "/series"
-            },
-            {
-              "scheme": "https",
-              "host": "templetv.org.ng",
-              "pathPrefix": "/favorites"
-            },
-            {
-              "scheme": "https",
-              "host": "templetv.org.ng",
-              "pathPrefix": "/history"
+              "pathPrefix": "/"
             },
             {
               "scheme": "https",
               "host": "www.templetv.org.ng",
-              "pathPrefix": "/channels"
-            },
-            {
-              "scheme": "https",
-              "host": "www.templetv.org.ng",
-              "pathPrefix": "/library"
-            },
+              "pathPrefix": "/"
+            }
+          ],
+          "category": [
+            "DEFAULT",
+            "BROWSABLE"
+          ]
+        },
+        {
+          "action": "VIEW",
+          "data": [
             {
               "scheme": "templetv",
               "host": "*"
