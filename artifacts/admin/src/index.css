@@ -578,6 +578,13 @@
   width: 100vw !important;
   height: 100vh !important;
   background: #000 !important;
+  /* Samsung Tizen / LG webOS bug: overflow:hidden on a fullscreened element
+   * causes the GPU compositor to clip the video texture to the pre-fullscreen
+   * element bounds — video disappears while audio (CPU-decoded) continues.
+   * Clearing overflow here overrides Tailwind's overflow-hidden class on the
+   * BroadcastPreviewV2 container in fullscreen mode.                         */
+  overflow: visible !important;
+  contain: none !important;
 }
 
 :fullscreen video,

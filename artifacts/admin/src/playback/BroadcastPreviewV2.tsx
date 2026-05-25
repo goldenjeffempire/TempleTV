@@ -138,7 +138,22 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
   hls.loadSource(url);
   hls.attachMedia(video);
 
+  // Recalibrate HLS ABR after fullscreen transitions so capLevelToPlayerSize
+  // reads the correct viewport dimensions rather than pre-transition values.
+  // Without this, a stale quality cap can trigger a level-switch pipeline
+  // flush that freezes video while audio continues for 1-3 s.
+  const onFsChange = () => {
+    if (!document.fullscreenElement) return;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      hls.currentLevel = -1;
+    }));
+  };
+  document.addEventListener("fullscreenchange", onFsChange);
+  document.addEventListener("webkitfullscreenchange", onFsChange);
+
   return () => {
+    document.removeEventListener("fullscreenchange", onFsChange);
+    document.removeEventListener("webkitfullscreenchange", onFsChange);
     try { hls.destroy(); } catch { /* ignore */ }
   };
 }

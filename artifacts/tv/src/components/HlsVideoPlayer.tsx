@@ -158,6 +158,7 @@ export function HlsVideoPlayer({
   const [duration, setDuration]       = useState(0);
   const [qualityLabel, setQualityLabel] = useState("Auto");
   const [seekOsd, setSeekOsd]         = useState<"+15s" | "-15s" | null>(null);
+  const [isFs, setIsFs]               = useState(false);
   const seekOsdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const controlsHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const progressTimer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -405,6 +406,39 @@ export function HlsVideoPlayer({
     else el.requestFullscreen?.().catch(() => {});
   }, []);
 
+  // Track fullscreen state and recalibrate HLS ABR after each transition.
+  //
+  // Problem: capLevelToPlayerSize queries clientWidth/clientHeight to cap the
+  // quality level. During a fullscreen transition the container's dimensions
+  // are in flux; hls.js may read 0 or the pre-fullscreen size and trigger a
+  // quality switch. A quality switch flushes the video decode pipeline, which
+  // freezes the frame for 1-3 s while the audio buffer (independently decoded)
+  // keeps running — the classic "audio continues, video frozen" symptom.
+  //
+  // Fix: after fullscreenchange fires (browser has finished compositing and
+  // clientWidth/clientHeight now reflect the fullscreen viewport), we use a
+  // double rAF to ensure layout is fully settled, then reset the current level
+  // to -1 (auto). This forces the ABR engine to re-evaluate at the correct
+  // dimensions and pick the optimal quality without a pipeline-flushing switch.
+  useEffect(() => {
+    const onFsChange = () => {
+      const entering = !!document.fullscreenElement;
+      setIsFs(entering);
+      if (!entering) return;
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const hls = activeSlotRef.current === "A" ? hlsARef.current : hlsBRef.current;
+        if (hls) hls.currentLevel = -1;
+      }));
+    };
+    document.addEventListener("fullscreenchange", onFsChange);
+    document.addEventListener("webkitfullscreenchange", onFsChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", onFsChange);
+      document.removeEventListener("webkitfullscreenchange", onFsChange);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── Video events (time update, ended) ─────────────────────────────────────
 
   const handleTimeUpdate = useCallback(() => {
@@ -435,7 +469,17 @@ export function HlsVideoPlayer({
   return (
     <div
       ref={containerRef}
-      style={{ position: "relative", width: "100%", height: "100%", background: "#000", overflow: "hidden" }}
+      style={{
+        position: "relative", width: "100%", height: "100%", background: "#000",
+        // overflow:hidden clips the scaled ambient background so blur edges
+        // stay invisible. In fullscreen this same clip causes the GPU compositor
+        // (Samsung Tizen, LG webOS) to paint the video texture only within the
+        // pre-fullscreen bounds → black screen while audio continues. We clear
+        // it via the :fullscreen CSS rule AND here via React state so both the
+        // CSS-pseudo-class path and older browsers that fire fullscreenchange
+        // without supporting :fullscreen are covered.
+        overflow: isFs ? "visible" : "hidden",
+      }}
       onMouseMove={showControls}
       onTouchStart={showControls}
     >

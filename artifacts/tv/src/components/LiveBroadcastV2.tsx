@@ -233,7 +233,28 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
   hls.loadSource(url);
   hls.attachMedia(video);
 
+  // After a fullscreen transition the browser finishes re-compositing before
+  // firing fullscreenchange.  At that point clientWidth/clientHeight reflect
+  // the new viewport dimensions.  Calling hls.currentLevel = -1 forces the
+  // ABR engine to re-evaluate quality at the correct size rather than the
+  // stale pre-transition value it may have cached via capLevelToPlayerSize.
+  // Without this, quality can be locked to the pre-fullscreen rendition for
+  // up to ~5 seconds and the level-switch pipeline flush freezes video while
+  // audio (separately buffered) continues unaffected.
+  const onFsChange = () => {
+    if (!document.fullscreenElement) return;
+    // Double rAF: first ensures the browser has committed the fullscreen
+    // layout; second gives hls.js a tick to observe the new dimensions.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      hls.currentLevel = -1; // re-trigger auto ABR at fullscreen dimensions
+    }));
+  };
+  document.addEventListener("fullscreenchange", onFsChange);
+  document.addEventListener("webkitfullscreenchange", onFsChange);
+
   return () => {
+    document.removeEventListener("fullscreenchange", onFsChange);
+    document.removeEventListener("webkitfullscreenchange", onFsChange);
     try { hls.destroy(); } catch { /* ignore */ }
   };
 }

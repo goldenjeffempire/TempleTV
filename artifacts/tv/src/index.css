@@ -349,6 +349,15 @@ html, body, #root {
   height: 100vh !important;
   background: #000 !important;
   cursor: none !important;
+  /* Samsung Tizen / LG webOS bug: overflow:hidden on a fullscreened element
+   * causes the GPU compositor to clip the video texture to the pre-fullscreen
+   * element bounds — video disappears while audio (CPU-decoded) continues.
+   * Clearing overflow here overrides the inline overflow:hidden on the
+   * HlsVideoPlayer and LiveBroadcastV2 containers in fullscreen mode.       */
+  overflow: visible !important;
+  /* Disable CSS containment so this element's paint area is not capped to its
+   * pre-fullscreen rect on Chromium-based TV runtimes (Tizen 6, webOS 5).   */
+  contain: none !important;
 }
 
 :fullscreen video,

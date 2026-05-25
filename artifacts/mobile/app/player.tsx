@@ -253,6 +253,15 @@ interface BroadcastHlsPlayerProps {
   title:              string;
   playerHeightOverride: number;
   onProgress?:        (positionSecs: number, durationSecs: number) => void;
+  /**
+   * When true, forces the underlying A/B video buffers to be muted even if
+   * the FSM has designated one as active. Used by the inline (non-fullscreen)
+   * instance to suppress audio bleed while the fullscreen Modal player loads.
+   * Without this, the inline player continues to emit audio while the Modal
+   * player's new HLS session is buffering — users hear the stream but see a
+   * blank/loading screen in the fullscreen overlay.
+   */
+  muted?:             boolean;
 }
 
 /**
@@ -266,8 +275,8 @@ interface BroadcastHlsPlayerProps {
  * navigate the user back rather than leaving a frozen "Broadcast unavailable"
  * overlay with no escape route.
  */
-function BroadcastHlsPlayer(_props: BroadcastHlsPlayerProps) {
-  void _props;
+function BroadcastHlsPlayer({ muted, ...rest }: BroadcastHlsPlayerProps) {
+  void rest;
   const apiBase = getApiBase() ?? "";
   const handleFatal = useCallback(() => {
     if (router.canGoBack()) {
@@ -280,6 +289,7 @@ function BroadcastHlsPlayer(_props: BroadcastHlsPlayerProps) {
     <V2PlayerContainer
       baseUrl={`${apiBase}/api/broadcast-v2`}
       onFatal={handleFatal}
+      muted={muted}
     />
   );
 }
@@ -890,6 +900,7 @@ export default function PlayerScreen() {
               title={title}
               playerHeightOverride={playerHeight}
               onProgress={handleProgress}
+              muted={isFullscreen}
             />
           ) : isYoutube ? (
             <YoutubePlayer
@@ -939,6 +950,7 @@ export default function PlayerScreen() {
               title={title}
               playerHeightOverride={playerHeight}
               onProgress={handleProgress}
+              muted={isFullscreen}
             />
           ) : (
             <Image
