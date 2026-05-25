@@ -167,6 +167,49 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
   );
 });
 
+// ── Midnight Prayers channel switching ───────────────────────────────────────
+
+interface MPScheduleConfig {
+  enabled: boolean;
+  startHour: number;
+  endHour: number;
+}
+
+function isInMpWindow(cfg: MPScheduleConfig): boolean {
+  if (!cfg.enabled) return false;
+  const h = new Date().getHours();
+  return cfg.endHour > cfg.startHour
+    ? h >= cfg.startHour && h < cfg.endHour
+    : h >= cfg.startHour || h < cfg.endHour;
+}
+
+function useMidnightPrayersSwitch(mainBaseUrl: string): string {
+  const [cfg, setCfg] = useState<MPScheduleConfig | null>(null);
+  const [inWindow, setInWindow] = useState(false);
+
+  useEffect(() => {
+    // Derive midnight-prayers config endpoint from the main baseUrl
+    const apiOrigin = mainBaseUrl.replace(/\/api\/broadcast-v2.*/, "");
+    fetch(`${apiOrigin}/api/midnight-prayers/config`)
+      .then((r) => (r.ok ? (r.json() as Promise<MPScheduleConfig>) : null))
+      .then((data) => { if (data) setCfg(data); })
+      .catch(() => { /* stay on main channel */ });
+  }, [mainBaseUrl]);
+
+  useEffect(() => {
+    if (!cfg) return;
+    const check = () => setInWindow(isInMpWindow(cfg));
+    check();
+    const t = setInterval(check, 60_000);
+    return () => clearInterval(t);
+  }, [cfg]);
+
+  if (!cfg || !inWindow) return mainBaseUrl;
+  return mainBaseUrl.replace(/\/api\/broadcast-v2.*/, "/api/midnight-prayers");
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
+
 export function V2PlayerContainer({
   baseUrl,
   channelId: _channelId = "main",
@@ -175,8 +218,9 @@ export function V2PlayerContainer({
   minimal = false,
 }: Props) {
   void _channelId;
+  const effectiveBaseUrl = useMidnightPrayersSwitch(baseUrl);
   const { snapshot, connected, buffers, reportBufferEvent, forceReconnect, notifyOnline } =
-    useV2BroadcastNative({ baseUrl });
+    useV2BroadcastNative({ baseUrl: effectiveBaseUrl });
 
   const fatalFiredRef = useRef(false);
   useEffect(() => {

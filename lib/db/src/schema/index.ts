@@ -34,3 +34,4 @@ export * from "./device-watch-history";
 export * from "./broadcast-runtime-state";
 export * from "./broadcast-event-log";
 export * from "./player-position-checkpoint";
+export * from "./midnight-prayers";

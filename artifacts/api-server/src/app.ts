@@ -35,6 +35,7 @@ import { adminOpsRoutes } from "./modules/admin-ops/admin-ops.routes.js";
 import { telemetryRoutes } from "./modules/telemetry/telemetry.routes.js";
 import { playbackRoutes } from "./modules/playback/playback.routes.js";
 import { broadcastV2Routes } from "./modules/broadcast-v2/index.js";
+import { midnightPrayersRoutes, midnightPrayersService } from "./modules/midnight-prayers/index.js";
 import { youtubeLiveRoutes } from "./modules/youtube-live/youtube-live.routes.js";
 import { youtubeChannelRoutes } from "./modules/youtube-channel/youtube-channel.routes.js";
 import { mediaUploadsRoutes } from "./modules/media-uploads/media-uploads.routes.js";
@@ -303,6 +304,11 @@ export async function buildApp(): Promise<FastifyInstance> {
       if (url.includes("/broadcast-v2/events")) return true;
       if (url.includes("/broadcast-v2/ws")) return true;
       if (url.includes("/broadcast-v2/rehydrate")) return true;
+      // Midnight Prayers real-time paths
+      if (url.includes("/midnight-prayers/state")) return true;
+      if (url.includes("/midnight-prayers/config")) return true;
+      if (url.includes("/midnight-prayers/events")) return true;
+      if (url.includes("/midnight-prayers/ws")) return true;
       // HLS segments + media proxy (high-volume streaming)
       if (url.includes("/hls/")) return true;
       if (url.includes("/media-proxy")) return true;
@@ -582,6 +588,10 @@ export async function buildApp(): Promise<FastifyInstance> {
     //   POST /broadcast-v2/override/start|stop
     //   POST /broadcast-v2/force-failover|clear-failover|reload
     await instance.register(broadcastV2Routes, { prefix: "/broadcast-v2" });
+    // Midnight Prayers — dedicated channel that auto-cycles prayer content
+    // between the configured hours (default 12 AM – 3 AM) based on each
+    // viewer's local clock.  V2Transport-compatible endpoints: /state, /events, /ws.
+    await instance.register(midnightPrayersRoutes, { prefix: "/midnight-prayers" });
     await instance.register(youtubeLiveRoutes, { prefix: "/youtube/live" });
     // YouTube channel content proxy — serves /api/youtube/rss and
     // /api/youtube/videos so web clients avoid CORS and all platforms
@@ -863,6 +873,14 @@ export async function buildApp(): Promise<FastifyInstance> {
   // (so it can receive and respond to the hub's verification GET challenge).
   // Fires after listen() completes. Non-fatal on failure — the 5-min poller
   // continues providing library updates.
+  // Initialise the Midnight Prayers service (loads config + video queue,
+  // starts heartbeat/item-watch timers).  Non-fatal — if the DB is not
+  // ready yet the service logs a warning and retries on the next
+  // library-updated event.
+  void midnightPrayersService.init().catch((err) => {
+    app.log.warn({ err }, "[midnight-prayers] init failed — will retry on next library update");
+  });
+
   app.addHook("onReady", async () => {
     const baseUrl =
       env.WEBHOOK_BASE_URL ??

@@ -57,8 +57,9 @@ const Purge           = lazyPage(() => import("@/pages/purge"));
 const AuditLog        = lazyPage(() => import("@/pages/audit-log"));
 const SystemSettings  = lazyPage(() => import("@/pages/settings"));
 const NotFound        = lazyPage(() => import("@/pages/not-found"));
-const RadioAdmin      = lazyPage(() => import("@/pages/radio"));
-const SecurityPage    = lazyPage(() => import("@/pages/security"));
+const RadioAdmin        = lazyPage(() => import("@/pages/radio"));
+const SecurityPage      = lazyPage(() => import("@/pages/security"));
+const MidnightPrayers   = lazyPage(() => import("@/pages/midnight-prayers"));
 
 // ── Error Boundary ────────────────────────────────────────────────────────────
 
@@ -234,9 +235,10 @@ function AuthenticatedApp() {
             <Route path="/launch-readiness" component={LaunchReadiness} />
             <Route path="/purge"            component={Purge} />
             <Route path="/audit-log"        component={AuditLog} />
-            <Route path="/radio"            component={RadioAdmin} />
-            <Route path="/settings"         component={SystemSettings} />
-            <Route path="/security"         component={SecurityPage} />
+            <Route path="/radio"             component={RadioAdmin} />
+            <Route path="/settings"          component={SystemSettings} />
+            <Route path="/security"          component={SecurityPage} />
+            <Route path="/midnight-prayers"  component={MidnightPrayers} />
             <Route component={NotFound} />
           </Switch>
         </Suspense>

@@ -116,12 +116,13 @@ function buildEditDelta(original: EditForm, current: EditForm): Partial<EditForm
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const CATEGORIES: { value: string; label: string }[] = [
-  { value: "sermon",      label: "Sermons" },
-  { value: "deliverance", label: "Deliverance" },
-  { value: "prayer",      label: "Prayers" },
-  { value: "crusade",     label: "Crusades" },
-  { value: "conference",  label: "Conferences" },
-  { value: "testimony",   label: "Testimonies" },
+  { value: "midnight-prayers", label: "Midnight Prayers" },
+  { value: "sermon",           label: "Sermons" },
+  { value: "deliverance",      label: "Deliverance" },
+  { value: "prayer",           label: "Prayers" },
+  { value: "crusade",          label: "Crusades" },
+  { value: "conference",       label: "Conferences" },
+  { value: "testimony",        label: "Testimonies" },
 ];
 const PAGE_SIZE = 20;
 

@@ -8,7 +8,7 @@ import {
   Bell, BarChart2, Users, Heart, Settings, Shield,
   Zap, Cpu, Signal, Layers, Tv2, Wifi, WifiOff, Loader, ChevronRight, X, Youtube,
   Image, Gauge, Rss, ClipboardList, Settings2, RefreshCw, Trash2, Headphones, Lock,
-  SignalLow,
+  SignalLow, Moon,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
@@ -85,8 +85,9 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
       items: [
         { href: "/", label: "Dashboard", icon: <LayoutDashboard size={16} /> },
         { href: "/live-control", label: "Live Control", icon: <Radio size={16} />, badge: <LiveBadge /> },
-        { href: "/broadcast-v2", label: "Master Control", icon: <Layers size={16} /> },
-        { href: "/radio", label: "Radio Station", icon: <Headphones size={16} /> },
+        { href: "/broadcast-v2",      label: "Master Control",    icon: <Layers size={16} /> },
+        { href: "/midnight-prayers",  label: "Midnight Prayers",  icon: <Moon size={16} /> },
+        { href: "/radio",             label: "Radio Station",      icon: <Headphones size={16} /> },
         { href: "/stream-health", label: "Stream Health", icon: <Activity size={16} /> },
         { href: "/chat", label: "Live Chat", icon: <MessageSquare size={16} /> },
       ],

@@ -21,10 +21,55 @@
  * chains or flex/grid sizing.
  */
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Hls from "hls.js";
 import { useV2Broadcast } from "@workspace/player-core/react";
 import { resolveApiOrigin } from "../lib/api";
+
+// ── Midnight Prayers channel switching ───────────────────────────────────────
+
+interface MPScheduleConfig {
+  enabled: boolean;
+  startHour: number;
+  endHour: number;
+}
+
+function isInMpWindow(cfg: MPScheduleConfig): boolean {
+  if (!cfg.enabled) return false;
+  const h = new Date().getHours();
+  return cfg.endHour > cfg.startHour
+    ? h >= cfg.startHour && h < cfg.endHour
+    : h >= cfg.startHour || h < cfg.endHour;
+}
+
+/**
+ * Fetches the Midnight Prayers schedule config once and then polls the local
+ * clock every 60 s to decide which broadcast channel to subscribe to.
+ * Returns the baseUrl the player should use for the current moment.
+ */
+function useMidnightPrayersSwitch(mainBaseUrl: string): string {
+  const [cfg, setCfg] = useState<MPScheduleConfig | null>(null);
+  const [inWindow, setInWindow] = useState(false);
+
+  useEffect(() => {
+    const apiOrigin = resolveApiOrigin();
+    fetch(`${apiOrigin}/api/midnight-prayers/config`)
+      .then((r) => (r.ok ? (r.json() as Promise<MPScheduleConfig>) : null))
+      .then((data) => { if (data) setCfg(data); })
+      .catch(() => { /* ignore — stay on main channel */ });
+  }, []);
+
+  useEffect(() => {
+    if (!cfg) return;
+    const check = () => setInWindow(isInMpWindow(cfg));
+    check();
+    const t = setInterval(check, 60_000);
+    return () => clearInterval(t);
+  }, [cfg]);
+
+  if (!cfg || !inWindow) return mainBaseUrl;
+  return `${resolveApiOrigin()}/api/midnight-prayers`;
+}
 
 interface Props {
   /**
@@ -266,8 +311,9 @@ export function LiveBroadcastV2({
   variant = "player",
 }: Props) {
   void _channelId;
-  const resolvedBaseUrl = baseUrl ?? `${resolveApiOrigin()}/api/broadcast-v2`;
-  const { snapshot, connected, attach } = useV2Broadcast({ baseUrl: resolvedBaseUrl, attachHls });
+  const mainBaseUrl = baseUrl ?? `${resolveApiOrigin()}/api/broadcast-v2`;
+  const effectiveBaseUrl = useMidnightPrayersSwitch(mainBaseUrl);
+  const { snapshot, connected, attach } = useV2Broadcast({ baseUrl: effectiveBaseUrl, attachHls });
   const fatalFiredRef = useRef(false);
 
   useEffect(() => {
