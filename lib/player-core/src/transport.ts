@@ -296,13 +296,30 @@ export class V2Transport {
    * immediately when a buffer ends with no inactive item — cutting the
    * SYNCING window from up to 8 s (keep-alive) to < 1 s.
    *
-   * Inflight guard: if a fetch is already in progress this call is a no-op.
-   * Concurrent REST responses dispatched milliseconds apart can regress the
-   * machine (the older response arriving second overwrites a newer seek
-   * position). The in-flight fetch will deliver the authoritative state.
+   * Inflight guard: if a fetch is already in progress this call is a no-op;
+   * however it still serves any cached snapshot immediately (throttled 2 s)
+   * to keep the FSM active during API slowness or brief outages.
    */
+  /** @internal — throttle for cached-snapshot stand-in during in-flight requests */
+  private lastCachedFallbackMs = 0;
+
   requestSnapshot(): void {
-    if (this.snapshotInflight) return;
+    if (this.snapshotInflight) {
+      // A REST fetch is already in progress.  If it succeeds it will
+      // dispatch the authoritative snapshot within ≤ 8 s.  To avoid a blank
+      // screen during that window (API slow / backpressured), immediately
+      // serve the localStorage-cached snapshot as a stand-in — it's stale
+      // but keeps the FSM in an active state rather than BOOTSTRAP limbo.
+      const now = Date.now();
+      if (now - this.lastCachedFallbackMs > 2_000) {
+        const cached = loadSnapshotCache();
+        if (cached) {
+          this.lastCachedFallbackMs = now;
+          this.cfg.onPlayerEvent({ type: "snapshot", snapshot: cached });
+        }
+      }
+      return;
+    }
     void this.doRequestSnapshot();
   }
 
@@ -622,6 +639,8 @@ export class V2Transport {
           if (!retry?.ok) return;
           const retryBody = (await retry.json()) as { state?: unknown };
           if (retryBody.state) {
+            // Cache the state so subsequent outages can serve it immediately.
+            saveSnapshotCache(retryBody.state as V2Snapshot);
             this.cfg.onPlayerEvent({ type: "snapshot", snapshot: retryBody.state as never });
           }
         }
@@ -629,6 +648,8 @@ export class V2Transport {
       }
       const body = (await res.json()) as { state?: unknown };
       if (body.state) {
+        // Cache the state so subsequent outages can serve it immediately.
+        saveSnapshotCache(body.state as V2Snapshot);
         this.cfg.onPlayerEvent({ type: "snapshot", snapshot: body.state as never });
       }
     } catch {

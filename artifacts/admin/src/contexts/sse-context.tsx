@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { tokenStore, forceRefreshToken } from "@/lib/api";
 import { apiBase } from "@/lib/api-base";
 
@@ -214,6 +215,7 @@ async function checkApiHealth(): Promise<boolean> {
 // ── Provider ──────────────────────────────────────────────────────────────────
 
 export function SSEProvider({ children }: { children: React.ReactNode }) {
+  const queryClient = useQueryClient();
   const [state, setState] = useState<SSEConnectionState>("connecting");
   const [lastStatusPayload, setLastStatusPayload] = useState<AdminLiveStatus | null>(null);
   const [recentActivity, setRecentActivity] = useState<SSEActivityEntry[]>([]);
@@ -368,10 +370,21 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
             clearTimeout(reconnectingGraceTimer.current);
             reconnectingGraceTimer.current = null;
           }
+          const wasAlreadyConnected = everConnected.current;
           everConnected.current = true;
           attempt.current = 0;
           lastFrameAt.current = Date.now();
           setStateSynced("connected");
+          // On reconnect (not the very first connect), invalidate all query
+          // caches immediately.  During a multi-minute SSE outage, library
+          // data, broadcast state, and queue data may have diverged from what
+          // the server now reports.  Invalidating here forces a background
+          // refetch so the dashboard reflects real server state the moment
+          // the connection is restored — without waiting for individual
+          // staleTime windows to expire.
+          if (wasAlreadyConnected) {
+            queryClient.invalidateQueries();
+          }
         });
 
         KNOWN_EVENTS.forEach((evt) => {

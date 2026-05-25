@@ -275,7 +275,10 @@ class UploadQueueEngine {
               preacher: s.preacher,
               featured: s.featured,
               status: "paused",
-              progress: 0,
+              // finalizeOnly items had all chunks confirmed before reload —
+              // show them at 92 % (finalize phase) so the progress bar is
+              // accurate when the user resumes.
+              progress: s.finalizeOnly ? 92 : 0,
               speed: 0,
               eta: 0,
               uploadedBytes: 0,
@@ -575,6 +578,7 @@ class UploadQueueEngine {
     this.items.clear();
     this.workerStates.clear();
     this.activeWorkers.clear();
+    this.networkPausedIds.clear();
     clearAllPersistedSessions().catch(() => {});
     this.notify();
   }

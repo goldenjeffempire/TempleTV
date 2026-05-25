@@ -204,6 +204,37 @@ function startSupervisedWorkers(): void {
 }
 
 let fanoutInitialised = false;
+let fanoutRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Try to initialise the Redis fan-out.  If Redis is unavailable (standalone
+ * mode), schedules a retry every 60 s so the fanout comes online automatically
+ * once Redis recovers — without requiring a process restart.
+ *
+ * Idempotent: no-op once the fanout is successfully initialised.
+ */
+function tryInitFanout(): void {
+  if (fanoutInitialised) return;
+  broadcastFanout
+    .init(broadcastOrchestrator)
+    .then(() => {
+      fanoutInitialised = true;
+      if (fanoutRetryTimer !== null) {
+        clearTimeout(fanoutRetryTimer);
+        fanoutRetryTimer = null;
+      }
+      logger.info("[broadcast-v2] fanout initialised (role: %s)", broadcastFanout.getRole());
+    })
+    .catch((err) => {
+      logger.warn({ err }, "[broadcast-v2] fanout init failed — retrying in 60 s (standalone mode)");
+      // Schedule another attempt; clear any previous timer to avoid stacking.
+      if (fanoutRetryTimer !== null) clearTimeout(fanoutRetryTimer);
+      fanoutRetryTimer = setTimeout(() => {
+        fanoutRetryTimer = null;
+        tryInitFanout();
+      }, 60_000);
+    });
+}
 
 export function ensureBroadcastV2Started(): Promise<void> {
   // Critical ordering fix: install the bus bridge UNCONDITIONALLY before
@@ -217,14 +248,10 @@ export function ensureBroadcastV2Started(): Promise<void> {
   installBusBridge();
   startSupervisedWorkers();
 
-  // Initialise the Redis fan-out once, non-blocking so a Redis outage
-  // never delays the HTTP listener from accepting connections.
-  if (!fanoutInitialised) {
-    fanoutInitialised = true;
-    broadcastFanout.init(broadcastOrchestrator).catch((err) =>
-      logger.warn({ err }, "[broadcast-v2] fanout init error (non-fatal — standalone mode)"),
-    );
-  }
+  // Initialise the Redis fan-out (with auto-retry on failure) so a Redis
+  // outage at boot doesn't permanently strand the instance in standalone
+  // mode — it will recover the moment Redis becomes available.
+  tryInitFanout();
 
   if (broadcastOrchestrator.isStarted()) {
     return Promise.resolve();
