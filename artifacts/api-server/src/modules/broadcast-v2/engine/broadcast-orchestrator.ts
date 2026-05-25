@@ -1751,6 +1751,20 @@ class BroadcastOrchestrator extends EventEmitter {
     })();
   }
 
+  /**
+   * Force-flush the current playback position to the database immediately,
+   * bypassing the dirty-flag guard and the periodic timer.
+   *
+   * Called during graceful shutdown (SIGTERM/SIGINT) so the server always
+   * restarts from the exact position it was at when it stopped — not from
+   * the last 5-second checkpoint boundary (which could be up to 5 seconds
+   * stale when the signal arrives between timer fires).
+   */
+  async flushCheckpointForShutdown(): Promise<void> {
+    this.checkpointDirty = true;
+    await this.persistCheckpoint();
+  }
+
   private async persistCheckpoint(): Promise<void> {
     // Fast-path: nothing has changed since the last write — skip the DB round-trip.
     // This eliminates checkpoint writes during idle periods (empty queue, override

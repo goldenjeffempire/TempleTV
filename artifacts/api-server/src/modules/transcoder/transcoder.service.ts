@@ -40,16 +40,23 @@ interface RenditionSpec {
   maxrateK: number;
   bufsizeK: number;
   audioBitrateK: number;
+  /** H.264 level string (e.g. "3.1"). Constrains decoder complexity so
+   *  Smart TVs, set-top boxes, and older mobile devices that refuse
+   *  higher-level streams can play every rendition without error. */
+  level: string;
 }
 
 // All renditions ordered from lowest to highest.
 // runTranscode filters this list to avoid upscaling by checking the source
 // video's actual height and dropping any renditions taller than the source.
 const ALL_RENDITIONS: RenditionSpec[] = [
-  { name: "360p",  width: 640,  height: 360,  videoBitrateK: 400,  maxrateK: 550,  bufsizeK: 800,  audioBitrateK: 64  },
-  { name: "480p",  width: 854,  height: 480,  videoBitrateK: 800,  maxrateK: 1000, bufsizeK: 1500, audioBitrateK: 96  },
-  { name: "720p",  width: 1280, height: 720,  videoBitrateK: 1800, maxrateK: 2200, bufsizeK: 3300, audioBitrateK: 128 },
-  { name: "1080p", width: 1920, height: 1080, videoBitrateK: 3500, maxrateK: 4500, bufsizeK: 6750, audioBitrateK: 192 },
+  // level "3.0" — baseline decoder for legacy STBs and Smart TV chipsets
+  { name: "360p",  width: 640,  height: 360,  videoBitrateK: 400,  maxrateK: 550,  bufsizeK: 800,  audioBitrateK: 64,  level: "3.0" },
+  // level "3.1" — covers 720p@30 and lower; widely supported across all smart TV SDKs
+  { name: "480p",  width: 854,  height: 480,  videoBitrateK: 800,  maxrateK: 1000, bufsizeK: 1500, audioBitrateK: 96,  level: "3.1" },
+  { name: "720p",  width: 1280, height: 720,  videoBitrateK: 1800, maxrateK: 2200, bufsizeK: 3300, audioBitrateK: 128, level: "3.1" },
+  // level "4.0" — required for 1080p@30; supported on all modern devices (2013+)
+  { name: "1080p", width: 1920, height: 1080, videoBitrateK: 3500, maxrateK: 4500, bufsizeK: 6750, audioBitrateK: 192, level: "4.0" },
 ];
 
 const HLS_SEGMENT_SECS = 4;
@@ -96,6 +103,12 @@ function buildFfmpegArgs(
       "-map", `[v${i}out]`,
       `-c:v:${i}`, "libx264",
       `-profile:v:${i}`, "main",
+      // Explicit H.264 level per rendition. Without this, some encoder/muxer
+      // combinations emit a too-high level (e.g. 4.1) that Samsung Tizen, LG
+      // webOS, and older Fire TV decoders refuse to play. Each level is chosen
+      // as the lowest that accommodates the target resolution and frame rate:
+      //   360p → 3.0,  480p/720p → 3.1,  1080p → 4.0
+      `-level:v:${i}`, r.level,
       `-preset:v:${i}`, FFMPEG_PRESET,
       `-crf:v:${i}`, FFMPEG_CRF,
       `-b:v:${i}`, `${r.videoBitrateK}k`,
@@ -121,6 +134,11 @@ function buildFfmpegArgs(
         `-c:a:${i}`, "aac",
         `-b:a:${i}`, `${r.audioBitrateK}k`,
         `-ac:a:${i}`, "2",
+        // Normalize all audio to 48 kHz. Source files can arrive at 44.1 kHz,
+        // 32 kHz, 22.05 kHz, etc. Mixed sample rates across HLS segments cause
+        // stuttering and decoder resets on Tizen, webOS, and some Chromecast
+        // builds that expect a constant sample rate across the entire playlist.
+        `-ar:a:${i}`, "48000",
       );
     });
   }

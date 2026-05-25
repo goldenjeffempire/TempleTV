@@ -277,10 +277,16 @@ export function ensureBroadcastV2Started(): Promise<void> {
 
 /**
  * Graceful shutdown for the broadcast-v2 module.
- * Closes the Redis fan-out subscriber and stops the leader renewal timer.
- * Called from main.ts shutdown handler.
+ * 1. Flushes the current playback position checkpoint to the database so
+ *    restarts resume from the exact position rather than the last periodic
+ *    checkpoint boundary (up to 5 s stale without this flush).
+ * 2. Closes the Redis fan-out subscriber and stops the leader renewal timer.
+ * Called from main.ts shutdown handler before app.close().
  */
 export async function stopBroadcastV2(): Promise<void> {
+  await broadcastOrchestrator.flushCheckpointForShutdown().catch((err) =>
+    logger.warn({ err }, "[broadcast-v2] final checkpoint flush failed (non-fatal)"),
+  );
   await broadcastFanout.close().catch((err) =>
     logger.warn({ err }, "[broadcast-v2] fanout close error (non-fatal)"),
   );

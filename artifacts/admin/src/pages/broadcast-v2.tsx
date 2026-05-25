@@ -339,6 +339,13 @@ export default function BroadcastV2Page() {
   // Dismissible circuit-open banner. Auto-reset when all workers are healthy.
   const [circuitOpenDismissed, setCircuitOpenDismissed] = useState(false);
 
+  // Ticks every second so the on-air progress bar stays live between SSE frames.
+  const [liveNow, setLiveNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setLiveNow(Date.now()), 1_000);
+    return () => clearInterval(t);
+  }, []);
+
   async function adminPost(path: string, body: Record<string, unknown> = {}) {
     setBusy(path);
     try {
@@ -559,6 +566,24 @@ export default function BroadcastV2Page() {
   // HLS items always arrive as kind="hls".
   const previewIsMp4Upload = previewSourceKind === "mp4";
 
+  // ── On-air progress ──────────────────────────────────────────────────────────
+  // Current item elapsed and total, recomputed every second by the liveNow tick.
+  const currentItem = server?.current ?? null;
+  const onAirElapsedMs = currentItem
+    ? Math.max(0, liveNow - currentItem.startsAtMs)
+    : 0;
+  const onAirTotalMs = currentItem
+    ? Math.max(1, currentItem.endsAtMs - currentItem.startsAtMs)
+    : 1;
+  const onAirProgressPct = Math.min(100, Math.round((onAirElapsedMs / onAirTotalMs) * 100));
+  const onAirElapsedSecs = Math.floor(onAirElapsedMs / 1000);
+  const onAirTotalSecs   = Math.floor(onAirTotalMs  / 1000);
+  const fmtSecs = (s: number) =>
+    s >= 3600
+      ? `${Math.floor(s / 3600)}:${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`
+      : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  const viewerCount = diagnostics?.analytics?.activeSessions ?? null;
+
   // Combined "live link health" indicator.
   const fullyConnected = transportConnected && sse.state === "connected";
   const partiallyConnected = transportConnected || sse.state === "connected";
@@ -722,6 +747,82 @@ export default function BroadcastV2Page() {
             <Clock className="h-3 w-3" />
             Sync drift — see health panel
           </Badge>
+        )}
+      </div>
+
+      {/* ── On-Air Status Bar ──────────────────────────────────────────── */}
+      {/* Always visible when the broadcast has a current item. Shows: live
+          pulse, item title, per-second progress bar, elapsed / total time,
+          viewer count, and sequence — giving operators a single glance
+          at the full broadcast state without scrolling to the queue. */}
+      <div
+        role="status"
+        aria-label="On-air status"
+        className={[
+          "rounded-lg border px-4 py-3",
+          currentItem
+            ? "border-red-300/70 bg-red-50 dark:border-red-800/60 dark:bg-red-950/20"
+            : "border-border bg-muted/30",
+        ].join(" ")}
+      >
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          {/* Live / Off-air label */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            {currentItem ? (
+              <>
+                <span
+                  className="h-2.5 w-2.5 rounded-full bg-red-500 animate-pulse"
+                  aria-hidden="true"
+                />
+                <span className="text-xs font-bold uppercase tracking-widest text-red-700 dark:text-red-400">
+                  On Air
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/40" aria-hidden="true" />
+                <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+                  Off Air
+                </span>
+              </>
+            )}
+          </div>
+
+          {/* Current item title */}
+          <p className="flex-1 min-w-0 truncate text-sm font-medium">
+            {currentItem?.title ?? (activeQueueCount === 0 ? "Queue is empty" : "No item on air")}
+          </p>
+
+          {/* Elapsed / total time */}
+          {currentItem && (
+            <span className="text-xs tabular-nums text-muted-foreground shrink-0">
+              {fmtSecs(onAirElapsedSecs)} / {fmtSecs(onAirTotalSecs)}
+            </span>
+          )}
+
+          {/* Viewer count */}
+          {viewerCount !== null && (
+            <div className="flex items-center gap-1 text-xs text-muted-foreground shrink-0" title="Active sessions in the last hour">
+              <Users className="h-3.5 w-3.5" />
+              <span>{viewerCount}</span>
+            </div>
+          )}
+
+          {/* Sequence */}
+          {server && (
+            <span className="text-xs tabular-nums text-muted-foreground shrink-0" title="Broadcast sequence number">
+              seq {server.sequence}
+            </span>
+          )}
+        </div>
+
+        {/* Progress bar — fills across the full card width */}
+        {currentItem && (
+          <Progress
+            value={onAirProgressPct}
+            className="mt-2.5 h-1.5"
+            aria-label={`${onAirProgressPct}% through current item`}
+          />
         )}
       </div>
 
