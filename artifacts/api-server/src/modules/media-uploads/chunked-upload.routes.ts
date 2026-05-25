@@ -1172,34 +1172,54 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
 
             // CRITICAL ORDERING: faststart MUST complete before enqueueTranscode.
             //
-            // faststart.service.ts replaces the source blob via
-            // completeMultipartUpload (multipart re-upload built from 8 MiB
-            // READ chunks of the original). If the transcoder dispatcher
-            // downloads the source while that assembly is still in progress,
-            // it fetches a partial/truncated file that passes the size check
-            // (headObject returns the in-flight size) but causes ffprobe to
-            // report "moov atom not found" — killing the transcode job.
+            // faststart.service.ts replaces the source blob via a multipart
+            // re-upload. If the transcoder downloads the source while that
+            // assembly is still in progress it fetches a partial file and
+            // ffprobe reports "moov atom not found", killing the transcode job.
             //
-            // Running enqueueTranscode AFTER faststart here guarantees the
-            // transcoder always downloads the complete, fully-assembled file.
-            // If faststart fails the original blob is still intact; the
-            // transcoder's own remuxForFaststart recovery handles moov-at-EOF.
+            // faststart now also runs a container pre-flight probe and attempts
+            // a stream-copy remux repair for files with moov-at-EOF or mild
+            // container damage. If the container is totally unrepairable,
+            // faststart throws with code="CORRUPT_UPLOAD" — we mark the video
+            // "failed" immediately rather than cycling through 3 transcoder
+            // retries against an unreadable file.
+            let skipTranscodeEnqueue = false;
             try {
               await runFaststart(videoId, objectKey, { skipStatusUpdate: false });
               capturedLog.info({ sessionId, videoId }, "[finalize:bg] faststart done");
             } catch (err) {
-              capturedLog.warn({ err, videoId }, "[finalize:bg] faststart failed (non-fatal)");
+              const isCorrupt = (err as { code?: string })?.code === "CORRUPT_UPLOAD";
+              if (isCorrupt) {
+                capturedLog.error(
+                  { err, videoId, objectKey },
+                  "[finalize:bg] CORRUPT UPLOAD — container structurally damaged and unrepairable. " +
+                  "Marking video failed. Operator must re-upload the file.",
+                );
+                skipTranscodeEnqueue = true;
+                await db
+                  .update(videos)
+                  .set({ transcodingStatus: "failed" })
+                  .where(eq(videos.id, videoId))
+                  .catch(() => {});
+                adminEventBus.push("videos-library-updated", { videoId, reason: "corrupt-upload-failed" });
+              } else {
+                capturedLog.warn({ err, videoId }, "[finalize:bg] faststart failed (non-fatal)");
+              }
             }
 
             // Enqueue HLS transcoding AFTER faststart is complete.
-            try {
-              await enqueueTranscode({ videoId, videoPath: objectKey });
-              capturedLog.info({ sessionId, videoId }, "[finalize:bg] HLS transcode job queued");
-            } catch (err) {
-              capturedLog.warn(
-                { err, videoId },
-                "[finalize:bg] enqueueTranscode failed (non-fatal) — faststart-applied video is still broadcast-ready",
-              );
+            // Skipped when the container is confirmed unrepairable (CORRUPT_UPLOAD)
+            // to avoid wasting transcoder retry cycles on a permanently broken file.
+            if (!skipTranscodeEnqueue) {
+              try {
+                await enqueueTranscode({ videoId, videoPath: objectKey });
+                capturedLog.info({ sessionId, videoId }, "[finalize:bg] HLS transcode job queued");
+              } catch (err) {
+                capturedLog.warn(
+                  { err, videoId },
+                  "[finalize:bg] enqueueTranscode failed (non-fatal) — faststart-applied video is still broadcast-ready",
+                );
+              }
             }
 
             capturedLog.info(
@@ -1431,21 +1451,42 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           }
 
           // Faststart MUST complete before enqueueTranscode (see Path A rationale).
+          // CORRUPT_UPLOAD errors are handled the same way as Path A: mark failed
+          // and skip transcode enqueue to avoid pointless retry cycles.
+          let skipTranscodeEnqueueB = false;
           try {
             await runFaststart(videoIdB, result.objectKey, { skipStatusUpdate: false });
             capturedLogB.info({ sessionId, videoId: videoIdB }, "[finalize:db_fallback:bg] faststart done");
           } catch (err) {
-            capturedLogB.warn({ err, videoId: videoIdB }, "[finalize:db_fallback:bg] faststart failed (non-fatal)");
+            const isCorruptB = (err as { code?: string })?.code === "CORRUPT_UPLOAD";
+            if (isCorruptB) {
+              capturedLogB.error(
+                { err, videoId: videoIdB, objectKey: result.objectKey },
+                "[finalize:db_fallback:bg] CORRUPT UPLOAD — container structurally damaged and unrepairable. " +
+                "Marking video failed. Operator must re-upload the file.",
+              );
+              skipTranscodeEnqueueB = true;
+              await db
+                .update(videos)
+                .set({ transcodingStatus: "failed" })
+                .where(eq(videos.id, videoIdB))
+                .catch(() => {});
+              adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "corrupt-upload-failed" });
+            } else {
+              capturedLogB.warn({ err, videoId: videoIdB }, "[finalize:db_fallback:bg] faststart failed (non-fatal)");
+            }
           }
 
-          try {
-            await enqueueTranscode({ videoId: videoIdB, videoPath: result.objectKey });
-            capturedLogB.info({ sessionId, videoId: videoIdB }, "[finalize:db_fallback:bg] HLS transcode job queued");
-          } catch (err) {
-            capturedLogB.warn(
-              { err, videoId: videoIdB },
-              "[finalize:db_fallback:bg] enqueueTranscode failed (non-fatal)",
-            );
+          if (!skipTranscodeEnqueueB) {
+            try {
+              await enqueueTranscode({ videoId: videoIdB, videoPath: result.objectKey });
+              capturedLogB.info({ sessionId, videoId: videoIdB }, "[finalize:db_fallback:bg] HLS transcode job queued");
+            } catch (err) {
+              capturedLogB.warn(
+                { err, videoId: videoIdB },
+                "[finalize:db_fallback:bg] enqueueTranscode failed (non-fatal)",
+              );
+            }
           }
 
           capturedLogB.info(

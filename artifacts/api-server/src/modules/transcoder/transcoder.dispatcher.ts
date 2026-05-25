@@ -1,4 +1,4 @@
-import { and, eq, inArray, lte, or, sql, isNull, count } from "drizzle-orm";
+import { and, eq, inArray, lt, lte, or, sql, isNull, count } from "drizzle-orm";
 import { readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -163,10 +163,72 @@ class TranscoderDispatcher {
     logger.info("transcoder dispatcher stopped");
   }
 
+  /**
+   * Periodically resets jobs that are stuck in "processing" beyond the
+   * configured job timeout. This is a belt-and-suspenders guard for
+   * long-running production deployments — resetOrphanedJobs only fires
+   * on startup, but a job can theoretically outlive its SIGKILL window
+   * (e.g. SIGKILL was swallowed, or a server crash race left the DB row
+   * in "processing" while this.running was never set again).
+   *
+   * Resets to "queued" rather than "failed" so the job retries normally.
+   * The 5-minute grace period beyond TRANSCODER_JOB_TIMEOUT_MS prevents
+   * false resets when the job is legitimately finishing its final upload.
+   */
+  private async resetStuckJobs(): Promise<void> {
+    try {
+      const stuckCutoff = new Date(
+        Date.now() - (env.TRANSCODER_JOB_TIMEOUT_MS + 5 * 60_000),
+      );
+      const reset = await db
+        .update(jobs)
+        .set({
+          status: "queued",
+          progress: 0,
+          startedAt: null,
+          errorMessage: "Reset: job exceeded processing timeout — periodic stuck-job watchdog.",
+        })
+        .where(
+          and(
+            eq(jobs.status, "processing"),
+            lt(jobs.startedAt, stuckCutoff),
+          ),
+        )
+        .returning({ id: jobs.id, videoId: jobs.videoId });
+
+      if (reset.length > 0) {
+        const videoIds = reset.map((r) => r.videoId);
+        await db
+          .update(videos)
+          .set({ transcodingStatus: "queued" })
+          .where(inArray(videos.id, videoIds));
+
+        logger.warn(
+          { count: reset.length, jobIds: reset.map((r) => r.id) },
+          "transcoder: periodic watchdog reset stuck processing jobs",
+        );
+        for (const r of reset) {
+          adminEventBus.push("transcoding-update", {
+            videoId: r.videoId,
+            jobId: r.id,
+            status: "queued",
+            progress: 0,
+          });
+        }
+      }
+    } catch (err) {
+      logger.warn({ err }, "transcoder: stuck-job watchdog error (non-fatal)");
+    }
+  }
+
   async runOnce(): Promise<{ ran: boolean }> {
     if (this.running) return { ran: false };
     this.running = true;
     try {
+      // Run the stuck-job watchdog on every tick to recover jobs that somehow
+      // outlived their timeout in a long-running production process.
+      await this.resetStuckJobs();
+
       const now = new Date();
 
       // Sample and publish queue depth before claiming a job.
@@ -230,6 +292,24 @@ class TranscoderDispatcher {
             });
           },
         });
+
+        // ── HLS output integrity check ────────────────────────────────────────
+        // Verify the master playlist actually landed in storage before committing
+        // hls_ready. A partial DB write failure in uploadDirRecursive would leave
+        // the job showing "done" but the master.m3u8 missing — every player would
+        // 404. Throwing here causes a normal retry which regenerates HLS from scratch.
+        const masterKey = `transcoded/${job.videoId}/master.m3u8`;
+        const masterExists = await db
+          .execute(sql`SELECT 1 FROM storage_blobs WHERE key = ${masterKey} LIMIT 1`)
+          .then((r) => (r.rows as unknown[]).length > 0)
+          .catch(() => false);
+        if (!masterExists) {
+          throw new Error(
+            `transcoder: HLS integrity check failed — master.m3u8 not found in storage ` +
+            `(key=${masterKey}). FFmpeg exited 0 but the manifest was not stored. ` +
+            `Retrying will regenerate HLS output.`,
+          );
+        }
 
         await db.update(jobs)
           .set({

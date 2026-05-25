@@ -30,6 +30,7 @@ import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
 import { boostTranscodePriority } from "./transcoder.queue.js";
+import { probeContainerIsValid, remuxForFaststart } from "./transcoder.service.js";
 
 const videos = schema.videosTable;
 
@@ -239,8 +240,45 @@ export async function runFaststart(
     const { body } = await storage().getObject(objectKey);
     await pipeline(body, createWriteStream(inputPath));
 
-    log.info("faststart: running ffmpeg -movflags +faststart");
-    await spawnFfmpegFaststart(inputPath, outputPath, log);
+    // ── Container pre-flight: detect moov-missing / structurally corrupt MP4 ──
+    //
+    // probeContainerIsValid runs ffprobe -v error and checks for the exact
+    // stderr patterns that cause HLS encode failures: "moov atom not found",
+    // "invalid data found", "partial file", "EOF before frame", etc.
+    //
+    // If the container is intact we run the normal spawnFfmpegFaststart pass.
+    // If ffprobe detects damage we attempt a stream-copy remux via
+    // remuxForFaststart — which also applies -movflags +faststart — so a
+    // successful repair produces the final output in one shot (no second pass).
+    // If remux also fails we throw a labelled CORRUPT_UPLOAD error so the
+    // finalize caller can log a clear diagnostic rather than cycling through
+    // transcoder retry attempts against a permanently unreadable file.
+    log.info("faststart: probing container validity");
+    const containerValid = await probeContainerIsValid(inputPath);
+    if (!containerValid) {
+      log.warn(
+        { videoId, objectKey },
+        "faststart: container probe failed — attempting stream-copy remux recovery " +
+        "(normal for uploads with moov atom at EOF or mild container damage)",
+      );
+      const recovered = await remuxForFaststart(inputPath, outputPath, videoId);
+      if (!recovered) {
+        throw Object.assign(
+          new Error(
+            "faststart: MP4 container is unrepairable — ffprobe detected structural damage " +
+            "(moov atom missing, partial/truncated file, or invalid container data) and the " +
+            "stream-copy remux recovery also failed. Re-upload the video file to recover.",
+          ),
+          { code: "CORRUPT_UPLOAD" },
+        );
+      }
+      // Repair succeeded: outputPath already has -movflags +faststart applied.
+      // Skip spawnFfmpegFaststart — no second pass needed.
+      log.info({ videoId }, "faststart: remux-recovery succeeded — moov atom rebuilt at file head");
+    } else {
+      log.info("faststart: running ffmpeg -movflags +faststart");
+      await spawnFfmpegFaststart(inputPath, outputPath, log);
+    }
 
     const { size: outputSizeBytes } = await stat(outputPath);
 

@@ -320,7 +320,7 @@ async function downloadSourceToTempFile(objectKey: string, destPath: string): Pr
  * found, EOF before frame, etc.) — the exact patterns FFmpeg emits for the
  * production failure class we're fixing.
  */
-async function probeContainerIsValid(inputPath: string): Promise<boolean> {
+export async function probeContainerIsValid(inputPath: string): Promise<boolean> {
   return new Promise((resolve) => {
     const proc = spawn("ffprobe", [
       "-v", "error",
@@ -370,7 +370,7 @@ async function probeContainerIsValid(inputPath: string): Promise<boolean> {
  * Returns the path to the remuxed file on success, or null on any failure
  * (the caller treats null as a hard error — there's nothing else to try).
  */
-async function remuxForFaststart(
+export async function remuxForFaststart(
   inputPath: string,
   outputPath: string,
   videoId: string,
@@ -770,6 +770,40 @@ export async function probeUploadedDuration(sourceObjectKey: string): Promise<nu
   } catch (err) {
     logger.warn({ err, sourceObjectKey }, "probe-duration: failed (non-fatal)");
     return null;
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+/**
+ * Download an assembled video from object storage to a temp file and run
+ * `probeContainerIsValid` to determine whether its container can be decoded.
+ *
+ * Returns `{ valid: true }` when the container is healthy, or when storage
+ * is unavailable (probe is skipped rather than blocking the pipeline).
+ * Returns `{ valid: false, error }` when ffprobe detects a structural problem
+ * (moov not found, invalid data found, partial file, EOF before frame, etc.).
+ *
+ * Non-throwing — any exception is caught and returned as `{ valid: false }`.
+ * Callers use the result for diagnostic logging only; faststart.service.ts
+ * handles the actual repair (remux recovery) during its own download pass.
+ */
+export async function probeUploadedContainerValidity(
+  objectKey: string,
+): Promise<{ valid: boolean; error?: string }> {
+  const s = storage();
+  if (!s.enabled) return { valid: true };
+  const tmpDir = path.join(os.tmpdir(), `container-probe-${randomUUID()}`);
+  try {
+    await mkdir(tmpDir, { recursive: true });
+    const extRaw = path.extname(objectKey).replace(/[^a-z0-9.]/gi, "");
+    const ext = extRaw || ".mp4";
+    const tmpPath = path.join(tmpDir, `source${ext}`);
+    await downloadSourceToTempFile(objectKey, tmpPath);
+    const valid = await probeContainerIsValid(tmpPath);
+    return { valid };
+  } catch (err) {
+    return { valid: false, error: err instanceof Error ? err.message : String(err) };
   } finally {
     await rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
   }
