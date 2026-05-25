@@ -71,6 +71,8 @@ interface BroadcastQueueRow {
   transcodingStatus: string | null;
   /** True when a complete HLS master playlist exists for this item. */
   hasHls: boolean;
+  /** Error message from the last failed transcoding job, or null when not failed. */
+  transcodingError: string | null;
 }
 
 interface SourceHealthEntry {
@@ -336,6 +338,8 @@ interface SortableItemProps {
   isReactivating: boolean;
   onDeactivate: (id: string) => void;
   onReactivate: (id: string) => void;
+  onRetryHls: (videoId: string) => void;
+  isRetryingHls: boolean;
 }
 
 function SortableQueueItem({
@@ -349,6 +353,8 @@ function SortableQueueItem({
   isReactivating,
   onDeactivate,
   onReactivate,
+  onRetryHls,
+  isRetryingHls,
 }: SortableItemProps) {
   const {
     attributes,
@@ -524,14 +530,31 @@ function SortableQueueItem({
             );
           if (item.transcodingStatus === "failed")
             return (
-              <Badge
-                variant="destructive"
-                className="gap-1 shrink-0 text-[10px]"
-                title="HLS transcoding failed — broadcasting as raw MP4."
-              >
-                <XCircle className="h-2.5 w-2.5" />
-                HLS failed
-              </Badge>
+              <div className="flex items-center gap-1 shrink-0">
+                <Badge
+                  variant="destructive"
+                  className="gap-1 text-[10px]"
+                  title={
+                    item.transcodingError
+                      ? `HLS transcoding failed — broadcasting as raw MP4.\n\nError: ${item.transcodingError}`
+                      : "HLS transcoding failed — broadcasting as raw MP4."
+                  }
+                >
+                  <XCircle className="h-2.5 w-2.5" />
+                  HLS failed
+                </Badge>
+                {item.videoId && (
+                  <button
+                    onClick={() => onRetryHls(item.videoId!)}
+                    disabled={isRetryingHls}
+                    className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-amber-300 hover:bg-amber-50 disabled:opacity-50 dark:text-amber-400 dark:ring-amber-700 dark:hover:bg-amber-950/30"
+                    title="Retry HLS transcoding for this video."
+                  >
+                    <RotateCw className={`h-2.5 w-2.5 ${isRetryingHls ? "animate-spin" : ""}`} />
+                    Retry
+                  </button>
+                )}
+              </div>
             );
           if (item.transcodingStatus === "ready")
             return (
@@ -703,6 +726,27 @@ export default function BroadcastV2Page() {
     },
     onError: (err) => {
       toast.error(err instanceof HttpError ? err.message : "Failed to remove item.");
+    },
+  });
+
+  // Retry HLS transcoding for a queue item whose transcodingStatus === 'failed'.
+  // Calls the same endpoint as the manual "Queue HLS" button in the Videos page,
+  // which re-arms the failed job (resets attempts + errorMessage) and nudges the
+  // dispatcher to start immediately rather than waiting for the next poll tick.
+  const retryHlsMutation = useMutation({
+    mutationFn: (videoId: string) =>
+      api.post<{ jobId: string; reused: boolean }>(
+        `/admin/videos/${videoId}/transcode`,
+        {},
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
+      toast.success("HLS transcoding re-queued — encoding will start shortly.");
+      void api.post("/broadcast-v2/reload", { idempotencyKey: crypto.randomUUID() }).catch(() => {});
+    },
+    onError: (err) => {
+      toast.error(err instanceof HttpError ? err.message : "Failed to retry HLS transcoding.");
     },
   });
 
@@ -1956,20 +2000,33 @@ export default function BroadcastV2Page() {
                     <Badge variant="destructive" className="ml-1 text-[10px] px-1.5 py-0">{diagnostics.autoSuspended.length}</Badge>
                   </div>
                   <p className="mb-2 text-[11px] text-muted-foreground">
-                    These items were deactivated automatically after repeated URL failures. Re-enable them in the queue editor once the source is fixed.
+                    These items were temporarily suspended after repeated URL failures. They <strong>auto-recover after 5 minutes</strong> — or click Re-enable in the queue above to unblock immediately.
                   </p>
                   <div className="flex flex-col gap-1">
-                    {diagnostics.autoSuspended.map((item) => (
-                      <div key={item.itemId} className="flex items-center justify-between rounded-md bg-red-50 dark:bg-red-950/30 px-2 py-1.5 text-xs">
-                        <span className="truncate font-medium text-red-800 dark:text-red-300 max-w-[200px]" title={item.title ?? item.itemId}>
-                          {item.title ?? item.itemId}
-                        </span>
-                        <div className="flex items-center gap-2 shrink-0 ml-2">
-                          <span className="text-red-600 dark:text-red-400">{item.failCount} failures</span>
-                          <span className="text-muted-foreground">{formatAgo(item.suspendedAtMs)}</span>
+                    {diagnostics.autoSuspended.map((item) => {
+                      const SUSPENSION_TTL_MS = 5 * 60_000;
+                      const recoverAtMs = item.suspendedAtMs + SUSPENSION_TTL_MS;
+                      const secsLeft = Math.max(0, Math.ceil((recoverAtMs - liveNow) / 1000));
+                      const recovered = secsLeft === 0;
+                      const recoveryLabel = recovered
+                        ? "Auto-recovered"
+                        : secsLeft >= 60
+                          ? `Auto-recovers in ${Math.ceil(secsLeft / 60)}m`
+                          : `Auto-recovers in ${secsLeft}s`;
+                      return (
+                        <div key={item.itemId} className="flex items-center justify-between rounded-md bg-red-50 dark:bg-red-950/30 px-2 py-1.5 text-xs">
+                          <span className="truncate font-medium text-red-800 dark:text-red-300 max-w-[180px]" title={item.title ?? item.itemId}>
+                            {item.title ?? item.itemId}
+                          </span>
+                          <div className="flex items-center gap-2 shrink-0 ml-2">
+                            <span className="text-red-600 dark:text-red-400">{item.failCount} failures</span>
+                            <span className={recovered ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground"}>
+                              {recoveryLabel}
+                            </span>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -2318,6 +2375,8 @@ export default function BroadcastV2Page() {
                         isReactivating={reactivateMutation.isPending}
                         onDeactivate={(id) => deactivateMutation.mutate(id)}
                         onReactivate={(id) => reactivateMutation.mutate(id)}
+                        onRetryHls={(videoId) => retryHlsMutation.mutate(videoId)}
+                        isRetryingHls={retryHlsMutation.isPending}
                       />
                     );
                   })}

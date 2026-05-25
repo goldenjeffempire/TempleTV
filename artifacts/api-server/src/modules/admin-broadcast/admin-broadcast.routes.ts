@@ -1,12 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, and } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { broadcastService } from "../broadcast/broadcast.service.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
-import { clearSuspended } from "../broadcast-v2/repository/queue.repo.js";
+import { clearSuspended, clearBadUrl } from "../broadcast-v2/repository/queue.repo.js";
 import { NotFoundError, BadRequestError } from "../../shared/errors.js";
 import { boostTranscodePriority } from "../transcoder/transcoder.queue.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
@@ -52,12 +52,15 @@ const QueueRowSchema = z.object({
   transcodingStatus: z.string().nullable(),
   /** True when the video has a complete HLS master playlist ready to stream. */
   hasHls: z.boolean(),
+  /** Error message from the last failed transcoding job, or null when not failed. */
+  transcodingError: z.string().nullable(),
 });
 
-/** Queue row optionally enriched with HLS fields from managed_videos. */
+/** Queue row optionally enriched with HLS + job error fields. */
 type EnrichedQueueRow = typeof queueTable.$inferSelect & {
   transcodingStatus?: string | null | undefined;
   hlsMasterUrl?: string | null | undefined;
+  transcodingError?: string | null | undefined;
 };
 
 function toDto(row: EnrichedQueueRow): z.infer<typeof QueueRowSchema> {
@@ -76,6 +79,7 @@ function toDto(row: EnrichedQueueRow): z.infer<typeof QueueRowSchema> {
     addedAt: row.addedAt.toISOString(),
     transcodingStatus: row.transcodingStatus ?? null,
     hasHls: !!(row.hlsMasterUrl),
+    transcodingError: row.transcodingError ?? null,
   };
 }
 
@@ -155,7 +159,7 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
       // Enrich each row with HLS readiness data from managed_videos.
       // One batched IN query is far cheaper than N individual lookups.
       const videoIds = rows.filter((r) => r.videoId).map((r) => r.videoId!);
-      const hlsMap = new Map<string, { transcodingStatus: string | null; hlsMasterUrl: string | null }>();
+      const hlsMap = new Map<string, { transcodingStatus: string | null; hlsMasterUrl: string | null; transcodingError: string | null }>();
       if (videoIds.length > 0) {
         const vids = await db
           .select({
@@ -166,7 +170,27 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
           .from(videosTable)
           .where(inArray(videosTable.id, videoIds));
         for (const v of vids) {
-          hlsMap.set(v.id, { transcodingStatus: v.transcodingStatus, hlsMasterUrl: v.hlsMasterUrl });
+          hlsMap.set(v.id, { transcodingStatus: v.transcodingStatus, hlsMasterUrl: v.hlsMasterUrl, transcodingError: null });
+        }
+
+        // For items whose transcoding_status is 'failed', fetch the last error
+        // message from the transcoding_jobs table so the admin UI can surface it
+        // in the "HLS failed" badge tooltip and offer a one-click Retry.
+        const failedVideoIds = vids
+          .filter((v) => v.transcodingStatus === "failed")
+          .map((v) => v.id);
+        if (failedVideoIds.length > 0) {
+          const jobsTable = schema.transcodingJobsTable;
+          const failedJobs = await db
+            .select({ videoId: jobsTable.videoId, errorMessage: jobsTable.errorMessage })
+            .from(jobsTable)
+            .where(and(inArray(jobsTable.videoId, failedVideoIds), eq(jobsTable.status, "failed")));
+          for (const j of failedJobs) {
+            const existing = hlsMap.get(j.videoId);
+            if (existing && j.errorMessage) {
+              existing.transcodingError = j.errorMessage;
+            }
+          }
         }
       }
       return {
@@ -350,10 +374,16 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
         .where(eq(queueTable.id, id))
         .returning();
       if (updated.length === 0) throw new NotFoundError(`Queue item ${id} not found`);
-      // When an operator re-enables a previously auto-suspended item, clear the
-      // in-memory skip counter and remove it from the recentlySuspended list so
-      // the diagnostics panel reflects the fresh state immediately.
-      if (patch.isActive === true) clearSuspended(id);
+      // When an operator re-enables a previously auto-suspended item:
+      //  1. Clear the in-memory skip counter + recentlySuspended list.
+      //  2. Clear the bad-URL cache for the item's localVideoUrl so the item
+      //     can air on the very next orchestrator tick rather than waiting for
+      //     the 5-min suspension TTL to expire on its own.
+      if (patch.isActive === true) {
+        clearSuspended(id);
+        const url = updated[0]!.localVideoUrl;
+        if (url) clearBadUrl(url);
+      }
       // Either change affects the active rotation — both engines need to reload.
       // V1: broadcastEngine.reload() recomputes the queue snapshot.
       // V2: adminEventBus fires the bus bridge that calls orchestrator.reload().
