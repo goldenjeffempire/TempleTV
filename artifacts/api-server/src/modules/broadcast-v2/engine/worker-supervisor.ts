@@ -37,9 +37,17 @@ export interface WorkerHealth {
   lastErrorAtMs: number | null;
   lastError: string | null;
   nextRunAtMs: number | null;
+  /** Wall-clock ms when the circuit breaker will auto-reset. Null when closed. */
+  circuitAutoResetAtMs: number | null;
 }
 
 const DEFAULT_BACKOFF_MS = [1_000, 5_000, 15_000, 60_000] as const;
+/**
+ * After a circuit-breaker trip, automatically reset and retry the worker
+ * after this many milliseconds (10 minutes). Prevents transient errors from
+ * permanently silencing background workers without operator intervention.
+ */
+const CIRCUIT_AUTO_RESET_MS = 10 * 60_000;
 
 class SupervisedWorker {
   private running = false;
@@ -53,6 +61,8 @@ class SupervisedWorker {
   private lastError: string | null = null;
   private nextRunAtMs: number | null = null;
   private timer: NodeJS.Timeout | null = null;
+  /** Scheduled auto-reset timer after a circuit-breaker trip. */
+  private circuitResetTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly cfg: WorkerConfig) {}
 
@@ -73,10 +83,18 @@ class SupervisedWorker {
       clearTimeout(this.timer);
       this.timer = null;
     }
+    if (this.circuitResetTimer) {
+      clearTimeout(this.circuitResetTimer);
+      this.circuitResetTimer = null;
+    }
     logger.info({ worker: this.cfg.name }, "[worker-supervisor] worker stopped");
   }
 
   resetCircuit(): void {
+    if (this.circuitResetTimer) {
+      clearTimeout(this.circuitResetTimer);
+      this.circuitResetTimer = null;
+    }
     this.circuitOpen = false;
     this.consecutiveFailures = 0;
     if (this.running) this.schedule(0);
@@ -96,6 +114,9 @@ class SupervisedWorker {
       lastErrorAtMs: this.lastErrorAtMs,
       lastError: this.lastError,
       nextRunAtMs: this.nextRunAtMs,
+      circuitAutoResetAtMs: this.circuitResetTimer !== null
+        ? (this.lastErrorAtMs ?? Date.now()) + CIRCUIT_AUTO_RESET_MS
+        : null,
     };
   }
 
@@ -140,9 +161,25 @@ class SupervisedWorker {
       if (this.consecutiveFailures >= max) {
         this.circuitOpen = true;
         logger.error(
-          { worker: this.cfg.name, consecutiveFailures: this.consecutiveFailures, maxAllowed: max },
-          "[worker-supervisor] circuit breaker opened — worker suspended until resetCircuit()",
+          { worker: this.cfg.name, consecutiveFailures: this.consecutiveFailures, maxAllowed: max, autoResetMs: CIRCUIT_AUTO_RESET_MS },
+          "[worker-supervisor] circuit breaker opened — worker suspended; auto-reset scheduled",
         );
+        // Auto-reset after cooldown so transient errors (DB blip, network
+        // hiccup, cold-start race) don't permanently silence background
+        // workers. The timer is cancelled if stop() or resetCircuit() is
+        // called first.
+        if (this.circuitResetTimer) clearTimeout(this.circuitResetTimer);
+        this.circuitResetTimer = setTimeout(() => {
+          this.circuitResetTimer = null;
+          if (this.circuitOpen) {
+            logger.info(
+              { worker: this.cfg.name, cooldownMs: CIRCUIT_AUTO_RESET_MS },
+              "[worker-supervisor] circuit auto-reset after cooldown — retrying worker",
+            );
+            this.resetCircuit();
+          }
+        }, CIRCUIT_AUTO_RESET_MS);
+        this.circuitResetTimer.unref?.();
         return;
       }
       const backoff = this.cfg.backoffMs ?? DEFAULT_BACKOFF_MS;

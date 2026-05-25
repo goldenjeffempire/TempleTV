@@ -146,6 +146,7 @@ interface WorkerHealth {
   lastErrorAtMs: number | null;
   lastError: string | null;
   nextRunAtMs: number | null;
+  circuitAutoResetAtMs: number | null;
 }
 
 interface ValidationIssue {
@@ -335,6 +336,8 @@ export default function BroadcastV2Page() {
   // Dismissible faststart-in-progress banner. Auto-reset when no items remain
   // in 'processing' state so the banner reappears if a new faststart starts.
   const [processingAlertDismissed, setProcessingAlertDismissed] = useState(false);
+  // Dismissible circuit-open banner. Auto-reset when all workers are healthy.
+  const [circuitOpenDismissed, setCircuitOpenDismissed] = useState(false);
 
   async function adminPost(path: string, body: Record<string, unknown> = {}) {
     setBusy(path);
@@ -525,6 +528,14 @@ export default function BroadcastV2Page() {
     if (!isAllBlocked) setAllBlockedDismissed(false);
   }, [isAllBlocked]);
 
+  // Circuit-open workers: any background worker whose circuit breaker has
+  // tripped. Workers auto-reset after 10 minutes but the banner surfaces the
+  // condition early so operators can act if needed.
+  const circuitOpenWorkers = diagnostics?.workers.filter((w) => w.circuitOpen) ?? [];
+  useEffect(() => {
+    if (circuitOpenWorkers.length === 0) setCircuitOpenDismissed(false);
+  }, [circuitOpenWorkers.length]);
+
   // Auto-reset the processing banner when no more items are in 'processing'.
   useEffect(() => {
     if (processingCount === 0) setProcessingAlertDismissed(false);
@@ -688,6 +699,13 @@ export default function BroadcastV2Page() {
             Engine stuck — see health panel
           </Badge>
         )}
+        {/* Circuit-open workers badge */}
+        {circuitOpenWorkers.length > 0 && (
+          <Badge variant="destructive" className="gap-1 animate-pulse">
+            <ShieldAlert className="h-3 w-3" />
+            {circuitOpenWorkers.length} worker{circuitOpenWorkers.length > 1 ? "s" : ""} tripped
+          </Badge>
+        )}
         {/* All-sources-blocked badge */}
         {isAllBlocked && (
           <Badge variant="destructive" className="gap-1 animate-pulse">
@@ -732,8 +750,8 @@ export default function BroadcastV2Page() {
           <div className="flex-1">
             <strong>Orchestrator may be stuck.</strong> Sequence is 0 after{" "}
             {Math.round((engineHealth?.uptimeMs ?? 0) / 1000)}s uptime with the event bus bridge
-            installed. This usually means the DB pool wasn't warm at boot or a table was missing.
-            The self-heal tick retries every 10 s automatically — check the{" "}
+            installed. Auto-recovery is running — the engine will clear source blocks, re-enable
+            suspended items, and reload every 5 minutes until broadcast resumes. Check the{" "}
             <a
               href={`${apiOrigin}/broadcast-v2/health`}
               target="_blank"
@@ -742,7 +760,7 @@ export default function BroadcastV2Page() {
             >
               health endpoint
             </a>{" "}
-            for the last error, or use <strong>Reload from queue</strong> to force a retry now.
+            for the last error, or use <strong>Reload from queue</strong> to force an immediate retry.
           </div>
           <button
             type="button"
@@ -796,6 +814,35 @@ export default function BroadcastV2Page() {
               <X className="h-4 w-4" />
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Circuit-open workers banner — dismissible amber strip */}
+      {circuitOpenWorkers.length > 0 && !circuitOpenDismissed && (
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-md border border-amber-300/60 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-700/60 dark:bg-amber-950/30 dark:text-amber-200"
+        >
+          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+          <div className="flex-1">
+            <strong>{circuitOpenWorkers.length} background worker{circuitOpenWorkers.length > 1 ? "s have" : " has"} stopped</strong>{" "}
+            after repeated failures:{" "}
+            <span className="font-mono">{circuitOpenWorkers.map((w) => w.name).join(", ")}</span>.{" "}
+            {circuitOpenWorkers[0]?.circuitAutoResetAtMs != null ? (
+              <>
+                Auto-reset in ~{Math.max(0, Math.round((circuitOpenWorkers[0].circuitAutoResetAtMs - Date.now()) / 60_000))} min.{" "}
+              </>
+            ) : null}
+            See the Diagnostics panel below for the last error, or reload the broadcast engine to force an immediate retry.
+          </div>
+          <button
+            type="button"
+            aria-label="Dismiss worker circuit alert"
+            onClick={() => setCircuitOpenDismissed(true)}
+            className="shrink-0 rounded p-0.5 hover:bg-amber-200/60 dark:hover:bg-amber-800/40"
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
       )}
 
@@ -1269,7 +1316,12 @@ export default function BroadcastV2Page() {
                           <span className="min-w-0 flex-1 truncate text-xs font-medium">{w.name}</span>
                           <div className="flex shrink-0 items-center gap-2 text-[10px] text-muted-foreground">
                             {w.circuitOpen && (
-                              <Badge variant="destructive" className="text-[10px] h-4 px-1">circuit open</Badge>
+                              <Badge variant="destructive" className="text-[10px] h-4 px-1">
+                                circuit open
+                                {w.circuitAutoResetAtMs != null && (
+                                  <> · auto-reset {Math.max(0, Math.round((w.circuitAutoResetAtMs - Date.now()) / 60_000))}m</>
+                                )}
+                              </Badge>
                             )}
                             <span title={`${w.totalRuns} runs, ${w.totalErrors} errors`}>
                               {w.totalRuns}r / {w.totalErrors}e

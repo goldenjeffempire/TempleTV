@@ -754,19 +754,32 @@ class BroadcastOrchestrator extends EventEmitter {
     // Fire a Sentry alert the first time the stuck condition is detected (and
     // at most once per 5 minutes while it persists) so on-call engineers are
     // paged even when no one is watching the Grafana dashboard.
+    // Also auto-recover: clear bad-URL cache + re-enable suspended items so
+    // the broadcast doesn't stay stuck indefinitely — previously only an alert
+    // fired, requiring manual operator intervention.
     if (stuck && Date.now() - this.lastStuckAlertMs > 5 * 60_000) {
       this.lastStuckAlertMs = Date.now();
       logger.error(
         { channel: this.channelId, sequence: this.sequence, itemCount: this.items.length },
-        "[broadcast-v2] STUCK: queue has items but playback sequence has not advanced past 0 for >30 s — broadcast may be OFF_AIR",
+        "[broadcast-v2] STUCK: queue has items but playback sequence has not advanced past 0 for >30 s — triggering auto-recovery",
       );
       void import("../../../infrastructure/sentry.js").then(({ captureEvent }) =>
         captureEvent(
-          `Broadcast stuck on channel "${this.channelId}": ${this.items.length} items loaded but no sequence advance for >30 s`,
+          `Broadcast stuck on channel "${this.channelId}": ${this.items.length} items loaded but no sequence advance for >30 s — auto-recovery triggered`,
           "error",
           { channel: this.channelId, sequence: this.sequence, itemCount: this.items.length, uptimeMs: Date.now() - startedAtMs },
         ),
       ).catch(() => {});
+      // Auto-recovery: bad-URL cache and suspended items are the two most
+      // common reasons items fail to project. Clear both, then schedule a
+      // fresh reload so the next snapshot() can return a playable item.
+      // scheduleSelfHealReload() is async-deferred (never re-enters
+      // reloadInner() synchronously) and rate-limited at RELOAD_COOLDOWN_MS.
+      clearAllBadUrls();
+      void reEnableAllSuspended().catch((err: unknown) => {
+        logger.warn({ err }, "[broadcast-v2] stuck-recovery: reEnableAllSuspended failed (non-fatal)");
+      });
+      this.scheduleSelfHealReload("stuck-sequence-auto-recovery");
     }
 
     if (prevCurrentId && this.items.length > 0) {
