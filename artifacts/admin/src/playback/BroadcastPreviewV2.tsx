@@ -401,6 +401,31 @@ export function BroadcastPreviewV2({ className }: Props) {
     return null;
   }, [snapshot.state, server, youtubeVideoId]);
 
+  // Compute source diagnosis during RECOVERING_* states for known preview-only
+  // failures. This lets operators see "Preview-only failure — real viewers
+  // unaffected" below the spinner before retries are exhausted, rather than
+  // waiting for SKIP_PENDING. Only shown for sources classified as preview-only
+  // (onrender.com, YouTube) — "likely-all-surfaces" failures are legitimately
+  // ambiguous during recovery and should not show an early green indicator.
+  const recoverySourceDiagnosis = useMemo<SourceDiagnosis | null>(() => {
+    if (
+      snapshot.state !== "RECOVERING_PRIMARY" &&
+      snapshot.state !== "RECOVERING_FAILOVER"
+    ) return null;
+
+    const activeItem =
+      snapshot.activeBufferId === "A" ? snapshot.bufferA : snapshot.bufferB;
+    let source: V2Source | null = null;
+    if (activeItem && "source" in activeItem) {
+      source = (activeItem as { source: V2Source }).source;
+    } else if (server?.current?.source) {
+      source = server.current.source;
+    }
+
+    const diagnosis = classifySourceFailure(source);
+    return diagnosis.scope === "preview-only" ? diagnosis : null;
+  }, [snapshot.state, snapshot.activeBufferId, snapshot.bufferA, snapshot.bufferB, server]);
+
   // Compute the source diagnosis only when SKIP_PENDING. The active buffer
   // holds whichever item the FSM was trying to play when retries were
   // exhausted — prefer that over lastServerSnapshot so overrides are handled.
@@ -580,6 +605,24 @@ export function BroadcastPreviewV2({ className }: Props) {
           <>
             <Loader2 size={20} className="animate-spin text-white/60" />
             <p className="text-xs font-medium text-white/70">{overlay.label}</p>
+            {overlay.kind === "tuning" && recoverySourceDiagnosis && (
+              <TooltipProvider delayDuration={120}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div className="flex items-center gap-1 mt-0.5 cursor-default">
+                      <CheckCircle2 size={10} className="text-emerald-400 shrink-0" />
+                      <p className="text-[10px] text-emerald-300/80 leading-tight">
+                        {recoverySourceDiagnosis.headline} — real viewers unaffected
+                      </p>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="max-w-[260px] text-[11px]">
+                    <p className="font-medium mb-1">{recoverySourceDiagnosis.headline}</p>
+                    <p className="text-muted-foreground leading-relaxed">{recoverySourceDiagnosis.viewerNote}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            )}
           </>
         ) : overlay?.kind === "offair" ? (
           <>

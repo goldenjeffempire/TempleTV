@@ -14,7 +14,13 @@
  * failure for each item so the analytics report shows trending health.
  */
 import { logger } from "../../../infrastructure/logger.js";
-import { queueRepo } from "../repository/queue.repo.js";
+import {
+  queueRepo,
+  markBadUrl,
+  incrementBadUrlSkipCount,
+  autoSuspendQueueItem,
+  BAD_URL_SKIP_THRESHOLD,
+} from "../repository/queue.repo.js";
 import { playbackAnalytics } from "./playback-analytics.js";
 
 export interface ScanItemResult {
@@ -44,7 +50,22 @@ const MAX_CONCURRENT = 4;
 const DEFAULT_INTERVAL_MS = 2 * 60_000;
 const INITIAL_DELAY_MS = 45_000;
 
-async function probeUrl(url: string): Promise<{ ok: boolean; status: number | null }> {
+/**
+ * Consecutive scanner failures before the URL is proactively added to the
+ * bad-URL cache (90 s TTL). Complements the stall-report-based escalation
+ * path with a server-side circuit breaker for sources whose clients are
+ * silently degrading rather than emitting stall reports.
+ *
+ * Set to 3 (≈ 6 minutes with 2-minute scan interval) — enough to
+ * distinguish a transient CDN hiccup from a persistently broken source.
+ */
+const SCANNER_BAD_URL_THRESHOLD = 3;
+
+/**
+ * Probe a non-HLS URL for HTTP reachability using HEAD + Range.
+ * 200 = full, 206 = partial OK, 416 = range not satisfiable but file exists.
+ */
+async function probeUrl(url: string): Promise<{ ok: boolean; status: number | null; reason?: string }> {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), PROBE_TIMEOUT_MS);
   try {
@@ -54,12 +75,50 @@ async function probeUrl(url: string): Promise<{ ok: boolean; status: number | nu
       headers: { Range: "bytes=0-0" },
     });
     clearTimeout(t);
-    // 200 = full response, 206 = partial OK, 416 = range invalid but file exists
     const ok = res.status === 200 || res.status === 206 || res.status === 416;
     return { ok, status: res.status };
   } catch {
     clearTimeout(t);
     return { ok: false, status: null };
+  }
+}
+
+/**
+ * Validate an HLS manifest URL by fetching it and checking content.
+ *
+ * HEAD probes can return 200 for stale/empty manifests cached by a CDN.
+ * A GET + content check ensures the playlist is actually valid:
+ *   • Starts with #EXTM3U (required HLS header)
+ *   • Contains at least one stream variant (#EXT-X-STREAM-INF) or
+ *     segment reference (#EXTINF) — guards against empty master playlists
+ *     from ingest sources that are live but not yet streaming.
+ */
+async function probeHlsManifest(url: string): Promise<{ ok: boolean; status: number | null; reason?: string }> {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), PROBE_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      signal: ac.signal,
+      headers: { Accept: "application/vnd.apple.mpegurl, application/x-mpegurl, */*" },
+    });
+    clearTimeout(t);
+    if (!res.ok) return { ok: false, status: res.status, reason: `HTTP ${res.status}` };
+
+    const text = await res.text();
+    if (!text.trimStart().startsWith("#EXTM3U")) {
+      return { ok: false, status: res.status, reason: "invalid HLS manifest (missing #EXTM3U header)" };
+    }
+    const hasStreams = text.includes("#EXT-X-STREAM-INF");
+    const hasSegments = text.includes("#EXTINF");
+    if (!hasStreams && !hasSegments) {
+      return { ok: false, status: res.status, reason: "empty HLS manifest (no streams or segments)" };
+    }
+    return { ok: true, status: res.status };
+  } catch (err) {
+    clearTimeout(t);
+    const reason = err instanceof Error && err.name === "AbortError" ? "timeout" : "network error";
+    return { ok: false, status: null, reason };
   }
 }
 
@@ -139,10 +198,16 @@ class MediaIntegrityScannerImpl {
 
           let ok = false;
           let httpStatus: number | null = null;
+          let failReason: string | undefined;
           if (url) {
-            const probe = await probeUrl(url);
+            // HLS manifests are validated by fetching and parsing content —
+            // a HEAD probe can return 200 for stale CDN-cached empty playlists.
+            const probe = kind === "hls"
+              ? await probeHlsManifest(url)
+              : await probeUrl(url);
             ok = probe.ok;
             httpStatus = probe.status;
+            failReason = probe.reason;
           }
 
           const newCount = ok ? 0 : prev.count + 1;
@@ -151,7 +216,7 @@ class MediaIntegrityScannerImpl {
 
           if (!ok && newCount === 1) {
             logger.warn(
-              { itemId: row.id, title: row.title, url, httpStatus },
+              { itemId: row.id, title: row.title, url, httpStatus, reason: failReason },
               "[media-scanner] queue item media unreachable (first detection)",
             );
             playbackAnalytics.record({
@@ -159,13 +224,38 @@ class MediaIntegrityScannerImpl {
               itemId: row.id,
               itemTitle: row.title,
               ts: Date.now(),
-              meta: { url, httpStatus, source: "media-scanner" },
+              meta: { url, httpStatus, reason: failReason, source: "media-scanner" },
             });
           } else if (!ok && newCount % 5 === 0) {
             logger.warn(
-              { itemId: row.id, title: row.title, consecutiveFailures: newCount, url },
+              { itemId: row.id, title: row.title, consecutiveFailures: newCount, url, reason: failReason },
               "[media-scanner] queue item media still unreachable",
             );
+          }
+
+          // ── Proactive bad-URL circuit breaker ─────────────────────────────
+          // After SCANNER_BAD_URL_THRESHOLD consecutive scanner failures, add
+          // the URL to the bad-URL cache (90 s TTL). On the next orchestrator
+          // tick (≤ 2 s) isKnownBadUrl() will skip this item, preventing
+          // viewers from continuing to receive a broken source.
+          //
+          // After BAD_URL_SKIP_THRESHOLD total increments, auto-suspend for
+          // 5 minutes — same escalation the stall-report path uses, so both
+          // paths converge to the same recovery mechanism.
+          if (!ok && url && newCount === SCANNER_BAD_URL_THRESHOLD) {
+            markBadUrl(url);
+            logger.warn(
+              { itemId: row.id, title: row.title, consecutiveFailures: newCount, url },
+              "[media-scanner] proactively marking URL bad after repeated scan failures",
+            );
+            // Increment the per-item skip counter; escalate to suspension if threshold reached.
+            const skipCount = incrementBadUrlSkipCount(row.id);
+            if (skipCount >= BAD_URL_SKIP_THRESHOLD) {
+              autoSuspendQueueItem(row.id, row.title, skipCount, url);
+            }
+          } else if (!ok && url && newCount > SCANNER_BAD_URL_THRESHOLD) {
+            // Re-mark on every scan after threshold to keep TTL fresh.
+            markBadUrl(url);
           }
 
           return {

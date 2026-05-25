@@ -361,22 +361,45 @@ export class PlayerMachine {
       this.emit({ type: "play", bufferId: activeId, positionSecs });
       this.transition("PREPARING_ACTIVE");
     } else {
-      // Same item still playing. If we're stuck in BOOTSTRAP, SYNCING,
-      // or a recovery state (e.g. after a reconnect that sent the same
-      // snapshot), force-transition to PLAYING so the overlay disappears
-      // and the existing buffer continues without rebinding. Also re-seek
-      // to wall-clock position to correct any drift accumulated during
-      // the reconnection window.
+      // Same item still playing.
       if (
         this.snapshot.state === "BOOTSTRAP" ||
         this.snapshot.state === "SYNCING" ||
-        this.snapshot.state === "PREPARING_ACTIVE" ||
-        this.snapshot.state === "RECOVERING_PRIMARY" ||
-        this.snapshot.state === "RECOVERING_FAILOVER"
+        this.snapshot.state === "PREPARING_ACTIVE"
       ) {
+        // No active recovery — server confirming same item means we can
+        // start/resume immediately. Re-seek to wall-clock position to
+        // correct any drift accumulated since the last item.advanced event.
         const positionSecs = resolvePositionSecs(server.current, server.current.startsAtMs);
         this.emit({ type: "play", bufferId: activeId, positionSecs });
         this.transition("PLAYING");
+      } else if (
+        this.snapshot.state === "RECOVERING_PRIMARY" ||
+        this.snapshot.state === "RECOVERING_FAILOVER"
+      ) {
+        // Active source recovery in progress. The server confirming the same
+        // item does NOT mean the source loaded — the adapter is still waiting
+        // for buffer-ready or buffer-error from the re-bound element.
+        //
+        // Re-issue play() to keep the element active (e.g. after a transport
+        // reconnect where the adapter restarted), but do NOT transition to
+        // PLAYING. Doing so would:
+        //   (a) hide the "Retrying source…" overlay before the source is
+        //       confirmed playable — false positive for the viewer.
+        //   (b) arm the stall watchdog on an element that is still loading
+        //       (in PLAYING state), causing buffer-stalled → onBufferError →
+        //       primaryRetries increments, burning through the retry budget
+        //       on a source that would have recovered cleanly.
+        //   (c) prevent onBufferReady from resetting primaryRetries — it
+        //       only resets in RECOVERING_* states, so if the machine is in
+        //       PLAYING when canplay fires, primaryRetries stays elevated and
+        //       the next genuine transient error escalates too aggressively.
+        //
+        // Correct path: buffer-ready → transition("PLAYING") + reset retries,
+        //               buffer-error → escalate recovery or SKIP_PENDING.
+        const positionSecs = resolvePositionSecs(server.current, server.current.startsAtMs);
+        this.emit({ type: "play", bufferId: activeId, positionSecs });
+        // State stays in RECOVERING_* — driven by buffer-ready/buffer-error.
       } else if (this.snapshot.state === "SKIP_PENDING") {
         // Single-item queue: server skipped back to the same item with a
         // fresh cycle anchor (new startsAtMs). Fully rebind and restart —
