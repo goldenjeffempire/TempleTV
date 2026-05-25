@@ -118,7 +118,7 @@ YOUTUBE_CHANNEL_ID = "UCPFFvkE-KGpR37qJgvYriJg"
 SENTRY_TRACES_RATE = "0.2"
 DB_STATEMENT_TIMEOUT_MS = "30000"
 REFRESH_TOKEN_STRICT_IP_CHECK = "false"
-API_ORIGIN = "https://admin.templetv.org.ng"
+API_ORIGIN = "https://api.templetv.org.ng"
 
 [userenv.development]
 PROD_SYNC_API_URL = "https://api.templetv.org.ng"

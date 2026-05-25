@@ -359,11 +359,6 @@ export async function runFaststart(
 
     void invalidateVideosCatalogCache();
     adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-complete" });
-    // Trigger an orchestrator reload so the broadcast queue picks up the
-    // faststarted file. The reload clears the bad-URL cache so items that
-    // entered SKIP_PENDING while the file was being re-uploaded are
-    // unblocked and promoted to LIVE without operator intervention.
-    adminEventBus.push("broadcast-queue-updated", { reason: "faststart-complete", videoId });
 
     // Auto-add to broadcast queue if not already there.
     // Videos are only enqueued AFTER faststart so the player always receives
@@ -377,6 +372,14 @@ export async function runFaststart(
     } else {
       log.debug({ videoId, skipReason: enqueueResult.skipReason }, "faststart: enqueueIfMissing skipped");
     }
+
+    // Trigger an orchestrator reload AFTER enqueueIfMissing so the single
+    // reload always finds the newly-added item in the queue.  Firing before
+    // would cause an extra reload (item not yet present), then a second one
+    // when broadcastService.addToQueue fires its own broadcast-queue-updated.
+    // The reload clears the bad-URL cache so items that entered SKIP_PENDING
+    // while the file was being re-uploaded are unblocked immediately.
+    adminEventBus.push("broadcast-queue-updated", { reason: "faststart-complete", videoId });
 
     // Boost transcoding priority for videos now in the broadcast queue.
     // The video is either just-enqueued or was already queued before faststart

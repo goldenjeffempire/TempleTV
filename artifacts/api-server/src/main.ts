@@ -185,8 +185,37 @@ function stopWorkers() {
 
 async function main() {
   const mode = env.RUN_MODE;
-  logger.info({ runMode: mode }, "process starting");
+  logger.info({ service: "api", env: process.env.NODE_ENV ?? "unknown", runMode: mode }, "process starting");
   logger.info("Prometheus metrics exporter active — scrape GET /metrics with admin token");
+
+  // Validate API_ORIGIN at startup — a mis-pointed value is the most common
+  // cause of broadcast failures (media proxy URLs at wrong host → 404 stalls
+  // → bad-URL cache → auto-suspension of all queue items → dead air).
+  if (env.API_ORIGIN) {
+    const parsed = (() => { try { return new URL(env.API_ORIGIN); } catch { return null; } })();
+    if (!parsed) {
+      logger.error({ API_ORIGIN: env.API_ORIGIN }, "MISCONFIGURED: API_ORIGIN is not a valid URL — broadcast media proxy will be broken");
+    } else {
+      const h = parsed.hostname;
+      const looksLikeAdminFrontend = h.startsWith("admin.") || h.includes("-admin.") || h.includes(".admin.");
+      if (looksLikeAdminFrontend) {
+        logger.error(
+          { API_ORIGIN: env.API_ORIGIN },
+          "MISCONFIGURED: API_ORIGIN points to what looks like an admin frontend domain — it must be the API server URL " +
+          "(e.g. https://api.templetv.org.ng), not the admin dashboard. " +
+          "Broadcast media proxy URLs will be built at the wrong host → 404 stall reports → dead air.",
+        );
+      } else {
+        logger.info({ API_ORIGIN: env.API_ORIGIN }, "API_ORIGIN validated — own-origin and media proxy URLs will use this base");
+      }
+    }
+  } else {
+    const fallback = process.env["RENDER_EXTERNAL_URL"] ?? process.env["REPLIT_DEV_DOMAIN"];
+    logger.info(
+      { fallbackOrigin: fallback ?? "(none — localhost fallback active)" },
+      "API_ORIGIN not set — using fallback origin for upload URL normalisation and media proxy",
+    );
+  }
 
   // Pre-warm the pg pool so the first inbound request doesn't pay the
   // connection-establish round-trip. Failures are non-fatal — the app

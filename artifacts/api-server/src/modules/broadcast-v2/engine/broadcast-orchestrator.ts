@@ -666,7 +666,11 @@ class BroadcastOrchestrator extends EventEmitter {
         id: row.id,
         videoId: row.videoId ?? null,
         title: row.title,
-        thumbnailUrl: row.thumbnailUrl,
+        // Use the absolutized thumbnailUrl from toItem() (relative /api/hls/…
+        // paths are rewritten to https://api.templetv.org.ng/api/hls/…) so
+        // all client surfaces (TV, mobile, admin) can render thumbnails without
+        // needing to know the API origin.
+        thumbnailUrl: v2.thumbnailUrl,
         durationSecs: row.durationSecs,
         // Store the RESOLVED (absolute) URL so that projectItem()'s
         // isKnownBadUrl() check correctly matches entries written by

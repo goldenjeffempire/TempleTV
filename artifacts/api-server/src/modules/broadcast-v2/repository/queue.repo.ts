@@ -768,10 +768,22 @@ export const queueRepo = {
       : null;
 
     const endsAtMs = startsAtMs + row.durationSecs * 1000;
+
+    // Absolutize relative thumbnail paths (e.g. /api/hls/…/thumbnail.jpg)
+    // so client apps on any origin can display them without knowing the API
+    // base URL.  Already-absolute URLs (http/https) are returned unchanged.
+    const thumbnailUrl = (() => {
+      if (!row.thumbnailUrl) return null;
+      if (/^https?:\/\//i.test(row.thumbnailUrl)) return row.thumbnailUrl;
+      const base = ownBase.replace(/\/+$/, "");
+      const path = row.thumbnailUrl.startsWith("/") ? row.thumbnailUrl : `/${row.thumbnailUrl}`;
+      return `${base}${path}`;
+    })();
+
     return {
       id: row.id,
       title: row.title,
-      thumbnailUrl: row.thumbnailUrl,
+      thumbnailUrl,
       durationSecs: row.durationSecs,
       source,
       failoverSource,
