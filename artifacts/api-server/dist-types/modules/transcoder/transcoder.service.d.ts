@@ -44,6 +44,34 @@ interface RenditionSpec {
  */
 declare function buildFfmpegArgs(input: string, outDir: string, renditions: RenditionSpec[], hasAudio?: boolean): string[];
 /**
+ * Pre-flight probe to detect MP4 container damage BEFORE running HLS encode.
+ *
+ * Validity = ffprobe can enumerate at least one stream AND its stderr does
+ * NOT contain a moov-atom / container-parse failure signature. We deliberately
+ * do NOT require duration metadata to be present — some valid containers
+ * (e.g. fragmented MP4, growing files, certain camera exports) report no
+ * format-level duration but still transcode cleanly. The previous
+ * format=duration check forced unnecessary remux passes on those inputs.
+ *
+ * Returns true on a clean probe; false only when ffprobe fails outright OR
+ * its stderr signals a real container error (moov not found, invalid data
+ * found, EOF before frame, etc.) — the exact patterns FFmpeg emits for the
+ * production failure class we're fixing.
+ */
+export declare function probeContainerIsValid(inputPath: string): Promise<boolean>;
+/**
+ * Recovery pass for MP4 files where the moov atom is at EOF, fragmented,
+ * or otherwise unreadable by ffmpeg's HLS muxer. Performs a stream-copy
+ * remux with `+faststart` which:
+ *   • Rebuilds the moov atom and places it at the front of the file.
+ *   • Does NOT re-encode (completes in seconds even for 1+ GiB files).
+ *   • Produces a clean, playable MP4 that the HLS encoder can consume.
+ *
+ * Returns the path to the remuxed file on success, or null on any failure
+ * (the caller treats null as a hard error — there's nothing else to try).
+ */
+export declare function remuxForFaststart(inputPath: string, outputPath: string, videoId: string): Promise<string | null>;
+/**
  * FFmpeg-based HLS transcoder.
  *
  * Downloads the source video from DatabaseObjectStorage (storage_blobs table)
@@ -73,6 +101,23 @@ export declare function runTranscode(req: TranscodeRequest): Promise<TranscodeRe
  * Non-fatal: returns null on any failure.
  */
 export declare function probeUploadedDuration(sourceObjectKey: string): Promise<number | null>;
+/**
+ * Download an assembled video from object storage to a temp file and run
+ * `probeContainerIsValid` to determine whether its container can be decoded.
+ *
+ * Returns `{ valid: true }` when the container is healthy, or when storage
+ * is unavailable (probe is skipped rather than blocking the pipeline).
+ * Returns `{ valid: false, error }` when ffprobe detects a structural problem
+ * (moov not found, invalid data found, partial file, EOF before frame, etc.).
+ *
+ * Non-throwing — any exception is caught and returned as `{ valid: false }`.
+ * Callers use the result for diagnostic logging only; faststart.service.ts
+ * handles the actual repair (remux recovery) during its own download pass.
+ */
+export declare function probeUploadedContainerValidity(objectKey: string): Promise<{
+    valid: boolean;
+    error?: string;
+}>;
 /**
  * Generates a quick preview thumbnail for a newly-uploaded video by
  * extracting a single JPEG frame at t=1s from the source object in

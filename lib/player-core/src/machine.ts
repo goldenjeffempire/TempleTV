@@ -37,7 +37,31 @@ function resolvePositionSecs(
   const kind = "source" in item
     ? (item as V2Item).source.kind
     : (item as V2Override).kind;
-  if (kind === "hls") return Math.max(0, (Date.now() - startsAtMs) / 1000);
+  if (kind === "hls") {
+    const elapsed = Math.max(0, (Date.now() - startsAtMs) / 1000);
+    // Cap at (durationSecs - 2) for V2Items with a known duration.
+    //
+    // Problem this fixes: if the DB row's durationSecs overestimates the
+    // actual encoded video length (e.g. a 30-min file catalogued as 86400 s
+    // due to a missing probe at upload), the stale-snapshot guard
+    // (endsAtMs > Date.now()) never fires, so the machine binds the item
+    // and requests a seek to `elapsed` seconds.  When elapsed > actual
+    // encoded duration, AVPlayer / ExoPlayer either clamps to the last
+    // frame and immediately fires didJustFinish, or surfaces a seek error.
+    // Either path creates a rapid HANDOFF → rebind → worse-elapsed → repeat
+    // loop on mobile — the "single HLS segment replaying" symptom.
+    //
+    // Capping at (durationSecs - 2) is safe: the stale-snapshot guard
+    // already prevents binding when elapsed ≥ durationSecs in the normal
+    // case.  The 2 s margin only matters when durationSecs is slightly
+    // wrong, providing a valid in-bounds seek target so the player can
+    // finish naturally and trigger the naturalEnd callback that corrects
+    // the DB row for all future loops.
+    if ("durationSecs" in item && (item as V2Item).durationSecs > 0) {
+      return Math.min(elapsed, Math.max(0, (item as V2Item).durationSecs - 2));
+    }
+    return elapsed;
+  }
   return 0;
 }
 

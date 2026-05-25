@@ -23,6 +23,22 @@
  *     depending on whether the device has no signal or just a dead WS socket.
  *   • progressUpdateIntervalMillis=500 for sub-second stall detection.
  *
+ * HLS live-timeline fixes (May 2026):
+ *   • Actual-duration clamping: expo-av's `onLoad` durationMillis is captured
+ *     as ground truth. For VOD HLS, playFromPositionAsync is clamped to
+ *     (actualDurationMs - 2000) to prevent out-of-range seeks that cause
+ *     AVPlayer/ExoPlayer to snap to the end and immediately fire didJustFinish,
+ *     creating the "single segment replaying" loop.
+ *   • Live vs VOD detection: if durationMillis is undefined/Infinity (live HLS),
+ *     playAsync() is used instead of playFromPositionAsync() — the native player
+ *     attaches to the live edge automatically.
+ *   • Quick-finish guard: if didJustFinish fires within HLS_QUICK_FINISH_THRESHOLD_MS
+ *     of playback start, it's a spurious finish (bad seek). Retried from position 0
+ *     up to HLS_MAX_QUICK_FINISH_RETRIES times before escalating to buffer-ended.
+ *   • Live-sync interval: playAsync() called every HLS_LIVE_SYNC_INTERVAL_MS on
+ *     active+playing HLS buffers to re-latch to the live edge and refresh the
+ *     manifest on DVR-windowed streams. No-op on VOD HLS (already playing).
+ *
  * Used by `app/player.tsx` for the live HLS path (v2 broadcast).
  */
 
@@ -53,6 +69,42 @@ import { useNetworkContext } from "@/context/NetworkContext";
  *     (moov-atom seek on MP4, first manifest parse on HLS)
  */
 const BUFFERING_STALL_THRESHOLD_MS = 20_000;
+
+/**
+ * How many milliseconds of actual playback must occur before a `didJustFinish`
+ * event is treated as a genuine natural end rather than a spurious "quick finish".
+ *
+ * A quick finish (< threshold) indicates a bad seek position — typically:
+ *   1. VOD HLS where positionSecs > actual encoded duration → AVPlayer snaps to
+ *      the last frame and fires didJustFinish in < 1 s.
+ *   2. Live HLS where the DVR window is exhausted before the manifest refresh
+ *      arrives → player reaches the last cached segment and fires didJustFinish.
+ *
+ * In both cases the right recovery is to retry from position 0 rather than
+ * HANDOFF (which would rebind the same item with a worse position, looping).
+ */
+const HLS_QUICK_FINISH_THRESHOLD_MS = 5_000;
+
+/**
+ * Maximum consecutive "quick finish" retries before escalating to buffer-ended.
+ * Prevents an infinite retry loop on a source that is genuinely broken (e.g.
+ * a corrupt HLS playlist that always ends in < 5 s regardless of start position).
+ */
+const HLS_MAX_QUICK_FINISH_RETRIES = 2;
+
+/**
+ * How often (ms) to call `playAsync()` on an active+playing HLS buffer.
+ *
+ * For live HLS streams (dynamic playlist): AVPlayer/ExoPlayer manage the live
+ * edge automatically, but a device that has been backgrounded, throttled, or
+ * on a congested link can drift behind the live window.  Calling `playAsync()`
+ * every 30 s re-latches the player to the current live edge without disrupting
+ * smooth playback if already at the edge (the call is a no-op in that case).
+ *
+ * For VOD HLS: `playAsync()` is always a no-op on a playing video — it only
+ * ensures `shouldPlay = true`, which is already true.  No seek occurs.
+ */
+const HLS_LIVE_SYNC_INTERVAL_MS = 30_000;
 
 interface Props {
   baseUrl: string;
@@ -90,6 +142,26 @@ function sourceUrl(state: MobileBufferState, excludeYouTube: boolean): string | 
   return item.url;
 }
 
+/**
+ * Returns true when the current buffer item is an HLS source (V2Item with
+ * source.kind === "hls", or V2Override with kind === "hls").
+ *
+ * HLS sources on mobile require a different playback strategy from MP4/DASH:
+ *   - Position clamping (VOD HLS): playFromPositionAsync must never seek past
+ *     the actual encoded duration or AVPlayer/ExoPlayer immediately fires
+ *     didJustFinish, creating a single-segment replay loop.
+ *   - Live-edge sync (live HLS): periodic playAsync() re-latches the player
+ *     to the live edge when it drifts behind the DVR window.
+ *   - Quick-finish detection: spurious didJustFinish from a bad seek should
+ *     be retried from position 0 instead of triggering HANDOFF.
+ */
+function isHlsSource(state: MobileBufferState): boolean {
+  const item = state.item;
+  if (!item) return false;
+  if ("source" in item) return item.source.kind === "hls";
+  return item.kind === "hls";
+}
+
 interface BufferProps {
   bufferId: "A" | "B";
   state: MobileBufferState;
@@ -108,6 +180,10 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
   const ref = useRef<Video>(null);
   const url = sourceUrl(state, excludeYouTube);
 
+  // Whether the current item is an HLS source — drives different seek/finish
+  // handling compared to MP4/DASH. Stable within a bind revision.
+  const isHls = isHlsSource(state);
+
   // Track the last bind revision that produced a buffer-ready report rather
   // than the URL string. URL-based dedup caused RECOVERING_PRIMARY to silently
   // swallow the onLoad event when the same URL was rebound after a failure,
@@ -124,6 +200,34 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
   // when onLoad fires and sets the loaded revision.
   const [loadedRevision, setLoadedRevision] = useState(-1);
 
+  // ── HLS playback tracking ───────────────────────────────────────────────
+
+  /**
+   * Actual video duration (ms) as reported by expo-av / AVPlayer after the
+   * source is loaded. This is the ground-truth duration from the native
+   * media pipeline, independent of the server's `durationSecs` DB field
+   * (which may over- or under-estimate for newly-uploaded or mis-probed
+   * videos). Null = not yet known or live HLS (infinite duration).
+   */
+  const actualDurationMsRef = useRef<number | null>(null);
+
+  /**
+   * Wall-clock timestamp (Date.now()) when the most recent
+   * playFromPositionAsync / playAsync call was issued for this buffer.
+   * Used by the quick-finish guard: if didJustFinish fires within
+   * HLS_QUICK_FINISH_THRESHOLD_MS of starting, it's a spurious finish
+   * (bad seek position) rather than a genuine natural end.
+   */
+  const playStartMsRef = useRef<number | null>(null);
+
+  /**
+   * Count of consecutive "quick finish" events on this buffer's current
+   * bind revision. After HLS_MAX_QUICK_FINISH_RETRIES consecutive quick
+   * finishes we escalate to buffer-ended so the FSM can skip a source
+   * that is genuinely broken regardless of seek position.
+   */
+  const hlsQuickFinishCountRef = useRef(0);
+
   // ── isBuffering stall watchdog ──────────────────────────────────────────
   // expo-av sets isBuffering=true whenever the player is waiting for the
   // network to deliver enough data to resume playback. On weak or
@@ -139,10 +243,13 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
     }
   }
 
-  // Reset watchdog when a new source is bound (new bindRevision).
+  // Reset all per-bind tracking when a new source is bound (new bindRevision).
   useEffect(() => {
     clearBufferingWatchdog();
     setLoadedRevision(-1);
+    actualDurationMsRef.current = null;
+    playStartMsRef.current = null;
+    hlsQuickFinishCountRef.current = 0;
   }, [state.bindRevision]);
 
   // Cancel watchdog on unmount.
@@ -150,22 +257,90 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
     return () => { clearBufferingWatchdog(); };
   }, []);
 
+  // ── Play effect ─────────────────────────────────────────────────────────
   // Drive playback against the imperative expo-av API.
-  // Guard: only call playFromPositionAsync once onLoad has confirmed the
-  // source is ready for this bind revision.  Pause calls are safe at any
+  // Guard: only call playFromPositionAsync/playAsync once onLoad has confirmed
+  // the source is ready for this bind revision.  Pause calls are safe at any
   // time so they don't need the same guard.
   useEffect(() => {
     const v = ref.current;
     if (!v || !url) return;
     if (state.playing) {
       if (loadedRevision !== state.bindRevision) return; // not ready yet — wait for onLoad
-      v.playFromPositionAsync(state.positionSecs * 1000).catch(() => {
-        reportBufferEvent({ type: "buffer-error", bufferId, error: "play-failed" });
-      });
+
+      if (isHls) {
+        const actualMs = actualDurationMsRef.current;
+        // Distinguish live HLS (no fixed duration) from VOD HLS:
+        //   Live HLS: durationMillis is undefined/Infinity from expo-av.
+        //   VOD HLS:  durationMillis is a finite positive number.
+        const isLiveHls = actualMs === null || !isFinite(actualMs) || actualMs <= 0;
+
+        if (isLiveHls) {
+          // ── Live HLS path ──────────────────────────────────────────────
+          // playAsync() attaches AVPlayer/ExoPlayer to the live edge of the
+          // dynamic playlist. Calling playFromPositionAsync() on a live
+          // stream either fails (no seekable range in the manifest) or snaps
+          // to the oldest cached segment, causing the player to trail further
+          // behind the live edge on every retry.
+          playStartMsRef.current = Date.now();
+          v.playAsync().catch(() => {
+            reportBufferEvent({ type: "buffer-error", bufferId, error: "play-failed" });
+          });
+        } else {
+          // ── VOD HLS path ───────────────────────────────────────────────
+          // Clamp the requested position to (actualMs - 2000) to prevent
+          // seeking past the last segment of the encoded content.
+          //
+          // Why this matters: if the DB row's durationSecs overestimates the
+          // actual video length (e.g. a 30-min file catalogued as 86400 s
+          // because the duration probe failed at upload), positionSecs from
+          // the machine can be >> the encoded duration. AVPlayer then either:
+          //   a) snaps to the last frame and fires didJustFinish within ~1 s, or
+          //   b) raises a seek error (buffer-error path).
+          // Both create a rapid HANDOFF→rebind→worse-position→repeat loop —
+          // the "single HLS segment replaying" symptom on mobile.
+          //
+          // Clamping to (actualMs - 2000) guarantees the seek lands inside the
+          // valid segment range. The 2 s margin before the end avoids the edge
+          // case where the last segment is still being fetched by the CDN.
+          const clampedMs = Math.min(
+            state.positionSecs * 1000,
+            Math.max(0, actualMs - 2_000),
+          );
+          playStartMsRef.current = Date.now();
+          v.playFromPositionAsync(clampedMs).catch(() => {
+            reportBufferEvent({ type: "buffer-error", bufferId, error: "play-failed" });
+          });
+        }
+      } else {
+        // ── MP4 / DASH / non-HLS path ──────────────────────────────────
+        v.playFromPositionAsync(state.positionSecs * 1000).catch(() => {
+          reportBufferEvent({ type: "buffer-error", bufferId, error: "play-failed" });
+        });
+      }
     } else {
       v.pauseAsync().catch(() => {});
     }
-  }, [state.playing, state.positionSecs, state.bindRevision, loadedRevision, url, bufferId, reportBufferEvent]);
+  }, [state.playing, state.positionSecs, state.bindRevision, loadedRevision, url, bufferId, reportBufferEvent, isHls]);
+
+  // ── HLS live-sync interval ──────────────────────────────────────────────
+  // For HLS buffers that are active and playing, call playAsync() every
+  // HLS_LIVE_SYNC_INTERVAL_MS to keep the player at the live edge.
+  //
+  // For live HLS: a device backgrounded, throttled, or recovering from a
+  // brief signal drop can drift behind the live window. Without periodic
+  // re-latching the player may exhaust the current DVR window and fire
+  // didJustFinish even though the stream is still running.
+  //
+  // For VOD HLS: playAsync() on an already-playing video is a no-op
+  // (it only asserts shouldPlay=true without seeking). Safe to call.
+  useEffect(() => {
+    if (!isHls || !state.playing || !state.active) return;
+    const t = setInterval(() => {
+      ref.current?.playAsync().catch(() => {});
+    }, HLS_LIVE_SYNC_INTERVAL_MS);
+    return () => clearInterval(t);
+  }, [isHls, state.playing, state.active]);
 
   // Mute follows the adapter store (only the active buffer is audible),
   // unless `forceMuted` is set by the parent — used by the homepage hero
@@ -188,7 +363,17 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
       shouldPlay={false}
       isMuted={effectiveMuted}
       progressUpdateIntervalMillis={500}
-      onLoad={() => {
+      onLoad={(loadStatus) => {
+        // Capture the actual encoded duration from the native media pipeline.
+        // This is the ground-truth duration — independent of the server's
+        // durationSecs DB field which may be inaccurate for newly-uploaded or
+        // mis-probed videos. For live HLS streams, durationMillis is either
+        // undefined or Infinity (no fixed duration).
+        if (loadStatus.isLoaded) {
+          const dur = loadStatus.durationMillis;
+          actualDurationMsRef.current =
+            dur !== undefined && isFinite(dur) && dur > 0 ? dur : null;
+        }
         // Mark this bind revision as loaded so the play useEffect can
         // proceed (it guards on loadedRevision === state.bindRevision).
         setLoadedRevision(state.bindRevision);
@@ -208,8 +393,61 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
           return;
         }
         if (status.didJustFinish) {
-          reportBufferEvent({ type: "buffer-ended", bufferId });
           clearBufferingWatchdog();
+
+          // ── HLS quick-finish guard ──────────────────────────────────
+          // For HLS sources on the active buffer, didJustFinish can fire
+          // spuriously in two situations:
+          //
+          //   1. VOD HLS — seek past the encoded end: positionSecs from the
+          //      machine exceeds the actual video duration (server durationSecs
+          //      wrong). AVPlayer snaps to the last frame and fires
+          //      didJustFinish within ~1 s of playFromPositionAsync.
+          //
+          //   2. Live HLS — DVR window exhausted: player reached the end of
+          //      fetched segments before the next manifest refresh arrived.
+          //
+          // In both cases the correct action is to retry from position 0
+          // (safe in-bounds start) rather than reporting buffer-ended, which
+          // would trigger HANDOFF → rebind → larger positionSecs → worse loop.
+          //
+          // After HLS_MAX_QUICK_FINISH_RETRIES consecutive quick-finishes we
+          // escalate to buffer-ended so the FSM can skip a genuinely broken
+          // source (corrupt manifest / permanently empty DVR) instead of
+          // looping forever.
+          if (isHls && state.active) {
+            const playDurationMs =
+              playStartMsRef.current !== null
+                ? Date.now() - playStartMsRef.current
+                : Infinity;
+            if (playDurationMs < HLS_QUICK_FINISH_THRESHOLD_MS) {
+              hlsQuickFinishCountRef.current += 1;
+              if (hlsQuickFinishCountRef.current > HLS_MAX_QUICK_FINISH_RETRIES) {
+                // Exhausted retries — escalate to buffer-ended.
+                hlsQuickFinishCountRef.current = 0;
+                reportBufferEvent({ type: "buffer-ended", bufferId });
+              } else {
+                // Retry from position 0: brief delay gives the HLS manifest
+                // time to refresh and avoids a tight CPU-spin retry loop.
+                playStartMsRef.current = Date.now();
+                setTimeout(() => {
+                  ref.current?.playFromPositionAsync(0).catch(() => {
+                    reportBufferEvent({
+                      type: "buffer-error",
+                      bufferId,
+                      error: "hls-retry-failed",
+                    });
+                  });
+                }, 1_000);
+              }
+              return;
+            }
+            // Played long enough — genuine natural end. Reset quick-finish
+            // counter and fall through to the normal buffer-ended path.
+            hlsQuickFinishCountRef.current = 0;
+          }
+
+          reportBufferEvent({ type: "buffer-ended", bufferId });
           return;
         }
         // ── isBuffering watchdog ──────────────────────────────────────

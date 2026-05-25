@@ -1,0 +1,1 @@
+- [Mobile HLS single-segment loop bug](mobile-hls-loop-bug.md) — expo-av seeks past video end → immediate didJustFinish → HANDOFF → worse position → loop; three fixes required.

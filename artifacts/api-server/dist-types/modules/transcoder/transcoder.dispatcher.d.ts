@@ -26,6 +26,36 @@ declare class TranscoderDispatcher {
     private purgeOrphanedScratchDirs;
     private resetOrphanedJobs;
     stop(): void;
+    /**
+     * Shared tick used by start() and nudge(). Runs one dispatch cycle then
+     * re-arms the timer at the normal TRANSCODER_POLL_MS cadence.
+     */
+    private tick;
+    /**
+     * Immediately trigger a dispatch cycle without waiting for the next poll
+     * timer. Safe to call from any context — if a job is already running the
+     * call is a no-op (runOnce() guards with `this.running`). Cancels any
+     * pending timer and re-arms after the immediate run so the regular cadence
+     * is preserved.
+     *
+     * Call this whenever a new transcoding job is enqueued so HLS encoding
+     * starts within milliseconds of the job being created rather than waiting
+     * up to TRANSCODER_POLL_MS (10 s) for the next scheduled tick.
+     */
+    nudge(): void;
+    /**
+     * Periodically resets jobs that are stuck in "processing" beyond the
+     * configured job timeout. This is a belt-and-suspenders guard for
+     * long-running production deployments — resetOrphanedJobs only fires
+     * on startup, but a job can theoretically outlive its SIGKILL window
+     * (e.g. SIGKILL was swallowed, or a server crash race left the DB row
+     * in "processing" while this.running was never set again).
+     *
+     * Resets to "queued" rather than "failed" so the job retries normally.
+     * The 5-minute grace period beyond TRANSCODER_JOB_TIMEOUT_MS prevents
+     * false resets when the job is legitimately finishing its final upload.
+     */
+    private resetStuckJobs;
     runOnce(): Promise<{
         ran: boolean;
     }>;

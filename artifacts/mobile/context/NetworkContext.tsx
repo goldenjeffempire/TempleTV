@@ -86,6 +86,7 @@ export function NetworkProvider({ children }: { children: React.ReactNode }) {
   const [justRecovered, setJustRecovered] = useState(false);
 
   const prevOnlineRef    = useRef(true);
+  const isOnlineRef      = useRef(true);
   const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const intervalRef      = useRef<ReturnType<typeof setInterval> | null>(null);
 
