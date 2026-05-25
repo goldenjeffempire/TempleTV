@@ -56,6 +56,13 @@ export interface V2Snapshot {
   /** Position checkpoint of the queue item paused under an override. */
   checkpoint: { itemId: string; positionMs: number } | null;
   failover: { active: boolean; reason: string | null };
+  /**
+   * Why the broadcast is off-air when `current` is null and mode is "queue".
+   * - "empty"       — no items in the queue (library empty or sync not run)
+   * - "all_blocked" — items exist but every URL is in the bad-URL cache
+   * - null          — not off-air (item is playing or mode is override)
+   */
+  offAirReason: "empty" | "all_blocked" | null;
 }
 
 /** Server → client WebSocket / SSE frames. */

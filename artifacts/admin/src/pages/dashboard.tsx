@@ -61,6 +61,9 @@ interface ReadyzResponse {
 interface EngineHealthSummary {
   sequence: number;
   uptimeMs: number;
+  hasCurrent: boolean;
+  mode: string;
+  itemCount: number;
   boot: { busBridgeInstalled: boolean; startAttempts: number; lastStartError: string | null };
 }
 
@@ -219,6 +222,27 @@ export default function Dashboard() {
             </div>
             {isLive && lastStatusPayload?.liveOverride && (
               <p className="text-xs text-muted-foreground truncate">{lastStatusPayload.liveOverride.title}</p>
+            )}
+            {/* v2 broadcast engine status */}
+            {engineHealth != null && (
+              <div className="flex items-center gap-2 rounded-md border px-2.5 py-1.5">
+                <div className={`w-2 h-2 rounded-full shrink-0 ${engineHealth.hasCurrent ? "bg-emerald-500 animate-pulse" : "bg-muted-foreground/30"}`} />
+                <div className="min-w-0 flex-1">
+                  <span className="text-xs font-medium">
+                    {engineHealth.hasCurrent ? "v2 broadcasting" : "v2 off air"}
+                  </span>
+                  {engineHealth.itemCount > 0 && (
+                    <span className="text-xs text-muted-foreground ml-1.5">
+                      ({engineHealth.itemCount} item{engineHealth.itemCount !== 1 ? "s" : ""})
+                    </span>
+                  )}
+                </div>
+                <Link href="/broadcast-v2">
+                  <button className="text-[10px] text-primary hover:underline shrink-0">
+                    Control →
+                  </button>
+                </Link>
+              </div>
             )}
             <div className="text-2xl font-bold">{viewerCount.toLocaleString()}</div>
             <p className="text-xs text-muted-foreground">Active viewers</p>

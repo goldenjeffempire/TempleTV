@@ -28,6 +28,8 @@ import {
   Upload,
   Video,
   ListPlus,
+  GripVertical,
+  Timer,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Link } from "wouter";
@@ -35,7 +37,24 @@ import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { apiBase } from "@/lib/api-base";
 import { api, HttpError } from "@/lib/api";
 import { useSSE, useSSEEvent } from "@/contexts/sse-context";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
 interface BroadcastQueueRow {
   id: string;
@@ -301,13 +320,277 @@ function TranscodingProgressPanel() {
   );
 }
 
+// ── Sortable queue row ───────────────────────────────────────────────────────
+// Extracted so useSortable() is called at the top level of a real component
+// (not inside a .map() callback — that would violate Rules of Hooks).
+
+interface SortableItemProps {
+  item: BroadcastQueueRow;
+  index: number;
+  isCurrent: boolean;
+  isNext: boolean;
+  health: SourceHealthEntry | undefined;
+  autoSuspendedIds: Set<string>;
+  isDeactivating: boolean;
+  isReactivating: boolean;
+  onDeactivate: (id: string) => void;
+  onReactivate: (id: string) => void;
+}
+
+function SortableQueueItem({
+  item,
+  index,
+  isCurrent,
+  isNext,
+  health,
+  autoSuspendedIds,
+  isDeactivating,
+  isReactivating,
+  onDeactivate,
+  onReactivate,
+}: SortableItemProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: item.id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  const isBlocked = health?.status === "bad";
+  const secsLeft =
+    isBlocked && health?.badUntilMs
+      ? Math.max(0, Math.ceil((health.badUntilMs - Date.now()) / 1000))
+      : null;
+  const blockLabel =
+    secsLeft !== null
+      ? secsLeft >= 60
+        ? `Blocked ${Math.ceil(secsLeft / 60)}m`
+        : `Blocked ${secsLeft}s`
+      : "Blocked";
+
+  return (
+    <li
+      ref={setNodeRef}
+      style={style}
+      className={[
+        "flex items-center gap-2 px-3 py-2",
+        isCurrent ? "bg-primary/5" : "",
+        !item.isActive ? "opacity-50" : "",
+        isDragging ? "bg-background shadow-lg rounded z-50" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
+      {/* Drag handle */}
+      <button
+        type="button"
+        {...attributes}
+        {...listeners}
+        className="cursor-grab active:cursor-grabbing text-muted-foreground/30 hover:text-muted-foreground/70 shrink-0 touch-none p-0.5 -ml-1"
+        aria-label="Drag to reorder"
+        title="Drag to reorder"
+      >
+        <GripVertical className="h-4 w-4" />
+      </button>
+
+      <span className="w-5 text-center text-xs tabular-nums text-muted-foreground shrink-0">
+        {index + 1}
+      </span>
+
+      <div className="h-10 w-16 flex-shrink-0 overflow-hidden rounded bg-muted">
+        {item.thumbnailUrl ? (
+          <img
+            src={item.thumbnailUrl}
+            alt=""
+            loading="lazy"
+            className="h-full w-full object-contain bg-black"
+            onError={(e) => {
+              (e.target as HTMLImageElement).style.display = "none";
+            }}
+          />
+        ) : null}
+      </div>
+
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-sm font-medium">{item.title}</div>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span>{Math.round(item.durationSecs)}s</span>
+          <span className="opacity-50">·</span>
+          <span className="uppercase">{item.videoSource}</span>
+          {!item.isActive &&
+            (autoSuspendedIds.has(item.id) ? (
+              <>
+                <Badge
+                  variant="destructive"
+                  className="h-4 text-[10px] gap-1"
+                  title="Auto-suspended after repeated URL failures. Fix the source URL then click Re-enable."
+                >
+                  <ShieldAlert className="h-2 w-2" />
+                  auto-suspended
+                </Badge>
+                <button
+                  onClick={() => onReactivate(item.id)}
+                  disabled={isReactivating}
+                  className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-300 hover:bg-emerald-50 disabled:opacity-50 dark:text-emerald-400 dark:ring-emerald-700 dark:hover:bg-emerald-950/30"
+                  title="Re-enable this item and add it back to the broadcast rotation."
+                >
+                  <RefreshCw className="h-2.5 w-2.5" />
+                  Re-enable
+                </button>
+              </>
+            ) : (
+              <Badge variant="outline" className="h-4 text-[10px]">
+                inactive
+              </Badge>
+            ))}
+        </div>
+      </div>
+
+      {/* Source health badge */}
+      {isBlocked ? (
+        <Badge
+          variant="destructive"
+          className="gap-1 shrink-0 text-[10px]"
+          title="Source URL failed to load. Blocked until TTL expires. Use 'Clear source blocks' to retry immediately."
+        >
+          <ShieldAlert className="h-2.5 w-2.5" />
+          {blockLabel}
+        </Badge>
+      ) : item.isActive && health?.status === "ok" ? (
+        <Badge
+          variant="outline"
+          className="gap-1 shrink-0 text-[10px] border-emerald-300 text-emerald-700 dark:border-emerald-700 dark:text-emerald-400"
+          title="Source URL confirmed reachable."
+        >
+          <CheckCircle2 className="h-2.5 w-2.5" />
+          OK
+        </Badge>
+      ) : null}
+
+      {/* HLS readiness badge */}
+      {item.videoId &&
+        (() => {
+          if (item.hasHls)
+            return (
+              <Badge
+                variant="outline"
+                className="gap-1 shrink-0 text-[10px] border-emerald-300 text-emerald-700 dark:border-emerald-700 dark:text-emerald-400"
+                title="HLS master playlist ready — adaptive-bitrate streaming available."
+              >
+                <CheckCircle2 className="h-2.5 w-2.5" />
+                HLS
+              </Badge>
+            );
+          if (item.transcodingStatus === "processing")
+            return (
+              <Badge
+                variant="secondary"
+                className="gap-1 shrink-0 text-[10px] text-amber-600 border-amber-200 dark:border-amber-800"
+                title="Faststart optimisation running — item held out of queue until ready."
+              >
+                <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                Preparing…
+              </Badge>
+            );
+          if (item.transcodingStatus === "encoding")
+            return (
+              <Badge
+                variant="secondary"
+                className="gap-1 shrink-0 text-[10px]"
+                title="HLS transcoding active — will broadcast as MP4 until encoding finishes."
+              >
+                <RotateCw className="h-2.5 w-2.5 animate-spin" />
+                Encoding…
+              </Badge>
+            );
+          if (item.transcodingStatus === "queued")
+            return (
+              <Badge
+                variant="secondary"
+                className="gap-1 shrink-0 text-[10px]"
+                title="HLS transcoding queued — will broadcast as MP4 until processed."
+              >
+                <RotateCw className="h-2.5 w-2.5" />
+                HLS queued
+              </Badge>
+            );
+          if (item.transcodingStatus === "failed")
+            return (
+              <Badge
+                variant="destructive"
+                className="gap-1 shrink-0 text-[10px]"
+                title="HLS transcoding failed — broadcasting as raw MP4."
+              >
+                <XCircle className="h-2.5 w-2.5" />
+                HLS failed
+              </Badge>
+            );
+          if (item.transcodingStatus === "ready")
+            return (
+              <Badge
+                variant="outline"
+                className="gap-1 shrink-0 text-[10px] text-amber-600 border-amber-300 dark:border-amber-700"
+                title="MP4 only — no HLS. Use 'Prepare HLS' for adaptive-bitrate streaming."
+              >
+                MP4 only
+              </Badge>
+            );
+          return null;
+        })()}
+
+      {isCurrent && (
+        <Badge variant="default" className="shrink-0">
+          On air
+        </Badge>
+      )}
+      {isNext && !isCurrent && (
+        <Badge variant="secondary" className="shrink-0">
+          Next
+        </Badge>
+      )}
+
+      {/* Remove item — warns when on air */}
+      {item.isActive && (
+        <button
+          onClick={() => {
+            if (isCurrent) {
+              toast.warning(
+                "This item is currently on air. Use Skip to move to the next item first, then remove it.",
+              );
+              return;
+            }
+            onDeactivate(item.id);
+          }}
+          disabled={isDeactivating}
+          className="ml-1 shrink-0 rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
+          title={
+            isCurrent
+              ? "On air — use Skip first, then remove"
+              : "Remove from broadcast queue"
+          }
+          aria-label={`Remove "${item.title}" from broadcast queue`}
+        >
+          <X className="h-3 w-3" />
+        </button>
+      )}
+    </li>
+  );
+}
+
 /**
  * Admin Live Broadcast (v2 control plane).
  *
  * Server-authoritative live console:
  *  - persistent A/B player buffers driven by the universal player core
  *  - real-time queue snapshot from the v2 transport
- *  - real-time queue list with per-item remove (deactivate) actions
+ *  - real-time queue list with per-item drag-to-reorder and remove actions
  *  - operator controls (skip / reload / failover) with idempotency keys
  *  - source health badges showing which queue items have blocked URLs
  *  - engine health panel (boot status, reload stats, prod-sync diagnostics)
@@ -463,6 +746,62 @@ export default function BroadcastV2Page() {
     },
   });
 
+  // ── Drag-to-reorder state ────────────────────────────────────────────────
+  // Optimistic local order: updated immediately on drag-end then synced to
+  // the server via a 250 ms debounced PUT. Reset from the server state on
+  // every fresh queueData fetch, but not while a drag is in flight.
+  const [localOrder, setLocalOrder] = useState<string[]>(() =>
+    (queueData?.items ?? []).map((i) => i.id),
+  );
+  const isDraggingRef = useRef(false);
+  useEffect(() => {
+    if (!isDraggingRef.current) {
+      setLocalOrder((queueData?.items ?? []).map((i) => i.id));
+    }
+  }, [queueData]);
+
+  const reorderDebounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(reorderDebounceRef.current), []);
+
+  const reorderMutation = useMutation({
+    mutationFn: (itemIds: string[]) =>
+      api.put<{ ok: boolean; count: number }>("/admin/broadcast/reorder", { itemIds }),
+    onError: (err) => {
+      toast.error(
+        err instanceof HttpError ? err.message : "Reorder failed — restoring queue from server.",
+      );
+      setLocalOrder((queueData?.items ?? []).map((i) => i.id));
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+    },
+  });
+
+  const sensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
+
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      isDraggingRef.current = false;
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      setLocalOrder((prev) => {
+        const oldIdx = prev.indexOf(active.id as string);
+        const newIdx = prev.indexOf(over.id as string);
+        if (oldIdx === -1 || newIdx === -1) return prev;
+        const next = arrayMove(prev, oldIdx, newIdx);
+        clearTimeout(reorderDebounceRef.current);
+        reorderDebounceRef.current = setTimeout(() => {
+          reorderMutation.mutate(next);
+        }, 250);
+        return next;
+      });
+    },
+    [reorderMutation],
+  );
+
   // How many library videos are missing from the queue — refreshed every 60 s
   // so the banner stays accurate without hammering the server.
   const { data: queueSyncStatus } = useQuery({
@@ -502,6 +841,15 @@ export default function BroadcastV2Page() {
   const server = snapshot.lastServerSnapshot;
   const queueItems = queueData?.items ?? [];
   const activeQueueCount = queueItems.filter((i) => i.isActive).length;
+
+  // Items in drag-reorder local order — instantly reflects drag operations
+  // before the server round-trip completes.
+  const orderedQueueItems = useMemo(() => {
+    const idToItem = new Map(queueItems.map((i) => [i.id, i]));
+    return localOrder
+      .map((id) => idToItem.get(id))
+      .filter((i): i is BroadcastQueueRow => i !== undefined);
+  }, [localOrder, queueItems]);
   const blockedCount = Object.values(healthByItemId).filter((h) => h.status === "bad").length;
   // Build a set of item IDs that were auto-suspended this session so queue
   // rows can show "auto-suspended" instead of the generic "inactive" badge.
@@ -594,6 +942,9 @@ export default function BroadcastV2Page() {
     s >= 3600
       ? `${Math.floor(s / 3600)}:${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`
       : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  const onAirRemainingSecs = currentItem
+    ? Math.max(0, Math.ceil((currentItem.endsAtMs - liveNow) / 1000))
+    : 0;
   const viewerCount = diagnostics?.analytics?.activeSessions ?? null;
 
   // Combined "live link health" indicator.
@@ -809,6 +1160,22 @@ export default function BroadcastV2Page() {
           {currentItem && (
             <span className="text-xs tabular-nums text-muted-foreground shrink-0">
               {fmtSecs(onAirElapsedSecs)} / {fmtSecs(onAirTotalSecs)}
+            </span>
+          )}
+
+          {/* Countdown — how much time remains on the current item */}
+          {currentItem && (
+            <span
+              className={[
+                "flex items-center gap-1 text-xs tabular-nums shrink-0",
+                onAirRemainingSecs <= 30
+                  ? "text-amber-500 dark:text-amber-400"
+                  : "text-muted-foreground",
+              ].join(" ")}
+              title="Time remaining on current item"
+            >
+              <Timer className="h-3 w-3" />
+              -{fmtSecs(onAirRemainingSecs)}
             </span>
           )}
 
@@ -1915,186 +2282,41 @@ export default function BroadcastV2Page() {
               Queue is empty — see the card above for the next step.
             </p>
           ) : (
-            <ul className="divide-y rounded-md border">
-              {queueItems.map((item, idx) => {
-                const isCurrent = server?.current?.id === item.id;
-                const isNext = server?.next?.id === item.id;
-                const health = healthByItemId[item.id];
-                const isBlocked = health?.status === "bad";
-                const secsLeft =
-                  isBlocked && health?.badUntilMs
-                    ? Math.max(0, Math.ceil((health.badUntilMs - Date.now()) / 1000))
-                    : null;
-                const blockLabel =
-                  secsLeft !== null
-                    ? secsLeft >= 60
-                      ? `Blocked ${Math.ceil(secsLeft / 60)}m`
-                      : `Blocked ${secsLeft}s`
-                    : "Blocked";
-
-                return (
-                  <li
-                    key={item.id}
-                    className={`flex items-center gap-3 px-3 py-2 ${
-                      isCurrent ? "bg-primary/5" : ""
-                    } ${!item.isActive ? "opacity-50" : ""}`}
-                  >
-                    <span className="w-6 text-center text-xs tabular-nums text-muted-foreground">
-                      {idx + 1}
-                    </span>
-                    <div className="h-10 w-16 flex-shrink-0 overflow-hidden rounded bg-muted">
-                      {item.thumbnailUrl ? (
-                        <img
-                          src={item.thumbnailUrl}
-                          alt=""
-                          loading="lazy"
-                          className="h-full w-full object-contain bg-black"
-                          onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                        />
-                      ) : null}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-medium">{item.title}</div>
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <span>{Math.round(item.durationSecs)}s</span>
-                        <span className="opacity-50">·</span>
-                        <span className="uppercase">{item.videoSource}</span>
-                        {!item.isActive && (
-                          autoSuspendedIds.has(item.id) ? (
-                            <>
-                              <Badge
-                                variant="destructive"
-                                className="h-4 text-[10px] gap-1"
-                                title="Auto-suspended: this item was automatically deactivated after repeated URL failures. Fix the source URL then click Re-enable."
-                              >
-                                <ShieldAlert className="h-2 w-2" />
-                                auto-suspended
-                              </Badge>
-                              <button
-                                onClick={() => reactivateMutation.mutate(item.id)}
-                                disabled={reactivateMutation.isPending}
-                                className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-300 hover:bg-emerald-50 disabled:opacity-50 dark:text-emerald-400 dark:ring-emerald-700 dark:hover:bg-emerald-950/30"
-                                title="Re-enable this item and add it back to the broadcast rotation."
-                              >
-                                <RefreshCw className="h-2.5 w-2.5" />
-                                Re-enable
-                              </button>
-                            </>
-                          ) : (
-                            <Badge variant="outline" className="h-4 text-[10px]">
-                              inactive
-                            </Badge>
-                          )
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Source health badge — right-aligned */}
-                    {isBlocked ? (
-                      <Badge
-                        variant="destructive"
-                        className="gap-1 shrink-0 text-[10px]"
-                        title={`Source URL failed to load. Blocked from playback queue until the TTL expires. Use "Clear source blocks" to retry immediately.`}
-                      >
-                        <ShieldAlert className="h-2.5 w-2.5" />
-                        {blockLabel}
-                      </Badge>
-                    ) : item.isActive && health?.status === "ok" ? (
-                      <Badge
-                        variant="outline"
-                        className="gap-1 shrink-0 text-[10px] border-emerald-300 text-emerald-700 dark:border-emerald-700 dark:text-emerald-400"
-                        title="Source URL was probed recently and confirmed reachable."
-                      >
-                        <CheckCircle2 className="h-2.5 w-2.5" />
-                        OK
-                      </Badge>
-                    ) : null}
-
-                    {/* HLS readiness badge — only shown for locally-hosted videos */}
-                    {item.videoId && (() => {
-                      if (item.hasHls) {
-                        return (
-                          <Badge
-                            variant="outline"
-                            className="gap-1 shrink-0 text-[10px] border-emerald-300 text-emerald-700 dark:border-emerald-700 dark:text-emerald-400"
-                            title="HLS master playlist ready — adaptive-bitrate streaming available on all surfaces."
-                          >
-                            <CheckCircle2 className="h-2.5 w-2.5" />
-                            HLS
-                          </Badge>
-                        );
-                      }
-                      if (item.transcodingStatus === "processing") {
-                        return (
-                          <Badge
-                            variant="secondary"
-                            className="gap-1 shrink-0 text-[10px] text-amber-600 border-amber-200 dark:border-amber-800"
-                            title="Faststart optimisation is running — the moov atom is being relocated to the front of the file for instant playback. This item will be held out of the broadcast queue until it is ready (usually 30–90 seconds)."
-                          >
-                            <Loader2 className="h-2.5 w-2.5 animate-spin" />
-                            Preparing…
-                          </Badge>
-                        );
-                      }
-                      if (item.transcodingStatus === "encoding") {
-                        return (
-                          <Badge variant="secondary" className="gap-1 shrink-0 text-[10px]" title="HLS transcoding is actively encoding. This item will broadcast as MP4 until encoding finishes.">
-                            <RotateCw className="h-2.5 w-2.5 animate-spin" />
-                            Encoding…
-                          </Badge>
-                        );
-                      }
-                      if (item.transcodingStatus === "queued") {
-                        return (
-                          <Badge variant="secondary" className="gap-1 shrink-0 text-[10px]" title="HLS transcoding is queued — this item will broadcast as MP4 until it's processed.">
-                            <RotateCw className="h-2.5 w-2.5" />
-                            HLS queued
-                          </Badge>
-                        );
-                      }
-                      if (item.transcodingStatus === "failed") {
-                        return (
-                          <Badge variant="destructive" className="gap-1 shrink-0 text-[10px]" title="HLS transcoding failed. This item will broadcast as raw MP4. Check the server logs for ffmpeg errors.">
-                            <XCircle className="h-2.5 w-2.5" />
-                            HLS failed
-                          </Badge>
-                        );
-                      }
-                      if (item.transcodingStatus === "ready") {
-                        return (
-                          <Badge variant="outline" className="gap-1 shrink-0 text-[10px] text-amber-600 border-amber-300 dark:border-amber-700" title="Video is streamable as MP4 (faststart applied) but has no HLS playlist. Use 'Prepare HLS' to enable adaptive-bitrate streaming.">
-                            MP4 only
-                          </Badge>
-                        );
-                      }
-                      return null;
-                    })()}
-
-                    {isCurrent && <Badge variant="default" className="shrink-0">On air</Badge>}
-                    {isNext && !isCurrent && <Badge variant="secondary" className="shrink-0">Next</Badge>}
-
-                    {/* Remove item — disabled while on air (use Skip first) */}
-                    {item.isActive && (
-                      <button
-                        onClick={() => {
-                          if (isCurrent) {
-                            toast.warning("This item is currently on air. Use Skip to move to the next item first, then remove it.");
-                            return;
-                          }
-                          deactivateMutation.mutate(item.id);
-                        }}
-                        disabled={deactivateMutation.isPending}
-                        className="ml-1 shrink-0 rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
-                        title={isCurrent ? "On air — use Skip first, then remove" : "Remove from broadcast queue"}
-                        aria-label={`Remove "${item.title}" from broadcast queue`}
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragStart={() => {
+                isDraggingRef.current = true;
+              }}
+              onDragEnd={handleDragEnd}
+            >
+              <SortableContext
+                items={orderedQueueItems.map((i) => i.id)}
+                strategy={verticalListSortingStrategy}
+              >
+                <ul className="divide-y rounded-md border">
+                  {orderedQueueItems.map((item, idx) => {
+                    const isCurrent = server?.current?.id === item.id;
+                    const isNext = server?.next?.id === item.id;
+                    return (
+                      <SortableQueueItem
+                        key={item.id}
+                        item={item}
+                        index={idx}
+                        isCurrent={isCurrent}
+                        isNext={isNext}
+                        health={healthByItemId[item.id]}
+                        autoSuspendedIds={autoSuspendedIds}
+                        isDeactivating={deactivateMutation.isPending}
+                        isReactivating={reactivateMutation.isPending}
+                        onDeactivate={(id) => deactivateMutation.mutate(id)}
+                        onReactivate={(id) => reactivateMutation.mutate(id)}
+                      />
+                    );
+                  })}
+                </ul>
+              </SortableContext>
+            </DndContext>
           )}
         </CardContent>
       </Card>

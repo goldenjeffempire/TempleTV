@@ -1019,6 +1019,17 @@ class BroadcastOrchestrator extends EventEmitter {
       }
     }
 
+    // Off-air diagnostic reason — helps the admin console surface an actionable
+    // message instead of a generic "Off Air" label.
+    let offAirReason: "empty" | "all_blocked" | null = null;
+    if (current === null && this.mode !== "override") {
+      if (this.items.length === 0) {
+        offAirReason = "empty";
+      } else if (this.allBlockedSinceMs !== null) {
+        offAirReason = "all_blocked";
+      }
+    }
+
     return {
       channelId: this.channelId,
       sequence: this.sequence,
@@ -1030,6 +1041,7 @@ class BroadcastOrchestrator extends EventEmitter {
       override: this.override,
       checkpoint: this.queueCheckpoint,
       failover: { ...this.failover },
+      offAirReason,
     };
   }
 
