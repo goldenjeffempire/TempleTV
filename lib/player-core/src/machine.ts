@@ -29,16 +29,32 @@ import type {
  * first natural play-through, so all subsequent loops are scheduled
  * correctly without any operator action.
  */
+/**
+ * Determine the playback start position (seconds) for a `play` intent.
+ *
+ * @param clockOffsetMs  Server-client clock offset: serverTimeMs − Date.now(),
+ *   measured at the last hello/heartbeat/snapshot frame. Positive = server clock
+ *   ahead of local clock. Applied to Date.now() so the position calculation uses
+ *   server time rather than the (potentially skewed) local OS clock. On mobile
+ *   devices whose OS clock has never synced NTP, the offset can exceed 30 seconds
+ *   — the primary cause of admin-mobile VOD HLS desync.
+ */
 function resolvePositionSecs(
   item: V2Item | V2Override | null | undefined,
   startsAtMs: number,
+  clockOffsetMs = 0,
 ): number {
   if (!item) return 0;
   const kind = "source" in item
     ? (item as V2Item).source.kind
     : (item as V2Override).kind;
   if (kind === "hls") {
-    const elapsed = Math.max(0, (Date.now() - startsAtMs) / 1000);
+    // Apply server-calibrated clock: Date.now() + clockOffsetMs ≈ serverTime.
+    // startsAtMs is always in server time (set by the orchestrator), so the
+    // elapsed calculation must also be in server time or the position drifts
+    // by exactly the device clock skew.
+    const nowMs = Date.now() + clockOffsetMs;
+    const elapsed = Math.max(0, (nowMs - startsAtMs) / 1000);
     // Cap at (durationSecs - 2) for V2Items with a known duration.
     //
     // Problem this fixes: if the DB row's durationSecs overestimates the
@@ -158,6 +174,24 @@ export class PlayerMachine {
   private onNaturalEndCb: ((itemId: string) => void) | null = null;
 
   /**
+   * Server-client clock offset in milliseconds (serverTime − localTime).
+   * Updated by setClockOffsetMs() whenever the transport measures a new
+   * offset from a hello / heartbeat / snapshot frame. Applied in every
+   * resolvePositionSecs() call so position calculations use server time
+   * instead of the potentially-skewed local OS clock.
+   */
+  private clockOffsetMs = 0;
+
+  /**
+   * Timer that fires shortly before the active buffer's source URL expires
+   * (if `source.expiresAtMs` is set on the item). Fires the onNeedSnapshot
+   * callback so the transport fetches a fresh snapshot with a renewed URL
+   * before the current one stops serving — preventing a silent buffer-error
+   * mid-broadcast when a pre-signed CDN URL times out.
+   */
+  private sourceExpiryTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
    * The ID of the last item that fired a natural `ended` event on the active
    * buffer.  Used as a post-HANDOFF guard: prevents `onSnapshot()` from
    * re-binding the just-finished item when the server's snapshot still shows
@@ -209,6 +243,54 @@ export class PlayerMachine {
 
   setNaturalEndCallback(fn: (itemId: string) => void): void {
     this.onNaturalEndCb = fn;
+  }
+
+  /**
+   * Update the server-client clock offset so resolvePositionSecs uses
+   * server time instead of the local OS clock. Call this whenever the
+   * transport measures a new offset from a hello / heartbeat / snapshot frame.
+   *
+   * The offset is `serverTimeMs − Date.now()`. Positive = server ahead.
+   */
+  setClockOffsetMs(offsetMs: number): void {
+    this.clockOffsetMs = offsetMs;
+  }
+
+  /**
+   * Schedule a proactive snapshot request to fire 90 s before the active
+   * source URL expires (if `source.expiresAtMs` is set). This ensures the
+   * transport fetches a fresh snapshot — with a renewed pre-signed URL —
+   * before the current one stops serving, avoiding a silent buffer-error
+   * mid-broadcast. Any previously scheduled timer is cancelled first.
+   *
+   * Only schedules if the expiry is within the next 10 minutes. URLs with
+   * longer lifetimes don't need proactive refresh — the normal server-push
+   * or reconnect cycle will provide a new URL in time.
+   */
+  private scheduleSourceExpiryWatch(item: V2Item | V2Override): void {
+    this.clearSourceExpiryTimer();
+    if (!("source" in item)) return; // V2Override has no expiresAtMs
+    const expiresAtMs = (item as V2Item).source.expiresAtMs;
+    if (!expiresAtMs) return;
+    // Use server-calibrated clock for the expiry calculation.
+    const nowMs = Date.now() + this.clockOffsetMs;
+    const msUntilExpiry = expiresAtMs - nowMs;
+    // Fire 90 s before expiry so the transport can refresh the URL in time.
+    const fireInMs = Math.max(0, msUntilExpiry - 90_000);
+    // Only schedule for URLs expiring within 10 minutes — longer lifetimes
+    // are covered by the normal snapshot-push and reconnect cycle.
+    if (fireInMs > 10 * 60_000) return;
+    this.sourceExpiryTimer = setTimeout(() => {
+      this.sourceExpiryTimer = null;
+      this.onNeedSnapshotCb?.();
+    }, fireInMs);
+  }
+
+  private clearSourceExpiryTimer(): void {
+    if (this.sourceExpiryTimer !== null) {
+      clearTimeout(this.sourceExpiryTimer);
+      this.sourceExpiryTimer = null;
+    }
   }
 
   getSnapshot(): PlayerSnapshot {
@@ -381,7 +463,7 @@ export class PlayerMachine {
       // player surface knows the item is loading, not playing yet.
       this.primaryRetries = 0;
       this.bindActive(server.current);
-      const positionSecs = resolvePositionSecs(server.current, server.current.startsAtMs);
+      const positionSecs = resolvePositionSecs(server.current, server.current.startsAtMs, this.clockOffsetMs);
       this.emit({ type: "play", bufferId: activeId, positionSecs });
       this.transition("PREPARING_ACTIVE");
     } else {
@@ -392,9 +474,9 @@ export class PlayerMachine {
         this.snapshot.state === "PREPARING_ACTIVE"
       ) {
         // No active recovery — server confirming same item means we can
-        // start/resume immediately. Re-seek to wall-clock position to
+        // start/resume immediately. Re-seek to server-calibrated position to
         // correct any drift accumulated since the last item.advanced event.
-        const positionSecs = resolvePositionSecs(server.current, server.current.startsAtMs);
+        const positionSecs = resolvePositionSecs(server.current, server.current.startsAtMs, this.clockOffsetMs);
         this.emit({ type: "play", bufferId: activeId, positionSecs });
         this.transition("PLAYING");
       } else if (
@@ -421,7 +503,7 @@ export class PlayerMachine {
         //
         // Correct path: buffer-ready → transition("PLAYING") + reset retries,
         //               buffer-error → escalate recovery or SKIP_PENDING.
-        const positionSecs = resolvePositionSecs(server.current, server.current.startsAtMs);
+        const positionSecs = resolvePositionSecs(server.current, server.current.startsAtMs, this.clockOffsetMs);
         this.emit({ type: "play", bufferId: activeId, positionSecs });
         // State stays in RECOVERING_* — driven by buffer-ready/buffer-error.
       } else if (this.snapshot.state === "SKIP_PENDING") {
@@ -450,7 +532,7 @@ export class PlayerMachine {
         this.skipPendingAnchorMs = null;
         this.primaryRetries = 0;
         this.bindActive(server.current);
-        const positionSecs = resolvePositionSecs(server.current, server.current.startsAtMs);
+        const positionSecs = resolvePositionSecs(server.current, server.current.startsAtMs, this.clockOffsetMs);
         this.emit({ type: "play", bufferId: activeId, positionSecs });
         this.transition("PREPARING_ACTIVE");
       } else if (this.snapshot.state === "PLAYING") {
@@ -475,12 +557,12 @@ export class PlayerMachine {
         if (prevServerSnapshot?.current?.id === server.current.id) {
           const driftMs = Math.abs(server.current.startsAtMs - prevServerSnapshot.current.startsAtMs);
           if (driftMs > 5000) {
-            const nowMs = Date.now();
+            const nowMs = Date.now() + this.clockOffsetMs;
             // resolvePositionSecs returns 0 for non-HLS sources so we never
             // seek a playing MP4 back to position 0 during a drift correction.
             // The guard below (positionSecs > 0) skips the emit entirely for
             // non-HLS, preserving continuous playback without interruption.
-            const positionSecs = resolvePositionSecs(server.current, server.current.startsAtMs);
+            const positionSecs = resolvePositionSecs(server.current, server.current.startsAtMs, this.clockOffsetMs);
             if (positionSecs > 0) {
               // Suppress if we are in the loop-transition window: the new
               // startsAtMs is ≤ 4 s old.  The natural `ended` + A/B swap path
@@ -569,7 +651,7 @@ export class PlayerMachine {
           server?.current && "startsAtMs" in server.current
             ? (server.current as V2Item).startsAtMs
             : Date.now();
-        const positionSecs = resolvePositionSecs(item as V2Item, startsAtMs);
+        const positionSecs = resolvePositionSecs(item as V2Item, startsAtMs, this.clockOffsetMs);
         this.emit({ type: "play", bufferId, positionSecs });
       }
     } else if (this.primaryRetries === 2) {
@@ -593,7 +675,7 @@ export class PlayerMachine {
             server?.current && "startsAtMs" in server.current
               ? (server.current as V2Item).startsAtMs
               : Date.now();
-          const positionSecs = resolvePositionSecs(item as V2Item, startsAtMs);
+          const positionSecs = resolvePositionSecs(item as V2Item, startsAtMs, this.clockOffsetMs);
           this.emit({ type: "play", bufferId, positionSecs });
         }
       }
@@ -778,6 +860,8 @@ export class PlayerMachine {
   // ── Helpers ────────────────────────────────────────────────────────────
 
   private engageOverride(override: V2Override): void {
+    // Queue item's source expiry watch is irrelevant while an override is active.
+    this.clearSourceExpiryTimer();
     const inactiveId = this.swappedId(this.snapshot.activeBufferId);
     this.emit({ type: "bind", bufferId: inactiveId, item: override });
     this.emit({ type: "play", bufferId: inactiveId, positionSecs: 0 });
@@ -792,6 +876,8 @@ export class PlayerMachine {
     this.emit({ type: "bind", bufferId: id, item });
     if (id === "A") this.set({ bufferA: item });
     else this.set({ bufferB: item });
+    // Proactively request a fresh snapshot before the source URL expires.
+    this.scheduleSourceExpiryWatch(item);
   }
 
   private bindInactive(item: V2Item | V2Override): void {

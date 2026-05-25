@@ -104,7 +104,7 @@ const HLS_MAX_QUICK_FINISH_RETRIES = 2;
  * For VOD HLS: `playAsync()` is always a no-op on a playing video — it only
  * ensures `shouldPlay = true`, which is already true.  No seek occurs.
  */
-const HLS_LIVE_SYNC_INTERVAL_MS = 30_000;
+const HLS_LIVE_SYNC_INTERVAL_MS = 15_000;
 
 interface Props {
   baseUrl: string;

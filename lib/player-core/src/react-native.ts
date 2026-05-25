@@ -150,6 +150,10 @@ function getOrCreateSession(baseUrl: string): NativeSession {
       session.connected = c;
       for (const l of session.connectedListeners) l(c);
     },
+    // Keep machine clock in sync with server time so resolvePositionSecs()
+    // uses server-calibrated wall-clock instead of the device's local clock.
+    // This is the primary driver of admin↔mobile broadcast position sync.
+    onClockCalibration: (offsetMs: number) => machine.setClockOffsetMs(offsetMs),
   });
 
   // Wire machine → transport: when the active buffer ends with no preloaded

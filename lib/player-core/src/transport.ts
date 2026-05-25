@@ -51,6 +51,21 @@ export interface TransportConfig {
   channel?: string;
   onPlayerEvent: (event: PlayerEvent) => void;
   onConnectionChange?: (connected: boolean) => void;
+  /**
+   * Called whenever a `hello`, `heartbeat`, or `snapshot` frame arrives from
+   * the server carrying a `serverTimeMs` timestamp. The argument is the
+   * computed clock offset: `serverTimeMs − Date.now()` at the moment the
+   * frame was parsed (before any async work). A positive value means the
+   * server clock is ahead of the local clock; negative means it's behind.
+   *
+   * Wire this to `PlayerMachine.setClockOffsetMs(offsetMs)` in the hook that
+   * owns both the transport and machine so that all subsequent
+   * `resolvePositionSecs` calls use server-calibrated time rather than the
+   * (potentially skewed) local device clock. On mobile devices where the OS
+   * clock can be 30+ seconds wrong, this is the primary driver of admin-mobile
+   * broadcast desync for VOD HLS content.
+   */
+  onClockCalibration?: (offsetMs: number) => void;
 }
 
 /**
@@ -217,6 +232,16 @@ export class V2Transport {
   private lastFrameMs = Date.now();
 
   /**
+   * Last measured server-client clock offset in milliseconds.
+   * Computed as `serverTimeMs − Date.now()` whenever a hello, heartbeat,
+   * or snapshot frame arrives. Exposed via getClockOffsetMs() and
+   * forwarded to the caller via onClockCalibration so the PlayerMachine
+   * can apply it to resolvePositionSecs — the primary driver of position
+   * sync accuracy for VOD HLS broadcasts on mobile.
+   */
+  private clockOffsetMs = 0;
+
+  /**
    * Number of consecutive WS connections that never reached `onopen`.
    * When ≥ WS_FAIL_STREAK_SSE_FALLBACK we fall back to SSE for one
    * cycle. Reset to 0 on any successful WS open or SSE connect.
@@ -379,6 +404,18 @@ export class V2Transport {
     if (this.stopped) return false;
     if (!this.ws && !this.es) return false;
     return Date.now() - this.lastFrameMs < DEAD_SOCKET_THRESHOLD_MS;
+  }
+
+  /**
+   * Return the last measured server-client clock offset (milliseconds).
+   * Positive = server clock is ahead of the local clock.
+   *
+   * Updated on every hello, heartbeat, and snapshot frame. Zero until the
+   * first such frame arrives. Consumers (e.g. PlayerMachine) should call
+   * this to calibrate time-sensitive calculations such as resolvePositionSecs.
+   */
+  getClockOffsetMs(): number {
+    return this.clockOffsetMs;
   }
 
   private startHeartbeatWatchdog(): void {
@@ -588,6 +625,23 @@ export class V2Transport {
     }
     switch (frame.type) {
       case "snapshot":
+        // Calibrate clock offset from every snapshot frame. The snapshot's
+        // serverTimeMs is the server's wall clock at the instant it was
+        // serialised — computing the delta here (before any async work or
+        // React re-renders) gives the tightest measurement.
+        //
+        // Why: startsAtMs / endsAtMs / checkpoint.positionMs are all in
+        // SERVER time. resolvePositionSecs uses Date.now() as "now", so if
+        // the mobile device's OS clock is off by 30 s (common on devices
+        // that have never synced NTP), every VOD HLS seek position is wrong
+        // by 30 s — the primary cause of admin-mobile desync on the broadcast.
+        if (typeof frame.state.serverTimeMs === "number") {
+          const offset = frame.state.serverTimeMs - Date.now();
+          if (offset !== this.clockOffsetMs) {
+            this.clockOffsetMs = offset;
+            this.cfg.onClockCalibration?.(offset);
+          }
+        }
         // Cache the snapshot locally so the FSM can be seeded during outages.
         saveSnapshotCache(frame.state);
         this.cfg.onPlayerEvent({ type: "snapshot", snapshot: frame.state });
@@ -635,8 +689,23 @@ export class V2Transport {
         }
         break;
       case "hello":
+        // Calibrate clock on first connect — hello arrives before the first
+        // snapshot, so this gives the earliest possible offset measurement.
+        if (typeof frame.serverTimeMs === "number") {
+          const offset = frame.serverTimeMs - Date.now();
+          this.clockOffsetMs = offset;
+          this.cfg.onClockCalibration?.(offset);
+        }
         break;
       case "heartbeat":
+        // Calibrate clock on every 10-second heartbeat so NTP corrections,
+        // daylight-saving transitions, and device sleep/wake don't
+        // accumulate into stale offsets over a long 24/7 broadcast session.
+        if (typeof frame.serverTimeMs === "number") {
+          const offset = frame.serverTimeMs - Date.now();
+          this.clockOffsetMs = offset;
+          this.cfg.onClockCalibration?.(offset);
+        }
         // Respond with an app-level pong so the server's dead-connection
         // detector sees activity and does not terminate the socket.
         // WS only — SSE is unidirectional; `this.ws` will be null on SSE.
