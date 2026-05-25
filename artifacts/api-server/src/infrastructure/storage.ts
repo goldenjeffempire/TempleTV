@@ -497,6 +497,11 @@ class DatabaseObjectStorage implements ObjectStorage {
           .catch(() => {});
       }
     } finally {
+      // Restore the connection's statement_timeout to the session default
+      // (the startup-parameter value) before returning it to the pool.
+      // _completeMultipartUploadLocked sets statement_timeout=0 to prevent
+      // the per-part assembly UPDATEs from being killed on large files.
+      await client.query("RESET statement_timeout").catch(() => {});
       client.release();
     }
   }
@@ -556,7 +561,19 @@ class DatabaseObjectStorage implements ObjectStorage {
      * plus the 8 MiB source part. For typical uploads (≤ 30 parts / ≤ 240 MB)
      * this is fast enough. For very large files the I/O cost is higher but the
      * operation always succeeds.
+     *
+     * statement_timeout override: The shared pool is initialized with a
+     * statement_timeout startup parameter (default 30 s) to guard against
+     * runaway OLTP queries. The per-part UPDATE here reads the ENTIRE
+     * growing TOAST blob on every iteration — for large files (128+ parts /
+     * 1 GB+) a single UPDATE can legitimately run for several minutes.
+     * We disable the timeout for the duration of this pinned client's
+     * assembly work and restore the pool default afterwards so the guard
+     * remains in place for all other queries on this connection once it
+     * returns to the pool.
      */
+    await client.query("SET statement_timeout = 0").catch(() => {});
+
     const partPrefix = `_parts/${uploadId}/`;
 
     // ── Seed the destination row with the first part ───────────────────────────

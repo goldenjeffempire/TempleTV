@@ -1015,6 +1015,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               uploadedBy: session.uploadedBy ?? null,
               s3MirroredAt: null, // set after background assembly confirms blob exists
               broadcastOnly: true, // hidden from public library until admin publishes
+              transcodingStatus: "queued", // background assembly + faststart in progress
             })
             .returning();
         } catch (insertErr) {
