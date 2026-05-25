@@ -31,6 +31,7 @@ import {
   GripVertical,
   Timer,
 } from "lucide-react";
+import { BroadcastUploadPanel } from "@/components/broadcast/BroadcastUploadPanel";
 import { toast } from "sonner";
 import { Link } from "wouter";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
@@ -1548,6 +1549,12 @@ export default function BroadcastV2Page() {
           </CardContent>
         </Card>
       </div>
+
+      {/* ── Broadcast Upload Panel ────────────────────────────────────────── */}
+      <BroadcastUploadPanel
+        server={server}
+        queueItems={queueItems}
+      />
 
       {/* Engine health panel */}
       <Card>
