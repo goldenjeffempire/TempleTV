@@ -29,7 +29,7 @@ import {
   Video, Search, MoreVertical, Pencil, Trash2,
   RefreshCw, Star, StarOff, ChevronLeft, ChevronRight, Film, Eye, EyeOff,
   UploadCloud, X, FileVideo, Layers, Lock, LockOpen, Youtube, HardDrive,
-  ArrowUpDown, SlidersHorizontal, Zap, Clapperboard, Globe,
+  ArrowUpDown, SlidersHorizontal, Zap, Clapperboard, Globe, AlertTriangle,
 } from "lucide-react";
 import { uploadQueue, useUploadQueue, formatBytes, titleFromFilename } from "@/lib/upload-queue";
 
@@ -215,7 +215,16 @@ export default function VideosPage() {
     refetchInterval: (query) => query.state.status === "error" ? 15_000 : false,
   });
 
-  useSSEEvent("videos-library-updated", () => { void qc.invalidateQueries({ queryKey: ["admin-videos"] }); });
+  useSSEEvent("videos-library-updated", (payload) => {
+    void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+    const p = payload as { reason?: string } | null;
+    if (p?.reason === "corrupt-upload-failed") {
+      toast.error(
+        "Upload rejected — file is corrupt or unreadable. Delete the video and re-upload a valid copy.",
+        { duration: 10_000 },
+      );
+    }
+  });
   // Transcoding status changes (queued → encoding → hls_ready) must refresh
   // immediately so the badge in the video list reflects reality. refetchType
   // defaults to "active" — only re-fetches the currently-mounted query (avoids
@@ -572,6 +581,37 @@ export default function VideosPage() {
         )}
       </div>
 
+      {/* Corrupt-upload alert banner — shown when any failed local uploads exist on
+          the current page and the user hasn't already filtered to the failed view. */}
+      {(() => {
+        const corruptCount =
+          data?.videos.filter(
+            (v) => v.transcodingStatus === "failed" && v.videoSource === "local",
+          ).length ?? 0;
+        if (corruptCount === 0 || statusFilter === "failed") return null;
+        return (
+          <div className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50/60 dark:border-red-900/40 dark:bg-red-950/20 px-4 py-3">
+            <AlertTriangle size={16} className="text-red-500 flex-shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-red-700 dark:text-red-400">
+                {corruptCount} upload{corruptCount !== 1 ? "s" : ""} failed — re-upload required
+              </p>
+              <p className="text-xs text-red-600/70 dark:text-red-400/70 mt-0.5">
+                These files could not be processed. Delete each one and re-upload a valid copy to make it available for broadcast.
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs border-red-300 text-red-700 hover:bg-red-100 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/40 flex-shrink-0"
+              onClick={() => { setStatusFilter("failed"); setSourceFilter("local"); setPage(1); }}
+            >
+              Show failed
+            </Button>
+          </div>
+        );
+      })()}
+
       {/* Video Table */}
       <Card>
         <CardContent className="p-0">
@@ -650,14 +690,27 @@ export default function VideosPage() {
                   </div>
 
                   {/* Status badge */}
-                  <Badge
-                    variant={(STATUS_COLORS[v.transcodingStatus] ?? "outline") as "default" | "secondary" | "outline" | "destructive"}
-                    className="capitalize text-[11px] flex-shrink-0"
-                  >
-                    {v.transcodingStatus === "hls_ready" || v.transcodingStatus === "ready"
-                      ? "Ready"
-                      : v.transcodingStatus || "—"}
-                  </Badge>
+                  <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                    <Badge
+                      variant={(STATUS_COLORS[v.transcodingStatus] ?? "outline") as "default" | "secondary" | "outline" | "destructive"}
+                      className="capitalize text-[11px]"
+                    >
+                      {v.transcodingStatus === "hls_ready" || v.transcodingStatus === "ready"
+                        ? "Ready"
+                        : v.transcodingStatus || "—"}
+                    </Badge>
+                    {v.transcodingStatus === "failed" && v.videoSource === "local" && (
+                      <span title="This file could not be processed — delete it and re-upload a valid copy to recover.">
+                        <Badge
+                          variant="outline"
+                          className="text-[10px] px-1.5 h-4 border-amber-400 text-amber-600 dark:text-amber-400 flex items-center gap-0.5 cursor-default"
+                        >
+                          <UploadCloud size={9} className="flex-shrink-0" />
+                          Re-upload required
+                        </Badge>
+                      </span>
+                    )}
+                  </div>
 
                   {/* Actions — always visible on touch, hover-only on pointer devices */}
                   <DropdownMenu>
