@@ -42,7 +42,6 @@ import { enqueueTranscode } from "../transcoder/transcoder.queue.js";
 import { generateQuickThumbnail, normalizeThumbnailBuffer, probeUploadedDuration } from "../transcoder/transcoder.service.js";
 import { runFaststart } from "../transcoder/faststart.service.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
-import { env } from "../../config/env.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { ServiceUnavailableError } from "../../shared/errors.js";
@@ -1080,6 +1079,27 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         const assemblyStartMs = Date.now();
 
         void (async () => {
+          // 60-minute assembly watchdog — if completeMultipartUpload hangs
+          // indefinitely (TOAST bloat, DB lock, disk pressure), mark the video
+          // failed and reset the session so the operator can retry from the
+          // upload panel without waiting for a server restart.
+          const assemblyWatchdog = setTimeout(() => {
+            void (async () => {
+              capturedLog.error(
+                { sessionId, videoId, elapsed: "60min" },
+                "[finalize:bg] assembly watchdog fired — marking video failed, resetting session",
+              );
+              await Promise.allSettled([
+                db.update(videos).set({ transcodingStatus: "failed" }).where(eq(videos.id, videoId)),
+                db
+                  .update(sessions)
+                  .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
+                  .where(eq(sessions.sessionId, sessionId)),
+              ]);
+              adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-watchdog-timeout" });
+            })();
+          }, 60 * 60 * 1000);
+
           try {
             capturedLog.info(
               { sessionId, videoId, parts: partsForAssembly.length },
@@ -1186,7 +1206,9 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               { sessionId, videoId, totalMs: Date.now() - assemblyStartMs },
               "[finalize:bg] all post-processing complete",
             );
+            clearTimeout(assemblyWatchdog);
           } catch (err) {
+            clearTimeout(assemblyWatchdog);
             // Assembly failed — mark the video as failed and reset the session
             // to "uploading" so the operator can retry from the upload queue.
             capturedLog.error(
@@ -1218,186 +1240,239 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         };
       }
 
-      // ── Path B: "db_fallback" backend — synchronous assembly (rare path) ───
+      // ── Path B: "db_fallback" backend — async pre-commit (same pattern as Path A) ──
       //
-      // db_fallback is only active when the init's createMultipartUpload failed.
-      // We keep this path synchronous to preserve the existing error semantics
-      // (assembly errors propagate as HTTP errors the client can retry).
-      let localVideoUrl: string | null = null;
-      let finalObjectKey: string | null = session.objectKey;
-      let finalStorageBackend = session.storageBackend;
+      // db_fallback is active when init's createMultipartUpload failed. Chunks are
+      // stored as BYTEA in upload_chunks.fallback_data. We follow the same
+      // pre-commit → background-assembly pattern as Path A so finalize returns
+      // immediately regardless of storage backend.
+      //
+      // objectKey is null on the session row for db_fallback. Compute it now
+      // using the same deterministic formula as finalizeFromDbFallback, then
+      // persist it so the background task uses the same key even if midnight
+      // rolls over between pre-commit and assembly.
+      const now = new Date();
+      const safeExtB = (() => {
+        const fnExt = session.originalFilename
+          ? (session.originalFilename.split(".").pop() ?? "").toLowerCase()
+          : "";
+        if (/^(mp4|mov|mkv|avi|webm|m4v|flv|wmv|ts|mts|m2ts)$/.test(fnExt)) return fnExt;
+        const mime = (session.mimeType ?? session.contentType ?? "").toLowerCase();
+        if (mime.includes("webm")) return "webm";
+        if (mime.includes("quicktime") || mime.includes("mov")) return "mov";
+        if (mime.includes("x-matroska") || mime.includes("mkv")) return "mkv";
+        if (mime.includes("x-msvideo") || mime.includes("avi")) return "avi";
+        return "mp4";
+      })();
+      const fallbackObjectKey =
+        session.objectKey ??
+        `uploads/${now.getUTCFullYear()}/${String(now.getUTCMonth() + 1).padStart(2, "0")}/${String(now.getUTCDate()).padStart(2, "0")}/${session.sessionId}.${safeExtB}`;
+      const fallbackVideoUrl = storage().publicUrl(fallbackObjectKey);
+      const durationSecsB =
+        session.durationSecs && session.durationSecs > 0
+          ? Math.round(session.durationSecs)
+          : 1800;
 
-      const ASSEMBLY_TIMEOUT_MS = 8 * 60 * 1000;
-      let assemblyTimedOut = false;
-      const assemblyTimer = setTimeout(async () => {
-        assemblyTimedOut = true;
-        req.log.error(
-          { sessionId, totalChunks: allChunks.length },
-          "[finalize] db_fallback assembly timeout — resetting session to uploading for retry",
-        );
-        await db
-          .update(sessions)
-          .set({ status: "uploading", updatedAt: new Date() })
-          .where(eq(sessions.sessionId, sessionId))
-          .catch(() => {});
-      }, ASSEMBLY_TIMEOUT_MS);
-
+      const videoIdB = randomUUID();
+      let insertedB: (typeof videos.$inferSelect)[];
       try {
-        const result = await finalizeFromDbFallback(session, allChunks.length, req.log);
-        localVideoUrl = result.localVideoUrl;
-        finalObjectKey = result.objectKey;
-        finalStorageBackend = result.storageBackend;
-      } catch (assemblyErr) {
-        clearTimeout(assemblyTimer);
-        await resetLock();
-        throw assemblyErr;
-      }
-
-      clearTimeout(assemblyTimer);
-
-      if (assemblyTimedOut) {
-        throw Object.assign(
-          new Error(
-            "File assembly exceeded the 8-minute deadline. " +
-            "All chunks are safely stored — click Retry to resume finalization.",
-          ),
-          { statusCode: 408 },
-        );
-      }
-
-      // Insert managed_videos row (db_fallback path)
-      // Wrapped in try/catch so a DB error releases the assembly lock and lets
-      // the client retry instead of being permanently stuck on 409.
-      const videoId = randomUUID();
-      let inserted2: (typeof videos.$inferSelect)[];
-      try {
-        inserted2 = await db
+        insertedB = await db
           .insert(videos)
           .values({
-            id: videoId,
+            id: videoIdB,
             youtubeId: null,
             title: session.title,
             description: session.description ?? "",
             thumbnailUrl: "",
-            duration: session.durationSecs ? String(Math.round(session.durationSecs)) : "0",
+            duration: String(durationSecsB),
             category: session.category ?? "sermon",
             preacher: session.preacher ?? "",
             publishedAt: null,
             videoSource: "local",
-            localVideoUrl,
+            localVideoUrl: fallbackVideoUrl,
             featured: session.featured,
             originalFilename: session.originalFilename ?? null,
             mimeType: session.mimeType ?? null,
             sizeBytes: session.sizeBytes,
-            objectPath: finalObjectKey ?? null,
+            objectPath: fallbackObjectKey,
             uploadedBy: session.uploadedBy ?? null,
-            s3MirroredAt: finalStorageBackend === "db" ? new Date() : null,
-            broadcastOnly: true, // hidden from public library until admin publishes
+            s3MirroredAt: null,
+            broadcastOnly: true,
+            transcodingStatus: "queued",
           })
           .returning();
       } catch (insertErr) {
         await resetLock();
-        req.log.error({ err: insertErr, sessionId, videoId }, "[finalize:db_fallback] video INSERT failed — lock released");
+        req.log.error(
+          { err: insertErr, sessionId, videoId: videoIdB },
+          "[finalize:db_fallback] video INSERT failed — lock released",
+        );
         throw Object.assign(
           new Error("Failed to create video record. The upload is safe — please retry finalization."),
           { statusCode: 500, cause: insertErr },
         );
       }
 
-      const row = inserted2[0];
-      if (!row) {
+      const rowB = insertedB[0];
+      if (!rowB) {
         await resetLock();
         throw new Error("videos insert returned no rows");
       }
 
-      await db
-        .update(sessions)
-        .set({
-          status: "completed",
-          completedVideoId: videoId,
-          storageBackend: finalStorageBackend,
-          updatedAt: new Date(),
-        })
-        .where(eq(sessions.sessionId, sessionId));
-
-      void db
-        .delete(chunks)
-        .where(eq(chunks.sessionId, sessionId))
-        .catch((err: unknown) => {
-          req.log.warn({ err, sessionId }, "[finalize] chunk row cleanup failed (non-fatal)");
-        });
-
-      // NOTE: The video is NOT added to the broadcast queue here.
-      // faststart.service.ts auto-adds it AFTER relocating the moov atom
-      // (faststartApplied=true), ensuring the player always receives a
-      // seekable MP4 rather than a raw upload with moov at EOF.
+      // Persist the pre-agreed objectKey + pre-committed videoId so the
+      // idempotency check and finalize-status poll work correctly during
+      // background assembly, and so the background task uses the same key
+      // even if midnight rolls over before assembly starts.
+      try {
+        await db
+          .update(sessions)
+          .set({ completedVideoId: videoIdB, objectKey: fallbackObjectKey, updatedAt: new Date() })
+          .where(eq(sessions.sessionId, sessionId));
+      } catch (updateErr) {
+        req.log.warn(
+          { err: updateErr, sessionId, videoId: videoIdB },
+          "[finalize:db_fallback] completedVideoId update failed (non-fatal)",
+        );
+      }
 
       void invalidateVideosCatalogCache();
       try { broadcastEngine.pushSnapshot(); } catch { /* non-fatal */ }
-      adminEventBus.push("videos-library-updated", { videoId: row.id, reason: "upload-finalized" });
-      adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalized", videoId: row.id });
+      adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "upload-precommitted" });
 
-      let transcodingWarning: string | null = null;
-      try {
-        await enqueueTranscode({
-          videoId: row.id,
-          videoPath: finalObjectKey ?? session.objectKey ?? "",
-        });
-      } catch (err) {
-        transcodingWarning =
-          err instanceof Error
-            ? err.message
-            : "Transcoding job could not be queued — re-enqueue from the Operations tab.";
-        req.log.warn({ err, videoId: row.id }, "[finalize] enqueueTranscode failed (non-fatal)");
-      }
+      req.log.info(
+        { sessionId, videoId: videoIdB, chunks: allChunks.length },
+        "[finalize:db_fallback] pre-committed ok — background assembly starting",
+      );
 
-      if (finalObjectKey) {
-        const _clientDuration = Number(row.duration ?? "0");
-        void (async () => {
-          try {
-            const [thumbUrl, probedSecs] = await Promise.all([
-              generateQuickThumbnail(finalObjectKey!, row.id),
-              _clientDuration > 0 ? Promise.resolve(null) : probeUploadedDuration(finalObjectKey!),
+      // ── Background db_fallback assembly + post-processing ─────────────────
+      const capturedLogB = req.log;
+      const sessionForAssembly = { ...session, objectKey: fallbackObjectKey };
+      const assemblyStartMsB = Date.now();
+
+      void (async () => {
+        // 60-minute watchdog — guards against a hung finalizeFromDbFallback
+        // (DB lock contention, OOM mid-chunk). On expiry: mark video failed
+        // and reset the session so the operator can retry.
+        const watchdogB = setTimeout(() => {
+          void (async () => {
+            capturedLogB.error(
+              { sessionId, videoId: videoIdB, elapsed: "60min" },
+              "[finalize:db_fallback:bg] assembly watchdog fired — marking failed, resetting session",
+            );
+            await Promise.allSettled([
+              db.update(videos).set({ transcodingStatus: "failed" }).where(eq(videos.id, videoIdB)),
+              db
+                .update(sessions)
+                .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
+                .where(eq(sessions.sessionId, sessionId)),
             ]);
-            const patch: Partial<typeof videos.$inferInsert> = {};
-            if (thumbUrl) patch.thumbnailUrl = thumbUrl;
-            if (probedSecs != null) patch.duration = String(Math.round(probedSecs));
-            if (Object.keys(patch).length > 0) {
-              await db.update(videos).set(patch).where(eq(videos.id, row.id));
+            adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "assembly-watchdog-timeout" });
+          })();
+        }, 60 * 60 * 1000);
+
+        try {
+          const result = await finalizeFromDbFallback(sessionForAssembly, allChunks.length, capturedLogB);
+          clearTimeout(watchdogB);
+
+          const assemblyMsB = Date.now() - assemblyStartMsB;
+          capturedLogB.info(
+            { sessionId, videoId: videoIdB, assemblyMsB },
+            "[finalize:db_fallback:bg] assembly done",
+          );
+
+          await Promise.all([
+            db
+              .update(sessions)
+              .set({ status: "completed", storageBackend: result.storageBackend, updatedAt: new Date() })
+              .where(eq(sessions.sessionId, sessionId))
+              .catch((err: unknown) =>
+                capturedLogB.warn({ err, sessionId }, "[finalize:db_fallback:bg] session completed update failed (non-fatal)"),
+              ),
+            db
+              .update(videos)
+              .set({ s3MirroredAt: new Date(), localVideoUrl: result.localVideoUrl, objectPath: result.objectKey })
+              .where(eq(videos.id, videoIdB))
+              .catch(() => {}),
+          ]);
+
+          // Reclaim BYTEA chunk rows now that the blob is fully assembled.
+          void db
+            .delete(chunks)
+            .where(eq(chunks.sessionId, sessionId))
+            .catch((err: unknown) =>
+              capturedLogB.warn({ err, sessionId }, "[finalize:db_fallback:bg] chunk cleanup failed (non-fatal)"),
+            );
+
+          // Post-upload probes: thumbnail + duration.
+          // Must run BEFORE faststart because faststart replaces the blob.
+          const clientDurationB = Number(rowB.duration ?? "0");
+          try {
+            const [thumbUrlB, probedSecsB] = await Promise.all([
+              generateQuickThumbnail(result.objectKey, videoIdB),
+              clientDurationB > 0 ? Promise.resolve(null) : probeUploadedDuration(result.objectKey),
+            ]);
+            const patchB: Partial<typeof videos.$inferInsert> = {};
+            if (thumbUrlB) patchB.thumbnailUrl = thumbUrlB;
+            if (probedSecsB != null) patchB.duration = String(Math.round(probedSecsB));
+            if (Object.keys(patchB).length > 0) {
+              await db.update(videos).set(patchB).where(eq(videos.id, videoIdB));
               void invalidateVideosCatalogCache();
-              adminEventBus.push("videos-library-updated", { videoId: row.id, reason: "thumbnail-generated" });
+              adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "thumbnail-generated" });
             }
-            if (probedSecs != null && probedSecs > 10) {
-              const roundedSecs = Math.round(probedSecs);
+            if (probedSecsB != null && probedSecsB > 10) {
               await db
                 .update(schema.broadcastQueueTable)
-                .set({ durationSecs: roundedSecs })
-                .where(eq(schema.broadcastQueueTable.videoId, row.id))
+                .set({ durationSecs: Math.round(probedSecsB) })
+                .where(eq(schema.broadcastQueueTable.videoId, videoIdB))
                 .catch(() => {});
             }
           } catch (err) {
-            req.log.warn({ err, videoId: row.id }, "[finalize] post-upload probes failed (non-fatal)");
+            capturedLogB.warn({ err, videoId: videoIdB }, "[finalize:db_fallback:bg] post-upload probes failed (non-fatal)");
           }
-          try {
-            await runFaststart(row.id, finalObjectKey!, { skipStatusUpdate: !env.TRANSCODER_DISABLE });
-          } catch (err) {
-            req.log.warn({ err, videoId: row.id }, "[finalize] faststart failed (non-fatal)");
-            if (env.TRANSCODER_DISABLE) {
-              adminEventBus.push("broadcast-queue-updated", { reason: "faststart-failed-fallback", videoId: row.id });
-            }
-          }
-        })();
-      }
 
-      req.log.info(
-        { sessionId, videoId: row.id, storageBackend: finalStorageBackend, totalChunks: allChunks.length },
-        "[finalize] ok (db_fallback)",
-      );
+          // Faststart MUST complete before enqueueTranscode (see Path A rationale).
+          try {
+            await runFaststart(videoIdB, result.objectKey, { skipStatusUpdate: false });
+            capturedLogB.info({ sessionId, videoId: videoIdB }, "[finalize:db_fallback:bg] faststart done");
+          } catch (err) {
+            capturedLogB.warn({ err, videoId: videoIdB }, "[finalize:db_fallback:bg] faststart failed (non-fatal)");
+          }
+
+          try {
+            await enqueueTranscode({ videoId: videoIdB, videoPath: result.objectKey });
+            capturedLogB.info({ sessionId, videoId: videoIdB }, "[finalize:db_fallback:bg] HLS transcode job queued");
+          } catch (err) {
+            capturedLogB.warn(
+              { err, videoId: videoIdB },
+              "[finalize:db_fallback:bg] enqueueTranscode failed (non-fatal)",
+            );
+          }
+
+          capturedLogB.info(
+            { sessionId, videoId: videoIdB, totalMs: Date.now() - assemblyStartMsB },
+            "[finalize:db_fallback:bg] all post-processing complete",
+          );
+        } catch (err) {
+          clearTimeout(watchdogB);
+          capturedLogB.error(
+            { err, sessionId, videoId: videoIdB, assemblyMs: Date.now() - assemblyStartMsB },
+            "[finalize:db_fallback:bg] ASSEMBLY FAILED — resetting session, marking video failed",
+          );
+          await Promise.allSettled([
+            db.update(videos).set({ transcodingStatus: "failed" }).where(eq(videos.id, videoIdB)),
+            db
+              .update(sessions)
+              .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
+              .where(eq(sessions.sessionId, sessionId)),
+          ]);
+          adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "assembly-failed" });
+        }
+      })();
 
       return {
-        ...projectRow(row),
-        storageBackend: finalStorageBackend,
-        transcodingWarning,
+        ...projectRow(rowB),
+        storageBackend: "db" as const,
+        transcodingWarning: null,
       };
     },
   );
