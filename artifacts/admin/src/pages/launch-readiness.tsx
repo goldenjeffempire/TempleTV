@@ -120,6 +120,7 @@ export default function LaunchReadinessPage() {
     queryKey: ["launch-readiness"],
     queryFn: () => api.get<ReadinessResponse>("/admin/launch/readiness"),
     refetchInterval: 60_000,
+    staleTime: 55_000,
   });
 
   const { overallStatus, summary, categories, counts, environment } = data ?? {};

@@ -302,7 +302,7 @@ async function main() {
     // makes both ports answer in dev. In production NODE_ENV=production
     // and PORT=8080 already, so this branch is skipped.
     const FORWARD_PORT = 8080;
-    if (process.env.NODE_ENV !== "production" && env.PORT !== FORWARD_PORT) {
+    if (env.NODE_ENV !== "production" && env.PORT !== FORWARD_PORT) {
       const forwarder = net.createServer((sock) => {
         const upstream = net.connect(env.PORT, "127.0.0.1");
         sock.on("error", () => upstream.destroy());
@@ -342,6 +342,10 @@ async function main() {
     if (mode === "worker" && workerKeepalive) clearInterval(workerKeepalive);
     if (mode === "api" || mode === "all") {
       broadcastEngine.stop();
+      // Stop all secondary channel engines. Without this call the timers and
+      // DB connections they hold stay alive past process.exit(), preventing
+      // the connection pool from draining cleanly.
+      channelRegistry.shutdown();
       broadcastScheduler.stop();
       stopKeepAlive();
       stopMemoryWatchdog();

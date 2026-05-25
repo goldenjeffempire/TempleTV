@@ -43,6 +43,7 @@ export default function PlaylistsPage() {
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["playlists"],
     queryFn: () => api.get<{ playlists: Playlist[] }>("/playlists"),
+    staleTime: 30_000,
   });
 
   const createMutation = useMutation({

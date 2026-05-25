@@ -621,7 +621,7 @@ function colocatedWorkerHeartbeat() {
   return {
     pid: process.pid,
     ageSec: 0,
-    runMode: process.env.RUN_MODE ?? "all",
+    runMode: env.RUN_MODE,
     nodeVersion: process.version,
     rssMb: mb(mem.rss),
     uptimeSec: Math.round(process.uptime()),
@@ -752,7 +752,7 @@ function processInfo() {
   const mem = process.memoryUsage();
   return {
     pid: process.pid,
-    runMode: process.env.RUN_MODE ?? "all",
+    runMode: env.RUN_MODE,
     role: "api" as const,
     uptimeSec: Math.round(process.uptime()),
     rssMb: mb(mem.rss),
@@ -863,16 +863,16 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         },
         fatals: [],
         deploy: {
-          commit: process.env.RENDER_GIT_COMMIT ?? process.env.REPL_DEPLOYMENT ?? null,
+          commit: env.RENDER_GIT_COMMIT ?? env.REPL_DEPLOYMENT ?? null,
           commitShort:
-            (process.env.RENDER_GIT_COMMIT ?? process.env.REPL_DEPLOYMENT ?? "").slice(
+            (env.RENDER_GIT_COMMIT ?? env.REPL_DEPLOYMENT ?? "").slice(
               0,
               7,
             ) || null,
-          branch: process.env.RENDER_GIT_BRANCH ?? null,
-          serviceName: process.env.RENDER_SERVICE_NAME ?? "temple-tv-api",
-          serviceId: process.env.RENDER_SERVICE_ID ?? null,
-          instanceId: process.env.RENDER_INSTANCE_ID ?? instanceId,
+          branch: env.RENDER_GIT_BRANCH ?? null,
+          serviceName: env.RENDER_SERVICE_NAME ?? "temple-tv-api",
+          serviceId: env.RENDER_SERVICE_ID ?? null,
+          instanceId: env.RENDER_INSTANCE_ID ?? instanceId,
           nodeEnv: env.NODE_ENV,
         },
         sentry: { configured: !!env.SENTRY_DSN },
@@ -1358,7 +1358,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         schema: {
           tags: ["admin-ops"],
           summary: "Re-arm a transcoding job (resets attempts + clears error)",
-          params: z.object({ id: z.string() }),
+          params: z.object({ id: z.string().min(1).max(128) }),
           response: {
             200: z.object({ ok: z.literal(true) }),
             404: z.object({ message: z.string() }),
@@ -1385,7 +1385,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       schema: {
         tags: ["admin-ops"],
         summary: "Delete a transcoding job row (does not touch the source video)",
-        params: z.object({ id: z.string() }),
+        params: z.object({ id: z.string().min(1).max(128) }),
         response: {
           200: z.object({ ok: z.literal(true) }),
           404: z.object({ message: z.string() }),
@@ -1413,7 +1413,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       schema: {
         tags: ["admin-ops"],
         summary: "Re-queue a video for transcoding (idempotent on existing jobs)",
-        params: z.object({ videoId: z.string() }),
+        params: z.object({ videoId: z.string().min(1).max(128) }),
         body: z.object({ priority: z.number().int().optional() }).optional(),
         response: {
           200: z.object({ id: z.string(), reused: z.boolean() }),
@@ -1527,7 +1527,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     async () => ({
       dailyTotals: [],
       todayByContext: [],
-      dailyLimit: Number(process.env.YOUTUBE_QUOTA_DAILY_LIMIT ?? 10_000),
+      dailyLimit: env.YOUTUBE_QUOTA_DAILY_LIMIT,
     }),
   );
 
@@ -1622,7 +1622,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         diskUsedGb: Math.round(mb(m.rss) / 1024 * 100) / 100,
         diskTotalGb: 0,
         uptimeSec: uptimeSec(),
-        version: process.env.npm_package_version ?? "1.0.0",
+        version: env.APP_VERSION ?? process.env.npm_package_version ?? "1.0.0",
         nodeVersion: process.version,
         activeConnections: sseCounter.get(),
         requestsPerMinute: 0,
@@ -1846,7 +1846,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       schema: {
         tags: ["admin-ops"],
         summary: "Dismiss/resolve an emergency alert by ID",
-        params: z.object({ id: z.string() }),
+        params: z.object({ id: z.string().min(1).max(128) }),
         response: { 200: z.object({ ok: z.literal(true), resolvedAt: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
@@ -2125,7 +2125,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       schema: {
         tags: ["admin-ops"],
         summary: "Cancel a scheduled live override",
-        params: z.object({ id: z.string() }),
+        params: z.object({ id: z.string().min(1).max(128) }),
         response: { 200: z.object({ ok: z.literal(true), id: z.string() }) },
         security: [{ bearerAuth: [] }],
       },

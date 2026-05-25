@@ -70,6 +70,26 @@ class ChannelRegistry {
       viewerCount: engine.getViewerCount(),
     }));
   }
+
+  /**
+   * Stop all managed channel engines and clear the registry.
+   * Must be called during graceful shutdown so timers and DB pool
+   * connections held by secondary ChannelEngine instances are released
+   * before `process.exit()`. Without this, those timers keep the event
+   * loop alive past the supervisor's hard-kill timeout and prevent clean
+   * connection pool drain.
+   */
+  shutdown(): void {
+    for (const [channelId, engine] of this.engines) {
+      try {
+        engine.stop();
+      } catch {
+        // Non-fatal — engine may already be stopped.
+      }
+      logger.info({ channelId }, "channel engine stopped (shutdown)");
+    }
+    this.engines.clear();
+  }
 }
 
 export const channelRegistry = new ChannelRegistry();

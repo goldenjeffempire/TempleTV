@@ -240,8 +240,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   // REPLIT_EXPO_DEV_DOMAIN are only set inside the Replit dev container.
   if (!wildcardOrigin) {
     const replitDevHosts = [
-      process.env.REPLIT_DEV_DOMAIN,
-      process.env.REPLIT_EXPO_DEV_DOMAIN,
+      env.REPLIT_DEV_DOMAIN,
+      env.REPLIT_EXPO_DEV_DOMAIN,
     ].filter((h): h is string => Boolean(h));
     if (replitDevHosts.length > 0) {
       const replitOrigins = replitDevHosts.map((h) => `https://${h}`);
@@ -436,6 +436,11 @@ export async function buildApp(): Promise<FastifyInstance> {
       reply.header("Access-Control-Allow-Origin", "*");
       reply.header("Timing-Allow-Origin", "*");
     }
+
+    // Additional security headers not covered by helmet defaults.
+    reply.header("Referrer-Policy", "strict-origin-when-cross-origin");
+    reply.header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()");
+    reply.header("X-DNS-Prefetch-Control", "off");
 
     return payload;
   });
@@ -656,7 +661,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   // through the primary Replit preview without switching ports.  Never active
   // in production — the TV app ships as static files served by a CDN.
   if (env.NODE_ENV !== "production") {
-    const TV_DEV_PORT = Number(process.env.TV_DEV_PORT ?? "23876");
+    const TV_DEV_PORT = env.TV_DEV_PORT;
     const http = await import("node:http");
 
     function makeDevProxy(port: number, label: string, stripPrefix?: string) {
@@ -711,7 +716,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     // /artifacts/mobile/* are the Metro bundle/asset paths (NOT stripped — Metro
     // serves them at that same absolute path). /hot and /message are Expo HMR
     // WebSocket upgrade paths that originate from the loaded Expo web page.
-    const MOBILE_DEV_PORT = Number(process.env.MOBILE_DEV_PORT ?? "18115");
+    const MOBILE_DEV_PORT = env.MOBILE_DEV_PORT;
     const mobileProxy = makeDevProxy(MOBILE_DEV_PORT, "Mobile", "/mobile");
     const mobileAssetProxy = makeDevProxy(MOBILE_DEV_PORT, "Mobile");
     app.get("/mobile", mobileProxy as unknown as Parameters<typeof app.get>[1]);
@@ -849,9 +854,9 @@ export async function buildApp(): Promise<FastifyInstance> {
   // continues providing library updates.
   app.addHook("onReady", async () => {
     const baseUrl =
-      process.env.WEBHOOK_BASE_URL ??
-      (process.env.REPLIT_DEV_DOMAIN
-        ? `https://${process.env.REPLIT_DEV_DOMAIN}`
+      env.WEBHOOK_BASE_URL ??
+      (env.REPLIT_DEV_DOMAIN
+        ? `https://${env.REPLIT_DEV_DOMAIN}`
         : null);
     if (baseUrl) {
       void subscribeToYouTubePubSubHubbub(baseUrl);

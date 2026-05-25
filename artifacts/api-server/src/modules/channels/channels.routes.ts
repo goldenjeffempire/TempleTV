@@ -105,7 +105,7 @@ export async function channelsRoutes(app: FastifyInstance) {
       schema: {
         tags: ["channels"],
         summary: "Get current broadcast snapshot for a channel by slug",
-        params: z.object({ slug: z.string() }),
+        params: z.object({ slug: z.string().min(1).max(80) }),
       },
     },
     async (req, reply) => {
@@ -166,7 +166,7 @@ export async function channelsRoutes(app: FastifyInstance) {
       schema: {
         tags: ["channels"],
         summary: "Update channel metadata",
-        params: z.object({ id: z.string() }),
+        params: z.object({ id: z.string().min(1).max(128) }),
         body: ChannelBodySchema.partial(),
         security: [{ bearerAuth: [] }],
       },
@@ -193,7 +193,7 @@ export async function channelsRoutes(app: FastifyInstance) {
       schema: {
         tags: ["channels"],
         summary: "Delete a non-primary channel",
-        params: z.object({ id: z.string() }),
+        params: z.object({ id: z.string().min(1).max(128) }),
         security: [{ bearerAuth: [] }],
       },
     },
@@ -221,7 +221,7 @@ export async function channelsRoutes(app: FastifyInstance) {
       schema: {
         tags: ["channels"],
         summary: "List queue items for a channel",
-        params: z.object({ id: z.string() }),
+        params: z.object({ id: z.string().min(1).max(128) }),
         security: [{ bearerAuth: [] }],
       },
     },
@@ -244,7 +244,7 @@ export async function channelsRoutes(app: FastifyInstance) {
       schema: {
         tags: ["channels"],
         summary: "Add a video to a channel's broadcast queue",
-        params: z.object({ id: z.string() }),
+        params: z.object({ id: z.string().min(1).max(128) }),
         body: QueueItemBodySchema,
         security: [{ bearerAuth: [] }],
       },
@@ -279,7 +279,7 @@ export async function channelsRoutes(app: FastifyInstance) {
       schema: {
         tags: ["channels"],
         summary: "Remove an item from a channel's queue",
-        params: z.object({ channelId: z.string(), itemId: z.string() }),
+        params: z.object({ channelId: z.string().min(1).max(128), itemId: z.string().min(1).max(128) }),
         security: [{ bearerAuth: [] }],
       },
     },
@@ -306,7 +306,7 @@ export async function channelsRoutes(app: FastifyInstance) {
       schema: {
         tags: ["channels"],
         summary: "Toggle active status of a channel queue item",
-        params: z.object({ channelId: z.string(), itemId: z.string() }),
+        params: z.object({ channelId: z.string().min(1).max(128), itemId: z.string().min(1).max(128) }),
         body: z.object({ isActive: z.boolean() }),
         security: [{ bearerAuth: [] }],
       },

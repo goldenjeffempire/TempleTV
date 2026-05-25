@@ -19,6 +19,13 @@ const Env = z.object({
   // Injected automatically by Replit in dev environments. Used by sse-cors.ts
   // to allow the Replit preview origin in addition to localhost.
   REPLIT_DEV_DOMAIN: z.string().optional(),
+  // Injected by Replit when the Expo dev container is running.
+  REPLIT_EXPO_DEV_DOMAIN: z.string().optional(),
+  // Dev-proxy ports for TV and Mobile surfaces (non-production only).
+  TV_DEV_PORT: z.coerce.number().int().positive().default(23876),
+  MOBILE_DEV_PORT: z.coerce.number().int().positive().default(18115),
+  // Absolute base URL used for outbound webhook callbacks (e.g. Stripe, Expo).
+  WEBHOOK_BASE_URL: z.string().url().optional(),
   LOG_LEVEL: z
     .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
     .default("info"),
@@ -179,6 +186,17 @@ const Env = z.object({
   // Defaults to `<os.tmpdir()>/transcoder`. Override in production when
   // the OS tmp partition is too small (e.g. Render's 512 MB container).
   TRANSCODER_SCRATCH_DIR: z.string().optional(),
+  // ffmpeg encoding preset (speed vs compression trade-off). Default "veryfast"
+  // minimises CPU time on the Replit free tier; use "medium" for better quality.
+  TRANSCODER_PRESET: z.string().default("veryfast"),
+  // ffmpeg Constant Rate Factor. Lower = higher quality / larger file.
+  TRANSCODER_CRF: z.coerce.number().int().min(0).max(51).default(23),
+  // When set to "1" the transcoder scratch dir is kept after job completion
+  // for post-mortem inspection.  Defaults to false (scratch dir deleted).
+  TRANSCODER_KEEP_SCRATCH: z
+    .union([z.boolean(), z.string()])
+    .transform((v) => v === true || v === "true" || v === "1")
+    .default(false),
   // Maximum wall-clock time (ms) allowed for a single FFmpeg encoding job.
   // If the process is still running after this deadline it receives SIGKILL so
   // the dispatcher can move on to the next queued job. Default 4 hours — long
@@ -251,10 +269,23 @@ const Env = z.object({
   // 0 = skip drain and close immediately.
   SHUTDOWN_DRAIN_MS: z.coerce.number().int().nonnegative().default(5_000),
 
+  // ── Application version ───────────────────────────────────────────────────
+  // Injected at build time (e.g. CI sets APP_VERSION=<git tag>).
+  // Falls back to npm_package_version (set by `node` when run via npm/pnpm).
+  APP_VERSION: z.string().optional(),
+
   // ── YouTube channel sync ──────────────────────────────────────────────────
   // YOUTUBE_API_KEY: YouTube Data API v3 key for full channel sync.
   // When absent the sync falls back to RSS (last ~15 videos only, no durations).
   YOUTUBE_API_KEY: z.string().optional(),
+  // YouTube channel ID to monitor for live streams and sync videos.
+  // Defaults to the JCTM temple channel if not set.
+  YOUTUBE_CHANNEL_ID: z.string().optional(),
+  // Daily YouTube Data API v3 quota cap. Default matches Google's free tier.
+  YOUTUBE_QUOTA_DAILY_LIMIT: z.coerce.number().int().positive().default(10_000),
+  // How many days back to include videos when syncing the channel. Default
+  // 1825 days (5 years) — covers the full broadcast library.
+  YOUTUBE_CONTENT_WINDOW_DAYS: z.coerce.number().int().positive().default(1825),
   // How often (in minutes) the background YouTube sync dispatcher polls the
   // @TEMPLETVJCTM channel for new/updated videos. Default 15 minutes.
   YOUTUBE_SYNC_INTERVAL_MINS: z.coerce.number().int().positive().default(15),
@@ -325,6 +356,16 @@ const Env = z.object({
   // CLEANUP_MAX_PER_SWEEP: maximum number of source blobs to delete in a
   //   single sweep run. Limits the DB/IO impact of a large backlog catch-up.
   CLEANUP_MAX_PER_SWEEP: z.coerce.number().int().positive().default(20),
+
+  // ── Deployment platform metadata (read-only, injected by Render / Replit) ─
+  // These are optional informational env vars set by hosting platforms.
+  // They are never required — absence is silently tolerated.
+  RENDER_GIT_COMMIT: z.string().optional(),
+  RENDER_GIT_BRANCH: z.string().optional(),
+  RENDER_SERVICE_NAME: z.string().optional(),
+  RENDER_SERVICE_ID: z.string().optional(),
+  RENDER_INSTANCE_ID: z.string().optional(),
+  REPL_DEPLOYMENT: z.string().optional(),
 
   // ── Startup admin seed ───────────────────────────────────────────────────
   // When both SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD are set, the API will

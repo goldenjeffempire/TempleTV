@@ -25,6 +25,7 @@ export default function LiveMonitorPage() {
     queryKey: ["live-monitor"],
     queryFn: () => api.get<LiveMonitorData>("/admin/live/monitor").catch(() => null),
     refetchInterval: 10_000,
+    staleTime: 8_000,
   });
 
   useSSEEvent("status", () => { void qc.invalidateQueries({ queryKey: ["live-monitor"] }); });

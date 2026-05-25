@@ -22,7 +22,8 @@ import Hls from "hls.js";
 import { useV2Broadcast } from "@workspace/player-core/react";
 import type { V2Source, V2SourceKind } from "@workspace/player-core";
 import { apiBase } from "@/lib/api-base";
-import { api } from "@/lib/api";
+import { api, HttpError } from "@/lib/api";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -455,6 +456,8 @@ export function BroadcastPreviewV2({ className }: Props) {
   const faststartMutation = useMutation({
     mutationFn: (videoId: string) =>
       api.post<{ ok: boolean; videoId: string }>(`/admin/videos/${videoId}/faststart`),
+    onSuccess: () => toast.success("Faststart applied — stream will load faster"),
+    onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to apply faststart"),
   });
 
   const title = server?.override?.title ?? server?.current?.title ?? null;
@@ -507,6 +510,7 @@ export function BroadcastPreviewV2({ className }: Props) {
             alt="Video thumbnail"
             className="relative z-10 w-28 rounded shadow-lg object-cover"
             draggable={false}
+            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
           />
           <div className="relative z-10 space-y-1.5 max-w-[260px]">
             <p className="text-white text-[11px] font-semibold leading-snug">

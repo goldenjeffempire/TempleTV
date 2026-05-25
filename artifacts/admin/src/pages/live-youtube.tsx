@@ -33,11 +33,13 @@ export default function LiveYoutubePage() {
     queryKey: ["youtube-live-status"],
     queryFn: () => api.get<YoutubeLiveStatus>("/youtube/live/status"),
     refetchInterval: 30_000,
+    staleTime: 25_000,
   });
 
   const { data: broadcasts, error: broadcastsError } = useQuery({
     queryKey: ["youtube-broadcasts"],
     queryFn: () => api.get<{ broadcasts: YoutubeScheduled[] }>("/youtube/live/broadcasts"),
+    staleTime: 60_000,
     retry: 1,
   });
 

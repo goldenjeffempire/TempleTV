@@ -11,6 +11,11 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel,
+  AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
+  AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { Radio, Square, Play, Clock, Users, Zap, AlertCircle, CheckCircle2 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
@@ -51,11 +56,13 @@ export default function LiveControlPage() {
     queryKey: ["live-status"],
     queryFn: () => api.get<LiveStatus>("/live/status"),
     refetchInterval: 10_000,
+    staleTime: 8_000,
   });
 
   const { data: recent } = useQuery({
     queryKey: ["live-recent"],
     queryFn: () => api.get<{ items: RecentOverride[] }>("/live/recent"),
+    staleTime: 30_000,
   });
 
   useSSEEvent("status", () => { void qc.invalidateQueries({ queryKey: ["live-status"] }); });
@@ -124,15 +131,36 @@ export default function LiveControlPage() {
         description="Manage live broadcast overrides and go live instantly."
         actions={
           isLive ? (
-            <Button
-              variant="destructive"
-              onClick={() => stopMutation.mutate()}
-              disabled={stopMutation.isPending}
-              className="gap-2"
-            >
-              <Square size={14} />
-              {stopMutation.isPending ? "Stopping…" : "Stop Broadcast"}
-            </Button>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  variant="destructive"
+                  disabled={stopMutation.isPending}
+                  className="gap-2"
+                >
+                  <Square size={14} />
+                  {stopMutation.isPending ? "Stopping…" : "Stop Broadcast"}
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Stop Live Broadcast?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This will immediately end the live broadcast override. Viewers will be
+                    returned to the regular broadcast queue. This action cannot be undone.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    onClick={() => stopMutation.mutate()}
+                  >
+                    Stop Broadcast
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           ) : undefined
         }
       />

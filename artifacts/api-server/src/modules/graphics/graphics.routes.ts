@@ -264,7 +264,7 @@ export async function graphicsRoutes(app: FastifyInstance) {
       schema: {
         tags: ["graphics"],
         summary: "Deactivate an on-air graphic",
-        params: z.object({ id: z.string() }),
+        params: z.object({ id: z.string().min(1).max(128) }),
         security: [{ bearerAuth: [] }],
       },
     },
@@ -307,7 +307,7 @@ export async function graphicsRoutes(app: FastifyInstance) {
       schema: {
         tags: ["graphics"],
         summary: "Clear all active on-air graphics for a channel",
-        params: z.object({ channelId: z.string() }),
+        params: z.object({ channelId: z.string().min(1).max(128) }),
         security: [{ bearerAuth: [] }],
       },
     },

@@ -219,7 +219,7 @@ export async function emergencyRoutes(app: FastifyInstance) {
       schema: {
         tags: ["emergency"],
         summary: "Dismiss an active emergency alert",
-        params: z.object({ id: z.string() }),
+        params: z.object({ id: z.string().min(1).max(128) }),
         security: [{ bearerAuth: [] }],
       },
     },

@@ -30,6 +30,7 @@ export default function SseBusPage() {
     queryKey: ["sse-bus-stats"],
     queryFn: () => api.get<{ connectedClients: number; eventsPerMinute: number; channels: string[] }>("/admin/sse-bus").catch(() => null),
     refetchInterval: 10_000,
+    staleTime: 8_000,
   });
 
   useEffect(() => {

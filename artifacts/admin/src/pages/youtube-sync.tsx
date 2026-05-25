@@ -65,18 +65,21 @@ export default function YoutubeSyncPage() {
     queryKey: ["yt-sync-status"],
     queryFn: () => api.get<SyncStatus>("/admin/youtube/sync/status"),
     refetchInterval: 10_000,
+    staleTime: 8_000,
   });
 
   const { data: history, isLoading: historyLoading, error: historyError } = useQuery({
     queryKey: ["yt-sync-history", historyLimit],
     queryFn: () => api.get<{ items: SyncHistoryItem[] }>(`/admin/youtube/sync/history?limit=${historyLimit}`),
     refetchInterval: 15_000,
+    staleTime: 12_000,
   });
 
   const { data: quota, isLoading: quotaLoading } = useQuery({
     queryKey: ["youtube-quota"],
     queryFn: () => api.get<QuotaStatus>("/admin/youtube/quota").catch(() => null),
     refetchInterval: 60_000,
+    staleTime: 55_000,
   });
 
   const triggerMutation = useMutation({

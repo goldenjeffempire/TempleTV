@@ -55,12 +55,14 @@ export default function StreamHealthPage() {
     queryKey: ["readyz"],
     queryFn: () => api.get<ReadyzResponse>("/readyz"),
     refetchInterval: 15_000,
+    staleTime: 12_000,
   });
 
   const { data: networkStatus, isLoading: networkLoading } = useQuery({
     queryKey: ["network-status"],
     queryFn: () => api.get<NetworkStatus>("/network/status").catch(() => null),
     refetchInterval: 15_000,
+    staleTime: 12_000,
   });
 
   useSSEEvent("stream-health", () => { void qc.invalidateQueries({ queryKey: ["readyz"] }); });

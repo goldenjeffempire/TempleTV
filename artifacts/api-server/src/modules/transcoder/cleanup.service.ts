@@ -150,12 +150,23 @@ async function validateHlsOutput(videoId: string): Promise<HlsValidationResult> 
       continue;
     }
 
-    // 3. Spot-check first + last segment existence (full scan is too expensive
-    //    for hundreds of segments; checking boundary segments catches truncation).
-    const firstSegKey = resolveHlsKey(rendKey, segmentUris[0]!);
-    const lastSegKey = resolveHlsKey(rendKey, segmentUris[segmentUris.length - 1]!);
-
-    const keysToCheck = Array.from(new Set([firstSegKey, lastSegKey]));
+    // 3. Sample segment existence — check first, last, and evenly-spaced
+    //    intermediate segments (up to HLS_VALIDATE_SAMPLE_COUNT total).
+    //    Checking only boundary segments misses corrupt middle segments that
+    //    would cause playback to stall mid-video after source deletion.
+    //    A single `WHERE key = ANY(...)` query keeps the cost O(1) regardless
+    //    of how many samples we take.
+    const HLS_VALIDATE_SAMPLE_COUNT = 10;
+    const sampledIndices = new Set<number>([0, segmentUris.length - 1]);
+    if (segmentUris.length > 2) {
+      const step = Math.max(1, Math.floor(segmentUris.length / (HLS_VALIDATE_SAMPLE_COUNT - 2)));
+      for (let i = step; i < segmentUris.length - 1 && sampledIndices.size < HLS_VALIDATE_SAMPLE_COUNT; i += step) {
+        sampledIndices.add(i);
+      }
+    }
+    const keysToCheck = Array.from(sampledIndices).map((idx) =>
+      resolveHlsKey(rendKey, segmentUris[idx]!),
+    );
     const segCheckResult = await db.execute(sql`
       SELECT key FROM storage_blobs WHERE key = ANY(${keysToCheck}::text[])
     `);

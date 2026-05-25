@@ -591,7 +591,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       schema: {
         tags: ["uploads"],
         summary: "Return received chunk indices so the client can skip them on resume",
-        params: z.object({ sessionId: z.string() }),
+        params: z.object({ sessionId: z.string().min(1).max(128) }),
         response: {
           200: z.object({
             sessionId: z.string(),
@@ -701,7 +701,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       schema: {
         tags: ["uploads"],
         summary: "Complete the upload, insert the video row, and queue HLS transcoding",
-        params: z.object({ sessionId: z.string() }),
+        params: z.object({ sessionId: z.string().min(1).max(128) }),
         response: {
           200: z.object({
             id: z.string(),
@@ -1412,7 +1412,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       schema: {
         tags: ["uploads"],
         summary: "Poll the finalization status of an upload session",
-        params: z.object({ sessionId: z.string() }),
+        params: z.object({ sessionId: z.string().min(1).max(128) }),
         response: {
           200: z.object({
             status: z.enum(["uploading", "assembling", "completed", "not_found"]),

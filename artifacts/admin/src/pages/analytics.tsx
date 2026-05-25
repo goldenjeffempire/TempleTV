@@ -122,7 +122,7 @@ export default function AnalyticsPage() {
     queryKey: ["analytics-overview", range],
     queryFn: () =>
       api.get<AnalyticsOverview>(`/admin/analytics/overview?range=${range}`),
-    staleTime: 60_000,
+    staleTime: 15_000,
   });
 
   // Memoize chart transforms so Recharts tooltip hover (which triggers a
@@ -417,6 +417,7 @@ export default function AnalyticsPage() {
                       src={video.thumbnailUrl}
                       alt=""
                       className="w-14 h-8 object-contain rounded flex-shrink-0 bg-black"
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                     />
                   )}
                   <p className="flex-1 text-sm truncate min-w-0">{video.title}</p>

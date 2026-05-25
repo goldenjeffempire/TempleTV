@@ -75,7 +75,7 @@ export async function seriesRoutes(app: FastifyInstance) {
       schema: {
         tags: ["series"],
         summary: "Get a series with its episodes",
-        params: z.object({ slug: z.string() }),
+        params: z.object({ slug: z.string().min(1).max(80) }),
       },
     },
     async (req, reply) => {
@@ -208,7 +208,7 @@ export async function seriesRoutes(app: FastifyInstance) {
       schema: {
         tags: ["series"],
         summary: "Update series metadata",
-        params: z.object({ id: z.string() }),
+        params: z.object({ id: z.string().min(1).max(128) }),
         body: SeriesBodySchema.partial(),
         response: { 200: SeriesRowSchema },
         security: [{ bearerAuth: [] }],
@@ -241,7 +241,7 @@ export async function seriesRoutes(app: FastifyInstance) {
       schema: {
         tags: ["series"],
         summary: "Delete a series (removes episodes too via cascade)",
-        params: z.object({ id: z.string() }),
+        params: z.object({ id: z.string().min(1).max(128) }),
         security: [{ bearerAuth: [] }],
       },
     },
@@ -264,7 +264,7 @@ export async function seriesRoutes(app: FastifyInstance) {
       schema: {
         tags: ["series"],
         summary: "Add a video as an episode in a series",
-        params: z.object({ id: z.string() }),
+        params: z.object({ id: z.string().min(1).max(128) }),
         body: z.object({
           videoId: z.string().min(1),
           episodeNumber: z.number().int().positive().optional(),
@@ -325,7 +325,7 @@ export async function seriesRoutes(app: FastifyInstance) {
       schema: {
         tags: ["series"],
         summary: "Remove an episode from a series",
-        params: z.object({ id: z.string(), episodeId: z.string() }),
+        params: z.object({ id: z.string().min(1).max(128), episodeId: z.string().min(1).max(128) }),
         security: [{ bearerAuth: [] }],
       },
     },

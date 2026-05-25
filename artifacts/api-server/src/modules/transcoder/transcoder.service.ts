@@ -61,8 +61,8 @@ const ALL_RENDITIONS: RenditionSpec[] = [
 
 const HLS_SEGMENT_SECS = 4;
 const KEYFRAME_INTERVAL_SECS = 2;
-const FFMPEG_PRESET = process.env.TRANSCODER_PRESET ?? "veryfast";
-const FFMPEG_CRF = process.env.TRANSCODER_CRF ?? "23";
+const FFMPEG_PRESET = env.TRANSCODER_PRESET;
+const FFMPEG_CRF = String(env.TRANSCODER_CRF);
 const THUMBNAIL_TIMEOUT_MS = 30_000;
 const PROBE_TIMEOUT_MS = 30_000;
 const RESOLUTION_PROBE_TIMEOUT_MS = 15_000;
@@ -739,7 +739,7 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
     };
   } finally {
     // Always clean up scratch space — runs even if download or transcode threw.
-    if (process.env.TRANSCODER_KEEP_SCRATCH !== "1") {
+    if (!env.TRANSCODER_KEEP_SCRATCH) {
       await rm(scratchDir, { recursive: true, force: true }).catch((err) => {
         logger.warn({ err, scratchDir }, "transcoder scratch cleanup failed");
       });

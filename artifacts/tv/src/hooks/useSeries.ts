@@ -17,21 +17,22 @@ interface SeriesResponse {
   total: number;
 }
 
-/**
- * Fetches published sermon series from the API.
- * Used on the TV Home page to render the horizontal series browsing row.
- */
 export function useSeries() {
   const [series, setSeries] = useState<SeriesItem[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const ctrl = new AbortController();
     const origin = resolveApiOrigin();
-    fetch(`${origin}/api/series?limit=20`)
+    fetch(`${origin}/api/series?limit=20`, { signal: ctrl.signal })
       .then((r) => (r.ok ? (r.json() as Promise<SeriesResponse>) : { series: [], total: 0 }))
       .then((data) => setSeries(data.series ?? []))
-      .catch(() => setSeries([]))
+      .catch((e: unknown) => {
+        if (e instanceof Error && e.name === "AbortError") return;
+        setSeries([]);
+      })
       .finally(() => setLoading(false));
+    return () => ctrl.abort();
   }, []);
 
   return { series, loading };

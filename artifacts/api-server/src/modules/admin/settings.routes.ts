@@ -102,8 +102,10 @@ export async function settingsRoutes(app: FastifyInstance) {
           updatedAt: row!.updatedAt?.toISOString() ?? now.toISOString(),
         });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        throw new Error(`Failed to save setting: ${msg}`);
+        // Log the real error server-side but do NOT leak internal DB error
+        // messages (table names, constraint names, etc.) to the client.
+        req.log.error({ err }, "settings: failed to save system setting");
+        throw new Error("Failed to save system setting — please try again");
       }
     },
   );

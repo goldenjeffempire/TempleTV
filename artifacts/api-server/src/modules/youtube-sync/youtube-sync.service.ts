@@ -1,5 +1,6 @@
 import { count, eq, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
+import { env } from "../../config/env.js";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
@@ -12,7 +13,7 @@ const YT_API_BASE = "https://www.googleapis.com/youtube/v3";
 const RSS_URL = `https://www.youtube.com/feeds/videos.xml?channel_id=${CHANNEL_ID}`;
 
 // ── 5-year content window ─────────────────────────────────────────────────────
-const CONTENT_WINDOW_DAYS = Number(process.env.YOUTUBE_CONTENT_WINDOW_DAYS ?? 1825);
+const CONTENT_WINDOW_DAYS = env.YOUTUBE_CONTENT_WINDOW_DAYS;
 const CONTENT_WINDOW_MS   = CONTENT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 
 function cutoffDate(): Date {
@@ -79,7 +80,7 @@ interface QuotaSnapshot {
 
 const quotaTracker = new Map<string, QuotaEntry>();
 let quotaUsed = 0;
-const QUOTA_TOTAL = Number(process.env.YOUTUBE_QUOTA_DAILY_LIMIT ?? 10_000);
+const QUOTA_TOTAL = env.YOUTUBE_QUOTA_DAILY_LIMIT;
 const QUOTA_SNAPSHOT_KEY = "yt:quota:snapshot";
 
 function nextMidnightUtc(): Date {
@@ -899,7 +900,7 @@ export async function syncYouTubeChannel(triggeredBy: "scheduler" | "manual" = "
 
   try {
     // ── Fetch from YouTube / RSS ─────────────────────────────────────────────
-    const apiKey = process.env.YOUTUBE_API_KEY;
+    const apiKey = env.YOUTUBE_API_KEY;
     const { videos: rawVideos, source, skipped } = apiKey
       ? await fetchAllChannelVideos(apiKey, cutoff)
       : await fetchWithRssOnly(cutoff);

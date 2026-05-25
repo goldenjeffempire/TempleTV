@@ -35,7 +35,7 @@ export async function mediaRoutes(app: FastifyInstance) {
       schema: {
         tags: ["media"],
         summary: "Single media item by id",
-        params: z.object({ id: z.string() }),
+        params: z.object({ id: z.string().min(1).max(128) }),
         response: { 200: MediaItemSchema },
       },
     },
@@ -51,7 +51,7 @@ export async function mediaRoutes(app: FastifyInstance) {
       schema: {
         tags: ["media"],
         summary: "Increment view counter (analytics ping)",
-        params: z.object({ id: z.string() }),
+        params: z.object({ id: z.string().min(1).max(128) }),
         response: { 204: z.null() },
       },
     },
@@ -90,7 +90,7 @@ export async function mediaRoutes(app: FastifyInstance) {
       schema: {
         tags: ["media"],
         summary: "Admin: update editable fields on a media item",
-        params: z.object({ id: z.string() }),
+        params: z.object({ id: z.string().min(1).max(128) }),
         body: UpdateMediaBodySchema,
         response: { 200: MediaItemSchema },
         security: [{ bearerAuth: [] }],
@@ -107,7 +107,7 @@ export async function mediaRoutes(app: FastifyInstance) {
       schema: {
         tags: ["media"],
         summary: "Admin: hard-delete a media item",
-        params: z.object({ id: z.string() }),
+        params: z.object({ id: z.string().min(1).max(128) }),
         security: [{ bearerAuth: [] }],
       },
     },

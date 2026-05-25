@@ -783,13 +783,7 @@ class UploadQueueEngine {
       // is called before every chunk but was never called before the init
       // request — an expired token at upload-start caused an immediate 401
       // with no recovery path.
-      console.log("[upload-queue] start item", { id, sessionId, fileName: file.name, size: file.size, totalChunks });
-      const tokenResult = await ensureFreshToken().then(
-        () => "ok",
-        (e) => `error: ${(e as Error)?.message ?? String(e)}`,
-      );
-      console.log("[upload-queue] ensureFreshToken →", tokenResult);
-      console.log("[upload-queue] authHeaders presence:", Object.keys(authHeaders()));
+      await ensureFreshToken().catch(() => {});
 
       const initBody = JSON.stringify({
         sessionId,
@@ -816,7 +810,6 @@ class UploadQueueEngine {
       });
 
       const initUrl = `${base}/v1/admin/videos/upload/init`;
-      console.log("[upload-queue] POST", initUrl);
       let initResp: Response;
       try {
         initResp = await Promise.race([
@@ -830,7 +823,6 @@ class UploadQueueEngine {
         ]).finally(() => {
           if (initTimeoutId !== null) clearTimeout(initTimeoutId);
         });
-        console.log("[upload-queue] init response", { status: initResp.status, ok: initResp.ok });
       } catch (err) {
         console.error("[upload-queue] init FETCH THREW", err);
         throw err;

@@ -171,7 +171,7 @@ export async function liveOverridesRoutes(app: FastifyInstance) {
       schema: {
         tags: ["live"],
         summary: "Admin: cancel a scheduled (not yet active) override",
-        params: z.object({ id: z.string() }),
+        params: z.object({ id: z.string().min(1).max(128) }),
         response: { 200: z.object({ ok: z.literal(true), id: z.string() }) },
         security: [{ bearerAuth: [] }],
       },

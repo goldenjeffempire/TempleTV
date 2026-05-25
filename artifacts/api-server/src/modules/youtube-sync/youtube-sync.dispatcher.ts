@@ -29,7 +29,7 @@ class YouTubeSyncDispatcher {
     if (this.timer) return;
     this.stopped = false;
 
-    const apiKey = process.env.YOUTUBE_API_KEY;
+    const apiKey = env.YOUTUBE_API_KEY;
     const source = apiKey ? "YouTube Data API v3" : "RSS feed (no YOUTUBE_API_KEY set)";
     logger.info({ intervalMins: this.intervalMs / 60_000, source }, "youtube-sync dispatcher started");
 

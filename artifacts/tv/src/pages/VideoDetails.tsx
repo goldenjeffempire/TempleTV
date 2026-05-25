@@ -105,7 +105,7 @@ export function VideoDetails({ video, relatedVideos, onPlay, onBack, onPlayRelat
     <div style={{ width: "100vw", height: "100vh", display: "flex", flexDirection: "column", overflow: "hidden", background: "#0a0a0f", position: "relative" }}>
       {video.thumbnailUrl && (
         <div style={{ position: "absolute", inset: 0, zIndex: 0, overflow: "hidden" }} aria-hidden="true">
-          <img src={video.thumbnailUrl} alt="" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", filter: "blur(40px) brightness(0.15)", transform: "scale(1.1)" }} />
+          <img src={video.thumbnailUrl} alt="" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", filter: "blur(40px) brightness(0.15)", transform: "scale(1.1)" }} onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
         </div>
       )}
 
@@ -123,7 +123,7 @@ export function VideoDetails({ video, relatedVideos, onPlay, onBack, onPlayRelat
           {/* Thumbnail */}
           <div style={{ width: "100%", aspectRatio: "16/9", borderRadius: 16, overflow: "hidden", marginBottom: 28, boxShadow: "0 20px 60px rgba(0,0,0,0.6)", flexShrink: 0 }}>
             {video.thumbnailUrl ? (
-              <img src={video.thumbnailUrl} alt={video.title} decoding="async" style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "center", background: "#000" }} />
+              <img src={video.thumbnailUrl} alt={video.title} decoding="async" style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "center", background: "#000" }} onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
             ) : (
               <div style={{ width: "100%", height: "100%", background: "rgba(106,13,173,0.3)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 <svg width="48" height="48" viewBox="0 0 24 24" fill="rgba(168,85,247,0.5)"><rect x="2" y="2" width="20" height="20" rx="2"/></svg>
@@ -334,7 +334,7 @@ export function VideoDetails({ video, relatedVideos, onPlay, onBack, onPlayRelat
                 >
                   <div style={{ width: 90, height: 52, borderRadius: 6, overflow: "hidden", flexShrink: 0 }}>
                     {v.thumbnailUrl ? (
-                      <img src={v.thumbnailUrl} alt="" loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "center", background: "#000" }} />
+                      <img src={v.thumbnailUrl} alt="" loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "center", background: "#000" }} onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
                     ) : (
                       <div style={{ width: "100%", height: "100%", background: "rgba(106,13,173,0.3)" }} />
                     )}

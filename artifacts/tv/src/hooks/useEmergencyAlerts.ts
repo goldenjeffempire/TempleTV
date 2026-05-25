@@ -18,7 +18,8 @@ export function useEmergencyAlerts() {
 
   // Fetch current state on mount
   useEffect(() => {
-    fetch(`${resolveApiOrigin()}/api/emergency/active`)
+    const ctrl = new AbortController();
+    fetch(`${resolveApiOrigin()}/api/emergency/active`, { signal: ctrl.signal })
       .then((r) => (r.ok ? r.json() : []))
       .then((alerts: Array<{
         id: string; title: string; message: string; severity: string; expiresAt: string | null;
@@ -34,7 +35,11 @@ export function useEmergencyAlerts() {
           });
         }
       })
-      .catch(() => { /* ignore */ });
+      .catch((e: unknown) => {
+        if (e instanceof Error && e.name === "AbortError") return;
+        /* ignore other errors — non-critical on-mount fetch */
+      });
+    return () => ctrl.abort();
   }, []);
 
   // Listen for omega-signals pushed from the existing SSE/WS gateways.

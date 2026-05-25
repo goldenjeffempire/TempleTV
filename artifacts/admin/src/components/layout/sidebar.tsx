@@ -3,7 +3,7 @@ import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/use-auth";
 import { useSSE } from "@/contexts/sse-context";
 import {
-  LayoutDashboard, Radio, ListVideo, Activity, MessageSquare,
+  LayoutDashboard, Radio, Activity, MessageSquare,
   Video, ListMusic, BookOpen, CalendarDays, Clapperboard,
   Bell, BarChart2, Users, Heart, Settings, Shield,
   Zap, Cpu, Signal, Layers, Tv2, Wifi, WifiOff, Loader, ChevronRight, X, Youtube,
@@ -85,9 +85,8 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
       items: [
         { href: "/", label: "Dashboard", icon: <LayoutDashboard size={16} /> },
         { href: "/live-control", label: "Live Control", icon: <Radio size={16} />, badge: <LiveBadge /> },
-        { href: "/broadcast", label: "Broadcast Queue", icon: <ListVideo size={16} /> },
-        { href: "/radio", label: "Radio Station", icon: <Headphones size={16} /> },
         { href: "/broadcast-v2", label: "Master Control", icon: <Layers size={16} /> },
+        { href: "/radio", label: "Radio Station", icon: <Headphones size={16} /> },
         { href: "/stream-health", label: "Stream Health", icon: <Activity size={16} /> },
         { href: "/chat", label: "Live Chat", icon: <MessageSquare size={16} /> },
       ],

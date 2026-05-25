@@ -21,6 +21,7 @@ export default function YoutubeQuotaPage() {
     queryKey: ["youtube-quota"],
     queryFn: () => api.get<QuotaStatus>("/admin/youtube/quota").catch(() => null),
     refetchInterval: 60_000,
+    staleTime: 55_000,
   });
 
   const pct = data ? Math.round((data.used / data.total) * 100) : 0;

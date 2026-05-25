@@ -207,6 +207,7 @@ export default function VideosPage() {
       return api.get<VideoListResponse>(`/admin/videos?${params}`);
     },
     placeholderData: (prev) => prev,
+    staleTime: 30_000,
     // Use the global retry/retryDelay policy (up to 5 retries for cold-start errors).
     // Auto-refetch every 15 s while in error state so the page self-heals once the
     // API server finishes its cold start without requiring a manual "Retry" click.
@@ -606,7 +607,7 @@ export default function VideosPage() {
                   {/* Thumbnail */}
                   <div className="flex-shrink-0 w-20 h-12 rounded overflow-hidden bg-black">
                     {v.thumbnailUrl ? (
-                      <img src={v.thumbnailUrl} alt={`Thumbnail for ${v.title}`} className="w-full h-full object-contain" loading="lazy" decoding="async" />
+                      <img src={v.thumbnailUrl} alt={`Thumbnail for ${v.title}`} className="w-full h-full object-contain" loading="lazy" decoding="async" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
                     ) : (
                       <div className="w-full h-full flex items-center justify-center">
                         <Video size={18} className="text-muted-foreground/30" />

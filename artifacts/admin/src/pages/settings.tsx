@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { api, HttpError } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -66,7 +66,7 @@ export default function SettingsPage() {
       setEditMap((m) => { const n = { ...m }; delete n[saved.key]; return n; });
       toast({ title: "Setting saved", description: saved.key });
     },
-    onError: (e) => toast({ title: "Save failed", description: String(e), variant: "destructive" }),
+    onError: (e) => toast({ title: "Save failed", description: e instanceof HttpError ? e.message : "An unexpected error occurred", variant: "destructive" }),
   });
 
   const deleteMutation = useMutation({
@@ -76,7 +76,7 @@ export default function SettingsPage() {
       qc.invalidateQueries({ queryKey: ["admin-system-settings"] });
       toast({ title: "Setting deleted" });
     },
-    onError: (e) => toast({ title: "Delete failed", description: String(e), variant: "destructive" }),
+    onError: (e) => toast({ title: "Delete failed", description: e instanceof HttpError ? e.message : "An unexpected error occurred", variant: "destructive" }),
   });
 
   const handleAdd = () => {

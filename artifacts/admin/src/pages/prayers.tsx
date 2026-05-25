@@ -48,6 +48,8 @@ export default function PrayersPage() {
           createdAt: p.createdAt,
         })),
       })),
+    staleTime: 30_000,
+    refetchInterval: 30_000,
   });
 
   const updateMutation = useMutation({

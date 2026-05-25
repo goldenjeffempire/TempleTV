@@ -29,7 +29,6 @@ function lazyPage<T extends React.ComponentType<object>>(
 const LoginPage       = lazyPage(() => import("@/pages/login"));
 const Dashboard       = lazyPage(() => import("@/pages/dashboard"));
 const Videos          = lazyPage(() => import("@/pages/videos"));
-const Broadcast       = lazyPage(() => import("@/pages/broadcast"));
 const LiveControl     = lazyPage(() => import("@/pages/live-control"));
 const StreamHealth    = lazyPage(() => import("@/pages/stream-health"));
 const Transcoding     = lazyPage(() => import("@/pages/transcoding"));
@@ -109,6 +108,28 @@ class ErrorBoundary extends Component<{ children: ReactNode }, EBState> {
   }
 }
 
+// ── Panel-level error boundary ─────────────────────────────────────────────
+// Lightweight boundary for persistent widgets like UploadQueuePanel that
+// should NOT take the entire admin down when a render error occurs. Instead
+// the panel silently disappears so operators can keep working; the error is
+// logged to the console for engineers.
+class PanelErrorBoundary extends Component<{ children: ReactNode }, EBState> {
+  state: EBState = { error: null };
+
+  static getDerivedStateFromError(error: Error): EBState {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error("[PanelErrorBoundary] Panel render error:", error, info.componentStack);
+  }
+
+  render() {
+    if (this.state.error) return null;
+    return this.props.children;
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 function PageLoader() {
@@ -146,7 +167,6 @@ function prefetchCommonPages() {
   schedule(() => {
     void import("@/pages/videos").catch(() => {});
     void import("@/pages/library").catch(() => {});
-    void import("@/pages/broadcast").catch(() => {});
     void import("@/pages/dashboard").catch(() => {});
   }, 2000);
 
@@ -178,14 +198,15 @@ function AuthenticatedApp() {
   return (
     <SSEProvider>
       <AppLayout>
-        <UploadQueuePanel />
+        <PanelErrorBoundary>
+          <UploadQueuePanel />
+        </PanelErrorBoundary>
         <Suspense fallback={<PageLoader />}>
           <Switch>
             <Route path="/"                 component={Dashboard} />
             <Route path="/dashboard"        component={Dashboard} />
             <Route path="/videos"           component={Videos} />
             <Route path="/library"          component={Library} />
-            <Route path="/broadcast"        component={Broadcast} />
             <Route path="/live-control"     component={LiveControl} />
             <Route path="/stream-health"    component={StreamHealth} />
             <Route path="/transcoding"      component={Transcoding} />
@@ -203,6 +224,7 @@ function AuthenticatedApp() {
             <Route path="/live-youtube"     component={LiveYoutube} />
             <Route path="/live-monitor"     component={LiveMonitor} />
             <Route path="/master-control">{() => <Redirect to="/broadcast-v2" />}</Route>
+            <Route path="/broadcast">{() => <Redirect to="/broadcast-v2" />}</Route>
             <Route path="/broadcast-v2"     component={BroadcastV2} />
             <Route path="/graphics"         component={Graphics} />
             <Route path="/playback"         component={Playback} />

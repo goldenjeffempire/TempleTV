@@ -26,6 +26,7 @@ export default function PlaybackPage() {
     queryKey: ["playback-state"],
     queryFn: () => api.get<PlaybackState>("/admin/playback/config"),
     refetchInterval: 30_000,
+    staleTime: 25_000,
   });
 
   const updateMutation = useMutation({

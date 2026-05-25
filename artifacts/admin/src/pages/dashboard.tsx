@@ -74,24 +74,28 @@ export default function Dashboard() {
   const { data: stats, isLoading: statsLoading, error: statsError, refetch: refetchStats } = useQuery({
     queryKey: ["admin-stats"],
     queryFn: () => api.get<AdminStats>("/admin/stats"),
-    staleTime: 60_000,
+    staleTime: 15_000,
+    refetchInterval: 15_000,
   });
 
   const { data: readyz } = useQuery({
     queryKey: ["readyz"],
     queryFn: () => api.get<ReadyzResponse>("/readyz"),
     refetchInterval: 30_000,
+    staleTime: 25_000,
   });
 
   const { data: transcodingQueue, isLoading: transcodingLoading } = useQuery({
     queryKey: ["transcoding-queue"],
     queryFn: () => api.get<{ jobs: TranscodingJob[] }>("/admin/transcoding/queue").catch(() => ({ jobs: [] as TranscodingJob[] })),
     refetchInterval: 15_000,
+    staleTime: 12_000,
   });
 
   const { data: scheduled } = useQuery({
     queryKey: ["scheduled-notifications-summary"],
     queryFn: () => api.get<{ items: ScheduledNotif[] }>("/admin/notifications/scheduled").catch(() => ({ items: [] })),
+    staleTime: 30_000,
   });
 
   const { data: engineHealth } = useQuery({

@@ -311,6 +311,15 @@ export async function ensureRuntimeIndexes(): Promise<void> {
         WHERE video_source = 'youtube'
           AND COALESCE(broadcast_only, false) = false
     `);
+    // Partial composite index for broadcast_queue — the hot path queried by
+    // the V2 orchestrator every 10-30 s.  Covering (sort_order, added_at) with
+    // a WHERE is_active = true predicate keeps the index small (active rows
+    // only) while eliminating the full table scan that occurs at scale.
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_broadcast_queue_active_sort
+        ON broadcast_queue (sort_order, added_at)
+        WHERE is_active = true
+    `);
     logger.info("db: functional and partial indexes ensured");
   } catch (err) {
     // Non-fatal — the search falls back to plainto_tsquery without the index

@@ -35,6 +35,7 @@ export default function ChatPage() {
     queryKey: ["chat-messages"],
     queryFn: () => api.get<{ messages: ChatMessage[]; stats?: ChatStats }>("/admin/chat").catch(() => ({ messages: [], stats: undefined })),
     refetchInterval: 15_000,
+    staleTime: 10_000,
   });
 
   useSSEEvent("chat-message", () => { void qc.invalidateQueries({ queryKey: ["chat-messages"] }); });

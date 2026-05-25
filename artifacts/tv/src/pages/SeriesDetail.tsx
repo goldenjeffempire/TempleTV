@@ -143,6 +143,7 @@ function EpisodeCard({
             loading="lazy"
             decoding="async"
             style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "center", background: "#000" }}
+            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
           />
         ) : (
           <div
@@ -392,6 +393,7 @@ export function SeriesDetail({ series, onBack, onPlay, onEpisodeDetails }: Serie
               filter: "blur(50px) brightness(0.12) saturate(1.4)",
               transform: "scale(1.15)",
             }}
+            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
           />
         </div>
       )}
@@ -471,6 +473,7 @@ export function SeriesDetail({ series, onBack, onPlay, onEpisodeDetails }: Serie
                 alt={series.title}
                 decoding="async"
                 style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "center", background: "#000" }}
+                onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
               />
             ) : (
               <div

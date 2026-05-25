@@ -59,12 +59,14 @@ export default function NotificationsPage() {
     queryKey: ["notifications-history"],
     queryFn: () => api.get<{ items: NotificationHistoryItem[] }>("/notifications/history"),
     refetchInterval: 30_000,
+    staleTime: 25_000,
   });
 
   const { data: scheduled, isLoading: schedLoading, error: schedError, refetch: refetchSched } = useQuery({
     queryKey: ["scheduled-notifications"],
     queryFn: () => api.get<{ items: ScheduledNotification[] }>("/admin/notifications/scheduled"),
     refetchInterval: 30_000,
+    staleTime: 25_000,
   });
 
   const { data: stats } = useQuery({

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { api, HttpError } from "@/lib/api";
+import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -45,7 +46,9 @@ export default function RadioPage() {
     onSuccess: (data) => {
       qc.setQueryData(["admin", "radio"], data);
       setDirty(false);
+      toast.success("Radio settings saved");
     },
+    onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to save radio settings"),
   });
 
   // Form state
@@ -81,6 +84,17 @@ export default function RadioPage() {
       }
     };
   }, []);
+
+  // Warn the browser before the tab closes / navigates away when there are
+  // unsaved changes so the operator doesn't accidentally lose their edits.
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (!dirty) return;
+      e.preventDefault();
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [dirty]);
 
   function testStream() {
     const url = streamUrl.trim();

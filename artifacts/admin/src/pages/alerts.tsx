@@ -34,6 +34,7 @@ export default function AlertsPage() {
     queryKey: ["alerts"],
     queryFn: () => api.get<{ alerts: Alert[] }>("/admin/alerts").catch(() => ({ alerts: [] })),
     refetchInterval: 30_000,
+    staleTime: 25_000,
   });
 
   const resolveMutation = useMutation({

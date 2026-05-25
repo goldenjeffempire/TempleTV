@@ -246,7 +246,7 @@ export async function adminVideosRoutes(app: FastifyInstance) {
       schema: {
         tags: ["admin"],
         summary: "Update video metadata (title, description, category, preacher, featured, metadataLocked)",
-        params: z.object({ id: z.string() }),
+        params: z.object({ id: z.string().min(1).max(128) }),
         body: PatchBodySchema,
         response: {
           200: VideoRowSchema,
@@ -335,7 +335,7 @@ export async function adminVideosRoutes(app: FastifyInstance) {
       schema: {
         tags: ["admin"],
         summary: "Delete a video from the library",
-        params: z.object({ id: z.string() }),
+        params: z.object({ id: z.string().min(1).max(128) }),
         response: {
           200: z.object({ ok: z.literal(true) }),
           404: z.object({ error: z.string() }),
@@ -443,7 +443,7 @@ export async function adminVideosRoutes(app: FastifyInstance) {
       schema: {
         tags: ["admin"],
         summary: "Queue a locally-uploaded video for HLS transcoding",
-        params: z.object({ id: z.string() }),
+        params: z.object({ id: z.string().min(1).max(128) }),
         response: {
           200: z.object({ jobId: z.string(), reused: z.boolean() }),
           400: z.object({ error: z.string() }),
@@ -502,7 +502,7 @@ export async function adminVideosRoutes(app: FastifyInstance) {
       schema: {
         tags: ["admin"],
         summary: "Re-apply MP4 faststart optimisation to a locally-uploaded video",
-        params: z.object({ id: z.string() }),
+        params: z.object({ id: z.string().min(1).max(128) }),
         response: {
           202: z.object({ ok: z.literal(true), videoId: z.string() }),
           400: z.object({ error: z.string() }),

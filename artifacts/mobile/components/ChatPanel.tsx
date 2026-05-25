@@ -82,9 +82,10 @@ export function ChatPanel({ visible, onClose }: ChatPanelProps) {
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     if (messages.length > 0 && visible) {
-      setTimeout(() => {
+      const t = setTimeout(() => {
         listRef.current?.scrollToEnd({ animated: true });
       }, 50);
+      return () => clearTimeout(t);
     }
   }, [messages.length, visible]);
 

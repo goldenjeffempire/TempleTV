@@ -28,6 +28,23 @@ import { authService } from "../auth/auth.service.js";
 const favoritesTable = schema.userFavoritesTable;
 const historyTable = schema.userWatchHistoryTable;
 
+/**
+ * Strip HTML tags and common HTML entities from a user-provided string.
+ *
+ * `videoTitle`, `videoThumbnail`, and `videoCategory` in the favorites and
+ * watch-history endpoints are client-supplied and later rendered in the admin
+ * and mobile surfaces. Without sanitization an authenticated user can inject
+ * `<script>` or event-handler attributes that execute in other users' sessions
+ * (stored XSS). Stripping tags here is a lightweight, zero-dependency defence
+ * that is safe even if the client library also sanitizes on render.
+ */
+function sanitizeText(s: string): string {
+  return s
+    .replace(/<[^>]*>/g, "")               // strip all HTML tags
+    .replace(/&[a-zA-Z0-9#]+;/g, " ")      // defuse named/numeric entities
+    .trim();
+}
+
 const FavoriteItemSchema = z.object({
   id: z.string(),
   videoId: z.string(),
@@ -131,7 +148,11 @@ export async function userRoutes(app: FastifyInstance) {
     },
     async (req, reply) => {
       const userId = req.principal!.id;
-      const { videoId, videoTitle, videoThumbnail, videoCategory } = req.body;
+      const { videoId } = req.body;
+      // Sanitize all user-supplied display strings before persisting.
+      const videoTitle     = sanitizeText(req.body.videoTitle);
+      const videoThumbnail = sanitizeText(req.body.videoThumbnail);
+      const videoCategory  = sanitizeText(req.body.videoCategory);
 
       const existing = await db
         .select({ id: favoritesTable.id })
@@ -182,7 +203,7 @@ export async function userRoutes(app: FastifyInstance) {
         tags: ["user"],
         summary: "Remove a video from the authenticated user's favorites",
         security: [{ bearerAuth: [] }],
-        params: z.object({ videoId: z.string() }),
+        params: z.object({ videoId: z.string().min(1).max(128) }),
         response: { 204: z.null() },
       },
     },
@@ -294,7 +315,11 @@ export async function userRoutes(app: FastifyInstance) {
     },
     async (req) => {
       const userId = req.principal!.id;
-      const { videoId, videoTitle, videoThumbnail, videoCategory, progressSecs } = req.body;
+      const { videoId, progressSecs } = req.body;
+      // Sanitize all user-supplied display strings before persisting.
+      const videoTitle     = sanitizeText(req.body.videoTitle);
+      const videoThumbnail = sanitizeText(req.body.videoThumbnail);
+      const videoCategory  = sanitizeText(req.body.videoCategory);
       const now = new Date();
 
       const existing = await db

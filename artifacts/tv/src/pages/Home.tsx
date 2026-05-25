@@ -536,7 +536,7 @@ export function Home({ onNavigateSearch, onNavigateHistory, onNavigateSettings, 
                           {/* Thumbnail with progress bar */}
                           <div style={{ width: 220, height: 132, borderRadius: 12, overflow: "hidden", position: "relative", background: "rgba(255,255,255,0.06)", marginBottom: 10 }}>
                             {thumb ? (
-                              <img src={thumb} alt={entry.title} style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "center", background: "#000" }} loading="lazy" decoding="async" />
+                              <img src={thumb} alt={entry.title} style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "center", background: "#000" }} loading="lazy" decoding="async" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
                             ) : (
                               <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
                                 <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -630,7 +630,7 @@ export function Home({ onNavigateSearch, onNavigateHistory, onNavigateSettings, 
                         >
                           <div style={{ width: 220, height: 132, borderRadius: 12, overflow: "hidden", position: "relative", background: "rgba(255,255,255,0.06)", marginBottom: 10 }}>
                             {fav.thumbnailUrl ? (
-                              <img src={fav.thumbnailUrl} alt={fav.title} style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "center", background: "#000" }} loading="lazy" decoding="async" />
+                              <img src={fav.thumbnailUrl} alt={fav.title} style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "center", background: "#000" }} loading="lazy" decoding="async" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
                             ) : (
                               <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
                                 <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -707,7 +707,7 @@ export function Home({ onNavigateSearch, onNavigateHistory, onNavigateSettings, 
                         >
                           <div style={{ width: 200, height: 120, borderRadius: 12, overflow: "hidden", position: "relative", background: "rgba(255,255,255,0.06)", marginBottom: 10 }}>
                             {s.thumbnailUrl ? (
-                              <img src={s.thumbnailUrl} alt={s.title} style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "center", background: "#000" }} loading="lazy" decoding="async" />
+                              <img src={s.thumbnailUrl} alt={s.title} style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "center", background: "#000" }} loading="lazy" decoding="async" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
                             ) : (
                               <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
                                 <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>

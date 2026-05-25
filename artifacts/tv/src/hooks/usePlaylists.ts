@@ -1,8 +1,3 @@
-/**
- * usePlaylists — fetch published playlists for the TV app.
- * usePlaylistDetail — fetch a single playlist with its ordered videos.
- */
-
 import { useEffect, useState } from "react";
 import { resolveApiOrigin } from "../lib/api";
 
@@ -41,9 +36,10 @@ export function usePlaylists() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    const ctrl = new AbortController();
     const origin = resolveApiOrigin();
     setLoading(true);
-    fetch(`${origin}/api/playlists?limit=100`)
+    fetch(`${origin}/api/playlists?limit=100`, { signal: ctrl.signal })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json() as Promise<{ playlists?: PlaylistItem[]; data?: PlaylistItem[] }>;
@@ -52,8 +48,12 @@ export function usePlaylists() {
         setPlaylists(data.playlists ?? data.data ?? []);
         setError(null);
       })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => {
+        if (e instanceof Error && e.name === "AbortError") return;
+        setError(e instanceof Error ? e.message : String(e));
+      })
       .finally(() => setLoading(false));
+    return () => ctrl.abort();
   }, []);
 
   return { playlists, loading, error };
@@ -66,10 +66,11 @@ export function usePlaylistDetail(id: string | null) {
 
   useEffect(() => {
     if (!id) return;
+    const ctrl = new AbortController();
     const origin = resolveApiOrigin();
     setLoading(true);
     setPlaylist(null);
-    fetch(`${origin}/api/playlists/${id}`)
+    fetch(`${origin}/api/playlists/${id}`, { signal: ctrl.signal })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json() as Promise<{ playlist?: PlaylistDetail } | PlaylistDetail>;
@@ -81,8 +82,12 @@ export function usePlaylistDetail(id: string | null) {
         setPlaylist(detail);
         setError(null);
       })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => {
+        if (e instanceof Error && e.name === "AbortError") return;
+        setError(e instanceof Error ? e.message : String(e));
+      })
       .finally(() => setLoading(false));
+    return () => ctrl.abort();
   }, [id]);
 
   return { playlist, loading, error };

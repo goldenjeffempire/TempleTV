@@ -88,6 +88,7 @@ export function TempleTvLogo({
       decoding="async"
       draggable={false}
       className={className}
+      onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
       style={{
         width,
         height,

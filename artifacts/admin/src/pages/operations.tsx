@@ -302,12 +302,14 @@ export default function OperationsPage() {
     queryKey: ["system-metrics"],
     queryFn: () => api.get<SystemMetrics>("/admin/system/metrics").catch(() => null),
     refetchInterval: 10_000,
+    staleTime: 8_000,
   });
 
   const { data: readyz } = useQuery({
     queryKey: ["readyz"],
     queryFn: () => api.get<{ status: string; uptimeSec: number; version: string; dependencies: Record<string, string> }>("/readyz"),
     refetchInterval: 15_000,
+    staleTime: 12_000,
   });
 
   const { data: engineHealth } = useQuery({

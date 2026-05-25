@@ -398,6 +398,7 @@ export function WatchHistory({ onBack, onPlay }: WatchHistoryProps) {
                         objectPosition: "center",
                         background: "#000",
                       }}
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                     />
                   ) : (
                     <div

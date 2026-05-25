@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { env } from "../../config/env.js";
 import { logger } from "../../infrastructure/logger.js";
 
 /**
@@ -263,7 +264,7 @@ async function fetchVideos(): Promise<ApiVideo[]> {
   const now = Date.now();
   if (cachedVideos && now < cacheExpiresAt) return cachedVideos;
 
-  const apiKey = process.env.YOUTUBE_API_KEY;
+  const apiKey = env.YOUTUBE_API_KEY;
 
   if (apiKey) {
     try {
@@ -333,7 +334,7 @@ export async function youtubeChannelRoutes(app: FastifyInstance) {
         .send({
           videos,
           total: videos.length,
-          source: process.env.YOUTUBE_API_KEY ? "youtube_api" : "rss",
+          source: env.YOUTUBE_API_KEY ? "youtube_api" : "rss",
           channelId: CHANNEL_ID,
         });
     } catch (err) {

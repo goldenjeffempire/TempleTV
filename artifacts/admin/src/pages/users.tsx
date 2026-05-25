@@ -52,6 +52,7 @@ export default function UsersPage() {
       return api.get<{ items: AdminUser[]; total: number }>(`/admin/users?${params}`);
     },
     enabled: isAdmin,
+    staleTime: 30_000,
   });
 
   const updateRoleMutation = useMutation({

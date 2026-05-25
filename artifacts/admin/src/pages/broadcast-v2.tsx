@@ -8,7 +8,6 @@ import {
   SkipForward,
   RefreshCw,
   AlertTriangle,
-  Pencil,
   Wifi,
   WifiOff,
   RotateCw,
@@ -308,8 +307,7 @@ function TranscodingProgressPanel() {
  * Server-authoritative live console:
  *  - persistent A/B player buffers driven by the universal player core
  *  - real-time queue snapshot from the v2 transport
- *  - real-time queue list mirrored from /admin/broadcast (read-only here;
- *    full drag-reorder editor lives at /broadcast)
+ *  - real-time queue list with per-item remove (deactivate) actions
  *  - operator controls (skip / reload / failover) with idempotency keys
  *  - source health badges showing which queue items have blocked URLs
  *  - engine health panel (boot status, reload stats, prod-sync diagnostics)
@@ -408,6 +406,20 @@ export default function BroadcastV2Page() {
     queryFn: () => api.get<DiagnosticsReport>("/broadcast-v2/diagnostics"),
     refetchInterval: 30_000,
     staleTime: 25_000,
+  });
+
+  // Deactivate (remove) a queue item without navigating away.
+  const deactivateMutation = useMutation({
+    mutationFn: (itemId: string) =>
+      api.patch(`/admin/broadcast/${itemId}`, { isActive: false }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
+      toast.success("Item removed from broadcast queue.");
+    },
+    onError: (err) => {
+      toast.error(err instanceof HttpError ? err.message : "Failed to remove item.");
+    },
   });
 
   // Re-enable an auto-suspended queue item without leaving Master Control.
@@ -1855,12 +1867,6 @@ export default function BroadcastV2Page() {
                     </Button>
                   </Link>
                 )}
-                <Link href="/broadcast">
-                  <Button variant="outline" className="gap-2 w-full sm:w-auto">
-                    <ListPlus className="h-4 w-4" />
-                    Edit Queue
-                  </Button>
-                </Link>
               </div>
             </CardContent>
           </Card>
@@ -1898,11 +1904,6 @@ export default function BroadcastV2Page() {
               )}
               Sync library
             </Button>
-            <Link href="/broadcast">
-              <Button size="sm" variant="outline" className="gap-1">
-                <Pencil className="h-3 w-3" /> Edit queue
-              </Button>
-            </Link>
           </div>
         </CardHeader>
         <CardContent>
@@ -1948,6 +1949,7 @@ export default function BroadcastV2Page() {
                           alt=""
                           loading="lazy"
                           className="h-full w-full object-contain bg-black"
+                          onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                         />
                       ) : null}
                     </div>
@@ -2070,6 +2072,25 @@ export default function BroadcastV2Page() {
 
                     {isCurrent && <Badge variant="default" className="shrink-0">On air</Badge>}
                     {isNext && !isCurrent && <Badge variant="secondary" className="shrink-0">Next</Badge>}
+
+                    {/* Remove item — disabled while on air (use Skip first) */}
+                    {item.isActive && (
+                      <button
+                        onClick={() => {
+                          if (isCurrent) {
+                            toast.warning("This item is currently on air. Use Skip to move to the next item first, then remove it.");
+                            return;
+                          }
+                          deactivateMutation.mutate(item.id);
+                        }}
+                        disabled={deactivateMutation.isPending}
+                        className="ml-1 shrink-0 rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
+                        title={isCurrent ? "On air — use Skip first, then remove" : "Remove from broadcast queue"}
+                        aria-label={`Remove "${item.title}" from broadcast queue`}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    )}
                   </li>
                 );
               })}
@@ -2121,6 +2142,7 @@ function SnapshotSlot({
               alt=""
               loading="lazy"
               className="h-12 w-20 rounded object-contain bg-black"
+              onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
             />
           )}
           <div className="min-w-0 flex-1">

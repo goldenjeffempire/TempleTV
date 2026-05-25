@@ -164,7 +164,7 @@ export async function chatRoutes(app: FastifyInstance) {
       schema: {
         tags: ["chat"],
         summary: "Recent chat messages for a channel",
-        params: z.object({ channelId: z.string() }),
+        params: z.object({ channelId: z.string().min(1).max(128) }),
         querystring: ChatHistoryQuerySchema,
         response: {
           200: z.object({
@@ -215,7 +215,7 @@ export async function chatRoutes(app: FastifyInstance) {
       schema: {
         tags: ["chat"],
         summary: "Post a chat message to a channel",
-        params: z.object({ channelId: z.string() }),
+        params: z.object({ channelId: z.string().min(1).max(128) }),
         body: PostChatBodySchema,
         security: [{ bearerAuth: [] }],
         response: { 201: ChatMessageSchema },

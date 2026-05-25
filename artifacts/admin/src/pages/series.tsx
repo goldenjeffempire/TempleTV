@@ -126,6 +126,7 @@ function EpisodesDialog({
       api.get<{ id: string; slug: string; episodes: EpisodeRow[] }>(
         `/series/${series.slug}`,
       ).then((d) => d.episodes),
+    staleTime: 30_000,
   });
 
   const { data: videosData } = useQuery({
@@ -259,6 +260,7 @@ function EpisodesDialog({
                           src={v.thumbnailUrl}
                           alt=""
                           className="w-12 h-8 object-contain rounded flex-shrink-0 bg-black"
+                          onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                         />
                       ) : (
                         <div className="w-12 h-8 rounded bg-muted flex items-center justify-center flex-shrink-0">
@@ -604,6 +606,7 @@ export default function SeriesPage() {
                     src={s.thumbnailUrl}
                     alt={s.title}
                     className="w-full h-full object-contain transition-transform duration-300"
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                   />
                 ) : (
                   <div className="w-full h-full flex items-center justify-center">

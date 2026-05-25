@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils";
 
 const PAGE_TITLES: Record<string, string> = {
   "/": "Dashboard", "/dashboard": "Dashboard",
-  "/videos": "Videos", "/broadcast": "Broadcast Queue",
+  "/videos": "Videos",
   "/broadcast-v2": "Master Control",
   "/live-control": "Live Control", "/stream-health": "Stream Health",
   "/transcoding": "Transcoding", "/notifications": "Notifications",

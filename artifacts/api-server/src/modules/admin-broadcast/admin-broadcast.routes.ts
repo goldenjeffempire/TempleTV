@@ -100,7 +100,7 @@ const AddByVideoIdSchema = z.object({
 const AddExplicitSchema = z.object({
   videoId: z.string().nullable().optional(),
   youtubeId: z.string().min(1).nullable().optional(),
-  title: z.string().min(1),
+  title: z.string().min(1).max(500),
   thumbnailUrl: z.string().default(""),
   durationSecs: z.number().int().positive().max(60 * 60 * 12).default(1800),
   localVideoUrl: z.string().nullable().optional(),

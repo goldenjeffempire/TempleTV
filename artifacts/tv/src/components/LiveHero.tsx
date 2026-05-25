@@ -202,6 +202,7 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
                 filter: "blur(28px) saturate(1.4) brightness(0.55)",
                 transform: "scale(1.08)",
               }}
+              onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
             />
           )}
           {/* Real ON AIR broadcast surface — joins the 24/7 timeline at the
@@ -240,6 +241,7 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
               filter: "blur(28px) saturate(1.3) brightness(0.5)",
               transform: "scale(1.08)",
             }}
+            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
           />
           {/* Crisp foreground image — full aspect ratio, no cropping */}
           <img
@@ -257,6 +259,7 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
               transform: mounted ? "scale(1.0)" : "scale(1.04)",
               transition: "transform 1800ms cubic-bezier(.2,.6,.2,1)",
             }}
+            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
           />
         </>
       ) : (

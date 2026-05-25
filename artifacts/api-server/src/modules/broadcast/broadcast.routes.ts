@@ -356,7 +356,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
       schema: {
         tags: ["broadcast"],
         summary: "Admin: remove a program from the queue",
-        params: z.object({ id: z.string() }),
+        params: z.object({ id: z.string().min(1).max(128) }),
         security: [{ bearerAuth: [] }],
       },
     },
@@ -417,7 +417,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
       schema: {
         tags: ["broadcast"],
         summary: "Admin: toggle whether a queue item is in rotation",
-        params: z.object({ id: z.string() }),
+        params: z.object({ id: z.string().min(1).max(128) }),
         body: z.object({ isActive: z.boolean() }),
         security: [{ bearerAuth: [] }],
       },

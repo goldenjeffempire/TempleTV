@@ -72,6 +72,7 @@ function PlaylistCard({
             src={playlist.thumbnailUrl}
             alt={playlist.title}
             style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
           />
         ) : (
           <div
@@ -203,6 +204,7 @@ function EpisodeRow({
             src={video.thumbnailUrl}
             alt={video.title}
             style={{ width: "100%", height: "100%", objectFit: "cover" }}
+            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
           />
         ) : (
           <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
