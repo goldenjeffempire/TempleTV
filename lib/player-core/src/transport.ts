@@ -1,4 +1,4 @@
-import type { PlayerEvent, V2ServerFrame } from "./types.js";
+import type { PlayerEvent, V2ServerFrame, V2Snapshot } from "./types.js";
 
 /**
  * Transport: connects to the v2 WebSocket gateway, dispatches frames into
@@ -97,6 +97,49 @@ function saveStoredSequence(seq: number): void {
     );
   } catch {
     // sessionStorage may be unavailable in some TV / sandboxed environments
+  }
+}
+
+// ── localStorage snapshot cache ────────────────────────────────────────────
+// Persists the last known full V2Snapshot so the FSM can be seeded with a
+// real state even when the server is temporarily unreachable (network loss,
+// API restart, brief outage).  A 30-minute TTL means a device that wakes from
+// sleep or briefly loses signal continues from the cached queue rather than
+// showing a blank BOOTSTRAP screen.
+//
+// This is a best-effort read-through cache: the authoritative state always
+// comes from the server.  The cached snapshot is only dispatched when a live
+// fetch fails — it never suppresses a successful server response.
+
+const SNAPSHOT_CACHE_KEY = "ttv:broadcast:snapshot:v1";
+const SNAPSHOT_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+function saveSnapshotCache(snapshot: V2Snapshot): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(
+      SNAPSHOT_CACHE_KEY,
+      JSON.stringify({ v: 1, snapshot, cachedAt: Date.now() }),
+    );
+  } catch {
+    // localStorage may be full or unavailable — cache is best-effort
+  }
+}
+
+function loadSnapshotCache(): V2Snapshot | null {
+  try {
+    if (typeof localStorage === "undefined") return null;
+    const raw = localStorage.getItem(SNAPSHOT_CACHE_KEY);
+    if (!raw) return null;
+    const env = JSON.parse(raw) as { v?: number; snapshot?: unknown; cachedAt?: number };
+    if (env.v !== 1 || !env.snapshot || typeof env.cachedAt !== "number") return null;
+    if (Date.now() - env.cachedAt > SNAPSHOT_CACHE_TTL_MS) {
+      localStorage.removeItem(SNAPSHOT_CACHE_KEY);
+      return null;
+    }
+    return env.snapshot as V2Snapshot;
+  } catch {
+    return null;
   }
 }
 
@@ -485,6 +528,8 @@ export class V2Transport {
     }
     switch (frame.type) {
       case "snapshot":
+        // Cache the snapshot locally so the FSM can be seeded during outages.
+        saveSnapshotCache(frame.state);
         this.cfg.onPlayerEvent({ type: "snapshot", snapshot: frame.state });
         break;
       case "preload":
@@ -587,7 +632,14 @@ export class V2Transport {
         this.cfg.onPlayerEvent({ type: "snapshot", snapshot: body.state as never });
       }
     } catch {
-      /* swallowed — next reconnect/heartbeat will reattempt */
+      // Network error — seed the FSM from the local snapshot cache so the
+      // player can continue (or begin) playback while connectivity recovers.
+      // This prevents a blank BOOTSTRAP/SYNCING screen during API restarts,
+      // brief outages, or the first seconds after a page load on a slow link.
+      const cached = loadSnapshotCache();
+      if (cached) {
+        this.cfg.onPlayerEvent({ type: "snapshot", snapshot: cached });
+      }
     } finally {
       this.snapshotInflight = false;
     }

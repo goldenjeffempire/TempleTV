@@ -1,7 +1,10 @@
 import type { BroadcastCurrent } from "./api";
 
 const KEY = "templetv:lastBroadcastCurrent";
-const TTL_MS = 60_000;
+// Extended from 60 s to 30 min: a device that wakes from sleep or briefly
+// loses signal should not show a blank screen — the cached item provides a
+// valid source URL the player can attempt while the transport reconnects.
+const TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 interface Envelope {
   v: 1;
@@ -12,7 +15,9 @@ interface Envelope {
 function safeStorage(): Storage | null {
   try {
     if (typeof window === "undefined") return null;
-    return window.sessionStorage;
+    // localStorage survives page reloads and tab restores; sessionStorage
+    // was limited to a single session and caused blank screens after reload.
+    return window.localStorage;
   } catch {
     return null;
   }

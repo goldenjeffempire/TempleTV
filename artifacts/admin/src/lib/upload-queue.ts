@@ -31,6 +31,13 @@
 import { apiBase } from "./api-base";
 import { tokenStore, ensureFreshToken, forceRefreshToken } from "./api";
 import { notifyUploadActivity, setUploadActive } from "./session-activity";
+import {
+  persistUploadSession,
+  updatePersistedSession,
+  removePersistedSession,
+  clearAllPersistedSessions,
+  loadPersistedSessions,
+} from "./upload-persist";
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -240,6 +247,52 @@ class UploadQueueEngine {
     if (typeof window !== "undefined") {
       window.addEventListener("offline", () => this._onNetworkOffline());
       window.addEventListener("online", () => this._onNetworkOnline());
+
+      // Restore in-progress uploads from IndexedDB after a page reload.
+      // Items are restored as "paused" so they don't auto-start — the user
+      // sees them in the queue panel and can resume with one click.  When
+      // resumed, the worker queries GET /status to skip already-confirmed
+      // chunks and continue from where the upload left off.
+      loadPersistedSessions()
+        .then((sessions) => {
+          if (sessions.length === 0) return;
+          for (const s of sessions) {
+            if (this.items.has(s.id)) continue;
+            // IDB preserves File objects including name/type via structured
+            // clone; reconstruct a proper File if an older browser returns
+            // a plain Blob.
+            const file: File =
+              s.file instanceof File
+                ? s.file
+                : new File([s.file], s.fileName, { type: s.fileMime });
+            const item: UploadItem = {
+              id: s.id,
+              sessionId: s.sessionId,
+              file,
+              title: s.title,
+              description: s.description,
+              category: s.category,
+              preacher: s.preacher,
+              featured: s.featured,
+              status: "paused",
+              progress: 0,
+              speed: 0,
+              eta: 0,
+              uploadedBytes: 0,
+              error: null,
+              addedAt: s.addedAt,
+              startedAt: null,
+              completedAt: null,
+              priority: s.priority,
+              videoId: null,
+              speedLabel: "",
+              finalizeOnly: s.finalizeOnly,
+            };
+            this.items.set(s.id, item);
+          }
+          this.notify();
+        })
+        .catch(() => { /* IDB unavailable — proceed without restore */ });
     }
   }
 
@@ -298,6 +351,24 @@ class UploadQueueEngine {
     const item = this.items.get(id);
     if (!item) return;
     this.items.set(id, { ...item, ...patch });
+
+    // IDB sync — only on meaningful state transitions, never on high-frequency
+    // progress ticks (which only patch progress/speed/eta/uploadedBytes).
+    if ("status" in patch) {
+      if (patch.status === "completed" || patch.status === "cancelled") {
+        removePersistedSession(id).catch(() => {});
+      }
+    }
+    // Normal retry assigns a new sessionId — update IDB so a subsequent reload
+    // picks up the correct server session instead of the stale one.
+    if ("sessionId" in patch && patch.sessionId !== item.sessionId) {
+      const updated = this.items.get(id)!;
+      updatePersistedSession(id, {
+        sessionId: updated.sessionId,
+        finalizeOnly: updated.finalizeOnly,
+      }).catch(() => {});
+    }
+
     this.notify();
   }
 
@@ -377,6 +448,22 @@ class UploadQueueEngine {
         finalizeOnly: false,
       };
       this.items.set(id, item);
+      // Persist to IndexedDB so the upload survives a page reload.
+      persistUploadSession({
+        id,
+        sessionId: item.sessionId,
+        file: item.file,
+        fileName: item.file.name,
+        fileMime: item.file.type,
+        title: item.title,
+        description: item.description,
+        category: item.category,
+        preacher: item.preacher,
+        featured: item.featured,
+        addedAt: item.addedAt,
+        priority: item.priority,
+        finalizeOnly: false,
+      }).catch(() => {});
     }
     this.notify();
     this.scheduleWorkers();
@@ -464,6 +551,7 @@ class UploadQueueEngine {
     if (item.status === "uploading" || item.status === "finalizing") return; // use cancel instead
     this.items.delete(id);
     this.workerStates.delete(id);
+    removePersistedSession(id).catch(() => {});
     this.notify();
   }
 
@@ -487,6 +575,7 @@ class UploadQueueEngine {
     this.items.clear();
     this.workerStates.clear();
     this.activeWorkers.clear();
+    clearAllPersistedSessions().catch(() => {});
     this.notify();
   }
 

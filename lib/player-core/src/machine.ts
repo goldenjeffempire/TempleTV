@@ -699,8 +699,26 @@ export class PlayerMachine {
   }
 
   private onOffline(): void {
-    this.transition("OFFLINE_HOLD");
-    this.emit({ type: "show-overlay", kind: "offline", reason: null });
+    // If the player already has content loaded (PLAYING, PREPARING_*, RECOVERING_*,
+    // HANDOFF, SKIP_PENDING, LIVE_OVERRIDE_ACTIVE), do NOT blank the screen.
+    // Video buffers hold pre-downloaded data that keeps playing through brief
+    // network drops (a few seconds for MP4, much longer for HLS with a deep
+    // buffer).  If the buffer truly empties, the stall watchdog fires and the
+    // normal RECOVERING → SKIP_PENDING path handles it.
+    //
+    // Only enter OFFLINE_HOLD from states that have no content to show
+    // (BOOTSTRAP, SYNCING) where a blank screen is already the reality.
+    const state = this.snapshot.state;
+    if (
+      state === "BOOTSTRAP" ||
+      state === "SYNCING" ||
+      state === "OFFLINE_HOLD"
+    ) {
+      this.transition("OFFLINE_HOLD");
+      this.emit({ type: "show-overlay", kind: "offline", reason: null });
+    }
+    // For all other states: let playback continue uninterrupted.  The overlay
+    // appears via the stall/error escalation path if the buffer runs dry.
   }
 
   private onForceSkip(): void {
