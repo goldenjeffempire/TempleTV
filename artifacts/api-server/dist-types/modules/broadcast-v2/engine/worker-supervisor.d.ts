@@ -18,6 +18,8 @@ export interface WorkerHealth {
     lastErrorAtMs: number | null;
     lastError: string | null;
     nextRunAtMs: number | null;
+    /** Wall-clock ms when the circuit breaker will auto-reset. Null when closed. */
+    circuitAutoResetAtMs: number | null;
 }
 declare class SupervisedWorker {
     private readonly cfg;
@@ -32,6 +34,8 @@ declare class SupervisedWorker {
     private lastError;
     private nextRunAtMs;
     private timer;
+    /** Scheduled auto-reset timer after a circuit-breaker trip. */
+    private circuitResetTimer;
     constructor(cfg: WorkerConfig);
     start(): void;
     stop(): void;

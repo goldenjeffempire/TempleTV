@@ -485,7 +485,7 @@ export function BroadcastPreviewV2({ className }: Props) {
         playsInline
         autoPlay
         muted={muted}
-        style={{ zIndex: 1 }}
+        style={{ zIndex: 1, opacity: 0 }}
       />
 
       {/* YouTube override placeholder.

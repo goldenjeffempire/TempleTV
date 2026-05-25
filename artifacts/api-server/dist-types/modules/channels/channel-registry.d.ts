@@ -22,6 +22,15 @@ declare class ChannelRegistry {
         running: boolean;
         viewerCount: number;
     }>;
+    /**
+     * Stop all managed channel engines and clear the registry.
+     * Must be called during graceful shutdown so timers and DB pool
+     * connections held by secondary ChannelEngine instances are released
+     * before `process.exit()`. Without this, those timers keep the event
+     * loop alive past the supervisor's hard-kill timeout and prevent clean
+     * connection pool drain.
+     */
+    shutdown(): void;
 }
 export declare const channelRegistry: ChannelRegistry;
 export {};

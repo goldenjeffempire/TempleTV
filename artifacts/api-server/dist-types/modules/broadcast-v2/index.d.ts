@@ -28,8 +28,11 @@ export declare function getBroadcastV2BootStatus(): {
 export declare function ensureBroadcastV2Started(): Promise<void>;
 /**
  * Graceful shutdown for the broadcast-v2 module.
- * Closes the Redis fan-out subscriber and stops the leader renewal timer.
- * Called from main.ts shutdown handler.
+ * 1. Flushes the current playback position checkpoint to the database so
+ *    restarts resume from the exact position rather than the last periodic
+ *    checkpoint boundary (up to 5 s stale without this flush).
+ * 2. Closes the Redis fan-out subscriber and stops the leader renewal timer.
+ * Called from main.ts shutdown handler before app.close().
  */
 export declare function stopBroadcastV2(): Promise<void>;
 export { broadcastOrchestrator, broadcastFanout };

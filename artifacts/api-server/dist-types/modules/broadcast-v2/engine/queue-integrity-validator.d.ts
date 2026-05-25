@@ -21,6 +21,8 @@ export interface ValidationReport {
 declare class QueueIntegrityValidatorImpl {
     private lastReport;
     private validating;
+    /** Fingerprint of the last logged issue set — used to suppress duplicate WARN spam. */
+    private lastIssueSig;
     validate(): Promise<ValidationReport>;
     getLastReport(): ValidationReport | null;
     private empty;

@@ -7,6 +7,14 @@ import type { V2Item } from "../domain/types.js";
  */
 export declare function makeMediaProxyUrl(externalUrl: string, ownBase?: string): string;
 export declare const BAD_URL_TTL_MS = 90000;
+/**
+ * How long a repeatedly-failing item is kept out of broadcast rotation.
+ * Longer than BAD_URL_TTL_MS so the standard per-snapshot check doesn't
+ * clear the block before the suspension window has elapsed.
+ * After this TTL the item automatically re-enters rotation — no operator
+ * action required, preventing permanent Off Air states from transient failures.
+ */
+export declare const SUSPENSION_TTL_MS: number;
 /** Mark a source URL as recently confirmed unreachable. */
 export declare function markBadUrl(url: string): void;
 /** Clear a URL from the bad cache (e.g. after a queue reload with new sources). */
@@ -38,17 +46,37 @@ export declare function getRecentlySuspended(): ReadonlyArray<{
     suspendedAtMs: number;
 }>;
 /**
- * Deactivate a queue item that has exceeded the bad-URL skip threshold.
+ * Temporarily suspend a queue item that has exceeded the bad-URL skip threshold.
  *
- * Sets `is_active = false` in the DB so the item is excluded from every
- * future orchestrator reload until an operator re-enables it manually.
- * Records the suspension in `recentlySuspended` for the /diagnostics
- * endpoint.
+ * CHANGED from permanent DB deactivation (is_active = false) to time-limited
+ * in-memory suspension via extended bad-URL cache TTL. This prevents the
+ * permanent Off Air state that occurred when all queue items were auto-suspended
+ * and no operator action was available to recover them.
  *
- * Non-throwing: DB errors are logged and swallowed so a suspension
- * failure never crashes the broadcast loop.
+ * Mechanism:
+ *  • The item's primary URL is extended in the bad-URL cache to SUSPENSION_TTL_MS
+ *    (5 min). The orchestrator's snapshot() already skips bad-URL items, so the
+ *    item stays out of rotation for 5 minutes without touching the DB.
+ *  • After the TTL expires the item auto-recovers and re-enters rotation.
+ *  • The skip counter is reset so the item gets a fresh set of probe attempts.
+ *  • The suspension is recorded in recentlySuspended for the /diagnostics endpoint.
+ *
+ * Non-throwing: errors are logged and swallowed so a suspension failure never
+ * crashes the broadcast loop.
  */
-export declare function autoSuspendQueueItem(itemId: string, title: string | null, failCount: number): Promise<void>;
+export declare function autoSuspendQueueItem(itemId: string, title: string | null, failCount: number, primaryUrl?: string): void;
+/**
+ * Re-enable all queue items that are currently inactive (is_active = false).
+ *
+ * Called on server startup to recover items that were permanently deactivated
+ * by the old auto-suspension logic (which wrote is_active=false to the DB).
+ * The new autoSuspendQueueItem no longer touches the DB, but items suspended by
+ * a previous server version need a one-time recovery pass.
+ *
+ * Returns the number of items re-enabled.
+ * Non-throwing: errors are logged and swallowed.
+ */
+export declare function reEnableAllSuspended(): Promise<number>;
 /**
  * Returns per-item health status for an array of raw queue rows.
  * Normalises each row's URL (relative → absolute) before looking it up in
@@ -85,6 +113,24 @@ export interface RawQueueRow {
      */
     videoDuration: string | null;
 }
+/**
+ * Count broadcast_queue rows that are `is_active = true`, regardless of
+ * whether the joined managed_videos row satisfies the faststart / transcoding
+ * admission policy enforced by `loadActive()`.
+ *
+ * Used by the dead-air watchdog in the orchestrator to distinguish two
+ * otherwise-identical states:
+ *   A) "Truly empty" — no active rows in the DB → library-scan backstop
+ *      is the right recovery path.
+ *   B) "Filtered out" — active rows exist but are excluded by the strict
+ *      broadcast policy (faststart_applied=false, status='processing', etc.)
+ *      → re-enabling suspended items + triggering faststart recovery is the
+ *      right path. Library scan would find nothing new to add, so running
+ *      it alone doesn't help.
+ *
+ * Never throws — callers treat 0 as a safe fallback.
+ */
+export declare function countActiveRaw(): Promise<number>;
 export declare const queueRepo: {
     loadActive(): Promise<RawQueueRow[]>;
     /**

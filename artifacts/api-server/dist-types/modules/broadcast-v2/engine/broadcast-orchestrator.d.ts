@@ -77,6 +77,15 @@ declare class BroadcastOrchestrator extends EventEmitter {
      */
     private consecutiveEmptyPolls;
     /**
+     * Wall-clock ms of the last dead-air escalation attempt. Zero = never.
+     * Guards against stampeding reEnableAllSuspended / faststart-sweep on
+     * every poll when the root cause (corrupt file, missing objectPath, or
+     * exhausted faststart attempts) is not fixable within a single cycle.
+     * Reset to 0 when items successfully load so subsequent outages get a
+     * fresh escalation immediately rather than waiting for the cooldown.
+     */
+    private lastDeadAirEscalationMs;
+    /**
      * Dirty flag for the position checkpoint.  Set whenever the orchestrator
      * emits a snapshot (state has changed).  persistCheckpoint() returns
      * immediately when this flag is false, eliminating the DB write for ticks
@@ -266,6 +275,36 @@ declare class BroadcastOrchestrator extends EventEmitter {
      */
     private scheduleSelfHealReload;
     /**
+     * Dead-air escalation: called by the self-heal empty timer after
+     * EMPTY_POLLS_BEFORE_ESCALATION consecutive empty-queue polls (30 s
+     * by default) when the orchestrator still has 0 items loaded.
+     *
+     * The key distinction this method makes: was loadActive() returning 0
+     * because the queue is *truly empty* (no active rows in the DB), or
+     * because active rows exist but are being *filtered out* by the strict
+     * admission policy (faststart_applied=false, status='processing', etc.)?
+     *
+     * - Truly empty  → library scan backstop handles it (already wired).
+     * - Filtered out → targeted recovery:
+     *     1. reEnableAllSuspended()      — clears any lingering is_active=false
+     *                                      rows left by older server versions.
+     *     2. clearAllBadUrls()           — removes in-memory 90 s / 5 min TTL
+     *                                      blocks so items can be re-probed.
+     *     3. faststartRecoveryWorker.sweep() — immediately triggers faststart
+     *                                      for items with faststart_applied=false;
+     *                                      on success the worker fires
+     *                                      broadcast-queue-updated → reload().
+     *     4. scheduleSelfHealReload()    — belt-and-suspenders reload that
+     *                                      picks up any items re-enabled by (1).
+     *
+     * Rate-limited by DEAD_AIR_ESCALATION_COOLDOWN_MS (5 min) to prevent
+     * hammering the DB and ffmpeg when the underlying cause is not fixable
+     * within a single cycle (e.g. permanently corrupt file, no objectPath).
+     * The cooldown is reset to 0 whenever the orchestrator successfully loads
+     * items, so the next outage always gets an immediate first escalation.
+     */
+    private escalateDeadAir;
+    /**
      * Outer tick() — crash-safe wrapper with circuit breaker.
      *
      * The setInterval callback MUST NOT throw: an unhandled rejection inside
@@ -357,6 +396,16 @@ declare class BroadcastOrchestrator extends EventEmitter {
      * advance past the broken item before it would have started playing.
      */
     private scheduleProactiveProbe;
+    /**
+     * Force-flush the current playback position to the database immediately,
+     * bypassing the dirty-flag guard and the periodic timer.
+     *
+     * Called during graceful shutdown (SIGTERM/SIGINT) so the server always
+     * restarts from the exact position it was at when it stopped — not from
+     * the last 5-second checkpoint boundary (which could be up to 5 seconds
+     * stale when the signal arrives between timer fires).
+     */
+    flushCheckpointForShutdown(): Promise<void>;
     private persistCheckpoint;
     getSequence(): number;
     /** Number of in-memory queue items currently driving the broadcast cycle. */

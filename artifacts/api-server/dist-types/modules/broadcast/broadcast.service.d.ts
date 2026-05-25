@@ -217,31 +217,31 @@ export declare const broadcastService: {
     listQueue(): Promise<(typeof queueTable.$inferSelect)[]>;
     addToQueue(item: z.infer<typeof AddQueueItemSchema>): Promise<{
         id: string;
-        title: string;
         youtubeId: string;
+        title: string;
         thumbnailUrl: string;
         videoSource: string;
         localVideoUrl: string | null;
         hlsMasterUrl: string | null;
-        isActive: boolean;
         videoId: string | null;
+        durationSecs: number;
+        isActive: boolean;
         sortOrder: number;
         addedAt: Date;
-        durationSecs: number;
     }>;
     removeFromQueue(id: string): Promise<{
         id: string;
-        title: string;
         youtubeId: string;
+        title: string;
         thumbnailUrl: string;
         videoSource: string;
         localVideoUrl: string | null;
         hlsMasterUrl: string | null;
-        isActive: boolean;
         videoId: string | null;
+        durationSecs: number;
+        isActive: boolean;
         sortOrder: number;
         addedAt: Date;
-        durationSecs: number;
     }>;
     reorder(itemIds: string[]): Promise<import("./queue.engine.js").BroadcastSnapshot>;
     toggleActive(id: string, isActive: boolean): Promise<{

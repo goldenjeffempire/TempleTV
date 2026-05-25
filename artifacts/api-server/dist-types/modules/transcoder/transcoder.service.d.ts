@@ -33,6 +33,10 @@ interface RenditionSpec {
     maxrateK: number;
     bufsizeK: number;
     audioBitrateK: number;
+    /** H.264 level string (e.g. "3.1"). Constrains decoder complexity so
+     *  Smart TVs, set-top boxes, and older mobile devices that refuse
+     *  higher-level streams can play every rendition without error. */
+    level: string;
 }
 /**
  * Build the FFmpeg filter_complex + per-rendition output args for multi-rendition HLS.

@@ -428,6 +428,7 @@ export function LiveBroadcastV2({
           objectFit,
           objectPosition: "center center",
           zIndex: 1,
+          opacity: 0,
           display: "block",
         }}
         playsInline

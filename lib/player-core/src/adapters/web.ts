@@ -92,16 +92,26 @@ export function createWebAdapter(
   const listenerAbort = new AbortController();
   const { signal } = listenerAbort;
 
-  // Set initial z-index and mute state from initialActiveId.  This matters
-  // when re-attaching elements to a running session whose active buffer is B
-  // (e.g. after a single-item loop handoff happened while the component was
-  // unmounted).  Without it the new elements would paint in the wrong order
+  // Set initial z-index, opacity, and mute state from initialActiveId.  This
+  // matters when re-attaching elements to a running session whose active buffer
+  // is B (e.g. after a single-item loop handoff happened while the component
+  // was unmounted).  Without it the new elements would paint in the wrong order
   // for one frame before the first swap intent corrects them.
+  //
+  // Opacity is set in addition to z-index because `object-fit: contain` leaves
+  // the letterbox/pillarbox areas of the <video> element transparent in
+  // Chromium-based browsers.  Without opacity control, the inactive buffer
+  // (z-index 1) bleeds through those transparent areas and renders a visible
+  // second video stream behind the active buffer — the "duplicate video" bug.
+  // Setting opacity:0 on the inactive buffer hides it visually while keeping
+  // it in the DOM so the browser continues buffering/decoding its content.
   const initialActive = buffers[initialActiveId];
   const initialInactive = buffers[initialActiveId === "A" ? "B" : "A"];
   initialActive.el.style.zIndex = "2";
+  initialActive.el.style.opacity = "1";
   initialActive.el.muted = false;
   initialInactive.el.style.zIndex = "1";
+  initialInactive.el.style.opacity = "0";
   initialInactive.el.muted = true;
 
   const watchdog = new Watchdog({
@@ -289,8 +299,10 @@ export function createWebAdapter(
         const top = buffers[activeId];
         const bot = buffers[activeId === "A" ? "B" : "A"];
         top.el.style.zIndex = "2";
+        top.el.style.opacity = "1";
         top.el.muted = false;
         bot.el.style.zIndex = "1";
+        bot.el.style.opacity = "0";
         bot.el.muted = true;
         // Re-arm watchdog on the new active buffer. notifyActive() resets
         // the clock immediately so the new buffer gets a full grace window
