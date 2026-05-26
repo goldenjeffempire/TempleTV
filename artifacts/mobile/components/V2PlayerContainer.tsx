@@ -71,6 +71,38 @@
  *     The 15 s re-latch was causing perceptible micro-stalls on weak Android
  *     connections; 30 s matches the standard live HLS target segment duration.
  *
+ * Recovery spiral fix (May 2026):
+ *   • Root cause: RECOVERING_PRIMARY same-URL fast-path fires buffer-ready →
+ *     play effect calls playFromPositionAsync(N) → ExoPlayer flushes its
+ *     download buffer and re-fetches segments at position N → slow-network
+ *     fetch exceeds BUFFERING_STALL_THRESHOLD_MS → buffer-error → RECOVERING
+ *     → same-URL fast-path → playFromPositionAsync(N) → stall → infinite loop.
+ *     Result: player permanently shows "Tuning in…" while audio plays.
+ *   • Fix: `isSameUrlRecoveryRef` (one-shot ref) is set in the reset effect
+ *     when a same-URL recovery is detected. The play effect checks this flag:
+ *     if set, it calls playAsync() instead of playFromPositionAsync(). This
+ *     resumes ExoPlayer from its already-buffered position without a buffer
+ *     flush. The HLS live-sync interval (30 s) re-latches broadcast timeline
+ *     position without seeking. The flag is consumed (cleared) immediately
+ *     after use so subsequent drift corrections take the normal seek path.
+ *
+ * Silent load-failure timeout (May 2026):
+ *   • Root cause: Android ExoPlayer occasionally fails to fire onLoad or
+ *     onError (manifest parse failure, codec negotiation deadlock, manifest
+ *     fetch timing out before the first byte arrives). Without a timeout the
+ *     FSM stays in PREPARING_ACTIVE or RECOVERING indefinitely.
+ *   • Fix: `loadTimeoutRef` starts LOAD_TIMEOUT_MS (25 s) after a new URL is
+ *     bound to an active+playing buffer. If onLoad has not fired by then,
+ *     buffer-error is emitted, triggering normal FSM recovery. The timeout is
+ *     cancelled on onLoad (success) or when bindRevision changes (new source).
+ *
+ * HLS content-type hint (May 2026):
+ *   • Added `overrideFileExtensionWithValue: 'm3u8'` to the expo-av source
+ *     object for HLS items. Some ExoPlayer 2.x builds fall back to progressive
+ *     download when the manifest URL has query params that obscure the .m3u8
+ *     extension, causing manifest parse failures and a permanently black video
+ *     surface while audio continues from the demuxed audio track.
+ *
  * Used by `app/player.tsx` for the live HLS path (v2 broadcast).
  */
 
@@ -176,6 +208,23 @@ const HLS_SMALL_DRIFT_SKIP_MS = 30_000;
  * ensures `shouldPlay = true`, which is already true.  No seek occurs.
  */
 const HLS_LIVE_SYNC_INTERVAL_MS = 30_000;
+
+/**
+ * Maximum time (ms) to wait for expo-av's `onLoad` to fire after a new
+ * source is bound to an active+playing buffer before declaring a load failure.
+ *
+ * This is a safety net for cases where Android ExoPlayer fails to fire
+ * `onLoad` or `onError` (silent failure modes seen with certain HLS manifests
+ * or codec configurations). Without this timeout the FSM stays stuck in
+ * PREPARING_ACTIVE or RECOVERING indefinitely — audio may play (from a prior
+ * successful load) but "Tuning in…" never clears.
+ *
+ * 25 s is chosen slightly above BUFFERING_STALL_THRESHOLD_MS (20 s) so the
+ * buffering watchdog has first crack at stalls (isBuffering:true path), and
+ * this timeout only fires for truly silent failures where isBuffering stays
+ * false (manifest fetch never started, codec negotiation hung, etc.).
+ */
+const LOAD_TIMEOUT_MS = 25_000;
 
 interface Props {
   baseUrl: string;
@@ -317,6 +366,46 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
    */
   const playheadMsRef = useRef<number | null>(null);
 
+  /**
+   * Set to `true` when the current bind-revision reset is a same-URL recovery
+   * (RECOVERING_PRIMARY/FAILOVER rebinding the same source URL). In this case
+   * the play effect MUST use `playAsync()` instead of `playFromPositionAsync()`
+   * for HLS, because:
+   *
+   *   1. ExoPlayer already has the HLS manifest and some segments in memory
+   *      from the prior successful load — calling `playAsync()` resumes
+   *      playback from where it is without flushing the download buffer.
+   *
+   *   2. `playFromPositionAsync(N)` forces ExoPlayer to discard its buffer
+   *      and re-fetch segments starting at position N. When N is far into
+   *      a large VOD HLS file, this fetch can exceed BUFFERING_STALL_THRESHOLD_MS
+   *      on a slow connection — triggering another buffer-error → RECOVERING_PRIMARY
+   *      → same-URL fast-path → playFromPositionAsync(N) → stall → loop (the
+   *      "recovery spiral" that keeps the player stuck on "Tuning in…").
+   *
+   *   3. Using `playAsync()` instead breaks the spiral: ExoPlayer resumes from
+   *      its buffered position (or re-attaches to the live edge for live HLS)
+   *      without a buffer flush, and the live-sync interval (HLS_LIVE_SYNC_INTERVAL_MS)
+   *      re-latches position to the broadcast timeline within 30 s.
+   *
+   * Cleared to false after the play effect consumes it (one-shot).
+   */
+  const isSameUrlRecoveryRef = useRef(false);
+
+  /**
+   * Safety-net load timeout for silent Android ExoPlayer failures.
+   *
+   * Fires LOAD_TIMEOUT_MS after a new URL is bound to an active+playing
+   * buffer if `onLoad` has not yet confirmed the source is ready. Covers:
+   *   - Manifest fetch silently hanging (no error event from ExoPlayer)
+   *   - Codec negotiation deadlock (no callback, no error, isBuffering false)
+   *   - HLS playlist parse failure that doesn't surface as `onError`
+   *
+   * Cleared immediately when `onLoad` fires (normal path) or when bindRevision
+   * changes again (the old timeout is irrelevant for the new source).
+   */
+  const loadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // ── isBuffering stall watchdog ──────────────────────────────────────────
   // expo-av sets isBuffering=true whenever the player is waiting for the
   // network to deliver enough data to resume playback. On weak or
@@ -340,6 +429,13 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
     if (quickFinishRetryTimerRef.current) {
       clearTimeout(quickFinishRetryTimerRef.current);
       quickFinishRetryTimerRef.current = null;
+    }
+  }
+
+  function clearLoadTimeout() {
+    if (loadTimeoutRef.current) {
+      clearTimeout(loadTimeoutRef.current);
+      loadTimeoutRef.current = null;
     }
   }
 
@@ -368,24 +464,45 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
     // re-issue the play intent (which will seek to the wall-clock position).
     // actualDurationMsRef stays valid — same video, same duration.
     if (url !== null && url === lastLoadedUrlRef.current) {
+      isSameUrlRecoveryRef.current = true;
+      // No load timeout needed — expo-av already has this source loaded.
+      clearLoadTimeout();
       setLoadedRevision(state.bindRevision);
       if (lastReportedRevision.current !== state.bindRevision) {
         lastReportedRevision.current = state.bindRevision;
         reportBufferEvent({ type: "buffer-ready", bufferId });
       }
     } else {
+      isSameUrlRecoveryRef.current = false;
       // New URL (or initial bind with no prior successful load) — full
       // reset; wait for onLoad before the play effect can seek.
       setLoadedRevision(-1);
       actualDurationMsRef.current = null;
+      // ── Silent-failure load timeout ─────────────────────────────────
+      // Android ExoPlayer can fail to fire onLoad or onError in certain
+      // edge cases (manifest parse failure, codec negotiation deadlock,
+      // network timeout before the first byte of the manifest arrives).
+      // Without this timeout the FSM stays stuck in PREPARING_ACTIVE or
+      // RECOVERING indefinitely with no recovery path.
+      //
+      // Only arm for active+playing buffers — preloading the inactive
+      // buffer silently is expected and should not trigger recovery.
+      clearLoadTimeout();
+      if (state.playing && state.active) {
+        loadTimeoutRef.current = setTimeout(() => {
+          loadTimeoutRef.current = null;
+          reportBufferEvent({ type: "buffer-error", bufferId, error: "load-timeout" });
+        }, LOAD_TIMEOUT_MS);
+      }
     }
   }, [state.bindRevision]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Cancel watchdog and any pending retry timer on unmount.
+  // Cancel all watchdogs and pending timers on unmount.
   useEffect(() => {
     return () => {
       clearBufferingWatchdog();
       clearQuickFinishRetry();
+      clearLoadTimeout();
     };
   }, []);
 
@@ -407,13 +524,25 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
         //   VOD HLS:  durationMillis is a finite positive number.
         const isLiveHls = actualMs === null || !isFinite(actualMs) || actualMs <= 0;
 
-        if (isLiveHls) {
-          // ── Live HLS path ──────────────────────────────────────────────
-          // playAsync() attaches AVPlayer/ExoPlayer to the live edge of the
-          // dynamic playlist. Calling playFromPositionAsync() on a live
-          // stream either fails (no seekable range in the manifest) or snaps
-          // to the oldest cached segment, causing the player to trail further
-          // behind the live edge on every retry.
+        if (isLiveHls || isSameUrlRecoveryRef.current) {
+          // ── Live HLS path or same-URL recovery ────────────────────────
+          // Live HLS: playAsync() attaches AVPlayer/ExoPlayer to the live
+          // edge of the dynamic playlist. Calling playFromPositionAsync()
+          // on a live stream either fails (no seekable range in manifest)
+          // or snaps to the oldest cached segment, trailing further behind
+          // the live edge on every retry.
+          //
+          // Same-URL recovery: RECOVERING_PRIMARY/FAILOVER rebinds the
+          // same URL. ExoPlayer still has the manifest and segments in
+          // memory from the prior load. Using playAsync() resumes from
+          // the buffered position without flushing ExoPlayer's download
+          // buffer. playFromPositionAsync(N) would flush+re-fetch segments
+          // at position N — on slow networks this refetch can exceed
+          // BUFFERING_STALL_THRESHOLD_MS, triggering another buffer-error
+          // → RECOVERING → playFromPositionAsync → stall → loop (the
+          // "Tuning in…" stuck spiral). playAsync() breaks the spiral.
+          // The HLS live-sync interval re-latches position within 30 s.
+          isSameUrlRecoveryRef.current = false; // consume one-shot flag
           playStartMsRef.current = Date.now();
           v.playAsync().catch(() => {
             reportBufferEvent({ type: "buffer-error", bufferId, error: "play-failed" });
@@ -516,10 +645,23 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
     return <View style={[styles.video, { zIndex: state.active ? 2 : 1 }]} />;
   }
 
+  // Build the expo-av source object. For HLS sources, include
+  // `overrideFileExtensionWithValue: 'm3u8'` to guarantee Android
+  // ExoPlayer recognises the content type as HLS even when the URL
+  // passes through a proxy path that doesn't end in `.m3u8` (e.g.
+  // `/api/hls/videoId/v0/playlist.m3u8?token=…` with a long query
+  // string). Without the hint, some ExoPlayer 2.x builds fall back to
+  // progressive download mode, causing manifest parse failures or
+  // segment looping that produce a permanently black video surface
+  // while audio continues from the demuxed audio track.
+  const avSource = isHls
+    ? { uri: url, overrideFileExtensionWithValue: "m3u8" as const }
+    : { uri: url };
+
   return (
     <Video
       ref={ref}
-      source={{ uri: url }}
+      source={avSource}
       style={[styles.video, { zIndex: state.active ? 2 : 1 }]}
       resizeMode={ResizeMode.CONTAIN}
       shouldPlay={false}
@@ -547,8 +689,9 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
           lastReportedRevision.current = state.bindRevision;
           reportBufferEvent({ type: "buffer-ready", bufferId });
         }
-        // Source loaded successfully — clear any lingering buffering watchdog.
+        // Source loaded successfully — disarm both watchdogs.
         clearBufferingWatchdog();
+        clearLoadTimeout();
       }}
       onReadyForDisplay={() => {
         // Android/ExoPlayer fires this when the first VIDEO FRAME is ready

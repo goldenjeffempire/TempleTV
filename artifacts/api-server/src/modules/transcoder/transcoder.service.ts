@@ -59,7 +59,17 @@ const ALL_RENDITIONS: RenditionSpec[] = [
   { name: "1080p", width: 1920, height: 1080, videoBitrateK: 3500, maxrateK: 4500, bufsizeK: 6750, audioBitrateK: 192, level: "4.0" },
 ];
 
-const HLS_SEGMENT_SECS = 4;
+// 2-second segments align with the 2-second keyframe interval so every
+// segment starts with an IDR frame — required for seamless ABR switching and
+// accurate seeking. Shorter segments (vs. the old 4 s) also reduce:
+//   • Time-to-first-frame: players can begin rendering after buffering just
+//     one 2 s segment instead of waiting for a full 4 s segment to arrive.
+//   • Seek latency: the nearest IDR frame is at most 2 s away from any
+//     wall-clock position, so ExoPlayer/AVPlayer refetches less data after a
+//     clock-calibrated seek (important for synchronized broadcast playback).
+//   • Android ExoPlayer black-screen gap: the initial buffer-fill window
+//     (manifest + first segment) shrinks from ~4 s to ~2 s of media time.
+const HLS_SEGMENT_SECS = 2;
 const KEYFRAME_INTERVAL_SECS = 2;
 const FFMPEG_PRESET = env.TRANSCODER_PRESET;
 const FFMPEG_CRF = String(env.TRANSCODER_CRF);
@@ -157,7 +167,14 @@ function buildFfmpegArgs(
     "-hls_time", String(HLS_SEGMENT_SECS),
     "-hls_playlist_type", "vod",
     "-hls_segment_type", "mpegts",
-    "-hls_flags", "independent_segments",
+    // independent_segments: every segment can be decoded independently —
+    //   required for ABR switching and accurate ExoPlayer/AVPlayer seeking.
+    // split_by_time: cut segments at wall-clock boundaries rather than at
+    //   GOP boundaries that drift past the target duration. Combined with
+    //   the force_key_frames expression above (IDR every KEYFRAME_INTERVAL_SECS)
+    //   this keeps segment duration within ±1 frame of HLS_SEGMENT_SECS even
+    //   when the source framerate is not an integer divisor of the segment length.
+    "-hls_flags", "independent_segments+split_by_time",
     "-hls_list_size", "0",
     "-hls_segment_filename", path.join(outDir, "v%v", "seg_%05d.ts"),
     "-master_pl_name", "master.m3u8",
