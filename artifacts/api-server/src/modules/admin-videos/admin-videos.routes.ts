@@ -47,6 +47,15 @@ const VideoRowSchema = z.object({
   sizeBytes: z.number().int().nonnegative().nullable(),
   mimeType: z.string().nullable(),
   originalFilename: z.string().nullable(),
+  /**
+   * Whether the source video file is still available in object storage.
+   * - true  → source file exists; "Retry Transcoding" is safe to call.
+   * - false → source was deleted or never stored; re-upload is required.
+   * - null  → not applicable (YouTube-sourced video, no local bytes).
+   * Computed from objectPath + sourceCleanupStatus + sourceDeletedAt —
+   * does NOT require a storage round-trip; purely DB-derived.
+   */
+  sourceAvailable: z.boolean().nullable(),
 });
 
 const ListQuerySchema = z.object({
@@ -87,6 +96,24 @@ const PatchBodySchema = z.object({
 
 function toDto(row: typeof videos.$inferSelect): z.infer<typeof VideoRowSchema> {
   const yt = row.youtubeId?.startsWith("local-") ? null : row.youtubeId;
+
+  // Determine whether the source video file is still in storage without
+  // making a live storage round-trip. We derive this purely from DB columns:
+  //   • objectPath null     → file was never stored (e.g. legacy import)
+  //   • sourceCleanupStatus === 'done' OR sourceDeletedAt set → file purged
+  //   • otherwise           → file should still be present in object storage
+  // Only meaningful for local-sourced videos; null for YouTube.
+  let sourceAvailable: boolean | null = null;
+  if (row.videoSource === "local") {
+    if (!row.objectPath) {
+      sourceAvailable = false;
+    } else if (row.sourceCleanupStatus === "done" || row.sourceDeletedAt !== null) {
+      sourceAvailable = false;
+    } else {
+      sourceAvailable = true;
+    }
+  }
+
   return {
     id: row.id,
     youtubeId: yt,
@@ -109,6 +136,7 @@ function toDto(row: typeof videos.$inferSelect): z.infer<typeof VideoRowSchema> 
     sizeBytes: row.sizeBytes ?? null,
     mimeType: row.mimeType,
     originalFilename: row.originalFilename,
+    sourceAvailable,
   };
 }
 

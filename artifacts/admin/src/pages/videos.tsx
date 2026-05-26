@@ -56,6 +56,13 @@ interface AdminVideo {
   sizeBytes: number | null;
   mimeType: string | null;
   originalFilename: string | null;
+  /**
+   * Whether the source video file is still in object storage.
+   * true  → retry transcoding is possible.
+   * false → source was deleted; re-upload is required.
+   * null  → not applicable (YouTube video).
+   */
+  sourceAvailable: boolean | null;
 }
 
 interface VideoListResponse {
@@ -581,29 +588,38 @@ export default function VideosPage() {
         )}
       </div>
 
-      {/* Corrupt-upload alert banner — shown when any failed local uploads exist on
-          the current page and the user hasn't already filtered to the failed view. */}
+      {/* Failed-upload alert banner — shown when failed local videos exist on
+          the current page and the user hasn't already filtered to the failed view.
+          Two flavours:
+          • retryableCount > 0 → source still in storage; can retry transcoding.
+          • noSourceCount  > 0 → source was deleted; re-upload genuinely required. */}
       {(() => {
-        const corruptCount =
-          data?.videos.filter(
-            (v) => v.transcodingStatus === "failed" && v.videoSource === "local",
-          ).length ?? 0;
-        if (corruptCount === 0 || statusFilter === "failed") return null;
+        const failedLocal = data?.videos.filter(
+          (v) => v.transcodingStatus === "failed" && v.videoSource === "local",
+        ) ?? [];
+        if (failedLocal.length === 0 || statusFilter === "failed") return null;
+        const retryableCount = failedLocal.filter((v) => v.sourceAvailable !== false).length;
+        const noSourceCount  = failedLocal.filter((v) => v.sourceAvailable === false).length;
         return (
-          <div className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50/60 dark:border-red-900/40 dark:bg-red-950/20 px-4 py-3">
-            <AlertTriangle size={16} className="text-red-500 flex-shrink-0 mt-0.5" />
+          <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50/60 dark:border-amber-900/40 dark:bg-amber-950/20 px-4 py-3">
+            <AlertTriangle size={16} className="text-amber-500 flex-shrink-0 mt-0.5" />
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-red-700 dark:text-red-400">
-                {corruptCount} upload{corruptCount !== 1 ? "s" : ""} failed — re-upload required
+              <p className="text-sm font-medium text-amber-700 dark:text-amber-400">
+                {failedLocal.length} video{failedLocal.length !== 1 ? "s" : ""} failed transcoding
               </p>
-              <p className="text-xs text-red-600/70 dark:text-red-400/70 mt-0.5">
-                These files could not be processed. Delete each one and re-upload a valid copy to make it available for broadcast.
+              <p className="text-xs text-amber-600/70 dark:text-amber-400/70 mt-0.5">
+                {retryableCount > 0 && noSourceCount === 0 &&
+                  `${retryableCount} file${retryableCount !== 1 ? "s have" : " has"} their source still available — use "Retry Transcoding" to re-process without re-uploading.`}
+                {noSourceCount > 0 && retryableCount === 0 &&
+                  `Source file${noSourceCount !== 1 ? "s were" : " was"} deleted — delete each video and re-upload a fresh copy to recover.`}
+                {retryableCount > 0 && noSourceCount > 0 &&
+                  `${retryableCount} can be retried directly; ${noSourceCount} require a fresh upload (source deleted).`}
               </p>
             </div>
             <Button
               size="sm"
               variant="outline"
-              className="h-7 text-xs border-red-300 text-red-700 hover:bg-red-100 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/40 flex-shrink-0"
+              className="h-7 text-xs border-amber-300 text-amber-700 hover:bg-amber-100 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-amber-950/40 flex-shrink-0"
               onClick={() => { setStatusFilter("failed"); setSourceFilter("local"); setPage(1); }}
             >
               Show failed
@@ -700,15 +716,29 @@ export default function VideosPage() {
                         : v.transcodingStatus || "—"}
                     </Badge>
                     {v.transcodingStatus === "failed" && v.videoSource === "local" && (
-                      <span title="This file could not be processed — delete it and re-upload a valid copy to recover.">
-                        <Badge
+                      v.sourceAvailable === false ? (
+                        <span title="Source file was deleted — delete this video and re-upload a fresh copy to recover.">
+                          <Badge
+                            variant="outline"
+                            className="text-[10px] px-1.5 h-4 border-red-400 text-red-600 dark:text-red-400 flex items-center gap-0.5 cursor-default"
+                          >
+                            <UploadCloud size={9} className="flex-shrink-0" />
+                            Re-upload required
+                          </Badge>
+                        </span>
+                      ) : (
+                        <Button
+                          size="sm"
                           variant="outline"
-                          className="text-[10px] px-1.5 h-4 border-amber-400 text-amber-600 dark:text-amber-400 flex items-center gap-0.5 cursor-default"
+                          className="h-5 text-[10px] px-1.5 border-amber-400 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30 flex items-center gap-0.5"
+                          title="Source file is still available — click to retry HLS transcoding without re-uploading"
+                          disabled={transcodeMutation.isPending}
+                          onClick={(e) => { e.stopPropagation(); transcodeMutation.mutate(v.id); }}
                         >
-                          <UploadCloud size={9} className="flex-shrink-0" />
-                          Re-upload required
-                        </Badge>
-                      </span>
+                          <RefreshCw size={9} className="flex-shrink-0" />
+                          Retry Transcoding
+                        </Button>
+                      )
                     )}
                   </div>
 
@@ -745,7 +775,9 @@ export default function VideosPage() {
                           <Zap size={13} className="mr-2 text-amber-500" />
                           {v.transcodingStatus === "queued" || v.transcodingStatus === "encoding" || v.transcodingStatus === "processing"
                             ? "Re-queue HLS"
-                            : "Convert to HLS"}
+                            : v.transcodingStatus === "failed"
+                              ? "Retry Transcoding"
+                              : "Convert to HLS"}
                         </DropdownMenuItem>
                       )}
                       {v.videoSource === "local" && (v.transcodingStatus === "queued" || v.transcodingStatus === "failed" || v.transcodingStatus === "none") && (
