@@ -202,7 +202,7 @@ const Env = z.object({
   // the dispatcher can move on to the next queued job. Default 4 hours — long
   // enough for a 2-hour 1080p sermon to encode on modest hardware without
   // ever blocking the queue indefinitely on a corrupt or malformed source file.
-  TRANSCODER_JOB_TIMEOUT_MS: z.coerce.number().int().positive().default(4 * 60 * 60_000),
+  TRANSCODER_JOB_TIMEOUT_MS: z.coerce.number().int().positive().default(2 * 60 * 60_000),
 
   // ── SMTP / email ────────────────────────────────────────────────────────
   // Non-sensitive connection params (set as plain env vars).

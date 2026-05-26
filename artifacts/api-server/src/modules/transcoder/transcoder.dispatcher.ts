@@ -102,12 +102,17 @@ class TranscoderDispatcher {
         }
       }
       if (removed > 0) {
-        logger.info({ removed, scratchRoot }, "transcoder: purged orphaned scratch directories on startup");
+        logger.info({ removed, scratchRoot }, "transcoder: purged orphaned scratch directories");
       }
     } catch (err) {
-      logger.warn({ err }, "transcoder: scratch dir GC failed on startup (non-fatal)");
+      logger.warn({ err }, "transcoder: scratch dir GC failed (non-fatal)");
     }
   }
+
+  // Scratch dir GC sweep counter — runs every SCRATCH_GC_TICKS ticks
+  // (roughly every 30 minutes at the default 10-second poll cadence).
+  private scratchGcCounter = 0;
+  private static readonly SCRATCH_GC_TICKS = 180; // ~30 min at 10 s/tick
 
   private async resetOrphanedJobs(): Promise<void> {
     try {
@@ -196,7 +201,9 @@ class TranscoderDispatcher {
    * (e.g. SIGKILL was swallowed, or a server crash race left the DB row
    * in "processing" while this.running was never set again).
    *
-   * Resets to "queued" rather than "failed" so the job retries normally.
+   * Unlike resetOrphanedJobs (startup-only reset), this watchdog INCREMENTS
+   * the attempts counter on each reset. Jobs that exceed maxAttempts via
+   * repeated timeouts are permanently failed rather than looping forever.
    * The 5-minute grace period beyond TRANSCODER_JOB_TIMEOUT_MS prevents
    * false resets when the job is legitimately finishing its final upload.
    */
@@ -205,41 +212,84 @@ class TranscoderDispatcher {
       const stuckCutoff = new Date(
         Date.now() - (env.TRANSCODER_JOB_TIMEOUT_MS + 5 * 60_000),
       );
-      const reset = await db
-        .update(jobs)
-        .set({
-          status: "queued",
-          progress: 0,
-          startedAt: null,
-          errorMessage: "Reset: job exceeded processing timeout — periodic stuck-job watchdog.",
+
+      // Find stuck jobs first (read-only).
+      const stuckJobs = await db
+        .select({
+          id: jobs.id,
+          videoId: jobs.videoId,
+          attempts: jobs.attempts,
+          maxAttempts: jobs.maxAttempts,
         })
+        .from(jobs)
         .where(
           and(
             eq(jobs.status, "processing"),
             lt(jobs.startedAt, stuckCutoff),
           ),
-        )
-        .returning({ id: jobs.id, videoId: jobs.videoId });
-
-      if (reset.length > 0) {
-        const videoIds = reset.map((r) => r.videoId);
-        await db
-          .update(videos)
-          .set({ transcodingStatus: "queued" })
-          .where(inArray(videos.id, videoIds));
-
-        logger.warn(
-          { count: reset.length, jobIds: reset.map((r) => r.id) },
-          "transcoder: periodic watchdog reset stuck processing jobs",
         );
-        for (const r of reset) {
-          adminEventBus.push("transcoding-update", {
-            videoId: r.videoId,
-            jobId: r.id,
-            status: "queued",
+
+      if (stuckJobs.length === 0) return;
+
+      const resetResults: Array<{ id: string; videoId: string; failed: boolean }> = [];
+
+      for (const stuck of stuckJobs) {
+        const newAttempts = stuck.attempts + 1;
+        const exceeded = newAttempts >= stuck.maxAttempts;
+        const timeoutMinutes = Math.round(env.TRANSCODER_JOB_TIMEOUT_MS / 60_000);
+
+        // Atomic claim: only update if still "processing" (multi-replica safe).
+        const claimed = await db
+          .update(jobs)
+          .set({
+            status: exceeded ? "failed" : "queued",
             progress: 0,
-          });
+            attempts: newAttempts,
+            startedAt: null,
+            completedAt: exceeded ? new Date() : null,
+            errorMessage: exceeded
+              ? `Job permanently failed after ${newAttempts} timeout(s). ` +
+                `Exceeded ${timeoutMinutes}-minute processing limit on every attempt — operator review required.`
+              : `Watchdog reset (attempt ${newAttempts}/${stuck.maxAttempts}): ` +
+                `job exceeded ${timeoutMinutes}-minute processing limit — re-queuing for retry.`,
+          })
+          .where(and(eq(jobs.id, stuck.id), eq(jobs.status, "processing")))
+          .returning({ id: jobs.id });
+
+        if (claimed.length > 0) {
+          resetResults.push({ id: stuck.id, videoId: stuck.videoId, failed: exceeded });
         }
+      }
+
+      if (resetResults.length === 0) return;
+
+      const failedVideoIds = resetResults.filter((r) => r.failed).map((r) => r.videoId);
+      const requeuedVideoIds = resetResults.filter((r) => !r.failed).map((r) => r.videoId);
+
+      if (failedVideoIds.length > 0) {
+        await db.update(videos).set({ transcodingStatus: "failed" }).where(inArray(videos.id, failedVideoIds));
+      }
+      if (requeuedVideoIds.length > 0) {
+        await db.update(videos).set({ transcodingStatus: "queued" }).where(inArray(videos.id, requeuedVideoIds));
+      }
+
+      logger.warn(
+        {
+          total: resetResults.length,
+          failed: failedVideoIds.length,
+          requeued: requeuedVideoIds.length,
+          jobIds: resetResults.map((r) => r.id),
+        },
+        "transcoder: periodic watchdog reset stuck processing jobs",
+      );
+
+      for (const r of resetResults) {
+        adminEventBus.push("transcoding-update", {
+          videoId: r.videoId,
+          jobId: r.id,
+          status: r.failed ? "failed" : "queued",
+          progress: 0,
+        });
       }
     } catch (err) {
       logger.warn({ err }, "transcoder: stuck-job watchdog error (non-fatal)");
@@ -253,6 +303,15 @@ class TranscoderDispatcher {
       // Run the stuck-job watchdog on every tick to recover jobs that somehow
       // outlived their timeout in a long-running production process.
       await this.resetStuckJobs();
+
+      // Periodic scratch directory GC (~every 30 min at 10 s/tick) so stale
+      // dirs from SIGKILL-orphaned processes don't accumulate between restarts
+      // in long-running production deployments.
+      this.scratchGcCounter++;
+      if (this.scratchGcCounter >= TranscoderDispatcher.SCRATCH_GC_TICKS) {
+        this.scratchGcCounter = 0;
+        void this.purgeOrphanedScratchDirs();
+      }
 
       const now = new Date();
 

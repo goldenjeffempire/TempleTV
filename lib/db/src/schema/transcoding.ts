@@ -9,7 +9,7 @@ export const transcodingJobsTable = pgTable("transcoding_jobs", {
   progress: integer("progress").notNull().default(0),
   errorMessage: text("error_message"),
   attempts: integer("attempts").notNull().default(0),
-  maxAttempts: integer("max_attempts").notNull().default(3),
+  maxAttempts: integer("max_attempts").notNull().default(5),
   nextRetryAt: timestamp("next_retry_at", { withTimezone: true }),
   startedAt: timestamp("started_at", { withTimezone: true }),
   completedAt: timestamp("completed_at", { withTimezone: true }),

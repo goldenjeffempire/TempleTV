@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, statfs, writeFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
 import os from "node:os";
@@ -114,9 +114,14 @@ function buildFfmpegArgs(
       `-b:v:${i}`, `${r.videoBitrateK}k`,
       `-maxrate:v:${i}`, `${r.maxrateK}k`,
       `-bufsize:v:${i}`, `${r.bufsizeK}k`,
-      `-pix_fmt`, "yuv420p",
     );
   });
+
+  // Apply pixel format globally once after all per-stream video options.
+  // yuv420p is required for maximum decoder compatibility (Tizen, webOS,
+  // Fire TV, iOS). Applying it per-rendition was redundant and could
+  // confuse option parsing in some FFmpeg 7.x builds.
+  args.push("-pix_fmt", "yuv420p");
 
   args.push("-force_key_frames", `expr:gte(t,n_forced*${KEYFRAME_INTERVAL_SECS})`);
   args.push("-sc_threshold", "0");
@@ -646,6 +651,39 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
       await mkdir(path.join(scratchDir, `v${i}`), { recursive: true });
     }
 
+    // Pre-flight disk space check: ensure sufficient scratch space before
+    // starting FFmpeg. HLS output across all renditions is typically 1–2×
+    // source size; require 3× to leave headroom for temp files, index files,
+    // and the thumbnail. If statfs() is unavailable (unsupported filesystem)
+    // the check is skipped non-fatally so the job proceeds anyway.
+    try {
+      const { bavail, bsize } = await statfs(scratchDir);
+      const availableBytes = bavail * bsize;
+      const sourceSize = (await stat(activeSourcePath)).size;
+      const requiredBytes = sourceSize * 3;
+      if (availableBytes < requiredBytes) {
+        throw Object.assign(
+          new Error(
+            `Insufficient disk space: need ~${Math.round(requiredBytes / 1024 / 1024)} MB for transcoding, ` +
+            `but only ${Math.round(availableBytes / 1024 / 1024)} MB available in ${scratchDir}. ` +
+            `The job will retry automatically once disk space is freed.`,
+          ),
+          { code: "ENOSPC" },
+        );
+      }
+      logger.info(
+        {
+          videoId: req.videoId,
+          availableMB: Math.round(availableBytes / 1024 / 1024),
+          requiredMB: Math.round(requiredBytes / 1024 / 1024),
+        },
+        "transcoder: disk space pre-flight passed",
+      );
+    } catch (diskErr) {
+      if ((diskErr as NodeJS.ErrnoException).code === "ENOSPC") throw diskErr;
+      logger.warn({ err: diskErr, videoId: req.videoId }, "transcoder: disk space pre-flight unavailable (non-fatal)");
+    }
+
     const args = buildFfmpegArgs(activeSourcePath, scratchDir, renditionsToUse, hasAudio);
 
     // Run HLS transcoding and thumbnail extraction in parallel.
@@ -697,10 +735,71 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
       });
     });
 
-    const [, thumbLocalPath] = await Promise.all([
-      hlsPromise,
-      generateThumbnail(activeSourcePath, scratchDir),
-    ]);
+    // Extract thumbnail first (non-critical; must precede any scratchDir rebuild
+    // so the file is never silently dropped by a single-rendition fallback below).
+    let thumbLocalPath = await generateThumbnail(activeSourcePath, scratchDir);
+
+    // Run HLS transcoding. On multi-rendition stream-mapping failures (FFmpeg
+    // exit 234 / AVERROR_INVALIDDATA, or other codec-parameter errors) retry
+    // automatically with a single 360p rendition. This prevents a source-file
+    // codec quirk from consuming all maxAttempts retries without any HLS output.
+    try {
+      await hlsPromise;
+    } catch (hlsErr) {
+      const errStr = hlsErr instanceof Error ? hlsErr.message : String(hlsErr);
+      // Heuristic: exit 234 = AVERROR_INVALIDDATA (most common for mapping/codec
+      // issues); also catch common FFmpeg stderr patterns for the same class.
+      const isMappingLike =
+        errStr.includes("234") ||
+        /stream.*map|invalid data|codec.*param|no such stream/i.test(errStr);
+
+      if (isMappingLike && renditionsToUse.length > 1) {
+        logger.warn(
+          { videoId: req.videoId, jobId: req.jobId, errSnippet: errStr.slice(0, 300) },
+          "transcoder: multi-rendition ffmpeg failed — retrying with 360p-only fallback",
+        );
+
+        const prevRenditionCount = renditionsToUse.length;
+        renditionsToUse = [ALL_RENDITIONS[0]!];
+
+        // Remove only the rendition output subdirs (v0..vN-1); preserve the
+        // source file (activeSourcePath lives inside scratchDir).
+        for (let i = 0; i < prevRenditionCount; i++) {
+          await rm(path.join(scratchDir, `v${i}`), { recursive: true, force: true }).catch(() => undefined);
+        }
+        // Remove stale thumbnail (will be regenerated after fallback succeeds).
+        await rm(path.join(scratchDir, "thumbnail.jpg"), { force: true }).catch(() => undefined);
+        thumbLocalPath = null;
+
+        // Recreate the single-rendition output directory.
+        await mkdir(path.join(scratchDir, "v0"), { recursive: true });
+
+        const fallbackArgs = buildFfmpegArgs(activeSourcePath, scratchDir, renditionsToUse, hasAudio);
+        await new Promise<void>((resolve, reject) => {
+          const proc = spawn("ffmpeg", fallbackArgs, { stdio: ["ignore", "ignore", "pipe"] });
+          let tail = "";
+          proc.stderr?.on("data", (c: Buffer) => { tail = (tail + c.toString()).slice(-3000); });
+          const t = setTimeout(() => {
+            try { proc.kill("SIGKILL"); } catch { /* noop */ }
+            reject(new Error(
+              `ffmpeg 360p fallback timed out after ${Math.round(env.TRANSCODER_JOB_TIMEOUT_MS / 60_000)} min`,
+            ));
+          }, env.TRANSCODER_JOB_TIMEOUT_MS);
+          proc.on("error", (err) => { clearTimeout(t); reject(err); });
+          proc.on("close", (code) => {
+            clearTimeout(t);
+            if (code === 0) resolve();
+            else reject(new Error(`ffmpeg 360p fallback exited ${code}: ${tail.trim()}`));
+          });
+        });
+
+        logger.info({ videoId: req.videoId }, "transcoder: 360p fallback encoding succeeded — regenerating thumbnail");
+        // Re-extract thumbnail into the rebuilt scratch dir (non-fatal if it fails).
+        thumbLocalPath = await generateThumbnail(activeSourcePath, scratchDir);
+      } else {
+        throw hlsErr;
+      }
+    }
 
     const keyPrefix = `transcoded/${req.videoId}`;
     const upload = await uploadDirRecursive(scratchDir, keyPrefix);

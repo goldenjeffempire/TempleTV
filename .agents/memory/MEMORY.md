@@ -1,1 +1,2 @@
 - [Mobile HLS single-segment loop bug](mobile-hls-loop-bug.md) — expo-av seeks past video end → immediate didJustFinish → HANDOFF → worse position → loop; three fixes required.
+- [Transcoding pipeline root causes & fixes](transcoding-pipeline.md) — maxAttempts=3 (→5), stuck-watchdog didn't increment attempts, timeout 4h (→2h), -pix_fmt per-rendition bug, 360p fallback, disk pre-flight.
