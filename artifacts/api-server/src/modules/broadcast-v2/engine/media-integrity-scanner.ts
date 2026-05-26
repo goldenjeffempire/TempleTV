@@ -16,6 +16,7 @@
 import { logger } from "../../../infrastructure/logger.js";
 import {
   queueRepo,
+  normalizeQueueUrl,
   markBadUrl,
   incrementBadUrlSkipCount,
   autoSuspendQueueItem,
@@ -188,7 +189,13 @@ class MediaIntegrityScannerImpl {
       const batch = rows.slice(i, i + MAX_CONCURRENT);
       const batchResults = await Promise.all(
         batch.map(async (row): Promise<ScanItemResult> => {
-          const url = row.hlsMasterUrl ?? row.localVideoUrl ?? null;
+          const rawUrl = row.hlsMasterUrl ?? row.localVideoUrl ?? null;
+          // Normalize relative paths (e.g. /api/hls/…/master.m3u8) to absolute
+          // before probing. Relative URLs always fail the HEAD/GET fetch — the
+          // scanner must resolve them using the same origin resolution order
+          // (API_ORIGIN → RENDER_EXTERNAL_URL → REPLIT_DEV_DOMAIN → localhost)
+          // that the orchestrator's toItem() uses.
+          const url = normalizeQueueUrl(rawUrl);
           const kind: ScanItemResult["kind"] = row.hlsMasterUrl
             ? "hls"
             : row.localVideoUrl

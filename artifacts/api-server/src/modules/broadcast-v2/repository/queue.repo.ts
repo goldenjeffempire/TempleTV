@@ -30,7 +30,7 @@ import { isUndefinedColumnError } from "../../../infrastructure/db-schema-guard.
  * in dev and a security issue in prod.
  */
 
-function normalizeQueueUrl(raw: string | null | undefined): string | null {
+export function normalizeQueueUrl(raw: string | null | undefined): string | null {
   if (!raw) return null;
   if (/^https?:\/\//i.test(raw)) return raw;
   // Resolution order (first truthy wins):
