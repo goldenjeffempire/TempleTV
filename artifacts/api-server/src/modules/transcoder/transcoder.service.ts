@@ -228,10 +228,19 @@ async function probeHasAudio(inputPath: string): Promise<boolean> {
     };
     const timer = setTimeout(() => {
       try { proc.kill("SIGKILL"); } catch { /* noop */ }
+      logger.warn(
+        { inputPath, timeoutMs: RESOLUTION_PROBE_TIMEOUT_MS },
+        "transcoder: audio stream probe timed out — defaulting to video-only HLS. " +
+        "If the source has audio the output will be silent. Re-upload or retry the job to attempt the probe again.",
+      );
       settle(false);
     }, RESOLUTION_PROBE_TIMEOUT_MS);
     proc.stdout.on("data", (b: Buffer) => { out += b.toString(); });
-    proc.on("error", () => { clearTimeout(timer); settle(false); });
+    proc.on("error", (err) => {
+      clearTimeout(timer);
+      logger.warn({ err, inputPath }, "transcoder: audio probe process error — defaulting to video-only HLS");
+      settle(false);
+    });
     proc.on("close", () => {
       clearTimeout(timer);
       settle(out.includes("audio"));

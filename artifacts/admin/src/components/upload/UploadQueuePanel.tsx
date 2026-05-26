@@ -320,6 +320,30 @@ export function UploadQueuePanel() {
         </p>
 
         <div className="flex items-center gap-1">
+          {active > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 text-[10px] px-1.5 text-muted-foreground"
+              onClick={(e) => { e.stopPropagation(); uploadQueue.pauseAll(); }}
+              title="Pause all uploads"
+            >
+              <Pause size={10} className="mr-0.5" />
+              Pause
+            </Button>
+          )}
+          {paused > 0 && active === 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 text-[10px] px-1.5 text-muted-foreground"
+              onClick={(e) => { e.stopPropagation(); uploadQueue.resumeAll(); }}
+              title="Resume all paused uploads"
+            >
+              <Play size={10} className="mr-0.5" />
+              Resume
+            </Button>
+          )}
           {inFlight === 0 && done > 0 && (
             <Button
               variant="ghost"

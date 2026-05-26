@@ -558,6 +558,22 @@ class UploadQueueEngine {
     this.notify();
   }
 
+  pauseAll(): void {
+    for (const [id, item] of this.items) {
+      if (item.status === "uploading" || item.status === "finalizing") {
+        this.pause(id);
+      }
+    }
+  }
+
+  resumeAll(): void {
+    for (const [id, item] of this.items) {
+      if (item.status === "paused") {
+        this.resume(id);
+      }
+    }
+  }
+
   clearCompleted(): void {
     for (const [id, item] of this.items) {
       if (item.status === "completed" || item.status === "cancelled") {

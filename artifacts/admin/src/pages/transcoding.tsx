@@ -11,7 +11,7 @@ import { Progress } from "@/components/ui/progress";
 import { toast } from "sonner";
 import {
   Clapperboard, RefreshCw, CheckCircle2, XCircle, Loader2,
-  Clock, AlertCircle, RotateCcw, Zap,
+  Clock, AlertCircle, RotateCcw, Zap, Ban,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
@@ -55,6 +55,15 @@ export default function TranscodingPage() {
       void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Retry failed"),
+  });
+
+  const cancelMutation = useMutation({
+    mutationFn: (jobId: string) => api.post(`/admin/transcoding/cancel/${jobId}`),
+    onSuccess: () => {
+      toast.success("Job cancelled");
+      void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+    },
+    onError: (e) => toast.error(e instanceof HttpError ? e.message : "Cancel failed"),
   });
 
   const bulkTranscodeMutation = useMutation({
@@ -156,9 +165,23 @@ export default function TranscodingPage() {
                           )}
                         </div>
                       )}
-                      <p className="text-xs text-muted-foreground">
-                        Started {formatDistanceToNow(new Date(job.createdAt), { addSuffix: true })}
-                      </p>
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs text-muted-foreground">
+                          Started {formatDistanceToNow(new Date(job.createdAt), { addSuffix: true })}
+                        </p>
+                        {job.status === "queued" && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 text-[11px] gap-1 text-muted-foreground hover:text-destructive"
+                            onClick={() => cancelMutation.mutate(job.id)}
+                            disabled={cancelMutation.isPending}
+                            title="Cancel this queued job"
+                          >
+                            <Ban size={11} /> Cancel
+                          </Button>
+                        )}
+                      </div>
                     </div>
                   );
                 })}

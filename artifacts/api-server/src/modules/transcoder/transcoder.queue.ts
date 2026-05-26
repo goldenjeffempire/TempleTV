@@ -168,6 +168,44 @@ export async function retryJob(id: string): Promise<boolean> {
   return out.length > 0;
 }
 
+/**
+ * Cancel a transcoding job that is in a cancellable state (queued or failed).
+ * Jobs that are currently processing cannot be cancelled here — the FFmpeg
+ * process must finish or time out naturally (or the process must be killed).
+ * Returns true when the job was found and successfully cancelled, false otherwise.
+ */
+export async function cancelJob(id: string): Promise<{ ok: boolean; reason?: string }> {
+  // Read current state first so we can give a clear error for in-progress jobs
+  const existing = await db
+    .select({ id: jobs.id, status: jobs.status, videoId: jobs.videoId })
+    .from(jobs)
+    .where(eq(jobs.id, id))
+    .limit(1);
+  const job = existing[0];
+  if (!job) return { ok: false, reason: "not_found" };
+  if (job.status === "processing") {
+    return { ok: false, reason: "processing" };
+  }
+  if (job.status === "done" || job.status === "cancelled") {
+    return { ok: false, reason: "terminal" };
+  }
+
+  const out = await db
+    .update(jobs)
+    .set({ status: "cancelled", completedAt: new Date(), errorMessage: "Cancelled by operator" })
+    .where(and(eq(jobs.id, id), inArray(jobs.status, ["queued", "failed"])))
+    .returning({ id: jobs.id, videoId: jobs.videoId });
+
+  if (out.length > 0) {
+    await db
+      .update(videos)
+      .set({ transcodingStatus: "none" })
+      .where(eq(videos.id, out[0]!.videoId));
+    logger.info({ jobId: id, videoId: out[0]!.videoId }, "transcoder: job cancelled by operator");
+  }
+  return { ok: out.length > 0 };
+}
+
 export async function queueStats() {
   const startOfTodayUtc = new Date();
   startOfTodayUtc.setUTCHours(0, 0, 0, 0);

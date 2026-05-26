@@ -55,6 +55,7 @@ import { adminEventBus } from "./admin-event-bus.js";
 import { verifyAccessToken } from "../auth/jwt.js";
 import { requireRole } from "../auth/rbac.js";
 import {
+  cancelJob,
   clearJobsByStatus,
   deleteJob,
   enqueueTranscode,
@@ -1379,6 +1380,47 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       },
     );
   }
+  r.post(
+    "/transcoding/cancel/:id",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin-ops"],
+        summary: "Cancel a queued or failed transcoding job (cannot cancel in-progress jobs)",
+        params: z.object({ id: z.string().min(1).max(128) }),
+        response: {
+          200: z.object({ ok: z.literal(true) }),
+          404: z.object({ message: z.string() }),
+          409: z.object({ message: z.string(), reason: z.string() }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req, reply) => {
+      const { id } = req.params;
+      const result = await cancelJob(id);
+      if (!result.ok) {
+        if (result.reason === "not_found") {
+          reply.code(404);
+          return { message: "Transcoding job not found" };
+        }
+        if (result.reason === "processing") {
+          reply.code(409);
+          return {
+            message: "Job is currently being processed by FFmpeg and cannot be cancelled. Wait for it to finish or time out.",
+            reason: "processing",
+          };
+        }
+        reply.code(409);
+        return {
+          message: "Job is already in a terminal state and cannot be cancelled.",
+          reason: result.reason ?? "terminal",
+        };
+      }
+      return { ok: true as const };
+    },
+  );
   r.delete(
     "/transcoding/:id",
     {
