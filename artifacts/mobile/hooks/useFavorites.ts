@@ -49,11 +49,17 @@ export function useFavorites() {
     AsyncStorage.getItem(STORAGE_KEYS.favorites)
       .then((raw) => {
         if (raw) {
-          const parsed = JSON.parse(raw) as Sermon[];
-          setFavorites(parsed);
-          // Use sermon.id (db UUID) as the canonical dedup key.
-          // This fixes local-video favorites where youtubeId is always "".
-          setFavoriteIds(new Set(parsed.map((s) => s.id)));
+          try {
+            const parsed = JSON.parse(raw) as Sermon[];
+            setFavorites(parsed);
+            // Use sermon.id (db UUID) as the canonical dedup key.
+            // This fixes local-video favorites where youtubeId is always "".
+            setFavoriteIds(new Set(parsed.map((s) => s.id)));
+          } catch {
+            // Corrupted AsyncStorage data — clear and start fresh so the app
+            // doesn't crash on every launch until the user reinstalls.
+            void AsyncStorage.removeItem(STORAGE_KEYS.favorites);
+          }
         }
       })
       .catch(() => {})
@@ -67,7 +73,10 @@ export function useFavorites() {
     apiGetFavorites()
       .then(async (cloudFavs) => {
         const raw = await AsyncStorage.getItem(STORAGE_KEYS.favorites).catch(() => null);
-        const local: Sermon[] = raw ? (JSON.parse(raw) as Sermon[]) : [];
+        let local: Sermon[] = [];
+        if (raw) {
+          try { local = JSON.parse(raw) as Sermon[]; } catch { /* corrupted — treat as empty */ }
+        }
         // Use s.id for dedup — matches the same key used throughout this hook.
         const localIds = new Set(local.map((s) => s.id));
 

@@ -193,16 +193,27 @@ class OrphanCleanupWorkerImpl {
       let prunedSent = 0;
       const notifCutoff = new Date(Date.now() - 90 * 24 * 60 * 60_000);
       try {
+        // LIMIT 5000 prevents a single sweep from holding a long-running
+        // lock on a heavily-backlogged table. Rows beyond the limit are
+        // picked up on the next scheduled sweep (every 6 h by default).
         const scheduledResult = await db.execute(
           sql`DELETE FROM scheduled_notifications
-              WHERE status IN ('sent', 'failed')
-                AND created_at < ${notifCutoff}`,
+              WHERE id IN (
+                SELECT id FROM scheduled_notifications
+                WHERE status IN ('sent', 'failed')
+                  AND created_at < ${notifCutoff}
+                LIMIT 5000
+              )`,
         );
         prunedScheduled = scheduledResult.rowCount ?? 0;
 
         const sentResult = await db.execute(
           sql`DELETE FROM sent_notifications
-              WHERE sent_at < ${notifCutoff}`,
+              WHERE id IN (
+                SELECT id FROM sent_notifications
+                WHERE sent_at < ${notifCutoff}
+                LIMIT 5000
+              )`,
         );
         prunedSent = sentResult.rowCount ?? 0;
 

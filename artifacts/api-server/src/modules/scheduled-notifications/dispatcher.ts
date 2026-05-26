@@ -58,9 +58,44 @@ class ScheduledNotificationDispatcher {
   private running = false;
   private stopped = false;
 
+  /**
+   * Reset rows that were claimed into `sending` status but never completed
+   * (e.g. process crash or SIGKILL between claim and status update). Rows
+   * older than 5 minutes in `sending` are safe to reclaim because the
+   * idempotency key on the audit row (`scheduled:{id}`) ensures the actual
+   * push is a no-op even if sendPush is called a second time.
+   */
+  private async resetStuckSending(): Promise<void> {
+    const cutoff = new Date(Date.now() - 5 * 60_000);
+    try {
+      const result = await db
+        .update(scheduled)
+        .set({ status: "pending" })
+        .where(
+          and(
+            eq(scheduled.status, "sending"),
+            lte(scheduled.scheduledAt, cutoff),
+          ),
+        )
+        .returning({ id: scheduled.id });
+      if (result.length > 0) {
+        logger.warn(
+          { count: result.length },
+          "scheduled-notification dispatcher: reset stuck 'sending' rows to 'pending' on startup",
+        );
+      }
+    } catch (err) {
+      // Non-fatal — the dispatcher will still function; stuck rows may remain
+      // until manual intervention but won't block normal dispatch.
+      logger.warn({ err }, "scheduled-notification dispatcher: resetStuckSending failed (non-fatal)");
+    }
+  }
+
   start(): void {
     if (this.timer) return;
     this.stopped = false;
+    // Run stuck-sending recovery once at startup before the first tick.
+    void this.resetStuckSending();
     const tick = () => {
       if (this.stopped) return;
       void this.runOnce().finally(() => {

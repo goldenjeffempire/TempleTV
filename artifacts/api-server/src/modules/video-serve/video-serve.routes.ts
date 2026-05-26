@@ -90,6 +90,17 @@ export async function videoServeRoutes(app: FastifyInstance) {
     );
   }
 
+  // Warn operators when HLS_TOKEN_SECRET falls back to the hardcoded default.
+  // In production this means any client can forge a valid token by using the
+  // well-known default value — set HLS_TOKEN_SECRET to a strong random secret.
+  if (env.NODE_ENV === "production" && !env.HLS_TOKEN_SECRET) {
+    logger.warn(
+      "video-serve: HLS_TOKEN_SECRET is not set — HLS token signing is using " +
+      "the built-in default secret. Set HLS_TOKEN_SECRET to a strong random " +
+      "value (≥32 chars) before enabling REQUIRE_HLS_TOKEN in production.",
+    );
+  }
+
   // ── GET /hls-token/:videoId ────────────────────────────────────────────
   // A3: Security — issue a short-lived HMAC token for a specific video.
   // Clients call this before starting HLS playback when REQUIRE_HLS_TOKEN

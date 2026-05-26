@@ -200,14 +200,26 @@ class MediaIntegrityScannerImpl {
           let httpStatus: number | null = null;
           let failReason: string | undefined;
           if (url) {
-            // HLS manifests are validated by fetching and parsing content —
-            // a HEAD probe can return 200 for stale CDN-cached empty playlists.
-            const probe = kind === "hls"
-              ? await probeHlsManifest(url)
-              : await probeUrl(url);
-            ok = probe.ok;
-            httpStatus = probe.status;
-            failReason = probe.reason;
+            try {
+              // HLS manifests are validated by fetching and parsing content —
+              // a HEAD probe can return 200 for stale CDN-cached empty playlists.
+              const probe = kind === "hls"
+                ? await probeHlsManifest(url)
+                : await probeUrl(url);
+              ok = probe.ok;
+              httpStatus = probe.status;
+              failReason = probe.reason;
+            } catch (probeErr) {
+              // probeHlsManifest / probeUrl should not throw (they catch
+              // internally), but guard here so one item's unexpected error
+              // can't abort the entire batch via Promise.all rejection.
+              ok = false;
+              failReason = probeErr instanceof Error ? probeErr.message : String(probeErr);
+              logger.warn(
+                { itemId: row.id, title: row.title, url, err: failReason },
+                "[media-scanner] probe threw unexpectedly — treating as unreachable",
+              );
+            }
           }
 
           const newCount = ok ? 0 : prev.count + 1;

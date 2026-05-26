@@ -59,9 +59,15 @@ export function useWatchHistory() {
     AsyncStorage.getItem(STORAGE_KEYS.watchHistory)
       .then((raw) => {
         if (raw) {
-          const parsed = JSON.parse(raw) as HistoryEntry[];
-          setHistory(parsed);
-          setHistoryIds(new Set(parsed.map((h) => h.sermon.youtubeId)));
+          try {
+            const parsed = JSON.parse(raw) as HistoryEntry[];
+            setHistory(parsed);
+            setHistoryIds(new Set(parsed.map((h) => h.sermon.youtubeId)));
+          } catch {
+            // Corrupted AsyncStorage data — clear and start fresh so the app
+            // doesn't crash on every launch until the user reinstalls.
+            void AsyncStorage.removeItem(STORAGE_KEYS.watchHistory);
+          }
         }
       })
       .catch(() => {})
@@ -75,7 +81,10 @@ export function useWatchHistory() {
     apiGetHistory()
       .then(async (cloudHistory) => {
         const raw = await AsyncStorage.getItem(STORAGE_KEYS.watchHistory).catch(() => null);
-        const local: HistoryEntry[] = raw ? (JSON.parse(raw) as HistoryEntry[]) : [];
+        let local: HistoryEntry[] = [];
+        if (raw) {
+          try { local = JSON.parse(raw) as HistoryEntry[]; } catch { /* corrupted — treat as empty */ }
+        }
         const localIds = new Set(local.map((h) => h.sermon.youtubeId));
 
         const cloudOnly = cloudHistory
