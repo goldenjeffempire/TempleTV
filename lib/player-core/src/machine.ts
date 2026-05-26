@@ -212,9 +212,23 @@ export class PlayerMachine {
    * keeps showing the ended item as current with endsAtMs far in the future.
    * Without a TTL the guard would block rebinding for the entire remaining
    * slot — potentially 1800 s if the default placeholder was never corrected.
-   * After 30 s the guard is cleared and normal snapshot processing resumes.
+   * After 30 s the guard is extended and the naturalEnd signal is retried
+   * (see naturalEndRetries). After 3 retries (90 s total) the guard clears.
    */
   private lastEndedAtMs: number | null = null;
+  /**
+   * Number of times the 30-second natural-end guard TTL has been extended to
+   * retry the POST /natural-end signal. Capped at 3: after 90 s total the
+   * guard is cleared and the server's snapshot is authoritative.
+   *
+   * Previous behaviour: on TTL expiry the guard was cleared immediately and
+   * bindActive() was called — re-binding the just-ended item and looping it
+   * for the remainder of the server-scheduled slot (potentially minutes).
+   * Now: extend the guard window, retry the POST, and only rebind as a
+   * last resort after 3 failures (~90 s), by which time the server's own
+   * slot TTL will almost certainly have advanced the anchor anyway.
+   */
+  private naturalEndRetries = 0;
 
   /**
    * The `startsAtMs` value from the server snapshot that caused the machine
@@ -442,9 +456,22 @@ export class PlayerMachine {
         // assume the signal was lost — clear the guard and allow rebinding
         // so the player doesn't stay dark for the full slot duration.
         if (this.lastEndedAtMs !== null && Date.now() - this.lastEndedAtMs > 30_000) {
+          // The guard TTL has elapsed.  Instead of clearing the guard and
+          // falling through to bindActive (which would re-bind the just-ended
+          // item and loop it for the rest of the server slot), extend the
+          // window and retry the naturalItemEnd POST so the server can advance.
+          // After 3 retries (~90 s total) the guard is released as a last resort.
+          this.naturalEndRetries += 1;
+          if (this.naturalEndRetries <= 3) {
+            this.lastEndedAtMs = Date.now(); // extend guard by another 30 s
+            this.onNaturalEndCb?.(server.current.id); // retry POST /natural-end
+            return;
+          }
+          // 3 retries exhausted — give up and let the server state win.
+          this.naturalEndRetries = 0;
           this.lastEndedItemId = null;
           this.lastEndedAtMs = null;
-          // Fall through to bindActive below.
+          // Fall through to bindActive below (last resort after ~90 s).
         } else {
           return;
         }
@@ -455,6 +482,7 @@ export class PlayerMachine {
       if (this.lastEndedItemId !== null && server.current.id !== this.lastEndedItemId) {
         this.lastEndedItemId = null;
         this.lastEndedAtMs = null;
+        this.naturalEndRetries = 0; // reset retry counter for the next natural-end event
       }
 
       // Different item — bind, start loading, and wait for buffer-ready

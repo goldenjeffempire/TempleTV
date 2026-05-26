@@ -202,9 +202,15 @@ export class ChatClient {
     };
 
     ws.onmessage = (ev: WebSocketMessageEvent) => {
+      // Skip binary frames — the chat protocol is JSON-only.  Some WebSocket
+      // polyfills (React Native's built-in and some Android Hermes builds)
+      // dispatch ArrayBuffer or Blob objects for binary messages. Passing
+      // those to JSON.parse as "" (falsy fallthrough) throws SyntaxError and
+      // silently drops the message, but the intent is clearer here.
+      if (typeof ev.data !== "string") return;
       let frame: ChatServerEvent;
       try {
-        frame = JSON.parse(typeof ev.data === "string" ? ev.data : "") as ChatServerEvent;
+        frame = JSON.parse(ev.data) as ChatServerEvent;
       } catch {
         return;
       }

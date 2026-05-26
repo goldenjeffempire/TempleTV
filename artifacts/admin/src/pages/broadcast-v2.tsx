@@ -801,7 +801,14 @@ export default function BroadcastV2Page() {
   const isDraggingRef = useRef(false);
   useEffect(() => {
     if (!isDraggingRef.current) {
-      setLocalOrder((queueData?.items ?? []).map((i) => i.id));
+      // Dedup IDs: DB-sync races can produce duplicate rows; duplicate IDs
+      // crash DnD-kit's sortable hook before orderedQueueItems can filter them.
+      const seen = new Set<string>();
+      setLocalOrder(
+        (queueData?.items ?? [])
+          .map((i) => i.id)
+          .filter((id) => !seen.has(id) && (seen.add(id), true)),
+      );
     }
   }, [queueData]);
 
@@ -889,11 +896,17 @@ export default function BroadcastV2Page() {
 
   // Items in drag-reorder local order — instantly reflects drag operations
   // before the server round-trip completes.
+  // Dedup by ID before passing to DnD-kit: duplicate IDs in queueData
+  // (possible during partial DB-sync or prod-sync races) crash the sortable
+  // hook with a "Found duplicate draggable id" invariant violation.
   const orderedQueueItems = useMemo(() => {
     const idToItem = new Map(queueItems.map((i) => [i.id, i]));
+    const seen = new Set<string>();
     return localOrder
       .map((id) => idToItem.get(id))
-      .filter((i): i is BroadcastQueueRow => i !== undefined);
+      .filter((i): i is BroadcastQueueRow =>
+        i !== undefined && !seen.has(i.id) && (seen.add(i.id), true),
+      );
   }, [localOrder, queueItems]);
   const blockedCount = Object.values(healthByItemId).filter((h) => h.status === "bad").length;
   // Build a set of item IDs that were auto-suspended this session so queue
@@ -1032,6 +1045,11 @@ export default function BroadcastV2Page() {
         { idempotencyKey: crypto.randomUUID() },
       );
       await qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      // Also invalidate admin-videos so the HLS-status badge in the video
+      // library reflects the newly-queued transcoding jobs without a manual
+      // page refresh. prepareHls touches the same transcodingStatus column
+      // that the video list reads for its "HLS ready" indicator.
+      await qc.invalidateQueries({ queryKey: ["admin-videos"] });
       if (!result.ok) {
         toast.error(`Prepare HLS: ${result.reason ?? "server refused"}`);
       } else if (result.triggered > 0) {

@@ -283,6 +283,11 @@ export default function VideosPage() {
     onSuccess: () => {
       toast.success("Video deleted");
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      // Also refresh the broadcast queue so any orphan references to this
+      // video are cleared from the queue panel immediately — without this,
+      // the queue UI shows stale items with broken source URLs until the
+      // next natural SSE-triggered invalidation.
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       setDeleteVideo(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Delete failed"),

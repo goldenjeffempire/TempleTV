@@ -105,14 +105,21 @@ export class Watchdog {
       this.lastAdvanceMs = now;
 
       if (this.firstAdvanceMs === null) {
-        // First real progress — leave initial phase.
+        // First real progress — leave initial phase and start stable timer.
         this.firstAdvanceMs = now;
         this.stableEnteredMs = now;
-      } else {
-        // Continuing to advance — update stable-entry timestamp so we know
-        // the stream has been continuously flowing up to now.
-        this.stableEnteredMs = now;
       }
+      // Do NOT reset stableEnteredMs on subsequent advances.
+      // stableEnteredMs is intentionally kept at the value from the first
+      // advance (or the last notifyActive / disarm reset). This allows
+      // resolvePhase() to detect 30 s of uninterrupted play and switch to
+      // the "stable" threshold (25 s) — giving a long-running stream more
+      // tolerance before a stall is declared.
+      //
+      // Previous code reset stableEnteredMs to `now` on every advance,
+      // meaning Date.now() - stableEnteredMs was always ≈ 0 and the
+      // "stable" phase was never reached (rebuffer 15 s threshold always
+      // applied, even on streams playing for hours without interruption).
     }
   }
 

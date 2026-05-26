@@ -395,8 +395,23 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
             if (esRef.current !== es) return;
             lastFrameAt.current = Date.now();
             let parsed: unknown = e.data;
-            try { parsed = JSON.parse(e.data as string); } catch { /* keep raw */ }
-            if (evt === "snapshot" || evt === "status") setLastStatusPayload(parsed as AdminLiveStatus);
+            try { parsed = JSON.parse(e.data as string); } catch { /* keep raw string */ }
+            // Only update structured listeners when the payload is actually an
+            // object. Malformed JSON leaves `parsed` as the raw string literal —
+            // passing that to setLastStatusPayload (typed as AdminLiveStatus)
+            // would cause "cannot read property 'isLive' of string"-style crashes
+            // in any consumer that destructures the value without nullish checks.
+            if (evt === "snapshot" || evt === "status") {
+              if (typeof parsed === "object" && parsed !== null) {
+                setLastStatusPayload(parsed as AdminLiveStatus);
+              }
+              // Don't propagate raw string payloads to status listeners —
+              // they cannot safely consume a string where an object is expected.
+              if (typeof parsed !== "object" || parsed === null) {
+                pushActivity(evt, parsed);
+                return; // skip emit to structured listeners
+              }
+            }
             pushActivity(evt, parsed);
             emit(evt, parsed);
           });

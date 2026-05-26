@@ -243,10 +243,26 @@ export class V2Transport {
 
   /**
    * Number of consecutive WS connections that never reached `onopen`.
-   * When ≥ WS_FAIL_STREAK_SSE_FALLBACK we fall back to SSE for one
-   * cycle. Reset to 0 on any successful WS open or SSE connect.
+   * When ≥ WS_FAIL_STREAK_SSE_FALLBACK we fall back to SSE.
+   * Reset to 0 only on a genuine WS open (`ws.onopen`), NOT on SSE connect —
+   * resetting on SSE connect caused WS→SSE→WS cycling on WS-blocked networks
+   * (SSE connect resets streak → SSE fails → connectWs → WS fails twice →
+   * SSE → repeat, with a black-screen window on every third reconnect cycle).
    */
   private wsFailStreak = 0;
+  /**
+   * Set to true when wsFailStreak hits the SSE-fallback threshold. While true,
+   * every reconnect goes directly to SSE without wasting WS attempt slots.
+   * Only cleared when WS actually reaches `onopen` — proving WS is usable again.
+   *
+   * Every WS_PROBE_INTERVAL_SSE_ROUNDS SSE reconnects we probe WS once so the
+   * transport self-heals if a firewall or proxy rule is lifted at runtime.
+   */
+  private wsPreferSseUntilWsOpens = false;
+  /** Rolling count of SSE reconnects since `wsPreferSseUntilWsOpens` was set. */
+  private sseReconnectCount = 0;
+  /** How many consecutive SSE reconnects to skip before probing WS once. */
+  private readonly WS_PROBE_INTERVAL_SSE_ROUNDS = 20;
 
   /**
    * Heartbeat watchdog timer — checks every 15 s whether a frame has
@@ -445,11 +461,33 @@ export class V2Transport {
   private connectWs(): void {
     if (typeof WebSocket === "undefined") return this.connectSse();
     if (this.stopped) return;
-    // If consecutive WS failures have exhausted the tolerance threshold,
-    // fall back to SSE for this reconnect cycle. The next scheduleReconnect
-    // call will reset and try WS again — recovery is automatic.
+    // ── SSE-preference hysteresis ────────────────────────────────────────────
+    // Once wsFailStreak has crossed the threshold we enter SSE-preference mode
+    // (wsPreferSseUntilWsOpens = true).  While in this mode, every reconnect
+    // goes straight to SSE without burning two WS slots.  This eliminates the
+    // "black-screen window" that occurred every 3rd reconnect on networks where
+    // WebSocket is permanently blocked (corp firewall, strict proxy, iOS low-
+    // power mode, some Android VPNs).
+    //
+    // Recovery: every WS_PROBE_INTERVAL_SSE_ROUNDS SSE reconnects we let one
+    // WS attempt through, so the transport self-heals if the block is lifted.
+    if (this.wsPreferSseUntilWsOpens) {
+      this.sseReconnectCount += 1;
+      if (this.sseReconnectCount < this.WS_PROBE_INTERVAL_SSE_ROUNDS) {
+        return this.connectSse(); // stay on SSE
+      }
+      // Time to probe WS — fall through to the normal WS connect path.
+      // If WS opens, wsPreferSseUntilWsOpens is cleared in onopen.
+      // If WS fails again, wsFailStreak is already at threshold → re-enters
+      // this block on the next scheduleReconnect.
+      this.sseReconnectCount = 0;
+    }
     if (this.wsFailStreak >= WS_FAIL_STREAK_SSE_FALLBACK) {
-      this.wsFailStreak = 0; // reset so next round tries WS first
+      // Enter SSE-preference mode. Do NOT reset wsFailStreak here — resetting
+      // it caused the WS→SSE→WS cycling bug (streak reset → SSE fails →
+      // connectWs with streak=0 → burns 2 more WS slots before SSE again).
+      this.wsPreferSseUntilWsOpens = true;
+      this.sseReconnectCount = 0;
       return this.connectSse();
     }
     // If a live socket already exists (defensive: should never happen
@@ -513,6 +551,8 @@ export class V2Transport {
       if (!isCurrent()) return;
       didOpen = true;
       this.wsFailStreak = 0; // successful open: clear failure streak
+      this.wsPreferSseUntilWsOpens = false; // WS is usable — exit SSE-preference mode
+      this.sseReconnectCount = 0;
       this.backoffMs = INITIAL_BACKOFF_MS;
       this.cfg.onConnectionChange?.(true);
       if (this.lastSequence > 0) {
@@ -599,7 +639,12 @@ export class V2Transport {
       this.cfg.onConnectionChange?.(false);
       this.scheduleReconnect();
     };
-    this.wsFailStreak = 0; // SSE is working — reset WS failure streak so next cycle tries WS first
+    // Do NOT reset wsFailStreak here. Resetting on SSE connect caused the
+    // WS→SSE→WS cycling bug: connecting via SSE (even with 0 frames received)
+    // reset the streak → when SSE dropped, connectWs had streak=0 → burned
+    // 2 more WS attempts before falling back to SSE again → black-screen window
+    // every 3rd reconnect on WS-blocked networks. wsFailStreak is now cleared
+    // exclusively in ws.onopen, where WS has demonstrably succeeded.
     // Reset backoff so that if SSE drops immediately the next reconnect
     // starts at INITIAL_BACKOFF_MS rather than the accumulated WS backoff.
     // Mirrors what WS onopen does (line ~297 above).
