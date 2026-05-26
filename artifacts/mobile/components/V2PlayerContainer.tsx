@@ -50,6 +50,27 @@
  *     active+playing HLS buffers to re-latch to the live edge and refresh the
  *     manifest on DVR-windowed streams. No-op on VOD HLS (already playing).
  *
+ * Android/ExoPlayer "Tuning in…" overlay stuck fix (May 2026):
+ *   • Root cause: RECOVERING_PRIMARY rebinds the same item URL (retry 1 or 2).
+ *     expo-av's Video component does NOT re-fire onLoad when the source prop
+ *     string is unchanged — so buffer-ready was never reported for the new
+ *     bindRevision, leaving the FSM stuck in RECOVERING_PRIMARY indefinitely
+ *     while audio from the original successful load continued playing.
+ *   • Fix: `lastLoadedUrlRef` tracks the URL of the last successful onLoad.
+ *     When bindRevision bumps with the same URL (same-URL recovery), the reset
+ *     effect immediately fires buffer-ready for the new revision and preserves
+ *     actualDurationMsRef (same video, same duration). New URLs get the full
+ *     reset and wait for onLoad as before.
+ *   • Secondary fix: `onReadyForDisplay` wired as a secondary buffer-ready
+ *     signal. On Android, onLoad fires on metadata decode; onReadyForDisplay
+ *     fires on first video-frame render (can be 100–500 ms later). The
+ *     lastReportedRevision guard prevents double-firing — onLoad wins normally,
+ *     onReadyForDisplay picks up the slack if onLoad fired without emitting
+ *     buffer-ready (e.g. revision mismatch during a rapid re-bind).
+ *   • Live-sync interval increased: HLS_LIVE_SYNC_INTERVAL_MS 15 s → 30 s.
+ *     The 15 s re-latch was causing perceptible micro-stalls on weak Android
+ *     connections; 30 s matches the standard live HLS target segment duration.
+ *
  * Used by `app/player.tsx` for the live HLS path (v2 broadcast).
  */
 
@@ -146,10 +167,15 @@ const HLS_SMALL_DRIFT_SKIP_MS = 30_000;
  * every 30 s re-latches the player to the current live edge without disrupting
  * smooth playback if already at the edge (the call is a no-op in that case).
  *
+ * 30 s matches the standard HLS target segment duration for live streams and
+ * avoids the brief audio stall that ExoPlayer/AVPlayer can produce when
+ * re-seeking to the live edge more aggressively (every 15 s caused perceptible
+ * micro-stalls on weak Android connections during congested periods).
+ *
  * For VOD HLS: `playAsync()` is always a no-op on a playing video — it only
  * ensures `shouldPlay = true`, which is already true.  No seek occurs.
  */
-const HLS_LIVE_SYNC_INTERVAL_MS = 15_000;
+const HLS_LIVE_SYNC_INTERVAL_MS = 30_000;
 
 interface Props {
   baseUrl: string;
@@ -235,6 +261,14 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
   // leaving the FSM stuck in RECOVERING_PRIMARY until the watchdog fired.
   const lastReportedRevision = useRef<number>(-1);
 
+  // Track the URL that expo-av successfully loaded (onLoad fired). Used to
+  // detect same-URL recovery rebinds (RECOVERING_PRIMARY/FAILOVER with the
+  // same item) where expo-av won't re-fire onLoad because the source prop
+  // string hasn't changed. In that case we immediately fire buffer-ready for
+  // the new bindRevision so the FSM exits recovery without waiting for a load
+  // event that will never come — while audio continues from the prior load.
+  const lastLoadedUrlRef = useRef<string | null>(null);
+
   // Tracks the bindRevision for which onLoad has fired. This prevents
   // playFromPositionAsync being called before expo-av has finished loading
   // the new source — without this guard the FSM emits a `play` intent
@@ -310,15 +344,42 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
   }
 
   // Reset all per-bind tracking when a new source is bound (new bindRevision).
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- url and reportBufferEvent
+  // intentionally omitted: url derives from state.item which always changes in
+  // lockstep with bindRevision; reportBufferEvent is a stable function reference.
   useEffect(() => {
     clearBufferingWatchdog();
     clearQuickFinishRetry();
-    setLoadedRevision(-1);
-    actualDurationMsRef.current = null;
     playStartMsRef.current = null;
     playheadMsRef.current = null;
     hlsQuickFinishCountRef.current = 0;
-  }, [state.bindRevision]);
+
+    // ── Same-URL recovery fast-path ──────────────────────────────────────
+    // RECOVERING_PRIMARY/FAILOVER often rebinds the SAME URL (same item,
+    // fresh bindRevision). expo-av's Video component won't re-fire onLoad
+    // when the source prop string is unchanged, so the normal path of
+    // "wait for onLoad → fire buffer-ready" will never complete, leaving
+    // the FSM stuck in RECOVERING_* while audio from the original load
+    // continues playing — the "Tuning in…" overlay that never clears bug.
+    //
+    // If expo-av already loaded this exact URL (lastLoadedUrlRef matches),
+    // we know the native player is still healthy. Immediately fire
+    // buffer-ready for the new revision so the FSM can exit recovery and
+    // re-issue the play intent (which will seek to the wall-clock position).
+    // actualDurationMsRef stays valid — same video, same duration.
+    if (url !== null && url === lastLoadedUrlRef.current) {
+      setLoadedRevision(state.bindRevision);
+      if (lastReportedRevision.current !== state.bindRevision) {
+        lastReportedRevision.current = state.bindRevision;
+        reportBufferEvent({ type: "buffer-ready", bufferId });
+      }
+    } else {
+      // New URL (or initial bind with no prior successful load) — full
+      // reset; wait for onLoad before the play effect can seek.
+      setLoadedRevision(-1);
+      actualDurationMsRef.current = null;
+    }
+  }, [state.bindRevision]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Cancel watchdog and any pending retry timer on unmount.
   useEffect(() => {
@@ -475,6 +536,10 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
           actualDurationMsRef.current =
             dur !== undefined && isFinite(dur) && dur > 0 ? dur : null;
         }
+        // Record the URL expo-av loaded so the bind-revision reset effect
+        // can fast-path same-URL recovery rebinds (RECOVERING_PRIMARY with
+        // the same item) without waiting for an onLoad that will never come.
+        lastLoadedUrlRef.current = url;
         // Mark this bind revision as loaded so the play useEffect can
         // proceed (it guards on loadedRevision === state.bindRevision).
         setLoadedRevision(state.bindRevision);
@@ -484,6 +549,22 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
         }
         // Source loaded successfully — clear any lingering buffering watchdog.
         clearBufferingWatchdog();
+      }}
+      onReadyForDisplay={() => {
+        // Android/ExoPlayer fires this when the first VIDEO FRAME is ready
+        // to render — which can be later than onLoad (metadata ready) on
+        // some Android devices. On iOS/AVPlayer the two events fire together.
+        //
+        // Using this as a secondary buffer-ready signal ensures the FSM's
+        // PLAYING transition (and overlay dismissal) coincides with actual
+        // video being visible, not just audio being audible. The
+        // lastReportedRevision guard prevents double-firing: if onLoad
+        // already reported buffer-ready for this revision, this is a no-op.
+        setLoadedRevision(state.bindRevision);
+        if (lastReportedRevision.current !== state.bindRevision) {
+          lastReportedRevision.current = state.bindRevision;
+          reportBufferEvent({ type: "buffer-ready", bufferId });
+        }
       }}
       onPlaybackStatusUpdate={(status: AVPlaybackStatus) => {
         if (!status.isLoaded) {
