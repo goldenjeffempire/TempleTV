@@ -365,58 +365,136 @@ export async function probeContainerIsValid(inputPath: string): Promise<boolean>
 }
 
 /**
- * Recovery pass for MP4 files where the moov atom is at EOF, fragmented,
- * or otherwise unreadable by ffmpeg's HLS muxer. Performs a stream-copy
- * remux with `+faststart` which:
- *   • Rebuilds the moov atom and places it at the front of the file.
- *   • Does NOT re-encode (completes in seconds even for 1+ GiB files).
- *   • Produces a clean, playable MP4 that the HLS encoder can consume.
+ * Detect whether an MP4 file has a media-data (mdat) box but no moov atom at all.
+ * This is the signature of a completely unrecoverable upload where the recording
+ * or export was interrupted before the moov could be written. When true, the
+ * caller should surface a "re-upload required" error immediately rather than
+ * cycling through expensive remux recovery attempts.
  *
- * Returns the path to the remuxed file on success, or null on any failure
- * (the caller treats null as a hard error — there's nothing else to try).
+ * Reads only the first 64 KiB of the file (enough to find all top-level box
+ * headers without loading the whole file). Returns false on any I/O error so
+ * the caller falls through to the normal remux path.
+ */
+export async function detectMdatWithoutMoov(inputPath: string): Promise<boolean> {
+  const SCAN_BYTES = 65536;
+  let fd: import("node:fs/promises").FileHandle | null = null;
+  try {
+    const { open: fsOpen } = await import("node:fs/promises");
+    fd = await fsOpen(inputPath, "r");
+    const buf = Buffer.allocUnsafe(SCAN_BYTES);
+    const { bytesRead } = await fd.read(buf, 0, SCAN_BYTES, 0);
+    let pos = 0;
+    let hasMdat = false;
+    // Parse top-level ISO base-media boxes: each starts with 4-byte size + 4-byte type.
+    // A size of 0 means "extends to EOF"; a size of 1 means 64-bit extended size (skip).
+    while (pos + 8 <= bytesRead) {
+      const boxSize = buf.readUInt32BE(pos);
+      const boxType = buf.slice(pos + 4, pos + 8).toString("ascii");
+      if (boxType === "moov") return false; // moov found → not the pathological case
+      if (boxType === "mdat") hasMdat = true;
+      if (boxSize === 0) break; // extends to EOF — stop scanning
+      if (boxSize < 8) break;  // malformed size — stop scanning
+      pos += boxSize;
+    }
+    return hasMdat; // mdat seen but moov never encountered in the scan window
+  } catch {
+    return false; // treat I/O failures as "unknown" — let remux attempt run
+  } finally {
+    await fd?.close().catch(() => undefined);
+  }
+}
+
+/**
+ * Recovery pass for MP4 files where the moov atom is at EOF, fragmented,
+ * or otherwise unreadable by ffmpeg's HLS muxer. Tries three strategies in
+ * sequence, stopping at the first success:
+ *
+ *   Strategy 1 — stream-copy with faststart (standard, handles moov-at-EOF)
+ *   Strategy 2 — error-tolerant stream-copy with faststart (mild corruption)
+ *   Strategy 3 — error-tolerant stream-copy without faststart (last resort)
+ *
+ * Returns the path to the remuxed file on success, or null when all three
+ * strategies fail (the caller treats null as a hard error).
+ *
+ * Note: when the moov atom is completely absent (detected by
+ * detectMdatWithoutMoov), none of these strategies can reconstruct it
+ * because the codec configuration (SPS/PPS) is stored only in the moov's
+ * avcC box. In that case callers should skip remux and throw immediately.
  */
 export async function remuxForFaststart(
   inputPath: string,
   outputPath: string,
   videoId: string,
 ): Promise<string | null> {
-  return new Promise((resolve) => {
-    const proc = spawn("ffmpeg", [
-      "-y",
-      "-hide_banner",
-      "-loglevel", "error",
-      "-i", inputPath,
-      "-c", "copy",
-      "-movflags", "+faststart",
-      outputPath,
-    ], { stdio: ["ignore", "ignore", "pipe"] });
-    let stderr = "";
-    let settled = false;
-    const settle = (val: string | null) => {
-      if (settled) return;
-      settled = true;
-      resolve(val);
-    };
-    const timer = setTimeout(() => {
-      try { proc.kill("SIGKILL"); } catch { /* noop */ }
-      logger.warn({ videoId }, "transcoder: remux-recovery timed out");
-      settle(null);
-    }, 15 * 60_000);
-    proc.stderr?.on("data", (chunk: Buffer) => {
-      stderr = (stderr + chunk.toString()).slice(-2000);
+  // Helper that runs one ffmpeg attempt and resolves true/false.
+  const tryFfmpeg = (args: string[], strategyName: string, timeoutMs: number): Promise<boolean> =>
+    new Promise((resolve) => {
+      const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
+      let stderr = "";
+      let settled = false;
+      const settle = (val: boolean) => { if (!settled) { settled = true; resolve(val); } };
+      const timer = setTimeout(() => {
+        try { proc.kill("SIGKILL"); } catch { /* noop */ }
+        logger.warn({ videoId, strategyName }, "transcoder: remux strategy timed out");
+        settle(false);
+      }, timeoutMs);
+      proc.stderr?.on("data", (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-2000); });
+      proc.on("error", () => { clearTimeout(timer); settle(false); });
+      proc.on("close", (code) => {
+        clearTimeout(timer);
+        if (code === 0) {
+          logger.info({ videoId, strategyName }, "transcoder: remux-recovery succeeded");
+          settle(true);
+        } else {
+          logger.warn(
+            { videoId, strategyName, exitCode: code, stderr: stderr.slice(-400) },
+            "transcoder: remux strategy failed — trying next",
+          );
+          settle(false);
+        }
+      });
     });
-    proc.on("error", () => { clearTimeout(timer); settle(null); });
-    proc.on("close", (code) => {
-      clearTimeout(timer);
-      if (code === 0) {
-        logger.info({ videoId }, "transcoder: remux-recovery succeeded — moov atom rebuilt at file head");
-        settle(outputPath);
-      } else {
-        logger.warn({ videoId, exitCode: code, stderr: stderr.slice(-500) }, "transcoder: remux-recovery failed");
-        settle(null);
-      }
-    });
-  });
+
+  const REMUX_TIMEOUT = 15 * 60_000; // 15 min per strategy
+
+  // Strategy 1: standard stream-copy with faststart (handles moov-at-EOF).
+  const s1 = await tryFfmpeg([
+    "-y", "-hide_banner", "-loglevel", "error",
+    "-i", inputPath,
+    "-c", "copy", "-movflags", "+faststart",
+    outputPath,
+  ], "s1-copy-faststart", REMUX_TIMEOUT);
+  if (s1) return outputPath;
+
+  // Strategy 2: error-tolerant stream-copy with faststart (mildly corrupt containers,
+  // discontinuous streams, DTS/PTS gaps). Discards corrupt packets and regenerates
+  // timestamps so the muxer can write a valid moov.
+  const s2 = await tryFfmpeg([
+    "-y", "-hide_banner", "-loglevel", "error",
+    "-fflags", "+genpts+discardcorrupt",
+    "-err_detect", "ignore_err",
+    "-i", inputPath,
+    "-c", "copy", "-movflags", "+faststart",
+    outputPath,
+  ], "s2-tolerant-faststart", REMUX_TIMEOUT);
+  if (s2) return outputPath;
+
+  // Strategy 3: last-resort stream-copy without faststart. Useful when the
+  // +faststart two-pass seek itself is what causes ffmpeg to abort. The
+  // resulting file works for HLS encode even though moov is at EOF.
+  const s3 = await tryFfmpeg([
+    "-y", "-hide_banner", "-loglevel", "error",
+    "-fflags", "+genpts+discardcorrupt",
+    "-err_detect", "ignore_err",
+    "-i", inputPath,
+    "-c", "copy",
+    "-ignore_unknown",
+    outputPath,
+  ], "s3-tolerant-no-faststart", REMUX_TIMEOUT);
+  if (s3) return outputPath;
+
+  logger.warn({ videoId }, "transcoder: all remux-recovery strategies exhausted — container is unrepairable");
+  return null;
 }
 
 function contentTypeFor(name: string): string {
@@ -599,6 +677,20 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
     let activeSourcePath = sourceTempPath;
     const containerValid = await probeContainerIsValid(sourceTempPath);
     if (!containerValid) {
+      // Fast-path: detect the specific case of mdat-present-but-no-moov. This is an
+      // unrecoverable condition (the codec configuration stored in the moov avcC box
+      // is permanently lost) and no remux strategy can reconstruct it. Surface a clear
+      // operator-facing error immediately instead of burning through remux attempts.
+      const mdatNoMoov = await detectMdatWithoutMoov(sourceTempPath);
+      if (mdatNoMoov) {
+        throw new Error(
+          "transcoder: source MP4 has media data (mdat) but NO moov atom. " +
+          "The recording or export was interrupted before the moov could be written. " +
+          "The codec configuration (SPS/PPS) stored in the moov is permanently lost — " +
+          "no recovery is possible from the stored blob. Re-upload from the original source file.",
+        );
+      }
+
       logger.warn(
         { videoId: req.videoId, jobId: req.jobId, sourceObjectKey: req.sourceObjectKey },
         "transcoder: source container appears damaged (likely moov-at-EOF or truncated) — attempting remux recovery",
@@ -607,7 +699,7 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
       const recovered = await remuxForFaststart(sourceTempPath, remuxedPath, req.videoId);
       if (!recovered) {
         throw new Error(
-          "transcoder: source MP4 container is unrepairable (moov atom missing and stream-copy remux failed). " +
+          "transcoder: source MP4 container is unrepairable (moov atom missing and all remux strategies failed). " +
             "The upload may be corrupt — re-upload required.",
         );
       }

@@ -30,7 +30,7 @@ import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
 import { boostTranscodePriority } from "./transcoder.queue.js";
-import { probeContainerIsValid, remuxForFaststart } from "./transcoder.service.js";
+import { detectMdatWithoutMoov, probeContainerIsValid, remuxForFaststart } from "./transcoder.service.js";
 
 const videos = schema.videosTable;
 
@@ -278,6 +278,19 @@ export async function runFaststart(
     log.info("faststart: probing container validity");
     const containerValid = await probeContainerIsValid(inputPath);
     if (!containerValid) {
+      // Detect the specific case of mdat-present-but-no-moov immediately to avoid
+      // running all three remux strategies on an unrecoverable file.
+      const mdatNoMoov = await detectMdatWithoutMoov(inputPath);
+      if (mdatNoMoov) {
+        throw Object.assign(
+          new Error(
+            "faststart: source MP4 has media data (mdat) but NO moov atom — the recording or export " +
+            "was interrupted before the moov could be written. The codec configuration (SPS/PPS) " +
+            "stored in the moov is permanently lost. Re-upload from the original source file.",
+          ),
+          { code: "CORRUPT_UPLOAD" },
+        );
+      }
       log.warn(
         { videoId, objectKey },
         "faststart: container probe failed — attempting stream-copy remux recovery " +

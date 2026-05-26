@@ -40,7 +40,7 @@ import { storage } from "../../infrastructure/storage.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { enqueueTranscode } from "../transcoder/transcoder.queue.js";
 import { transcoderDispatcher } from "../transcoder/transcoder.dispatcher.js";
-import { generateQuickThumbnail, normalizeThumbnailBuffer, probeUploadedDuration } from "../transcoder/transcoder.service.js";
+import { generateQuickThumbnail, normalizeThumbnailBuffer, probeUploadedContainerValidity, probeUploadedDuration } from "../transcoder/transcoder.service.js";
 import { runFaststart } from "../transcoder/faststart.service.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
@@ -1184,17 +1184,20 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             // faststart throws with code="CORRUPT_UPLOAD" — we mark the video
             // "failed" immediately rather than cycling through 3 transcoder
             // retries against an unreadable file.
+            //
+            // EARLY GATE: probeUploadedContainerValidity runs before faststart
+            // so that files with missing moov atoms are caught here rather than
+            // falling through the DOWNLOAD_TRUNCATED bypass in faststart.service.ts
+            // (which previously let corrupt uploads reach the HLS transcoder and
+            // fail there after 3 expensive retry cycles).
             let skipTranscodeEnqueue = false;
             try {
-              await runFaststart(videoId, objectKey, { skipStatusUpdate: false });
-              capturedLog.info({ sessionId, videoId }, "[finalize:bg] faststart done");
-            } catch (err) {
-              const isCorrupt = (err as { code?: string })?.code === "CORRUPT_UPLOAD";
-              if (isCorrupt) {
+              const { valid: containerOk } = await probeUploadedContainerValidity(objectKey);
+              if (!containerOk) {
                 capturedLog.error(
-                  { err, videoId, objectKey },
-                  "[finalize:bg] CORRUPT UPLOAD — container structurally damaged and unrepairable. " +
-                  "Marking video failed. Operator must re-upload the file.",
+                  { videoId, objectKey },
+                  "[finalize:bg] EARLY CORRUPT GATE — container probe failed before faststart. " +
+                  "Marking video failed; operator must re-upload the source file.",
                 );
                 skipTranscodeEnqueue = true;
                 await db
@@ -1202,14 +1205,42 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                   .set({ transcodingStatus: "failed" })
                   .where(eq(videos.id, videoId))
                   .catch(() => {});
-                adminEventBus.push("videos-library-updated", { videoId, reason: "corrupt-upload-failed" });
-              } else {
-                capturedLog.warn({ err, videoId }, "[finalize:bg] faststart failed (non-fatal)");
+                adminEventBus.push("videos-library-updated", { videoId, reason: "corrupt-upload-early-gate" });
+              }
+            } catch (earlyGateErr) {
+              capturedLog.warn(
+                { err: earlyGateErr, videoId },
+                "[finalize:bg] early container gate probe failed (non-fatal) — proceeding to faststart",
+              );
+            }
+
+            if (!skipTranscodeEnqueue) {
+              try {
+                await runFaststart(videoId, objectKey, { skipStatusUpdate: false });
+                capturedLog.info({ sessionId, videoId }, "[finalize:bg] faststart done");
+              } catch (err) {
+                const isCorrupt = (err as { code?: string })?.code === "CORRUPT_UPLOAD";
+                if (isCorrupt) {
+                  capturedLog.error(
+                    { err, videoId, objectKey },
+                    "[finalize:bg] CORRUPT UPLOAD — container structurally damaged and unrepairable. " +
+                    "Marking video failed. Operator must re-upload the file.",
+                  );
+                  skipTranscodeEnqueue = true;
+                  await db
+                    .update(videos)
+                    .set({ transcodingStatus: "failed" })
+                    .where(eq(videos.id, videoId))
+                    .catch(() => {});
+                  adminEventBus.push("videos-library-updated", { videoId, reason: "corrupt-upload-failed" });
+                } else {
+                  capturedLog.warn({ err, videoId }, "[finalize:bg] faststart failed (non-fatal)");
+                }
               }
             }
 
             // Enqueue HLS transcoding AFTER faststart is complete.
-            // Skipped when the container is confirmed unrepairable (CORRUPT_UPLOAD)
+            // Skipped when the container is confirmed unrepairable (CORRUPT_UPLOAD or early gate)
             // to avoid wasting transcoder retry cycles on a permanently broken file.
             if (!skipTranscodeEnqueue) {
               try {
