@@ -194,6 +194,11 @@ function createSession(baseUrl: string): BroadcastSession {
       session.connected = c;
       for (const l of session.connectedListeners) l(c);
     },
+    // Forward server-client clock offset to the machine so resolvePositionSecs
+    // uses server time instead of the local OS clock. Without this wire the
+    // machine's clockOffsetMs stays 0 forever — every seek position is wrong
+    // by the server-client clock delta, causing persistent timeline drift.
+    onClockCalibration: (offset) => machine.setClockOffsetMs(offset),
   });
 
   // Wire machine → transport: when the active buffer ends with no preloaded
@@ -291,7 +296,9 @@ function attachElements(
 
   // Immediately drive the new adapter to match the current machine state so
   // the viewer sees video within one animation frame on remount.
-  replayStateToAdapter(snap, (intent) => adapter.apply(intent));
+  // Pass the transport's clock offset so the seek position on remount uses
+  // server time rather than the raw local OS clock.
+  replayStateToAdapter(snap, (intent) => adapter.apply(intent), session.transport.getClockOffsetMs());
 }
 
 /**
@@ -323,8 +330,13 @@ function detachElements(session: BroadcastSession): void {
  *
  * Skips BOOTSTRAP / SYNCING / recovery states where we have no item to play;
  * those states resolve naturally as the next server snapshot arrives.
+ *
+ * @param clockOffsetMs - Server-client clock delta (`serverTimeMs − Date.now()`).
+ *   Applied to the seek calculation so remounts use server time rather than
+ *   the raw local OS clock — the same correction the machine uses in
+ *   resolvePositionSecs. Defaults to 0 (no correction) when not provided.
  */
-function replayStateToAdapter(snap: PlayerSnapshot, adapter: IntentHandler): void {
+function replayStateToAdapter(snap: PlayerSnapshot, adapter: IntentHandler, clockOffsetMs = 0): void {
   const activeId = snap.activeBufferId;
   const inactiveId: "A" | "B" = activeId === "A" ? "B" : "A";
   const activeItem = activeId === "A" ? snap.bufferA : snap.bufferB;
@@ -348,12 +360,17 @@ function replayStateToAdapter(snap: PlayerSnapshot, adapter: IntentHandler): voi
   if (shouldPlay && activeItem) {
     adapter({ type: "bind", bufferId: activeId, item: activeItem });
     // Seek to wall-clock position so we rejoin the broadcast mid-stream.
+    // Apply clockOffsetMs so the seek uses server time — matching the same
+    // correction applied by resolvePositionSecs inside the machine. Without
+    // this, devices with OS clock skew rejoin at the wrong position on every
+    // SPA navigation or sleep-wake cycle.
     const server = snap.lastServerSnapshot;
     const startsAtMs =
       server?.current && "startsAtMs" in server.current
         ? (server.current as { startsAtMs: number }).startsAtMs
         : null;
-    const positionSecs = startsAtMs ? Math.max(0, (Date.now() - startsAtMs) / 1000) : 0;
+    const nowMs = Date.now() + clockOffsetMs;
+    const positionSecs = startsAtMs ? Math.max(0, (nowMs - startsAtMs) / 1000) : 0;
     adapter({ type: "play", bufferId: activeId, positionSecs });
   }
 

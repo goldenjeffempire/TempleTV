@@ -885,7 +885,28 @@ export class PlayerMachine {
   private bindInactive(item: V2Item | V2Override): void {
     const id = this.swappedId(this.snapshot.activeBufferId);
     const current = id === "A" ? this.snapshot.bufferA : this.snapshot.bufferB;
-    if (current && "id" in current && (current as V2Item).id === (item as V2Item).id) return;
+    // Early-exit only when the inactive buffer already holds the SAME item
+    // AND the same cycle-start anchor (startsAtMs).
+    //
+    // Why startsAtMs matters: on a single-item queue, after HANDOFF the old
+    // active buffer (now inactive) still holds item X from the previous loop
+    // pass — it is at the end of the video. The server then fires item.advanced
+    // with a fresh startsAtMs for the new loop pass. Without the startsAtMs
+    // comparison, the early-exit fires (same ID) and the inactive buffer is
+    // never rebound. When the current active buffer ends, HANDOFF swaps to
+    // an already-ended buffer → black screen / SYNCING stall every loop.
+    //
+    // V2Override has `startedAtMs` not `startsAtMs`, so the `"startsAtMs" in`
+    // guard naturally skips the check for overrides and falls through to the
+    // rebind path — correct, since override loop-prevention is handled elsewhere.
+    if (
+      current &&
+      "id" in current &&
+      (current as V2Item).id === (item as V2Item).id &&
+      "startsAtMs" in current &&
+      "startsAtMs" in item &&
+      (current as V2Item).startsAtMs === (item as V2Item).startsAtMs
+    ) return;
     this.emit({ type: "bind", bufferId: id, item });
     if (id === "A") this.set({ bufferA: item });
     else this.set({ bufferB: item });

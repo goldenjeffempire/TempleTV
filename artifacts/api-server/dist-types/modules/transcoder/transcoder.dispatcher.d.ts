@@ -24,6 +24,8 @@ declare class TranscoderDispatcher {
     private stopped;
     start(): void;
     private purgeOrphanedScratchDirs;
+    private scratchGcCounter;
+    private static readonly SCRATCH_GC_TICKS;
     private resetOrphanedJobs;
     stop(): void;
     /**
@@ -51,7 +53,9 @@ declare class TranscoderDispatcher {
      * (e.g. SIGKILL was swallowed, or a server crash race left the DB row
      * in "processing" while this.running was never set again).
      *
-     * Resets to "queued" rather than "failed" so the job retries normally.
+     * Unlike resetOrphanedJobs (startup-only reset), this watchdog INCREMENTS
+     * the attempts counter on each reset. Jobs that exceed maxAttempts via
+     * repeated timeouts are permanently failed rather than looping forever.
      * The 5-minute grace period beyond TRANSCODER_JOB_TIMEOUT_MS prevents
      * false resets when the job is legitimately finishing its final upload.
      */
