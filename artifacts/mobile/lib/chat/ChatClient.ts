@@ -91,6 +91,12 @@ export class ChatClient {
   private closedByUser = false;
   private readonly bufferSize: number;
   private readonly opts: ChatClientOptions;
+  private pingInterval: ReturnType<typeof setInterval> | null = null;
+  // 25 s is well under the ~2-5 min idle-drop window on mobile NAT gateways.
+  // Sending a lightweight ping frame keeps the TCP connection alive and lets
+  // us detect a silently-dead socket on the next send rather than waiting
+  // for the user to tap Chat and discover nothing is coming through.
+  private readonly PING_INTERVAL_MS = 25_000;
 
   constructor(opts: ChatClientOptions = {}) {
     this.opts = opts;
@@ -104,6 +110,7 @@ export class ChatClient {
 
   stop(): void {
     this.closedByUser = true;
+    this.stopPing();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -191,6 +198,7 @@ export class ChatClient {
     ws.onopen = () => {
       this.reconnectAttempts = 0;
       this.setState("open");
+      this.startPing(ws);
     };
 
     ws.onmessage = (ev: WebSocketMessageEvent) => {
@@ -206,6 +214,7 @@ export class ChatClient {
     ws.onerror = () => { /* see onclose */ };
 
     ws.onclose = () => {
+      this.stopPing();
       this.ws = null;
       if (!this.closedByUser) this.scheduleReconnect();
     };
@@ -295,5 +304,29 @@ export class ChatClient {
     this.cachedSnapshot = null;
     const snap = this.snapshot();
     for (const l of this.listeners) l(snap);
+  }
+
+  /**
+   * Start a periodic ping on the given socket. Sends a lightweight
+   * `{ type: "ping" }` frame every PING_INTERVAL_MS to keep the TCP
+   * connection alive through mobile NAT gateways that drop idle sockets
+   * after 2–5 minutes. The server already handles inbound `ping` frames
+   * (see handleServerFrame — type "ping" is a no-op). Errors are silently
+   * swallowed; the next failed send will surface via the normal onclose path.
+   */
+  private startPing(ws: WebSocket): void {
+    this.stopPing();
+    this.pingInterval = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        try { ws.send(JSON.stringify({ type: "ping" })); } catch { /* noop */ }
+      }
+    }, this.PING_INTERVAL_MS);
+  }
+
+  private stopPing(): void {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
+    }
   }
 }

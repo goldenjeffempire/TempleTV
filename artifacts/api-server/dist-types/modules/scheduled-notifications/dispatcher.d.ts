@@ -27,6 +27,14 @@ declare class ScheduledNotificationDispatcher {
     private timer;
     private running;
     private stopped;
+    /**
+     * Reset rows that were claimed into `sending` status but never completed
+     * (e.g. process crash or SIGKILL between claim and status update). Rows
+     * older than 5 minutes in `sending` are safe to reclaim because the
+     * idempotency key on the audit row (`scheduled:{id}`) ensures the actual
+     * push is a no-op even if sendPush is called a second time.
+     */
+    private resetStuckSending;
     start(): void;
     stop(): void;
     /**

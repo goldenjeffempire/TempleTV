@@ -354,6 +354,23 @@ export default function PlayerScreen() {
       shouldDuckAndroid: false,
       playThroughEarpieceAndroid: false,
     }).catch(() => {});
+    // Restore the global audio policy when this screen unmounts. The root
+    // layout (setupAudioSession) establishes shouldDuckAndroid: true so OS
+    // sounds (navigation prompts, notifications) and in-app radio can duck
+    // Temple TV during lower-priority audio events. This screen tightens it
+    // to false for exclusive broadcast focus. Without cleanup the session
+    // remains in exclusive mode after the user leaves — radio and other
+    // in-app audio lose the ability to duck correctly on Android.
+    return () => {
+      Audio.setAudioModeAsync({
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: true,
+        interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+        interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+        shouldDuckAndroid: true,
+        playThroughEarpieceAndroid: false,
+      }).catch(() => {});
+    };
   }, []);
 
   const { setIsBroadcastMode, isPlaying, playerPlayRef, playerPauseRef, playerSeekRef } = usePlayer();

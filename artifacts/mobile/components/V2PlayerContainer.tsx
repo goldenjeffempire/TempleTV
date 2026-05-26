@@ -290,6 +290,10 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
   // surfacing an error event. The watchdog converts a prolonged buffering
   // state into an explicit buffer-error so the FSM can recover.
   const bufferingWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Pending quick-finish retry timer. Cancelled when bindRevision changes so
+  // a 1 s retry that was scheduled for the OLD source never fires against the
+  // NEW one and seeks it back to position 0, causing a desync loop.
+  const quickFinishRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function clearBufferingWatchdog() {
     if (bufferingWatchdogRef.current) {
@@ -298,9 +302,17 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
     }
   }
 
+  function clearQuickFinishRetry() {
+    if (quickFinishRetryTimerRef.current) {
+      clearTimeout(quickFinishRetryTimerRef.current);
+      quickFinishRetryTimerRef.current = null;
+    }
+  }
+
   // Reset all per-bind tracking when a new source is bound (new bindRevision).
   useEffect(() => {
     clearBufferingWatchdog();
+    clearQuickFinishRetry();
     setLoadedRevision(-1);
     actualDurationMsRef.current = null;
     playStartMsRef.current = null;
@@ -308,9 +320,12 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
     hlsQuickFinishCountRef.current = 0;
   }, [state.bindRevision]);
 
-  // Cancel watchdog on unmount.
+  // Cancel watchdog and any pending retry timer on unmount.
   useEffect(() => {
-    return () => { clearBufferingWatchdog(); };
+    return () => {
+      clearBufferingWatchdog();
+      clearQuickFinishRetry();
+    };
   }, []);
 
   // ── Play effect ─────────────────────────────────────────────────────────
@@ -536,7 +551,12 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
                 const actualMsRetry = actualDurationMsRef.current;
                 const isLiveRetry = actualMsRetry === null || !isFinite(actualMsRetry) || actualMsRetry <= 0;
                 playStartMsRef.current = Date.now();
-                setTimeout(() => {
+                // Store the timer handle so the bindRevision reset effect can
+                // cancel it if the source changes before the 1 s delay fires.
+                // Without this, the retry would call playFromPositionAsync(0)
+                // on the NEW source, seeking it back to position 0.
+                quickFinishRetryTimerRef.current = setTimeout(() => {
+                  quickFinishRetryTimerRef.current = null;
                   const retryPromise = isLiveRetry
                     ? ref.current?.playAsync()
                     : ref.current?.playFromPositionAsync(0);
@@ -614,10 +634,14 @@ function useMidnightPrayersSwitch(mainBaseUrl: string): string {
   useEffect(() => {
     // Derive midnight-prayers config endpoint from the main baseUrl
     const apiOrigin = mainBaseUrl.replace(/\/api\/broadcast-v2.*/, "");
-    fetch(`${apiOrigin}/api/midnight-prayers/config`)
+    const controller = new AbortController();
+    fetch(`${apiOrigin}/api/midnight-prayers/config`, { signal: controller.signal })
       .then((r) => (r.ok ? (r.json() as Promise<MPScheduleConfig>) : null))
       .then((data) => { if (data) setCfg(data); })
       .catch(() => { /* stay on main channel */ });
+    // Abort on mainBaseUrl change or component unmount to prevent setting
+    // state on an already-unmounted component during rapid navigation.
+    return () => controller.abort();
   }, [mainBaseUrl]);
 
   useEffect(() => {
