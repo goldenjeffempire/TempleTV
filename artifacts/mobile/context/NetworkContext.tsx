@@ -131,6 +131,7 @@ export function NetworkProvider({ children }: { children: React.ReactNode }) {
       return () => {
         window.removeEventListener("online",  handleOnline);
         window.removeEventListener("offline", handleOffline);
+        if (intervalRef.current) clearInterval(intervalRef.current);
         if (recoveryTimerRef.current) clearTimeout(recoveryTimerRef.current);
       };
     }

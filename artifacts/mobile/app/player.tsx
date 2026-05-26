@@ -724,6 +724,21 @@ export default function PlayerScreen() {
     return () => sub.remove();
   }, [isFullscreen]);
 
+  // Restore portrait lock whenever the player screen is torn down, regardless
+  // of how navigation happened (deep-link push, OS back gesture that bypasses
+  // the Modal's onRequestClose, tab switch while fullscreen, etc.). Without
+  // this, a landscape lock acquired inside the fullscreen Modal can persist
+  // into the app's home screen and every screen opened afterward.
+  useEffect(() => {
+    return () => {
+      if (Platform.OS !== "web") {
+        ScreenOrientation.lockAsync(
+          ScreenOrientation.OrientationLock.PORTRAIT_UP,
+        ).catch(() => {});
+      }
+    };
+  }, []);
+
   // Live broadcast sync — used by BroadcastHlsPlayer internally.
   // For the YouTube live path, read sync directly to keep title/id live.
   const sync             = useBroadcastSync();
@@ -888,6 +903,11 @@ export default function PlayerScreen() {
         clearTimeout(countdownFireRef.current);
         countdownFireRef.current = null;
       }
+      // Reset navigation guard on unmount. expo-router can keep screen
+      // instances alive in its cache; if navInFlightRef is still true when
+      // the screen re-activates, all Prev/Next taps would be silently blocked
+      // until a videoId change resets it via the videoId effect below.
+      navInFlightRef.current = false;
     };
   }, []);
   useEffect(() => {

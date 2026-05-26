@@ -40,6 +40,17 @@ const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_BASE_DELAY_MS = 350;
 const DEFAULT_MAX_DELAY_MS = 10_000;
 
+/**
+ * Per-attempt fetch timeout applied when the caller does not provide an
+ * AbortSignal. On mobile, zombie TCP connections (OS keep-alive open, no
+ * application-layer traffic) can cause `fetch()` to hang indefinitely.
+ * 15 s gives enough headroom for a legitimate slow CDN response while still
+ * tearing down true zombies within one watchdog cycle.
+ * Callers that pass their own signal always take precedence — this only
+ * activates as a safety net when no signal is provided.
+ */
+const FETCH_TIMEOUT_MS = 15_000;
+
 /** Default retryable predicate: 5xx and 429 */
 function defaultIsRetryable(res: Response): boolean {
   return res.status === 429 || res.status >= 500;
@@ -106,7 +117,18 @@ export async function fetchWithRetry(
   // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
-      const res = await fetch(input, init);
+      // Apply a per-attempt timeout when the caller did not supply an AbortSignal.
+      // On mobile, zombie TCP connections (OS keep-alive open, application layer
+      // silent) can cause fetch() to hang indefinitely. AbortSignal.timeout()
+      // tears the connection down so the retry loop can issue a fresh attempt.
+      // Callers that pass their own signal always take precedence.
+      // A timeout fires as DOMException("TimeoutError") which is neither
+      // signal?.aborted nor "AbortError", so it falls through to the retry
+      // path below — correct: a timed-out attempt should be retried.
+      const perAttemptInit = signal
+        ? init
+        : { ...init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) };
+      const res = await fetch(input, perAttemptInit);
 
       if (res.ok) return res;
 

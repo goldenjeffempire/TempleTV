@@ -3,7 +3,7 @@
     "name": "Temple TV",
     "slug": "temple-tv-mobile",
     "version": "1.0.10",
-    "orientation": "portrait",
+    "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "templetv",
     "userInterfaceStyle": "light",
@@ -255,7 +255,7 @@
       "./plugins/with-kotlin-version.js",
       "./plugins/with-foreground-service-type.js",
       "./plugins/with-android-activity-flags.js",
-      "expo-screen-orientation"
+      ["expo-screen-orientation", { "initialOrientation": "DEFAULT" }]
     ],
     "extra": {
       "router": {

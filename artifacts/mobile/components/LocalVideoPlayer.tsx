@@ -570,8 +570,10 @@ export function LocalVideoPlayer({
     }
 
     // Tear down any prior hls instance bound to this slot before rebinding.
+    // detachMedia() first: releases the MSE SourceBuffer cleanly so the new
+    // loadSource() does not inherit a dead MediaSource from the old instance.
     const prev = getWebHls(slot);
-    if (prev) { try { prev.destroy(); } catch { /* noop */ } setWebHls(slot, null); }
+    if (prev) { try { prev.detachMedia(); prev.destroy(); } catch { /* noop */ } setWebHls(slot, null); }
 
     setWebLoadedUrl(slot, url);
     // Fresh URL into this slot ⇒ reset its hls.js retry budget so the new
@@ -682,9 +684,17 @@ export function LocalVideoPlayer({
         // tear down the slot. The next queue advance will fall back to a
         // cold load through the active path.
         if (mode === "preload") {
-          try { hls.destroy(); } catch { /* noop */ }
+          // detachMedia() first so hls.js releases the MSE SourceBuffer
+          // cleanly before the instance is discarded; destroy() alone can
+          // leave the <video> element bound to a dead MediaSource on some
+          // browsers, causing a stale-state error on the next loadSource().
+          try { hls.detachMedia(); hls.destroy(); } catch { /* noop */ }
           setWebHls(slot, null);
           setWebLoadedUrl(slot, null);
+          // Blank the <video> src so the element holds no stale URL or
+          // buffer state; the next cold-load through the active path starts
+          // from a completely clean slate.
+          try { video.src = ""; video.load(); } catch { /* noop */ }
           return;
         }
         // Active-loaded slot that has since been swapped out (queue
