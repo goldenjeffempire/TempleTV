@@ -1,167 +1,163 @@
 # `@workspace/admin` — Temple TV Operator Dashboard
 
-A React + Vite + wouter single-page application for the JCTM media team.
-Manages the entire Temple TV catalog, schedule, broadcast, push notifications,
-subscriptions, and live operations — all wired to
-[`@workspace/api-server`](../api-server/README.md) through generated React Query
-hooks in [`@workspace/api-client-react`](../../lib/api-client-react/README.md).
+React + Vite + Tailwind single-page application for the JCTM media team. Manages the entire Temple TV catalog, broadcast schedule, live operations, push notifications, analytics, and user management — all wired to the API through the shared client library.
 
 > Production: `https://admin.templetv.org.ng`
 
 ---
 
-## 1. What's inside
+## Pages
 
-| Page | Path | Purpose |
-|---|---|---|
-| Dashboard | `/` | Stats cards, live status, recent videos, “Import Video” quick action |
-| Video Library | `/videos` | Browse / search / edit / delete / import (YouTube URL or local upload) |
-| Broadcast Queue | `/broadcast` | The 24/7 channel — order, pause, end items, see what is on air |
+| Page | Route | Purpose |
+|------|-------|---------|
+| Dashboard | `/` | Stats, live status, recent videos, quick actions |
+| Video Library | `/library` | Browse, search, edit, delete, upload, import from YouTube |
+| Broadcast Queue | `/broadcast` | 24/7 channel — order items, pause, skip, see what is on air |
+| Broadcast v2 Console | `/broadcast-v2` | **Master Control** — v2 orchestrator with skip/reload/override/failover |
 | Playlists | `/playlists` | CRUD + drag-and-drop video reordering (`@dnd-kit`) |
-| Schedule | `/schedule` | Time-of-day slots — playlist, single video, or live override |
-| Notifications | `/notifications` | Compose & send push to all registered devices; history |
+| Series | `/series` | Sermon series management |
+| Schedule | `/schedule` | Time-of-day broadcast slots |
+| Live Control | `/live-control` | One-click Go Live — overrides every client in real time |
+| Live Monitor | `/live-monitor` | Read-only current live state, viewer count, SSE health |
+| Live YouTube | `/live-youtube` | YouTube Live status and override controls |
+| Live Ingest | `/live-ingest` | RTMP ingest endpoint metadata |
+| Notifications | `/notifications` | Compose and send push to all registered devices; history |
 | Analytics | `/analytics` | Views per video, daily activity, top categories, registered devices |
-| Registered Users | `/users` | Searchable / paginated user table |
-| Transcoding Queue | `/transcoding` | HLS pipeline status (queued / processing / done / failed) with retry |
-| Live Control | `/live-control` | One-click **Go Live** — overrides every client in real time |
-| Live Monitor | `/live-monitor` | Read-only mirror of the current live state, viewer count, SSE health |
-| Subscriptions | `/subscriptions` | CRUD subscription tiers, manage subscriber status |
-| Operations | `/operations` | Health checks, metrics, cache, broadcast continuity |
-| Launch Readiness | `/launch-readiness` | Self-check that surfaces any pre-launch blocker |
+| Audit Log | `/audit-log` | Admin action history |
+| Prayers | `/prayers` | Prayer request moderation |
+| Midnight Prayers | `/midnight-prayers` | Scheduled midnight prayer stream management |
+| Chat | `/chat` | Live chat moderation |
+| Graphics | `/graphics` | Lower-third and channel graphics management |
+| Radio | `/radio` | Radio stream controls |
+| Stream Health | `/stream-health` | HLS / RTMP stream health monitoring |
+| SSE Bus | `/sse-bus` | Real-time event bus diagnostics |
+| Playback | `/playback` | Playback session monitoring |
+| Security | `/security` | RBAC, API token management |
+| Settings | `/settings` | Platform-wide configuration |
+| Operations | `/operations` | Health checks, cache, broadcast continuity |
+| Launch Readiness | `/launch-readiness` | Self-check surfacing any pre-launch blocker |
+| Purge | `/purge` | Cache + CDN purge controls |
+| Alerts | `/alerts` | Emergency alert management |
 
 ---
 
-## 2. Stack
+## Stack
 
-- **React 18** with **wouter** for routing (path-based, base = `/admin`)
-- **Vite 7** dev server + production bundler
+- **React 19** with **wouter** for client-side routing
+- **Vite** dev server + production bundler
 - **Tailwind CSS** + **shadcn/ui** (`src/components/ui/*`)
-- **TanStack React Query** for all API state
-- **Generated hooks** from `@workspace/api-client-react` (`useGetLiveStatus`,
-  `useListAdminVideos`, etc.) — never hand-roll fetch in pages
-- **`framer-motion`** for transitions
-- **`recharts`** for analytics
-- **`@dnd-kit/sortable`** for playlist reordering
-- **Auto theme** — light by default, automatic midnight palette from
-  20:00 → 05:59 local time
+- **TanStack React Query** — all API state, `staleTime=60s / gcTime=10min / placeholderData=prev`
+- **`@workspace/api-client-react`** — generated hooks; never hand-roll fetch in pages
+- **`@workspace/player-core`** — v2 broadcast player FSM for the Master Control console
+- **`framer-motion`** — page transitions
+- **`recharts`** — analytics charts
+- **`@dnd-kit/sortable`** — drag-and-drop playlist reordering
+- **hls.js** — in-admin HLS preview player
+- **Auto theme** — light by default; midnight palette active 20:00 → 05:59 local time
 
 ---
 
-## 3. Authentication
+## Authentication
 
-Admin endpoints are gated by `ADMIN_API_TOKEN` server-side. The dashboard:
+Routes and API calls require a JWT session. Login at `/login`.
 
-1. Shows an **Admin key** badge in the header — amber when not set, green when set.
-2. Clicking the badge opens a prompt to paste / clear the token.
-3. The token is stored in `localStorage` and automatically attached as
-   `Authorization: Bearer <token>` on every request via the api-client wrapper.
+RBAC roles that have admin access: `editor`, `admin`, `system`. The `requireAuth("editor")` guard protects broadcast mutations; `requireAuth("admin")` protects destructive operations.
 
-There is no per-user login — the dashboard itself is a single team tool. Use
-your hosting platform (Render IP allowlist, Cloudflare Access, etc.) for any
-additional perimeter security.
+The legacy `ADMIN_API_TOKEN` bearer header is also accepted for machine-to-machine operator scripts.
 
 ---
 
-## 4. Local development
+## Upload engine
 
-```bash
-pnpm --filter @workspace/admin run dev          # vite dev server
-pnpm --filter @workspace/admin run build        # production build → dist/
-pnpm --filter @workspace/admin run serve        # preview the production build
-pnpm --filter @workspace/admin run typecheck
-```
+Multi-file upload queue (`src/lib/upload-queue.ts`) — module-level singleton:
 
-The dev server reads `BASE_URL` from `vite.config.ts` (`/admin/`). All API
-calls go to `import.meta.env.VITE_API_URL` if set; otherwise the same origin.
+- Max 3 concurrent files; adaptive 1–4 chunk concurrency (slow/moderate/fast network detection)
+- Chunk size: 8 MiB max; SHA-256 per chunk
+- Per-item pause / cancel / retry / prioritize
+- `UploadQueuePanel` (fixed bottom-right) mounts once in `AuthenticatedApp`
+- XHR chunks for real-time byte-level progress bars
+- Auto-pause on `offline` event, auto-resume on `online`
 
-### Configuring the API base
-
-Edit `.env.local` (gitignored):
-
-```env
-VITE_API_URL=http://localhost:8080
-```
+Vite proxy order matters: `/api/v1/admin/videos/upload` (600 s timeout) MUST appear before the generic `/api` proxy rule.
 
 ---
 
-## 5. Source layout
+## Broadcast v2 console
+
+`src/pages/broadcast-v2.tsx` — the **Master Control** page. Connects to `/api/broadcast-v2/ws` (WebSocket, SSE fallback) via `useV2Broadcast` from `@workspace/player-core`.
+
+Operator actions available:
+- **Skip** current item (requires `editor` role + `idempotencyKey`)
+- **Reload** queue from DB (requires `editor` role)
+- **Override** — inject an emergency source URL (requires `admin` role)
+- **Failover** — switch to backup source (requires `admin` role)
+- **End override** — return to scheduled programming
+
+---
+
+## Source layout
 
 ```
 artifacts/admin/
 ├── index.html
 ├── vite.config.ts
 ├── tsconfig.json
-├── tailwind.config (in package.json)
-├── public/
 └── src/
     ├── main.tsx
-    ├── App.tsx               ← router + QueryClientProvider
+    ├── App.tsx                    ← router + QueryClientProvider + AuthGuard
     ├── components/
-    │   ├── layout.tsx        ← sidebar, header, admin-token badge
-    │   └── ui/               ← shadcn/ui primitives
+    │   ├── layout/                ← sidebar, header, breadcrumbs
+    │   └── ui/                    ← shadcn/ui primitives
     ├── lib/
-    │   ├── admin-access.ts   ← token storage helpers + cross-tab sync
-    │   ├── theme.ts          ← auto midnight detection
-    │   ├── api.ts            ← shared fetch wrapper
-    │   └── videoCompressor.ts← client-side H.264 (WebCodecs) for uploads
+    │   ├── upload-queue.ts        ← multi-file upload singleton
+    │   ├── api.ts                 ← shared fetch wrapper + auth headers
+    │   ├── theme.ts               ← midnight palette detection
+    │   └── utils.ts               ← cn(), formatBytes(), etc.
     └── pages/
-        ├── dashboard.tsx
-        ├── videos.tsx
-        ├── playlists.tsx
+        ├── broadcast-v2.tsx       ← Master Control console
+        ├── library.tsx
         ├── schedule.tsx
-        ├── broadcast.tsx
-        ├── notifications.tsx
         ├── analytics.tsx
-        ├── users.tsx
-        ├── transcoding.tsx
-        ├── live-control.tsx
-        ├── live-monitor.tsx
-        ├── subscriptions.tsx
-        ├── operations.tsx
-        ├── launch-readiness.tsx
-        └── not-found.tsx
+        └── ... (see Pages table above)
 ```
 
 ---
 
-## 6. Notable subsystems
+## Development
 
-### 6.1 Chunked upload + client-side compression
-`src/lib/videoCompressor.ts` runs an H.264 WebCodecs pipeline
-(mp4box → VideoDecoder → OffscreenCanvas → VideoEncoder → mp4-muxer). The
-upload UI (in `pages/videos.tsx`) splits the result into 8 MB chunks, hashes
-each with SHA-256, and uploads in parallel with resume support. Sessions
-persist to `localStorage` and survive a browser refresh.
+```bash
+pnpm --filter @workspace/admin run dev          # Vite dev server (port 5000 on Replit)
+pnpm --filter @workspace/admin run build        # production build → dist/
+pnpm --filter @workspace/admin run serve        # preview production build
+pnpm --filter @workspace/admin run typecheck
+```
 
-### 6.2 Real-time updates via SSE
-The Broadcast and Live pages subscribe to `/api/broadcast/events` and
-`/api/live/events` so the UI updates within milliseconds of any change made
-by another admin (multi-operator safe).
+The dev server proxies `/api/*` to port 5000 (the API server) — **start the API first**.
 
-### 6.3 Auto theme
-`lib/theme.ts` re-evaluates every 60 s — pages do not need to import anything
-to participate; CSS variables flip automatically.
+To point at a different API base during local development, create `.env.local` (gitignored):
+
+```env
+VITE_API_URL=http://localhost:8080
+API_DEV_PORT=8080
+```
 
 ---
 
-## 7. Deployment
+## Deployment
 
 `render.yaml` builds a static bundle:
 
-```
-pnpm install --frozen-lockfile
+```bash
+pnpm install --ignore-scripts
 pnpm --filter @workspace/admin run build
-# Render's static site serves dist/
+# Render static site serves dist/
 ```
-
-The base path `/admin/` (set in `vite.config.ts`) makes both the standalone
-`https://admin.templetv.org.ng` host and `https://templetv.org.ng/admin`
-work transparently.
 
 ---
 
-## 8. Related
+## Related
 
 - [`@workspace/api-server`](../api-server/README.md)
 - [`@workspace/api-client-react`](../../lib/api-client-react/README.md)
-- Project [README](../../README.md), audit report [`RELEASE_AUDIT.md`](../../RELEASE_AUDIT.md)
+- [`@workspace/player-core`](../../lib/player-core/README.md)
+- Project [README](../../README.md)

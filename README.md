@@ -1,9 +1,6 @@
-# Temple TV (JCTM Broadcasting)
+# Temple TV — JCTM Broadcasting Platform
 
-End-to-end media platform for Jesus Christ Temple Ministry — live worship,
-sermon-on-demand, 24/7 broadcast continuity, push notifications, and
-subscription management — delivered to **mobile, web, smart-TV, and admin**
-clients from a single codebase.
+End-to-end media platform for Jesus Christ Temple Ministry — live worship, sermon-on-demand, 24/7 broadcast continuity, push notifications, and subscription management — delivered to **mobile, web, Smart TV, and admin** clients from a single codebase.
 
 > **Live URLs (production)**
 > Web · `https://templetv.org.ng` &nbsp;·&nbsp;
@@ -13,202 +10,185 @@ clients from a single codebase.
 
 ---
 
-## 1. Repository layout
-
-This is a [pnpm](https://pnpm.io) workspace monorepo.
+## Repository layout
 
 ```
 .
-├── artifacts/                  ← deployable applications (one workflow each)
-│   ├── api-server              ← Express API + transcoder + push fan-out
-│   ├── admin                   ← React + Vite operator dashboard
-│   ├── mobile                  ← Expo (iOS, Android, web)
-│   ├── tv                      ← React + Vite Smart-TV (10-foot UI)
-│   └── mockup-sandbox          ← design preview server (canvas only)
+├── artifacts/                  ← deployable applications
+│   ├── api-server/             ← Fastify v5 API + transcoder + broadcast orchestrator
+│   ├── admin/                  ← React + Vite operator dashboard
+│   ├── mobile/                 ← Expo (iOS, Android, Android TV, Apple TV, Fire TV)
+│   ├── tv/                     ← React + Vite Smart TV app (Tizen, webOS)
+│   └── mockup-sandbox/         ← isolated Vite design-preview server
 │
-├── lib/                        ← shared library packages
-│   ├── api-spec                ← OpenAPI source-of-truth + Orval codegen
-│   ├── api-zod                 ← Zod request/response schemas (generated)
-│   ├── api-client-react        ← React Query hooks (generated)
-│   └── db                      ← Drizzle schema + migrations + client
+├── lib/                        ← shared workspace libraries
+│   ├── api-spec/               ← OpenAPI source-of-truth + codegen orchestrator
+│   ├── api-zod/                ← Zod request/response schemas
+│   ├── api-client-react/       ← TanStack Query hooks
+│   ├── db/                     ← Drizzle ORM schema + PostgreSQL client
+│   ├── broadcast-types/        ← shared TypeScript interfaces for the broadcast protocol
+│   ├── broadcast-sync/         ← v1 real-time broadcast sync engine (chat, graphics, viewer count)
+│   └── player-core/            ← universal A/B-buffer player FSM + WS/SSE transport
 │
+├── scripts/                    ← release, smoke-test, env-validate helpers
 ├── render.yaml                 ← Render Blueprint (production deploy)
-├── RELEASE_AUDIT.md            ← latest production-readiness audit
-├── replit.md                   ← architecture / change log (deep technical)
+├── turbo.json                  ← TurboRepo build graph
+├── replit.md                   ← deep architecture notes + active gotchas
+├── CHANGELOG.md                ← historical fix logs
+├── RELEASE_PIPELINE.md         ← CI/CD, EAS, Tizen/webOS packaging guide
 └── README.md                   ← this file
 ```
 
-Each artifact and library has its own README with details specific to that
-package — see the **Per-package documentation** section below.
+Each artifact and library has its own `README.md` with package-specific detail.
 
 ---
 
-## 2. Quick start
+## Quick start
 
 ```bash
-pnpm install                   # one-time, hoisted across the workspace
-pnpm --filter @workspace/db run push   # apply Drizzle schema to DATABASE_URL
+# Install (always --ignore-scripts on Replit)
+pnpm install --ignore-scripts
 
-# In separate terminals (or via the configured workflows):
-pnpm --filter @workspace/api-server run dev
-pnpm --filter @workspace/admin     run dev
-pnpm --filter @workspace/tv        run dev
-pnpm --filter @workspace/mobile    run dev    # Expo
-```
-
-When using Replit, all four are wired as long-running workflows
-(`Run` button starts them automatically).
-
-### Required environment variables
-
-| Variable | Used by | Purpose |
-|---|---|---|
-| `DATABASE_URL` | api-server, db | Postgres connection string (Neon in prod) |
-| `YOUTUBE_API_KEY` | api-server | Channel uploads pagination (full 2,114-video catalog) |
-| `JWT_SECRET` | api-server | Access + refresh token signing |
-| `ADMIN_API_TOKEN` | api-server, admin | Bearer guard for `/api/admin/*` routes |
-| `EXPO_PUBLIC_API_URL` | mobile | Canonical API base URL |
-| `EXPO_PUBLIC_DOMAIN` | mobile | Fallback API host (legacy Expo Go) |
-| `SENTRY_DSN` *(optional)* | api-server | Server error reporting |
-| `CLIENT_ERROR_SINK_URL` *(optional)* | api-server | External log sink for `/api/client-errors` |
-
-See `RELEASE_AUDIT.md` § 5 for the production checklist.
-
----
-
-## 3. Per-package documentation
-
-| Package | Purpose | README |
-|---|---|---|
-| `artifacts/api-server` | Express 5 API, transcoder, SSE, broadcast engine | [`./artifacts/api-server/README.md`](./artifacts/api-server/README.md) |
-| `artifacts/admin` | Operator dashboard — videos, broadcast, schedule, users | [`./artifacts/admin/README.md`](./artifacts/admin/README.md) |
-| `artifacts/mobile` | Expo app for iOS, Android, mobile-web | [`./artifacts/mobile/README.md`](./artifacts/mobile/README.md) |
-| `artifacts/tv` | React + Vite 10-foot UI for Smart TVs | [`./artifacts/tv/README.md`](./artifacts/tv/README.md) |
-| `lib/api-spec` | OpenAPI spec + Orval codegen | [`./lib/api-spec/README.md`](./lib/api-spec/README.md) |
-| `lib/api-zod` | Generated Zod schemas | [`./lib/api-zod/README.md`](./lib/api-zod/README.md) |
-| `lib/api-client-react` | Generated React Query hooks | [`./lib/api-client-react/README.md`](./lib/api-client-react/README.md) |
-| `lib/db` | Drizzle ORM schema + migrations | [`./lib/db/README.md`](./lib/db/README.md) |
-
----
-
-## 4. The unified broadcast architecture
-
-A single live source feeds every client simultaneously:
-
-```
-   Admin Live Control                  YouTube Live channel
-        │                                       │
-        ▼                                       ▼
-   POST /api/admin/live-overrides          live-status poll
-        │                                       │
-        └──────────► broadcast state ◄──────────┘
-                          │
-        Server-Sent Events │  GET /api/broadcast/events
-                          ▼
-   ┌──────────┬──────────┬──────────┬──────────┐
-   │ Mobile   │   Web    │ Smart TV │  Admin   │
-   │ (Expo)   │ (Expo-W) │  (Vite)  │ (Vite)   │
-   └──────────┴──────────┴──────────┴──────────┘
-```
-
-- **One source of truth** — `/api/broadcast/current` (HTTP) and
-  `/api/broadcast/events` (SSE) return the same payload.
-- **All clients reconnect automatically** with polling fallback when SSE drops.
-- **Admin can override instantly** — `Live Control` → Go Live pushes a
-  state change to every connected client within milliseconds.
-- **Failover-safe** — if the YouTube live signal disappears, the server
-  promotes the next scheduled item or the broadcast queue front item, never
-  showing dead-air to viewers.
-
-### 4.1 Sync-aware playback (Hero + Player)
-
-Every broadcast surface (mobile Hero, TV Hero, mobile `/player`, TV `/player`)
-joins the live timeline at the **exact second currently airing** and stays in
-sync via a uniform drift-correction loop:
-
-| Concept | Where | Behaviour |
-|---|---|---|
-| Join offset | `computeLiveBroadcastPosition()` (TV `Home.tsx`); inline `bc.positionSecs * 1000 + networkDriftSecs` on mobile | Computed once per item from `serverTimeMs`, `positionSecs`, and the network round-trip drift, then passed to the player as `startPositionMs` |
-| Drift correction | `LiveBroadcastVideo.tsx` (TV), `app/(tabs)/index.tsx` (mobile hero) | Every **12 s**, if playhead drift &gt; **4 s** vs the expected live offset, snap forward / back via `currentTime =` (TV) or `setPositionAsync` (mobile) |
-| Stable-ref pattern | Both platforms | Sync data and callbacks held in `useRef`s so identity churn doesn't tear down the video element on every payload |
-| Container shape | Both platforms | Two-layer render — blurred `cover` backdrop fills the box, foreground at `contain` so the broadcast frame is **never cropped** |
-| MP4 routing | `LocalVideoPlayer.tsx` (mobile web), `HlsVideoPlayer.tsx` (TV) | URL-extension check (`.mp4|.webm|.mov|...`) routes plain video away from `hls.js`; `seekToStart()` honours `startPositionMs` on every code path (HLS, native HLS, direct MP4) |
-| Pairing URL | `AuthGateModal.tsx` (TV) | Displayed as **`templetv.org.ng/link`** — the mobile `/link` route claims the TV-displayed code |
-
-This means a viewer who lands on the mobile app, taps **Watch Temple TV**, and
-then opens the same channel on a TV will see both screens within a few seconds
-of each other, drifting back into lock-step automatically as the broadcast
-progresses.
-
----
-
-## 5. Tech stack
-
-| Layer | Technology |
-|---|---|
-| Runtime | Node.js 24 |
-| Package manager | pnpm 9 (workspace + catalog versions) |
-| Language | TypeScript 5.9 |
-| API server | Express 5 + Drizzle ORM + Zod |
-| Database | PostgreSQL (Neon in production) |
-| Real-time | Server-Sent Events |
-| Mobile | Expo SDK 54 (React Native + react-native-web) |
-| Web | Vite 7 + React 18 |
-| State | React Query (server) + Context (client) |
-| Styling | Tailwind CSS + shadcn/ui (admin), platform-native (mobile, TV) |
-| Auth | JWT access + refresh, tokens in `expo-secure-store` |
-| Storage | Replit Object Storage (HLS bucket) |
-| Push | Expo Push Notifications (APNs + FCM) |
-| Transcoding | FFmpeg → adaptive HLS (5 quality ladders) |
-| Observability | pino (structured) + optional Sentry |
-
----
-
-## 6. Common workflows
-
-```bash
-# Regenerate Zod schemas + React Query hooks from the OpenAPI spec
-pnpm --filter @workspace/api-spec run codegen
-
-# Apply schema changes to the database (DEV ONLY — overwrites)
+# Apply schema to the database
 pnpm --filter @workspace/db run push
 
-# Typecheck every package
-pnpm -r run typecheck
+# Build and start the API (port 5000 / 8080 on Replit)
+pnpm --filter @workspace/api-server run build
+PORT=5000 node --enable-source-maps \
+  --import ./artifacts/api-server/dist/instrument.mjs \
+  ./artifacts/api-server/dist/index.mjs
 
-# Build a production EAS mobile build
-cd artifacts/mobile && eas build --platform ios --profile production
+# In separate terminals:
+PORT=3000 pnpm --filter @workspace/admin run dev   # admin dashboard
+pnpm --filter @workspace/tv run dev                 # Smart TV app
+pnpm --filter @workspace/mobile run dev             # Expo bundler
+```
+
+On Replit the four workflows (`Start API`, `Start application`, `artifacts/tv: web`, `artifacts/mobile: expo`) wire these up automatically.
+
+---
+
+## Package documentation
+
+| Package | Purpose | README |
+|---------|---------|--------|
+| `artifacts/api-server` | Fastify v5 API, HLS transcoder, broadcast orchestrator, SSE/WS | [→](./artifacts/api-server/README.md) |
+| `artifacts/admin` | Operator dashboard — library, broadcast, schedule, analytics | [→](./artifacts/admin/README.md) |
+| `artifacts/mobile` | Expo app — iOS, Android, Android TV, Apple TV, Fire TV | [→](./artifacts/mobile/README.md) |
+| `artifacts/tv` | Smart TV web app — Samsung Tizen, LG webOS | [→](./artifacts/tv/README.md) |
+| `lib/db` | Drizzle ORM schema + PostgreSQL client | [→](./lib/db/README.md) |
+| `lib/api-spec` | OpenAPI source of truth + codegen | [→](./lib/api-spec/README.md) |
+| `lib/api-zod` | Shared Zod validation schemas | [→](./lib/api-zod/README.md) |
+| `lib/api-client-react` | TanStack Query hooks for the API | [→](./lib/api-client-react/README.md) |
+| `lib/broadcast-types` | Shared broadcast protocol types | [→](./lib/broadcast-types/README.md) |
+| `lib/broadcast-sync` | v1 broadcast sync engine | [→](./lib/broadcast-sync/README.md) |
+| `lib/player-core` | Universal player FSM + transport | [→](./lib/player-core/README.md) |
+
+---
+
+## Broadcast / Player v2
+
+The live broadcast stack runs on **v2** across all four player surfaces (admin console, TV, mobile, web). v1 modules are intentionally retained for companion surfaces (chat, graphics, viewer count, reactions).
+
+| Component | Location |
+|-----------|----------|
+| Server orchestrator FSM | `artifacts/api-server/src/modules/broadcast-v2/` |
+| API gateway | `GET/POST /api/broadcast-v2/{snapshot,events,ws,skip,reload,…}` |
+| Player FSM (A/B buffer) | `lib/player-core/src/machine.ts` |
+| WS/SSE transport | `lib/player-core/src/transport.ts` |
+| Stall watchdog | `lib/player-core/src/watchdog.ts` |
+| Admin console | `artifacts/admin/src/pages/broadcast-v2.tsx` |
+| TV player | `artifacts/tv/src/components/LiveBroadcastV2.tsx` |
+| Mobile player | `artifacts/mobile/components/V2PlayerContainer.tsx` |
+| Health endpoint | `GET /api/broadcast-v2/health` |
+
+---
+
+## Tech stack
+
+| Layer | Technology |
+|-------|-----------|
+| Runtime | Node.js ≥24 |
+| Package manager | pnpm ≥10 (workspace + catalog versions) |
+| Language | TypeScript 5.9 (strict, ESM throughout) |
+| API server | Fastify v5, fastify-type-provider-zod |
+| Database | PostgreSQL via Drizzle ORM (Replit built-in) |
+| Validation | Zod (SSOT for schema + OpenAPI) |
+| Real-time | Server-Sent Events + WebSockets |
+| Caching | Redis (optional) + in-process LRU + PostgreSQL fallback |
+| Admin | React 19, Vite, Tailwind CSS, shadcn/ui, wouter, TanStack Query |
+| Mobile | Expo ~54, React Native 0.81, expo-av, expo-router |
+| TV | React 19, Vite, HLS.js, Tailwind CSS |
+| Transcoding | FFmpeg → multi-rendition VOD HLS (360p – 1080p) |
+| Observability | Sentry, OpenTelemetry, Prometheus (`/metrics`) |
+| Build graph | TurboRepo |
+| Release | GitHub Actions + EAS Build + Fastlane |
+
+---
+
+## Required secrets
+
+| Secret | Required | Notes |
+|--------|----------|-------|
+| `JWT_ACCESS_SECRET` | Yes | ≥32 characters |
+| `JWT_REFRESH_SECRET` | Yes | ≥32 characters |
+| `SMTP_PASS` | Yes | Email delivery |
+| `DATABASE_URL` | Auto | Set by Replit; `PG*` env vars override at boot |
+| `API_ORIGIN` | Production | e.g. `https://api.templetv.org.ng` — absolutizes upload URLs |
+| `REDIS_URL` | Optional | Falls back to PostgreSQL when unset |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Optional | CDN/S3 delivery |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Optional | Web push notifications |
+| `EXPO_ACCESS_TOKEN` | Optional | EAS builds |
+| `SENTRY_DSN` | Optional | Error tracking |
+
+---
+
+## Common workflows
+
+```bash
+# Regenerate OpenAPI spec + Zod schemas + React Query hooks
+pnpm --filter @workspace/api-spec run emit
+
+# Apply schema changes to the local database
+pnpm --filter @workspace/db run push
+
+# Typecheck all libraries
+pnpm run typecheck:libs
+
+# Run the full verification suite (CI gate)
+pnpm run verify
+
+# Bump version + release all platforms (patch)
+pnpm run release:production
 ```
 
 ---
 
-## 7. Deployment
+## Deployment
 
-Both Render and EAS are pre-configured.
+| Surface | Platform | Trigger |
+|---------|----------|---------|
+| API + Admin + TV | Render | `git push main` → Render Blueprint |
+| iOS / Android | EAS Build + Submit | `pnpm run mobile:eas:build` |
+| TV web (CDN) | AWS S3 + CloudFront | `bash scripts/deploy-tv-cdn.sh` |
+| DB schema | Drizzle push | `pnpm --filter @workspace/db run push` |
 
-| Surface | How |
-|---|---|
-| API + admin + TV + web | `render.yaml` Blueprint — `git push` to `main` triggers a Render build & deploy |
-| iOS / Android | `eas build --profile production` then `eas submit` |
-| DB schema | `pnpm --filter @workspace/db run push` (dev) — production migrations follow Drizzle's standard `migrate` flow |
-
-Detailed launch checklist: [`RELEASE_AUDIT.md`](./RELEASE_AUDIT.md).
-
----
-
-## 8. Contributing
-
-1. **Branch from `main`** — short-lived feature branches.
-2. **Type-check before pushing** — `pnpm -r run typecheck`.
-3. **Keep the project docs current** for any architectural change.
-4. **Bump the OpenAPI spec first**, then run codegen — the generated Zod
-   schemas and React Query hooks must never be hand-edited.
+See [`RELEASE_PIPELINE.md`](./RELEASE_PIPELINE.md) for the full pipeline, GitHub Actions workflow list, and EAS profiles.
 
 ---
 
-## 9. License & ownership
+## Development notes
+
+- Node ≥24 and pnpm ≥10 are enforced in `package.json engines`
+- Always run `pnpm install --ignore-scripts` (not plain `pnpm install`) on Replit
+- Always run `pnpm --filter @workspace/db run push` after any schema change
+- The admin Vite dev server proxies `/api/*` → port 5000 — start the API first
+- Default dev admin: `admin@templetv.org.ng` / `Temple124@`
+- Mobile cannot be previewed in the browser — use Expo Go or a device/simulator build
+- `pnpm --filter @workspace/api-spec run emit` must be re-run after any API schema change; commit the generated files
+
+---
+
+## License
 
 Proprietary © Jesus Christ Temple Ministry (JCTM). All rights reserved.
-
-For licensing or partnership inquiries, contact the JCTM media office through
-[templetv.org.ng](https://templetv.org.ng).
