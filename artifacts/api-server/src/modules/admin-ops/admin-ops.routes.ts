@@ -63,6 +63,7 @@ import {
   queueStats,
   retryJob,
 } from "../transcoder/transcoder.queue.js";
+import { transcoderDispatcher } from "../transcoder/transcoder.dispatcher.js";
 import { liveOverridesService } from "../live-overrides/live-overrides.service.js";
 import { StartOverrideBodySchema } from "../live-overrides/live-overrides.schemas.js";
 import { schema } from "../../infrastructure/db.js";
@@ -1373,6 +1374,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
           reply.code(404);
           return { message: "Transcoding job not found" };
         }
+        transcoderDispatcher.nudge();
         return { ok: true as const };
       },
     );
@@ -1459,6 +1461,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         videoPath: sourceKey,
         priority: body.priority,
       });
+      transcoderDispatcher.nudge();
       return result;
     },
   );

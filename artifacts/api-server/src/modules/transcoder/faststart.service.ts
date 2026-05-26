@@ -237,8 +237,30 @@ export async function runFaststart(
     }
 
     log.info("faststart: downloading source from storage");
-    const { body } = await storage().getObject(objectKey);
+    const { body, contentLength } = await storage().getObject(objectKey);
     await pipeline(body, createWriteStream(inputPath));
+
+    // Verify the download completed in full. The chunked streaming path for
+    // large blobs (> 64 MiB) exits the generator early on a short SUBSTRING
+    // result — the `pipeline` call succeeds but the written file is shorter
+    // than expected. A truncated input causes probeContainerIsValid to return
+    // false on a valid file, which leads remuxForFaststart to also fail and
+    // ultimately throws CORRUPT_UPLOAD — permanently failing a healthy video.
+    // Throwing DOWNLOAD_TRUNCATED here instead lets the finalize handler treat
+    // it as a non-fatal faststart failure so the video continues to the HLS
+    // transcoder, which performs its own verified download.
+    if (contentLength != null && contentLength > 0) {
+      const { size: actualSize } = await stat(inputPath);
+      if (actualSize !== contentLength) {
+        throw Object.assign(
+          new Error(
+            `faststart: source download truncated — expected ${contentLength} bytes but received ${actualSize}. ` +
+            `The video will be processed by the HLS transcoder instead.`,
+          ),
+          { code: "DOWNLOAD_TRUNCATED" },
+        );
+      }
+    }
 
     // ── Container pre-flight: detect moov-missing / structurally corrupt MP4 ──
     //

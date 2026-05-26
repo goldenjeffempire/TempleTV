@@ -1486,6 +1486,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           if (!skipTranscodeEnqueueB) {
             try {
               await enqueueTranscode({ videoId: videoIdB, videoPath: result.objectKey });
+              transcoderDispatcher.nudge();
               capturedLogB.info({ sessionId, videoId: videoIdB }, "[finalize:db_fallback:bg] HLS transcode job queued");
             } catch (err) {
               capturedLogB.warn(

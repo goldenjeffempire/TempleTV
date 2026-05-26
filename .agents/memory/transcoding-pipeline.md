@@ -36,7 +36,26 @@ Added automatic 360p-only retry when multi-rendition FFmpeg fails with exit 234 
 ### 7. Scratch dir GC only fires on startup
 Added per-tick counter in `runOnce()`; calls `purgeOrphanedScratchDirs()` every 180 ticks (~30 min at 10s/tick). Prevents accumulation in long-running production deployments.
 
+### 8. db_fallback path missing nudge() — fixed May 2026
+`chunked-upload.routes.ts` Path A (line ~1222) called `transcoderDispatcher.nudge()` after `enqueueTranscode`; Path B (db_fallback) did not. Jobs queued via this path waited up to 10 s for the next poll tick.
+
+**Fix:** Added `transcoderDispatcher.nudge()` immediately after `enqueueTranscode` in the db_fallback success branch.
+
+### 9. faststart source download lacked size verification — fixed May 2026
+`faststart.service.ts` used raw `pipeline(body, createWriteStream(inputPath))` without checking the written file size. The chunked streaming path for blobs > 64 MiB (storage.ts `streamChunked`) exits early on a short SUBSTRING result, producing a silently truncated local file. Truncated input → `probeContainerIsValid` returns false on a valid file → `remuxForFaststart` also fails → `CORRUPT_UPLOAD` thrown → video permanently marked failed even though the storage blob is intact.
+
+**Fix:** Destructure `contentLength` from `getObject()` response. After `pipeline()`, check `stat(inputPath).size === contentLength` and throw `{ code: "DOWNLOAD_TRUNCATED" }` on mismatch. This code is treated as non-fatal by the finalize handler — the video continues to the HLS transcoder, which does its own verified download via `downloadSourceToTempFile`.
+
+**Why this matters:** Only triggers for videos > 64 MiB. `DOWNLOAD_TRUNCATED` vs `CORRUPT_UPLOAD` is the critical distinction — the latter permanently fails the video with no recovery path.
+
+### 10. retryJob / manual requeue missing nudge() — fixed May 2026
+`admin-ops.routes.ts` called `retryJob(id)` and `enqueueTranscode(...)` (the `/transcoding/:id/retry` and `/transcoding/requeue/:videoId` routes) without calling `transcoderDispatcher.nudge()`. Manual retries from the admin UI waited up to 10 s before the dispatcher picked up the job.
+
+**Fix:** Imported `transcoderDispatcher` into `admin-ops.routes.ts` and added `nudge()` after each successful queue operation.
+
 ## Architecture note
 - `activeSourcePath` lives INSIDE `scratchDir` (either `source.ext` or `source.remuxed.mp4`). Any fallback that wipes scratchDir must preserve this path — wipe only `v0/`, `v1/` etc.
 - `generateThumbnail()` writes to `scratchDir/thumbnail.jpg` and is uploaded by `uploadDirRecursive()`.
 - `maxAttempts` DB column default controls per-job retry budget. The `resetStuckJobs()` watchdog now increments this budget; `resetOrphanedJobs()` (startup-only) does NOT increment (server crash is not the job's fault).
+- Broadcast auto-enqueue requires: `hlsMasterUrl` OR (`localVideoUrl` AND `faststartApplied=true`).
+- `TRANSCODER_DISABLE=1` disables the dispatcher entirely — check when jobs queue but never start.
