@@ -374,15 +374,23 @@ export async function probeContainerIsValid(inputPath: string): Promise<boolean>
 }
 
 /**
- * Detect whether an MP4 file has a media-data (mdat) box but no moov atom at all.
- * This is the signature of a completely unrecoverable upload where the recording
- * or export was interrupted before the moov could be written. When true, the
- * caller should surface a "re-upload required" error immediately rather than
- * cycling through expensive remux recovery attempts.
+ * Detect whether an MP4 file has a media-data (mdat) box but no moov atom
+ * anywhere in the file. This is the signature of a completely unrecoverable
+ * upload where the recording or export was interrupted before the moov could
+ * be written — the codec configuration (SPS/PPS) in the moov's avcC box is
+ * permanently lost and no remux strategy can reconstruct it.
  *
- * Reads only the first 64 KiB of the file (enough to find all top-level box
- * headers without loading the whole file). Returns false on any I/O error so
- * the caller falls through to the normal remux path.
+ * Scans both the FRONT (first 64 KiB) and the TAIL (last 64 KiB) of the
+ * file. Normal camera recordings write mdat first and moov last (moov-at-EOF
+ * layout). Scanning only the front misidentifies those files as unrecoverable
+ * because mdat is found but moov is out of the scan window. The tail scan
+ * catches the moov-at-EOF case and correctly returns false, allowing the
+ * remux recovery path to run (strategy 1 — stream-copy with +faststart fixes
+ * these in seconds with no re-encoding).
+ *
+ * Returns true ONLY when mdat is present AND moov is absent from both the
+ * front and tail scan windows. Returns false on any I/O error so the caller
+ * falls through to the normal remux path.
  */
 export async function detectMdatWithoutMoov(inputPath: string): Promise<boolean> {
   const SCAN_BYTES = 65536;
@@ -390,22 +398,56 @@ export async function detectMdatWithoutMoov(inputPath: string): Promise<boolean>
   try {
     const { open: fsOpen } = await import("node:fs/promises");
     fd = await fsOpen(inputPath, "r");
-    const buf = Buffer.allocUnsafe(SCAN_BYTES);
-    const { bytesRead } = await fd.read(buf, 0, SCAN_BYTES, 0);
+
+    // ── Front scan ───────────────────────────────────────────────────────────
+    // Parse ISO base-media top-level boxes from the beginning of the file.
+    // Each box starts with: 4-byte big-endian size + 4-byte ASCII type.
+    // A size of 0 means "extends to EOF"; a size of 1 means 64-bit extended
+    // size (rare — just skip past the box to avoid infinite looping).
+    const frontBuf = Buffer.allocUnsafe(SCAN_BYTES);
+    const { bytesRead: frontRead } = await fd.read(frontBuf, 0, SCAN_BYTES, 0);
     let pos = 0;
     let hasMdat = false;
-    // Parse top-level ISO base-media boxes: each starts with 4-byte size + 4-byte type.
-    // A size of 0 means "extends to EOF"; a size of 1 means 64-bit extended size (skip).
-    while (pos + 8 <= bytesRead) {
-      const boxSize = buf.readUInt32BE(pos);
-      const boxType = buf.slice(pos + 4, pos + 8).toString("ascii");
-      if (boxType === "moov") return false; // moov found → not the pathological case
+    while (pos + 8 <= frontRead) {
+      const boxSize = frontBuf.readUInt32BE(pos);
+      const boxType = frontBuf.slice(pos + 4, pos + 8).toString("ascii");
+      if (boxType === "moov") return false; // moov at front → not the pathological case
       if (boxType === "mdat") hasMdat = true;
       if (boxSize === 0) break; // extends to EOF — stop scanning
       if (boxSize < 8) break;  // malformed size — stop scanning
       pos += boxSize;
     }
-    return hasMdat; // mdat seen but moov never encountered in the scan window
+
+    if (!hasMdat) return false; // no mdat in front → this pathology doesn't apply
+
+    // ── Tail scan ────────────────────────────────────────────────────────────
+    // mdat was found in the front but moov wasn't. Before declaring the file
+    // unrecoverable, check the TAIL of the file — normal recordings (camera,
+    // phone, OBS without faststart) write moov as the very last box. If moov
+    // is there, the remux recovery path (remuxForFaststart) can fix it in
+    // seconds using ffmpeg's stream-copy + movflags=+faststart.
+    //
+    // We scan byte-by-byte in the tail window rather than parsing box
+    // boundaries (which may be misaligned relative to the tail offset).
+    const fileSize = (await stat(inputPath)).size;
+    if (fileSize > SCAN_BYTES) {
+      const tailOffset = fileSize - SCAN_BYTES;
+      const tailBuf = Buffer.allocUnsafe(SCAN_BYTES);
+      const { bytesRead: tailRead } = await fd.read(tailBuf, 0, SCAN_BYTES, tailOffset);
+      for (let i = 0; i + 8 <= tailRead; i++) {
+        // Look for the 4-byte ASCII sequence "moov" anywhere in the tail window.
+        if (
+          tailBuf[i]     === 0x6d && // m
+          tailBuf[i + 1] === 0x6f && // o
+          tailBuf[i + 2] === 0x6f && // o
+          tailBuf[i + 3] === 0x76    // v
+        ) {
+          return false; // moov at EOF → recoverable via remux, not truly absent
+        }
+      }
+    }
+
+    return true; // mdat present but moov absent from both front and tail — unrecoverable
   } catch {
     return false; // treat I/O failures as "unknown" — let remux attempt run
   } finally {
