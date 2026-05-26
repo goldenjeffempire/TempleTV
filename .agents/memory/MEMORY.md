@@ -1,2 +1,2 @@
-- [Mobile HLS single-segment loop bug](mobile-hls-loop-bug.md) — expo-av seeks past video end → immediate didJustFinish → HANDOFF → worse position → loop; three fixes required.
+- [Mobile HLS playback end-guard and drift-seek fixes](mobile-hls-playback.md) — 4-layer fix for "single segment replay" loop: HLS_END_GUARD_MS=8000 > threshold=5000, live HLS retry uses playAsync(), drift guard skips < 30 s re-seeks, machine cap durationSecs-10.
 - [Transcoding pipeline root causes & fixes](transcoding-pipeline.md) — maxAttempts=3 (→5), stuck-watchdog didn't increment attempts, timeout 4h (→2h), -pix_fmt per-rendition bug, 360p fallback, disk pre-flight.

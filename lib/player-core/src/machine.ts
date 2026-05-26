@@ -55,7 +55,7 @@ function resolvePositionSecs(
     // by exactly the device clock skew.
     const nowMs = Date.now() + clockOffsetMs;
     const elapsed = Math.max(0, (nowMs - startsAtMs) / 1000);
-    // Cap at (durationSecs - 2) for V2Items with a known duration.
+    // Cap at (durationSecs - 10) for V2Items with a known duration.
     //
     // Problem this fixes: if the DB row's durationSecs overestimates the
     // actual encoded video length (e.g. a 30-min file catalogued as 86400 s
@@ -67,14 +67,16 @@ function resolvePositionSecs(
     // Either path creates a rapid HANDOFF → rebind → worse-elapsed → repeat
     // loop on mobile — the "single HLS segment replaying" symptom.
     //
-    // Capping at (durationSecs - 2) is safe: the stale-snapshot guard
-    // already prevents binding when elapsed ≥ durationSecs in the normal
-    // case.  The 2 s margin only matters when durationSecs is slightly
-    // wrong, providing a valid in-bounds seek target so the player can
-    // finish naturally and trigger the naturalEnd callback that corrects
-    // the DB row for all future loops.
+    // Why 10 s (was 2 s): the mobile player's HLS_END_GUARD_MS is 8 000 ms.
+    // The server-side cap must be ≥ client-side guard so that, when
+    // durationSecs ≈ actualDurationMs, the machine already lands the seek
+    // target well before the end. The client still applies its own clamp
+    // (Math.max(0, actualDurationMs - HLS_END_GUARD_MS)) as a second layer,
+    // but aligning the server cap to 10 s gives defense-in-depth and prevents
+    // spurious quick-finish events even when actualDurationMs is unavailable
+    // (e.g. while the expo-av onLoad has not yet fired for the new item).
     if ("durationSecs" in item && (item as V2Item).durationSecs > 0) {
-      return Math.min(elapsed, Math.max(0, (item as V2Item).durationSecs - 2));
+      return Math.min(elapsed, Math.max(0, (item as V2Item).durationSecs - 10));
     }
     return elapsed;
   }

@@ -26,15 +26,26 @@
  * HLS live-timeline fixes (May 2026):
  *   • Actual-duration clamping: expo-av's `onLoad` durationMillis is captured
  *     as ground truth. For VOD HLS, playFromPositionAsync is clamped to
- *     (actualDurationMs - 2000) to prevent out-of-range seeks that cause
- *     AVPlayer/ExoPlayer to snap to the end and immediately fire didJustFinish,
+ *     (actualDurationMs - HLS_END_GUARD_MS) to prevent out-of-range seeks that
+ *     cause AVPlayer/ExoPlayer to snap to the end and immediately fire didJustFinish,
  *     creating the "single segment replaying" loop.
+ *   • End-guard margin: HLS_END_GUARD_MS (8 000 ms) > HLS_QUICK_FINISH_THRESHOLD_MS
+ *     (5 000 ms) guarantees every clamped seek lands ≥ 8 s before the encoded end —
+ *     closing the 2–5 s gap that caused spurious quick-finish loops with the old
+ *     2 000 ms guard.
  *   • Live vs VOD detection: if durationMillis is undefined/Infinity (live HLS),
  *     playAsync() is used instead of playFromPositionAsync() — the native player
  *     attaches to the live edge automatically.
+ *   • Quick-finish retry corrected: live HLS retries via playAsync() (not
+ *     playFromPositionAsync(0)), which was seeking to the oldest DVR segment
+ *     and trailing further behind the live edge on every spurious retry.
+ *   • Drift-correction seek guard: small anchor recalibrations (< 30 s drift)
+ *     are suppressed when the playhead is already near the target, preventing
+ *     AVPlayer/ExoPlayer from dropping its download buffer on every keepalive.
+ *     Only genuine drifts (server restart, timezone mis-sync, > 30 s gap) seek.
  *   • Quick-finish guard: if didJustFinish fires within HLS_QUICK_FINISH_THRESHOLD_MS
- *     of playback start, it's a spurious finish (bad seek). Retried from position 0
- *     up to HLS_MAX_QUICK_FINISH_RETRIES times before escalating to buffer-ended.
+ *     of playback start, it's a spurious finish (bad seek). Retried up to
+ *     HLS_MAX_QUICK_FINISH_RETRIES times before escalating to buffer-ended.
  *   • Live-sync interval: playAsync() called every HLS_LIVE_SYNC_INTERVAL_MS on
  *     active+playing HLS buffers to re-latch to the live edge and refresh the
  *     manifest on DVR-windowed streams. No-op on VOD HLS (already playing).
@@ -80,10 +91,26 @@ const BUFFERING_STALL_THRESHOLD_MS = 20_000;
  *   2. Live HLS where the DVR window is exhausted before the manifest refresh
  *      arrives → player reaches the last cached segment and fires didJustFinish.
  *
- * In both cases the right recovery is to retry from position 0 rather than
- * HANDOFF (which would rebind the same item with a worse position, looping).
+ * In both cases the right recovery is to retry rather than HANDOFF (which would
+ * rebind the same item with a worse position, looping).
  */
 const HLS_QUICK_FINISH_THRESHOLD_MS = 5_000;
+
+/**
+ * Minimum margin (ms) between the seek target and the actual encoded end of
+ * the VOD HLS content. Must be strictly greater than HLS_QUICK_FINISH_THRESHOLD_MS
+ * (5 000 ms) to guarantee that every clamped seek lands far enough from the end
+ * that the player can play at least that many milliseconds before firing
+ * didJustFinish — ensuring no clamped seek ever triggers the quick-finish guard.
+ *
+ * 8 000 ms = HLS_QUICK_FINISH_THRESHOLD_MS + 3 000 ms safety margin.
+ *
+ * Without this margin the window between the old 2 000 ms guard and the
+ * 5 000 ms quick-finish threshold (3 000 ms) was wide enough that seeks landing
+ * 2–5 s from the encoded end produced a "single segment replay" loop:
+ *   seek to end-3s → play 3s → quick-finish → retry from 0 → desync.
+ */
+const HLS_END_GUARD_MS = 8_000;
 
 /**
  * Maximum consecutive "quick finish" retries before escalating to buffer-ended.
@@ -91,6 +118,24 @@ const HLS_QUICK_FINISH_THRESHOLD_MS = 5_000;
  * a corrupt HLS playlist that always ends in < 5 s regardless of start position).
  */
 const HLS_MAX_QUICK_FINISH_RETRIES = 2;
+
+/**
+ * Maximum position drift (ms) between a drift-correction seek target and the
+ * current playhead before a re-seek is actually issued on VOD HLS.
+ *
+ * The player-core machine emits drift-correction `play` intents when the
+ * server's cycle anchor shifts by > 5 s (e.g. after a server restart or
+ * checkpoint restore). On web this is cheap (a single currentTime assignment).
+ * On mobile, every `playFromPositionAsync` causes AVPlayer/ExoPlayer to:
+ *   1. Drop its current download buffer
+ *   2. Re-request the segment containing the new position
+ *   3. Stall visibly for 0.5–2 s while the new segment downloads
+ *
+ * Suppressing re-seeks when the playhead is already within 30 s of the target
+ * preserves smooth playback for small anchor recalibrations while still
+ * correcting large drifts (server restart, timezone mis-sync, > 30 s gap).
+ */
+const HLS_SMALL_DRIFT_SKIP_MS = 30_000;
 
 /**
  * How often (ms) to call `playAsync()` on an active+playing HLS buffer.
@@ -228,6 +273,16 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
    */
   const hlsQuickFinishCountRef = useRef(0);
 
+  /**
+   * Most-recently reported playback position (positionMillis from
+   * onPlaybackStatusUpdate). Used by the drift-correction seek guard in the
+   * play effect: if the current playhead is already within HLS_SMALL_DRIFT_SKIP_MS
+   * of the requested target, the re-seek is suppressed to avoid the stall caused
+   * by AVPlayer/ExoPlayer dropping its buffer on every small anchor recalibration.
+   * Reset to null on each new bind revision so the initial seek always fires.
+   */
+  const playheadMsRef = useRef<number | null>(null);
+
   // ── isBuffering stall watchdog ──────────────────────────────────────────
   // expo-av sets isBuffering=true whenever the player is waiting for the
   // network to deliver enough data to resume playback. On weak or
@@ -249,6 +304,7 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
     setLoadedRevision(-1);
     actualDurationMsRef.current = null;
     playStartMsRef.current = null;
+    playheadMsRef.current = null;
     hlsQuickFinishCountRef.current = 0;
   }, [state.bindRevision]);
 
@@ -288,8 +344,8 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
           });
         } else {
           // ── VOD HLS path ───────────────────────────────────────────────
-          // Clamp the requested position to (actualMs - 2000) to prevent
-          // seeking past the last segment of the encoded content.
+          // Clamp the requested position to (actualMs - HLS_END_GUARD_MS) to
+          // prevent seeking past the last segment of the encoded content.
           //
           // Why this matters: if the DB row's durationSecs overestimates the
           // actual video length (e.g. a 30-min file catalogued as 86400 s
@@ -300,17 +356,47 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
           // Both create a rapid HANDOFF→rebind→worse-position→repeat loop —
           // the "single HLS segment replaying" symptom on mobile.
           //
-          // Clamping to (actualMs - 2000) guarantees the seek lands inside the
-          // valid segment range. The 2 s margin before the end avoids the edge
-          // case where the last segment is still being fetched by the CDN.
+          // HLS_END_GUARD_MS (8 000 ms) > HLS_QUICK_FINISH_THRESHOLD_MS (5 000 ms)
+          // by a 3 s safety margin, guaranteeing that even when clamping kicks in
+          // the player has at least 8 s to play before a natural didJustFinish —
+          // far above the quick-finish threshold so no clamped seek triggers the
+          // retry loop.
           const clampedMs = Math.min(
             state.positionSecs * 1000,
-            Math.max(0, actualMs - 2_000),
+            Math.max(0, actualMs - HLS_END_GUARD_MS),
           );
-          playStartMsRef.current = Date.now();
-          v.playFromPositionAsync(clampedMs).catch(() => {
-            reportBufferEvent({ type: "buffer-error", bufferId, error: "play-failed" });
-          });
+
+          // ── Drift-correction seek guard ────────────────────────────────
+          // The machine emits a new `play` intent (updating state.positionSecs)
+          // whenever the server's cycle anchor shifts by > 5 s — for example,
+          // after a server restart, checkpoint restore, or keepalive arriving
+          // just after a REST snapshot during a transport reconnect. On web
+          // this is a free currentTime assignment. On mobile every
+          // playFromPositionAsync causes AVPlayer/ExoPlayer to drop its
+          // download buffer and stall for 0.5–2 s while re-fetching the
+          // segment at the new position.
+          //
+          // Suppress the re-seek when the playhead is already within
+          // HLS_SMALL_DRIFT_SKIP_MS (30 s) of the target — the viewer is
+          // watching the correct content and the minor desync is imperceptible.
+          // Allow the seek when the drift is large (> 30 s), which indicates a
+          // genuine broadcast restart or a severely skewed device clock.
+          //
+          // The guard requires playStartMsRef to be set (i.e. we have already
+          // sought at least once for this bind revision) so the INITIAL seek
+          // always fires unconditionally and lands at the correct timeline position.
+          const currentPlayheadMs = playheadMsRef.current;
+          const nearTarget =
+            currentPlayheadMs !== null &&
+            playStartMsRef.current !== null &&
+            Math.abs(clampedMs - currentPlayheadMs) < HLS_SMALL_DRIFT_SKIP_MS;
+
+          if (!nearTarget) {
+            playStartMsRef.current = Date.now();
+            v.playFromPositionAsync(clampedMs).catch(() => {
+              reportBufferEvent({ type: "buffer-error", bufferId, error: "play-failed" });
+            });
+          }
         }
       } else {
         // ── MP4 / DASH / non-HLS path ──────────────────────────────────
@@ -392,6 +478,14 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
           clearBufferingWatchdog();
           return;
         }
+        // Track current playhead position for the drift-correction seek guard
+        // in the play effect. positionMillis is reported every 500 ms
+        // (progressUpdateIntervalMillis). We only record values > 0 to avoid
+        // overwriting a valid position with the initial 0 ms before the first
+        // segment arrives or after a seek completes.
+        if (typeof status.positionMillis === "number" && status.positionMillis > 0) {
+          playheadMsRef.current = status.positionMillis;
+        }
         if (status.didJustFinish) {
           clearBufferingWatchdog();
 
@@ -427,11 +521,26 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
                 hlsQuickFinishCountRef.current = 0;
                 reportBufferEvent({ type: "buffer-ended", bufferId });
               } else {
-                // Retry from position 0: brief delay gives the HLS manifest
-                // time to refresh and avoids a tight CPU-spin retry loop.
+                // Retry: brief delay gives the HLS manifest time to refresh
+                // and avoids a tight CPU-spin retry loop.
+                //
+                // Live HLS: use playAsync() — calling playFromPositionAsync(0)
+                // on a live stream either fails (no seekable range in a
+                // dynamic playlist) or snaps to the oldest buffered segment,
+                // trailing further behind the live edge on every retry.
+                //
+                // VOD HLS: playFromPositionAsync(0) restarts from the
+                // beginning. On the next real-time snapshot the machine will
+                // issue a fresh drift-corrected seek to the correct timeline
+                // position once the video is loaded.
+                const actualMsRetry = actualDurationMsRef.current;
+                const isLiveRetry = actualMsRetry === null || !isFinite(actualMsRetry) || actualMsRetry <= 0;
                 playStartMsRef.current = Date.now();
                 setTimeout(() => {
-                  ref.current?.playFromPositionAsync(0).catch(() => {
+                  const retryPromise = isLiveRetry
+                    ? ref.current?.playAsync()
+                    : ref.current?.playFromPositionAsync(0);
+                  retryPromise?.catch(() => {
                     reportBufferEvent({
                       type: "buffer-error",
                       bufferId,
