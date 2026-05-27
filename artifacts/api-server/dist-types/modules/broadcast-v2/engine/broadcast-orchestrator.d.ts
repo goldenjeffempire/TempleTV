@@ -385,8 +385,21 @@ declare class BroadcastOrchestrator extends EventEmitter {
     /**
      * Send an HTTP HEAD to `url` with a 5 s timeout.
      * Returns true  — server replied 1xx/2xx/3xx (reachable).
-     * Returns false — server replied 4xx/5xx (definitively broken).
-     * Returns null  — timeout, network error, or SSRF block (ambiguous — do not mark bad).
+     * Returns false — server replied 4xx (definitively broken — not found, forbidden).
+     * Returns null  — 5xx, timeout, network error, or SSRF block (ambiguous — do not mark bad).
+     *
+     * 5xx responses are treated as ambiguous (not definitively broken) because:
+     *   • A 503 Service Unavailable is transient — the origin may recover within
+     *     seconds (deploy restart, DB blip, HLS segment not yet flushed).
+     *   • Marking a URL bad on the first 5xx causes probeUrlReachability to trigger
+     *     the forward-scan anchor fix in tickInner(), permanently advancing
+     *     cycleStartedAtMs past that item's slot for the entire cycle. For a 2-hour
+     *     cycle this means a 10-second 503 silently drops content for up to 2 hours.
+     *   • 5xx failures during actual playback are already handled by the player
+     *     stall-report path (stall → markBadUrl → incrementBadUrlSkipCount), which
+     *     applies the bad-URL TTL with full skip-count gating.
+     *   • Conservative design: false positives on transient server errors must never
+     *     silently drop healthy content from the broadcast rotation.
      */
     private probeUrlReachability;
     /**

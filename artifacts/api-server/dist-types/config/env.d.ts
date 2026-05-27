@@ -45,6 +45,7 @@ declare const Env: z.ZodObject<{
     TRANSCODER_POLL_MS: z.ZodDefault<z.ZodNumber>;
     TRANSCODER_DISABLE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
     BROADCAST_AUTO_ENQUEUE_DISABLE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
+    BROADCAST_QUEUE_MAX_ITEMS: z.ZodDefault<z.ZodNumber>;
     TRANSCODER_SCRATCH_DIR: z.ZodOptional<z.ZodString>;
     TRANSCODER_PRESET: z.ZodDefault<z.ZodString>;
     TRANSCODER_CRF: z.ZodDefault<z.ZodNumber>;
@@ -125,6 +126,7 @@ declare const Env: z.ZodObject<{
     TRANSCODER_POLL_MS: number;
     TRANSCODER_DISABLE: boolean;
     BROADCAST_AUTO_ENQUEUE_DISABLE: boolean;
+    BROADCAST_QUEUE_MAX_ITEMS: number;
     TRANSCODER_PRESET: string;
     TRANSCODER_CRF: number;
     TRANSCODER_KEEP_SCRATCH: boolean;
@@ -225,6 +227,7 @@ declare const Env: z.ZodObject<{
     TRANSCODER_POLL_MS?: number | undefined;
     TRANSCODER_DISABLE?: string | boolean | undefined;
     BROADCAST_AUTO_ENQUEUE_DISABLE?: string | boolean | undefined;
+    BROADCAST_QUEUE_MAX_ITEMS?: number | undefined;
     TRANSCODER_SCRATCH_DIR?: string | undefined;
     TRANSCODER_PRESET?: string | undefined;
     TRANSCODER_CRF?: number | undefined;

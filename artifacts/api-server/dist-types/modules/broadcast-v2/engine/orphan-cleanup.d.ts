@@ -10,6 +10,8 @@ export interface CleanupStats {
         videoId: string;
     }>;
     lastStaleSessiosClosed: number;
+    lastPrunedStalePushTokens: number;
+    lastPrunedStaleWebPushSubs: number;
     lastError: string | null;
     nextRunAtMs: number | null;
 }

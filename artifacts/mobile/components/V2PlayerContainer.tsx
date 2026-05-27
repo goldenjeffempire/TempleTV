@@ -125,14 +125,15 @@ import { useNetworkContext } from "@/context/NetworkContext";
  * skip) rather than waiting indefinitely for segment data that may never
  * arrive on a very weak or interrupted connection.
  *
- * 20 s balances:
- *   • HLS: enough time for a slow connection to fetch the next segment (5–10 s
- *     on a 2G link loading a 2 MB 6-second segment)
- *   • Transient rebuffer pauses on a healthy connection (usually <3 s)
+ * 10 s balances:
+ *   • HLS: enough time for a slow connection to fetch the next segment (5–8 s
+ *     on a 3G link loading a 2 MB 2-second segment pair)
+ *   • Transient rebuffer pauses on a healthy connection (usually <2 s)
  *   • Avoidance of false-positives during the very first load of a new item
- *     (moov-atom seek on MP4, first manifest parse on HLS)
+ *   • Fast recovery on bad sources: 10 s instead of 20 s means the overlay
+ *     clears sooner via recovery rather than sitting frozen with audio playing
  */
-const BUFFERING_STALL_THRESHOLD_MS = 20_000;
+const BUFFERING_STALL_THRESHOLD_MS = 10_000;
 
 /**
  * How many milliseconds of actual playback must occur before a `didJustFinish`
@@ -219,12 +220,13 @@ const HLS_LIVE_SYNC_INTERVAL_MS = 30_000;
  * PREPARING_ACTIVE or RECOVERING indefinitely — audio may play (from a prior
  * successful load) but "Tuning in…" never clears.
  *
- * 25 s is chosen slightly above BUFFERING_STALL_THRESHOLD_MS (20 s) so the
- * buffering watchdog has first crack at stalls (isBuffering:true path), and
- * this timeout only fires for truly silent failures where isBuffering stays
- * false (manifest fetch never started, codec negotiation hung, etc.).
+ * 12 s: chosen above BUFFERING_STALL_THRESHOLD_MS (10 s) so the buffering
+ * watchdog has first crack at stalls (isBuffering:true path). Only fires for
+ * truly silent failures where isBuffering stays false (manifest fetch never
+ * started, codec negotiation hung, etc.). Reduced from 25 s so the FSM
+ * recovers twice as fast on completely silent ExoPlayer failures.
  */
-const LOAD_TIMEOUT_MS = 25_000;
+const LOAD_TIMEOUT_MS = 12_000;
 
 interface Props {
   baseUrl: string;
@@ -725,6 +727,38 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
         if (typeof status.positionMillis === "number" && status.positionMillis > 0) {
           playheadMsRef.current = status.positionMillis;
         }
+
+        // ── isPlaying fast-path (Android ExoPlayer audio-before-onLoad fix) ──
+        // Android ExoPlayer sometimes starts playing audio before expo-av's
+        // React bridge fires the `onLoad` callback. In that case `isPlaying`
+        // becomes true and positionMillis starts advancing while the FSM is
+        // still in PREPARING_ACTIVE — leaving "Tuning in…" on screen even
+        // though the stream is actively outputting media.
+        //
+        // If the player is actively playing (not buffering, positionMillis > 0)
+        // but buffer-ready has never been reported for this bind revision, fire
+        // it now. This is safe because:
+        //   1. `status.isLoaded` guarantees ExoPlayer has reached STATE_READY.
+        //   2. `status.isPlaying && !status.isBuffering` guarantees it is
+        //      producing frames / audio, not just pre-rolling in a paused state.
+        //   3. The `lastReportedRevision` guard prevents double-firing —
+        //      if onLoad already sent buffer-ready this branch is a no-op.
+        //
+        // Effect: the "Tuning in…" overlay clears as soon as ExoPlayer starts
+        // playing, even if the React bridge delivery of onLoad is delayed.
+        if (
+          status.isLoaded &&
+          status.isPlaying &&
+          !status.isBuffering &&
+          lastReportedRevision.current !== state.bindRevision
+        ) {
+          if (url) lastLoadedUrlRef.current = url;
+          setLoadedRevision(state.bindRevision);
+          lastReportedRevision.current = state.bindRevision;
+          clearLoadTimeout();
+          reportBufferEvent({ type: "buffer-ready", bufferId });
+        }
+
         if (status.didJustFinish) {
           clearBufferingWatchdog();
 
@@ -950,40 +984,153 @@ export function V2PlayerContainer({
   }, [justRecovered, notifyOnline, forceReconnect]);
 
   const server = snapshot.lastServerSnapshot;
-  const overlay = useMemo(() => {
-    if (snapshot.state === "OFFLINE_HOLD") return "Reconnecting…";
-    if (snapshot.state === "FATAL") return "We encountered a playback issue — please try again in a moment.";
-    if (server?.failover.active) return server.failover.reason ?? "On standby";
-    // BOOTSTRAP/SYNCING MUST resolve before off-air so the cold-load
-    // flash (snapshot has arrived but FSM hasn't bound a buffer yet)
-    // shows "Tuning in…" instead of a misleading off-air state.
-    if (snapshot.state === "BOOTSTRAP") return "Tuning in…";
-    if (snapshot.state === "SYNCING") {
-      if (server && !server.current && !server.override) return "Temple TV is currently off-air — we'll be back shortly.";
-      return "Tuning in…";
+
+  // ── Loading phase tracker ─────────────────────────────────────────────────
+  // Tracks how long the player has been in a transient loading state and
+  // advances a `loadingPhase` counter every PHASE_STEP_MS. This drives
+  // contextual message rotation: early phases show specific status text;
+  // later phases shift to "still working" language so the user knows we
+  // haven't frozen. The counter resets to 0 whenever we leave a loading state.
+  const PHASE_STEP_MS = 5_000;
+  const [loadingPhase, setLoadingPhase] = useState(0);
+  const phaseTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isLoadingState =
+    snapshot.state === "BOOTSTRAP" ||
+    snapshot.state === "SYNCING" ||
+    snapshot.state === "PREPARING_ACTIVE" ||
+    snapshot.state === "RECOVERING_PRIMARY" ||
+    snapshot.state === "RECOVERING_FAILOVER" ||
+    snapshot.state === "SKIP_PENDING" ||
+    snapshot.state === "OFFLINE_HOLD";
+
+  useEffect(() => {
+    if (!isLoadingState) {
+      setLoadingPhase(0);
+      if (phaseTimerRef.current) {
+        clearInterval(phaseTimerRef.current);
+        phaseTimerRef.current = null;
+      }
+      return;
     }
-    // Buffer loading: a new item has been bound to the active buffer but
-    // `buffer-ready` hasn't fired yet. Keep the "Tuning in…" overlay visible
-    // so the user sees activity during initial load — not a silent black box.
-    if (snapshot.state === "PREPARING_ACTIVE") return "Tuning in…";
-    // Active playback states — content is bound and playing; suppress any
-    // overlay so a transient server-snapshot gap between queue items never
-    // produces a misleading overlay flash over a playing video.
+    setLoadingPhase(0);
+    phaseTimerRef.current = setInterval(() => {
+      setLoadingPhase((p) => p + 1);
+    }, PHASE_STEP_MS);
+    return () => {
+      if (phaseTimerRef.current) {
+        clearInterval(phaseTimerRef.current);
+        phaseTimerRef.current = null;
+      }
+    };
+  // snapshot.state is the only meaningful dependency for reset/start
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshot.state]);
+
+  // ── Overlay content ───────────────────────────────────────────────────────
+  // Returns { main, sub, showSpinner } or null (no overlay).
+  // Phases give users progressively more honest context as time passes —
+  // "Preparing Video" (phase 0) → "Buffering…" (phase 1) → "Please wait…" (phase 2+).
+  interface OverlayContent { main: string; sub: string; showSpinner: boolean }
+  const overlayContent = useMemo<OverlayContent | null>(() => {
+    const p = loadingPhase;
+
+    if (snapshot.state === "FATAL") {
+      return { main: "Playback Error", sub: "Please try again in a moment.", showSpinner: false };
+    }
+    if (server?.failover.active) {
+      const reason = server.failover.reason ?? "Failover stream active";
+      return { main: reason, sub: "On standby", showSpinner: false };
+    }
+    if (snapshot.state === "OFFLINE_HOLD") {
+      return {
+        main: isOnline ? "Reconnecting…" : "No Internet Connection",
+        sub: isOnline ? "Re-establishing broadcast link" : "Will reconnect automatically when signal returns",
+        showSpinner: true,
+      };
+    }
+    // BOOTSTRAP — transport not yet connected, no server snapshot yet.
+    if (snapshot.state === "BOOTSTRAP") {
+      return {
+        main: p === 0 ? "Connecting to Broadcast" : "Connecting…",
+        sub: p === 0
+          ? "Establishing secure connection"
+          : p === 1
+          ? "Reaching broadcast server"
+          : "Taking a bit longer than usual — please wait",
+        showSpinner: true,
+      };
+    }
+    // SYNCING — transport connected, waiting for first server snapshot.
+    if (snapshot.state === "SYNCING") {
+      if (server && !server.current && !server.override) {
+        return {
+          main: "Temple TV is Off-Air",
+          sub: "We'll be back shortly — stay tuned",
+          showSpinner: false,
+        };
+      }
+      return {
+        main: p === 0 ? "Loading Live Stream" : "Synchronizing Broadcast…",
+        sub: p === 0
+          ? "Fetching broadcast data"
+          : p === 1
+          ? "Almost ready to play"
+          : "Still loading — almost there",
+        showSpinner: true,
+      };
+    }
+    // PREPARING_ACTIVE — item bound to active buffer, waiting for buffer-ready.
+    if (snapshot.state === "PREPARING_ACTIVE") {
+      return {
+        main: p === 0 ? "Preparing Video" : p === 1 ? "Buffering Stream…" : "Loading…",
+        sub: p === 0
+          ? "Buffering live stream"
+          : p === 1
+          ? "Loading video segments"
+          : p === 2
+          ? "This is taking a moment — please wait"
+          : "Still buffering — hang tight",
+        showSpinner: true,
+      };
+    }
+    // Active playback — no overlay.
     if (
       snapshot.state === "PLAYING" ||
       snapshot.state === "HANDOFF" ||
       snapshot.state === "PREPARING_NEXT"
     ) return null;
-    // Recovery states are transient buffer errors, not a true off-air event.
-    if (
-      snapshot.state === "RECOVERING_PRIMARY" ||
-      snapshot.state === "RECOVERING_FAILOVER" ||
-      snapshot.state === "SKIP_PENDING"
-    ) return "Tuning in…";
-    // All remaining states: genuinely off air only when server has no content.
-    if (server && !server.current && !server.override) return "Temple TV is currently off-air — we'll be back shortly.";
+    // Recovery states.
+    if (snapshot.state === "RECOVERING_PRIMARY") {
+      return {
+        main: p === 0 ? "Reconnecting…" : "Retrying Stream…",
+        sub: p === 0 ? "Retrying stream source" : "Attempting stream recovery",
+        showSpinner: true,
+      };
+    }
+    if (snapshot.state === "RECOVERING_FAILOVER") {
+      return {
+        main: "Switching to Backup",
+        sub: "Loading failover stream",
+        showSpinner: true,
+      };
+    }
+    if (snapshot.state === "SKIP_PENDING") {
+      return {
+        main: "Loading Next Broadcast",
+        sub: "Preparing next item in queue",
+        showSpinner: true,
+      };
+    }
+    // Remaining states: genuinely off-air when no content.
+    if (server && !server.current && !server.override) {
+      return {
+        main: "Temple TV is Off-Air",
+        sub: "We'll be back shortly — stay tuned",
+        showSpinner: false,
+      };
+    }
     return null;
-  }, [snapshot.state, server]);
+  }, [snapshot.state, server, loadingPhase, isOnline]);
 
   // Poster: show the upcoming/current sermon thumbnail behind the buffers
   // while the player is still tuning in, off-air, reconnecting, or in any
@@ -996,7 +1143,7 @@ export function V2PlayerContainer({
     const t = server?.current?.thumbnailUrl ?? server?.next?.thumbnailUrl ?? null;
     return t && t.length > 0 ? t : null;
   }, [server]);
-  const showPoster = !!overlay && !!posterUrl;
+  const showPoster = !!overlayContent && !!posterUrl;
 
   // Banner text: distinguish "no signal" from "WS disconnected" so viewers
   // understand whether to wait for auto-reconnect (WS) or move somewhere
@@ -1053,15 +1200,19 @@ export function V2PlayerContainer({
         </View>
       )}
 
-      {overlay && !minimal && (
+      {overlayContent && !minimal && (
         <View style={styles.overlay}>
-          {/* Show spinner only during transient states (tuning/reconnecting),
-              not for definitive states like Off air or Broadcast unavailable
-              where a spinner would imply something is loading when it isn't. */}
-          {overlay !== "Temple TV is currently off-air — we'll be back shortly." && overlay !== "We encountered a playback issue — please try again in a moment." && (
-            <ActivityIndicator color="#fff" size="large" style={{ marginBottom: 12 }} />
+          {overlayContent.showSpinner && (
+            <ActivityIndicator
+              color="#fff"
+              size="large"
+              style={styles.overlaySpinner}
+            />
           )}
-          <Text style={styles.overlayText}>{overlay}</Text>
+          <Text style={styles.overlayText}>{overlayContent.main}</Text>
+          {overlayContent.sub ? (
+            <Text style={styles.overlaySubText}>{overlayContent.sub}</Text>
+          ) : null}
         </View>
       )}
     </View>
@@ -1135,10 +1286,24 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     zIndex: 20,
   },
+  overlaySpinner: {
+    marginBottom: 16,
+  },
   overlayText: {
     color: "#fff",
     fontSize: 18,
-    fontWeight: "600",
-    letterSpacing: 0.5,
+    fontWeight: "700",
+    letterSpacing: 0.4,
+    textAlign: "center",
+    marginHorizontal: 24,
+  },
+  overlaySubText: {
+    color: "rgba(255,255,255,0.65)",
+    fontSize: 13,
+    fontWeight: "400",
+    letterSpacing: 0.2,
+    textAlign: "center",
+    marginHorizontal: 24,
+    marginTop: 6,
   },
 });
