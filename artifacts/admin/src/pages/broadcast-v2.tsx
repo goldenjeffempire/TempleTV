@@ -1405,8 +1405,9 @@ export default function BroadcastV2Page() {
               {processingCount} queue item{processingCount !== 1 ? "s are" : " is"} being optimised for streaming.
             </strong>{" "}
             The moov atom is being relocated to byte 0 (faststart) so the video can stream
-            instantly without an HTTP Range pre-flight. The item{processingCount !== 1 ? "s are" : " is"} airing
-            normally on the raw upload while this runs in the background — no operator action needed.
+            instantly without an HTTP Range pre-flight.{" "}
+            {processingCount !== 1 ? "These items will air" : "This item will air"} automatically
+            once optimisation completes — no operator action needed.
           </div>
           <button
             type="button"

@@ -567,11 +567,33 @@ export const queueRepo = {
               isNotNull(v.hlsMasterUrl),
               // 'ready' and 'hls_ready' are always safe: faststart/HLS is complete.
               inArray(v.transcodingStatus, ["ready", "hls_ready"]),
-              // 'none', 'queued', 'encoding', 'processing': admit immediately.
-              // All four states have the original upload blob accessible at
-              // localVideoUrl. Faststart ('processing') re-uploads to the same key
-              // atomically; HLS adds a separate manifest. Both upgrade in-place.
-              inArray(v.transcodingStatus, ["none", "queued", "encoding", "processing"]),
+              // 'none', 'queued', 'encoding': admit immediately — the raw upload
+              // blob is accessible at localVideoUrl. Faststart re-uploads to the
+              // same key atomically; HLS adds a separate manifest. Both upgrade
+              // in-place without a re-queue.
+              inArray(v.transcodingStatus, ["none", "queued", "encoding"]),
+              // 'processing': faststart.service is running the moov-atom relocation.
+              // Safe to admit ONLY when faststartApplied=true, meaning a previous
+              // successful faststart already placed the moov atom at byte 0. The
+              // file currently at localVideoUrl IS seekable; this new run is a
+              // repeat/upgrade (e.g. operator re-applied faststart after a fix).
+              //
+              // When faststartApplied=false (first-ever faststart run), the file
+              // at localVideoUrl has the moov atom at EOF — browsers must download
+              // the entire file before metadata is available. That causes a 20 s
+              // initial-load watchdog timeout and SKIP_PENDING on every player that
+              // tries to bind to it. Block until faststart completes and sets
+              // faststartApplied=true + transcodingStatus='ready'.
+              //
+              // Recovery path: faststart completion fires broadcast-queue-updated →
+              // reloadInner() re-queries → item enters as 'ready' → clearBadUrl()
+              // clears any stall-report blocks from the in-flight window. No
+              // operator action needed; the gap is the faststart duration (seconds
+              // to minutes depending on file size and network throughput).
+              and(
+                eq(v.transcodingStatus, "processing"),
+                eq(v.faststartApplied, true),
+              ),
               // 'failed': still require faststart or HLS confirmed safe to stream.
               and(
                 eq(v.transcodingStatus, "failed"),
