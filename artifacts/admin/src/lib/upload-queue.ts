@@ -91,6 +91,14 @@ export interface UploadItem {
    * instead of starting from scratch. Set when finalize times out or returns 408.
    */
   finalizeOnly: boolean;
+  /**
+   * Real blob-assembly progress 0–99 reported by the server's /finalize-status
+   * endpoint. Derived from storage_blobs.size_bytes vs session.sizeBytes so it
+   * reflects actual PostgreSQL bytea-concat progress. Null when assembly hasn't
+   * started, the objectKey is unavailable (db_fallback mode), or polling hasn't
+   * returned a value yet. When non-null the fake-tick timer defers to this value.
+   */
+  assemblyPercent: number | null;
 }
 
 export interface UploadQueueSummary {
@@ -179,9 +187,14 @@ function authHeaders(): Record<string, string> {
 }
 
 /**
- * Poll /finalize-status every 5 s until the assembly completes, the session
+ * Poll /finalize-status every 2 s until the assembly completes, the session
  * is released back to "uploading" (previous finalize failed server-side), or
  * the caller's AbortSignal fires (deadline / user cancel).
+ *
+ * @param onProgress - Optional callback receiving the real assembly percent
+ *   (0–99) derived from storage_blobs.size_bytes on the server. Called on
+ *   every poll that returns an assemblyPercent. Lets the upload queue panel
+ *   show honest progress instead of a fake slow tick.
  *
  * Returns the video ID when completed, or null when polling stopped without
  * a completion (deadline fired, or session went back to "uploading").
@@ -190,6 +203,7 @@ async function pollFinalizeStatus(
   sessionId: string,
   base: string,
   signal: AbortSignal,
+  onProgress?: (percent: number) => void,
 ): Promise<string | null> {
   // 2-second interval: snappy feedback when finalize-status transitions to
   // "completed" without burning too many requests on long assemblies.
@@ -208,7 +222,16 @@ async function pollFinalizeStatus(
         { headers: authHeaders() },
       );
       if (!resp.ok) continue;
-      const body = (await resp.json()) as { status: string; videoId?: string | null };
+      const body = (await resp.json()) as {
+        status: string;
+        videoId?: string | null;
+        assemblyPercent?: number | null;
+      };
+      // Forward real assembly progress to the caller so the UI can show an
+      // honest percentage instead of the fake slow-tick animation.
+      if (body.assemblyPercent != null && onProgress) {
+        onProgress(body.assemblyPercent);
+      }
       if (body.status === "completed" && body.videoId) return body.videoId;
       // Server released the lock (previous finalize failed) — let the caller retry.
       if (body.status === "uploading") return null;
@@ -290,6 +313,7 @@ class UploadQueueEngine {
               videoId: null,
               speedLabel: "",
               finalizeOnly: s.finalizeOnly,
+              assemblyPercent: null,
             };
             this.items.set(s.id, item);
           }
@@ -449,6 +473,7 @@ class UploadQueueEngine {
         videoId: null,
         speedLabel: "",
         finalizeOnly: false,
+        assemblyPercent: null,
       };
       this.items.set(id, item);
       // Persist to IndexedDB so the upload survives a page reload.
@@ -520,6 +545,7 @@ class UploadQueueEngine {
         error: null,
         completedAt: null,
         videoId: null,
+        assemblyPercent: null,
         // keepfinalizeOnly: true so the worker knows to skip chunk upload
       });
     } else {
@@ -536,6 +562,7 @@ class UploadQueueEngine {
         completedAt: null,
         videoId: null,
         finalizeOnly: false,
+        assemblyPercent: null,
       });
     }
     this.scheduleWorkers();
@@ -1084,18 +1111,39 @@ class UploadQueueEngine {
       } // end if (!isFinalizeOnly)
 
       // ── 4. Finalize ───────────────────────────────────────────────────────
-      this.update(id, { status: "finalizing", progress: 92, speed: 0, eta: 0 });
+      this.update(id, { status: "finalizing", progress: 92, speed: 0, eta: 0, assemblyPercent: null });
 
-      // Animate progress from 92 → 99 while finalization runs.
+      // Callback wired into pollFinalizeStatus so polling paths receive real
+      // assembly progress (0–99 from server) and apply it to the item. Maps
+      // server-side percent into the 92–98 display range and stores the raw
+      // percent in assemblyPercent so the UI can show "Assembling (X%)…".
+      const onAssemblyProgress = (percent: number): void => {
+        const curr = this.items.get(id);
+        if (curr?.status === "finalizing") {
+          this.update(id, {
+            assemblyPercent: percent,
+            // Map 0–99% real assembly → 92–98% display so the bar inches toward
+            // completion without jumping to 99% prematurely before completion.
+            progress: Math.min(98, 92 + Math.round((percent / 100) * 6)),
+          });
+        }
+      };
+
+      // Animate progress from 92 → 99 while finalization runs (fallback for
+      // when the server doesn't return a real assemblyPercent — e.g. for small
+      // files with fast inline assembly, or db_fallback mode with no objectKey).
       // Ticks every 800 ms at 0.3% per step — reaches 99% after ~23 seconds.
-      // This gives honest visual feedback for large-file (500 MB+) assembly
-      // which can take 30–90 seconds with the batch-hex algorithm.
+      // When real assembly progress arrives via onAssemblyProgress() the fake
+      // tick skips the update so both never conflict.
       let finalizeProgress = 92;
       const finalizeTimer = setInterval(() => {
         finalizeProgress = Math.min(parseFloat((finalizeProgress + 0.3).toFixed(1)), 99);
         const curr = this.items.get(id);
         if (curr?.status === "finalizing") {
-          this.update(id, { progress: Math.floor(finalizeProgress) });
+          // Only apply fake tick when the server hasn't provided real progress.
+          if (curr.assemblyPercent == null) {
+            this.update(id, { progress: Math.floor(finalizeProgress) });
+          }
         } else {
           clearInterval(finalizeTimer);
         }
@@ -1132,7 +1180,11 @@ class UploadQueueEngine {
             { headers: authHeaders(), signal: finalizeTimeoutCtrl.signal },
           ).catch(() => null);
           if (preCheck?.ok) {
-            const preCheckBody = (await preCheck.json()) as { status: string; videoId?: string | null };
+            const preCheckBody = (await preCheck.json()) as {
+              status: string;
+              videoId?: string | null;
+              assemblyPercent?: number | null;
+            };
             if (preCheckBody.status === "completed" && preCheckBody.videoId) {
               // Already done — mark complete without a redundant /finalize call.
               this.update(id, {
@@ -1148,12 +1200,15 @@ class UploadQueueEngine {
               return;
             }
             if (preCheckBody.status === "assembling") {
+              // Apply any real progress from the pre-check before the polling loop starts.
+              if (preCheckBody.assemblyPercent != null) onAssemblyProgress(preCheckBody.assemblyPercent);
               // Still assembling — poll instead of calling /finalize (which
               // would return 409 and require another manual retry).
               const polledVideoId = await pollFinalizeStatus(
                 sessionId,
                 base,
                 finalizeTimeoutCtrl.signal,
+                onAssemblyProgress,
               );
               if (polledVideoId) {
                 this.update(id, {
@@ -1251,7 +1306,7 @@ class UploadQueueEngine {
 
         // 409 = a concurrent finalize request already holds the assembly lock.
         // Rather than surfacing an error that forces the user to manually click
-        // Retry, automatically poll /finalize-status every 5 s so the upload
+        // Retry, automatically poll /finalize-status every 2 s so the upload
         // item transitions to "completed" the moment the assembly finishes —
         // completely transparent to the operator.
         if (finalizeResp.status === 409) {
@@ -1259,6 +1314,7 @@ class UploadQueueEngine {
             sessionId,
             base,
             finalizeTimeoutCtrl.signal,
+            onAssemblyProgress,
           );
           if (polledVideoId) {
             // Assembly finished while we were polling — mark complete.

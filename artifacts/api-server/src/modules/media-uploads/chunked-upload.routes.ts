@@ -1562,6 +1562,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
   // Lightweight polling endpoint — no auth required beyond the session ID being
   // a secret UUID. Returns the assembly state so the client can detect
   // completion even after a finalize fetch timed out or disconnected.
+  //
+  // When status="assembling", assemblyPercent is derived by comparing the
+  // current size_bytes of the dest blob in storage_blobs against the total
+  // file size stored in the session. The iterative PostgreSQL bytea-concat
+  // loop grows the dest row's size_bytes column by one part on every UPDATE,
+  // so this gives an accurate real-time assembly percentage (0–99).
   r.get(
     "/videos/upload/:sessionId/finalize-status",
     {
@@ -1574,6 +1580,10 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           200: z.object({
             status: z.enum(["uploading", "assembling", "completed", "not_found"]),
             videoId: z.string().nullable(),
+            /** Real assembly progress 0–99 derived from storage_blobs.size_bytes.
+             *  Null when status is not "assembling", when objectKey is unavailable
+             *  (db_fallback mode), or when the storage query fails. */
+            assemblyPercent: z.number().nullable(),
           }),
         },
         security: [{ bearerAuth: [] }],
@@ -1585,6 +1595,8 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         .select({
           status: sessions.status,
           completedVideoId: sessions.completedVideoId,
+          objectKey: sessions.objectKey,
+          sizeBytes: sessions.sizeBytes,
         })
         .from(sessions)
         .where(eq(sessions.sessionId, sessionId))
@@ -1592,21 +1604,42 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         .then((r) => r[0]);
 
       if (!session) {
-        return { status: "not_found" as const, videoId: null };
+        return { status: "not_found" as const, videoId: null, assemblyPercent: null };
       }
 
       const st = session.status as string;
       if (st === "completed") {
-        return { status: "completed" as const, videoId: session.completedVideoId ?? null };
+        return { status: "completed" as const, videoId: session.completedVideoId ?? null, assemblyPercent: null };
       }
       if (st === "assembling") {
         // Return completedVideoId even during assembly — the async-finalize path
         // pre-commits the video row and stores its id before background assembly
         // starts, so the client can obtain the video id without waiting for the
         // full assembly to finish.
-        return { status: "assembling" as const, videoId: session.completedVideoId ?? null };
+        //
+        // Derive real assembly percentage from the dest blob's current size.
+        // Non-fatal: if the query fails or objectKey is null (db_fallback mode
+        // that hasn't run completeMultipartUpload yet), assemblyPercent stays null
+        // and the client falls back to its fake-tick progress animation.
+        let assemblyPercent: number | null = null;
+        if (session.objectKey && session.sizeBytes > 0) {
+          try {
+            type BlobRow = { size_bytes: string | number };
+            const blobResult = await db.execute<BlobRow>(
+              sql`SELECT size_bytes FROM storage_blobs WHERE key = ${session.objectKey} LIMIT 1`,
+            );
+            const rows = (blobResult as unknown as { rows?: BlobRow[] }).rows ?? (blobResult as unknown as BlobRow[]);
+            const currentBytes = Number(rows[0]?.size_bytes ?? 0);
+            if (currentBytes > 0) {
+              assemblyPercent = Math.max(1, Math.min(99, Math.round((currentBytes / session.sizeBytes) * 100)));
+            }
+          } catch {
+            // Non-fatal: storage query failed, client keeps fake-tick animation.
+          }
+        }
+        return { status: "assembling" as const, videoId: session.completedVideoId ?? null, assemblyPercent };
       }
-      return { status: "uploading" as const, videoId: null };
+      return { status: "uploading" as const, videoId: null, assemblyPercent: null };
     },
   );
 }

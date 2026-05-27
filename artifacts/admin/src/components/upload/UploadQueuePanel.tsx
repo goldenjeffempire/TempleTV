@@ -120,7 +120,9 @@ function UploadRow({ item }: { item: ReturnType<typeof useUploadQueue>["items"][
               <div className="flex items-center justify-between">
                 <span className="text-[10px] text-muted-foreground">
                   {item.status === "finalizing"
-                    ? "Finalizing…"
+                    ? item.assemblyPercent != null
+                      ? `Assembling (${item.assemblyPercent}%)…`
+                      : "Finalizing…"
                     : item.speed > 0
                       ? `${formatSpeed(item.speed)} · ${formatEta(item.eta)}`
                       : item.speedLabel || "Starting…"}
