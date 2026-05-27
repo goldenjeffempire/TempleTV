@@ -36,6 +36,7 @@ import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { eq, asc, and, inArray, lt, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
+import { env } from "../../config/env.js";
 import { storage } from "../../infrastructure/storage.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { enqueueTranscode } from "../transcoder/transcoder.queue.js";
@@ -1099,7 +1100,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               ]);
               adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-watchdog-timeout" });
             })();
-          }, 60 * 60 * 1000);
+          }, env.ASSEMBLY_WATCHDOG_MS);
 
           try {
             capturedLog.info(
@@ -1145,12 +1146,13 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
 
             // Post-upload probes: thumbnail extraction + duration probe.
             // Must run BEFORE faststart because faststart replaces the blob.
+            // Run sequentially (not in parallel) so only one source download
+            // occupies /tmp at a time — parallel downloads would double the
+            // peak disk usage (2× source size) on Replit's constrained /tmp.
             const clientDuration = Number(row.duration ?? "0");
             try {
-              const [thumbUrl, probedSecs] = await Promise.all([
-                generateQuickThumbnail(objectKey, videoId),
-                clientDuration > 0 ? Promise.resolve(null) : probeUploadedDuration(objectKey),
-              ]);
+              const thumbUrl = await generateQuickThumbnail(objectKey, videoId);
+              const probedSecs = clientDuration > 0 ? null : await probeUploadedDuration(objectKey);
               const patch: Partial<typeof videos.$inferInsert> = {};
               if (thumbUrl) patch.thumbnailUrl = thumbUrl;
               if (probedSecs != null) patch.duration = String(Math.round(probedSecs));

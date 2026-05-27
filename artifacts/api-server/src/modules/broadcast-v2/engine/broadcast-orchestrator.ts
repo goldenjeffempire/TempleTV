@@ -696,6 +696,14 @@ class BroadcastOrchestrator extends EventEmitter {
       if (item.primaryUrl) clearBadUrl(item.primaryUrl);
     }
 
+    // Reset the proactive-probe tracking set on every successful reload.
+    // Without this, items whose source URLs changed since the last reload
+    // (e.g. transcoding just produced an HLS master playlist) would be
+    // skipped by scheduleProbeIfNeeded() because their ID is still present
+    // in the set from a prior cycle. Clearing here guarantees a fresh probe
+    // against the updated URL so bad/unreachable sources are detected early.
+    this.probeAttemptedForId.clear();
+
     if (resolved.length === 0 && rawRows.length > 0) {
       // Every item in the queue was rejected — the system has no playable
       // content and will enter OFF_AIR safe mode.  This is an operator-action

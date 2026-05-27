@@ -199,10 +199,19 @@ const Env = z.object({
     .default(false),
   // Maximum wall-clock time (ms) allowed for a single FFmpeg encoding job.
   // If the process is still running after this deadline it receives SIGKILL so
-  // the dispatcher can move on to the next queued job. Default 4 hours — long
+  // the dispatcher can move on to the next queued job. Default 2 hours — long
   // enough for a 2-hour 1080p sermon to encode on modest hardware without
   // ever blocking the queue indefinitely on a corrupt or malformed source file.
   TRANSCODER_JOB_TIMEOUT_MS: z.coerce.number().int().positive().default(2 * 60 * 60_000),
+  // Maximum wall-clock time (ms) for the background blob-assembly task that
+  // runs after a chunked video upload is finalized. The iterative bytea-concat
+  // loop is O(n²) in PostgreSQL I/O — a 2 GB file (250 chunks) can legitimately
+  // take 40+ minutes on Replit's shared Neon DB. Default 90 minutes leaves
+  // a 50% safety margin. Set ASSEMBLY_WATCHDOG_MS=5400000 for very large
+  // files or slow DB instances. When the watchdog fires the video is marked
+  // transcodingStatus='failed' and the session resets to 'uploading' so the
+  // operator can retry finalization from the upload queue panel.
+  ASSEMBLY_WATCHDOG_MS: z.coerce.number().int().positive().default(90 * 60_000),
 
   // ── SMTP / email ────────────────────────────────────────────────────────
   // Non-sensitive connection params (set as plain env vars).
