@@ -611,10 +611,10 @@ export function scheduleStaleDataCleanup(): void {
       // sweep catches any crash that happened AFTER the last boot (e.g. an
       // OOM kill between cleanup runs).
       //
-      // Items stuck in 'processing' for > 20 minutes are reset to 'queued'
-      // (if they have a localVideoUrl) or 'none'.  20 min is comfortably
-      // above the faststart timeout (15 min for very large files) so we
-      // will never interrupt a legitimately running faststart job.
+      // Note: managed_videos has no updated_at column.  The periodic cleanup
+      // runs every 6 hours which is comfortably longer than the 15-minute
+      // faststart timeout, so resetting *all* stuck 'processing' rows is safe
+      // — any item still processing at the 6h mark is genuinely stuck.
       const stuckResult = await client.query(`
         UPDATE managed_videos
         SET    transcoding_status = CASE
@@ -622,7 +622,6 @@ export function scheduleStaleDataCleanup(): void {
                  ELSE 'none'
                END
         WHERE  transcoding_status = 'processing'
-          AND  updated_at < NOW() - INTERVAL '20 minutes'
       `);
       const stuckReset = (stuckResult as unknown as { rowCount: number | null }).rowCount ?? 0;
       if (stuckReset > 0) {

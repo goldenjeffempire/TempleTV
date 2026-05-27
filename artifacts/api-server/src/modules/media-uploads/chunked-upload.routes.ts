@@ -1193,7 +1193,15 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 }
               }
 
-              const probedSecs = clientDuration > 0 ? null : await probeUploadedDuration(objectKey);
+              // Probe even when clientDuration > 0 if it equals the well-known
+              // 1800-second upload-time placeholder.  The admin upload client
+              // sends duration=1800 as a default when the real length is
+              // unknown; treating that as a real duration permanently skips
+              // ffprobe and leaves the broadcast_queue row at 1800 s, which
+              // causes dead-air gaps when the video ends before its slot expires.
+              const probedSecs =
+                (clientDuration > 0 && clientDuration !== 1800) ? null
+                  : await probeUploadedDuration(objectKey);
               const patch: Partial<typeof videos.$inferInsert> = {};
               if (effectiveThumbUrl) patch.thumbnailUrl = effectiveThumbUrl;
               if (probedSecs != null) patch.duration = String(Math.round(probedSecs));
@@ -1531,7 +1539,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           try {
             const [thumbUrlB, probedSecsB] = await Promise.all([
               generateQuickThumbnail(result.objectKey, videoIdB),
-              clientDurationB > 0 ? Promise.resolve(null) : probeUploadedDuration(result.objectKey),
+              // Mirror Path A: probe even when clientDurationB > 0 if it equals
+              // the 1800-second placeholder so db_fallback uploads also get
+              // a real ffprobe duration instead of a permanent placeholder.
+              (clientDurationB > 0 && clientDurationB !== 1800)
+                ? Promise.resolve(null)
+                : probeUploadedDuration(result.objectKey),
             ]);
             const patchB: Partial<typeof videos.$inferInsert> = {};
             if (thumbUrlB) patchB.thumbnailUrl = thumbUrlB;

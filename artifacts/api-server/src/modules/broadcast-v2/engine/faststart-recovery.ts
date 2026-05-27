@@ -43,6 +43,7 @@ import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger as rootLogger } from "../../../infrastructure/logger.js";
 import { runFaststart } from "../../transcoder/faststart.service.js";
+import { probeUploadedDuration } from "../../transcoder/transcoder.service.js";
 
 const v = schema.videosTable;
 const q = schema.broadcastQueueTable;
@@ -229,10 +230,98 @@ async function dispatchOne(c: Candidate): Promise<boolean> {
   return true;
 }
 
+/**
+ * Lightweight duration backfill.
+ *
+ * Finds broadcast_queue items still carrying the 1800 s upload-time
+ * placeholder on BOTH the queue row AND the joined managed_videos row,
+ * then runs ffprobe on the video's objectPath to get the real duration.
+ * Updates both rows so:
+ *   - The orchestrator uses the correct slot length for timing.
+ *   - The PLACEHOLDER_DURATION validator warning clears automatically.
+ *
+ * This handles the case where the admin upload client sends duration=1800
+ * as a default and the server skipped ffprobe because `clientDuration > 0`.
+ * Runs on every sweep (every 60 s) but is fast — ffprobe on a local object
+ * takes < 5 s per file and exits as soon as the container header is parsed.
+ * Items still in `processing` (faststart running) are skipped — runFaststart
+ * calls ffprobe itself and will update the duration on completion.
+ */
+async function backfillPlaceholderDurations(): Promise<void> {
+  let rows: Array<{ queueItemId: string; videoId: string; objectPath: string; title: string }>;
+  try {
+    rows = await db
+      .select({
+        queueItemId: q.id,
+        videoId: v.id,
+        objectPath: v.objectPath,
+        title: q.title,
+      })
+      .from(q)
+      .innerJoin(v, eq(q.videoId, v.id))
+      .where(
+        and(
+          eq(q.isActive, true),
+          eq(q.durationSecs, 1800),
+          eq(v.duration, "1800"),
+          isNotNull(v.objectPath),
+          // Skip items with faststart actively running — runFaststart calls
+          // ffprobe itself and will update the duration on completion.
+          inArray(v.transcodingStatus, ["none", "queued", "encoding", "ready", "hls_ready", "failed"]),
+        ),
+      )
+      .limit(10); // cap per sweep to avoid saturating ffprobe
+  } catch (err) {
+    logger.warn({ err }, "faststart-recovery: placeholder-duration backfill query failed");
+    return;
+  }
+
+  if (rows.length === 0) return;
+
+  logger.info(
+    { count: rows.length },
+    "faststart-recovery: probing duration for placeholder items",
+  );
+
+  for (const row of rows) {
+    try {
+      const secs = await probeUploadedDuration(row.objectPath!);
+      if (secs == null || secs < 5) continue; // probe failed or suspiciously short
+      const rounded = Math.round(secs);
+      // Update the managed_videos duration
+      await db
+        .update(v)
+        .set({ duration: String(rounded) })
+        .where(eq(v.id, row.videoId));
+      // Update the broadcast_queue duration_secs
+      await db
+        .update(q)
+        .set({ durationSecs: rounded })
+        .where(eq(q.id, row.queueItemId));
+      logger.info(
+        { videoId: row.videoId, queueItemId: row.queueItemId, title: row.title, secs: rounded },
+        "faststart-recovery: duration backfill corrected placeholder",
+      );
+    } catch (err) {
+      logger.warn(
+        { err, videoId: row.videoId, title: row.title },
+        "faststart-recovery: duration backfill probe failed (non-fatal)",
+      );
+    }
+  }
+}
+
 export const faststartRecoveryWorker = {
   async sweep(): Promise<void> {
     stats.totalSweeps += 1;
     stats.lastSweepAt = Date.now();
+
+    // ── Duration backfill (lightweight, runs every sweep) ─────────────────
+    // Fix items stuck at the 1800 s upload-time placeholder by running
+    // ffprobe on their objectPath. No moov relocation or re-upload needed.
+    await backfillPlaceholderDurations();
+
+    // ── Faststart recovery (heavy, gated by MAX_ATTEMPTS) ─────────────────
     let candidates: Candidate[];
     try {
       candidates = await findCandidates();
@@ -248,10 +337,6 @@ export const faststartRecoveryWorker = {
     if (candidates.length === 0) return;
     // Dispatch sequentially: ffmpeg + multipart upload is heavy and we
     // don't want N concurrent encodes saturating the CPU/network.
-    // dispatchOne returns true only when it actually triggered ffmpeg
-    // (not when skipped for in-flight / max-attempts). Earlier revisions
-    // checked `inFlight.size` after await — broken because the finally
-    // block in dispatchOne clears the entry, so the delta was always 0.
     for (const c of candidates) {
       const dispatched = await dispatchOne(c);
       if (dispatched) stats.lastSweepDispatched += 1;
