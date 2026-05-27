@@ -1552,10 +1552,67 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             capturedLogB.warn({ err, videoId: videoIdB }, "[finalize:db_fallback:bg] post-upload probes failed (non-fatal)");
           }
 
+          // ── Early container gate (Path B) ────────────────────────────────
+          // Mirror Path A: run probeUploadedContainerValidity before faststart
+          // so that structurally corrupt db_fallback uploads are caught here
+          // rather than burning 3 transcoder retry cycles against a broken file.
+          let skipTranscodeEnqueueB = false;
+          try {
+            const { valid: containerOkB } = await probeUploadedContainerValidity(result.objectKey);
+            if (!containerOkB) {
+              capturedLogB.error(
+                { videoId: videoIdB, objectKey: result.objectKey },
+                "[finalize:db_fallback:bg] EARLY CORRUPT GATE — container probe failed before faststart. " +
+                "Marking video failed; operator must re-upload the source file.",
+              );
+              skipTranscodeEnqueueB = true;
+              await db
+                .update(videos)
+                .set({ transcodingStatus: "failed" })
+                .where(eq(videos.id, videoIdB))
+                .catch(() => {});
+              adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "corrupt-upload-early-gate" });
+            }
+          } catch (earlyGateBErr) {
+            capturedLogB.warn(
+              { err: earlyGateBErr, videoId: videoIdB },
+              "[finalize:db_fallback:bg] early container gate probe failed (non-fatal) — proceeding to faststart",
+            );
+          }
+
+          // ── Immediate broadcast queue entry (Path B) ─────────────────────
+          // Queue the video right after the blob is assembled and validated —
+          // no need to wait for faststart or HLS.  Matches Path A behaviour:
+          // faststart upgrades the source in-place; HLS adds a separate URL.
+          // Skipped for confirmed corrupt/unrepairable uploads.
+          //
+          // IMPORTANT: this call must happen BEFORE runFaststart.  faststart
+          // sets transcodingStatus='processing' while it swaps the blob, which
+          // temporarily blocks the item in loadActive().  If faststart then
+          // fails non-fatally (no ffmpeg, network hiccup), enqueueIfMissing
+          // inside faststart.service never runs and the video would never be
+          // queued.  Calling it here ensures the item is queued regardless.
+          if (!skipTranscodeEnqueueB) {
+            try {
+              const enqueueResultB = await enqueueIfMissing({ videoId: videoIdB, reason: "upload-finalize" });
+              if (enqueueResultB.enqueued) {
+                capturedLogB.info(
+                  { videoId: videoIdB, queueItemId: enqueueResultB.queueItemId },
+                  "[finalize:db_fallback:bg] video auto-queued for broadcast immediately after assembly",
+                );
+                adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize", videoId: videoIdB });
+              }
+            } catch (enqErrB) {
+              capturedLogB.warn(
+                { err: enqErrB, videoId: videoIdB },
+                "[finalize:db_fallback:bg] immediate enqueueIfMissing failed (non-fatal)",
+              );
+            }
+          }
+
           // Faststart MUST complete before enqueueTranscode (see Path A rationale).
           // CORRUPT_UPLOAD errors are handled the same way as Path A: mark failed
           // and skip transcode enqueue to avoid pointless retry cycles.
-          let skipTranscodeEnqueueB = false;
           try {
             await runFaststart(videoIdB, result.objectKey, { skipStatusUpdate: false });
             capturedLogB.info({ sessionId, videoId: videoIdB }, "[finalize:db_fallback:bg] faststart done");

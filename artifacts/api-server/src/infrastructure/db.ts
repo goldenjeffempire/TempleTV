@@ -195,6 +195,53 @@ export async function ensureBroadcastV2Tables(): Promise<void> {
 }
 
 /**
+ * Reset managed_videos rows stuck in transcodingStatus='processing'.
+ *
+ * 'processing' is the transient state set by runFaststart while it atomically
+ * replaces the stored blob.  runFaststart restores the prior status on a clean
+ * failure, but a mid-faststart server crash leaves the row permanently blocked:
+ * loadActive() excludes 'processing' items, so the broadcast queue slot is
+ * silently held but never aired.
+ *
+ * At startup we can safely reset any 'processing' row back to 'queued' (if it
+ * has a playable localVideoUrl) or 'none' (if not).  The object-storage blob is
+ * always consistent — runFaststart uses a multipart atomic swap so the key
+ * holds either the old un-optimised file or the fully written new file.
+ * faststartApplied is intentionally left unchanged; the value was false before
+ * the crash and the file may or may not be optimised.
+ *
+ * Called once at boot, non-blocking.
+ */
+export async function resetStuckProcessingVideos(): Promise<void> {
+  const client = await pool.connect();
+  try {
+    const result = await client.query(`
+      UPDATE managed_videos
+      SET    transcoding_status = CASE
+               WHEN local_video_url IS NOT NULL AND local_video_url != '' THEN 'queued'
+               ELSE 'none'
+             END
+      WHERE  transcoding_status = 'processing'
+    `);
+    const reset = (result as unknown as { rowCount: number | null }).rowCount ?? 0;
+    if (reset > 0) {
+      logger.warn(
+        { reset },
+        "db: reset stuck 'processing' videos to queued/none — " +
+          "these were interrupted mid-faststart by a server crash; " +
+          "they are broadcast-ready at their existing localVideoUrl",
+      );
+    } else {
+      logger.info("db: no stuck processing videos found at startup");
+    }
+  } catch (err) {
+    logger.warn({ err }, "db: resetStuckProcessingVideos failed (non-fatal)");
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Deactivate broadcast_queue rows that can never play in the v2 system.
  *
  * A row is "unresolvable" when it is not a YouTube item AND has no platform

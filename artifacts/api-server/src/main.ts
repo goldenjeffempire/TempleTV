@@ -6,7 +6,7 @@ import { logger } from "./infrastructure/logger.js";
 import { broadcastEngine } from "./modules/broadcast/queue.engine.js";
 import { channelRegistry } from "./modules/channels/channel-registry.js";
 import { overrideBus } from "./modules/live-overrides/override-bus.js";
-import { closeDb, db, ensureRuntimeIndexes, ensureBroadcastV2Tables, deactivateUnresolvableQueueRows, ensureUserSchemaColumns, scheduleStaleDataCleanup } from "./infrastructure/db.js";
+import { closeDb, db, ensureRuntimeIndexes, ensureBroadcastV2Tables, deactivateUnresolvableQueueRows, resetStuckProcessingVideos, ensureUserSchemaColumns, scheduleStaleDataCleanup } from "./infrastructure/db.js";
 import { closeRedis } from "./infrastructure/redis.js";
 import { sseCounter } from "./infrastructure/sse-counter.js";
 import { scheduledNotificationDispatcher } from "./modules/scheduled-notifications/dispatcher.js";
@@ -285,6 +285,12 @@ async function main() {
     // Non-destructive (is_active=false, not DELETE) and non-blocking.
     deactivateUnresolvableQueueRows().catch((err) =>
       logger.warn({ err }, "db: deactivateUnresolvableQueueRows failed (non-fatal)"),
+    );
+    // Reset videos stuck in transcodingStatus='processing' from a prior
+    // mid-faststart server crash. loadActive() blocks 'processing' items, so
+    // without this reset those queue slots would be silently held forever.
+    resetStuckProcessingVideos().catch((err) =>
+      logger.warn({ err }, "db: resetStuckProcessingVideos failed (non-fatal)"),
     );
     // Stale-data GC: expired tokens, stale viewer sessions, old upload sessions,
     // old broadcast event log entries. Runs at 30 s after boot then every 6 h.
