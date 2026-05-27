@@ -230,6 +230,40 @@ class OrphanCleanupWorkerImpl {
         );
       }
 
+      // ── 5. Storage _parts/ / _meta/ orphan GC ──────────────────────────────
+      // completeMultipartUpload assembles temp part rows and deletes them in
+      // the same SQL transaction, so _parts/* keys should never outlive a
+      // successful assembly. Rows that persist are from interrupted assemblies
+      // (server crash mid-upload, finalize timeout, etc.) and accumulate
+      // indefinitely. We delete any _parts/ or _meta/ rows older than 24 hours
+      // — well past the longest possible successful upload window — capped at
+      // 5 000 rows per sweep to bound lock-hold time.
+      let prunedStorageParts = 0;
+      try {
+        const partsCutoff = new Date(Date.now() - 24 * 60 * 60_000);
+        const partsResult = await db.execute(
+          sql`DELETE FROM storage_blobs
+              WHERE key IN (
+                SELECT key FROM storage_blobs
+                WHERE (key LIKE '_parts/%' OR key LIKE '_meta/%')
+                  AND updated_at < ${partsCutoff}
+                LIMIT 5000
+              )`,
+        );
+        prunedStorageParts = partsResult.rowCount ?? 0;
+        if (prunedStorageParts > 0) {
+          logger.info(
+            { pruned: prunedStorageParts, cutoffHours: 24 },
+            "[orphan-cleanup] pruned orphaned storage_blobs _parts/ and _meta/ rows",
+          );
+        }
+      } catch (partsErr) {
+        logger.warn(
+          { err: partsErr },
+          "[orphan-cleanup] storage parts GC failed (non-fatal)",
+        );
+      }
+
       this.stats.lastRunAtMs = start;
       this.stats.lastRunDurationMs = Date.now() - start;
       this.stats.lastOrphanedRefCount = candidates.length;
@@ -244,6 +278,7 @@ class OrphanCleanupWorkerImpl {
           staleSessions: staleSessionsClosed,
           prunedScheduledNotifs: prunedScheduled,
           prunedSentNotifs: prunedSent,
+          prunedStorageParts,
           durationMs: this.stats.lastRunDurationMs,
         },
         "[orphan-cleanup] sweep complete",

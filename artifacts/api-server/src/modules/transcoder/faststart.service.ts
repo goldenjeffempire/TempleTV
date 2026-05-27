@@ -478,9 +478,19 @@ export async function runFaststart(
         // completeMultipartUpload, so the original key was never overwritten).
         // Setting "failed" here would permanently block the item from loadActive()
         // and cause an avoidable Off Air state — the source file is still playable.
+        //
+        // CRITICAL: Never restore to "processing" — that value means "faststart is
+        // actively running" and restoring it leaves the video permanently stuck if
+        // this crash-restart scenario set priorTranscodingStatus to "processing"
+        // (i.e. the previous server process was killed while faststart was running).
+        // "queued" is always safe: the source blob is intact and the video will be
+        // re-processed by faststart-on-finalize or by the transcoder dispatcher.
+        const safeRestoreStatus = (
+          priorTranscodingStatus === "processing" ? "queued" : priorTranscodingStatus
+        ) as "none" | "queued" | "encoding" | "ready" | "hls_ready" | "failed";
         await db
           .update(videos)
-          .set({ transcodingStatus: priorTranscodingStatus as "none" | "queued" | "encoding" | "ready" | "hls_ready" | "failed" | "processing" })
+          .set({ transcodingStatus: safeRestoreStatus })
           .where(and(eq(videos.id, videoId), ne(videos.transcodingStatus, "hls_ready")));
       } catch (dbErr) {
         log.error({ dbErr }, "faststart: could not restore transcodingStatus");

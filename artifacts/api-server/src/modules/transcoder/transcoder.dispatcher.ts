@@ -42,6 +42,53 @@ class TranscoderDispatcher {
   private running = false;
   private stopped = false;
 
+  /**
+   * FFmpeg circuit breaker.
+   *
+   * When ffmpeg is unavailable `ffmpegAvailable` is set to false and all job
+   * dispatch is paused — preventing every queued video from exhausting its
+   * retry budget against a missing binary and being permanently failed.
+   *
+   * A background re-check fires every FFMPEG_RECHECK_MS until ffmpeg is
+   * confirmed reachable, then the circuit closes automatically.
+   */
+  private ffmpegAvailable = true;
+  private ffmpegRecheckTimer: NodeJS.Timeout | null = null;
+  private static readonly FFMPEG_RECHECK_MS = 30_000;
+
+  /**
+   * Open the ffmpeg circuit breaker. Logs a CRITICAL warning and schedules
+   * periodic re-checks so the dispatcher self-heals when ffmpeg is installed.
+   */
+  private openFfmpegCircuit(): void {
+    if (!this.ffmpegAvailable) return; // already open
+    this.ffmpegAvailable = false;
+    logger.error(
+      "transcoder: CRITICAL — ffmpeg binary not found or not executable. " +
+      "Job dispatch is PAUSED to prevent burning through retry budgets on every job. " +
+      "Fix: install ffmpeg (e.g. apt-get install ffmpeg). " +
+      "The dispatcher will recover automatically once ffmpeg is available.",
+    );
+    const scheduleRecheck = (): void => {
+      if (this.stopped) return;
+      this.ffmpegRecheckTimer = setTimeout(() => {
+        void checkFfmpegAvailable().then((available) => {
+          if (available) {
+            this.ffmpegAvailable = true;
+            this.ffmpegRecheckTimer = null;
+            logger.info(
+              "transcoder: ffmpeg binary restored — circuit CLOSED, job dispatch resumed ✓",
+            );
+          } else {
+            scheduleRecheck();
+          }
+        }).catch(() => scheduleRecheck());
+      }, TranscoderDispatcher.FFMPEG_RECHECK_MS);
+      this.ffmpegRecheckTimer?.unref?.();
+    };
+    scheduleRecheck();
+  }
+
   start(): void {
     if (this.timer) return;
     this.stopped = false;
@@ -65,13 +112,11 @@ class TranscoderDispatcher {
 
     // Verify the ffmpeg binary is reachable so we surface a clear error
     // immediately at startup rather than silently failing on every job.
+    // If unavailable, the circuit breaker opens and job dispatch pauses
+    // until ffmpeg becomes reachable (checked every FFMPEG_RECHECK_MS).
     void checkFfmpegAvailable().then((available) => {
       if (!available) {
-        logger.error(
-          "transcoder: CRITICAL — ffmpeg binary not found or not executable. " +
-          "Every transcoding job will fail until ffmpeg is installed. " +
-          "Fix: apt-get install ffmpeg  (or set TRANSCODER_DISABLE=1 to suppress this message).",
-        );
+        this.openFfmpegCircuit();
       } else {
         logger.info("transcoder: ffmpeg binary confirmed available ✓");
       }
@@ -147,6 +192,27 @@ class TranscoderDispatcher {
           });
         }
       }
+
+      // Reset videos stuck in "processing" with no backing transcoding_job.
+      // These were orphaned by faststart (which sets transcodingStatus="processing"
+      // directly, without a transcoding_job row) when the server was killed mid-run.
+      // After the transcoding_jobs reset above, any video still at "processing"
+      // has no active job — safe to reset to "queued" (source blob is intact).
+      const faststartOrphans = await db
+        .select({ id: videos.id })
+        .from(videos)
+        .where(eq(videos.transcodingStatus, "processing"))
+        .limit(100);
+      if (faststartOrphans.length > 0) {
+        const orphanIds = faststartOrphans.map((r) => r.id);
+        await db.update(videos)
+          .set({ transcodingStatus: "queued" })
+          .where(inArray(videos.id, orphanIds));
+        logger.warn(
+          { count: faststartOrphans.length },
+          "transcoder: reset faststart-orphaned videos stuck in 'processing' on startup",
+        );
+      }
     } catch (err) {
       logger.error({ err }, "transcoder: failed to reset orphaned jobs on startup (non-fatal)");
     }
@@ -157,6 +223,10 @@ class TranscoderDispatcher {
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
+    }
+    if (this.ffmpegRecheckTimer) {
+      clearTimeout(this.ffmpegRecheckTimer);
+      this.ffmpegRecheckTimer = null;
     }
     logger.info("transcoder dispatcher stopped");
   }
@@ -298,6 +368,10 @@ class TranscoderDispatcher {
 
   async runOnce(): Promise<{ ran: boolean }> {
     if (this.running) return { ran: false };
+    // Circuit open — ffmpeg unavailable. Pause dispatch to preserve every
+    // job's retry budget. The openFfmpegCircuit() re-check loop closes the
+    // circuit automatically when ffmpeg becomes reachable again.
+    if (!this.ffmpegAvailable) return { ran: false };
     this.running = true;
     try {
       // Run the stuck-job watchdog on every tick to recover jobs that somehow

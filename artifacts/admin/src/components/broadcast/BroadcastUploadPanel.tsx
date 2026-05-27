@@ -252,6 +252,17 @@ const INTENT_LABELS: Record<BroadcastIntent, string> = {
   "play-now": "Play Now",
 };
 
+// ── Module-level idempotency guard ─────────────────────────────────────────────
+//
+// Persists across component unmount/remount cycles so completed upload intents
+// are never re-triggered when the operator navigates away and back to the
+// broadcast console within the same browser session.
+//
+// A useRef<Set<string>> would reset to an empty Set on every unmount, causing
+// already-executed items to re-enqueue their broadcast intent on re-mount.
+// A module-level Set avoids this without requiring any external state store.
+const _panelExecutedIds = new Set<string>();
+
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export function BroadcastUploadPanel({ server, queueItems }: BroadcastUploadPanelProps) {
@@ -280,22 +291,19 @@ export function BroadcastUploadPanel({ server, queueItems }: BroadcastUploadPane
   const queueItemsRef = useRef(queueItems);
   useEffect(() => { queueItemsRef.current = queueItems; }, [queueItems]);
 
-  // IDs that have already had their intent triggered (idempotency guard)
-  const executedRef = useRef<Set<string>>(new Set());
-
   // ── Auto-execute intent when upload completes ──────────────────────────────
   useEffect(() => {
     for (const item of items) {
       if (!panelItemIds.current.has(item.id)) continue;
       if (item.status !== "completed" || !item.videoId) continue;
-      if (executedRef.current.has(item.id)) continue;
+      if (_panelExecutedIds.has(item.id)) continue;
 
       const state = broadcastStatesRef.current.get(item.id);
       if (!state || state.executed || state.executing) continue;
 
       // Guard: mark as triggered before the async call so concurrent
       // renders don't fire the same execution twice.
-      executedRef.current.add(item.id);
+      _panelExecutedIds.add(item.id);
       void executeIntent(item.id, item.videoId, state.intent);
     }
   }, [items]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -356,7 +364,7 @@ export function BroadcastUploadPanel({ server, queueItems }: BroadcastUploadPane
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
     } catch (e) {
       // Allow retry by removing from the idempotency guard
-      executedRef.current.delete(uploadId);
+      _panelExecutedIds.delete(uploadId);
       const msg =
         e instanceof HttpError
           ? e.message
@@ -386,14 +394,14 @@ export function BroadcastUploadPanel({ server, queueItems }: BroadcastUploadPane
   async function retryQueue(uploadId: string, videoId: string) {
     const state = broadcastStatesRef.current.get(uploadId);
     if (!state || state.executing) return;
-    executedRef.current.delete(uploadId);
+    _panelExecutedIds.delete(uploadId);
     setBroadcastStates((prev) => {
       const next = new Map(prev);
       const s = next.get(uploadId);
       if (s) next.set(uploadId, { ...s, error: null, executed: false });
       return next;
     });
-    executedRef.current.add(uploadId);
+    _panelExecutedIds.add(uploadId);
     await executeIntent(uploadId, videoId, state.intent);
   }
 
@@ -466,7 +474,7 @@ export function BroadcastUploadPanel({ server, queueItems }: BroadcastUploadPane
       uploadQueue.dismiss(uploadId);
     }
     panelItemIds.current.delete(uploadId);
-    executedRef.current.delete(uploadId);
+    _panelExecutedIds.delete(uploadId);
     setBroadcastStates((prev) => {
       const next = new Map(prev);
       next.delete(uploadId);

@@ -665,7 +665,10 @@ export default function BroadcastV2Page() {
           : "?";
       toast.error(`Failed: ${path.split("/").pop()} (${detail})`);
     } finally {
-      setBusy(null);
+      // Functional update: only clear busy if WE are still the active
+      // operation — a concurrent clearBlocks / prepareHls may have
+      // started and set a different key while adminPost was in-flight.
+      setBusy((prev) => (prev === path ? null : prev));
     }
   }
 
@@ -1033,7 +1036,7 @@ export default function BroadcastV2Page() {
           : "?";
       toast.error(`Failed to clear blocks (${detail})`);
     } finally {
-      setBusy(null);
+      setBusy((prev) => (prev === "clear-blocks" ? null : prev));
     }
   }
 
@@ -1068,7 +1071,7 @@ export default function BroadcastV2Page() {
           : "?";
       toast.error(`Failed to prepare HLS (${detail})`);
     } finally {
-      setBusy(null);
+      setBusy((prev) => (prev === "prepare-hls" ? null : prev));
     }
   }
 
@@ -1337,7 +1340,7 @@ export default function BroadcastV2Page() {
             <Button
               size="sm"
               variant="destructive"
-              disabled={busy === "clear-blocks"}
+              disabled={!!busy}
               onClick={clearBlocks}
               className="h-7 px-2 text-xs"
             >

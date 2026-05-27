@@ -22,6 +22,24 @@ declare class TranscoderDispatcher {
     private timer;
     private running;
     private stopped;
+    /**
+     * FFmpeg circuit breaker.
+     *
+     * When ffmpeg is unavailable `ffmpegAvailable` is set to false and all job
+     * dispatch is paused — preventing every queued video from exhausting its
+     * retry budget against a missing binary and being permanently failed.
+     *
+     * A background re-check fires every FFMPEG_RECHECK_MS until ffmpeg is
+     * confirmed reachable, then the circuit closes automatically.
+     */
+    private ffmpegAvailable;
+    private ffmpegRecheckTimer;
+    private static readonly FFMPEG_RECHECK_MS;
+    /**
+     * Open the ffmpeg circuit breaker. Logs a CRITICAL warning and schedules
+     * periodic re-checks so the dispatcher self-heals when ffmpeg is installed.
+     */
+    private openFfmpegCircuit;
     start(): void;
     private purgeOrphanedScratchDirs;
     private scratchGcCounter;
