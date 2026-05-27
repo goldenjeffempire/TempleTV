@@ -764,30 +764,13 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         ]);
       }
 
-      // Stale-lock recovery: If status is "assembling" but completedVideoId is null,
-      // a prior finalize attempt locked the session but crashed before pre-committing
-      // the video row (e.g. DB error thrown from db.insert(videos)).
-      // Without this reset the session is permanently stuck — subsequent finalize
-      // calls see lockResult.length === 0, re-read status="assembling" + null id,
-      // and throw 409 forever. Reset to "uploading" so this attempt can proceed.
-      if (session.status === "assembling" && !session.completedVideoId) {
-        req.log.warn(
-          { sessionId },
-          "[finalize] stale-lock recovery: status=assembling but no completedVideoId — resetting to uploading",
-        );
-        await db
-          .update(sessions)
-          .set({ status: "uploading", updatedAt: new Date() })
-          .where(eq(sessions.sessionId, sessionId))
-          .catch(() => {});
-        // Re-read to get fresh state for the lock acquisition below.
-        session = (await db
-          .select()
-          .from(sessions)
-          .where(eq(sessions.sessionId, sessionId))
-          .limit(1)
-          .then((r) => r[0])) ?? session;
-      }
+      // NOTE: We intentionally do NOT reset status="assembling" sessions here,
+      // even when completedVideoId is null (i.e. assembly is mid-flight).
+      // Resetting pre-CAS would kill a concurrent live assembler — Request 2 would
+      // reset Request 1's lock, win the subsequent atomic CAS, and spawn a second
+      // parallel assembly. Crash-recovery (status="assembling" left over from a
+      // dead process) is handled below, after the CAS fails, using an age-gated
+      // threshold (STALE_LOCK_THRESHOLD_MS).
 
       // Idempotency: already completed OR pre-committed (background assembly running).
       // The new async-finalize path sets status="assembling" + completedVideoId before
@@ -862,25 +845,29 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         // Stale lock race: status="assembling" but no completedVideoId.
         //
         // There are two distinct cases:
-        //   A. Genuinely stale: a prior finalize crashed before pre-committing
-        //      the video row.  updatedAt will be old (> 2 min ago).
+        //   A. Genuinely stale: a prior finalize crashed before writing the
+        //      video row. updatedAt is old (> STALE_LOCK_THRESHOLD_MS ago).
         //      → Safe to reset to "uploading" so the client can retry.
         //
         //   B. Active concurrent request: a concurrent /finalize call acquired
-        //      the lock milliseconds ago (status="assembling") but hasn't yet
-        //      completed the async pre-commit DB INSERT.  updatedAt is very
-        //      recent (< 2 min).
-        //      → Must NOT reset — doing so would kill the active assembly.
+        //      the lock recently (status="assembling") and assembly is in
+        //      progress. updatedAt is recent (< threshold).
+        //      → Must NOT reset — doing so would kill the active assembler.
         //        Return 409 so the client polls finalize-status instead.
         //
-        // The 2-minute threshold is generous: the pre-commit INSERT path runs
-        // entirely in Node.js memory with a single async DB call — it takes
-        // well under a second under any normal load.
+        // Threshold: 30 minutes. A 2 GiB file assembled via the db_fallback
+        // bytea-concat path can legitimately take 40+ minutes on Replit's
+        // shared Neon DB; we also respect ASSEMBLY_WATCHDOG_MS (default 90 min)
+        // as a hard upper bound. 30 minutes means: if no progress marker
+        // (completedVideoId) appears within 30 min, the assembler is assumed
+        // dead and the lock is released.
         if (refreshed?.status === "assembling" && !refreshed.completedVideoId) {
           const lockAgeMs = refreshed.updatedAt
             ? Date.now() - new Date(refreshed.updatedAt).getTime()
             : Infinity;
-          const STALE_LOCK_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
+          // 30 minutes — safely below the 90-min ASSEMBLY_WATCHDOG_MS but long
+          // enough that genuine large-file assemblies are never interrupted.
+          const STALE_LOCK_THRESHOLD_MS = 30 * 60 * 1000;
 
           if (lockAgeMs > STALE_LOCK_THRESHOLD_MS) {
             // Case A: genuinely stale — reset and tell client to retry.

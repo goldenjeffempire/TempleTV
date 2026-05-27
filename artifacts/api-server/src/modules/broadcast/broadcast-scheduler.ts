@@ -132,7 +132,11 @@ async function tick(): Promise<void> {
     const isStale = lastSnapshotAgeMs > 600_000 && engineRunning;
 
     if (isStale) {
-      logger.warn({ lastSnapshotAgeMs }, "[scheduler] broadcast engine appears stale — triggering reload");
+      // The v1 engine is no longer the primary broadcast driver (v2 handles
+      // playback). It naturally goes silent between cycles, so this fires
+      // every ~10 minutes as expected behaviour rather than a real alert.
+      // Downgraded from WARN → INFO to prevent log-monitoring false positives.
+      logger.info({ lastSnapshotAgeMs }, "[scheduler] v1 broadcast engine cycle idle — nudging reload");
       try {
         await broadcastEngine.reload();
         broadcastSignal("SYNC_REQUIRED", channelId, {

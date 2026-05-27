@@ -580,10 +580,78 @@ export async function videoServeRoutes(app: FastifyInstance) {
       reply.raw.on("close", decrementConcurrent);
 
       const key = `transcoded/${videoId}/${wildcard}`;
+      // Determine type early — needed both for Range pre-check and CDN rewriting.
+      const isManifest = wildcard.endsWith(".m3u8");
+      const isMaster = wildcard === "master.m3u8";
       const s = storage();
       if (!s.enabled) {
         decrementConcurrent();
         return reply.code(503).send({ error: "Object storage not configured" });
+      }
+
+      // ── Range request path (segments only) ────────────────────────────────
+      // Honour Range: bytes=START-END on .ts segments before issuing the full
+      // getObject call. Required by:
+      //   • Safari / AVFoundation — makes range requests for every HLS segment.
+      //   • Smart TV players (Tizen, WebOS) — many require 206 for buffering.
+      //   • Seek-into-segment scenarios where a client already has part of a
+      //     segment in cache and wants only the remainder.
+      //
+      // Manifests (.m3u8) are always served whole — they are buffered for URL
+      // rewriting anyway, and Range-for-manifests is not a real use case.
+      const rangeHeader = typeof req.headers["range"] === "string"
+        ? req.headers["range"]
+        : null;
+
+      if (!isManifest && rangeHeader) {
+        const rangeMatch = /bytes=(\d*)-(\d*)/.exec(rangeHeader);
+        if (rangeMatch) {
+          try {
+            const head = await s.headObject(key);
+            if (!head.exists) {
+              decrementConcurrent();
+              return reply.code(404).send({ error: "HLS segment not found in storage" });
+            }
+            const total = head.contentLength ?? 0;
+            const rawStart = rangeMatch[1] ? parseInt(rangeMatch[1], 10) : 0;
+            // Open-ended "bytes=START-" means through the last byte.
+            const rawEnd = rangeMatch[2] ? parseInt(rangeMatch[2], 10) : total - 1;
+            const rangeStart = Math.max(0, rawStart);
+            const rangeEnd = Math.min(rawEnd, total - 1);
+
+            if (rangeStart > rangeEnd || rangeStart >= total) {
+              decrementConcurrent();
+              return reply
+                .code(416)
+                .header("Content-Range", `bytes */${total}`)
+                .send({ error: "Range Not Satisfiable" });
+            }
+
+            const rangeObj = await s.getObjectRange(key, rangeStart, rangeEnd);
+            if (!rangeObj) {
+              decrementConcurrent();
+              return reply.code(404).send({ error: "HLS segment not found in storage" });
+            }
+
+            return reply
+              .code(206)
+              .header("Content-Type", head.contentType ?? "video/mp2t")
+              .header("Content-Range", `bytes ${rangeStart}-${rangeEnd}/${total}`)
+              .header("Content-Length", String(rangeObj.contentLength))
+              .header("Cache-Control", "public, max-age=604800, immutable")
+              .header("Accept-Ranges", "bytes")
+              .header("Access-Control-Allow-Origin", "*")
+              .header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+              .header("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
+              .header("Cross-Origin-Resource-Policy", "cross-origin")
+              .header("Timing-Allow-Origin", "*")
+              .send(rangeObj.body);
+          } catch (rangeErr) {
+            decrementConcurrent();
+            logger.warn({ err: rangeErr, videoId, wildcard }, "[hls-proxy] range request failed");
+            return reply.code(404).send({ error: "HLS segment not found in storage" });
+          }
+        }
       }
 
       let obj: Awaited<ReturnType<typeof s.getObject>>;
@@ -598,9 +666,6 @@ export async function videoServeRoutes(app: FastifyInstance) {
         }
         throw err;
       }
-
-      const isManifest = wildcard.endsWith(".m3u8");
-      const isMaster = wildcard === "master.m3u8";
 
       if (isManifest) {
         // Buffer the manifest so we can rewrite absolute S3 segment URLs.
@@ -649,9 +714,11 @@ export async function videoServeRoutes(app: FastifyInstance) {
         // stale-if-error=60: if the origin is transiently unavailable (deploy
         // restart, DB blip) the CDN serves stale for up to 60 s rather than
         // returning a 5xx that would cause hls.js to abort playback.
+        const manifestBuf = Buffer.from(text, "utf8");
         return reply
           .header("Content-Type", "application/vnd.apple.mpegurl")
           .header("Cache-Control", "public, max-age=10, s-maxage=10, stale-while-revalidate=5, stale-if-error=60")
+          .header("Content-Length", String(manifestBuf.byteLength))
           .header("Accept-Ranges", "bytes")
           .header("Access-Control-Allow-Origin", "*")
           .header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
@@ -659,7 +726,7 @@ export async function videoServeRoutes(app: FastifyInstance) {
           .header("Cross-Origin-Resource-Policy", "cross-origin")
           .header("Timing-Allow-Origin", "*")
           .header("X-Queue-Depth", String(hlsConcurrent))
-          .send(text);
+          .send(manifestBuf);
       }
 
       // A2: Binary segment — long cache TTL (7 days). TS segments are immutable

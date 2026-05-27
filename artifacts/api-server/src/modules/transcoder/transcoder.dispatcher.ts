@@ -640,8 +640,16 @@ class TranscoderDispatcher {
         void scheduleSourceCleanup(job.videoId, job.videoPath ?? null);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        const attempts = job.attempts + 1;
-        const exceeded = attempts >= job.maxAttempts;
+        const errCode = (err as NodeJS.ErrnoException).code;
+
+        // ENOSPC / EDQUOT: disk-full errors are non-retryable — no amount of
+        // waiting will free disk space. Immediately mark the job "failed" without
+        // burning any retry slots, and emit a high-severity log so operators
+        // know they need to free storage before re-queuing.
+        const isDiskFull = errCode === "ENOSPC" || errCode === "EDQUOT";
+
+        const attempts = job.attempts + (isDiskFull ? 0 : 1); // don't increment on disk-full
+        const exceeded = isDiskFull || attempts >= job.maxAttempts;
         const backoffMs = Math.min(60_000 * 2 ** attempts, 30 * 60_000);
         const nextRetry = new Date(Date.now() + backoffMs);
 
@@ -671,15 +679,24 @@ class TranscoderDispatcher {
           nextRetryAt: exceeded ? null : nextRetry.toISOString(),
         });
 
-        logger.error({
-          err,
-          jobId: job.id,
-          videoId: job.videoId,
-          attempts,
-          maxAttempts: job.maxAttempts,
-          willRetry: !exceeded,
-          nextRetryAt: exceeded ? null : nextRetry.toISOString(),
-        }, "transcoder: job failed");
+        if (isDiskFull) {
+          logger.error({
+            err,
+            jobId: job.id,
+            videoId: job.videoId,
+            errCode,
+          }, "transcoder: job aborted — disk full (ENOSPC/EDQUOT); free storage and re-queue the video");
+        } else {
+          logger.error({
+            err,
+            jobId: job.id,
+            videoId: job.videoId,
+            attempts,
+            maxAttempts: job.maxAttempts,
+            willRetry: !exceeded,
+            nextRetryAt: exceeded ? null : nextRetry.toISOString(),
+          }, "transcoder: job failed");
+        }
       }
 
       return { ran: true };

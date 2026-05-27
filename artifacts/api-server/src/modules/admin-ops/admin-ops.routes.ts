@@ -1221,8 +1221,17 @@ export async function adminOpsRoutes(app: FastifyInstance) {
   );
 
   // Cancel an upload session — accepts the URL the admin SPA uses
-  // (`DELETE /admin/videos/upload/:sessionId`). Aborts the underlying
-  // S3 multipart upload (best-effort) and drops the session.
+  // (`DELETE /admin/videos/upload/:sessionId`).
+  //
+  // Handles DB-based chunked sessions (the primary upload path since the
+  // S3 multipart path was replaced). Immediately frees all chunk data from
+  // storage_blobs and upload_chunks so the operator doesn't have to wait
+  // for the 48-hour stale-session GC sweep.
+  //
+  // Status rules:
+  //   uploading  → cancelled immediately (chunks + parts deleted)
+  //   assembling → 409 (background assembly is in flight — cannot abort safely)
+  //   completed  → 409 (use the video delete route instead)
   r.delete(
     "/videos/upload/:sessionId",
     {
@@ -1230,28 +1239,73 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin-ops"],
-        summary: "Cancel an active multipart upload session",
+        summary: "Cancel and clean up an in-progress upload session",
         params: z.object({ sessionId: z.string().min(1) }),
-        response: { 200: z.object({ ok: z.literal(true), aborted: z.boolean() }) },
+        response: {
+          200: z.object({ ok: z.literal(true) }),
+          409: z.object({ error: z.string() }),
+        },
         security: [{ bearerAuth: [] }],
       },
     },
-    async (req) => {
+    async (req, reply) => {
       const { sessionId } = req.params;
-      const session = uploadSessions.remove(sessionId);
-      if (!session) return { ok: true as const, aborted: false };
-      try {
-        await storage().abortMultipartUpload({
-          key: session.objectKey,
-          uploadId: session.uploadId,
+
+      const session = await db
+        .select({
+          status: schema.uploadSessionsTable.status,
+          uploadId: schema.uploadSessionsTable.uploadId,
+          storageBackend: schema.uploadSessionsTable.storageBackend,
+        })
+        .from(schema.uploadSessionsTable)
+        .where(eq(schema.uploadSessionsTable.sessionId, sessionId))
+        .limit(1)
+        .then((r) => r[0]);
+
+      // Session already gone — idempotent OK.
+      if (!session) return { ok: true as const };
+
+      if (session.status === "assembling") {
+        return reply.code(409).send({
+          error:
+            "Assembly is in progress for this session — cannot cancel now. " +
+            "Poll /finalize-status until it completes, then delete the video if unwanted.",
         });
-      } catch (err) {
-        req.log.warn(
-          { err, sessionId, objectKey: session.objectKey },
-          "[admin-ops] abort during DELETE failed",
-        );
       }
-      return { ok: true as const, aborted: true };
+
+      if (session.status === "completed") {
+        return reply.code(409).send({
+          error:
+            "This session has already been completed. " +
+            "Use the video delete route to remove the resulting video.",
+        });
+      }
+
+      // Delete chunks first (FK dependency), then any orphaned multipart
+      // part rows from storage_blobs, then the session row itself.
+      await db
+        .delete(schema.uploadChunksTable)
+        .where(eq(schema.uploadChunksTable.sessionId, sessionId))
+        .catch(() => {});
+
+      if (session.uploadId) {
+        const partPrefix = `_parts/${session.uploadId}/`;
+        await db
+          .execute(sql`DELETE FROM storage_blobs WHERE starts_with(key, ${partPrefix})`)
+          .catch(() => {});
+      }
+
+      await db
+        .delete(schema.uploadSessionsTable)
+        .where(eq(schema.uploadSessionsTable.sessionId, sessionId))
+        .catch(() => {});
+
+      req.log.info(
+        { sessionId, storageBackend: session.storageBackend },
+        "[admin-ops] upload session cancelled and cleaned up",
+      );
+
+      return { ok: true as const };
     },
   );
 
