@@ -527,63 +527,52 @@ export const queueRepo = {
             or(isNotNull(q.hlsMasterUrl), isNotNull(v.hlsMasterUrl), isNotNull(v.localVideoUrl), isNotNull(q.localVideoUrl)),
             // Only admit items whose video asset is confirmed safe to stream.
             //
-            // Still-blocked state (item excluded from broadcast):
-            //   'processing'— faststart.service.ts is re-encoding and re-uploading
-            //                 the moov-rewritten file via multipart upload. The
-            //                 original key remains readable throughout (no 404
-            //                 window), but we hold the item back until the new
-            //                 file is atomically committed so the player doesn't
-            //                 bind to the un-faststarted source mid-cycle.
-            //                 The item re-enters the queue immediately after
-            //                 faststart completes and the orchestrator reloads
-            //                 (broadcast-queue-updated event).
-            //
             // Allowed states (item is safe to serve via localVideoUrl):
-            //   'none'      — no transcoding requested; raw upload is the final
-            //                 artifact. Legacy / externally-created rows with no
-            //                 transcoding history.
-            //   'queued'    — transcoding job created but ffmpeg has NOT yet
-            //                 started. The original upload blob at localVideoUrl
-            //                 is completely intact and readable. Blocking this
-            //                 state causes a guaranteed off-air window between
-            //                 upload and the first transcoding tick. Allow it so
-            //                 videos air immediately when added to the queue.
-            //   'encoding'  — HLS ffmpeg is running. The transcoder downloads
-            //                 the source to a temp directory and encodes there;
-            //                 the ORIGINAL localVideoUrl object in storage is
-            //                 never modified during this phase. Safe to serve.
-            //   'ready'     — MP4 faststart complete; moov atom at byte 0, fully seekable.
-            //   'hls_ready' — full HLS transcode done; hlsMasterUrl is also set and
-            //                 preferred over localVideoUrl by toItem().
-            //   'failed'    — Transcoding or faststart failed.
-            //                 Only admit when `faststart_applied = true` (moov
-            //                 atom confirmed at byte-0, safe to stream) OR when
-            //                 an HLS master URL is already available.
-            //                 Un-faststarted 'failed' files have the moov atom
-            //                 at EOF — browsers must download the entire file
-            //                 before they can parse metadata, causing timeouts
-            //                 and SKIP_PENDING dead-air loops on large uploads.
-            //                 Recovery path: Videos page → Re-apply faststart,
-            //                 or convert to HLS via the transcoder.
+            //   'none'       — no transcoding requested; raw upload is the final
+            //                  artifact. Legacy / externally-created rows with no
+            //                  transcoding history.
+            //   'queued'     — transcoding job created but ffmpeg has NOT yet
+            //                  started. The original upload blob at localVideoUrl
+            //                  is completely intact and readable. Blocking this
+            //                  state causes a guaranteed off-air window between
+            //                  upload and the first transcoding tick.
+            //   'encoding'   — HLS ffmpeg is running. The transcoder downloads
+            //                  the source to a temp directory and encodes there;
+            //                  the ORIGINAL localVideoUrl object in storage is
+            //                  never modified during this phase. Safe to serve.
+            //   'processing' — faststart.service.ts is re-uploading a moov-rewritten
+            //                  file to the same storage key via multipart upload.
+            //                  The ORIGINAL key is still served by storage throughout
+            //                  (multipart parts are not visible until
+            //                  completeMultipartUpload commits them atomically).
+            //                  Blocking this state was wrong: it created an off-air
+            //                  window that could last minutes for large files, even
+            //                  though the video was perfectly playable the whole
+            //                  time. Admitted on the same basis as 'queued'.
+            //   'ready'      — MP4 faststart complete; moov atom at byte 0.
+            //   'hls_ready'  — full HLS transcode done; hlsMasterUrl preferred.
+            //   'failed'     — Transcoding or faststart failed.
+            //                  Only admit when `faststart_applied = true` (moov
+            //                  atom confirmed at byte-0, safe to stream) OR when
+            //                  an HLS master URL is already available.
+            //                  Un-faststarted 'failed' files may have the moov
+            //                  atom at EOF — large uploads cause seek timeouts.
+            //                  Recovery: Videos page → Re-apply faststart, or
+            //                  convert to HLS via the transcoder.
             //
             // Items with hlsMasterUrl set are always admitted regardless of status:
-            // the HLS playlist is the authoritative streamable source and is already
-            // stable by the time hlsMasterUrl is written to the DB.
+            // the HLS playlist is the authoritative streamable source.
             or(
               sql`${v.id} IS NULL`,
               isNotNull(v.hlsMasterUrl),
               // 'ready' and 'hls_ready' are always safe: faststart/HLS is complete.
               inArray(v.transcodingStatus, ["ready", "hls_ready"]),
-              // 'none', 'queued', 'encoding': admit immediately — the raw upload blob
-              // is accessible at localVideoUrl as soon as completeMultipartUpload
-              // finishes. Faststart re-uploads an optimised file to the same key in
-              // the background; HLS transcoding adds an adaptive manifest. Both
-              // upgrade the source in-place without a re-queue. The orchestrator
-              // picks up the best available URL (HLS preferred) on the next reload.
-              inArray(v.transcodingStatus, ["none", "queued", "encoding"]),
+              // 'none', 'queued', 'encoding', 'processing': admit immediately.
+              // All four states have the original upload blob accessible at
+              // localVideoUrl. Faststart ('processing') re-uploads to the same key
+              // atomically; HLS adds a separate manifest. Both upgrade in-place.
+              inArray(v.transcodingStatus, ["none", "queued", "encoding", "processing"]),
               // 'failed': still require faststart or HLS confirmed safe to stream.
-              // A failed transcode where faststartApplied=false may have the moov
-              // atom at EOF — the player would time out trying to buffer it.
               and(
                 eq(v.transcodingStatus, "failed"),
                 or(isNotNull(q.hlsMasterUrl), isNotNull(v.hlsMasterUrl), eq(v.faststartApplied, true)),

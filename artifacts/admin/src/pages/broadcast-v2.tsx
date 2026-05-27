@@ -923,8 +923,9 @@ export default function BroadcastV2Page() {
   const allHlsReady = localQueueItems.length > 0 && pendingHlsCount === 0;
 
   // Items currently being faststarted (moov atom relocation in progress).
-  // These are temporarily excluded from the broadcast queue by loadActive()
-  // and will re-enter automatically once faststart completes.
+  // These items ARE in the broadcast queue and will air normally — the raw
+  // upload blob remains readable throughout the multipart atomic swap.
+  // Once faststart completes the optimised file replaces the original in-place.
   const processingCount = queueItems.filter(
     (i) => i.isActive && i.transcodingStatus === "processing",
   ).length;
@@ -1139,11 +1140,11 @@ export default function BroadcastV2Page() {
         {processingCount > 0 && (
           <Badge
             variant="outline"
-            className="gap-1 animate-pulse border-blue-400/70 bg-blue-50 text-blue-800 dark:bg-blue-900/30 dark:text-blue-200"
-            title={`${processingCount} item${processingCount !== 1 ? "s" : ""} temporarily held from broadcast while the moov atom is being relocated to byte 0 (faststart). They will air automatically once complete.`}
+            className="gap-1 border-blue-400/70 bg-blue-50 text-blue-800 dark:bg-blue-900/30 dark:text-blue-200"
+            title={`${processingCount} item${processingCount !== 1 ? "s" : ""} being optimised for streaming (moov atom relocation). ${processingCount !== 1 ? "They are" : "It is"} airing normally on the raw upload while faststart runs in the background.`}
           >
             <Loader2 className="h-3 w-3 animate-spin" />
-            {processingCount} processing
+            {processingCount} optimising
           </Badge>
         )}
         {/* Stuck orchestrator alert badge */}
@@ -1401,12 +1402,11 @@ export default function BroadcastV2Page() {
           <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
           <div className="flex-1">
             <strong>
-              {processingCount} queue item{processingCount !== 1 ? "s are" : " is"} being processed.
+              {processingCount} queue item{processingCount !== 1 ? "s are" : " is"} being optimised for streaming.
             </strong>{" "}
             The moov atom is being relocated to byte 0 (faststart) so the video can stream
-            instantly without an HTTP Range pre-flight. The item{processingCount !== 1 ? "s are" : " is"}{" "}
-            temporarily held from the broadcast queue and will air automatically once complete —
-            no operator action needed.
+            instantly without an HTTP Range pre-flight. The item{processingCount !== 1 ? "s are" : " is"} airing
+            normally on the raw upload while this runs in the background — no operator action needed.
           </div>
           <button
             type="button"

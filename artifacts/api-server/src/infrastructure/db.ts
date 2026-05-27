@@ -602,6 +602,37 @@ export function scheduleStaleDataCleanup(): void {
       await run("broadcast_event_log_old",
         "DELETE FROM broadcast_event_log WHERE created_at < NOW() - INTERVAL '14 days'");
 
+      // ── Stuck-processing recovery ─────────────────────────────────────
+      // 'processing' is the transient state set by runFaststart while it
+      // atomically re-uploads the moov-optimised blob.  runFaststart
+      // restores the prior status on a clean error path, but if the Node
+      // process is killed mid-upload the row stays at 'processing' forever.
+      // The startup reset in main.ts handles the previous-run case; this
+      // sweep catches any crash that happened AFTER the last boot (e.g. an
+      // OOM kill between cleanup runs).
+      //
+      // Items stuck in 'processing' for > 20 minutes are reset to 'queued'
+      // (if they have a localVideoUrl) or 'none'.  20 min is comfortably
+      // above the faststart timeout (15 min for very large files) so we
+      // will never interrupt a legitimately running faststart job.
+      const stuckResult = await client.query(`
+        UPDATE managed_videos
+        SET    transcoding_status = CASE
+                 WHEN local_video_url IS NOT NULL AND local_video_url != '' THEN 'queued'
+                 ELSE 'none'
+               END
+        WHERE  transcoding_status = 'processing'
+          AND  updated_at < NOW() - INTERVAL '20 minutes'
+      `);
+      const stuckReset = (stuckResult as unknown as { rowCount: number | null }).rowCount ?? 0;
+      if (stuckReset > 0) {
+        logger.warn(
+          { stuckReset },
+          "db: stale-cleanup: reset stuck 'processing' videos to queued/none — " +
+            "these were interrupted mid-faststart; they are broadcast-ready at localVideoUrl",
+        );
+      }
+
       if (Object.keys(results).length > 0) {
         logger.info({ swept: results }, "db: stale-data cleanup completed");
       }
