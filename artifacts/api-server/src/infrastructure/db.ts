@@ -170,6 +170,10 @@ export async function ensureBroadcastV2Tables(): Promise<void> {
       CREATE INDEX IF NOT EXISTS broadcast_event_log_channel_created_idx
         ON broadcast_event_log (channel_id, created_at)
     `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS broadcast_event_log_event_type_idx
+        ON broadcast_event_log (event_type)
+    `);
 
     // player_position_checkpoint — resume-point for mid-item restarts
     await client.query(`
@@ -500,6 +504,73 @@ export async function ensureUserSchemaColumns(): Promise<void> {
   } finally {
     client.release();
   }
+}
+
+/**
+ * Periodic stale-data cleanup — removes expired/stale rows that accumulate
+ * over time in high-churn tables and would never be swept by application logic.
+ *
+ * Runs once at startup (deferred 30 s so boot completes first) and then
+ * every 6 hours. All DELETE statements are bounded, safe to re-run, and
+ * will not block normal traffic for more than a few milliseconds on a
+ * normally-sized installation.
+ *
+ * Tables swept:
+ *   refresh_tokens        — rows past expires_at (JWTs already rejected)
+ *   password_reset_tokens — rows past expires_at
+ *   device_link_codes     — rows past expires_at
+ *   viewer_sessions       — sessions with no heartbeat for >1 h and ended_at IS NULL
+ *   upload_sessions       — completed/failed sessions older than 30 days
+ *   rate_limit            — all rows (TRUNCATE; it's an in-process fallback table)
+ *   broadcast_event_log   — events older than 14 days (replay window is seconds)
+ */
+export function scheduleStaleDataCleanup(): void {
+  const INTERVAL_MS = 6 * 60 * 60 * 1_000; // 6 hours
+  const STARTUP_DELAY_MS = 30_000;           // don't compete with boot queries
+
+  async function runCleanup(): Promise<void> {
+    const client = await pool.connect();
+    try {
+      const results: Record<string, number> = {};
+
+      const run = async (label: string, sql: string): Promise<void> => {
+        const r = await client.query(sql);
+        if (r.rowCount && r.rowCount > 0) results[label] = r.rowCount;
+      };
+
+      await run("refresh_tokens",
+        "DELETE FROM refresh_tokens WHERE expires_at < NOW() - INTERVAL '1 day'");
+      await run("password_reset_tokens",
+        "DELETE FROM password_reset_tokens WHERE expires_at < NOW()");
+      await run("device_link_codes",
+        "DELETE FROM device_link_codes WHERE expires_at < NOW()");
+      await run("viewer_sessions_stale",
+        `DELETE FROM viewer_sessions
+         WHERE ended_at IS NULL
+           AND last_heartbeat_at < NOW() - INTERVAL '1 hour'`);
+      await run("upload_sessions_old",
+        `DELETE FROM upload_sessions
+         WHERE status IN ('completed', 'failed', 'cancelled')
+           AND created_at < NOW() - INTERVAL '30 days'`);
+      await run("broadcast_event_log_old",
+        "DELETE FROM broadcast_event_log WHERE created_at < NOW() - INTERVAL '14 days'");
+
+      if (Object.keys(results).length > 0) {
+        logger.info({ swept: results }, "db: stale-data cleanup completed");
+      }
+    } catch (err) {
+      logger.warn({ err }, "db: stale-data cleanup failed (non-fatal)");
+    } finally {
+      client.release();
+    }
+  }
+
+  const timer = setTimeout(() => {
+    void runCleanup();
+    const interval = setInterval(() => void runCleanup(), INTERVAL_MS);
+    interval.unref?.();
+  }, STARTUP_DELAY_MS);
+  timer.unref?.();
 }
 
 /**

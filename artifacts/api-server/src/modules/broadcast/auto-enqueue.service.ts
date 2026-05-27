@@ -76,7 +76,6 @@ export async function enqueueIfMissing(opts: {
         youtubeId: videosTable.youtubeId,
         localVideoUrl: videosTable.localVideoUrl,
         hlsMasterUrl: videosTable.hlsMasterUrl,
-        faststartApplied: videosTable.faststartApplied,
       })
       .from(videosTable)
       .where(eq(videosTable.id, opts.videoId))
@@ -189,7 +188,6 @@ export async function scanLibraryAndEnqueue(opts: {
         youtubeId: videosTable.youtubeId,
         localVideoUrl: videosTable.localVideoUrl,
         hlsMasterUrl: videosTable.hlsMasterUrl,
-        faststartApplied: videosTable.faststartApplied,
       })
       .from(videosTable)
       .where(
@@ -197,8 +195,7 @@ export async function scanLibraryAndEnqueue(opts: {
           // YouTube is library-only — never enters the broadcast queue.
           ne(videosTable.videoSource, "youtube"),
           // Must have at least one local-playback source. The per-row
-          // isPlayableForBroadcast() check below applies the full faststart
-          // rule (raw MP4 without moov-at-byte-0 is intentionally excluded).
+          // isPlayableForBroadcast() check below confirms the video is ready.
           or(
             isNotNull(videosTable.hlsMasterUrl),
             isNotNull(videosTable.localVideoUrl),
@@ -278,7 +275,6 @@ function isPlayableForBroadcast(row: {
   youtubeId: string | null;
   localVideoUrl: string | null;
   hlsMasterUrl: string | null;
-  faststartApplied: boolean | null;
 }): boolean {
   // YouTube is library-only — excluded from broadcast entirely.
   if (row.videoSource === "youtube") return false;
@@ -309,7 +305,6 @@ export async function listMissingFromQueue(limit = 50): Promise<
         youtubeId: videosTable.youtubeId,
         localVideoUrl: videosTable.localVideoUrl,
         hlsMasterUrl: videosTable.hlsMasterUrl,
-        faststartApplied: videosTable.faststartApplied,
       })
       .from(videosTable)
       .where(

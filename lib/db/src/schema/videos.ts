@@ -96,10 +96,12 @@ export const videosTable = pgTable("managed_videos", {
   // full-scans managed_videos via the JOIN; with it Postgres can use a bitmap
   // index scan to narrow rows before evaluating the heavier OR conditions.
   index("idx_managed_videos_faststart_applied").on(table.faststartApplied),
-  // Composite broadcast-admission index: mirrors the exact admission predicate
+  // Composite broadcast-admission index: mirrors the primary admission predicate
   // in loadActive() — (video_source, transcoding_status, faststart_applied).
-  // Replaces a full managed_videos scan with a tight composite range scan on
-  // every orchestrator reload; critical for libraries with many videos.
+  // faststart_applied is still used for the 'failed' state guard
+  // (faststartApplied=true required to broadcast a failed-transcode file).
+  // All other states (none/queued/encoding/ready/hls_ready) are admitted by
+  // transcoding_status alone — see idx_managed_videos_source_transcoding above.
   index("idx_managed_videos_broadcast_admission").on(table.videoSource, table.transcodingStatus, table.faststartApplied),
   // NOTE: The GIN full-text search index (idx_managed_videos_fts) is created via
   // raw SQL at API startup in infrastructure/db.ts using CREATE INDEX IF NOT EXISTS.

@@ -6,7 +6,7 @@ import { logger } from "./infrastructure/logger.js";
 import { broadcastEngine } from "./modules/broadcast/queue.engine.js";
 import { channelRegistry } from "./modules/channels/channel-registry.js";
 import { overrideBus } from "./modules/live-overrides/override-bus.js";
-import { closeDb, db, ensureRuntimeIndexes, ensureBroadcastV2Tables, deactivateUnresolvableQueueRows, ensureUserSchemaColumns } from "./infrastructure/db.js";
+import { closeDb, db, ensureRuntimeIndexes, ensureBroadcastV2Tables, deactivateUnresolvableQueueRows, ensureUserSchemaColumns, scheduleStaleDataCleanup } from "./infrastructure/db.js";
 import { closeRedis } from "./infrastructure/redis.js";
 import { sseCounter } from "./infrastructure/sse-counter.js";
 import { scheduledNotificationDispatcher } from "./modules/scheduled-notifications/dispatcher.js";
@@ -286,6 +286,9 @@ async function main() {
     deactivateUnresolvableQueueRows().catch((err) =>
       logger.warn({ err }, "db: deactivateUnresolvableQueueRows failed (non-fatal)"),
     );
+    // Stale-data GC: expired tokens, stale viewer sessions, old upload sessions,
+    // old broadcast event log entries. Runs at 30 s after boot then every 6 h.
+    scheduleStaleDataCleanup();
 
     // Broadcast v2 orchestrator (rebuild — coexists with v1 until cut-over).
     try {

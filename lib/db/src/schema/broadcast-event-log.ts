@@ -13,6 +13,10 @@ export const broadcastEventLogTable = pgTable(
   (t) => [
     uniqueIndex("broadcast_event_log_channel_seq_uq").on(t.channelId, t.sequence),
     index("broadcast_event_log_channel_created_idx").on(t.channelId, t.createdAt),
+    // eventType filter used by admin log dashboards and alert monitors.
+    // Without this a filter on event_type alone requires a full table scan
+    // on what can be a high-volume table (every broadcast tick emits events).
+    index("broadcast_event_log_event_type_idx").on(t.eventType),
   ],
 );
 
