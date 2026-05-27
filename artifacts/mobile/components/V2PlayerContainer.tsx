@@ -125,15 +125,18 @@ import { useNetworkContext } from "@/context/NetworkContext";
  * skip) rather than waiting indefinitely for segment data that may never
  * arrive on a very weak or interrupted connection.
  *
- * 10 s balances:
- *   • HLS: enough time for a slow connection to fetch the next segment (5–8 s
- *     on a 3G link loading a 2 MB 2-second segment pair)
- *   • Transient rebuffer pauses on a healthy connection (usually <2 s)
- *   • Avoidance of false-positives during the very first load of a new item
- *   • Fast recovery on bad sources: 10 s instead of 20 s means the overlay
- *     clears sooner via recovery rather than sitting frozen with audio playing
+ * 15 s balances:
+ *   • HLS: enough time for a slow connection to fetch the next segment. A
+ *     single 2 MB segment on 3G (≈ 1 Mbit/s effective) takes 16 s in the
+ *     worst case; even at 2 Mbit/s it's 8 s. The old 10 s value fired on
+ *     perfectly healthy streams during momentary cell-tower congestion.
+ *   • Transient rebuffer pauses on a healthy connection (usually < 2 s)
+ *   • Must stay > LocalVideoPlayer.STALL_FAIL_MS (15 s) so both paths are
+ *     consistent — users on web and RN see the same stall tolerance.
+ *   • Fast recovery on genuinely bad sources: 15 s is still much faster than
+ *     the OS-level TCP keepalive timeout (> 60 s on Android/iOS).
  */
-const BUFFERING_STALL_THRESHOLD_MS = 10_000;
+const BUFFERING_STALL_THRESHOLD_MS = 15_000;
 
 /**
  * How many milliseconds of actual playback must occur before a `didJustFinish`

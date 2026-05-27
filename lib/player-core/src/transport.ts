@@ -554,6 +554,15 @@ export class V2Transport {
       this.wsPreferSseUntilWsOpens = false; // WS is usable — exit SSE-preference mode
       this.sseReconnectCount = 0;
       this.backoffMs = INITIAL_BACKOFF_MS;
+      // Tear down any active SSE fallback now that WS has successfully
+      // opened. Without this both connections remain alive simultaneously,
+      // causing duplicate event delivery to the FSM (every server frame
+      // arrives once via WS and once via SSE) and leaking a server-side
+      // SSE subscription for the remainder of the session.
+      if (this.es) {
+        this.es.close();
+        this.es = null;
+      }
       this.cfg.onConnectionChange?.(true);
       if (this.lastSequence > 0) {
         try {
@@ -624,17 +633,29 @@ export class V2Transport {
     // in SSE messages; on initial connect we rely on the URL param fallback.
     this.es = es;
     const wrap = (frame: V2ServerFrame) => this.handleFrame(frame);
+    // Store handlers so we can removeEventListener on teardown, breaking
+    // the es → handler → wrap → this closure cycle that would otherwise
+    // keep the transport instance reachable from the EventSource object
+    // after es.close() is called (preventing GC of both).
+    const sseHandlers: Array<[string, (e: Event) => void]> = [];
     for (const t of ["hello", "snapshot", "event", "preload", "takeover", "heartbeat"] as const) {
-      es.addEventListener(t, (msg) => {
+      const handler = (msg: Event) => {
         try {
           wrap(JSON.parse((msg as MessageEvent).data));
         } catch {
           /* noop */
         }
-      });
+      };
+      sseHandlers.push([t, handler]);
+      es.addEventListener(t, handler);
     }
-    es.onerror = () => {
+    const teardownSse = () => {
+      for (const [t, h] of sseHandlers) es.removeEventListener(t, h);
+      sseHandlers.length = 0;
       es.close();
+    };
+    es.onerror = () => {
+      teardownSse();
       if (this.es === es) this.es = null;
       this.cfg.onConnectionChange?.(false);
       this.scheduleReconnect();
