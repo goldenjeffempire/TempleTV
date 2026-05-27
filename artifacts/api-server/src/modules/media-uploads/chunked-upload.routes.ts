@@ -46,6 +46,7 @@ import { runFaststart } from "../transcoder/faststart.service.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
+import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
 import { ServiceUnavailableError } from "../../shared/errors.js";
 
 const sessions = schema.uploadSessionsTable;
@@ -1072,10 +1073,10 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           );
         }
 
-        // NOTE: The video is NOT added to the broadcast queue here.
-        // faststart.service.ts auto-adds it AFTER relocating the moov atom
-        // (faststartApplied=true), ensuring the player always receives a
-        // seekable MP4 rather than a raw upload with moov at EOF.
+        // The video is queued for broadcast in the background task below,
+        // immediately after completeMultipartUpload confirms the blob is fully
+        // assembled in storage. No need to wait for faststart or HLS —
+        // both upgrade the source in-place after the video is already on-air.
 
         // Notify connected clients that the library has a new entry.
         void invalidateVideosCatalogCache();
@@ -1254,6 +1255,28 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 { err: earlyGateErr, videoId },
                 "[finalize:bg] early container gate probe failed (non-fatal) — proceeding to faststart",
               );
+            }
+
+            // ── Immediate broadcast queue entry ─────────────────────────────
+            // Queue the video right after the raw file is confirmed valid and
+            // accessible in storage — no need to wait for faststart or HLS.
+            // Faststart re-uploads an optimised file to the same storage key;
+            // HLS transcoding produces a separate manifest URL. Both upgrade
+            // the broadcast source in-place without a re-queue.
+            // Skipped for confirmed corrupt/unrepairable uploads.
+            if (!skipTranscodeEnqueue) {
+              try {
+                const enqueueResult = await enqueueIfMissing({ videoId, reason: "upload-finalize" });
+                if (enqueueResult.enqueued) {
+                  capturedLog.info(
+                    { videoId, queueItemId: enqueueResult.queueItemId },
+                    "[finalize:bg] video auto-queued for broadcast immediately after assembly",
+                  );
+                  adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize", videoId });
+                }
+              } catch (enqErr) {
+                capturedLog.warn({ err: enqErr, videoId }, "[finalize:bg] immediate enqueueIfMissing failed (non-fatal)");
+              }
             }
 
             if (!skipTranscodeEnqueue) {

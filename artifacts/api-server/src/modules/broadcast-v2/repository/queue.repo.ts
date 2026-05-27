@@ -574,19 +574,16 @@ export const queueRepo = {
               isNotNull(v.hlsMasterUrl),
               // 'ready' and 'hls_ready' are always safe: faststart/HLS is complete.
               inArray(v.transcodingStatus, ["ready", "hls_ready"]),
-              // 'none', 'queued', 'encoding': only admit when faststart has
-              // relocated the moov atom to byte 0. Raw uploads (faststartApplied=false)
-              // have the moov atom at EOF — the browser must download the entire file
-              // before it can parse metadata, causing player timeouts and infinite
-              // SKIP_PENDING dead-air loops on large MP4 uploads.
-              // Videos are auto-added to the queue by faststart.service.ts AFTER
-              // faststartApplied=true, so the window here is only for items manually
-              // added via the admin queue page while faststart is still running.
-              and(
-                inArray(v.transcodingStatus, ["none", "queued", "encoding"]),
-                eq(v.faststartApplied, true),
-              ),
-              // 'failed': admit only when the moov atom is confirmed at byte-0.
+              // 'none', 'queued', 'encoding': admit immediately — the raw upload blob
+              // is accessible at localVideoUrl as soon as completeMultipartUpload
+              // finishes. Faststart re-uploads an optimised file to the same key in
+              // the background; HLS transcoding adds an adaptive manifest. Both
+              // upgrade the source in-place without a re-queue. The orchestrator
+              // picks up the best available URL (HLS preferred) on the next reload.
+              inArray(v.transcodingStatus, ["none", "queued", "encoding"]),
+              // 'failed': still require faststart or HLS confirmed safe to stream.
+              // A failed transcode where faststartApplied=false may have the moov
+              // atom at EOF — the player would time out trying to buffer it.
               and(
                 eq(v.transcodingStatus, "failed"),
                 or(isNotNull(q.hlsMasterUrl), isNotNull(v.hlsMasterUrl), eq(v.faststartApplied, true)),

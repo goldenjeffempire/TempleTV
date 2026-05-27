@@ -29,11 +29,14 @@ import { broadcastService } from "./broadcast.service.js";
  * What counts as "playable" for auto-enqueue:
  *  • YouTube  — excluded from broadcast. YouTube content is library-only and
  *    surfaces only through catalog/search endpoints, never the broadcast queue.
- *  • Local    — has hls_master_url (preferred — adaptive bitrate) OR a
- *    local_video_url AND faststart_applied=true (moov-at-byte-0). Raw
- *    uploads without faststart are intentionally excluded — broadcasting
- *    them produces the "infinite SKIP_PENDING" dead-air loop documented in
- *    faststart.service.ts.
+ *  • Local    — has hls_master_url (preferred — adaptive bitrate) OR any
+ *    non-empty local_video_url. Videos are queued immediately after blob
+ *    assembly so the broadcast doesn't wait for faststart or HLS transcoding.
+ *    Faststart runs in the background and re-uploads the optimised file to the
+ *    same storage key; HLS transcoding produces a separate manifest URL. The
+ *    queue-integrity-validator upgrades the queue item's source to HLS once
+ *    hls_master_url is set, so the broadcast always airs the best available
+ *    source without operator action.
  */
 
 const queueTable = schema.broadcastQueueTable;
@@ -279,14 +282,13 @@ function isPlayableForBroadcast(row: {
 }): boolean {
   // YouTube is library-only — excluded from broadcast entirely.
   if (row.videoSource === "youtube") return false;
-  // Local / uploaded. HLS is the gold standard; raw MP4 is OK only when
-  // faststart has relocated the moov atom — see faststart.service.ts for
-  // the full rationale (raw MP4 without faststart triggers the dead-air
-  // "infinite SKIP_PENDING" loop).
+  // HLS is the gold standard (adaptive bitrate, CDN-friendly).
   if (row.hlsMasterUrl && row.hlsMasterUrl.trim() !== "") return true;
-  if (row.localVideoUrl && row.localVideoUrl.trim() !== "" && row.faststartApplied === true) {
-    return true;
-  }
+  // Raw local upload — queue as soon as the blob is confirmed valid in
+  // storage. Faststart optimises the moov position in-place and HLS
+  // transcoding adds an adaptive manifest; both upgrade the source
+  // automatically without requiring a re-queue.
+  if (row.localVideoUrl && row.localVideoUrl.trim() !== "") return true;
   return false;
 }
 
