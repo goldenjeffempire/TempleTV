@@ -594,7 +594,12 @@ export const queueRepo = {
             ),
           ),
         )
-        .orderBy(asc(q.sortOrder), asc(q.addedAt));
+        .orderBy(asc(q.sortOrder), asc(q.addedAt))
+        // Safety cap: prevents the orchestrator from loading an unbounded number
+        // of rows into its in-memory cycle array on every 30 s reload.  Items
+        // beyond the cap are NOT removed from the DB — they will air once
+        // earlier items are removed or the cap is raised via BROADCAST_QUEUE_MAX_ITEMS.
+        .limit(env.BROADCAST_QUEUE_MAX_ITEMS);
 
     let rows: Awaited<ReturnType<typeof buildQuery>>;
     try {
@@ -615,6 +620,16 @@ export const queueRepo = {
       );
       rows = await buildQuery(sql<boolean>`false`);
     }
+    // Warn operators when the queue is at or near the cap — items beyond the
+    // limit are silently excluded from the current broadcast cycle.
+    if (rows.length >= env.BROADCAST_QUEUE_MAX_ITEMS) {
+      logger.warn(
+        { loaded: rows.length, cap: env.BROADCAST_QUEUE_MAX_ITEMS },
+        "[broadcast-v2] loadActive: queue at capacity cap — items beyond the limit will not air this cycle. " +
+        "Raise BROADCAST_QUEUE_MAX_ITEMS or remove items from the queue.",
+      );
+    }
+
     // ── Post-query validation layer ──────────────────────────────────────
     // The WHERE clause above is the primary gate but we add a JS-level pass
     // here as defense-in-depth: it catches edge cases where COALESCE returns

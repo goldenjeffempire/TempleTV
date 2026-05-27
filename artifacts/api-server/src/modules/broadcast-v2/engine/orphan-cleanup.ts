@@ -38,6 +38,8 @@ export interface CleanupStats {
   lastOrphanedRefsDeactivated: number;
   orphanedRefCandidates: Array<{ id: string; title: string; videoId: string }>;
   lastStaleSessiosClosed: number;
+  lastPrunedStalePushTokens: number;
+  lastPrunedStaleWebPushSubs: number;
   lastError: string | null;
   nextRunAtMs: number | null;
 }
@@ -57,6 +59,8 @@ class OrphanCleanupWorkerImpl {
     lastOrphanedRefsDeactivated: 0,
     orphanedRefCandidates: [],
     lastStaleSessiosClosed: 0,
+    lastPrunedStalePushTokens: 0,
+    lastPrunedStaleWebPushSubs: 0,
     lastError: null,
     nextRunAtMs: null,
   };
@@ -230,7 +234,66 @@ class OrphanCleanupWorkerImpl {
         );
       }
 
-      // ── 5. Storage _parts/ / _meta/ orphan GC ──────────────────────────────
+      // ── 5. Stale push tokens + web push subscriptions ──────────────────────
+      // Expo and Web Push tokens from uninstalled apps are pruned reactively
+      // when a DeliveryReceipt returns DeviceNotRegistered / HTTP 410.  But
+      // devices that simply stop using the app (without uninstalling) never
+      // trigger that path — their tokens accumulate in the DB forever, growing
+      // the `deliverToExpo` query set and the push_tokens table unboundedly.
+      //
+      // We prune tokens whose last_seen_at is older than 180 days.  A device
+      // that hasn't opened the app in 6 months is almost certainly inactive.
+      // The existing last_seen_at index (push_tokens_last_seen_at_idx) makes
+      // this a cheap index-only scan.
+      let prunedStalePushTokens = 0;
+      let prunedStaleWebPushSubs = 0;
+      const tokenCutoff = new Date(Date.now() - 180 * 24 * 60 * 60_000);
+      try {
+        const tokenResult = await db.execute(
+          sql`DELETE FROM push_tokens
+              WHERE id IN (
+                SELECT id FROM push_tokens
+                WHERE last_seen_at < ${tokenCutoff}
+                LIMIT 5000
+              )`,
+        );
+        prunedStalePushTokens = tokenResult.rowCount ?? 0;
+        if (prunedStalePushTokens > 0) {
+          logger.info(
+            { pruned: prunedStalePushTokens, cutoffDays: 180 },
+            "[orphan-cleanup] pruned stale Expo push tokens",
+          );
+        }
+      } catch (tokenErr) {
+        logger.warn(
+          { err: tokenErr },
+          "[orphan-cleanup] stale push token cleanup failed (non-fatal)",
+        );
+      }
+      try {
+        const webSubResult = await db.execute(
+          sql`DELETE FROM web_push_subscriptions
+              WHERE id IN (
+                SELECT id FROM web_push_subscriptions
+                WHERE last_seen_at < ${tokenCutoff}
+                LIMIT 5000
+              )`,
+        );
+        prunedStaleWebPushSubs = webSubResult.rowCount ?? 0;
+        if (prunedStaleWebPushSubs > 0) {
+          logger.info(
+            { pruned: prunedStaleWebPushSubs, cutoffDays: 180 },
+            "[orphan-cleanup] pruned stale web push subscriptions",
+          );
+        }
+      } catch (webSubErr) {
+        logger.warn(
+          { err: webSubErr },
+          "[orphan-cleanup] stale web push subscription cleanup failed (non-fatal)",
+        );
+      }
+
+      // ── 6. Storage _parts/ / _meta/ orphan GC ──────────────────────────────
       // completeMultipartUpload assembles temp part rows and deletes them in
       // the same SQL transaction, so _parts/* keys should never outlive a
       // successful assembly. Rows that persist are from interrupted assemblies
@@ -270,6 +333,8 @@ class OrphanCleanupWorkerImpl {
       this.stats.lastOrphanedRefsDeactivated = deactivatedCount;
       this.stats.orphanedRefCandidates = candidates;
       this.stats.lastStaleSessiosClosed = staleSessionsClosed;
+      this.stats.lastPrunedStalePushTokens = prunedStalePushTokens;
+      this.stats.lastPrunedStaleWebPushSubs = prunedStaleWebPushSubs;
       this.stats.lastError = null;
       logger.info(
         {
@@ -278,6 +343,8 @@ class OrphanCleanupWorkerImpl {
           staleSessions: staleSessionsClosed,
           prunedScheduledNotifs: prunedScheduled,
           prunedSentNotifs: prunedSent,
+          prunedStalePushTokens,
+          prunedStaleWebPushSubs,
           prunedStorageParts,
           durationMs: this.stats.lastRunDurationMs,
         },

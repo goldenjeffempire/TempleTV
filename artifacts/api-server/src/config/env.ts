@@ -180,6 +180,14 @@ const Env = z.object({
     .union([z.boolean(), z.string()])
     .transform((v) => v === true || v === "true" || v === "1")
     .default(false),
+  // Hard cap on the number of active queue items loaded into the orchestrator's
+  // in-memory cycle on each reload (every 30 s).  `loadActive()` applies this
+  // as a SQL LIMIT so the heap never grows with an unusually large queue.
+  // Items beyond the limit retain their sort order priority — they will air
+  // once earlier items are removed or the cap is raised.
+  // Default 2 000 items × ~1 800 s average ≈ 41 days of unique content —
+  // sufficient for any foreseeable 24/7 broadcast schedule.
+  BROADCAST_QUEUE_MAX_ITEMS: z.coerce.number().int().min(10).max(50_000).default(2000),
   // F31: Where ffmpeg writes its HLS segments and thumbnails during
   // transcoding. Each job creates a sub-directory named after the jobId;
   // the directory is deleted when the job finishes (success or failure).
