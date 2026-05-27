@@ -175,13 +175,25 @@ export const notificationsService = {
     // Web Push round-trips (which can take 1–3 s each). The notification
     // row status is updated from "pending" to "sent" or "failed" once
     // delivery completes. Deduplicated rows are already sent/failed — skip.
+    //
+    // .catch() is added so unexpected errors from deliverPushNotification
+    // surface in logs rather than being swallowed silently. The `void`
+    // pattern alone suppresses the unhandled-rejection warning but hides
+    // crashes (e.g., missing DB column, network stack failure) from the
+    // on-call engineer. The row is already persisted in sent_notifications
+    // so the delivery can be retried manually if the error is logged.
     if (!deduplicated) {
-      void deliverPushNotification({
+      deliverPushNotification({
         notificationId: row.id,
         title: body.title,
         body: body.body,
         type: body.type,
         videoId: body.videoId,
+      }).catch((err: unknown) => {
+        logger.error(
+          { err, notificationId: row.id, type: body.type },
+          "push notification delivery threw unexpectedly — delivery may be incomplete",
+        );
       });
     }
 

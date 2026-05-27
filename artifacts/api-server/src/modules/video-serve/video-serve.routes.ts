@@ -430,6 +430,92 @@ export async function videoServeRoutes(app: FastifyInstance) {
     },
   );
 
+  // ── OPTIONS /hls/:videoId/* — CORS preflight ────────────────────────────
+  // Browsers send an OPTIONS preflight before any cross-origin GET or HEAD
+  // that includes custom headers (e.g. Range). Without this handler the
+  // preflight returns Fastify's default 404 / 405 and the subsequent media
+  // request is blocked by CORS, preventing playback in web and TV apps that
+  // load HLS from a different origin than the page.
+  app.options<{ Params: { videoId: string; "*": string } }>(
+    "/hls/:videoId/*",
+    async (_req, reply) => {
+      return reply
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+        .header("Access-Control-Allow-Headers", "Range, Content-Type")
+        .header("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
+        .header("Access-Control-Max-Age", "86400")
+        .header("Cross-Origin-Resource-Policy", "cross-origin")
+        .code(204)
+        .send();
+    },
+  );
+
+  // ── HEAD /hls/:videoId/* — TV / mobile player probe ─────────────────────
+  // Samsung Tizen, LG webOS, Apple TV, and many mobile HLS implementations
+  // send a HEAD request before the first GET to:
+  //   1. Verify the asset exists (404 = don't even try to play).
+  //   2. Read Content-Length and Accept-Ranges to decide whether seeking
+  //      is possible before buffering anything.
+  // Without this handler, Fastify returns its default 405 Method Not Allowed,
+  // which most TV players interpret as "source unavailable" and show a blank
+  // screen or immediately fall back to the failover source.
+  app.head<{ Params: { videoId: string; "*": string }; Querystring: { t?: string } }>(
+    "/hls/:videoId/*",
+    async (req, reply) => {
+      const { videoId } = req.params;
+      const wildcard = (req.params as Record<string, string>)["*"] || "master.m3u8";
+
+      if (wildcard.includes("..")) {
+        return reply.code(400).send();
+      }
+
+      if (env.REQUIRE_HLS_TOKEN) {
+        const tokenRaw = typeof req.query?.t === "string" ? req.query.t : "";
+        if (!tokenRaw || !validateHlsToken(videoId, tokenRaw)) {
+          return reply.code(401).send();
+        }
+      }
+
+      const key = `transcoded/${videoId}/${wildcard}`;
+      const s = storage();
+      if (!s.enabled) {
+        return reply.code(503).send();
+      }
+
+      try {
+        const head = await s.headObject(key);
+        if (!head.exists) {
+          return reply.code(404).send();
+        }
+        const isManifest = wildcard.endsWith(".m3u8");
+        const contentType = isManifest
+          ? "application/vnd.apple.mpegurl"
+          : (head.contentType ?? "video/mp2t");
+        reply
+          .header("Content-Type", contentType)
+          .header("Accept-Ranges", "bytes")
+          .header("Access-Control-Allow-Origin", "*")
+          .header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+          .header("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
+          .header("Cross-Origin-Resource-Policy", "cross-origin")
+          .header("Timing-Allow-Origin", "*")
+          .header(
+            "Cache-Control",
+            isManifest
+              ? "public, max-age=10, s-maxage=10, stale-while-revalidate=5, stale-if-error=60"
+              : "public, max-age=604800, immutable",
+          );
+        if (head.contentLength) {
+          reply.header("Content-Length", String(head.contentLength));
+        }
+        return reply.code(200).send();
+      } catch {
+        return reply.code(404).send();
+      }
+    },
+  );
+
   // ── GET /hls/:videoId/* ────────────────────────────────────────────────
   // Streams HLS manifest + segments directly from the private S3 bucket.
   //
@@ -479,7 +565,17 @@ export async function videoServeRoutes(app: FastifyInstance) {
       }
 
       hlsConcurrent += 1;
-      const decrementConcurrent = () => { hlsConcurrent = Math.max(0, hlsConcurrent - 1); };
+      // Guard flag prevents double-decrement: both "finish" (data flushed) and
+      // "close" (connection destroyed) fire on every response in Node.js HTTP.
+      // Without the guard, each request would decrement the counter twice,
+      // causing hlsConcurrent to undercount live requests and allowing more
+      // concurrent requests than HLS_MAX_CONCURRENT through the gate.
+      let _decremented = false;
+      const decrementConcurrent = () => {
+        if (_decremented) return;
+        _decremented = true;
+        hlsConcurrent = Math.max(0, hlsConcurrent - 1);
+      };
       reply.raw.on("finish", decrementConcurrent);
       reply.raw.on("close", decrementConcurrent);
 
@@ -556,7 +652,10 @@ export async function videoServeRoutes(app: FastifyInstance) {
         return reply
           .header("Content-Type", "application/vnd.apple.mpegurl")
           .header("Cache-Control", "public, max-age=10, s-maxage=10, stale-while-revalidate=5, stale-if-error=60")
+          .header("Accept-Ranges", "bytes")
           .header("Access-Control-Allow-Origin", "*")
+          .header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+          .header("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
           .header("Cross-Origin-Resource-Policy", "cross-origin")
           .header("Timing-Allow-Origin", "*")
           .header("X-Queue-Depth", String(hlsConcurrent))
@@ -570,7 +669,10 @@ export async function videoServeRoutes(app: FastifyInstance) {
       reply
         .header("Content-Type", contentType)
         .header("Cache-Control", "public, max-age=604800, immutable")
+        .header("Accept-Ranges", "bytes")
         .header("Access-Control-Allow-Origin", "*")
+        .header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+        .header("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
         .header("Cross-Origin-Resource-Policy", "cross-origin")
         .header("Timing-Allow-Origin", "*")
         .header("X-Queue-Depth", String(hlsConcurrent));
