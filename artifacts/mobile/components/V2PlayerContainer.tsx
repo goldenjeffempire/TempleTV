@@ -293,6 +293,14 @@ interface BufferProps {
   reportBufferEvent: ReturnType<typeof useV2BroadcastNative>["reportBufferEvent"];
   forceMuted?: boolean;
   excludeYouTube?: boolean;
+  /**
+   * Called when the native player renders its first video frame
+   * (`onReadyForDisplay`). The parent uses this to keep the poster
+   * visible until actual pixels appear on screen, eliminating the
+   * 100–500 ms black flash that occurs between the FSM entering PLAYING
+   * (overlay dismissed) and ExoPlayer/AVPlayer painting frame 1.
+   */
+  onVideoReady?: () => void;
 }
 
 const BroadcastBuffer = React.memo(function BroadcastBuffer({
@@ -301,6 +309,7 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
   reportBufferEvent,
   forceMuted = false,
   excludeYouTube = false,
+  onVideoReady,
 }: BufferProps) {
   const ref = useRef<Video>(null);
   const url = sourceUrl(state, excludeYouTube);
@@ -708,11 +717,37 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
         // video being visible, not just audio being audible. The
         // lastReportedRevision guard prevents double-firing: if onLoad
         // already reported buffer-ready for this revision, this is a no-op.
+        //
+        // We also do three defensive bookkeeping actions here:
+        //
+        //   1. Update lastLoadedUrlRef: on some ExoPlayer builds the React
+        //      bridge delivers onReadyForDisplay before flushing onLoad on
+        //      the same frame (frame-first delivery order). Without this
+        //      update, the next same-URL recovery rebind would see a stale
+        //      lastLoadedUrlRef and fall through to the full reset path,
+        //      waiting for an onLoad that will never come.
+        //
+        //   2. Clear load timeout: first-frame render proves ExoPlayer is
+        //      healthy — there is no need to wait for the load timeout to
+        //      fire a spurious buffer-error that would trigger an unnecessary
+        //      RECOVERING_PRIMARY cycle.
+        //
+        //   3. Clear buffering watchdog: first-frame render also means
+        //      ExoPlayer is not stalled (isBuffering:true state). Disarming
+        //      prevents a late watchdog firing after healthy startup.
+        //
+        //   4. Notify parent via onVideoReady: the parent tracks this to
+        //      keep the poster visible until actual pixels appear, eliminating
+        //      the 100–500 ms black flash between FSM→PLAYING and first frame.
+        if (url) lastLoadedUrlRef.current = url;
+        clearLoadTimeout();
+        clearBufferingWatchdog();
         setLoadedRevision(state.bindRevision);
         if (lastReportedRevision.current !== state.bindRevision) {
           lastReportedRevision.current = state.bindRevision;
           reportBufferEvent({ type: "buffer-ready", bufferId });
         }
+        onVideoReady?.();
       }}
       onPlaybackStatusUpdate={(status: AVPlaybackStatus) => {
         if (!status.isLoaded) {
@@ -1135,18 +1170,61 @@ export function V2PlayerContainer({
     return null;
   }, [snapshot.state, server, loadingPhase, isOnline]);
 
+  // ── First-frame readiness gate ────────────────────────────────────────
+  // Tracks whether the native player (ExoPlayer / AVPlayer) has rendered
+  // its first video frame for the current item. Set to true when
+  // `onReadyForDisplay` fires on the active buffer; reset to false
+  // whenever the FSM leaves the PLAYING family of states (which signals
+  // that the current item has changed or the stream is recovering).
+  //
+  // Why this matters: the FSM transitions to PLAYING as soon as
+  // `buffer-ready` fires (which fires on `onLoad` — metadata ready).
+  // On Android, ExoPlayer can take an additional 100–500 ms after onLoad
+  // to render the first decoded frame (`onReadyForDisplay`). During that
+  // window the overlay is already dismissed (FSM in PLAYING), but the
+  // <Video> surface is still black. Without this gate the user sees a
+  // brief black flash between the tuning overlay disappearing and the
+  // first video frame appearing.
+  //
+  // By keeping the poster visible until `onReadyForDisplay` fires we
+  // ensure there is always *something* on screen: the poster fades out
+  // only when actual pixels are ready, matching Netflix / Apple TV+ UX.
+  const [videoReady, setVideoReady] = useState(false);
+  const activeBufferId = buffers.A.active ? "A" : "B";
+  useEffect(() => {
+    // Entering a non-active-playback state means the current item
+    // changed, the stream is recovering, or we went off-air.
+    // In all cases the next item will need to pass the first-frame
+    // gate again before the poster is hidden.
+    const isPlayingFamily =
+      snapshot.state === "PLAYING" ||
+      snapshot.state === "HANDOFF" ||
+      snapshot.state === "PREPARING_NEXT";
+    if (!isPlayingFamily) setVideoReady(false);
+  }, [snapshot.state]);
+  // Also reset when the active buffer's bind revision changes
+  // (HANDOFF swaps A↔B; the newly active buffer may not have
+  // rendered its first frame yet even if the previous buffer had).
+  const activeBindRevision = buffers[activeBufferId].bindRevision;
+  useEffect(() => {
+    setVideoReady(false);
+  }, [activeBindRevision]);
+
   // Poster: show the upcoming/current sermon thumbnail behind the buffers
   // while the player is still tuning in, off-air, reconnecting, or in any
-  // other non-PLAYING state. Without this the user sees a black box for
-  // 1–3 seconds on cold open or after every reconnect — a TV-grade
-  // experience needs *something* on screen at all times. We prefer the
-  // current item's thumb (what they're about to watch) and fall back to
-  // `next` so the surface is never bare when the queue is between items.
+  // non-PLAYING state — AND until the active buffer's first video frame is
+  // visible (first-frame gate above). Without this the user sees a black
+  // box for 1–3 s on cold open or after every reconnect, and a brief black
+  // flash when the tuning overlay clears before ExoPlayer paints frame 1.
+  // We prefer the current item's thumb and fall back to `next` so the
+  // surface is never bare when the queue is between items.
   const posterUrl = useMemo(() => {
     const t = server?.current?.thumbnailUrl ?? server?.next?.thumbnailUrl ?? null;
     return t && t.length > 0 ? t : null;
   }, [server]);
-  const showPoster = !!overlayContent && !!posterUrl;
+  // Show poster while there is an overlay (tuning/off-air/reconnecting)
+  // OR while the video frame is not yet ready (prevents black flash).
+  const showPoster = (!!overlayContent || !videoReady) && !!posterUrl;
 
   // Banner text: distinguish "no signal" from "WS disconnected" so viewers
   // understand whether to wait for auto-reconnect (WS) or move somewhere
@@ -1188,6 +1266,7 @@ export function V2PlayerContainer({
         reportBufferEvent={reportBufferEvent}
         forceMuted={muted}
         excludeYouTube={minimal}
+        onVideoReady={buffers.A.active ? () => setVideoReady(true) : undefined}
       />
       <BroadcastBuffer
         bufferId="B"
@@ -1195,6 +1274,7 @@ export function V2PlayerContainer({
         reportBufferEvent={reportBufferEvent}
         forceMuted={muted}
         excludeYouTube={minimal}
+        onVideoReady={buffers.B.active ? () => setVideoReady(true) : undefined}
       />
 
       {!connected && !minimal && (

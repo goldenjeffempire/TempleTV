@@ -165,6 +165,14 @@ function buildFfmpegArgs(
   args.push(
     "-f", "hls",
     "-hls_time", String(HLS_SEGMENT_SECS),
+    // hls_init_time: target duration (seconds) of the FIRST segment only.
+    // Setting this to 1 s (half the normal 2 s segment) means ExoPlayer /
+    // AVPlayer can begin rendering after buffering just ~1 s of media instead
+    // of a full 2 s segment — halving cold-start time-to-first-frame on a
+    // fresh load. The splice is IDR-aligned (force_key_frames ensures an IDR
+    // at t=1 s), so the first segment is independently decodable and safe for
+    // ABR. Subsequent segments remain at HLS_SEGMENT_SECS (2 s).
+    "-hls_init_time", "1",
     "-hls_playlist_type", "vod",
     "-hls_segment_type", "mpegts",
     // independent_segments: every segment can be decoded independently —

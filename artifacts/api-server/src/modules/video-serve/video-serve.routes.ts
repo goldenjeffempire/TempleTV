@@ -503,7 +503,7 @@ export async function videoServeRoutes(app: FastifyInstance) {
           .header(
             "Cache-Control",
             isManifest
-              ? "public, max-age=10, s-maxage=10, stale-while-revalidate=5, stale-if-error=60"
+              ? "public, max-age=2, s-maxage=2, stale-while-revalidate=1, stale-if-error=60"
               : "public, max-age=604800, immutable",
           );
         if (head.contentLength) {
@@ -700,24 +700,26 @@ export async function videoServeRoutes(app: FastifyInstance) {
           text = text.replace(s3UrlPattern, (_match, rest: string) => `/api/hls/${videoId}/${rest}`);
         }
 
-        // A2: segment cache TTL on manifests — short public cache so the
-        // CDN/browser absorbs request stampedes (50+ concurrent viewers
-        // starting playback at the same moment), while keeping the TTL low
-        // enough that queue advances and live edge segments still propagate
-        // within ~10 s. `s-maxage` lets the edge cache; clients revalidate.
+        // A2: segment cache TTL on manifests — 2 s max-age keeps the CDN /
+        // browser from serving stale segment lists more than one segment
+        // duration behind the live edge. This is important for broadcast
+        // sync: when the orchestrator advances to the next item the mobile
+        // player needs to receive the updated position quickly so it can
+        // seek to the correct point. The previous 10 s TTL caused up to
+        // 10 s of position lag on cold-cache clients.
         //
-        // stale-while-revalidate=5: CDN/browser serves the cached manifest
-        // immediately for up to 5 s past max-age while fetching a fresh copy
-        // in the background — eliminates the manifest-fetch stall that would
-        // otherwise freeze hls.js while it waits for a fresh playlist.
+        // stale-while-revalidate=1: serve the cached manifest for at most
+        // 1 s past max-age while fetching a fresh copy in the background —
+        // eliminates the manifest-fetch stall that would otherwise briefly
+        // pause HLS.js / ExoPlayer while waiting for a fresh playlist.
         //
         // stale-if-error=60: if the origin is transiently unavailable (deploy
         // restart, DB blip) the CDN serves stale for up to 60 s rather than
-        // returning a 5xx that would cause hls.js to abort playback.
+        // returning a 5xx that would cause ExoPlayer/AVPlayer to abort playback.
         const manifestBuf = Buffer.from(text, "utf8");
         return reply
           .header("Content-Type", "application/vnd.apple.mpegurl")
-          .header("Cache-Control", "public, max-age=10, s-maxage=10, stale-while-revalidate=5, stale-if-error=60")
+          .header("Cache-Control", "public, max-age=2, s-maxage=2, stale-while-revalidate=1, stale-if-error=60")
           .header("Content-Length", String(manifestBuf.byteLength))
           .header("Accept-Ranges", "bytes")
           .header("Access-Control-Allow-Origin", "*")
