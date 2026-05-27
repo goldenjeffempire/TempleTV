@@ -831,6 +831,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             status: sessions.status,
             completedVideoId: sessions.completedVideoId,
             storageBackend: sessions.storageBackend,
+            updatedAt: sessions.updatedAt,
           })
           .from(sessions)
           .where(eq(sessions.sessionId, sessionId))
@@ -858,23 +859,51 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           }
         }
 
-        // Stale lock race: status="assembling" but no completedVideoId means a prior
-        // finalize crashed before pre-committing the video row. The stale-lock recovery
-        // block above (run on the initial session read) would have reset this to
-        // "uploading" already. If we still end up here with null completedVideoId,
-        // surface a 503 (not 409) so the client knows it can retry immediately.
+        // Stale lock race: status="assembling" but no completedVideoId.
+        //
+        // There are two distinct cases:
+        //   A. Genuinely stale: a prior finalize crashed before pre-committing
+        //      the video row.  updatedAt will be old (> 2 min ago).
+        //      → Safe to reset to "uploading" so the client can retry.
+        //
+        //   B. Active concurrent request: a concurrent /finalize call acquired
+        //      the lock milliseconds ago (status="assembling") but hasn't yet
+        //      completed the async pre-commit DB INSERT.  updatedAt is very
+        //      recent (< 2 min).
+        //      → Must NOT reset — doing so would kill the active assembly.
+        //        Return 409 so the client polls finalize-status instead.
+        //
+        // The 2-minute threshold is generous: the pre-commit INSERT path runs
+        // entirely in Node.js memory with a single async DB call — it takes
+        // well under a second under any normal load.
         if (refreshed?.status === "assembling" && !refreshed.completedVideoId) {
-          await db
-            .update(sessions)
-            .set({ status: "uploading", updatedAt: new Date() })
-            .where(eq(sessions.sessionId, sessionId))
-            .catch(() => {});
+          const lockAgeMs = refreshed.updatedAt
+            ? Date.now() - new Date(refreshed.updatedAt).getTime()
+            : Infinity;
+          const STALE_LOCK_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
+
+          if (lockAgeMs > STALE_LOCK_THRESHOLD_MS) {
+            // Case A: genuinely stale — reset and tell client to retry.
+            await db
+              .update(sessions)
+              .set({ status: "uploading", updatedAt: new Date() })
+              .where(eq(sessions.sessionId, sessionId))
+              .catch(() => {});
+            throw Object.assign(
+              new Error(
+                "A prior finalize attempt left a stale lock. The lock has been cleared — " +
+                "please retry finalization now.",
+              ),
+              { statusCode: 503 },
+            );
+          }
+          // Case B: active concurrent assembly — tell client to poll.
           throw Object.assign(
             new Error(
-              "A prior finalize attempt left a stale lock. The lock has been cleared — " +
-              "please retry finalization now.",
+              "Assembly is in progress for this session. " +
+              "Poll GET /upload/:sessionId/finalize-status to check completion.",
             ),
-            { statusCode: 503 },
+            { statusCode: 409 },
           );
         }
 

@@ -23,6 +23,20 @@ const MAX_WS_PER_IP = process.env["MAX_WS_PER_IP"] !== undefined
   ? Number(process.env["MAX_WS_PER_IP"])
   : 8;
 
+// ── Periodic IP-map sweep ─────────────────────────────────────────────────────
+// Safety net for long-lived servers: cleans any stale entries where the count
+// never reached zero due to an edge-case disconnect (OS-level TCP RST) that
+// bypassed the normal releaseCounter/close-event path. The heartbeat's 30 s
+// zombie detector calls terminate() on dead sockets, which fires the close
+// event and the normal releaseCounter path, so this sweep is belt-and-suspenders
+// only. Runs every 10 minutes; unref'd so it does not delay graceful shutdown.
+const _wsSweep = setInterval(() => {
+  for (const [ip, count] of wsConnectionsPerIp) {
+    if (count <= 0) wsConnectionsPerIp.delete(ip);
+  }
+}, 10 * 60_000);
+(_wsSweep as unknown as { unref?: () => void }).unref?.();
+
 export async function wsRoutes(app: FastifyInstance) {
   app.get("/ws", { websocket: true }, (socket, req) => {
     const ip = (req.ip ?? req.socket?.remoteAddress ?? "unknown") as string;

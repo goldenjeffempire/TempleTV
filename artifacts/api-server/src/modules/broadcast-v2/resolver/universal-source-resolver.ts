@@ -163,10 +163,22 @@ function classify(url: string): V2Source["kind"] | null {
   // and report an error if the content-type is actually wrong, which
   // triggers the normal RECOVERING path rather than a silent skip.
   if (/\/(?:api\/v1\/)?uploads?\//i.test(parsed.pathname)) return "mp4";
-  // HLS streams delivered via a CDN "playlist" path (e.g. /live/playlist,
-  // /hls/stream, /index) are common in self-hosted setups. Treat paths that
-  // contain these keywords as HLS before falling back to unknown.
-  if (/\/(playlist|manifest|master|index|stream)(?:$|\/|\?)/i.test(parsed.pathname)) return "hls";
+  // HLS streams delivered via a CDN path are common in self-hosted setups.
+  // "playlist", "manifest", and "master" are unambiguously HLS-specific
+  // terminology — treat any path containing them as HLS.
+  //
+  // "index" and "stream" are intentionally excluded from this broad check:
+  //   • "index" appears in many MP4 paths (e.g. /videos/sermon-index) and
+  //     would cause MP4 files to be misclassified as HLS, sending them to
+  //     hls.js which cannot parse an MP4 bytestream → player stall.
+  //   • "stream" is similarly generic (REST paths, API names, etc.).
+  // Instead, "index" is handled below in a tighter streaming-context check.
+  if (/\/(?:playlist|manifest|master)(?:$|\/|\?)/i.test(parsed.pathname)) return "hls";
+  // "index" is only treated as HLS when it appears after a known streaming
+  // path prefix (/live/, /hls/, /channel/, /broadcast/) — this covers the
+  // canonical CDN HLS delivery pattern (/live/channel/index) without
+  // misidentifying arbitrary paths that happen to contain the word "index".
+  if (/\/(?:live|hls|channel|broadcast)(?:\/[^/]+)?\/index(?:$|\?)/i.test(parsed.pathname)) return "hls";
   return null;
 }
 

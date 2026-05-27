@@ -11,6 +11,22 @@ import { activeSseConnections, SERVICE_LABELS } from "../../../infrastructure/me
  */
 const sseConnectionsPerIp = new Map<string, number>();
 
+// ── Periodic IP-map sweep ─────────────────────────────────────────────────────
+// Belt-and-suspenders safety net: in a long-running server that sees many
+// unique visitor IPs, any edge case where the close event doesn't fire (OS-level
+// TCP RST, proxy reset, etc.) would leave a stale positive count in the map that
+// never decrements, eventually preventing that IP from connecting. The normal
+// releaseCounter path handles the vast majority of disconnects; this sweep
+// corrects any survivors. Runs every 10 minutes, scoped to its own closure so
+// it has no references outside this module.
+const _sseSweep = setInterval(() => {
+  for (const [ip, count] of sseConnectionsPerIp) {
+    if (count <= 0) sseConnectionsPerIp.delete(ip);
+  }
+}, 10 * 60_000);
+// unref() so this timer does not prevent the process from exiting gracefully.
+(_sseSweep as unknown as { unref?: () => void }).unref?.();
+
 function getSseLimit(): number {
   const val = process.env["MAX_SSE_PER_IP"];
   if (val === undefined || val === "") return 8;

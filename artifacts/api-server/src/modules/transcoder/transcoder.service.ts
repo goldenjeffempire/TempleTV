@@ -928,6 +928,14 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
           "transcoder: multi-rendition ffmpeg failed — retrying with 360p-only fallback",
         );
 
+        // Reset progress to 0 so the Admin UI shows "Encoding (0%)" rather
+        // than a stale partial percentage from the failed multi-rendition run.
+        // Without this the progress bar shows e.g. 47% and then jumps to 100%
+        // at the end, confusing operators into thinking encoding was instant.
+        if (req.onProgress) {
+          await Promise.resolve(req.onProgress(0)).catch(() => { /* non-fatal */ });
+        }
+
         const prevRenditionCount = renditionsToUse.length;
         renditionsToUse = [ALL_RENDITIONS[0]!];
 

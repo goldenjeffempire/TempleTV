@@ -213,6 +213,62 @@ class TranscoderDispatcher {
           "transcoder: reset faststart-orphaned videos stuck in 'processing' on startup",
         );
       }
+
+      // ── Partial-success recovery ──────────────────────────────────────────
+      // Covers the crash window between the two writes in runOnce():
+      //   1. UPDATE transcoding_jobs SET status='done'   ← succeeded
+      //   2. UPDATE managed_videos SET transcodingStatus='hls_ready' ← lost
+      //
+      // After a restart, the video is stuck at "encoding" forever (it never
+      // re-enters the dispatch loop because the job is "done"). Recover by
+      // verifying that master.m3u8 actually landed in storage and then
+      // completing the video-row update that was lost.
+      const encodingVideoIds = await db
+        .select({ id: videos.id })
+        .from(videos)
+        .where(eq(videos.transcodingStatus, "encoding"))
+        .then((rows) => rows.map((r) => r.id));
+
+      if (encodingVideoIds.length > 0) {
+        const doneJobs = await db
+          .select({ videoId: jobs.videoId, id: jobs.id })
+          .from(jobs)
+          .where(and(eq(jobs.status, "done"), inArray(jobs.videoId, encodingVideoIds)));
+
+        for (const job of doneJobs) {
+          try {
+            const masterKey = `transcoded/${job.videoId}/master.m3u8`;
+            const masterExists = await db
+              .execute(sql`SELECT 1 FROM storage_blobs WHERE key = ${masterKey} LIMIT 1`)
+              .then((r) => (r.rows as unknown[]).length > 0)
+              .catch(() => false);
+
+            if (masterExists) {
+              const masterUrl = `/api/hls/${job.videoId}/master.m3u8`;
+              await db.update(videos)
+                .set({ transcodingStatus: "hls_ready", hlsMasterUrl: masterUrl })
+                .where(eq(videos.id, job.videoId));
+              logger.warn(
+                { videoId: job.videoId, jobId: job.id, masterUrl },
+                "transcoder: recovered partial-success video — job was 'done' but video was stuck at 'encoding'. " +
+                "Applied missing hls_ready update.",
+              );
+              adminEventBus.push("transcoding-update", {
+                videoId: job.videoId,
+                jobId: job.id,
+                status: "hls_ready",
+                progress: 100,
+                hlsMasterUrl: masterUrl,
+              });
+            }
+          } catch (recErr) {
+            logger.warn(
+              { err: recErr, videoId: job.videoId, jobId: job.id },
+              "transcoder: partial-success recovery check failed (non-fatal)",
+            );
+          }
+        }
+      }
     } catch (err) {
       logger.error({ err }, "transcoder: failed to reset orphaned jobs on startup (non-fatal)");
     }

@@ -1427,6 +1427,13 @@ class BroadcastOrchestrator extends EventEmitter {
       snap.current.startsAtMs > this.lastCurrentItemStartsAtMs + 500
     ) {
       this.preloadFiredForId = null;
+      // Also clear the probe-attempted set so that on the new cycle pass the
+      // proactive HEAD probe fires again for the looping item.  Without this,
+      // the set retains the item's ID from the previous pass and the probe
+      // window is silently skipped for every subsequent loop — meaning a CDN
+      // URL that became stale during playback is not detected until the next
+      // self-heal reload (up to 60 s later).
+      this.probeAttemptedForId.clear();
       this.lastCurrentItemStartsAtMs = snap.current.startsAtMs;
       // Emit item.advanced so clients know the loop restarted and update
       // their startsAtMs reference for wall-clock position correction.
