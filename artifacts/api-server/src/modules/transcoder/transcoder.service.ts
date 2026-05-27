@@ -374,7 +374,16 @@ export async function probeContainerIsValid(inputPath: string): Promise<boolean>
     }, PROBE_TIMEOUT_MS);
     proc.stdout.on("data", (b: Buffer) => { out += b.toString(); });
     proc.stderr.on("data", (b: Buffer) => { err = (err + b.toString()).slice(-2000); });
-    proc.on("error", () => { clearTimeout(timer); settle(false); });
+    proc.on("error", () => {
+      // Spawn failed (ENOENT, EACCES, …) — ffprobe is not available on PATH.
+      // We cannot determine validity, so give the file the benefit of the
+      // doubt: treat it as structurally valid and let faststart / the HLS
+      // transcoder discover any real corruption during their own passes.
+      // Returning false here would permanently fail every upload on systems
+      // without ffprobe installed, which is far worse than a missed early gate.
+      clearTimeout(timer);
+      settle(true);
+    });
     proc.on("close", (code) => {
       clearTimeout(timer);
       // Hard fail when ffprobe exits non-zero OR stderr emits one of the
@@ -1062,7 +1071,16 @@ export async function probeUploadedContainerValidity(
     const valid = await probeContainerIsValid(tmpPath);
     return { valid };
   } catch (err) {
-    return { valid: false, error: err instanceof Error ? err.message : String(err) };
+    // Any exception here is an infrastructure failure (download error, tmp
+    // directory I/O error, etc.) — NOT evidence of container corruption.
+    // Return valid=true to give the file the benefit of the doubt: faststart
+    // and the HLS transcoder will discover real corruption on their own probing
+    // passes, where structured retries and better diagnostics exist.
+    logger.warn(
+      { err, objectKey },
+      "transcoder: container probe infrastructure error (non-fatal) — assuming valid, proceeding to faststart",
+    );
+    return { valid: true };
   } finally {
     await rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
   }

@@ -50,6 +50,7 @@ declare const Env: z.ZodObject<{
     TRANSCODER_CRF: z.ZodDefault<z.ZodNumber>;
     TRANSCODER_KEEP_SCRATCH: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
     TRANSCODER_JOB_TIMEOUT_MS: z.ZodDefault<z.ZodNumber>;
+    ASSEMBLY_WATCHDOG_MS: z.ZodDefault<z.ZodNumber>;
     SMTP_HOST: z.ZodOptional<z.ZodString>;
     SMTP_PORT: z.ZodDefault<z.ZodNumber>;
     SMTP_USER: z.ZodOptional<z.ZodString>;
@@ -128,6 +129,7 @@ declare const Env: z.ZodObject<{
     TRANSCODER_CRF: number;
     TRANSCODER_KEEP_SCRATCH: boolean;
     TRANSCODER_JOB_TIMEOUT_MS: number;
+    ASSEMBLY_WATCHDOG_MS: number;
     SMTP_PORT: number;
     SMTP_FROM_NAME: string;
     SMTP_SECURE: boolean;
@@ -228,6 +230,7 @@ declare const Env: z.ZodObject<{
     TRANSCODER_CRF?: number | undefined;
     TRANSCODER_KEEP_SCRATCH?: string | boolean | undefined;
     TRANSCODER_JOB_TIMEOUT_MS?: number | undefined;
+    ASSEMBLY_WATCHDOG_MS?: number | undefined;
     SMTP_HOST?: string | undefined;
     SMTP_PORT?: number | undefined;
     SMTP_USER?: string | undefined;

@@ -60,15 +60,41 @@ declare function buildFfmpegArgs(input: string, outDir: string, renditions: Rend
  */
 export declare function probeContainerIsValid(inputPath: string): Promise<boolean>;
 /**
- * Recovery pass for MP4 files where the moov atom is at EOF, fragmented,
- * or otherwise unreadable by ffmpeg's HLS muxer. Performs a stream-copy
- * remux with `+faststart` which:
- *   • Rebuilds the moov atom and places it at the front of the file.
- *   • Does NOT re-encode (completes in seconds even for 1+ GiB files).
- *   • Produces a clean, playable MP4 that the HLS encoder can consume.
+ * Detect whether an MP4 file has a media-data (mdat) box but no moov atom
+ * anywhere in the file. This is the signature of a completely unrecoverable
+ * upload where the recording or export was interrupted before the moov could
+ * be written — the codec configuration (SPS/PPS) in the moov's avcC box is
+ * permanently lost and no remux strategy can reconstruct it.
  *
- * Returns the path to the remuxed file on success, or null on any failure
- * (the caller treats null as a hard error — there's nothing else to try).
+ * Scans both the FRONT (first 64 KiB) and the TAIL (last 64 KiB) of the
+ * file. Normal camera recordings write mdat first and moov last (moov-at-EOF
+ * layout). Scanning only the front misidentifies those files as unrecoverable
+ * because mdat is found but moov is out of the scan window. The tail scan
+ * catches the moov-at-EOF case and correctly returns false, allowing the
+ * remux recovery path to run (strategy 1 — stream-copy with +faststart fixes
+ * these in seconds with no re-encoding).
+ *
+ * Returns true ONLY when mdat is present AND moov is absent from both the
+ * front and tail scan windows. Returns false on any I/O error so the caller
+ * falls through to the normal remux path.
+ */
+export declare function detectMdatWithoutMoov(inputPath: string): Promise<boolean>;
+/**
+ * Recovery pass for MP4 files where the moov atom is at EOF, fragmented,
+ * or otherwise unreadable by ffmpeg's HLS muxer. Tries three strategies in
+ * sequence, stopping at the first success:
+ *
+ *   Strategy 1 — stream-copy with faststart (standard, handles moov-at-EOF)
+ *   Strategy 2 — error-tolerant stream-copy with faststart (mild corruption)
+ *   Strategy 3 — error-tolerant stream-copy without faststart (last resort)
+ *
+ * Returns the path to the remuxed file on success, or null when all three
+ * strategies fail (the caller treats null as a hard error).
+ *
+ * Note: when the moov atom is completely absent (detected by
+ * detectMdatWithoutMoov), none of these strategies can reconstruct it
+ * because the codec configuration (SPS/PPS) is stored only in the moov's
+ * avcC box. In that case callers should skip remux and throw immediately.
  */
 export declare function remuxForFaststart(inputPath: string, outputPath: string, videoId: string): Promise<string | null>;
 /**

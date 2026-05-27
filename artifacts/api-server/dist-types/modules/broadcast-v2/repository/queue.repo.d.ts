@@ -1,5 +1,28 @@
 import type { V2Item } from "../domain/types.js";
 /**
+ * Normalise a possibly-relative URL into an absolute one the resolver
+ * (and the player) can use.
+ *
+ * Relative paths in the queue come from locally-uploaded videos whose
+ * `localVideoUrl` is stored as `/api/v1/uploads/{key}` by the upload
+ * pipeline. We must absolutize against THIS server's public origin, not
+ * against PROD_SYNC_API_URL — the prod-sync module already rewrites prod
+ * items to absolute URLs before inserting them into the local DB, so any
+ * remaining relative path belongs to a locally-uploaded file served by
+ * this process.
+ *
+ * Resolution order (first truthy wins):
+ *   1. API_ORIGIN        — explicit own-origin, required in production
+ *   2. REPLIT_DEV_DOMAIN — Replit-managed public dev domain (auto-set)
+ *   3. Raw path returned — resolver will reject with allowlist error;
+ *                          surfaces a clear log instead of a silent null.
+ *
+ * NOTE: PROD_SYNC_API_URL is intentionally excluded. Using it would
+ * proxy local file requests to the upstream production server — broken
+ * in dev and a security issue in prod.
+ */
+export declare function normalizeQueueUrl(raw: string | null | undefined): string | null;
+/**
  * Build a signed proxy URL for `externalUrl`. The HMAC-SHA256 signature
  * (keyed with JWT_ACCESS_SECRET) is verified by media-proxy.routes.ts
  * before the proxy fetches anything, preventing unauthorised use of the

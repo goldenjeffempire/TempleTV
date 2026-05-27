@@ -1152,9 +1152,33 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             const clientDuration = Number(row.duration ?? "0");
             try {
               const thumbUrl = await generateQuickThumbnail(objectKey, videoId);
+
+              // Fall back to the custom thumbnail that the client uploaded via
+              // POST /upload/:sessionId/thumbnail when ffprobe-based auto-generation
+              // is unavailable (ffprobe not installed) or returns null. The custom
+              // thumbnail is stored at thumbnails/${sessionId}.jpg and served via
+              // the /uploads/* wildcard route (which now resolves non-upload prefixes
+              // correctly after the key-construction fix in video-serve.routes.ts).
+              let effectiveThumbUrl = thumbUrl;
+              if (!effectiveThumbUrl) {
+                const customThumbKey = `thumbnails/${sessionId}.jpg`;
+                try {
+                  const customHead = await storage().headObject(customThumbKey);
+                  if (customHead.exists) {
+                    effectiveThumbUrl = `/api/v1/uploads/thumbnails/${sessionId}.jpg`;
+                    capturedLog.info(
+                      { videoId, sessionId, customThumbKey },
+                      "[finalize:bg] auto-thumbnail unavailable — using custom uploaded thumbnail",
+                    );
+                  }
+                } catch {
+                  // Non-fatal: no custom thumbnail to fall back to.
+                }
+              }
+
               const probedSecs = clientDuration > 0 ? null : await probeUploadedDuration(objectKey);
               const patch: Partial<typeof videos.$inferInsert> = {};
-              if (thumbUrl) patch.thumbnailUrl = thumbUrl;
+              if (effectiveThumbUrl) patch.thumbnailUrl = effectiveThumbUrl;
               if (probedSecs != null) patch.duration = String(Math.round(probedSecs));
               if (Object.keys(patch).length > 0) {
                 await db.update(videos).set(patch).where(eq(videos.id, videoId));

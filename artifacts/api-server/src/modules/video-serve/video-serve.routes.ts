@@ -201,7 +201,15 @@ export async function videoServeRoutes(app: FastifyInstance) {
       if (suffix.includes("..") || suffix === "") {
         return reply.code(400).send();
       }
-      const key = `uploads/${suffix}`;
+      // Keys for non-upload storage namespaces (custom thumbnails, HLS
+      // transcoded files) are stored WITHOUT the "uploads/" prefix in
+      // storage_blobs. publicUrl() strips "uploads/" for actual upload blobs
+      // so their suffix starts with a date path (e.g. "2025/01/02/abc.mp4").
+      // For other storage namespaces we use the suffix directly as the key.
+      const NON_UPLOAD_STORAGE_PREFIXES = ["thumbnails/", "transcoded/", "_parts/", "_meta/"];
+      const key = NON_UPLOAD_STORAGE_PREFIXES.some((p) => suffix.startsWith(p))
+        ? suffix
+        : `uploads/${suffix}`;
       const s = storage();
       if (!s.enabled) {
         return reply.code(503).send();
@@ -248,7 +256,13 @@ export async function videoServeRoutes(app: FastifyInstance) {
       if (suffix.includes("..") || suffix === "") {
         return reply.code(400).send({ error: "Invalid filename" });
       }
-      const key = `uploads/${suffix}`;
+      // Same key-resolution logic as the HEAD handler above:
+      // non-upload namespaces (thumbnails/, transcoded/) are stored without
+      // the "uploads/" prefix, so we use the suffix directly for those.
+      const NON_UPLOAD_STORAGE_PREFIXES = ["thumbnails/", "transcoded/", "_parts/", "_meta/"];
+      const key = NON_UPLOAD_STORAGE_PREFIXES.some((p) => suffix.startsWith(p))
+        ? suffix
+        : `uploads/${suffix}`;
       const s = storage();
       if (!s.enabled) {
         return reply.code(503).send({ error: "Object storage not configured" });

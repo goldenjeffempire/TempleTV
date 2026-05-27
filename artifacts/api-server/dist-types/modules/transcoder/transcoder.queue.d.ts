@@ -45,6 +45,16 @@ export declare function getJob(id: string): Promise<{
 export declare function deleteJob(id: string): Promise<boolean>;
 export declare function clearJobsByStatus(status: "done" | "failed" | "cancelled" | "all"): Promise<number>;
 export declare function retryJob(id: string): Promise<boolean>;
+/**
+ * Cancel a transcoding job that is in a cancellable state (queued or failed).
+ * Jobs that are currently processing cannot be cancelled here — the FFmpeg
+ * process must finish or time out naturally (or the process must be killed).
+ * Returns true when the job was found and successfully cancelled, false otherwise.
+ */
+export declare function cancelJob(id: string): Promise<{
+    ok: boolean;
+    reason?: string;
+}>;
 export declare function queueStats(): Promise<{
     activeCount: number;
     queuedCount: number;
