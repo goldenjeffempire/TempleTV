@@ -698,7 +698,10 @@ class UploadQueueEngine {
       requestAnimationFrame(() => {
         pendingRaf = false;
         const currentItem = this.items.get(id);
-        if (!currentItem || currentItem.status !== "uploading") return;
+        // Allow progress updates for both uploading and finalizing states.
+        // Without this guard the RAF exits early during assembly, freezing
+        // the progress bar at 90% for the entire db-fallback assembly duration.
+        if (!currentItem || (currentItem.status !== "uploading" && currentItem.status !== "finalizing")) return;
 
         const now = Date.now();
         // Prune entries older than 5 seconds

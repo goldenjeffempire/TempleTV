@@ -97,6 +97,16 @@ export class ChatClient {
   // us detect a silently-dead socket on the next send rather than waiting
   // for the user to tap Chat and discover nothing is coming through.
   private readonly PING_INTERVAL_MS = 25_000;
+  /**
+   * Wall-clock timestamp of the most recent server-originated frame (any
+   * message type, including pong/state/message). Set on socket open and on
+   * every onmessage delivery. The ping watchdog checks this value: if no
+   * frame has arrived within 2 × PING_INTERVAL_MS after the socket opens,
+   * the socket is silently OPEN but the server has stopped responding — a
+   * "dead socket" scenario common on Android when the radio changes state.
+   * Force-closing triggers the normal onclose → scheduleReconnect path.
+   */
+  private lastServerActivityAt = 0;
 
   constructor(opts: ChatClientOptions = {}) {
     this.opts = opts;
@@ -197,11 +207,14 @@ export class ChatClient {
 
     ws.onopen = () => {
       this.reconnectAttempts = 0;
+      this.lastServerActivityAt = Date.now(); // baseline for pong watchdog
       this.setState("open");
       this.startPing(ws);
     };
 
     ws.onmessage = (ev: WebSocketMessageEvent) => {
+      // Any inbound frame (state/message/pong) counts as "server is alive".
+      this.lastServerActivityAt = Date.now();
       // Skip binary frames — the chat protocol is JSON-only.  Some WebSocket
       // polyfills (React Native's built-in and some Android Hermes builds)
       // dispatch ArrayBuffer or Blob objects for binary messages. Passing
@@ -319,13 +332,30 @@ export class ChatClient {
    * after 2–5 minutes. The server already handles inbound `ping` frames
    * (see handleServerFrame — type "ping" is a no-op). Errors are silently
    * swallowed; the next failed send will surface via the normal onclose path.
+   *
+   * Dead-socket watchdog: if no server frame has arrived within
+   * 2 × PING_INTERVAL_MS (50 s) the socket is OPEN but the server has
+   * stopped responding — a common failure mode on Android when the radio
+   * switches towers or the OS power-manager freezes network I/O in the
+   * background. Force-closing the socket here triggers the normal
+   * onclose → scheduleReconnect path so the client self-heals without
+   * waiting for the user to discover nothing is loading.
    */
   private startPing(ws: WebSocket): void {
     this.stopPing();
     this.pingInterval = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        try { ws.send(JSON.stringify({ type: "ping" })); } catch { /* noop */ }
+      if (ws.readyState !== WebSocket.OPEN) return;
+
+      // ── Pong / dead-socket watchdog ──────────────────────────────────────
+      // If the server hasn't sent us any frame in the last 2 ping intervals,
+      // the socket is effectively dead. Force-close it to trigger reconnect.
+      const silentMs = Date.now() - this.lastServerActivityAt;
+      if (silentMs > this.PING_INTERVAL_MS * 2) {
+        try { ws.close(1001, "pong-timeout"); } catch { /* noop */ }
+        return; // onclose will handle scheduleReconnect
       }
+
+      try { ws.send(JSON.stringify({ type: "ping" })); } catch { /* noop */ }
     }, this.PING_INTERVAL_MS);
   }
 

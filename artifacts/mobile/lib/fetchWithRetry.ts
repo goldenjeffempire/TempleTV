@@ -37,7 +37,11 @@ export interface RetryOptions {
 }
 
 const DEFAULT_MAX_RETRIES = 3;
-const DEFAULT_BASE_DELAY_MS = 350;
+// 1 s base gives the mobile radio (LTE handoff, cell tower switch) time to
+// complete its state transition before the first retry fires. The old 350 ms
+// value was so short that the first retry almost always hit the radio mid-
+// recovery, causing a second failure and burning an extra retry slot.
+const DEFAULT_BASE_DELAY_MS = 1_000;
 const DEFAULT_MAX_DELAY_MS = 10_000;
 
 /**

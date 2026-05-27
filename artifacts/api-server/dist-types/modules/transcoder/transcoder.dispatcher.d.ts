@@ -36,6 +36,22 @@ declare class TranscoderDispatcher {
     private ffmpegRecheckTimer;
     private static readonly FFMPEG_RECHECK_MS;
     /**
+     * Storage circuit breaker.
+     *
+     * When consecutive storage/DB writes fail (e.g. Postgres connection lost,
+     * object-store unreachable), job dispatch is temporarily paused so healthy
+     * queued jobs don't burn through their retry budgets against a transient
+     * infrastructure outage. The circuit re-closes after STORAGE_REOPEN_DELAY_MS.
+     *
+     * Tracking: `storageErrorStreak` counts consecutive jobs that fail with a
+     * storage-flavoured error. Once it hits STORAGE_ERROR_THRESHOLD the circuit
+     * opens. Any successful job resets the streak to 0.
+     */
+    private storageErrorStreak;
+    private storageCircuitOpenUntil;
+    private static readonly STORAGE_ERROR_THRESHOLD;
+    private static readonly STORAGE_REOPEN_DELAY_MS;
+    /**
      * Open the ffmpeg circuit breaker. Logs a CRITICAL warning and schedules
      * periodic re-checks so the dispatcher self-heals when ffmpeg is installed.
      */

@@ -309,7 +309,11 @@ export function LocalVideoPlayer({
   // interval before it ever fires.
   const statusRef = useRef<any>(null);
   const STALL_NUDGE_MS = 8_000;
-  const STALL_FAIL_MS = 10_000;
+  // 15 s before declaring a stall fatal — on 3G / congested LTE a single HLS
+  // segment can legitimately take 12–14 s to start delivering bytes. The old
+  // 10 s value caused premature "broken item" skips for perfectly healthy
+  // streams under weak-signal conditions, leaving viewers on a black screen.
+  const STALL_FAIL_MS = 15_000;
   const MAX_STALL_NUDGES = 2;
 
   const getWebVideo = useCallback((slot: "A" | "B"): HTMLVideoElement | null =>

@@ -57,6 +57,23 @@ class TranscoderDispatcher {
   private static readonly FFMPEG_RECHECK_MS = 30_000;
 
   /**
+   * Storage circuit breaker.
+   *
+   * When consecutive storage/DB writes fail (e.g. Postgres connection lost,
+   * object-store unreachable), job dispatch is temporarily paused so healthy
+   * queued jobs don't burn through their retry budgets against a transient
+   * infrastructure outage. The circuit re-closes after STORAGE_REOPEN_DELAY_MS.
+   *
+   * Tracking: `storageErrorStreak` counts consecutive jobs that fail with a
+   * storage-flavoured error. Once it hits STORAGE_ERROR_THRESHOLD the circuit
+   * opens. Any successful job resets the streak to 0.
+   */
+  private storageErrorStreak = 0;
+  private storageCircuitOpenUntil = 0;
+  private static readonly STORAGE_ERROR_THRESHOLD = 3;
+  private static readonly STORAGE_REOPEN_DELAY_MS = 60_000; // 1 min cool-down
+
+  /**
    * Open the ffmpeg circuit breaker. Logs a CRITICAL warning and schedules
    * periodic re-checks so the dispatcher self-heals when ffmpeg is installed.
    */
@@ -428,6 +445,10 @@ class TranscoderDispatcher {
     // job's retry budget. The openFfmpegCircuit() re-check loop closes the
     // circuit automatically when ffmpeg becomes reachable again.
     if (!this.ffmpegAvailable) return { ran: false };
+    // Storage circuit open — pause dispatch during transient Postgres/storage
+    // outages so healthy jobs don't burn retries against an infrastructure
+    // failure that will resolve on its own within the cool-down window.
+    if (this.storageCircuitOpenUntil > Date.now()) return { ran: false };
     this.running = true;
     try {
       // Run the stuck-job watchdog on every tick to recover jobs that somehow
@@ -638,6 +659,9 @@ class TranscoderDispatcher {
         // configurable retention window (CLEANUP_RETENTION_HOURS). This
         // frees significant DB storage (raw 1080p sermons can be 4–8 GiB).
         void scheduleSourceCleanup(job.videoId, job.videoPath ?? null);
+
+        // ── Storage circuit breaker: reset streak on success ───────────────
+        this.storageErrorStreak = 0;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         const errCode = (err as NodeJS.ErrnoException).code;
@@ -647,6 +671,36 @@ class TranscoderDispatcher {
         // burning any retry slots, and emit a high-severity log so operators
         // know they need to free storage before re-queuing.
         const isDiskFull = errCode === "ENOSPC" || errCode === "EDQUOT";
+
+        // ── Storage circuit breaker: detect Postgres/storage outage ────────
+        // Infrastructure errors (connection refused, broken pipe, DB pool timeout)
+        // are transient and will resolve without operator action. Count consecutive
+        // such failures; once the threshold is hit, pause dispatch for
+        // STORAGE_REOPEN_DELAY_MS so the outage can recover before more jobs burn
+        // their retry budgets. Any successful job resets the streak.
+        const isStorageError = !isDiskFull && (
+          errCode === "ECONNREFUSED" ||
+          errCode === "ECONNRESET" ||
+          errCode === "ETIMEDOUT" ||
+          errCode === "EPIPE" ||
+          (message.includes("Connection terminated") ||
+           message.includes("pool") ||
+           message.includes("ECONNREFUSED") ||
+           message.includes("connection refused"))
+        );
+        if (isStorageError) {
+          this.storageErrorStreak++;
+          if (this.storageErrorStreak >= TranscoderDispatcher.STORAGE_ERROR_THRESHOLD) {
+            this.storageCircuitOpenUntil = Date.now() + TranscoderDispatcher.STORAGE_REOPEN_DELAY_MS;
+            this.storageErrorStreak = 0;
+            logger.error(
+              { errCode, message, cooldownMs: TranscoderDispatcher.STORAGE_REOPEN_DELAY_MS },
+              "transcoder: storage outage detected — dispatch PAUSED for 60 s to protect job retry budgets",
+            );
+          }
+        } else {
+          this.storageErrorStreak = 0; // non-storage error → reset streak
+        }
 
         const attempts = job.attempts + (isDiskFull ? 0 : 1); // don't increment on disk-full
         const exceeded = isDiskFull || attempts >= job.maxAttempts;
