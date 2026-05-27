@@ -40,10 +40,12 @@ const Env = z.object({
   // Refresh tokens are 30 days; keep-alive rotates/extends far more often.
   JWT_ACCESS_TTL_SECONDS: z.coerce.number().int().positive().default(3600),
   JWT_REFRESH_TTL_SECONDS: z.coerce.number().int().positive().default(60 * 60 * 24 * 30),
-  // F10: algorithm agility — HS256 (symmetric, default) or RS256 (asymmetric).
-  // RS256 requires JWT_ACCESS_SECRET / JWT_REFRESH_SECRET to be PEM-encoded
-  // RSA private keys; HS256 uses them as raw HMAC secrets.
-  JWT_ALGORITHM: z.enum(["HS256", "RS256"]).default("HS256"),
+  // F10: JWT signing algorithm. Only HS256 (symmetric HMAC-SHA-256) is
+  // supported. RS256 (asymmetric RSA) requires PEM key-import which is not
+  // yet implemented in the jose migration (F28). Accepts only "HS256" so
+  // Zod validation fails cleanly at startup rather than crashing inside the
+  // jwt module after secrets have already been loaded.
+  JWT_ALGORITHM: z.literal("HS256").default("HS256"),
   // F22: when true, a refresh token presented from a different IP than the
   // one it was issued from is hard-rejected instead of soft-warned.
   // Default is environment-aware: explicit "true"/"false" overrides; unset
