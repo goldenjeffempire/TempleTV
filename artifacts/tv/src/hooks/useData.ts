@@ -58,7 +58,8 @@ function categorizeVideo(video: VideoItem, index: number): string {
       return category;
     }
   }
-  return CATEGORIES[index % CATEGORIES.length]!;
+  void index;
+  return "Sermons";
 }
 
 function categorize(videos: VideoItem[]): Sermon[] {

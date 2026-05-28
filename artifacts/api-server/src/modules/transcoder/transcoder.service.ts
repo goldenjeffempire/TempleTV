@@ -137,7 +137,7 @@ function buildFfmpegArgs(
     args.push(
       "-map", `[v${i}out]`,
       `-c:v:${i}`, "libx264",
-      `-profile:v:${i}`, "main",
+      `-profile:v:${i}`, r.height >= 720 ? "high" : "main",
       // Explicit H.264 level per rendition. Without this, some encoder/muxer
       // combinations emit a too-high level (e.g. 4.1) that Samsung Tizen, LG
       // webOS, and older Fire TV decoders refuse to play. Each level is chosen

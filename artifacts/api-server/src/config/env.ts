@@ -196,9 +196,10 @@ const Env = z.object({
   // Defaults to `<os.tmpdir()>/transcoder`. Override in production when
   // the OS tmp partition is too small (e.g. Render's 512 MB container).
   TRANSCODER_SCRATCH_DIR: z.string().optional(),
-  // ffmpeg encoding preset (speed vs compression trade-off). Default "veryfast"
-  // minimises CPU time on the Replit free tier; use "medium" for better quality.
-  TRANSCODER_PRESET: z.string().default("veryfast"),
+  // ffmpeg encoding preset (speed vs compression trade-off). Default "fast"
+  // balances quality and CPU time; use "medium" for best quality or "veryfast"
+  // to minimise encode time on constrained machines.
+  TRANSCODER_PRESET: z.string().default("fast"),
   // ffmpeg Constant Rate Factor. Lower = higher quality / larger file.
   // CRF 21 produces visibly sharper output vs. the old default of 23
   // at the cost of ~15-20% larger files — worthwhile for broadcast-quality

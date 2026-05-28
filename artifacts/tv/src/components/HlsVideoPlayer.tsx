@@ -238,11 +238,16 @@ export function HlsVideoPlayer({
         enableSoftwareAES: true,
         maxFragLookUpTolerance: 0.2,
         // Retry tuning
-        fragLoadingMaxRetry: 8,
-        fragLoadingRetryDelay: 300,
-        manifestLoadingMaxRetry: 6,
-        levelLoadingMaxRetry: 6,
-        nudgeMaxRetry: 5,
+        lowLatencyMode: false,
+        fragLoadingMaxRetry: 10,
+        fragLoadingRetryDelay: 500,
+        fragLoadingMaxRetryTimeout: 8_000,
+        manifestLoadingMaxRetry: 8,
+        manifestLoadingRetryDelay: 500,
+        levelLoadingMaxRetry: 8,
+        levelLoadingRetryDelay: 500,
+        nudgeMaxRetry: 8,
+        nudgeOffset: 0.3,
       });
       hls.attachMedia(video);
       hls.loadSource(url);
@@ -255,8 +260,25 @@ export function HlsVideoPlayer({
       hls.on(HlsLib.Events.LEVEL_SWITCHED, (_e, d) => {
         setQualityLabel(levelLabel(hls.levels[d.level]?.height));
       });
+      let stallLevelDropped = false;
       hls.on(HlsLib.Events.ERROR, (_e, data) => {
-        if (!data.fatal) return;
+        // ABR stall-drop: on non-fatal load stalls, immediately drop to the lowest
+        // available rendition rather than exhausting the retry budget at an
+        // unplayable bitrate. After 30 s of stable play the ABR engine auto-recovers.
+        if (!data.fatal) {
+          const isLoadStall =
+            data.details === HlsLib.ErrorDetails.FRAG_LOAD_TIMEOUT ||
+            data.details === HlsLib.ErrorDetails.FRAG_LOAD_ERROR ||
+            data.details === HlsLib.ErrorDetails.LEVEL_LOAD_TIMEOUT;
+          if (isLoadStall && !stallLevelDropped && hls.currentLevel > 0) {
+            stallLevelDropped = true;
+            hls.currentLevel = 0;
+            setTimeout(() => {
+              try { stallLevelDropped = false; hls.currentLevel = -1; } catch { /* destroyed */ }
+            }, 30_000);
+          }
+          return;
+        }
         if (slot !== activeSlotRef.current) return;
         // Two-stage MEDIA_ERROR recovery — flush MSE pipeline before
         // giving up. Handles codec/decoder reset issues on Samsung/LG TVs.
