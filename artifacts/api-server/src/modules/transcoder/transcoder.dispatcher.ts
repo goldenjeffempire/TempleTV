@@ -342,6 +342,10 @@ class TranscoderDispatcher {
    */
   private tick(): void {
     if (this.stopped) return;
+    // Stamp liveness on every scheduler cycle — including idle ticks where no
+    // job is claimed — so getHeartbeat() accurately reflects that the dispatcher
+    // is alive even when the queue is empty.
+    this.lastHeartbeatAt = Date.now();
     void this.runOnce().finally(() => {
       if (this.stopped) return;
       this.timer = setTimeout(() => this.tick(), env.TRANSCODER_POLL_MS);
@@ -790,9 +794,14 @@ class TranscoderDispatcher {
             nextRetryAt: exceeded ? null : nextRetry.toISOString(),
           }, "transcoder: job failed");
         }
-        this.lastCompletedAt = Date.now();
-        this.lastCompletedJobId = job.id;
-        this.lastCompletedStatus = exceeded ? "failed" : "queued";
+        // Only record a terminal status. A non-exceeded failure re-queues for
+        // retry — the job is not done yet, so we leave lastCompletedStatus as
+        // whatever the previous terminal value was (or null on first failure).
+        if (exceeded) {
+          this.lastCompletedAt = Date.now();
+          this.lastCompletedJobId = job.id;
+          this.lastCompletedStatus = "failed";
+        }
       }
 
       return { ran: true };

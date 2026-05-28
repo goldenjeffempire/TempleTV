@@ -3,6 +3,7 @@ import { broadcastOrchestrator } from "../engine/broadcast-orchestrator.js";
 import { eventLogRepo } from "../repository/event-log.repo.js";
 import { getBroadcastV2BootStatus, broadcastFanout } from "../index.js";
 import { prodQueueSync } from "../../prod-sync/prod-queue-sync.js";
+import { getViewerSlopeStatus } from "../../admin-ops/viewer-slope-monitor.js";
 import { getYouTubeAutoOverrideStats } from "../../youtube-live/auto-override.js";
 import {
   ForceFailoverCommand,
@@ -216,6 +217,7 @@ export async function restRoutes(app: FastifyInstance) {
       },
       airingHistory: broadcastOrchestrator.getAiringHistory(),
       youtubeAutoOverride: getYouTubeAutoOverrideStats(),
+      viewerSlope: getViewerSlopeStatus(),
     };
   });
 
