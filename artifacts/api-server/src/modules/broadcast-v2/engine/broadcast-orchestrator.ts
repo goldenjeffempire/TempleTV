@@ -1336,15 +1336,45 @@ class BroadcastOrchestrator extends EventEmitter {
           }
           acc += span;
         }
+        // Dead-air structured alert: emit once when the consecutive-skip
+        // threshold first crosses 2, regardless of whether a filler URL is
+        // configured. External monitors (and the admin banner) key off this.
+        if (this.consecutiveSkips === 2) {
+          this.lastDeadAirAt = Date.now();
+          logger.warn(
+            {
+              channel: this.channelId,
+              consecutiveSkips: 2,
+              itemCount: this.items.length,
+            },
+            "[broadcast-v2] dead-air: 2 consecutive auto-skips — emitting dead_air.detected",
+          );
+          void this.bump("dead_air.detected", {
+            consecutiveSkips: 2,
+            itemCount: this.items.length,
+          });
+        }
         // Total queue exhaustion: every item has been consecutively skipped.
-        // Engage an emergency filler override so viewers see content rather
-        // than a blank screen while the operator resolves the broken items.
+        // Insert a virtual emergency filler at the HEAD of the in-memory queue
+        // so viewers see something rather than a blank screen. This is an
+        // ephemeral in-memory change only — the filler is removed on the next
+        // reload() (which fires when the operator fixes the queue items).
         if (
           this.consecutiveSkips >= Math.max(1, this.items.length) &&
-          env.BROADCAST_EMERGENCY_FILLER_URL
+          env.EMERGENCY_FILLER_URL
         ) {
-          this.lastDeadAirAt = Date.now();
-          const fillerUrl = env.BROADCAST_EMERGENCY_FILLER_URL;
+          const fillerUrl = env.EMERGENCY_FILLER_URL;
+          const isHls = fillerUrl.includes(".m3u8");
+          const fillerItem: CachedQueueItem = {
+            id: `emergency-filler-${Date.now()}`,
+            videoId: null,
+            title: "Emergency Filler",
+            thumbnailUrl: null,
+            durationSecs: 300,
+            primaryUrl: fillerUrl,
+            source: { kind: isHls ? "hls" : "mp4", url: fillerUrl, expiresAtMs: null },
+            failoverSource: null,
+          };
           logger.error(
             {
               channel: this.channelId,
@@ -1352,21 +1382,14 @@ class BroadcastOrchestrator extends EventEmitter {
               itemCount: this.items.length,
               fillerUrl,
             },
-            "[broadcast-v2] TOTAL QUEUE EXHAUSTION — all items unresolvable; engaging emergency filler override",
+            "[broadcast-v2] TOTAL QUEUE EXHAUSTION — inserting emergency filler at queue head",
           );
-          void this.bump("dead_air.detected", {
-            consecutiveSkips: this.consecutiveSkips,
-            itemCount: this.items.length,
-          });
-          void this.startOverride({
-            kind: "hls",
-            url: fillerUrl,
-            title: "Emergency Filler",
-            endsAtMs: null,
-            resumeQueueOnEnd: false,
-          }).catch((err: unknown) =>
-            logger.warn({ err }, "[broadcast-v2] failed to engage emergency filler override (non-fatal)"),
-          );
+          this.items.unshift(fillerItem);
+          this.cycleDurationMs = this.items.reduce((s, r) => s + r.durationSecs * 1000, 0);
+          this.cycleStartedAtMs = Date.now();
+          this.consecutiveSkips = 0;
+          this.autoSkipAttempts = 0;
+          this.emitSnapshot();
         }
       }
       // All-sources-blocked auto-recovery: when items are loaded but every URL
@@ -1397,7 +1420,9 @@ class BroadcastOrchestrator extends EventEmitter {
     }
     this.allBlockedSinceMs = null;
     this.autoSkipAttempts  = 0;
-    this.consecutiveSkips  = 0;
+    // NOTE: consecutiveSkips is intentionally NOT reset here. It resets only
+    // in naturalItemEnd() (confirmed successful play) so the dead-air counter
+    // is not cleared the instant a new item becomes current but before it plays.
     // Drift-correct self-heal is handled by selfHealStaleTimer (SELF_HEAL_STALE_MS)
     // which runs outside the tick loop so no DB work ever happens inside tick().
 
@@ -1605,14 +1630,43 @@ class BroadcastOrchestrator extends EventEmitter {
     this.consecutiveSkips += 1;
     await this.bump("item.skipped", { itemId: snap.current.id });
     this.emitSnapshot();
-    // Total queue exhaustion check: if every queue item has now been skipped
-    // consecutively, engage the emergency filler override (if configured).
+    // Dead-air structured alert: emit once when the consecutive-skip
+    // threshold first crosses 2, regardless of filler configuration.
+    if (this.consecutiveSkips === 2) {
+      this.lastDeadAirAt = Date.now();
+      logger.warn(
+        {
+          channel: this.channelId,
+          consecutiveSkips: 2,
+          itemCount: this.items.length,
+        },
+        "[broadcast-v2] dead-air: 2 consecutive operator skips — emitting dead_air.detected",
+      );
+      await this.bump("dead_air.detected", {
+        consecutiveSkips: 2,
+        itemCount: this.items.length,
+      });
+    }
+    // Total queue exhaustion: insert a virtual emergency filler at the HEAD
+    // of the in-memory queue so the channel is never completely dark.
+    // Ephemeral: a subsequent reload() (triggered when the operator fixes
+    // the broken items) will replace the filler with the real queue.
     if (
       this.consecutiveSkips >= Math.max(1, this.items.length) &&
-      env.BROADCAST_EMERGENCY_FILLER_URL
+      env.EMERGENCY_FILLER_URL
     ) {
-      this.lastDeadAirAt = Date.now();
-      const fillerUrl = env.BROADCAST_EMERGENCY_FILLER_URL;
+      const fillerUrl = env.EMERGENCY_FILLER_URL;
+      const isHls = fillerUrl.includes(".m3u8");
+      const fillerItem: CachedQueueItem = {
+        id: `emergency-filler-${Date.now()}`,
+        videoId: null,
+        title: "Emergency Filler",
+        thumbnailUrl: null,
+        durationSecs: 300,
+        primaryUrl: fillerUrl,
+        source: { kind: isHls ? "hls" : "mp4", url: fillerUrl, expiresAtMs: null },
+        failoverSource: null,
+      };
       logger.error(
         {
           channel: this.channelId,
@@ -1620,19 +1674,13 @@ class BroadcastOrchestrator extends EventEmitter {
           itemCount: this.items.length,
           fillerUrl,
         },
-        "[broadcast-v2] TOTAL QUEUE EXHAUSTION (operator skip) — engaging emergency filler override",
+        "[broadcast-v2] TOTAL QUEUE EXHAUSTION (operator skip) — inserting emergency filler at queue head",
       );
-      void this.bump("dead_air.detected", {
-        consecutiveSkips: this.consecutiveSkips,
-        itemCount: this.items.length,
-      });
-      await this.startOverride({
-        kind: "hls",
-        url: fillerUrl,
-        title: "Emergency Filler",
-        endsAtMs: null,
-        resumeQueueOnEnd: false,
-      });
+      this.items.unshift(fillerItem);
+      this.cycleDurationMs = this.items.reduce((s, r) => s + r.durationSecs * 1000, 0);
+      this.cycleStartedAtMs = Date.now();
+      this.consecutiveSkips = 0;
+      this.emitSnapshot();
     }
   }
 
@@ -1873,10 +1921,40 @@ class BroadcastOrchestrator extends EventEmitter {
   }
 
   /**
+   * Fast HEAD probe for YouTube sources with a 2 s timeout.
+   *
+   * Returns:
+   *  "blocked"   — HTTP 403 or 451 (geo-block / legal takedown). The item is
+   *                definitively unreachable for most viewers → mark bad immediately.
+   *  "ambiguous" — Network error, timeout, or any other status code (including
+   *                5xx / 2xx). Do NOT mark bad; allow the normal retry path.
+   */
+  private async probeYouTubeReachability(url: string): Promise<"blocked" | "ambiguous"> {
+    try {
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 2_000);
+      let res: Response;
+      try {
+        res = await fetch(url, { method: "HEAD", redirect: "follow", signal: ctrl.signal });
+      } finally {
+        clearTimeout(timeout);
+      }
+      if (res.status === 403 || res.status === 451) return "blocked";
+      return "ambiguous";
+    } catch {
+      return "ambiguous"; // AbortError or NetworkError — allow normal retry
+    }
+  }
+
+  /**
    * Schedule a background HEAD probe for `item`'s source URL.
    * If the probe returns a definitive failure, marks both primary and
    * failover URLs bad and pushes an immediate snapshot so all clients
    * advance past the broken item before it would have started playing.
+   *
+   * YouTube sources use a specialised 2 s probe that only marks bad on
+   * HTTP 403/451 (geo-block / takedown). Other failures are ambiguous and
+   * leave the rotation unchanged so the normal retry path can continue.
    */
   private scheduleProactiveProbe(item: V2Item): void {
     const key = item.id;
@@ -1890,6 +1968,28 @@ class BroadcastOrchestrator extends EventEmitter {
 
     const url = item.source?.url ?? null;
     if (!url) return;
+
+    // YouTube sources: use the fast 2 s probe that only classifies
+    // 403/451 (geo-block / takedown) as definitively broken.
+    if (item.source?.kind === "youtube") {
+      void (async () => {
+        const result = await this.probeYouTubeReachability(url);
+        if (result !== "blocked") return; // ambiguous — leave rotation unchanged
+        markBadUrl(url);
+        if (item.failoverSource?.url) markBadUrl(item.failoverSource.url);
+        logger.warn(
+          { itemId: item.id, title: item.title, url, sequence: this.sequence },
+          "[broadcast-v2] YouTube probe: 403/451 response — source geo-blocked or taken down, pre-marking bad",
+        );
+        this.emitSnapshot();
+        const failCount = incrementBadUrlSkipCount(item.id);
+        if (failCount >= BAD_URL_SKIP_THRESHOLD) {
+          autoSuspendQueueItem(item.id, item.title ?? null, failCount, url ?? undefined);
+          void this.reload();
+        }
+      })();
+      return;
+    }
 
     void (async () => {
       const reachable = await this.probeUrlReachability(url);

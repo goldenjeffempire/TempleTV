@@ -95,7 +95,7 @@ const Env = z.object({
   // (total queue exhaustion). Acts as a last-resort emergency filler so
   // viewers always see *something* rather than a blank screen.
   // Leave unset to keep the current behaviour (off-air on exhaustion).
-  BROADCAST_EMERGENCY_FILLER_URL: z.string().optional(),
+  EMERGENCY_FILLER_URL: z.string().optional(),
 
   RATE_LIMIT_DEFAULT_PER_MINUTE: z.coerce.number().int().positive().default(120),
   RATE_LIMIT_AUTH_PER_MINUTE: z.coerce.number().int().positive().default(20),

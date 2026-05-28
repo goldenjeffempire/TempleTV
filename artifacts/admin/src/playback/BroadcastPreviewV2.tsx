@@ -387,12 +387,12 @@ export function BroadcastPreviewV2({ className }: Props) {
       return { kind: "tuning" as const, label: "Retrying source…" };
     }
     if (snapshot.state === "SKIP_PENDING") {
-      // When the active source is YouTube the SKIP_PENDING state is expected —
-      // the <video> element can't load YouTube URLs and the iframe path has been
-      // removed. The static YouTube placeholder card is rendered separately
-      // (z-index 5) and is the only meaningful UI for that case; suppress the
-      // "skipping" overlay so it doesn't cover the placeholder.
-      if (youtubeVideoId) return null;
+      // YouTube sources cannot be played through the <video> element, so
+      // SKIP_PENDING is expected here — but we still want operators to see
+      // the state rather than silently suppressing it. Render a distinct
+      // yellow warning instead of the full "Skipping…" banner so it is
+      // visible alongside the YouTube placeholder card without being alarming.
+      if (youtubeVideoId) return { kind: "skipping" as const, label: "YouTube source · skip pending" };
       return { kind: "skipping" as const, label: "Skipping to next item…" };
     }
     if (server && !server.current && !server.override) {
