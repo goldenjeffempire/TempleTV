@@ -116,7 +116,7 @@ export default defineConfig({
       // proxy to the running Fastify server in dev. Falls back to 8080 only
       // if the operator explicitly sets that override (the prior Render
       // local-dev convention).
-      const apiDevPort = process.env.API_DEV_PORT ?? "5000";
+      const apiDevPort = process.env.API_DEV_PORT ?? "8080";
       const target = `http://localhost:${apiDevPort}`;
       return {
         "/api": {
