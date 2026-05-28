@@ -1,4 +1,5 @@
 import { useV2Broadcast } from "@workspace/player-core/react";
+import { BroadcastPreviewV2 } from "@/playback/BroadcastPreviewV2";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorBoundary } from "@/components/shared/error-boundary";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -713,7 +714,7 @@ function BroadcastV2PageInner() {
   // enableStallReport: false — operator console must never affect the broadcast
   // stream. Admin preview failures are environment-local and must not block
   // sources for real viewers (TV, mobile, web).
-  const { snapshot, connected: transportConnected, attach } = useV2Broadcast({ baseUrl, enableStallReport: false });
+  const { snapshot, connected: transportConnected } = useV2Broadcast({ baseUrl, enableStallReport: false });
   const sse = useSSE();
   const qc = useQueryClient();
   const [busy, setBusy] = useState<string | null>(null);
@@ -1109,24 +1110,6 @@ function BroadcastV2PageInner() {
   useEffect(() => {
     if (processingCount === 0) setProcessingAlertDismissed(false);
   }, [processingCount]);
-
-  // ── Preview player error overlay ────────────────────────────────────────────
-  // Surfaces FSM recovery / skip states directly inside the A/B buffer preview
-  // so operators know immediately when a source is failing — without having to
-  // watch a black screen and guess. Because enableStallReport=false, this
-  // overlay never triggers a server-side skip for real viewers.
-  const previewErrorState: string | null =
-    snapshot.state === "RECOVERING_PRIMARY" ||
-    snapshot.state === "RECOVERING_FAILOVER" ||
-    snapshot.state === "SKIP_PENDING"
-      ? snapshot.state
-      : null;
-  const previewFailingSource = previewErrorState ? (server?.current?.source ?? null) : null;
-  const previewFailingUrl = previewFailingSource?.url ?? null;
-  const previewSourceKind = previewFailingSource?.kind ?? null;
-  // "mp4" kind covers both local uploads and proxied raw-MP4 sources.
-  // HLS items always arrive as kind="hls".
-  const previewIsMp4Upload = previewSourceKind === "mp4";
 
   // ── On-air progress ──────────────────────────────────────────────────────────
   // Current item elapsed and total, recomputed every second by the liveNow tick.
@@ -1907,108 +1890,17 @@ function BroadcastV2PageInner() {
       )}
 
       <div className="grid gap-6 md:grid-cols-[2fr_1fr]">
-        <Card>
-          <CardHeader>
-            <CardTitle>Live preview (A/B persistent buffers)</CardTitle>
+        <Card className="overflow-hidden">
+          <CardHeader className="pb-2 pt-4">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <span className="h-2 w-2 rounded-full bg-red-500 animate-pulse" aria-hidden="true" />
+              Live Preview
+            </CardTitle>
           </CardHeader>
-          <CardContent>
-            <div className="relative aspect-video w-full overflow-hidden rounded-lg bg-black">
-              <video
-                ref={attach.A}
-                playsInline
-                preload="auto"
-                className="absolute inset-0 h-full w-full object-contain"
-                style={{ zIndex: 2 }}
-              />
-              <video
-                ref={attach.B}
-                playsInline
-                muted
-                preload="auto"
-                className="absolute inset-0 h-full w-full object-contain"
-                style={{ zIndex: 1 }}
-              />
-
-              {/* ── Preview load-failure overlay ──────────────────────────
-                  Appears when the FSM enters a recovery or skip-pending state.
-                  enableStallReport=false means this overlay never sends a stall
-                  report, so it cannot block sources for real viewers. */}
-              {previewErrorState && previewFailingSource && (
-                <div
-                  className="absolute inset-0 flex flex-col justify-end p-2 sm:p-3"
-                  style={{
-                    zIndex: 10,
-                    background:
-                      "linear-gradient(to top, rgba(0,0,0,0.93) 55%, rgba(0,0,0,0.35) 100%)",
-                  }}
-                >
-                  <div className="rounded-md border border-red-500/30 bg-red-950/90 p-2.5 space-y-1.5 text-xs backdrop-blur-sm">
-                    {/* Title row */}
-                    <div className="flex items-start gap-1.5">
-                      <AlertTriangle className="h-3.5 w-3.5 text-red-400 shrink-0 mt-px" />
-                      <div className="min-w-0 space-y-1">
-                        <p className="font-semibold text-red-200 leading-tight">
-                          {previewIsMp4Upload
-                            ? "MP4 upload failed to load"
-                            : previewSourceKind === "hls"
-                            ? "HLS stream failed to load"
-                            : "Broadcast source failed to load"}
-                        </p>
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="inline-block rounded px-1 py-px bg-red-900/60 text-red-300 text-[10px] font-mono tracking-wide uppercase">
-                            {previewIsMp4Upload
-                              ? "MP4 upload"
-                              : previewSourceKind ?? "unknown"}
-                          </span>
-                          <span className="text-red-400/50 text-[10px]">
-                            {previewErrorState}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Source-specific guidance */}
-                    {previewIsMp4Upload && (
-                      <p className="text-red-200/75 text-[11px] leading-snug pl-5">
-                        This MP4 upload timed out or failed during initial load.
-                        The video may still be undergoing moov-atom optimization
-                        (faststart) after upload, or the server may be under load.
-                      </p>
-                    )}
-
-                    {/* Failing URL */}
-                    {previewFailingUrl && (
-                      <p
-                        className="font-mono text-[10px] text-slate-400/70 truncate pl-5"
-                        title={previewFailingUrl}
-                      >
-                        {previewFailingUrl}
-                      </p>
-                    )}
-
-                    {/* Viewer impact — MP4 uploads only */}
-                    {previewIsMp4Upload && (
-                      <p className="text-amber-200/70 text-[11px] leading-snug pl-5">
-                        <strong className="text-amber-200/90">Viewers:</strong>{" "}
-                        This failure can affect real viewers. If the video was
-                        recently uploaded, wait 60–120 seconds for the
-                        post-upload optimization to complete and the broadcast
-                        queue to reload. Check the health panel for viewer stall
-                        reports.
-                      </p>
-                    )}
-
-                    {/* Stall-report disclaimer — always shown */}
-                    <p className="text-slate-500 text-[10px] pl-5 border-t border-white/5 pt-1.5">
-                      This preview never sends stall reports — it cannot block
-                      sources for real viewers.
-                    </p>
-                  </div>
-                </div>
-              )}
-            </div>
-            <p className="mt-3 text-xs text-muted-foreground">
-              Two &lt;video&gt; elements stay mounted for the lifetime of the page; the FSM swaps z-index between them on each item handoff. No remount, no blank frame.
+          <CardContent className="pb-4">
+            <BroadcastPreviewV2 className="w-full aspect-video" />
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              Mirrors exactly what viewers see on TV, web, and mobile. Audio is muted by default — unmute with the volume button to monitor.
             </p>
           </CardContent>
         </Card>
