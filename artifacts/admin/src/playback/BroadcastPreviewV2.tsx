@@ -129,41 +129,44 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
 
   const hls = new Hls({
     // ── Latency / buffer ─────────────────────────────────────────────────────
+    // Mirror of the production TV player config — ensures admin preview exhibits
+    // exactly the same buffering behaviour as what real viewers experience.
     lowLatencyMode: false,           // stability over latency for broadcast replay
-    backBufferLength: 60,            // keep 60 s behind playhead — instant resume after
-                                     //   screen-dim / tab-switch without re-buffering
+    backBufferLength: 90,            // keep 90 s behind playhead — instant resume
     maxBufferLength: 60,             // build 60 s ahead — eliminates mid-segment rebuffers
     maxMaxBufferLength: 120,         // allow up to 2 min buffer on very fast connections
-    maxBufferHole: 0.5,              // bridge fragment discontinuities up to 500 ms smoothly
+    highBufferWatchdogPeriod: 3,     // nudge stalled high-buffer streams every 3 s
+    maxBufferHole: 0.25,             // crisper segment joins (was 0.5)
 
     // ── ABR / quality ─────────────────────────────────────────────────────────
     startLevel: -1,                  // auto — let EWMA bandwidth probe pick first level
     capLevelToPlayerSize: true,      // never load 1080p into a small container
-    // 8 Mbps optimistic start — above our highest rendition (4.5 Mbps 1080p) so
-    // ABR always opens at the best quality the container size permits.
-    abrEwmaDefaultEstimate: 8_000_000,
-    abrBandWidthFactor: 0.90,        // conservative BW estimate — prefer stream stability
-    abrBandWidthUpFactor: 0.80,      // ramps up once link is confirmed stable
+    abrEwmaDefaultEstimate: 10_000_000, // optimistic 10 Mbps start — probes best level first
+    abrBandWidthFactor: 0.92,        // conservative BW estimate — prefer stream stability
+    abrBandWidthUpFactor: 0.82,      // ramps up once link is confirmed stable
+    abrEwmaFastLive: 3.0,
+    abrEwmaSlowLive: 9.0,
 
     // ── Reliability ───────────────────────────────────────────────────────────
     enableWorker: true,              // offload muxer/demuxer to Web Worker thread
+    workerPath: undefined,
     autoStartLoad: true,
     startFragPrefetch: true,         // fetch next fragment before current ends (zero-gap)
-    // Software AES-128 fallback — prevents silent stalls on browsers/extensions
-    // that intercept or lack hardware crypto acceleration.
     enableSoftwareAES: true,
-    maxFragLookUpTolerance: 0.2,     // tighter fragment boundary matching
+    maxFragLookUpTolerance: 0.15,    // tighter fragment boundary matching
+    appendErrorMaxRetry: 8,
+    progressive: true,
 
     // ── Retry budgets ─────────────────────────────────────────────────────────
-    fragLoadingMaxRetry: 10,
-    fragLoadingRetryDelay: 500,
-    fragLoadingMaxRetryTimeout: 8_000,
-    manifestLoadingMaxRetry: 8,
-    manifestLoadingRetryDelay: 500,
-    levelLoadingMaxRetry: 8,
-    levelLoadingRetryDelay: 500,
-    nudgeMaxRetry: 8,
-    nudgeOffset: 0.3,
+    fragLoadingMaxRetry: 12,
+    fragLoadingRetryDelay: 400,
+    fragLoadingMaxRetryTimeout: 6_000,
+    manifestLoadingMaxRetry: 10,
+    manifestLoadingRetryDelay: 400,
+    levelLoadingMaxRetry: 10,
+    levelLoadingRetryDelay: 400,
+    nudgeMaxRetry: 10,
+    nudgeOffset: 0.2,
   });
 
   hls.on(Hls.Events.ERROR, handleHlsStallDrop);

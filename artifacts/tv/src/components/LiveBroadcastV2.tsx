@@ -202,45 +202,56 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
   const hls = new Hls({
     // ── Latency / buffer ─────────────────────────────────────────────
     lowLatencyMode: false,          // stability over latency for broadcast replay
-    backBufferLength: 60,           // keep 60 s behind playhead — instant resume after
+    backBufferLength: 90,           // keep 90 s behind playhead — instant resume after
                                     //   screen-dim/lock/tab-switch without re-buffering
     maxBufferLength: 60,            // build 60 s ahead — eliminates mid-segment rebuffers
     maxMaxBufferLength: 120,        // allow up to 2 min buffer on very fast connections
+    highBufferWatchdogPeriod: 3,    // nudge stalled high-buffer streams every 3 s
 
     // ── ABR / quality ────────────────────────────────────────────────
     startLevel: -1,                 // auto — let EWMA bandwidth probe pick first level
     capLevelToPlayerSize: true,     // never load 1080p into a 480p container
-    // Start ABR with an optimistic 8 Mbps baseline. On fast connections this
+    // Start ABR with an optimistic 10 Mbps baseline. On fast connections this
     // causes hls.js to probe the highest rendition first instead of always
     // opening at 360p; on slow links it converges down within 2–3 segments.
-    // 8 Mbps is above our highest rendition (4.5 Mbps 1080p) so ABR always
-    // starts with the best quality the container size permits.
-    abrEwmaDefaultEstimate: 8_000_000,
-    abrBandWidthFactor: 0.90,       // conservative BW estimate — prefer stream stability
-    abrBandWidthUpFactor: 0.80,     // ramps up once link is confirmed stable
-    maxBufferHole: 0.5,             // bridge fragment discontinuities ≤ 500 ms seamlessly
-                                    //   instead of stalling while seeking past the gap
+    abrEwmaDefaultEstimate: 10_000_000,
+    abrBandWidthFactor: 0.92,       // conservative BW estimate — prefer stream stability
+    abrBandWidthUpFactor: 0.82,     // ramps up once link is confirmed stable
+    abrEwmaFastLive: 3.0,           // fast EMA for live BW variance response
+    abrEwmaSlowLive: 9.0,           // slow EMA baseline for stable quality selection
+    maxBufferHole: 0.25,            // bridge fragment discontinuities ≤ 250 ms — crisper
+                                    //   segment joins vs the old 500 ms gap-bridge
 
     // ── Reliability ──────────────────────────────────────────────────
     enableWorker: true,             // offload muxer/demuxer to Web Worker thread
+    workerPath: undefined,          // use inline worker (no external path needed)
     autoStartLoad: true,
     startFragPrefetch: true,        // fetch next fragment before current ends (zero-gap)
     // Enable software AES-128 fallback for Smart TV chipsets lacking hardware
     // crypto acceleration (some WebOS 3.x, Tizen 2.x). Without this, HW
     // crypto failures cause silent stalls with no error event.
     enableSoftwareAES: true,
-    maxFragLookUpTolerance: 0.2,    // tighter fragment boundary matching
+    maxFragLookUpTolerance: 0.15,   // tighter fragment boundary matching — reduces gaps
+    appendErrorMaxRetry: 8,         // retry MSE append errors before escalating to fatal
+    progressive: true,              // progressive MP4 fallback — deliver decoded frames
+                                    //   as bytes arrive rather than waiting for full segment
+
+    // ── Frame pacing ─────────────────────────────────────────────────
+    // Disable the 6 s live sync nudge — we are replaying a VOD-style queue,
+    // not a true low-latency live edge; nudging causes jarring seek artifacts.
+    liveSyncDurationCount: 3,
+    liveMaxLatencyDurationCount: 10,
 
     // ── Retry budgets ────────────────────────────────────────────────
-    fragLoadingMaxRetry: 10,
-    fragLoadingRetryDelay: 500,
-    fragLoadingMaxRetryTimeout: 8_000,
-    manifestLoadingMaxRetry: 8,
-    manifestLoadingRetryDelay: 500,
-    levelLoadingMaxRetry: 8,
-    levelLoadingRetryDelay: 500,
-    nudgeMaxRetry: 8,
-    nudgeOffset: 0.3,               // small nudge avoids large seek on stall recovery
+    fragLoadingMaxRetry: 12,
+    fragLoadingRetryDelay: 400,
+    fragLoadingMaxRetryTimeout: 6_000,
+    manifestLoadingMaxRetry: 10,
+    manifestLoadingRetryDelay: 400,
+    levelLoadingMaxRetry: 10,
+    levelLoadingRetryDelay: 400,
+    nudgeMaxRetry: 10,
+    nudgeOffset: 0.2,               // smaller nudge — less perceptible seek on stall recovery
   });
 
   // ── Fatal error recovery ─────────────────────────────────────────────
@@ -478,11 +489,21 @@ export function LiveBroadcastV2({
           // layer, enabling zero-copy hardware decoding on Chromium-based browsers
           // and preventing repaints from UI overlays (badges, title chip) from
           // invalidating the video decode pipeline.
-          willChange: "transform",
+          willChange: "transform, opacity",
           transform: "translateZ(0)",
+          // backfaceVisibility: hidden prevents the browser from re-compositing
+          // the back face of the GPU layer on 3D transforms, eliminating a
+          // flash/ghost frame that can appear during buffer swap on some GPU drivers.
+          WebkitBackfaceVisibility: "hidden",
+          backfaceVisibility: "hidden",
+          // Smooth opacity transition for A/B buffer crossfade — the web adapter
+          // sets opacity:0/1 directly; this CSS transition eases the visibility
+          // change at 250 ms so buffer swaps feel like a dissolve cut, not a hard cut.
+          transition: "opacity 250ms ease",
         }}
         playsInline
         autoPlay
+        preload="auto"
       />
       {/* Buffer B — preload + hand-off target */}
       <video
@@ -497,11 +518,15 @@ export function LiveBroadcastV2({
           zIndex: 1,
           opacity: 0,
           display: "block",
-          willChange: "transform",
+          willChange: "transform, opacity",
           transform: "translateZ(0)",
+          WebkitBackfaceVisibility: "hidden",
+          backfaceVisibility: "hidden",
+          transition: "opacity 250ms ease",
         }}
         playsInline
         muted
+        preload="auto"
       />
 
       {/* Connection-loss strip (non-blocking) */}
@@ -512,19 +537,26 @@ export function LiveBroadcastV2({
           left: 0,
           right: 0,
           zIndex: 30,
-          background: "rgba(217,119,6,0.92)",
-          color: "#000",
+          background: "linear-gradient(90deg, rgba(180,83,9,0.97) 0%, rgba(217,119,6,0.97) 50%, rgba(180,83,9,0.97) 100%)",
+          color: "#fff",
           textAlign: "center",
-          fontSize: "clamp(11px, 1.2vw, 14px)",
-          fontWeight: 600,
-          padding: "6px 12px",
-          paddingTop: "max(env(safe-area-inset-top, 0px), 6px)",
+          fontSize: "clamp(10px, 1.1vw, 13px)",
+          fontWeight: 700,
+          letterSpacing: "0.06em",
+          padding: "7px 12px",
+          paddingTop: "max(env(safe-area-inset-top, 0px), 7px)",
           opacity: connected ? 0 : 1,
           pointerEvents: connected ? "none" : "auto",
-          transition: "opacity 300ms ease",
+          transition: "opacity 400ms ease",
+          boxShadow: "0 2px 12px rgba(0,0,0,0.4)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 8,
         }}
       >
-        Reconnecting to broadcast…
+        <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "#fff", opacity: 0.9 }} />
+        RECONNECTING TO BROADCAST
       </div>
 
       {/* ON AIR badge — top-right */}
@@ -537,24 +569,27 @@ export function LiveBroadcastV2({
           display: "flex",
           alignItems: "center",
           gap: "clamp(5px, 0.6vw, 8px)",
-          background: "rgba(220,38,38,0.95)",
+          background: "rgba(109,40,217,0.92)",
           color: "#fff",
-          padding: "clamp(4px, 0.6vh, 6px) clamp(8px, 1vw, 12px)",
+          padding: "clamp(4px, 0.6vh, 7px) clamp(10px, 1.1vw, 14px)",
           borderRadius: 999,
-          boxShadow: "0 2px 16px rgba(220,38,38,0.5)",
+          border: "1px solid rgba(167,139,250,0.35)",
+          boxShadow: "0 0 0 1px rgba(109,40,217,0.3), 0 4px 24px rgba(109,40,217,0.55), 0 0 48px rgba(109,40,217,0.2)",
+          backdropFilter: "blur(8px)",
+          WebkitBackdropFilter: "blur(8px)",
           opacity: isOnAir ? 1 : 0,
-          transform: isOnAir ? "scale(1)" : "scale(0.88)",
+          transform: isOnAir ? "scale(1)" : "scale(0.85)",
           pointerEvents: "none",
-          transition: "opacity 500ms ease, transform 500ms ease",
-          paddingTop: "max(env(safe-area-inset-top, 0px), clamp(4px, 0.6vh, 6px))",
+          transition: "opacity 600ms cubic-bezier(0.16,1,0.3,1), transform 600ms cubic-bezier(0.16,1,0.3,1), box-shadow 600ms ease",
+          paddingTop: "max(env(safe-area-inset-top, 0px), clamp(4px, 0.6vh, 7px))",
         }}
       >
         <span
           style={{
             position: "relative",
             display: "inline-flex",
-            width: "clamp(7px, 0.8vw, 10px)",
-            height: "clamp(7px, 0.8vw, 10px)",
+            width: "clamp(7px, 0.7vw, 9px)",
+            height: "clamp(7px, 0.7vw, 9px)",
           }}
         >
           <span
@@ -562,9 +597,9 @@ export function LiveBroadcastV2({
               position: "absolute",
               inset: 0,
               borderRadius: "50%",
-              background: "#fff",
-              opacity: 0.75,
-              animation: "ping 1s cubic-bezier(0,0,0.2,1) infinite",
+              background: "#c4b5fd",
+              opacity: 0.7,
+              animation: "ping 1.4s cubic-bezier(0,0,0.2,1) infinite",
             }}
           />
           <span
@@ -574,18 +609,20 @@ export function LiveBroadcastV2({
               borderRadius: "50%",
               width: "100%",
               height: "100%",
-              background: "#fff",
+              background: "#e9d5ff",
+              boxShadow: "0 0 6px rgba(233,213,255,0.8)",
             }}
           />
         </span>
         <span
           style={{
-            fontSize: "clamp(10px, 1vw, 13px)",
+            fontSize: "clamp(9px, 0.9vw, 12px)",
             fontWeight: 800,
-            letterSpacing: "0.12em",
+            letterSpacing: "0.14em",
+            textTransform: "uppercase" as const,
           }}
         >
-          ON AIR
+          On Air
         </span>
       </div>
 
@@ -598,10 +635,14 @@ export function LiveBroadcastV2({
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          background: "rgba(0,0,0,0.72)",
+          background: overlay?.showRefresh
+            ? "rgba(0,0,0,0.82)"
+            : "radial-gradient(ellipse at center, rgba(15,5,25,0.88) 0%, rgba(0,0,0,0.78) 100%)",
           opacity: overlay ? 1 : 0,
           pointerEvents: overlay ? "auto" : "none",
           transition: "opacity 500ms ease",
+          backdropFilter: overlay ? "blur(2px)" : "none",
+          WebkitBackdropFilter: overlay ? "blur(2px)" : "none",
         }}
       >
         <div
@@ -609,19 +650,65 @@ export function LiveBroadcastV2({
             display: "flex",
             flexDirection: "column",
             alignItems: "center",
-            gap: "clamp(8px, 1.2vh, 16px)",
+            gap: "clamp(10px, 1.5vh, 20px)",
             padding: "0 clamp(16px, 4vw, 48px)",
             maxWidth: "clamp(280px, 55vw, 700px)",
           }}
         >
+          {/* Loading spinner — shown for non-fatal, non-refresh states */}
+          {overlay && !overlay.showRefresh && (
+            <div style={{
+              position: "relative",
+              width: "clamp(36px, 4vw, 52px)",
+              height: "clamp(36px, 4vw, 52px)",
+              marginBottom: "clamp(2px, 0.4vh, 6px)",
+            }}>
+              {/* Outer ring */}
+              <svg
+                viewBox="0 0 52 52"
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  width: "100%",
+                  height: "100%",
+                  animation: "broadcast-spin 1.4s linear infinite",
+                }}
+              >
+                <circle
+                  cx="26" cy="26" r="22"
+                  fill="none"
+                  stroke="rgba(167,139,250,0.18)"
+                  strokeWidth="3"
+                />
+                <circle
+                  cx="26" cy="26" r="22"
+                  fill="none"
+                  stroke="rgba(167,139,250,0.85)"
+                  strokeWidth="3"
+                  strokeLinecap="round"
+                  strokeDasharray="34.56 103.67"
+                  strokeDashoffset="0"
+                />
+              </svg>
+              {/* Inner pulse dot */}
+              <div style={{
+                position: "absolute",
+                inset: "30%",
+                borderRadius: "50%",
+                background: "rgba(167,139,250,0.6)",
+                animation: "broadcast-pulse 2s ease-in-out infinite",
+              }} />
+            </div>
+          )}
           <p
             style={{
-              fontSize: "clamp(15px, 2.5vw, 28px)",
+              fontSize: "clamp(14px, 2.2vw, 24px)",
               fontWeight: 600,
-              letterSpacing: "0.02em",
+              letterSpacing: "0.03em",
               color: "#fff",
               textAlign: "center",
               margin: 0,
+              textShadow: "0 2px 16px rgba(0,0,0,0.6)",
             }}
           >
             {overlay?.primary ?? ""}
@@ -629,11 +716,12 @@ export function LiveBroadcastV2({
           {overlay?.secondary && (
             <p
               style={{
-                fontSize: "clamp(12px, 1.6vw, 20px)",
+                fontSize: "clamp(11px, 1.4vw, 17px)",
                 fontWeight: 400,
-                color: "rgba(255,255,255,0.72)",
+                color: "rgba(255,255,255,0.65)",
                 textAlign: "center",
                 margin: 0,
+                lineHeight: 1.5,
               }}
             >
               {overlay.secondary}
@@ -643,21 +731,29 @@ export function LiveBroadcastV2({
             <button
               onClick={() => window.location.reload()}
               style={{
-                marginTop: "clamp(4px, 0.8vh, 12px)",
-                padding: "clamp(8px, 1vh, 12px) clamp(20px, 2.5vw, 36px)",
-                background: "rgba(255,255,255,0.15)",
-                border: "1px solid rgba(255,255,255,0.3)",
-                borderRadius: 8,
+                marginTop: "clamp(6px, 1vh, 14px)",
+                padding: "clamp(10px, 1.2vh, 14px) clamp(24px, 3vw, 40px)",
+                background: "rgba(109,40,217,0.85)",
+                border: "1px solid rgba(167,139,250,0.4)",
+                borderRadius: 10,
                 color: "#fff",
-                fontSize: "clamp(12px, 1.4vw, 18px)",
-                fontWeight: 500,
+                fontSize: "clamp(12px, 1.3vw, 16px)",
+                fontWeight: 600,
                 cursor: "pointer",
-                backdropFilter: "blur(4px)",
-                WebkitBackdropFilter: "blur(4px)",
-                transition: "background 200ms ease",
+                backdropFilter: "blur(8px)",
+                WebkitBackdropFilter: "blur(8px)",
+                transition: "background 200ms ease, box-shadow 200ms ease",
+                boxShadow: "0 4px 20px rgba(109,40,217,0.4)",
+                letterSpacing: "0.02em",
               }}
-              onMouseEnter={(e) => { (e.target as HTMLButtonElement).style.background = "rgba(255,255,255,0.25)"; }}
-              onMouseLeave={(e) => { (e.target as HTMLButtonElement).style.background = "rgba(255,255,255,0.15)"; }}
+              onMouseEnter={(e) => {
+                (e.target as HTMLButtonElement).style.background = "rgba(124,58,237,0.95)";
+                (e.target as HTMLButtonElement).style.boxShadow = "0 6px 28px rgba(109,40,217,0.6)";
+              }}
+              onMouseLeave={(e) => {
+                (e.target as HTMLButtonElement).style.background = "rgba(109,40,217,0.85)";
+                (e.target as HTMLButtonElement).style.boxShadow = "0 4px 20px rgba(109,40,217,0.4)";
+              }}
             >
               Try Again
             </button>
@@ -674,16 +770,18 @@ export function LiveBroadcastV2({
             left: 0,
             right: 0,
             zIndex: 20,
-            // Tall cinematic gradient — fades black from the bottom third up
-            // so the title is always legible over any content colour.
-            background: "linear-gradient(to top, rgba(0,0,0,0.88) 0%, rgba(0,0,0,0.55) 40%, transparent 100%)",
-            padding: "clamp(32px, 5vh, 64px) clamp(16px, 3vw, 40px) clamp(14px, 2.5vh, 28px)",
-            paddingBottom: "max(env(safe-area-inset-bottom, 0px), clamp(14px, 2.5vh, 28px))",
+            // Multi-stop cinematic gradient — deep black at bottom for title
+            // legibility, dissolving to transparent near center so the video
+            // breathes without a visible gradient ceiling.
+            background: "linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.72) 30%, rgba(0,0,0,0.36) 60%, transparent 100%)",
+            padding: "clamp(48px, 7vh, 80px) clamp(20px, 3.5vw, 52px) clamp(16px, 3vh, 36px)",
+            paddingBottom: "max(env(safe-area-inset-bottom, 0px), clamp(16px, 3vh, 36px))",
             display: "flex",
             flexDirection: "column",
-            gap: "clamp(3px, 0.5vh, 6px)",
+            gap: "clamp(4px, 0.6vh, 8px)",
             opacity: isOnAir ? 1 : 0,
-            transition: "opacity 600ms ease",
+            transform: isOnAir ? "translateY(0)" : "translateY(8px)",
+            transition: "opacity 700ms cubic-bezier(0.16,1,0.3,1), transform 700ms cubic-bezier(0.16,1,0.3,1)",
             pointerEvents: "none",
           }}
         >
@@ -692,14 +790,21 @@ export function LiveBroadcastV2({
             display: "flex",
             alignItems: "center",
             gap: 6,
-            marginBottom: "clamp(2px, 0.4vh, 5px)",
+            marginBottom: "clamp(3px, 0.5vh, 6px)",
           }}>
+            <div style={{
+              width: 3,
+              height: "clamp(10px, 1.2vh, 14px)",
+              borderRadius: 999,
+              background: "rgba(167,139,250,0.8)",
+              flexShrink: 0,
+            }} />
             <span style={{
-              fontSize: "clamp(9px, 0.85vw, 11px)",
+              fontSize: "clamp(9px, 0.8vw, 11px)",
               fontWeight: 700,
-              letterSpacing: "0.14em",
-              color: "rgba(255,255,255,0.55)",
-              textTransform: "uppercase",
+              letterSpacing: "0.18em",
+              color: "rgba(196,181,253,0.75)",
+              textTransform: "uppercase" as const,
             }}>
               Now Playing
             </span>
@@ -707,12 +812,12 @@ export function LiveBroadcastV2({
           {/* Programme title */}
           <p style={{
             margin: 0,
-            fontSize: "clamp(14px, 1.8vw, 26px)",
-            fontWeight: 700,
-            letterSpacing: "0.01em",
+            fontSize: "clamp(15px, 2vw, 30px)",
+            fontWeight: 800,
+            letterSpacing: "-0.01em",
             color: "#fff",
-            lineHeight: 1.2,
-            textShadow: "0 1px 8px rgba(0,0,0,0.6)",
+            lineHeight: 1.18,
+            textShadow: "0 2px 16px rgba(0,0,0,0.7), 0 4px 32px rgba(0,0,0,0.4)",
             display: "-webkit-box",
             WebkitLineClamp: 2,
             WebkitBoxOrient: "vertical",
@@ -726,30 +831,36 @@ export function LiveBroadcastV2({
               display: "flex",
               alignItems: "center",
               gap: "clamp(5px, 0.6vw, 8px)",
-              marginTop: "clamp(6px, 0.9vh, 12px)",
-              padding: "clamp(3px, 0.4vh, 5px) clamp(8px, 0.9vw, 12px)",
-              background: "rgba(255,255,255,0.09)",
-              border: "1px solid rgba(255,255,255,0.15)",
+              marginTop: "clamp(8px, 1.1vh, 14px)",
+              padding: "clamp(4px, 0.5vh, 6px) clamp(10px, 1.1vw, 14px)",
+              background: "rgba(109,40,217,0.22)",
+              border: "1px solid rgba(167,139,250,0.22)",
               borderRadius: 999,
-              backdropFilter: "blur(6px)",
-              WebkitBackdropFilter: "blur(6px)",
+              backdropFilter: "blur(8px)",
+              WebkitBackdropFilter: "blur(8px)",
               width: "fit-content",
-              maxWidth: "100%",
+              maxWidth: "80%",
             }}>
               <span style={{
-                fontSize: "clamp(8px, 0.7vw, 10px)",
+                fontSize: "clamp(7px, 0.65vw, 10px)",
                 fontWeight: 700,
-                letterSpacing: "0.12em",
-                color: "rgba(255,255,255,0.45)",
-                textTransform: "uppercase",
+                letterSpacing: "0.14em",
+                color: "rgba(196,181,253,0.65)",
+                textTransform: "uppercase" as const,
                 flexShrink: 0,
               }}>
                 Up Next
               </span>
+              <div style={{
+                width: 1,
+                height: "0.9em",
+                background: "rgba(167,139,250,0.25)",
+                flexShrink: 0,
+              }} />
               <span style={{
                 fontSize: "clamp(10px, 0.9vw, 13px)",
                 fontWeight: 500,
-                color: "rgba(255,255,255,0.72)",
+                color: "rgba(255,255,255,0.75)",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
                 whiteSpace: "nowrap",
@@ -763,7 +874,15 @@ export function LiveBroadcastV2({
 
       <style>{`
         @keyframes ping {
-          75%, 100% { transform: scale(2); opacity: 0; }
+          75%, 100% { transform: scale(2.2); opacity: 0; }
+        }
+        @keyframes broadcast-spin {
+          from { transform: rotate(0deg); }
+          to   { transform: rotate(360deg); }
+        }
+        @keyframes broadcast-pulse {
+          0%, 100% { opacity: 0.4; transform: scale(0.8); }
+          50%       { opacity: 0.9; transform: scale(1.15); }
         }
       `}</style>
     </div>

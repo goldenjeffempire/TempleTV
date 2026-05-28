@@ -179,6 +179,31 @@ html, body, #root {
 ::-webkit-scrollbar { display: none; }
 * { scrollbar-width: none; }
 
+/* ── Broadcast player: video rendering optimisations ─────────────────────── */
+/*
+ * These rules apply globally to <video> elements but are specifically tuned
+ * for the LiveBroadcastV2 dual-buffer surfaces.
+ *
+ * 1. transform + backface-visibility — isolates each video in its own GPU
+ *    compositor layer, preventing overlay repaints (badge, title, gradient)
+ *    from invalidating the video decode pipeline on Chromium / WebKit.
+ *
+ * 2. image-rendering: auto — requests the highest-quality resampling filter
+ *    available (bilinear / bicubic), preventing the low-quality default
+ *    nearest-neighbour upscaling that some Smart TV chipsets apply to 720p
+ *    content scaled to a 4K panel.
+ *
+ * 3. isolation: isolate — creates a new stacking context so the video layer
+ *    is composited independently. Critical on webOS 6+ / Tizen 6+ where
+ *    mix-blend-mode on overlay elements can collapse the video GPU layer.
+ */
+video {
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  image-rendering: auto;
+  isolation: isolate;
+}
+
 /* ── Animations ──────────────────────────────────────────────────────────── */
 
 /* Live pulse dot */

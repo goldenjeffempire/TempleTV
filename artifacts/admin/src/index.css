@@ -565,6 +565,24 @@
   );
 }
 
+/* ── Broadcast preview: video rendering optimisations ───────────────────── */
+/*
+ * Mirror of the TV app's video rules — ensures BroadcastPreviewV2 uses the
+ * same GPU compositing, quality sampling, and stacking-context isolation as
+ * the production TV player surfaces.
+ */
+video {
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  image-rendering: auto;
+  isolation: isolate;
+  /* Smooth opacity transitions for A/B buffer crossfade — the web adapter
+   * sets opacity:0/1 directly; this CSS eases it so buffer swaps dissolve
+   * rather than hard-cut. Matches the 250 ms inline transition on the
+   * TV player video elements. */
+  transition: opacity 250ms ease;
+}
+
 /* ── Fullscreen video player ─────────────────────────────────────────────── */
 /*
  * When the HlsVideoPlayer or BroadcastPreviewV2 enters browser fullscreen,
