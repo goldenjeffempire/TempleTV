@@ -262,6 +262,11 @@ function WebYoutubePlayer({
         referrerPolicy: "strict-origin-when-cross-origin",
         loading: "eager",
         onLoad: handleLoad,
+        // Network / resource-load failure (e.g. YouTube CDN unreachable,
+        // CSP block, iframe sandbox error). The IFrame Player API's
+        // postMessage onError only fires for playback errors *after* the
+        // player bootstraps — this catches failures before bootstrap too.
+        onError: () => { callbacksRef.current.onError?.(); },
         style: {
           position: "absolute",
           top: 0,

@@ -371,9 +371,55 @@ export default function OperationsPage() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <MetricCard title="CPU Usage" value={data ? `${data.cpu}%` : null} icon={<Cpu size={16} />} loading={isLoading} highlight={data && data.cpu > 80 ? "danger" : data && data.cpu > 60 ? "warning" : undefined} />
         <MetricCard title="Memory" value={data ? `${memPct}%` : null} icon={<MemoryStick size={16} />} loading={isLoading} subtitle={data ? `${data.memoryUsedMb}MB / ${data.memoryTotalMb}MB` : undefined} highlight={memPct > 85 ? "danger" : memPct > 70 ? "warning" : undefined} />
-        <MetricCard title="Uptime" value={uptimeStr} icon={<Clock size={16} />} loading={isLoading} />
+        <MetricCard title="API Uptime" value={uptimeStr} icon={<Clock size={16} />} loading={isLoading} />
         <MetricCard title="Connections" value={data?.activeConnections} icon={<Zap size={16} />} loading={isLoading} subtitle="Active right now" />
       </div>
+
+      {/* Broadcast engine quick metrics */}
+      {engineHealth && (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <MetricCard
+            title="Engine Uptime"
+            value={(() => {
+              const s = Math.round(engineHealth.uptimeMs / 1000);
+              const h = Math.floor(s / 3600);
+              const m = Math.floor((s % 3600) / 60);
+              if (h > 0) return `${h}h ${m}m`;
+              if (m > 0) return `${m}m ${s % 60}s`;
+              return `${s}s`;
+            })()}
+            icon={<Radio size={16} />}
+            loading={false}
+            subtitle={isEngineStuck ? "Stuck — check Master Control" : `Sequence #${engineHealth.sequence}`}
+            highlight={isEngineStuck ? "danger" : undefined}
+          />
+          <MetricCard
+            title="Reload Reliability"
+            value={engineHealth.reload.attempts > 0
+              ? `${Math.round((engineHealth.reload.successes / engineHealth.reload.attempts) * 100)}%`
+              : "—"}
+            icon={<RefreshCw size={16} />}
+            loading={false}
+            subtitle={`${engineHealth.reload.successes}/${engineHealth.reload.attempts} ok`}
+          />
+          <MetricCard
+            title="Boot Attempts"
+            value={String(engineHealth.boot.startAttempts)}
+            icon={<Zap size={16} />}
+            loading={false}
+            subtitle={engineHealth.boot.started ? "Started ok" : "Retrying…"}
+            highlight={engineHealth.boot.startAttempts > 3 ? "danger" : engineHealth.boot.startAttempts > 1 ? "warning" : undefined}
+          />
+          <MetricCard
+            title="Engine Mode"
+            value={engineHealth.mode}
+            icon={<Activity size={16} />}
+            loading={false}
+            subtitle={engineHealth.boot.busBridgeInstalled ? "Bus bridge ok" : "Bus bridge missing"}
+            highlight={!engineHealth.boot.busBridgeInstalled ? "danger" : undefined}
+          />
+        </div>
+      )}
 
       {/* Details */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

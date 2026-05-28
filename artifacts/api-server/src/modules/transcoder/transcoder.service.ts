@@ -1023,10 +1023,24 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
         );
       }
     } else {
-      // Probe failed — fall back to safe default (480p + 720p only) to avoid
-      // attempting 1080p on sources where the resolution is unknown.
-      renditionsToUse = ALL_RENDITIONS.filter((r) => r.height <= 720);
-      logger.warn({ videoId: req.videoId }, "transcoder: resolution probe failed — using 360p/480p/720p renditions");
+      // Probe failed — cap at 360p ONLY as the safest conservative fallback.
+      //
+      // Why 360p-only rather than "everything up to 720p":
+      //   If the source is a 360p file, using 360p/480p/720p would upscale it
+      //   to 480p and 720p — producing larger segments with worse quality than
+      //   the original AND confusing ExoPlayer/AVPlayer ABR engines that prefer
+      //   higher renditions even when they're upscales. 360p is universally
+      //   decodable (H.264 level 3.0) and never upscales any realistic source.
+      //
+      // Recovery path: operators can re-transcode the video after the root cause
+      // of the probe failure is resolved (corrupt container, ffprobe unavailable,
+      // etc.) to get the full multi-rendition ladder.
+      renditionsToUse = [ALL_RENDITIONS[0]!];
+      logger.warn(
+        { videoId: req.videoId },
+        "transcoder: resolution probe failed — using 360p-only (conservative anti-upscale fallback). " +
+        "Re-transcode after fixing probe failure to restore the full quality ladder.",
+      );
     }
 
     // Create per-rendition scratch subdirectories (v0, v1, …).
@@ -1138,7 +1152,16 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
         if (!progressiveActive) break;
         try {
           await progressiveSegmentUpload(scratchDir, keyPrefix, renditionsToUse.length, uploadedSegmentKeys);
-        } catch { /* non-fatal; errors logged inside */ }
+        } catch (progressiveErr) {
+          // progressiveSegmentUpload handles per-file errors internally with logger.warn.
+          // This outer catch covers unexpected structural failures (e.g. a bug in the
+          // function itself). Log at warn so it shows up in the transcoding dashboard
+          // rather than being silently swallowed, then continue looping.
+          logger.warn(
+            { videoId: req.videoId, jobId: req.jobId, err: String(progressiveErr) },
+            "transcoder: progressive segment upload loop threw unexpectedly (non-fatal — will retry next poll)",
+          );
+        }
       }
     })();
 
@@ -1197,7 +1220,12 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
             if (!progressiveActive) break;
             try {
               await progressiveSegmentUpload(scratchDir, keyPrefix, renditionsToUse.length, uploadedSegmentKeys);
-            } catch { /* non-fatal */ }
+            } catch (progressiveErr) {
+              logger.warn(
+                { videoId: req.videoId, jobId: req.jobId, err: String(progressiveErr) },
+                "transcoder: progressive segment upload loop threw unexpectedly in 360p fallback (non-fatal — will retry next poll)",
+              );
+            }
           }
         })();
 

@@ -706,7 +706,25 @@ class BroadcastOrchestrator extends EventEmitter {
         // all client surfaces (TV, mobile, admin) can render thumbnails without
         // needing to know the API origin.
         thumbnailUrl: v2.thumbnailUrl,
-        durationSecs: row.durationSecs,
+        // Apply a minimum 60 s floor to durationSecs.
+        //
+        // A durationSecs of 0 (YouTube videos where duration wasn't fetched, or
+        // uploads where ffprobe timed out) gives the item a 0 ms time slot in the
+        // cycle. The orchestrator then tries to advance past it every tick,
+        // producing a rapid skip storm and spending 100% of ticks on no-ops.
+        // 60 s is conservative enough to let real content load + be probed before
+        // the skip fires, while still avoiding multi-hour dead air if the fix
+        // never arrives. The correct fix is always to populate durationSecs via
+        // re-upload / re-transcode / metadata edit, but the floor prevents a 0
+        // from being a broadcast-stopper in the meantime.
+        durationSecs: row.durationSecs > 0 ? row.durationSecs : (() => {
+          logger.warn(
+            { itemId: row.id, title: row.title },
+            "[broadcast-v2] queue item has durationSecs=0 — applying 60 s floor to prevent skip storm. " +
+            "Fix: re-upload, re-transcode, or set duration via metadata edit.",
+          );
+          return 60;
+        })(),
         // Store the RESOLVED (absolute) URL so that projectItem()'s
         // isKnownBadUrl() check correctly matches entries written by
         // markBadUrl() (which also receives the resolved source URL).
@@ -881,17 +899,50 @@ class BroadcastOrchestrator extends EventEmitter {
           let cpOffsetMs = 0;
           for (let j = 0; j < cpIdx; j++) cpOffsetMs += this.items[j]!.durationSecs * 1000;
           const anchor = cpSavedAtMs ?? reloadNow;
-          this.cycleStartedAtMs = anchor - cpOffsetMs - this.queueCheckpoint.positionMs;
-          logger.info(
-            {
-              itemId: this.items[cpIdx]!.id,
-              positionMs: this.queueCheckpoint.positionMs,
-              anchor,
-              usedSavedAtMs: cpSavedAtMs !== null,
-            },
-            "[broadcast-v2] restored cycle position from checkpoint after restart",
-          );
+          // Staleness guard: if the checkpoint was saved more than one full cycle
+          // duration ago the position arithmetic would land in the wrong slot
+          // (or wrap around to a misleading anchor). Warn and use reloadNow so
+          // the broadcast starts from item 0 instead of from a stale offset.
+          const staleDurationMs = reloadNow - anchor;
+          const isStale = this.cycleDurationMs > 0 && staleDurationMs > this.cycleDurationMs;
+          if (isStale) {
+            logger.warn(
+              {
+                itemId: this.items[cpIdx]!.id,
+                positionMs: this.queueCheckpoint.positionMs,
+                anchor,
+                staleDurationMs: Math.round(staleDurationMs),
+                cycleDurationMs: Math.round(this.cycleDurationMs),
+              },
+              "[broadcast-v2] checkpoint is stale (older than full cycle duration) — starting fresh to avoid wrong slot",
+            );
+            this.cycleStartedAtMs = reloadNow;
+          } else {
+            this.cycleStartedAtMs = anchor - cpOffsetMs - this.queueCheckpoint.positionMs;
+            logger.info(
+              {
+                itemId: this.items[cpIdx]!.id,
+                positionMs: this.queueCheckpoint.positionMs,
+                anchor,
+                usedSavedAtMs: cpSavedAtMs !== null,
+                staleDurationMs: Math.round(staleDurationMs),
+              },
+              "[broadcast-v2] restored cycle position from checkpoint after restart",
+            );
+          }
         } else {
+          // The checkpointed item is no longer in the active queue (was removed,
+          // deactivated, or replaced since the checkpoint was saved). Starting
+          // from now is the correct fallback — the queue has changed and a
+          // position relative to a missing item would corrupt the cycle anchor.
+          logger.warn(
+            {
+              checkpointItemId: this.queueCheckpoint.itemId,
+              itemCount: this.items.length,
+              cpSavedAtMs,
+            },
+            "[broadcast-v2] checkpoint item not found in active queue (item removed/deactivated since last save) — starting fresh",
+          );
           this.cycleStartedAtMs = reloadNow;
         }
       } else {
@@ -1402,6 +1453,22 @@ class BroadcastOrchestrator extends EventEmitter {
         const now = Date.now();
         if (this.allBlockedSinceMs === null) {
           this.allBlockedSinceMs = now;
+          // First tick where every source URL is blocked — emit a structured
+          // warning so operators and monitoring see the exact moment the queue
+          // becomes non-playable. The TTL recovery fires after BAD_URL_TTL_MS
+          // but an operator can clear blocks immediately from Stream Health.
+          logger.warn(
+            {
+              channel: this.channelId,
+              itemCount: this.items.length,
+              badUrlTtlMs: BAD_URL_TTL_MS,
+            },
+            "[broadcast-v2] ALL queue source URLs are blocked — broadcast will be off-air until TTL expires or operator clears blocks via Stream Health",
+          );
+          void this.bump("all_sources_blocked", {
+            channel: this.channelId,
+            itemCount: this.items.length,
+          });
         } else if (now - this.allBlockedSinceMs >= BAD_URL_TTL_MS) {
           this.allBlockedSinceMs = null;
           logger.info(

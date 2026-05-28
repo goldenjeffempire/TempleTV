@@ -65,6 +65,13 @@ const SCANNER_BAD_URL_THRESHOLD = 3;
 /**
  * Probe a non-HLS URL for HTTP reachability using HEAD + Range.
  * 200 = full, 206 = partial OK, 416 = range not satisfiable but file exists.
+ *
+ * GET fallback: some CDNs and object-storage configs block HEAD while allowing
+ * GET (returning 405 Method Not Allowed for HEAD). When the server returns 405
+ * we fall back to a byte-range GET (bytes=0-1023) so one-way HEAD blocks don't
+ * permanently mark valid sources as unreachable.
+ * The response body is discarded immediately (getRes.body?.cancel()) to avoid
+ * holding the connection open while only reading the headers.
  */
 async function probeUrl(url: string): Promise<{ ok: boolean; status: number | null; reason?: string }> {
   const ac = new AbortController();
@@ -76,6 +83,28 @@ async function probeUrl(url: string): Promise<{ ok: boolean; status: number | nu
       headers: { Range: "bytes=0-0" },
     });
     clearTimeout(t);
+
+    if (res.status === 405) {
+      // HEAD not supported — fall back to a small GET to confirm the URL is live.
+      const getAc = new AbortController();
+      const getT = setTimeout(() => getAc.abort(), PROBE_TIMEOUT_MS);
+      try {
+        const getRes = await fetch(url, {
+          method: "GET",
+          signal: getAc.signal,
+          headers: { Range: "bytes=0-1023" },
+        });
+        clearTimeout(getT);
+        // Discard body immediately — we only need the status code.
+        await getRes.body?.cancel().catch(() => {});
+        const ok = getRes.status === 200 || getRes.status === 206 || getRes.status === 416;
+        return { ok, status: getRes.status, reason: ok ? undefined : `GET fallback: HTTP ${getRes.status}` };
+      } catch {
+        clearTimeout(getT);
+        return { ok: false, status: 405, reason: "HEAD rejected (405) and GET fallback failed" };
+      }
+    }
+
     const ok = res.status === 200 || res.status === 206 || res.status === 416;
     return { ok, status: res.status };
   } catch {

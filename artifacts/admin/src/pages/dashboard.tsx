@@ -208,6 +208,44 @@ export default function Dashboard() {
         />
       </div>
 
+      {/* Stuck / dead-air action banner — shown when the broadcast engine needs attention */}
+      {(isEngineStuck || engineHealth?.deadAir) && (
+        <div className={`flex items-start gap-3 p-4 rounded-lg border text-sm ${
+          isEngineStuck
+            ? "border-red-500/40 bg-red-500/5"
+            : "border-amber-500/40 bg-amber-500/5"
+        }`}>
+          <AlertTriangle
+            size={16}
+            className={`${isEngineStuck ? "text-red-500" : "text-amber-500"} mt-0.5 flex-shrink-0`}
+          />
+          <div className="flex-1 min-w-0">
+            <p className={`font-semibold ${isEngineStuck ? "text-red-700 dark:text-red-400" : "text-amber-700 dark:text-amber-400"}`}>
+              {isEngineStuck
+                ? "Broadcast engine stuck — action required"
+                : "Dead air — content in queue but not playing"}
+            </p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {isEngineStuck
+                ? `Engine has been running ${Math.round((engineHealth?.uptimeMs ?? 0) / 1000)}s without advancing past sequence 0. ${engineHealth?.itemCount ?? 0} item(s) in queue. Open Master Control and check for source errors.`
+                : `${engineHealth?.itemCount ?? 0} item(s) queued but nothing is on air. Sources may be blocked — check Stream Health.`}
+            </p>
+            <div className="flex flex-wrap gap-2 mt-2.5">
+              <Link href="/broadcast-v2">
+                <Button size="sm" variant={isEngineStuck ? "destructive" : "default"} className="h-7 text-xs gap-1.5">
+                  <Radio size={12} /> Open Master Control
+                </Button>
+              </Link>
+              <Link href="/stream-health">
+                <Button size="sm" variant="outline" className="h-7 text-xs gap-1.5">
+                  <Activity size={12} /> Stream Health
+                </Button>
+              </Link>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Live Status */}
         <Card className={isLive ? "border-red-500/40 bg-red-500/5" : ""}>

@@ -92,4 +92,5 @@ export type V2EventType =
   | "failover.engaged"
   | "failover.cleared"
   | "checkpoint.updated"
-  | "dead_air.detected";
+  | "dead_air.detected"
+  | "all_sources_blocked";

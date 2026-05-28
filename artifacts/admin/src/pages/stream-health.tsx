@@ -1,7 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, isTransientError } from "@/lib/api";
 import { useSSEEvent } from "@/contexts/sse-context";
-import { useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,6 +11,7 @@ import { Progress } from "@/components/ui/progress";
 import {
   Activity, Wifi, Server, CheckCircle2, AlertCircle, RefreshCw,
   Radio, Zap, Users, BarChart2, Clock, ShieldAlert, ShieldCheck,
+  Ban, RotateCcw, Shield, WifiOff,
 } from "lucide-react";
 
 interface NetworkStatus {
@@ -58,8 +58,37 @@ interface DiagnosticsAnalytics {
   lastEventAtMs: number | null;
 }
 
+interface ScanItemResult {
+  id: string;
+  title: string;
+  url: string | null;
+  kind: "hls" | "mp4" | "unknown";
+  reachable: boolean;
+  httpStatus: number | null;
+  consecutiveFailures: number;
+  lastCheckedAtMs: number;
+  lastFailedAtMs: number | null;
+}
+
+interface AutoSuspendedItem {
+  itemId: string;
+  title: string | null;
+  failCount: number;
+  suspendedAtMs: number;
+}
+
 interface DiagnosticsReport {
   analytics: DiagnosticsAnalytics | null;
+  autoSuspended: AutoSuspendedItem[];
+  mediaScan: {
+    lastScanAtMs: number | null;
+    scanDurationMs: number | null;
+    totalItems: number;
+    reachable: number;
+    unreachable: number;
+    scanning: boolean;
+    items: ScanItemResult[];
+  } | null;
 }
 
 function StatusDot({ ok, warn }: { ok: boolean; warn?: boolean }) {
@@ -145,10 +174,23 @@ export default function StreamHealthPage() {
 
   const allOk = allDepsOk && (engineHealth ? isEngineHealthy : true);
 
+  const clearBadUrlsMutation = useMutation({
+    mutationFn: () =>
+      api.post<{ ok: boolean }>("/broadcast-v2/clear-bad-urls", {
+        idempotencyKey: crypto.randomUUID(),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+    },
+  });
+
   const analytics = diagnostics?.analytics;
   const stallCount = analytics?.eventCounts?.["stall"] ?? 0;
   const skipCount = analytics?.eventCounts?.["skip"] ?? 0;
   const recoveryCount = analytics?.eventCounts?.["recovery"] ?? 0;
+  const autoSuspended = diagnostics?.autoSuspended ?? [];
+  const mediaScan = diagnostics?.mediaScan ?? null;
 
   const elapsedPct = engineHealth?.currentDurationSecs && engineHealth?.currentElapsedSecs
     ? Math.min(100, Math.round((engineHealth.currentElapsedSecs / engineHealth.currentDurationSecs) * 100))
@@ -456,6 +498,136 @@ export default function StreamHealthPage() {
                   <StatusRow label="Players" value={networkStatus.playerStatus} ok={networkStatus.playerStatus === "ok"} />
                 </div>
               )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Source Circuit Breaker — suspended items + clear button */}
+        <Card className={`md:col-span-2 ${autoSuspended.length > 0 ? "border-amber-500/40" : ""}`}>
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <Shield size={15} /> Source Circuit Breaker
+              </CardTitle>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs gap-1.5"
+                disabled={clearBadUrlsMutation.isPending}
+                onClick={() => clearBadUrlsMutation.mutate()}
+              >
+                {clearBadUrlsMutation.isPending
+                  ? <RefreshCw size={11} className="animate-spin" />
+                  : <RotateCcw size={11} />}
+                Clear All Blocks
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {autoSuspended.length === 0 ? (
+              <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground">
+                <ShieldCheck size={15} className="text-green-500" />
+                No items currently suspended — all sources in active rotation.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1.5 pb-1">
+                  <Ban size={12} />
+                  {autoSuspended.length} item{autoSuspended.length !== 1 ? "s" : ""} temporarily suspended due to repeated source failures — auto-recover after 5 min.
+                </p>
+                <div className="divide-y rounded-md border border-amber-200 dark:border-amber-900/40">
+                  {autoSuspended.slice(-6).reverse().map((item) => (
+                    <div key={item.itemId} className="flex items-center justify-between px-3 py-2 gap-2">
+                      <span className="text-sm truncate min-w-0 flex-1">{item.title ?? item.itemId}</span>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <span className="text-xs text-muted-foreground tabular-nums">{item.failCount}× failed</span>
+                        <Badge variant="destructive" className="text-[10px]">{formatAgo(item.suspendedAtMs)}</Badge>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {clearBadUrlsMutation.isSuccess && (
+              <div className="mt-2 text-xs text-green-600 dark:text-green-400 flex items-center gap-1.5">
+                <ShieldCheck size={12} /> All URL blocks cleared — orchestrator reloaded.
+              </div>
+            )}
+            {clearBadUrlsMutation.isError && (
+              <div className="mt-2 text-xs text-red-600 dark:text-red-400">
+                Failed to clear blocks — {(clearBadUrlsMutation.error as Error).message}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Media Integrity Scanner results */}
+        {mediaScan && (
+          <Card className="md:col-span-2">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <WifiOff size={15} /> Media Integrity Scanner
+                </CardTitle>
+                {mediaScan.scanning && (
+                  <Badge variant="secondary" className="text-[10px] gap-1 flex items-center">
+                    <RefreshCw size={10} className="animate-spin" /> Scanning…
+                  </Badge>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-3 gap-3 mb-4">
+                <div className="rounded-lg bg-muted/40 p-3">
+                  <p className="text-xs text-muted-foreground mb-1">Total sources</p>
+                  <p className="text-xl font-bold tabular-nums">{mediaScan.totalItems}</p>
+                </div>
+                <div className="rounded-lg bg-green-500/10 p-3">
+                  <p className="text-xs text-muted-foreground mb-1">Reachable</p>
+                  <p className="text-xl font-bold tabular-nums text-green-600 dark:text-green-400">{mediaScan.reachable}</p>
+                </div>
+                <div className={`rounded-lg p-3 ${mediaScan.unreachable > 0 ? "bg-red-500/10" : "bg-muted/40"}`}>
+                  <p className="text-xs text-muted-foreground mb-1">Unreachable</p>
+                  <p className={`text-xl font-bold tabular-nums ${mediaScan.unreachable > 0 ? "text-red-600 dark:text-red-400" : ""}`}>
+                    {mediaScan.unreachable}
+                  </p>
+                </div>
+              </div>
+              {mediaScan.lastScanAtMs && (
+                <p className="text-xs text-muted-foreground mb-3">
+                  Last scan: {formatAgo(mediaScan.lastScanAtMs)}
+                  {mediaScan.scanDurationMs != null && ` · took ${Math.round(mediaScan.scanDurationMs / 1000)}s`}
+                </p>
+              )}
+              {mediaScan.items.filter(i => !i.reachable).length > 0 ? (
+                <div className="space-y-1.5">
+                  <p className="text-xs font-medium text-red-600 dark:text-red-400 flex items-center gap-1.5">
+                    <AlertCircle size={12} /> Unreachable sources
+                  </p>
+                  <div className="divide-y rounded-md border border-red-200 dark:border-red-900/40">
+                    {mediaScan.items.filter(i => !i.reachable).slice(0, 6).map(item => (
+                      <div key={item.id} className="flex items-start gap-2.5 px-3 py-2">
+                        <WifiOff size={12} className="text-red-500 mt-0.5 flex-shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-medium truncate">{item.title}</p>
+                          {item.url && <p className="text-[10px] text-muted-foreground truncate">{item.url}</p>}
+                        </div>
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          <Badge variant="outline" className="text-[10px] capitalize">{item.kind}</Badge>
+                          {item.httpStatus != null && (
+                            <Badge variant="destructive" className="text-[10px]">HTTP {item.httpStatus}</Badge>
+                          )}
+                          <span className="text-[10px] text-muted-foreground whitespace-nowrap">{item.consecutiveFailures}× fail</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : mediaScan.totalItems > 0 ? (
+                <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
+                  <ShieldCheck size={15} /> All {mediaScan.totalItems} sources are currently reachable.
+                </div>
+              ) : null}
             </CardContent>
           </Card>
         )}

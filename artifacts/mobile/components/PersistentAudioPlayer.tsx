@@ -83,6 +83,10 @@ export function PersistentAudioPlayer() {
         thumbnailUrl={currentSermon.thumbnailUrl}
         playerHeight={Platform.OS === "web" ? 180 : 1}
         onEnd={advanceToNext}
+        // If this background iframe fails to load (network error, CSP block,
+        // video removed, YouTube CDN unreachable) advance to the next sermon
+        // rather than silently stalling on a track the user can't interact with.
+        onError={advanceToNext}
       />
     </View>
   );
