@@ -31,6 +31,7 @@ import {
   UploadCloud, X, FileVideo, Layers, Lock, LockOpen, Youtube, HardDrive,
   ArrowUpDown, SlidersHorizontal, Zap, Clapperboard, Globe, AlertTriangle,
 } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 import { uploadQueue, useUploadQueue, formatBytes, titleFromFilename } from "@/lib/upload-queue";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -189,6 +190,11 @@ export default function VideosPage() {
 
   // Drag-over state for the page-level drop zone
   const [pageDragOver, setPageDragOver] = useState(false);
+
+  // Bulk selection state — cleared on page/filter change so stale IDs don't
+  // linger when the visible video list changes.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
 
   // Batch upload dialog state
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -358,6 +364,50 @@ export default function VideosPage() {
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Batch retry failed"),
   });
 
+  // Bulk transcode — fires individual transcode requests for each selected ID
+  // in parallel. Failures are silent per-item so a single bad video doesn't
+  // block the rest; the final toast reports the success count.
+  const bulkTranscodeMutation = useMutation({
+    mutationFn: async (ids: string[]) => {
+      const results = await Promise.all(
+        ids.map((id) =>
+          api.post<{ jobId: string; reused: boolean }>(`/admin/videos/${id}/transcode`)
+            .then(() => true)
+            .catch(() => false)
+        )
+      );
+      return results.filter(Boolean).length;
+    },
+    onSuccess: (count, ids) => {
+      const failed = ids.length - count;
+      if (count > 0) toast.success(`Queued ${count} video${count !== 1 ? "s" : ""} for HLS transcoding`);
+      if (failed > 0) toast.warning(`${failed} video${failed !== 1 ? "s" : ""} could not be queued (already encoding or YouTube source)`);
+      setSelectedIds(new Set());
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+    },
+    onError: () => toast.error("Bulk transcode request failed"),
+  });
+
+  // Bulk delete — runs sequentially to avoid hammering the DB with concurrent
+  // DELETEs on a large selection. Reports success count on completion.
+  const bulkDeleteMutation = useMutation({
+    mutationFn: async (ids: string[]) => {
+      let count = 0;
+      for (const id of ids) {
+        try { await api.delete(`/admin/videos/${id}`); count++; } catch { /* skip — already deleted or foreign key */ }
+      }
+      return count;
+    },
+    onSuccess: (count) => {
+      toast.success(`Deleted ${count} video${count !== 1 ? "s" : ""}`);
+      setSelectedIds(new Set());
+      setBulkDeleteOpen(false);
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+    },
+    onError: () => toast.error("Bulk delete failed"),
+  });
+
   const openEdit = (v: AdminVideo) => {
     const initial: EditForm = {
       title: v.title,
@@ -374,11 +424,39 @@ export default function VideosPage() {
     setEditVideo(v);
   };
 
-  const handleSearch = () => { setSearch(searchInput); setPage(1); };
+  // ── Bulk selection helpers ─────────────────────────────────────────────────
+
+  const toggleSelection = (id: string) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); } else { next.add(id); }
+      return next;
+    });
+
+  const currentPageIds = data?.videos?.map((v) => v.id) ?? [];
+  const allOnPageSelected =
+    currentPageIds.length > 0 && currentPageIds.every((id) => selectedIds.has(id));
+  const someOnPageSelected = currentPageIds.some((id) => selectedIds.has(id));
+
+  const toggleSelectPage = () => {
+    if (allOnPageSelected) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        currentPageIds.forEach((id) => next.delete(id));
+        return next;
+      });
+    } else {
+      setSelectedIds((prev) => new Set([...prev, ...currentPageIds]));
+    }
+  };
+
+  // Auto-clear selection when filters or page change so stale IDs don't linger.
+  const handleSearch = () => { setSearch(searchInput); setPage(1); setSelectedIds(new Set()); };
 
   const resetFilters = () => {
     setSearch(""); setSearchInput(""); setStatusFilter("all");
     setSourceFilter("all"); setCategoryFilter("all"); setSortOrder("newest"); setPage(1);
+    setSelectedIds(new Set());
   };
   const hasActiveFilters = search || statusFilter !== "all" || sourceFilter !== "all" || categoryFilter !== "all" || sortOrder !== "newest";
 
@@ -663,6 +741,52 @@ export default function VideosPage() {
         );
       })()}
 
+      {/* Bulk-action toolbar — appears when ≥1 video is selected */}
+      {selectedIds.size > 0 && (
+        <div className="flex items-center gap-3 rounded-lg border border-primary/20 bg-primary/5 px-4 py-2.5">
+          <Checkbox
+            id="select-all-page"
+            checked={allOnPageSelected ? true : someOnPageSelected ? "indeterminate" : false}
+            onCheckedChange={toggleSelectPage}
+            aria-label="Toggle select all on this page"
+          />
+          <span className="text-sm font-medium">
+            {selectedIds.size} video{selectedIds.size !== 1 ? "s" : ""} selected
+          </span>
+          <div className="flex items-center gap-2 ml-auto">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={bulkTranscodeMutation.isPending}
+              onClick={() => bulkTranscodeMutation.mutate([...selectedIds])}
+              className="h-7 px-2.5 text-xs gap-1"
+              title="Queue all selected local videos for HLS transcoding. YouTube videos are skipped."
+            >
+              <Zap size={11} className="text-amber-500" />
+              {bulkTranscodeMutation.isPending ? "Queuing…" : "Transcode selected"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={bulkDeleteMutation.isPending}
+              onClick={() => setBulkDeleteOpen(true)}
+              className="h-7 px-2.5 text-xs gap-1 text-red-600 border-red-300 hover:bg-red-50 dark:text-red-400 dark:border-red-800 dark:hover:bg-red-950/20"
+            >
+              <Trash2 size={11} />
+              {bulkDeleteMutation.isPending ? "Deleting…" : "Delete selected"}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setSelectedIds(new Set())}
+              className="h-7 px-2 text-xs text-muted-foreground"
+            >
+              Clear
+            </Button>
+          </div>
+        </div>
+      )}
+
       {/* Video Table */}
       <Card>
         <CardContent className="p-0">
@@ -694,8 +818,34 @@ export default function VideosPage() {
             </div>
           ) : (
             <div className="divide-y">
+              {/* Select-all row header — shows only while data is present */}
+              {(data?.videos?.length ?? 0) > 0 && (
+                <div className="flex items-center gap-3 px-4 py-2 bg-muted/20 border-b">
+                  <Checkbox
+                    checked={allOnPageSelected ? true : someOnPageSelected ? "indeterminate" : false}
+                    onCheckedChange={toggleSelectPage}
+                    aria-label="Select all videos on this page"
+                    className="shrink-0"
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    {allOnPageSelected
+                      ? `All ${currentPageIds.length} on this page selected`
+                      : someOnPageSelected
+                      ? `${selectedIds.size} selected`
+                      : "Select all on this page"}
+                  </span>
+                </div>
+              )}
               {data!.videos.map((v) => (
-                <div key={v.id} className="flex items-center gap-3 px-4 py-3 hover:bg-muted/30 transition-colors group">
+                <div key={v.id} className={`flex items-center gap-3 px-4 py-3 hover:bg-muted/30 transition-colors group ${selectedIds.has(v.id) ? "bg-primary/5" : ""}`}>
+                  {/* Row checkbox */}
+                  <Checkbox
+                    checked={selectedIds.has(v.id)}
+                    onCheckedChange={() => toggleSelection(v.id)}
+                    aria-label={`Select ${v.title}`}
+                    className="shrink-0"
+                    onClick={(e) => e.stopPropagation()}
+                  />
                   {/* Thumbnail */}
                   <div className="flex-shrink-0 w-20 h-12 rounded overflow-hidden bg-black">
                     {v.thumbnailUrl ? (
@@ -1310,6 +1460,48 @@ export default function VideosPage() {
           })()}
         </DialogContent>
       </Dialog>
+
+      {/* ── Bulk Delete Confirm Dialog ────────────────────────────────────── */}
+      <AlertDialog
+        open={bulkDeleteOpen}
+        onOpenChange={(o) => {
+          if (!o && bulkDeleteMutation.isPending) return;
+          if (!o) {
+            setBulkDeleteOpen(false);
+            bulkDeleteMutation.reset();
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {selectedIds.size} video{selectedIds.size !== 1 ? "s" : ""}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently remove {selectedIds.size} video{selectedIds.size !== 1 ? "s" : ""} from the library.
+              Stored video files will also be deleted for uploaded (non-YouTube) videos.
+              {" "}This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {bulkDeleteMutation.isError && (
+            <div className="rounded-md border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/20 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+              Bulk delete encountered errors — some videos may not have been deleted.
+            </div>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={bulkDeleteMutation.isPending}>Cancel</AlertDialogCancel>
+            <Button
+              className="bg-red-600 hover:bg-red-700 text-white"
+              disabled={bulkDeleteMutation.isPending}
+              onClick={() => {
+                if (!bulkDeleteMutation.isPending) {
+                  bulkDeleteMutation.mutate([...selectedIds]);
+                }
+              }}
+            >
+              {bulkDeleteMutation.isPending ? "Deleting…" : `Delete ${selectedIds.size} video${selectedIds.size !== 1 ? "s" : ""}`}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* ── Delete Confirm Dialog ──────────────────────────────────────────── */}
       <AlertDialog

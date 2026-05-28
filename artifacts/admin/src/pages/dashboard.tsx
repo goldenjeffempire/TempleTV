@@ -64,7 +64,15 @@ interface EngineHealthSummary {
   hasCurrent: boolean;
   mode: string;
   itemCount: number;
+  currentTitle: string | null;
+  nextTitle: string | null;
+  currentElapsedSecs: number | null;
+  currentDurationSecs: number | null;
+  offAirReason: "empty" | "all_blocked" | null;
+  deadAir: boolean;
+  stuck: boolean;
   boot: { busBridgeInstalled: boolean; startAttempts: number; lastStartError: string | null };
+  reload: { lastReloadAtMs: number | null; lastReloadOk: boolean; attempts: number; successes: number };
 }
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -225,30 +233,80 @@ export default function Dashboard() {
             )}
             {/* v2 broadcast engine status */}
             {engineHealth != null && (
-              <div className="flex items-center gap-2 rounded-md border px-2.5 py-1.5">
-                <div className={`w-2 h-2 rounded-full shrink-0 ${engineHealth.hasCurrent ? "bg-emerald-500 animate-pulse" : "bg-muted-foreground/30"}`} />
-                <div className="min-w-0 flex-1">
-                  <span className="text-xs font-medium">
-                    {engineHealth.hasCurrent ? "v2 broadcasting" : "v2 off air"}
-                  </span>
-                  {engineHealth.itemCount > 0 && (
-                    <span className="text-xs text-muted-foreground ml-1.5">
-                      ({engineHealth.itemCount} item{engineHealth.itemCount !== 1 ? "s" : ""})
+              <div className={`rounded-md border px-2.5 py-2 space-y-1.5 ${engineHealth.deadAir ? "border-amber-300/60 bg-amber-50/60 dark:border-amber-700/50 dark:bg-amber-950/20" : engineHealth.stuck ? "border-red-300/60 bg-red-50/60 dark:border-red-700/50 dark:bg-red-950/20" : ""}`}>
+                <div className="flex items-center gap-2">
+                  <div className={`w-2 h-2 rounded-full shrink-0 ${engineHealth.hasCurrent ? "bg-emerald-500 animate-pulse" : engineHealth.deadAir ? "bg-amber-500" : "bg-muted-foreground/30"}`} />
+                  <div className="min-w-0 flex-1">
+                    <span className={`text-xs font-medium ${engineHealth.deadAir ? "text-amber-700 dark:text-amber-300" : ""}`}>
+                      {engineHealth.stuck
+                        ? "Engine stuck — check Master Control"
+                        : engineHealth.deadAir
+                        ? "Dead air — content in queue"
+                        : engineHealth.hasCurrent
+                        ? "Broadcasting"
+                        : engineHealth.offAirReason === "empty"
+                        ? "Queue empty"
+                        : "Off air"}
                     </span>
-                  )}
+                    {engineHealth.itemCount > 0 && (
+                      <span className="text-xs text-muted-foreground ml-1.5">
+                        ({engineHealth.itemCount} item{engineHealth.itemCount !== 1 ? "s" : ""})
+                      </span>
+                    )}
+                  </div>
+                  <Link href="/broadcast-v2">
+                    <button className="text-[10px] text-primary hover:underline shrink-0">
+                      Control →
+                    </button>
+                  </Link>
                 </div>
-                <Link href="/broadcast-v2">
-                  <button className="text-[10px] text-primary hover:underline shrink-0">
-                    Control →
-                  </button>
-                </Link>
+                {/* Now playing title */}
+                {engineHealth.hasCurrent && engineHealth.currentTitle && (
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="w-2 h-2 shrink-0" />
+                    <p className="text-xs text-muted-foreground truncate min-w-0 flex-1" title={engineHealth.currentTitle}>
+                      {engineHealth.currentTitle}
+                    </p>
+                    {engineHealth.currentElapsedSecs !== null && engineHealth.currentDurationSecs !== null && (
+                      <span className="text-[10px] tabular-nums text-muted-foreground/60 shrink-0">
+                        {Math.floor(engineHealth.currentElapsedSecs / 60)}:{String(engineHealth.currentElapsedSecs % 60).padStart(2, "0")}
+                        {" / "}
+                        {Math.floor(engineHealth.currentDurationSecs / 60)}:{String(engineHealth.currentDurationSecs % 60).padStart(2, "0")}
+                      </span>
+                    )}
+                  </div>
+                )}
+                {/* Next up preview */}
+                {engineHealth.hasCurrent && engineHealth.nextTitle && (
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="w-2 h-2 shrink-0" />
+                    <p className="text-[10px] text-muted-foreground/60 truncate min-w-0" title={`Next: ${engineHealth.nextTitle}`}>
+                      Next: {engineHealth.nextTitle}
+                    </p>
+                  </div>
+                )}
               </div>
             )}
             <div className="text-2xl font-bold">{viewerCount.toLocaleString()}</div>
             <p className="text-xs text-muted-foreground">Active viewers</p>
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              {dbOk ? <CheckCircle2 size={12} className="text-green-500" /> : <XCircle size={12} className="text-red-500" />}
-              Database {dbOk ? "healthy" : "unreachable"}
+            {/* System dependencies health row */}
+            <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground pt-0.5">
+              <span className="flex items-center gap-1">
+                {dbOk ? <CheckCircle2 size={11} className="text-green-500" /> : <XCircle size={11} className="text-red-500" />}
+                Database
+              </span>
+              {readyz?.dependencies?.cache && (
+                <span className="flex items-center gap-1">
+                  {readyz.dependencies.cache === "ok" ? <CheckCircle2 size={11} className="text-green-500" /> : <Activity size={11} className="text-amber-500" />}
+                  Cache
+                </span>
+              )}
+              {readyz?.dependencies?.storage && (
+                <span className="flex items-center gap-1">
+                  {readyz.dependencies.storage === "ok" ? <CheckCircle2 size={11} className="text-green-500" /> : <XCircle size={11} className="text-red-500" />}
+                  Storage
+                </span>
+              )}
             </div>
           </CardContent>
         </Card>

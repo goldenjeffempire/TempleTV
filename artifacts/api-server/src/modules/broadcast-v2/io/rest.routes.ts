@@ -101,6 +101,7 @@ export async function restRoutes(app: FastifyInstance) {
       itemCount > 0 &&
       boot.busBridgeInstalled === true &&
       boot.started === true;
+    const allBlocked = broadcastOrchestrator.getAllBlockedInfo();
     return {
       ok: !stuck,
       stuck,
@@ -110,6 +111,18 @@ export async function restRoutes(app: FastifyInstance) {
       hasCurrent: snap.current !== null,
       hasOverride: snap.override !== null,
       failoverActive: snap.failover.active,
+      /** Current item title — null when off air or in override mode. */
+      currentTitle: snap.current?.title ?? null,
+      /** Next item title — null when queue has ≤1 active item. */
+      nextTitle: snap.next?.title ?? null,
+      /** Current item duration in seconds — useful for monitoring dashboards. */
+      currentDurationSecs: snap.current?.durationSecs ?? null,
+      /** Seconds elapsed on the current item (wall-clock estimate). */
+      currentElapsedSecs: snap.current
+        ? Math.max(0, Math.floor((Date.now() - snap.current.startsAtMs) / 1000))
+        : null,
+      /** Off-air reason when nothing is playing and mode is not override. */
+      offAirReason: snap.offAirReason ?? null,
       itemCount,
       uptimeMs,
       serverTimeMs: Date.now(),
@@ -117,7 +130,9 @@ export async function restRoutes(app: FastifyInstance) {
       reload,
       prodSync: sync,
       drift: broadcastOrchestrator.getDriftInfo(),
-      allBlocked: broadcastOrchestrator.getAllBlockedInfo(),
+      allBlocked,
+      /** True when queue has items but nothing is on air and sources are not all blocked. */
+      deadAir: !stuck && !allBlocked.allSourcesBlocked && itemCount > 0 && snap.current === null && snap.mode !== "override",
       redis: {
         connected: broadcastFanout.isConnected(),
         role: broadcastFanout.getRole(),

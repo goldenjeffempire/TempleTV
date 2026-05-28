@@ -1068,7 +1068,7 @@ export function V2PlayerContainer({
   // Returns { main, sub, showSpinner } or null (no overlay).
   // Phases give users progressively more honest context as time passes —
   // "Preparing Video" (phase 0) → "Buffering…" (phase 1) → "Please wait…" (phase 2+).
-  interface OverlayContent { main: string; sub: string; showSpinner: boolean }
+  interface OverlayContent { main: string; sub: string; showSpinner: boolean; upNext?: string }
   const overlayContent = useMemo<OverlayContent | null>(() => {
     const p = loadingPhase;
 
@@ -1161,10 +1161,12 @@ export function V2PlayerContainer({
     }
     // Remaining states: genuinely off-air when no content.
     if (server && !server.current && !server.override) {
+      const nextTitle = server.next?.title;
       return {
         main: "Temple TV is Off-Air",
         sub: "We'll be back shortly — stay tuned",
         showSpinner: false,
+        upNext: nextTitle && nextTitle.length > 0 ? nextTitle : undefined,
       };
     }
     return null;
@@ -1296,6 +1298,14 @@ export function V2PlayerContainer({
           {overlayContent.sub ? (
             <Text style={styles.overlaySubText}>{overlayContent.sub}</Text>
           ) : null}
+          {overlayContent.upNext ? (
+            <View style={styles.upNextChip}>
+              <Text style={styles.upNextLabel}>UP NEXT</Text>
+              <Text style={styles.upNextTitle} numberOfLines={1}>
+                {overlayContent.upNext}
+              </Text>
+            </View>
+          ) : null}
         </View>
       )}
     </View>
@@ -1392,5 +1402,32 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginHorizontal: 24,
     marginTop: 6,
+  },
+  upNextChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 20,
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    backgroundColor: "rgba(255,255,255,0.10)",
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
+    maxWidth: "80%",
+  },
+  upNextLabel: {
+    color: "rgba(255,255,255,0.45)",
+    fontSize: 9,
+    fontWeight: "700",
+    letterSpacing: 1.2,
+    textTransform: "uppercase",
+    flexShrink: 0,
+  },
+  upNextTitle: {
+    color: "rgba(255,255,255,0.75)",
+    fontSize: 12,
+    fontWeight: "500",
+    flexShrink: 1,
   },
 });

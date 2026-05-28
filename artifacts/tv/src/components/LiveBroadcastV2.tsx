@@ -685,7 +685,7 @@ export function LiveBroadcastV2({
             pointerEvents: "none",
           }}
         >
-          {/* Live badge */}
+          {/* Now Playing label */}
           <div style={{
             display: "flex",
             alignItems: "center",
@@ -718,6 +718,44 @@ export function LiveBroadcastV2({
           }}>
             {title}
           </p>
+          {/* Up Next chip — appears when the next item title is known */}
+          {server?.next?.title && (
+            <div style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "clamp(5px, 0.6vw, 8px)",
+              marginTop: "clamp(6px, 0.9vh, 12px)",
+              padding: "clamp(3px, 0.4vh, 5px) clamp(8px, 0.9vw, 12px)",
+              background: "rgba(255,255,255,0.09)",
+              border: "1px solid rgba(255,255,255,0.15)",
+              borderRadius: 999,
+              backdropFilter: "blur(6px)",
+              WebkitBackdropFilter: "blur(6px)",
+              width: "fit-content",
+              maxWidth: "100%",
+            }}>
+              <span style={{
+                fontSize: "clamp(8px, 0.7vw, 10px)",
+                fontWeight: 700,
+                letterSpacing: "0.12em",
+                color: "rgba(255,255,255,0.45)",
+                textTransform: "uppercase",
+                flexShrink: 0,
+              }}>
+                Up Next
+              </span>
+              <span style={{
+                fontSize: "clamp(10px, 0.9vw, 13px)",
+                fontWeight: 500,
+                color: "rgba(255,255,255,0.72)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}>
+                {server.next.title}
+              </span>
+            </div>
+          )}
         </div>
       )}
 

@@ -93,12 +93,28 @@ interface QueueSyncStatus {
 
 interface EngineHealth {
   ok: boolean;
+  stuck?: boolean;
   channelId: string;
   sequence: number;
   mode: string;
   hasCurrent: boolean;
   hasOverride: boolean;
   failoverActive: boolean;
+  /** Current item title — null when off air or override mode. */
+  currentTitle?: string | null;
+  /** Next item title — null when queue has ≤1 active item. */
+  nextTitle?: string | null;
+  /** Current item duration in seconds. */
+  currentDurationSecs?: number | null;
+  /** Seconds elapsed on the current item (server wall-clock estimate). */
+  currentElapsedSecs?: number | null;
+  /** Why broadcast is off air when not in override mode. */
+  offAirReason?: "empty" | "all_blocked" | null;
+  /**
+   * True when the queue has items but nothing is on air and sources are
+   * not all blocked — signals a dead-air condition requiring operator attention.
+   */
+  deadAir?: boolean;
   itemCount: number;
   uptimeMs: number;
   serverTimeMs: number;
@@ -643,6 +659,9 @@ export default function BroadcastV2Page() {
   const [processingAlertDismissed, setProcessingAlertDismissed] = useState(false);
   // Dismissible circuit-open banner. Auto-reset when all workers are healthy.
   const [circuitOpenDismissed, setCircuitOpenDismissed] = useState(false);
+  // Dismissible dead-air banner. Auto-reset when a current item is found so
+  // the banner reappears if the broadcast drops to dead air again.
+  const [deadAirDismissed, setDeadAirDismissed] = useState(false);
 
   // Ticks every second so the on-air progress bar stays live between SSE frames.
   const [liveNow, setLiveNow] = useState(() => Date.now());
@@ -945,6 +964,14 @@ export default function BroadcastV2Page() {
     if (!isStuck) setStuckAlertDismissed(false);
   }, [isStuck]);
 
+  // Dead air: queue has items but nothing is broadcasting and sources aren't
+  // all blocked — a subtle condition that the other banners don't cover.
+  // Only surface after a brief warmup window so we don't flash on cold boot.
+  const isDeadAir = engineHealth?.deadAir === true && !isStuck;
+  useEffect(() => {
+    if (!isDeadAir) setDeadAirDismissed(false);
+  }, [isDeadAir]);
+
   // Drift alert: cycle anchor is more than the threshold ahead/behind the
   // checkpoint-projected position. Means viewers are watching the wrong segment.
   const isDriftAlerted = engineHealth?.drift?.driftAlerted === true;
@@ -1145,6 +1172,16 @@ export default function BroadcastV2Page() {
           >
             <Loader2 className="h-3 w-3 animate-spin" />
             {processingCount} optimising
+          </Badge>
+        )}
+        {/* Dead-air badge — queue has items but nothing is on air */}
+        {isDeadAir && (
+          <Badge
+            variant="outline"
+            className="gap-1 animate-pulse border-orange-400/70 bg-orange-50 text-orange-800 dark:bg-orange-900/30 dark:text-orange-200"
+          >
+            <Radio className="h-3 w-3" />
+            Dead air — {engineHealth?.itemCount} item{engineHealth?.itemCount !== 1 ? "s" : ""} queued
           </Badge>
         )}
         {/* Stuck orchestrator alert badge */}
@@ -1438,6 +1475,55 @@ export default function BroadcastV2Page() {
             its expected real-time position (threshold: {engineHealth.drift.driftThresholdMs / 1000}s).
             Viewers may be watching a different segment than intended.
             Use <strong>Skip</strong> or <strong>Reload from queue</strong> to resync the broadcast.
+          </div>
+        </div>
+      )}
+
+      {/* Dead-air alert strip — queue has content but nothing is broadcasting.
+          This condition is distinct from "stuck" (seq=0) and "all-blocked"
+          (every URL banned). It fires when the engine is healthy but no item
+          is selected as current — typically after all items were skipped or
+          the cycle position landed past the last item in an undersized queue. */}
+      {isDeadAir && !deadAirDismissed && (
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-md border border-orange-300/60 bg-orange-50 px-4 py-3 text-sm text-orange-900 dark:border-orange-700/60 dark:bg-orange-950/30 dark:text-orange-200"
+        >
+          <Radio className="mt-0.5 h-4 w-4 shrink-0 text-orange-500" />
+          <div className="flex-1">
+            <strong>Broadcast is dead air.</strong>{" "}
+            The queue has{" "}
+            {engineHealth?.itemCount === 1
+              ? "1 active item"
+              : `${engineHealth?.itemCount ?? 0} active items`}
+            {" "}but no item is currently on air — sources are reachable, the engine
+            is not stuck, and no failover is active. Use{" "}
+            <strong>Reload from queue</strong> to restart the broadcast cycle, or{" "}
+            <strong>Skip</strong> to advance to the next item.
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!!busy}
+              onClick={() => void adminPost("/broadcast-v2/reload")}
+              className="h-7 px-2 text-xs border-orange-400/70 text-orange-800 hover:bg-orange-100 dark:text-orange-200 dark:border-orange-600/70 dark:hover:bg-orange-900/30"
+            >
+              {busy === "/broadcast-v2/reload" ? (
+                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+              ) : (
+                <RotateCw className="mr-1 h-3 w-3" />
+              )}
+              Reload
+            </Button>
+            <button
+              type="button"
+              aria-label="Dismiss dead-air alert"
+              onClick={() => setDeadAirDismissed(true)}
+              className="shrink-0 rounded p-0.5 hover:bg-orange-200/60 dark:hover:bg-orange-800/40"
+            >
+              <X className="h-4 w-4" />
+            </button>
           </div>
         </div>
       )}
