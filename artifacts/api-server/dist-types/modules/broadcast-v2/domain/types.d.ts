@@ -117,4 +117,4 @@ export type V2ClientFrame = {
 } | {
     type: "pong";
 };
-export type V2EventType = "queue.changed" | "item.advanced" | "item.skipped" | "override.started" | "override.ended" | "failover.engaged" | "failover.cleared" | "checkpoint.updated";
+export type V2EventType = "queue.changed" | "item.advanced" | "item.skipped" | "override.started" | "override.ended" | "failover.engaged" | "failover.cleared" | "checkpoint.updated" | "dead_air.detected" | "all_sources_blocked";

@@ -152,13 +152,14 @@ export default function StreamHealthPage() {
   const { data: diagnostics } = useQuery({
     queryKey: ["broadcast-v2-diagnostics-health"],
     queryFn: () => api.get<DiagnosticsReport>("/broadcast-v2/diagnostics"),
-    refetchInterval: 30_000,
-    staleTime: 25_000,
+    refetchInterval: 10_000,
+    staleTime: 8_000,
   });
 
   useSSEEvent("stream-health", () => { void qc.invalidateQueries({ queryKey: ["readyz"] }); });
   useSSEEvent("broadcast-queue-updated", () => {
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics-health"] });
   });
 
   const deps = readyz?.dependencies;

@@ -248,7 +248,7 @@ async function dispatchOne(c: Candidate): Promise<boolean> {
  * calls ffprobe itself and will update the duration on completion.
  */
 async function backfillPlaceholderDurations(): Promise<void> {
-  let rows: Array<{ queueItemId: string; videoId: string; objectPath: string; title: string }>;
+  let rows: Array<{ queueItemId: string; videoId: string; objectPath: string | null; title: string }>;
   try {
     rows = await db
       .select({

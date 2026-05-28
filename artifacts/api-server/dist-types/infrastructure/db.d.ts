@@ -36,6 +36,25 @@ export declare function closeDb(): Promise<void>;
  */
 export declare function ensureBroadcastV2Tables(): Promise<void>;
 /**
+ * Reset managed_videos rows stuck in transcodingStatus='processing'.
+ *
+ * 'processing' is the transient state set by runFaststart while it atomically
+ * replaces the stored blob.  runFaststart restores the prior status on a clean
+ * failure, but a mid-faststart server crash leaves the row permanently blocked:
+ * loadActive() excludes 'processing' items, so the broadcast queue slot is
+ * silently held but never aired.
+ *
+ * At startup we can safely reset any 'processing' row back to 'queued' (if it
+ * has a playable localVideoUrl) or 'none' (if not).  The object-storage blob is
+ * always consistent — runFaststart uses a multipart atomic swap so the key
+ * holds either the old un-optimised file or the fully written new file.
+ * faststartApplied is intentionally left unchanged; the value was false before
+ * the crash and the file may or may not be optimised.
+ *
+ * Called once at boot, non-blocking.
+ */
+export declare function resetStuckProcessingVideos(): Promise<void>;
+/**
  * Deactivate broadcast_queue rows that can never play in the v2 system.
  *
  * A row is "unresolvable" when it is not a YouTube item AND has no platform
@@ -66,6 +85,25 @@ export declare function ensureRuntimeIndexes(): Promise<void>;
  * IF NOT EXISTS …` here so production auto-heals without a manual migration.
  */
 export declare function ensureUserSchemaColumns(): Promise<void>;
+/**
+ * Periodic stale-data cleanup — removes expired/stale rows that accumulate
+ * over time in high-churn tables and would never be swept by application logic.
+ *
+ * Runs once at startup (deferred 30 s so boot completes first) and then
+ * every 6 hours. All DELETE statements are bounded, safe to re-run, and
+ * will not block normal traffic for more than a few milliseconds on a
+ * normally-sized installation.
+ *
+ * Tables swept:
+ *   refresh_tokens        — rows past expires_at (JWTs already rejected)
+ *   password_reset_tokens — rows past expires_at
+ *   device_link_codes     — rows past expires_at
+ *   viewer_sessions       — sessions with no heartbeat for >1 h and ended_at IS NULL
+ *   upload_sessions       — completed/failed sessions older than 30 days
+ *   rate_limit            — all rows (TRUNCATE; it's an in-process fallback table)
+ *   broadcast_event_log   — events older than 14 days (replay window is seconds)
+ */
+export declare function scheduleStaleDataCleanup(): void;
 /**
  * Wrap a DB call in bounded exponential-backoff retries for *transient*
  * errors only. Use sparingly — most code should let errors bubble up

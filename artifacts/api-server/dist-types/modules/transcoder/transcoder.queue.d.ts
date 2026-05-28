@@ -44,6 +44,12 @@ export declare function getJob(id: string): Promise<{
 }>;
 export declare function deleteJob(id: string): Promise<boolean>;
 export declare function clearJobsByStatus(status: "done" | "failed" | "cancelled" | "all"): Promise<number>;
+/**
+ * Re-arm ALL failed transcoding jobs whose source blob is still available.
+ * Returns the number of jobs reset to "queued".
+ * Safe to call concurrently — uses a single UPDATE statement.
+ */
+export declare function retryAllFailed(): Promise<number>;
 export declare function retryJob(id: string): Promise<boolean>;
 /**
  * Cancel a transcoding job that is in a cancellable state (queued or failed).

@@ -1,5 +1,6 @@
 import { useV2Broadcast } from "@workspace/player-core/react";
 import { PageHeader } from "@/components/shared/page-header";
+import { ErrorBoundary } from "@/components/shared/error-boundary";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -706,7 +707,7 @@ function SortableQueueItem({
  *  - listens for `broadcast-queue-updated` to auto-reload the v2 orchestrator
  *    so the queue snapshot always reflects DB mutations within ~1 frame.
  */
-export default function BroadcastV2Page() {
+function BroadcastV2PageInner() {
   const apiOrigin = apiBase().replace(/\/$/, "");
   const baseUrl = `${apiOrigin}/broadcast-v2`;
   // enableStallReport: false — operator console must never affect the broadcast
@@ -1266,14 +1267,31 @@ export default function BroadcastV2Page() {
         title="Master Control"
         description="Server-authoritative continuous broadcast — live preview, queue, and operator controls."
         actions={
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-1.5"
-            onClick={() => setShowChecklist(true)}
-          >
-            <ClipboardCheck size={13} /> Launch Checklist
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
+              disabled={!!busy}
+              onClick={() => adminPost("/broadcast-v2/reload")}
+              title="Re-enables all suspended items, clears blocked sources, and reloads the queue from the database."
+            >
+              {busy === "/broadcast-v2/reload" ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : (
+                <RotateCw size={13} />
+              )}
+              Restart Engine
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
+              onClick={() => setShowChecklist(true)}
+            >
+              <ClipboardCheck size={13} /> Launch Checklist
+            </Button>
+          </div>
         }
       />
 
@@ -2952,5 +2970,13 @@ function formatAgo(ms: number): string {
   if (diff < 60_000) return `${Math.round(diff / 1000)}s ago`;
   if (diff < 3_600_000) return `${Math.round(diff / 60_000)}m ago`;
   return `${Math.round(diff / 3_600_000)}h ago`;
+}
+
+export default function BroadcastV2Page() {
+  return (
+    <ErrorBoundary>
+      <BroadcastV2PageInner />
+    </ErrorBoundary>
+  );
 }
 

@@ -358,6 +358,42 @@ class BroadcastOrchestrator extends EventEmitter {
     // Hydrate always completes without throwing — worst case gives safe defaults.
     await this.hydrate();
 
+    // ── EMERGENCY_FILLER_URL startup diagnostic ────────────────────────────
+    // Without a filler URL, total queue exhaustion (every item unplayable or
+    // auto-suspended) produces dead air with no fallback content. This warning
+    // fires once at boot so the ops team can configure the env var before going
+    // live. It is a warn, not an error, because many dev/staging deployments
+    // legitimately have no filler URL and a missing var is not a crash condition.
+    if (!env.EMERGENCY_FILLER_URL) {
+      logger.warn(
+        "[broadcast-v2] EMERGENCY_FILLER_URL is not configured. " +
+        "If all queue items become unplayable the broadcast will go to dead air " +
+        "with no fallback content. Configure this env var with a valid https:// " +
+        "HLS or MP4 stream URL for 24/7 broadcast resilience.",
+      );
+    } else {
+      // Validate the URL is parseable and uses http(s) so we surface config
+      // mistakes before the first real queue-exhaustion event — not during one.
+      try {
+        const fillerUrl = new URL(env.EMERGENCY_FILLER_URL);
+        if (!["http:", "https:"].includes(fillerUrl.protocol)) {
+          logger.warn(
+            { fillerUrl: env.EMERGENCY_FILLER_URL },
+            "[broadcast-v2] EMERGENCY_FILLER_URL uses a non-HTTP protocol. " +
+            "The universal source resolver will reject it. " +
+            "Set a valid https:// URL.",
+          );
+        }
+      } catch {
+        logger.warn(
+          { fillerUrl: env.EMERGENCY_FILLER_URL },
+          "[broadcast-v2] EMERGENCY_FILLER_URL is not a valid URL. " +
+          "The emergency filler will fail to resolve on queue exhaustion. " +
+          "Fix the URL format.",
+        );
+      }
+    }
+
     // reloadInner in start() context: retry up to 3 times with short back-off
     // before accepting OFF_AIR.  A single transient DB blip (pool not yet warm,
     // brief PG restart) previously caused an immediate OFF_AIR snapshot that

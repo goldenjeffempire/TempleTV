@@ -35,7 +35,7 @@ export declare function enqueueIfMissing(opts: {
  * UX users expect from "add to queue" on the library page.
  */
 export declare function scanLibraryAndEnqueue(opts: {
-    reason: "yt-sync" | "self-heal-empty" | "manual";
+    reason: "yt-sync" | "self-heal-empty" | "self-heal-all-blocked" | "manual";
     maxToAdd?: number;
 }): Promise<{
     scanned: number;

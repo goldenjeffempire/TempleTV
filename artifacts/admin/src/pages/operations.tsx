@@ -315,8 +315,8 @@ export default function OperationsPage() {
   const { data: engineHealth } = useQuery({
     queryKey: ["ops-engine-health"],
     queryFn: () => api.get<EngineHealthSummary>("/broadcast-v2/health").catch(() => null),
-    refetchInterval: 30_000,
-    staleTime: 25_000,
+    refetchInterval: 15_000,
+    staleTime: 12_000,
   });
 
   const memPct = data ? Math.round((data.memoryUsedMb / data.memoryTotalMb) * 100) : 0;

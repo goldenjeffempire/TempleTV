@@ -234,6 +234,20 @@ declare class BroadcastOrchestrator extends EventEmitter {
     private projectItem;
     snapshot(): V2Snapshot;
     private autoSkipAttempts;
+    /**
+     * Consecutive skip counter — incremented each time an item is skipped
+     * (both operator-triggered and auto-skip in tick). Reset to 0 whenever an
+     * item successfully becomes the current item (broadcast resumes normally).
+     *
+     * When consecutiveSkips reaches the number of queue items, the orchestrator
+     * has cycled through every item without successfully playing any of them
+     * (total queue exhaustion). If BROADCAST_EMERGENCY_FILLER_URL is configured,
+     * an emergency override is engaged so viewers always see content.
+     */
+    private consecutiveSkips;
+    /** Wall-clock ms when the orchestrator last detected total queue exhaustion
+     *  (consecutiveSkips >= items.length). Null if no exhaustion has occurred. */
+    private lastDeadAirAt;
     /** Timestamp (ms) when we first detected items loaded but all URLs blocked.
      *  Null when not in that state. Used for auto-recovery after the TTL window. */
     private allBlockedSinceMs;
@@ -403,10 +417,24 @@ declare class BroadcastOrchestrator extends EventEmitter {
      */
     private probeUrlReachability;
     /**
+     * Fast HEAD probe for YouTube sources with a 2 s timeout.
+     *
+     * Returns:
+     *  "blocked"   — HTTP 403 or 451 (geo-block / legal takedown). The item is
+     *                definitively unreachable for most viewers → mark bad immediately.
+     *  "ambiguous" — Network error, timeout, or any other status code (including
+     *                5xx / 2xx). Do NOT mark bad; allow the normal retry path.
+     */
+    private probeYouTubeReachability;
+    /**
      * Schedule a background HEAD probe for `item`'s source URL.
      * If the probe returns a definitive failure, marks both primary and
      * failover URLs bad and pushes an immediate snapshot so all clients
      * advance past the broken item before it would have started playing.
+     *
+     * YouTube sources use a specialised 2 s probe that only marks bad on
+     * HTTP 403/451 (geo-block / takedown). Other failures are ambiguous and
+     * leave the rotation unchanged so the normal retry path can continue.
      */
     private scheduleProactiveProbe;
     /**
@@ -493,6 +521,22 @@ declare class BroadcastOrchestrator extends EventEmitter {
         allSourcesBlocked: boolean;
         allBlockedSinceMs: number | null;
         allBlockedDurationMs: number | null;
+    };
+    /**
+     * Consecutive-skip and dead-air diagnostics for /health.
+     *
+     * consecutiveSkips counts how many items have been skipped back-to-back
+     * (auto-skip or operator skip) since the last successful item play. When
+     * this equals items.length every queue item has been cycled through without
+     * successfully playing — total queue exhaustion.
+     *
+     * lastDeadAirAt is the wall-clock ms when the most recent exhaustion event
+     * occurred (emergency filler engaged). Null if no exhaustion has occurred
+     * since startup.
+     */
+    getSkipInfo(): {
+        consecutiveSkips: number;
+        lastDeadAirAt: number | null;
     };
     /**
      * Returns the airing history ring buffer: the last AIRING_HISTORY_MAX items

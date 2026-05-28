@@ -60,7 +60,23 @@ declare class TranscoderDispatcher {
     private purgeOrphanedScratchDirs;
     private scratchGcCounter;
     private static readonly SCRATCH_GC_TICKS;
+    private lastHeartbeatAt;
+    private currentJobId;
+    private currentJobVideoId;
+    private lastCompletedAt;
+    private lastCompletedJobId;
+    private lastCompletedStatus;
     private resetOrphanedJobs;
+    getHeartbeat(): {
+        lastHeartbeatAt: number | null;
+        currentJobId: string | null;
+        currentJobVideoId: string | null;
+        lastCompletedAt: number | null;
+        lastCompletedJobId: string | null;
+        lastCompletedStatus: "done" | "failed" | null;
+        isRunning: boolean;
+        ffmpegAvailable: boolean;
+    };
     stop(): void;
     /**
      * Shared tick used by start() and nudge(). Runs one dispatch cycle then

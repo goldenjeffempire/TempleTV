@@ -79,7 +79,7 @@ const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Frid
 
 export default function Dashboard() {
   const qc = useQueryClient();
-  const { lastStatusPayload } = useSSE();
+  const { lastStatusPayload, state: sseState } = useSSE();
   const activity = useRecentActivity();
 
   const { data: stats, isLoading: statsLoading, error: statsError, refetch: refetchStats } = useQuery({
@@ -262,6 +262,11 @@ export default function Dashboard() {
             <div className="flex items-center gap-2">
               <div className={`w-2.5 h-2.5 rounded-full ${isLive ? "bg-red-500 animate-pulse" : "bg-muted-foreground/30"}`} />
               <span className="font-semibold text-sm">{isLive ? "ON AIR" : "OFF AIR"}</span>
+              {sseState !== "connected" && (
+                <Badge variant="outline" className="text-[10px] text-muted-foreground/60 border-muted-foreground/25">
+                  Stale
+                </Badge>
+              )}
               {isLive && lastStatusPayload?.liveOverride && (
                 <Badge variant="destructive" className="text-[10px]">Override Active</Badge>
               )}

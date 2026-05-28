@@ -27,6 +27,7 @@ declare const Env: z.ZodObject<{
     REDIS_URL: z.ZodOptional<z.ZodString>;
     BROADCAST_PRELOAD_LEAD_MS: z.ZodDefault<z.ZodNumber>;
     BROADCAST_FAILOVER_HLS_URL: z.ZodOptional<z.ZodString>;
+    EMERGENCY_FILLER_URL: z.ZodOptional<z.ZodString>;
     RATE_LIMIT_DEFAULT_PER_MINUTE: z.ZodDefault<z.ZodNumber>;
     RATE_LIMIT_AUTH_PER_MINUTE: z.ZodDefault<z.ZodNumber>;
     AUTH_BF_MAX_ATTEMPTS: z.ZodDefault<z.ZodNumber>;
@@ -161,6 +162,7 @@ declare const Env: z.ZodObject<{
     CORS_ORIGINS_EXTRA?: string | undefined;
     REDIS_URL?: string | undefined;
     BROADCAST_FAILOVER_HLS_URL?: string | undefined;
+    EMERGENCY_FILLER_URL?: string | undefined;
     AUTH_BF_BYPASS_TOKEN?: string | undefined;
     SENTRY_DSN?: string | undefined;
     TRANSCODER_SCRATCH_DIR?: string | undefined;
@@ -209,6 +211,7 @@ declare const Env: z.ZodObject<{
     REDIS_URL?: string | undefined;
     BROADCAST_PRELOAD_LEAD_MS?: number | undefined;
     BROADCAST_FAILOVER_HLS_URL?: string | undefined;
+    EMERGENCY_FILLER_URL?: string | undefined;
     RATE_LIMIT_DEFAULT_PER_MINUTE?: number | undefined;
     RATE_LIMIT_AUTH_PER_MINUTE?: number | undefined;
     AUTH_BF_MAX_ATTEMPTS?: number | undefined;

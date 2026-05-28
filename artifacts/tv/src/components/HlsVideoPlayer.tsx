@@ -262,17 +262,30 @@ export function HlsVideoPlayer({
       });
       let stallLevelDropped = false;
       hls.on(HlsLib.Events.ERROR, (_e, data) => {
-        // ABR stall-drop: on non-fatal load stalls, immediately drop to the lowest
-        // available rendition rather than exhausting the retry budget at an
-        // unplayable bitrate. After 30 s of stable play the ABR engine auto-recovers.
+        // ABR stall-drop: on non-fatal load stalls, immediately drop to the
+        // lowest available rendition (if not already there) to shed a bitrate
+        // that the current link cannot sustain. Regardless of the starting
+        // level, always schedule an auto-recovery timer so the ABR engine
+        // returns to automatic quality selection after 30 s of stable play.
+        //
+        // Previous bug: the recovery timer was inside the `currentLevel > 0`
+        // guard, so streams already at level 0 (e.g. on a slow connection where
+        // HLS.js had already auto-selected the lowest rendition) never scheduled
+        // the recovery — meaning the ABR engine stayed pinned at level 0
+        // permanently even after the connection recovered, causing sustained
+        // low-quality video for the rest of the session.
         if (!data.fatal) {
           const isLoadStall =
             data.details === HlsLib.ErrorDetails.FRAG_LOAD_TIMEOUT ||
             data.details === HlsLib.ErrorDetails.FRAG_LOAD_ERROR ||
-            data.details === HlsLib.ErrorDetails.LEVEL_LOAD_TIMEOUT;
-          if (isLoadStall && !stallLevelDropped && hls.currentLevel > 0) {
+            data.details === HlsLib.ErrorDetails.LEVEL_LOAD_TIMEOUT ||
+            data.details === HlsLib.ErrorDetails.LEVEL_LOAD_ERROR;
+          if (isLoadStall && !stallLevelDropped) {
             stallLevelDropped = true;
-            hls.currentLevel = 0;
+            if (hls.currentLevel > 0) {
+              hls.currentLevel = 0; // drop to lowest bitrate
+            }
+            // Always schedule auto-recovery — fires even when already at level 0.
             setTimeout(() => {
               try { stallLevelDropped = false; hls.currentLevel = -1; } catch { /* destroyed */ }
             }, 30_000);
