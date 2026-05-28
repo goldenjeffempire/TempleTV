@@ -343,6 +343,21 @@ export default function VideosPage() {
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Faststart request failed"),
   });
 
+  const batchRetryMutation = useMutation({
+    mutationFn: () =>
+      api.post<{ ok: boolean; retried: number }>("/admin/ops/transcoding/retry-failed"),
+    onSuccess: (res) => {
+      if (res.retried === 0) {
+        toast.info("No failed transcoding jobs found to retry.");
+      } else {
+        toast.success(`Re-queued ${res.retried} failed job${res.retried !== 1 ? "s" : ""} — they will encode shortly.`);
+        void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+        void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
+      }
+    },
+    onError: (e) => toast.error(e instanceof HttpError ? e.message : "Batch retry failed"),
+  });
+
   const openEdit = (v: AdminVideo) => {
     const initial: EditForm = {
       title: v.title,
@@ -621,14 +636,29 @@ export default function VideosPage() {
                   `${retryableCount} can be retried directly; ${noSourceCount} require a fresh upload (source deleted).`}
               </p>
             </div>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 text-xs border-amber-300 text-amber-700 hover:bg-amber-100 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-amber-950/40 flex-shrink-0"
-              onClick={() => { setStatusFilter("failed"); setSourceFilter("local"); setPage(1); }}
-            >
-              Show failed
-            </Button>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              {retryableCount > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={batchRetryMutation.isPending}
+                  className="h-7 text-xs border-amber-400 bg-amber-50 text-amber-800 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-400 dark:hover:bg-amber-950/50"
+                  onClick={() => batchRetryMutation.mutate()}
+                >
+                  {batchRetryMutation.isPending
+                    ? <><RefreshCw size={11} className="animate-spin mr-1" />Retrying…</>
+                    : <><RefreshCw size={11} className="mr-1" />Retry All Failed</>}
+                </Button>
+              )}
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs border-amber-300 text-amber-700 hover:bg-amber-100 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-amber-950/40"
+                onClick={() => { setStatusFilter("failed"); setSourceFilter("local"); setPage(1); }}
+              >
+                Show failed
+              </Button>
+            </div>
           </div>
         );
       })()}

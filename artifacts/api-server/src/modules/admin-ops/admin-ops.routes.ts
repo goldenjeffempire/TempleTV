@@ -56,6 +56,7 @@ import { verifyAccessToken } from "../auth/jwt.js";
 import { requireRole } from "../auth/rbac.js";
 import {
   cancelJob,
+  retryAllFailed,
   clearJobsByStatus,
   deleteJob,
   enqueueTranscode,
@@ -1434,6 +1435,32 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       },
     );
   }
+  // Batch-retry all failed transcoding jobs in one click.
+  // Re-arms every row with status="failed" to status="queued" (attempts reset,
+  // errorMessage cleared) and nudges the dispatcher to pick them up immediately.
+  r.post(
+    "/transcoding/retry-failed",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin-ops"],
+        summary: "Re-arm all failed transcoding jobs (batch retry)",
+        response: {
+          200: z.object({ ok: z.literal(true), retried: z.number() }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (_req, _reply) => {
+      const retried = await retryAllFailed();
+      if (retried > 0) {
+        transcoderDispatcher.nudge();
+      }
+      return { ok: true as const, retried };
+    },
+  );
+
   r.post(
     "/transcoding/cancel/:id",
     {

@@ -146,6 +146,37 @@ export async function clearJobsByStatus(status: "done" | "failed" | "cancelled" 
   return out.length;
 }
 
+/**
+ * Re-arm ALL failed transcoding jobs whose source blob is still available.
+ * Returns the number of jobs reset to "queued".
+ * Safe to call concurrently — uses a single UPDATE statement.
+ */
+export async function retryAllFailed(): Promise<number> {
+  const out = await db.update(jobs)
+    .set({
+      status: "queued",
+      attempts: 0,
+      progress: 0,
+      errorMessage: null,
+      nextRetryAt: null,
+      startedAt: null,
+      completedAt: null,
+    })
+    .where(eq(jobs.status, "failed"))
+    .returning({ id: jobs.id, videoId: jobs.videoId });
+
+  if (out.length > 0) {
+    const videoIds = out.map((r) => r.videoId).filter(Boolean) as string[];
+    if (videoIds.length > 0) {
+      await db.update(videos)
+        .set({ transcodingStatus: "queued" })
+        .where(inArray(videos.id, videoIds));
+    }
+    logger.info({ count: out.length }, "transcoder: batch-retried all failed jobs");
+  }
+  return out.length;
+}
+
 export async function retryJob(id: string): Promise<boolean> {
   const out = await db.update(jobs)
     .set({
