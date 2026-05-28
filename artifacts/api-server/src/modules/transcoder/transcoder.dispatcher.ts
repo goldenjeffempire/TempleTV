@@ -176,6 +176,16 @@ class TranscoderDispatcher {
   private scratchGcCounter = 0;
   private static readonly SCRATCH_GC_TICKS = 180; // ~30 min at 10 s/tick
 
+  // ── In-process heartbeat ────────────────────────────────────────────────────
+  // Written on every dispatch tick so the diagnostics panel can surface
+  // real-time transcoder state without a DB round-trip.
+  private lastHeartbeatAt: number | null = null;
+  private currentJobId: string | null = null;
+  private currentJobVideoId: string | null = null;
+  private lastCompletedAt: number | null = null;
+  private lastCompletedJobId: string | null = null;
+  private lastCompletedStatus: "done" | "failed" | null = null;
+
   private async resetOrphanedJobs(): Promise<void> {
     try {
       const reset = await db
@@ -289,6 +299,28 @@ class TranscoderDispatcher {
     } catch (err) {
       logger.error({ err }, "transcoder: failed to reset orphaned jobs on startup (non-fatal)");
     }
+  }
+
+  getHeartbeat(): {
+    lastHeartbeatAt: number | null;
+    currentJobId: string | null;
+    currentJobVideoId: string | null;
+    lastCompletedAt: number | null;
+    lastCompletedJobId: string | null;
+    lastCompletedStatus: "done" | "failed" | null;
+    isRunning: boolean;
+    ffmpegAvailable: boolean;
+  } {
+    return {
+      lastHeartbeatAt: this.lastHeartbeatAt,
+      currentJobId: this.currentJobId,
+      currentJobVideoId: this.currentJobVideoId,
+      lastCompletedAt: this.lastCompletedAt,
+      lastCompletedJobId: this.lastCompletedJobId,
+      lastCompletedStatus: this.lastCompletedStatus,
+      isRunning: this.running,
+      ffmpegAvailable: this.ffmpegAvailable,
+    };
   }
 
   stop(): void {
@@ -511,6 +543,10 @@ class TranscoderDispatcher {
 
       logger.info({ jobId: job.id, videoId: job.videoId, attempt: job.attempts + 1 }, "transcoder: starting job");
 
+      this.lastHeartbeatAt = Date.now();
+      this.currentJobId = job.id;
+      this.currentJobVideoId = job.videoId;
+
       let lastProgressUpdate = Date.now();
 
       try {
@@ -662,6 +698,9 @@ class TranscoderDispatcher {
 
         // ── Storage circuit breaker: reset streak on success ───────────────
         this.storageErrorStreak = 0;
+        this.lastCompletedAt = Date.now();
+        this.lastCompletedJobId = job.id;
+        this.lastCompletedStatus = "done";
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         const errCode = (err as NodeJS.ErrnoException).code;
@@ -751,11 +790,16 @@ class TranscoderDispatcher {
             nextRetryAt: exceeded ? null : nextRetry.toISOString(),
           }, "transcoder: job failed");
         }
+        this.lastCompletedAt = Date.now();
+        this.lastCompletedJobId = job.id;
+        this.lastCompletedStatus = exceeded ? "failed" : "queued";
       }
 
       return { ran: true };
     } finally {
       this.running = false;
+      this.currentJobId = null;
+      this.currentJobVideoId = null;
     }
   }
 }

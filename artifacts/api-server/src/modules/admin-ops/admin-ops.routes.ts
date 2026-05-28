@@ -72,6 +72,7 @@ import { schema } from "../../infrastructure/db.js";
 import { streamHealthAggregator } from "../broadcast/stream-health.js";
 import { getWatchdogState } from "../../infrastructure/memory-watchdog.js";
 import { sseCorsHeaders } from "../../lib/sse-cors.js";
+import { startViewerSlopeMonitor, getViewerSlopeStatus } from "./viewer-slope-monitor.js";
 
 const startedAtMs = Date.now();
 const instanceId = `inst-${Math.random().toString(36).slice(2, 10)}`;
@@ -780,6 +781,138 @@ function memSnapshot() {
 
 export async function adminOpsRoutes(app: FastifyInstance) {
   const r = app.withTypeProvider<ZodTypeProvider>();
+
+  // Start the viewer-count slope monitor once per process. The guard inside
+  // startViewerSlopeMonitor() is idempotent — safe to call on every plugin
+  // registration even if the plugin is registered twice during dev reloads.
+  startViewerSlopeMonitor();
+
+  // ── GET /admin/process-info ───────────────────────────────────────────────
+  // Real-time process metrics: memory (from process.memoryUsage()) and CPU
+  // accumulators (from process.cpuUsage()). Designed for the Diagnostics page
+  // which polls every 15 s; rate-limited accordingly.
+  r.get(
+    "/process-info",
+    {
+      preHandler: requireAuth("admin"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin-ops"],
+        summary: "Real-time process memory + CPU metrics for the diagnostics panel",
+        response: {
+          200: z.object({
+            pid: z.number(),
+            nodeVersion: z.string(),
+            runMode: z.string(),
+            uptimeS: z.number(),
+            rss: z.number(),
+            heapUsed: z.number(),
+            heapTotal: z.number(),
+            external: z.number(),
+            arrayBuffers: z.number(),
+            rssMb: z.number(),
+            heapUsedMb: z.number(),
+            heapTotalMb: z.number(),
+            cpuUserMs: z.number(),
+            cpuSystemMs: z.number(),
+            checkedAt: z.string(),
+          }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async () => {
+      const mem = process.memoryUsage();
+      const cpu = process.cpuUsage();
+      return {
+        pid: process.pid,
+        nodeVersion: process.version,
+        runMode: env.RUN_MODE,
+        uptimeS: Math.round(process.uptime()),
+        rss: mem.rss,
+        heapUsed: mem.heapUsed,
+        heapTotal: mem.heapTotal,
+        external: mem.external,
+        arrayBuffers: mem.arrayBuffers ?? 0,
+        rssMb: Math.round(mem.rss / 1024 / 1024 * 10) / 10,
+        heapUsedMb: Math.round(mem.heapUsed / 1024 / 1024 * 10) / 10,
+        heapTotalMb: Math.round(mem.heapTotal / 1024 / 1024 * 10) / 10,
+        cpuUserMs: Math.round(cpu.user / 1000),
+        cpuSystemMs: Math.round(cpu.system / 1000),
+        checkedAt: new Date().toISOString(),
+      };
+    },
+  );
+
+  // ── GET /admin/transcoder-status ─────────────────────────────────────────
+  // In-process transcoder heartbeat (no DB) + queue depth from DB.
+  // Used by the Diagnostics page to surface transcoder liveness and current job.
+  r.get(
+    "/transcoder-status",
+    {
+      preHandler: requireAuth("admin"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin-ops"],
+        summary: "Transcoder in-process heartbeat + queue stats for the diagnostics panel",
+        response: {
+          200: z.object({
+            heartbeat: z.object({
+              lastHeartbeatAt: z.number().nullable(),
+              currentJobId: z.string().nullable(),
+              currentJobVideoId: z.string().nullable(),
+              lastCompletedAt: z.number().nullable(),
+              lastCompletedJobId: z.string().nullable(),
+              lastCompletedStatus: z.enum(["done", "failed"]).nullable(),
+              isRunning: z.boolean(),
+              ffmpegAvailable: z.boolean(),
+            }),
+            queue: z.object({
+              queued: z.number(),
+              processing: z.number(),
+              done: z.number(),
+              failed: z.number(),
+            }),
+            viewerSlope: z.object({
+              degraded: z.boolean(),
+              degradedSince: z.number().nullable(),
+              consecutiveDrops: z.number(),
+              viewerDeltaPerMin: z.number().nullable(),
+              samples: z.array(z.object({ ts: z.number(), count: z.number() })),
+              checkedAt: z.string(),
+            }),
+            checkedAt: z.string(),
+          }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async () => {
+      const [stats, slope] = await Promise.all([
+        queueStats().catch(() => ({ activeCount: 0, queuedCount: 0, completedToday: 0, failedToday: 0 })),
+        Promise.resolve(getViewerSlopeStatus()),
+      ]);
+      const hb = transcoderDispatcher.getHeartbeat();
+      return {
+        heartbeat: hb,
+        queue: {
+          queued: stats.queuedCount,
+          processing: stats.activeCount,
+          done: stats.completedToday,
+          failed: stats.failedToday,
+        },
+        viewerSlope: {
+          degraded: slope.degraded,
+          degradedSince: slope.degradedSince,
+          consecutiveDrops: slope.consecutiveDrops,
+          viewerDeltaPerMin: slope.viewerDeltaPerMin,
+          samples: slope.samples,
+          checkedAt: slope.checkedAt,
+        },
+        checkedAt: new Date().toISOString(),
+      };
+    },
+  );
 
   // ── Process status ────────────────────────────────────────────────────────
   r.get(

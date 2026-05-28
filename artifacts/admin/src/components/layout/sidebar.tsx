@@ -8,7 +8,7 @@ import {
   Bell, BarChart2, Users, Heart, Settings, Shield,
   Zap, Cpu, Signal, Layers, Tv2, Wifi, WifiOff, Loader, ChevronRight, X, Youtube,
   Image, Gauge, Rss, ClipboardList, Settings2, RefreshCw, Trash2, Headphones, Lock,
-  SignalLow, Moon,
+  SignalLow, Moon, ScanSearch,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
@@ -116,6 +116,7 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
       title: "System",
       items: [
         { href: "/operations", label: "Operations", icon: <Cpu size={16} />, adminOnly: true },
+        { href: "/diagnostics", label: "Diagnostics", icon: <ScanSearch size={16} />, adminOnly: true },
         { href: "/live-ingest", label: "Live Ingest", icon: <Wifi size={16} />, adminOnly: true },
         { href: "/live-monitor", label: "Live Monitor", icon: <Signal size={16} /> },
         { href: "/live-youtube", label: "YouTube Live", icon: <Tv2 size={16} /> },
