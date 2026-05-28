@@ -407,7 +407,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({})) as Record<string, unknown>;
-    const errMsg = (body.detail as string) ?? (body.message as string) ?? res.statusText;
+    const errMsg = (body.detail as string) ?? (body.message as string) ?? (body.error as string) ?? res.statusText;
     if (res.status >= 500 || res.status === 408 || res.status === 429) {
       apiErrorBus.emit({ path, status: res.status, message: errMsg, ts: Date.now() });
     }

@@ -28,6 +28,10 @@ import { workerSupervisor } from "../engine/worker-supervisor.js";
 import { orphanCleanupWorker } from "../engine/orphan-cleanup.js";
 import { playbackAnalytics } from "../engine/playback-analytics.js";
 import { randomUUID } from "node:crypto";
+import { statfs } from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
+import { env } from "../../../config/env.js";
 
 const adminGuard = { preHandler: requireAuth("editor") } as const;
 const adminOnlyGuard = { preHandler: requireAuth("admin") } as const;
@@ -67,6 +71,77 @@ _idempotencyGcTimer.unref?.();
 // "stuck for an hour". Kept module-scoped so the value is stable
 // across the lifetime of the API process.
 const PROCESS_BOOTED_AT_MS = Date.now();
+
+// ── Remote-transcode disk pre-flight ────────────────────────────────────────
+//
+// Before the route creates any DB rows or kicks off a download it checks:
+//   1. Content-Length of the remote source via HTTP HEAD (10 s timeout).
+//   2. Free bytes on the transcoder scratch filesystem via statfs.
+//
+// Required headroom = REMOTE_TRANSCODE_DISK_MULTIPLIER × Content-Length:
+//   1× for the raw download on disk
+//   ≈3× for multi-rendition HLS segments + manifest files + thumbnail
+// Total = 4×. This matches the existing in-transcoder check (3× source size
+// already on disk) so both gates use the same conservative bound.
+//
+// Returns a human-readable error string when space is tight, null when the
+// check passes or cannot be performed (absent Content-Length, statfs error,
+// or HEAD failure).  All failures are non-fatal so operators aren't blocked
+// when the remote origin doesn't support HEAD or omits the header.
+const REMOTE_TRANSCODE_DISK_MULTIPLIER = 4;
+
+async function checkRemoteTranscodeDiskSpace(
+  sourceUrl: string,
+  itemId: string,
+): Promise<string | null> {
+  try {
+    const headRes = await fetch(sourceUrl, {
+      method: "HEAD",
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!headRes.ok) return null; // non-2xx — URL issue, not a disk issue
+
+    const rawLen = headRes.headers.get("content-length");
+    if (!rawLen) return null; // server didn't advertise size — skip check
+
+    const remoteBytes = parseInt(rawLen, 10);
+    if (!Number.isFinite(remoteBytes) || remoteBytes <= 0) return null;
+
+    // Check the filesystem where the transcoder scratch dir lives.
+    // Fall back to os.tmpdir() if the scratch root doesn't exist yet (first boot).
+    const scratchRoot = env.TRANSCODER_SCRATCH_DIR ?? path.join(os.tmpdir(), "transcoder");
+    const fsInfo = await statfs(scratchRoot).catch(() => statfs(os.tmpdir()));
+    const availableBytes = fsInfo.bavail * fsInfo.bsize;
+    const requiredBytes = remoteBytes * REMOTE_TRANSCODE_DISK_MULTIPLIER;
+
+    if (availableBytes < requiredBytes) {
+      const remoteMb  = Math.round(remoteBytes   / 1024 / 1024);
+      const requiredMb = Math.round(requiredBytes / 1024 / 1024);
+      const availMb   = Math.round(availableBytes / 1024 / 1024);
+      return (
+        `Insufficient disk space for remote transcode. ` +
+        `The remote source is ~${remoteMb} MB; ` +
+        `download + HLS encoding needs ~${requiredMb} MB ` +
+        `(${REMOTE_TRANSCODE_DISK_MULTIPLIER}× for raw download + multi-rendition HLS segments) ` +
+        `but only ${availMb} MB is free on the transcoder scratch filesystem. ` +
+        `Free up disk space and retry.`
+      );
+    }
+
+    logger.info(
+      { itemId, remoteBytes, availableBytes, requiredBytes, scratchRoot },
+      "[broadcast-v2] remote transcode disk pre-flight passed",
+    );
+    return null;
+  } catch (err) {
+    // Non-fatal: HEAD or statfs failure must not block the operator.
+    logger.warn(
+      { itemId, sourceUrl, err: String(err) },
+      "[broadcast-v2] remote transcode disk pre-flight skipped (HEAD or statfs failed)",
+    );
+    return null;
+  }
+}
 
 export async function restRoutes(app: FastifyInstance) {
   // ── Public: lightweight health probe ─────────────────────────────────
@@ -841,6 +916,17 @@ export async function restRoutes(app: FastifyInstance) {
       }
 
       const sourceUrl = queueItem.localVideoUrl;
+
+      // ── Disk-space pre-flight ──────────────────────────────────────────
+      // HEAD the remote URL to determine download size, then verify the
+      // transcoder scratch filesystem has enough headroom before touching the DB.
+      // Returns null when the check passes or cannot be determined; returns an
+      // error string when the disk is too full to proceed.
+      const diskError = await checkRemoteTranscodeDiskSpace(sourceUrl, id);
+      if (diskError) {
+        return reply.code(507).send({ error: diskError });
+      }
+
       const videoId = randomUUID();
 
       // Create managed_videos placeholder.
