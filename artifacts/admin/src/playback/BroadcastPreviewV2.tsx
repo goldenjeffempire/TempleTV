@@ -864,6 +864,39 @@ export function BroadcastPreviewV2({ className }: Props) {
           >
             {muted ? <VolumeX size={11} /> : <Volume2 size={11} />}
           </Button>
+
+          {/* Picture-in-Picture — float the preview so admin can navigate
+              other panels while monitoring the live broadcast. Only shown
+              on browsers that support the native PiP API (Chrome / Edge /
+              Safari 13.1+ — covers the admin's desktop browser). */}
+          {typeof document !== "undefined" && !!document.pictureInPictureEnabled && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-5 w-5 text-white/60 hover:text-white hover:bg-white/10 rounded"
+              onClick={() => {
+                const a = aRef.current;
+                const b = bRef.current;
+                const candidates = [a, b].filter(Boolean) as HTMLVideoElement[];
+                const target =
+                  candidates.find((v) => !v.muted && !v.paused && v.readyState >= 2) ??
+                  candidates.find((v) => !v.paused && v.readyState >= 2);
+                if (!target || !("requestPictureInPicture" in target)) return;
+                if (document.pictureInPictureElement) {
+                  document.exitPictureInPicture().catch(() => {});
+                } else {
+                  target.requestPictureInPicture().catch(() => {});
+                }
+              }}
+              title="Picture-in-Picture — monitor while navigating other panels"
+            >
+              {/* PiP icon */}
+              <svg viewBox="0 0 16 16" fill="currentColor" style={{ width: 11, height: 11 }}>
+                <rect x="0.75" y="2" width="14.5" height="10" rx="1.25" fill="none" stroke="currentColor" strokeWidth="1.25" />
+                <rect x="8" y="6.5" width="6.5" height="4.5" rx="0.75" fill="currentColor" />
+              </svg>
+            </Button>
+          )}
         </div>
       </div>
     </div>

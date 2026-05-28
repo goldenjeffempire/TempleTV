@@ -13,6 +13,7 @@ import { EmergencyAlert } from "./components/EmergencyAlert";
 import { useOnAirGraphics } from "./hooks/useOnAirGraphics";
 import { useEmergencyAlerts } from "./hooks/useEmergencyAlerts";
 import { AuthGateModal } from "./components/AuthGateModal";
+import { PipIndicator } from "./components/PipIndicator";
 
 const Home = lazy(() => import("./pages/Home").then((m) => ({ default: m.Home })));
 const Search = lazy(() => import("./pages/Search").then((m) => ({ default: m.Search })));
@@ -101,6 +102,10 @@ export default function App() {
   } | null>(null);
   const [seriesDetail, setSeriesDetail] = useState<SeriesItem | null>(null);
   const [showAuthGate, setShowAuthGate] = useState(false);
+
+  // Snapshot of the player that activated PiP — used by PipIndicator's
+  // "Return to Full Screen" to restore the exact broadcast session.
+  const [pipSource, setPipSource] = useState<typeof player>(null);
 
   // Track the latest progress report so we can flush it on back (final save).
   const lastProgressRef = useRef<{ positionSecs: number; durationSecs: number } | null>(null);
@@ -223,6 +228,20 @@ export default function App() {
     [pushHistory],
   );
 
+  // Called by LiveBroadcastHlsPlayer when PiP is activated — saves context
+  // so the operator can return to the full player from the PipIndicator badge.
+  const handlePipActivate = useCallback(() => {
+    if (player) setPipSource(player);
+  }, [player]);
+
+  // Called by PipIndicator "Return to Full Screen" — exits PiP, restores player.
+  const handleReturnToPlayer = useCallback(() => {
+    const src = pipSource;
+    if (!src) return;
+    setPipSource(null);
+    play(src.videoId, src.title, src.hlsUrl, src.startPositionSecs, src.isLive, src.thumbnailUrl);
+  }, [pipSource, play]);
+
   // Called every ≈5 s by the active player for VOD content only.
   const handleProgress = useCallback(
     (positionSecs: number, durationSecs: number) => {
@@ -279,6 +298,7 @@ export default function App() {
           startPositionSecs={player.startPositionSecs}
           isLive={player.isLive ?? false}
           onProgress={handleProgress}
+          onPipActivate={handlePipActivate}
         />
       </ErrorBoundary>
     );
@@ -408,6 +428,11 @@ export default function App() {
           <OnAirOverlays />
         </div>
       </Suspense>
+      {/* Global PiP indicator — persists across all screen transitions so the
+          operator always sees the "Live broadcast in Picture-in-Picture" badge
+          and the "Return to Full Screen" CTA no matter which page they're on */}
+      <PipIndicator onReturnToPlayer={handleReturnToPlayer} />
+
       {/* Global auth gate modal — mounted outside the keyed screen so it
           survives screen transitions without remounting */}
       <AuthGateModal

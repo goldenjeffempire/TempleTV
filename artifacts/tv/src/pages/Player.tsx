@@ -23,6 +23,7 @@ import { useLiveSync } from "../hooks/useLiveSync";
 import { reportLiveFailure, useLiveFailureFor } from "../lib/liveFailureSignal";
 import { sendReaction, submitPrayerRequest } from "../lib/api";
 import { LiveBroadcastV2 } from "../components/LiveBroadcastV2";
+import { usePictureInPicture } from "../hooks/usePictureInPicture";
 
 
 // ── Reactions & prayer ────────────────────────────────────────────────────────
@@ -153,6 +154,12 @@ export interface PlayerProps {
   startPositionSecs?: number;
   isLive?: boolean;
   onProgress?: (positionSecs: number, durationSecs: number) => void;
+  /**
+   * Called just after PiP entry succeeds — before `onBack()` navigates away.
+   * The parent can save the current player context so `PipIndicator`'s
+   * "Return to Full Screen" action can restore it exactly.
+   */
+  onPipActivate?: () => void;
 }
 
 // ── YouTube VOD player ────────────────────────────────────────────────────────
@@ -285,29 +292,46 @@ function LiveYouTubePlayer({
  * The v2 component owns its own transport (WS+SSE), FSM, A/B-buffer
  * management, hls.js attachment, watchdog, and overlay rendering — this
  * file only adds the TV-specific chrome (chat overlay, channel bug, viewer
- * companion, prayer/reactions panel, back button, keyboard handling).
+ * companion, prayer/reactions panel, back button, PiP button, keyboard handling).
  *
  * `useLiveSync` is still consumed for its non-player signals (`isLive`,
- * `viewerCount`) that drive the surrounding chrome — those will move onto
- * the v2 snapshot in a follow-up.
+ * `viewerCount`) that drive the surrounding chrome.
  */
 function LiveBroadcastHlsPlayer({
   onBack,
+  onPipActivate,
 }: {
   onBack: () => void;
+  onPipActivate?: () => void;
 }) {
   const sync = useLiveSync();
   const [actionsOpen, setActionsOpen] = useState(false);
+  const { isPipSupported, enterPiP } = usePictureInPicture();
+
+  const handlePiP = useCallback(async () => {
+    const ok = await enterPiP();
+    if (ok && onPipActivate) {
+      // Navigate away so the operator can browse the library with
+      // the live broadcast floating in the OS native PiP window.
+      onPipActivate();
+      onBack();
+    }
+  }, [enterPiP, onPipActivate, onBack]);
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       const action = keyEventToAction(e);
       if (action === "back") { e.preventDefault(); onBack(); }
       if (action === "info") { e.preventDefault(); setActionsOpen((p) => !p); }
+      // P key — enter Picture-in-Picture and browse the library
+      if ((e.key === "p" || e.key === "P") && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        void handlePiP();
+      }
     };
     window.addEventListener("keydown", h, true);
     return () => window.removeEventListener("keydown", h, true);
-  }, [onBack]);
+  }, [onBack, handlePiP]);
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%", background: "#000", overflow: "hidden" }}>
@@ -317,7 +341,54 @@ function LiveBroadcastHlsPlayer({
       <BroadcastLiveCompanion isLive={sync.isLive} viewerCount={sync.viewerCount} />
       <ChatOverlay />
 
-      <button onClick={onBack} style={{ position: "absolute", top: 24, left: 32, zIndex: 50, background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 50, width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#fff", fontSize: 20 }}>←</button>
+      {/* Back button */}
+      <button
+        onClick={onBack}
+        style={{ position: "absolute", top: 24, left: 32, zIndex: 50, background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 50, width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#fff", fontSize: 20 }}
+        aria-label="Back"
+      >
+        ←
+      </button>
+
+      {/* Picture-in-Picture button — only on supported browsers */}
+      {isPipSupported && (
+        <button
+          onClick={() => void handlePiP()}
+          style={{
+            position: "absolute",
+            top: 24,
+            left: 86,
+            zIndex: 50,
+            background: "rgba(0,0,0,0.6)",
+            border: "1px solid rgba(255,255,255,0.15)",
+            borderRadius: 50,
+            width: 44,
+            height: 44,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            color: "#fff",
+            transition: "background 150ms ease, border-color 150ms ease",
+          }}
+          onMouseEnter={(e) => {
+            (e.currentTarget as HTMLButtonElement).style.background = "rgba(109,40,217,0.75)";
+            (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(167,139,250,0.5)";
+          }}
+          onMouseLeave={(e) => {
+            (e.currentTarget as HTMLButtonElement).style.background = "rgba(0,0,0,0.6)";
+            (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(255,255,255,0.15)";
+          }}
+          title="Picture-in-Picture (P)"
+          aria-label="Watch in Picture-in-Picture"
+        >
+          {/* PiP icon — small screen inside larger frame */}
+          <svg viewBox="0 0 20 20" fill="currentColor" style={{ width: 18, height: 18 }}>
+            <rect x="1" y="3" width="18" height="12" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
+            <rect x="10" y="8.5" width="8" height="5.5" rx="1" fill="currentColor" opacity="0.9" />
+          </svg>
+        </button>
+      )}
 
       {!actionsOpen && <LiveActionsToggle onOpen={() => setActionsOpen(true)} />}
       <LiveActionsPanel visible={actionsOpen} onClose={() => setActionsOpen(false)} />
@@ -335,12 +406,14 @@ export function Player({
   startPositionSecs = 0,
   isLive = false,
   onProgress,
+  onPipActivate,
 }: PlayerProps) {
   if (hlsUrl) {
     if (isLive) {
       return (
         <LiveBroadcastHlsPlayer
           onBack={onBack}
+          onPipActivate={onPipActivate}
         />
       );
     }
