@@ -238,6 +238,8 @@ interface DiagnosticsReport {
     totalSessions: number;
     eventCounts: Record<string, number>;
     lastEventAtMs: number | null;
+    bufferUtilizationPct?: number;
+    windowMs?: number;
   } | null;
 }
 
@@ -266,7 +268,8 @@ function TranscodingProgressPanel() {
     refetchInterval: 15_000,
     staleTime: 10_000,
     select: (d) => ({
-      jobs: d.jobs.filter((j) => j.status === "queued" || j.status === "encoding" || j.status === "processing"),
+      active: d.jobs.filter((j) => ["queued", "encoding", "processing"].includes(j.status)),
+      recentFailed: d.jobs.filter((j) => j.status === "failed").slice(0, 3),
     }),
   });
 
@@ -274,8 +277,9 @@ function TranscodingProgressPanel() {
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
   });
 
-  const activeJobs = data?.jobs ?? [];
-  if (activeJobs.length === 0) return null;
+  const activeJobs = data?.active ?? [];
+  const recentFailed = data?.recentFailed ?? [];
+  if (activeJobs.length === 0 && recentFailed.length === 0) return null;
 
   const encodingJob = activeJobs.find((j) => j.status === "encoding" || j.status === "processing");
   const queuedJobs = activeJobs.filter((j) => j.status === "queued");
@@ -340,6 +344,31 @@ function TranscodingProgressPanel() {
           <p className="text-[10px] text-muted-foreground px-1">
             Encoder will pick up the next job within 10 s.
           </p>
+        )}
+        {recentFailed.length > 0 && (
+          <div className="space-y-1 border-t pt-2 mt-1">
+            <p className="text-[10px] font-medium uppercase tracking-wide text-red-500 dark:text-red-400 px-1">
+              Recent Failures
+            </p>
+            {recentFailed.map((job) => (
+              <div key={job.id} className="flex items-start gap-2 rounded-md border border-red-200/60 dark:border-red-800/40 bg-red-50/40 dark:bg-red-950/15 px-3 py-2">
+                <XCircle className="h-3.5 w-3.5 text-red-500 shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-medium truncate text-foreground">
+                    {job.videoTitle ?? job.videoId}
+                  </p>
+                  {job.errorMessage && (
+                    <p className="text-[10px] text-red-600 dark:text-red-400 truncate mt-0.5" title={job.errorMessage}>
+                      {job.errorMessage}
+                    </p>
+                  )}
+                </div>
+                <Badge variant="destructive" className="shrink-0 text-[10px] px-1.5">
+                  Failed
+                </Badge>
+              </div>
+            ))}
+          </div>
         )}
       </CardContent>
     </Card>
@@ -438,18 +467,17 @@ function SortableQueueItem({
         {index + 1}
       </span>
 
-      <div className="h-10 w-16 flex-shrink-0 overflow-hidden rounded bg-muted">
-        {item.thumbnailUrl ? (
+      <div className="h-10 w-16 flex-shrink-0 overflow-hidden rounded bg-muted flex items-center justify-center relative">
+        {item.thumbnailUrl && (
           <img
             src={item.thumbnailUrl}
             alt=""
             loading="lazy"
-            className="h-full w-full object-contain bg-black"
-            onError={(e) => {
-              (e.target as HTMLImageElement).style.display = "none";
-            }}
+            className="absolute inset-0 h-full w-full object-contain bg-black"
+            onError={(e) => { (e.target as HTMLImageElement).style.opacity = "0"; }}
           />
-        ) : null}
+        )}
+        <Radio className="h-4 w-4 opacity-25 text-muted-foreground" />
       </div>
 
       <div className="min-w-0 flex-1">
@@ -754,7 +782,7 @@ export default function BroadcastV2Page() {
   // (no harm in that — the server ignores them on this route). The 15 s cadence
   // is short enough to surface a newly-stuck orchestrator within one poll
   // cycle but long enough to stay well under the server-side 30 req/min cap.
-  const { data: engineHealth } = useQuery({
+  const { data: engineHealth, isError: engineHealthError } = useQuery({
     queryKey: ["broadcast-v2-engine-health"],
     queryFn: () => api.get<EngineHealth>("/broadcast-v2/health"),
     refetchInterval: 15_000,
@@ -1244,7 +1272,13 @@ export default function BroadcastV2Page() {
 
           {engineHealth == null ? (
             <div className="py-8 text-center text-sm text-muted-foreground">
-              Loading engine status…
+              {engineHealthError ? (
+                <span className="text-destructive">
+                  Failed to load engine status — check API connectivity and try again.
+                </span>
+              ) : (
+                "Loading engine status…"
+              )}
             </div>
           ) : (
             <div className="space-y-1 py-2">
@@ -2378,6 +2412,14 @@ export default function BroadcastV2Page() {
                       <span className="font-semibold tabular-nums">{diagnostics.analytics.totalSessions}</span>
                       <span className="text-muted-foreground">total sessions</span>
                     </span>
+                    {diagnostics.analytics.bufferUtilizationPct !== undefined && (
+                      <span className="flex items-center gap-1" title="Ring-buffer utilization — percentage of event-buffer capacity currently occupied">
+                        <span className={`font-semibold tabular-nums ${diagnostics.analytics.bufferUtilizationPct > 80 ? "text-amber-600 dark:text-amber-400" : ""}`}>
+                          {diagnostics.analytics.bufferUtilizationPct}%
+                        </span>
+                        <span className="text-muted-foreground">buf</span>
+                      </span>
+                    )}
                     {diagnostics.analytics.lastEventAtMs && (
                       <span className="text-muted-foreground">
                         last event {formatAgo(diagnostics.analytics.lastEventAtMs)}

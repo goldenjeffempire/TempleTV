@@ -813,7 +813,10 @@ export async function restRoutes(app: FastifyInstance) {
   // from the external server directly), then enqueues local HLS transcoding.
   app.post<{ Params: { id: string } }>(
     "/broadcast-v2/queue/:id/transcode-remote",
-    { preHandler: requireAuth("admin") },
+    {
+      preHandler: requireAuth("admin"),
+      config: { rateLimit: { max: 10, timeWindow: "10 minutes" } },
+    },
     async (req, reply) => {
       const { id } = req.params as { id: string };
 
@@ -849,6 +852,7 @@ export async function restRoutes(app: FastifyInstance) {
         videoSource: "local",
         objectPath: sourceUrl,
         transcodingStatus: "queued",
+        broadcastOnly: true,
       });
 
       // Link broadcast_queue row to the new managed_videos entry
