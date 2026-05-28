@@ -37,6 +37,20 @@ import { logger } from "../../infrastructure/logger.js";
 const queueTable = schema.broadcastQueueTable;
 const videosTable = schema.videosTable;
 
+/**
+ * Parse a user-supplied scheduledAt string to a Date or null.
+ * Returns null when the string is empty / null.
+ * Throws BadRequestError when the string is non-empty but not a valid date.
+ */
+function parseScheduledAt(raw: string | null | undefined): Date | null {
+  if (!raw || raw.trim() === "") return null;
+  const d = new Date(raw.trim());
+  if (isNaN(d.getTime())) {
+    throw new BadRequestError(`Invalid scheduledAt value: "${raw}" is not a valid ISO date-time string.`);
+  }
+  return d;
+}
+
 const QueueRowSchema = z.object({
   id: z.string(),
   videoId: z.string().nullable(),
@@ -570,12 +584,12 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
         throw new BadRequestError("PATCH body must include at least one of: scheduledAt, scheduleLabel");
       }
 
+      const parsedAt = scheduledAt !== undefined ? parseScheduledAt(scheduledAt) : undefined;
+
       const updated = await db
         .update(queueTable)
         .set({
-          ...(scheduledAt !== undefined
-            ? { scheduledAt: (scheduledAt && scheduledAt.trim() !== "") ? new Date(scheduledAt) : null }
-            : {}),
+          ...(parsedAt !== undefined ? { scheduledAt: parsedAt } : {}),
           ...(scheduleLabel !== undefined
             ? { scheduleLabel: (scheduleLabel && scheduleLabel.trim() !== "") ? scheduleLabel.trim() : null }
             : {}),
@@ -632,12 +646,11 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
       // nullable timestamps is complex; individual row updates are cheap
       // enough for typical schedule sizes (< 50 items) and more readable.
       for (const upd of updates) {
+        const parsedAt = parseScheduledAt(upd.scheduledAt);
         const result = await db
           .update(queueTable)
           .set({
-            scheduledAt: (upd.scheduledAt && upd.scheduledAt.trim() !== "")
-              ? new Date(upd.scheduledAt)
-              : null,
+            scheduledAt: parsedAt,
             scheduleLabel: (upd.scheduleLabel && upd.scheduleLabel.trim() !== "")
               ? upd.scheduleLabel.trim()
               : null,

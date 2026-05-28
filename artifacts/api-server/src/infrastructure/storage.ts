@@ -636,9 +636,9 @@ class DatabaseObjectStorage implements ObjectStorage {
       if (i % 25 === 0 || i === sorted.length - 1) {
         const pct = Math.round(((i + 1) / sorted.length) * 100);
         const elapsedMs = Date.now() - assemblyStart;
-        // eslint-disable-next-line no-console
-        console.info(
-          `[storage:assembly] key=${key} part=${i + 1}/${sorted.length} (${pct}%) elapsed=${elapsedMs}ms`,
+        logger.info(
+          { key, part: i + 1, total: sorted.length, pct, elapsedMs },
+          "[storage:assembly] multipart assembly progress",
         );
       }
     }

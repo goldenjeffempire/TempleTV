@@ -76,8 +76,6 @@ export declare const ListUsersResponseSchema: z.ZodObject<{
     limit: z.ZodNumber;
     offset: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
-    limit: number;
-    offset: number;
     items: {
         id: string;
         createdAt: string;
@@ -89,9 +87,9 @@ export declare const ListUsersResponseSchema: z.ZodObject<{
         emailVerified: boolean;
     }[];
     total: number;
+    limit: number;
+    offset: number;
 }, {
-    limit: number;
-    offset: number;
     items: {
         id: string;
         createdAt: string;
@@ -103,6 +101,8 @@ export declare const ListUsersResponseSchema: z.ZodObject<{
         emailVerified: boolean;
     }[];
     total: number;
+    limit: number;
+    offset: number;
 }>;
 export declare const UpdateUserRoleBodySchema: z.ZodObject<{
     role: z.ZodEnum<["user", "editor", "admin"]>;
@@ -117,12 +117,12 @@ export declare const AdminStatsSchema: z.ZodObject<{
         featured: z.ZodNumber;
         bySource: z.ZodRecord<z.ZodString, z.ZodNumber>;
     }, "strip", z.ZodTypeAny, {
-        featured: number;
         total: number;
+        featured: number;
         bySource: Record<string, number>;
     }, {
-        featured: number;
         total: number;
+        featured: number;
         bySource: Record<string, number>;
     }>;
     users: z.ZodObject<{
@@ -181,22 +181,22 @@ export declare const AdminStatsSchema: z.ZodObject<{
     }>;
     generatedAt: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    playlists: {
-        total: number;
-    };
-    users: {
-        total: number;
-        byRole: Record<string, number>;
-    };
     broadcast: {
         queueDepth: number;
         activeQueueDepth: number;
     };
     generatedAt: string;
     videos: {
-        featured: number;
         total: number;
+        featured: number;
         bySource: Record<string, number>;
+    };
+    playlists: {
+        total: number;
+    };
+    users: {
+        total: number;
+        byRole: Record<string, number>;
     };
     devices: {
         total: number;
@@ -210,22 +210,22 @@ export declare const AdminStatsSchema: z.ZodObject<{
         sentTotal: number;
     };
 }, {
-    playlists: {
-        total: number;
-    };
-    users: {
-        total: number;
-        byRole: Record<string, number>;
-    };
     broadcast: {
         queueDepth: number;
         activeQueueDepth: number;
     };
     generatedAt: string;
     videos: {
-        featured: number;
         total: number;
+        featured: number;
         bySource: Record<string, number>;
+    };
+    playlists: {
+        total: number;
+    };
+    users: {
+        total: number;
+        byRole: Record<string, number>;
     };
     devices: {
         total: number;

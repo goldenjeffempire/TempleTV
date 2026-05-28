@@ -1,16 +1,23 @@
 /**
- * F17: Memory pressure watchdog.
+ * Memory pressure watchdog.
  *
- * Samples process.memoryUsage().rss on a fixed interval and emits a
- * structured "ops-alert" SSE event via the broadcastEngine when RSS
- * exceeds the MEMORY_WARN_RSS_MB threshold. The admin console receives
- * these events and can surface a warning banner so operators know about
- * impending OOM before the process is killed.
+ * Samples process.memoryUsage() on a fixed interval and:
  *
- * The watchdog also maintains module-level state that the
- * GET /admin/diagnostics/memory endpoint reads to populate the
- * `watchdog` section of the response (replacing the previous
- * hardcoded `enabled: false`).
+ *   1. RSS alert — emits a structured "ops-alert" SSE event when RSS
+ *      exceeds MEMORY_WARN_RSS_MB for SUSTAIN_SAMPLES consecutive readings.
+ *      Recovers when RSS drops 200 MB below the threshold.
+ *
+ *   2. External memory slope alert — tracks the rate of change of the
+ *      `external` heap (native bindings, Buffer allocations) over a
+ *      rolling SLOPE_WINDOW_SAMPLES window and alerts when sustained
+ *      growth exceeds EXTERNAL_GROWTH_ALERT_MB_PER_MIN.
+ *
+ *   3. Critical escalation — in production only, voluntarily exits after
+ *      CRITICAL_SAMPLES_FOR_EXIT consecutive over-threshold RSS samples so
+ *      the supervisor (Replit, k8s) can restart cleanly.
+ *
+ * State is exposed via getWatchdogState() for the
+ * GET /admin/diagnostics/memory endpoint.
  */
 export interface WatchdogState {
     enabled: boolean;
@@ -18,13 +25,20 @@ export interface WatchdogState {
     thresholds: {
         rssAlertMb: number;
         rssRecoveryMb: number;
+        externalGrowthAlertMbPerMin: number;
+        externalGrowthRecoveryMbPerMin: number;
+        sustainSamples: number;
+        slopeWindowSamples: number;
     };
     current: {
         rssMb: number;
         consecutiveRssOver: number;
+        externalGrowthMbPerMin: number | null;
+        consecutiveSlopeOver: number;
     };
     alerts: {
         rssAlertActive: boolean;
+        slopeAlertActive: boolean;
     };
 }
 export declare function startMemoryWatchdog(): void;

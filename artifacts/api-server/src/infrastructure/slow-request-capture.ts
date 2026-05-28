@@ -163,7 +163,7 @@ export function registerSlowRequestHook(app: FastifyInstance): void {
     const elapsed =
       typeof reply.elapsedTime === "number"
         ? reply.elapsedTime
-        : Date.now() - (request.startTime ?? Date.now());
+        : Date.now() - ((request as unknown as { startTime?: number }).startTime ?? Date.now());
     if (elapsed >= SLOW_THRESHOLD_MS) {
       record(request, reply, elapsed);
     }

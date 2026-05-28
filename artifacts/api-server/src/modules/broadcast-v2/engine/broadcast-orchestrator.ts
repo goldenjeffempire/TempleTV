@@ -1478,7 +1478,7 @@ class BroadcastOrchestrator extends EventEmitter {
           this.consecutiveSkips = 0;
           this.autoSkipAttempts = 0;
           // Notify admin SSE bus so the dashboard can surface an alert banner.
-          adminEventBus.push("emergency-filler-activated");
+          adminEventBus.push("emergency-filler-activated", {});
           this.emitSnapshot();
         }
       }

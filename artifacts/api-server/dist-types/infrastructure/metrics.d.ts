@@ -18,7 +18,7 @@ export declare const httpRequestTotal: Counter<"service" | "env" | "method" | "r
 export declare const activeSseConnections: Gauge<"service" | "env" | "surface">;
 export declare const activeWsConnections: Gauge<"service" | "env" | "surface">;
 export declare const broadcastSequence: Gauge<"service" | "env" | "channel">;
-export declare const broadcastModeGauge: Gauge<"mode" | "service" | "env" | "channel">;
+export declare const broadcastModeGauge: Gauge<"service" | "env" | "channel" | "mode">;
 export declare const transcodingQueueDepth: Gauge<"service" | "env">;
 export declare const broadcastQueueDepth: Gauge<"service" | "env" | "channel">;
 export declare const broadcastViewerCount: Gauge<"service" | "env" | "channel">;

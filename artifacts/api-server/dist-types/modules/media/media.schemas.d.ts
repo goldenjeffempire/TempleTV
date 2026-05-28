@@ -16,37 +16,37 @@ export declare const MediaItemSchema: z.ZodObject<{
     localVideoUrl: z.ZodNullable<z.ZodString>;
     hlsMasterUrl: z.ZodNullable<z.ZodString>;
 }, "strip", z.ZodTypeAny, {
-    duration: string;
     id: string;
-    youtubeId: string | null;
     title: string;
     thumbnailUrl: string;
-    localVideoUrl: string | null;
-    hlsMasterUrl: string | null;
-    videoSource: string;
     description: string;
+    duration: string;
+    youtubeId: string | null;
     category: string;
     preacher: string;
     publishedAt: string | null;
     importedAt: string;
     viewCount: number;
     featured: boolean;
+    videoSource: string;
+    localVideoUrl: string | null;
+    hlsMasterUrl: string | null;
 }, {
-    duration: string;
     id: string;
-    youtubeId: string | null;
     title: string;
     thumbnailUrl: string;
-    localVideoUrl: string | null;
-    hlsMasterUrl: string | null;
-    videoSource: string;
     description: string;
+    duration: string;
+    youtubeId: string | null;
     category: string;
     preacher: string;
     publishedAt: string | null;
     importedAt: string;
     viewCount: number;
     featured: boolean;
+    videoSource: string;
+    localVideoUrl: string | null;
+    hlsMasterUrl: string | null;
 }>;
 export declare const ListMediaQuerySchema: z.ZodObject<{
     limit: z.ZodDefault<z.ZodNumber>;
@@ -85,83 +85,83 @@ export declare const ListMediaResponseSchema: z.ZodObject<{
         localVideoUrl: z.ZodNullable<z.ZodString>;
         hlsMasterUrl: z.ZodNullable<z.ZodString>;
     }, "strip", z.ZodTypeAny, {
-        duration: string;
         id: string;
-        youtubeId: string | null;
         title: string;
         thumbnailUrl: string;
-        localVideoUrl: string | null;
-        hlsMasterUrl: string | null;
-        videoSource: string;
         description: string;
+        duration: string;
+        youtubeId: string | null;
         category: string;
         preacher: string;
         publishedAt: string | null;
         importedAt: string;
         viewCount: number;
         featured: boolean;
+        videoSource: string;
+        localVideoUrl: string | null;
+        hlsMasterUrl: string | null;
     }, {
-        duration: string;
         id: string;
-        youtubeId: string | null;
         title: string;
         thumbnailUrl: string;
-        localVideoUrl: string | null;
-        hlsMasterUrl: string | null;
-        videoSource: string;
         description: string;
+        duration: string;
+        youtubeId: string | null;
         category: string;
         preacher: string;
         publishedAt: string | null;
         importedAt: string;
         viewCount: number;
         featured: boolean;
+        videoSource: string;
+        localVideoUrl: string | null;
+        hlsMasterUrl: string | null;
     }>, "many">;
     total: z.ZodNumber;
     limit: z.ZodNumber;
     offset: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
-    limit: number;
-    offset: number;
     items: {
-        duration: string;
         id: string;
-        youtubeId: string | null;
         title: string;
         thumbnailUrl: string;
-        localVideoUrl: string | null;
-        hlsMasterUrl: string | null;
-        videoSource: string;
         description: string;
+        duration: string;
+        youtubeId: string | null;
         category: string;
         preacher: string;
         publishedAt: string | null;
         importedAt: string;
         viewCount: number;
         featured: boolean;
+        videoSource: string;
+        localVideoUrl: string | null;
+        hlsMasterUrl: string | null;
     }[];
     total: number;
+    limit: number;
+    offset: number;
 }, {
-    limit: number;
-    offset: number;
     items: {
-        duration: string;
         id: string;
-        youtubeId: string | null;
         title: string;
         thumbnailUrl: string;
-        localVideoUrl: string | null;
-        hlsMasterUrl: string | null;
-        videoSource: string;
         description: string;
+        duration: string;
+        youtubeId: string | null;
         category: string;
         preacher: string;
         publishedAt: string | null;
         importedAt: string;
         viewCount: number;
         featured: boolean;
+        videoSource: string;
+        localVideoUrl: string | null;
+        hlsMasterUrl: string | null;
     }[];
     total: number;
+    limit: number;
+    offset: number;
 }>;
 export declare const CreateMediaBodySchema: z.ZodObject<{
     youtubeId: z.ZodString;
@@ -176,29 +176,29 @@ export declare const CreateMediaBodySchema: z.ZodObject<{
     featured: z.ZodDefault<z.ZodBoolean>;
     publishedAt: z.ZodOptional<z.ZodString>;
 }, "strip", z.ZodTypeAny, {
-    duration: string;
-    youtubeId: string;
     title: string;
     thumbnailUrl: string;
-    videoSource: "local" | "youtube" | "hls";
     description: string;
+    duration: string;
+    youtubeId: string;
     category: string;
     preacher: string;
     featured: boolean;
-    localVideoUrl?: string | null | undefined;
+    videoSource: "hls" | "youtube" | "local";
     publishedAt?: string | undefined;
-}, {
-    youtubeId: string;
-    title: string;
-    duration?: string | undefined;
-    thumbnailUrl?: string | undefined;
     localVideoUrl?: string | null | undefined;
-    videoSource?: "local" | "youtube" | "hls" | undefined;
+}, {
+    title: string;
+    youtubeId: string;
+    thumbnailUrl?: string | undefined;
     description?: string | undefined;
+    duration?: string | undefined;
     category?: string | undefined;
     preacher?: string | undefined;
     publishedAt?: string | undefined;
     featured?: boolean | undefined;
+    videoSource?: "hls" | "youtube" | "local" | undefined;
+    localVideoUrl?: string | null | undefined;
 }>;
 export declare const UpdateMediaBodySchema: z.ZodEffects<z.ZodObject<{
     title: z.ZodOptional<z.ZodString>;
@@ -210,37 +210,37 @@ export declare const UpdateMediaBodySchema: z.ZodEffects<z.ZodObject<{
     featured: z.ZodOptional<z.ZodBoolean>;
     publishedAt: z.ZodOptional<z.ZodNullable<z.ZodString>>;
 }, "strip", z.ZodTypeAny, {
-    duration?: string | undefined;
     title?: string | undefined;
     thumbnailUrl?: string | undefined;
     description?: string | undefined;
+    duration?: string | undefined;
     category?: string | undefined;
     preacher?: string | undefined;
     publishedAt?: string | null | undefined;
     featured?: boolean | undefined;
 }, {
-    duration?: string | undefined;
     title?: string | undefined;
     thumbnailUrl?: string | undefined;
     description?: string | undefined;
+    duration?: string | undefined;
     category?: string | undefined;
     preacher?: string | undefined;
     publishedAt?: string | null | undefined;
     featured?: boolean | undefined;
 }>, {
-    duration?: string | undefined;
     title?: string | undefined;
     thumbnailUrl?: string | undefined;
     description?: string | undefined;
+    duration?: string | undefined;
     category?: string | undefined;
     preacher?: string | undefined;
     publishedAt?: string | null | undefined;
     featured?: boolean | undefined;
 }, {
-    duration?: string | undefined;
     title?: string | undefined;
     thumbnailUrl?: string | undefined;
     description?: string | undefined;
+    duration?: string | undefined;
     category?: string | undefined;
     preacher?: string | undefined;
     publishedAt?: string | null | undefined;
@@ -264,11 +264,11 @@ export declare const SignedUploadResponseSchema: z.ZodObject<{
     url: z.ZodString;
     expiresIn: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
-    key: string;
     url: string;
+    key: string;
     expiresIn: number;
 }, {
-    key: string;
     url: string;
+    key: string;
     expiresIn: number;
 }>;
