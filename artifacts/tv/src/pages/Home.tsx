@@ -72,6 +72,19 @@ export function Home({ onNavigateSearch, onNavigateHistory, onNavigateSettings, 
   const [broadcastCurrent, setBroadcastCurrent] = useState<BroadcastCurrent | null>(
     () => readLastBroadcast(),
   );
+  const [isOnline, setIsOnline] = useState(() =>
+    typeof navigator !== "undefined" ? navigator.onLine : true,
+  );
+  useEffect(() => {
+    const onOnline  = () => setIsOnline(true);
+    const onOffline = () => setIsOnline(false);
+    window.addEventListener("online",  onOnline);
+    window.addEventListener("offline", onOffline);
+    return () => {
+      window.removeEventListener("online",  onOnline);
+      window.removeEventListener("offline", onOffline);
+    };
+  }, []);
 
   // Real-time hero sync strategy:
   //
@@ -398,6 +411,43 @@ export function Home({ onNavigateSearch, onNavigateHistory, onNavigateSettings, 
         </div>
       </div>
 
+      {/* Offline connectivity banner — appears when browser loses network */}
+      {!isOnline && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            position: "absolute",
+            top: 0, left: 0, right: 0,
+            zIndex: 95,
+            background: "rgba(15,15,15,0.96)",
+            backdropFilter: "blur(12px)",
+            WebkitBackdropFilter: "blur(12px)",
+            padding: "10px var(--tv-safe-h, 60px)",
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            borderBottom: "1px solid rgba(255,255,255,0.08)",
+            animation: "tv-emergency-slide-in 280ms cubic-bezier(0.2,0.6,0.2,1)",
+          }}
+        >
+          <div
+            style={{
+              width: 8, height: 8, borderRadius: "50%",
+              background: "#f87171", flexShrink: 0,
+              boxShadow: "0 0 8px rgba(248,113,113,0.6)",
+              animation: "tv-emergency-pulse 1.5s ease-in-out infinite alternate",
+            }}
+          />
+          <span style={{ color: "rgba(255,255,255,0.88)", fontSize: 14, fontWeight: 600, letterSpacing: "0.01em" }}>
+            No internet connection
+          </span>
+          <span style={{ color: "rgba(255,255,255,0.4)", fontSize: 13, borderLeft: "1px solid rgba(255,255,255,0.15)", paddingLeft: 12 }}>
+            Showing cached content
+          </span>
+        </div>
+      )}
+
       {/* NOW ON AIR + UP NEXT strip — overlays the hero so viewers always
           see what's airing now and what's next, even before they interact. */}
       <BroadcastOnAirStrip liveStatus={liveStatus} broadcastCurrent={broadcastCurrent} />
@@ -470,6 +520,22 @@ export function Home({ onNavigateSearch, onNavigateHistory, onNavigateSettings, 
                   Check your connection and press <kbd style={{ background: "rgba(255,255,255,0.12)", borderRadius: 4, padding: "1px 7px", fontSize: 13, fontFamily: "monospace" }}>SELECT</kbd> to retry.
                 </p>
               </div>
+            </div>
+          </div>
+        ) : !loading && !error && sermons.length === 0 && continueWatching.length === 0 && favorites.length === 0 ? (
+          <div style={{ paddingLeft: "var(--tv-safe-h, 60px)", paddingTop: 60 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 14, maxWidth: 520 }}>
+              <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                <line x1="8" y1="21" x2="16" y2="21"/>
+                <line x1="12" y1="17" x2="12" y2="21"/>
+              </svg>
+              <p style={{ fontSize: 22, fontWeight: 700, color: "rgba(255,255,255,0.75)", margin: 0 }}>
+                No content available
+              </p>
+              <p style={{ fontSize: 15, color: "rgba(255,255,255,0.35)", margin: 0, lineHeight: 1.6 }}>
+                Videos will appear here once they are uploaded and processed by the admin team.
+              </p>
             </div>
           </div>
         ) : (

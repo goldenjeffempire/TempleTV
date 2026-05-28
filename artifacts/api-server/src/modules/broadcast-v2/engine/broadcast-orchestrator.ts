@@ -486,13 +486,47 @@ class BroadcastOrchestrator extends EventEmitter {
     }, SELF_HEAL_EMPTY_MS);
     this.selfHealEmptyTimer.unref?.();
 
-    // Stale-queue drift correction: reload every 60 s while the queue is
+    // Stale-queue drift correction: reload every 30 s while the queue is
     // populated to pick up reorders / additions that arrived without a
     // bus signal — without blocking the 2 s tick loop at all.
+    //
+    // All-blocked library-scan backstop: if every in-memory item has had
+    // its source URL blacklisted for ≥ EMPTY_POLLS_BEFORE_LIBRARY_SCAN ×
+    // SELF_HEAL_EMPTY_MS (= 60 s by default), the queue is functionally
+    // empty even though items.length > 0.  In that case we also trigger a
+    // library scan so fresh, un-blacklisted videos can fill the gap —
+    // exactly the same guarantee the empty-queue backstop provides.
     this.selfHealStaleTimer = setInterval(() => {
       if (!this.started) return;
       if (this.items.length > 0) {
         this.scheduleSelfHealReload("drift-poll");
+
+        if (
+          this.allBlockedSinceMs !== null &&
+          Date.now() - this.allBlockedSinceMs >=
+            EMPTY_POLLS_BEFORE_LIBRARY_SCAN * SELF_HEAL_EMPTY_MS
+        ) {
+          logger.warn(
+            { allBlockedDurationMs: Date.now() - this.allBlockedSinceMs },
+            "[broadcast-v2] self-heal: all queue sources blocked >60 s — triggering library scan backstop",
+          );
+          void scanLibraryAndEnqueue({ reason: "self-heal-all-blocked", maxToAdd: 100 })
+            .then((res) => {
+              if (res.enqueued > 0) {
+                logger.info(
+                  res,
+                  "[broadcast-v2] self-heal: library scan promoted videos into all-blocked queue — reloading",
+                );
+                this.scheduleSelfHealReload("self-heal-all-blocked-library-scan");
+              }
+            })
+            .catch((err) => {
+              logger.warn(
+                { err },
+                "[broadcast-v2] self-heal: all-blocked library scan failed (non-fatal)",
+              );
+            });
+        }
       }
     }, SELF_HEAL_STALE_MS);
     this.selfHealStaleTimer.unref?.();

@@ -30,8 +30,15 @@ import {
   ListPlus,
   GripVertical,
   Timer,
+  ClipboardCheck,
+  CircleCheck,
+  CircleX,
+  CircleAlert,
 } from "lucide-react";
 import { BroadcastUploadPanel } from "@/components/broadcast/BroadcastUploadPanel";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+} from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Link } from "wouter";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
@@ -662,6 +669,8 @@ export default function BroadcastV2Page() {
   // Dismissible dead-air banner. Auto-reset when a current item is found so
   // the banner reappears if the broadcast drops to dead air again.
   const [deadAirDismissed, setDeadAirDismissed] = useState(false);
+  // Launch Checklist modal.
+  const [showChecklist, setShowChecklist] = useState(false);
 
   // Ticks every second so the on-air progress bar stays live between SSE frames.
   const [liveNow, setLiveNow] = useState(() => Date.now());
@@ -1103,12 +1112,179 @@ export default function BroadcastV2Page() {
     }
   }
 
+  // ── Launch Checklist computation (derived from already-fetched state) ───────
+  const checklistItems = engineHealth != null ? [
+    {
+      label: "Queue populated",
+      pass: activeQueueCount > 0,
+      warn: false,
+      detail: activeQueueCount > 0
+        ? `${activeQueueCount} active item${activeQueueCount !== 1 ? "s" : ""}`
+        : "No active items — add videos to the queue before going live",
+    },
+    {
+      label: "Engine running",
+      pass: engineHealth.boot.started && (engineHealth.sequence > 0 || engineHealth.uptimeMs < 30_000),
+      warn: false,
+      detail: engineHealth.boot.started
+        ? `Sequence #${engineHealth.sequence} · uptime ${Math.floor(engineHealth.uptimeMs / 60_000)}m`
+        : `Boot failed after ${engineHealth.boot.startAttempts} attempt${engineHealth.boot.startAttempts !== 1 ? "s" : ""}`,
+    },
+    {
+      label: "No dead air detected",
+      pass: !isDeadAir && !isStuck,
+      warn: false,
+      detail: isStuck
+        ? "Orchestrator appears stuck — try Reload"
+        : isDeadAir
+        ? "Queue has items but nothing is on air"
+        : "Broadcast is on air or off air normally",
+    },
+    {
+      label: "Transport connected",
+      pass: fullyConnected,
+      warn: partiallyConnected && !fullyConnected,
+      detail: linkLabel === "Live" ? "WS + SSE both connected" : linkLabel,
+    },
+    {
+      label: "Source URLs healthy",
+      pass: blockedCount === 0,
+      warn: false,
+      detail: blockedCount === 0
+        ? "All source URLs reachable"
+        : `${blockedCount} source${blockedCount !== 1 ? "s" : ""} temporarily blocked — clear blocks to retry`,
+    },
+    {
+      label: "HLS transcoding ready",
+      pass: allHlsReady || localQueueItems.length === 0,
+      warn: pendingHlsCount > 0,
+      detail: localQueueItems.length === 0
+        ? "No local videos in queue"
+        : allHlsReady
+        ? "All local items have HLS playlist ready"
+        : `${pendingHlsCount} item${pendingHlsCount !== 1 ? "s" : ""} missing HLS — will fall back to raw MP4`,
+    },
+  ] : [];
+  const checklistBlockerCount = checklistItems.filter(c => !c.pass && !c.warn).length;
+  const checklistWarnCount = checklistItems.filter(c => !c.pass && c.warn).length;
+  const checklistAllClear = checklistBlockerCount === 0;
+
   return (
     <div className="space-y-6 p-4 md:p-6">
       <PageHeader
         title="Master Control"
         description="Server-authoritative continuous broadcast — live preview, queue, and operator controls."
+        actions={
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            onClick={() => setShowChecklist(true)}
+          >
+            <ClipboardCheck size={13} /> Launch Checklist
+          </Button>
+        }
       />
+
+      {/* Launch Checklist dialog */}
+      <Dialog open={showChecklist} onOpenChange={setShowChecklist}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ClipboardCheck className="h-5 w-5" />
+              Pre-Broadcast Launch Checklist
+            </DialogTitle>
+            <DialogDescription>
+              Verify these conditions before going live to ensure uninterrupted broadcasting.
+            </DialogDescription>
+          </DialogHeader>
+
+          {engineHealth == null ? (
+            <div className="py-8 text-center text-sm text-muted-foreground">
+              Loading engine status…
+            </div>
+          ) : (
+            <div className="space-y-1 py-2">
+              {checklistItems.map((item) => (
+                <div
+                  key={item.label}
+                  className={`flex items-start gap-3 rounded-lg px-3 py-2.5 ${
+                    item.pass
+                      ? "bg-green-50 dark:bg-green-950/20"
+                      : item.warn
+                      ? "bg-amber-50 dark:bg-amber-950/20"
+                      : "bg-red-50 dark:bg-red-950/20"
+                  }`}
+                >
+                  {item.pass ? (
+                    <CircleCheck className="h-4 w-4 text-green-600 dark:text-green-400 mt-0.5 flex-shrink-0" />
+                  ) : item.warn ? (
+                    <CircleAlert className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" />
+                  ) : (
+                    <CircleX className="h-4 w-4 text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" />
+                  )}
+                  <div className="min-w-0">
+                    <p className={`text-sm font-medium ${item.pass ? "text-green-800 dark:text-green-200" : item.warn ? "text-amber-800 dark:text-amber-200" : "text-red-800 dark:text-red-200"}`}>
+                      {item.label}
+                    </p>
+                    <p className={`text-xs mt-0.5 ${item.pass ? "text-green-700/70 dark:text-green-300/70" : item.warn ? "text-amber-700/70 dark:text-amber-300/70" : "text-red-700/70 dark:text-red-300/70"}`}>
+                      {item.detail}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Summary */}
+          {engineHealth != null && (
+            <div className={`rounded-lg border px-4 py-3 text-sm font-medium flex items-center gap-2 ${
+              checklistAllClear
+                ? "border-green-500/30 bg-green-500/5 text-green-700 dark:text-green-300"
+                : "border-red-500/30 bg-red-500/5 text-red-700 dark:text-red-300"
+            }`}>
+              {checklistAllClear
+                ? <CircleCheck className="h-4 w-4 flex-shrink-0" />
+                : <CircleX className="h-4 w-4 flex-shrink-0" />}
+              {checklistAllClear && checklistWarnCount === 0
+                ? "All checks passed — ready to go live."
+                : checklistAllClear
+                ? `Ready with ${checklistWarnCount} warning${checklistWarnCount !== 1 ? "s" : ""} — review before going live.`
+                : `${checklistBlockerCount} blocker${checklistBlockerCount !== 1 ? "s" : ""} found — resolve before going live.`}
+            </div>
+          )}
+
+          <DialogFooter className="flex-wrap gap-2 sm:flex-row">
+            {blockedCount > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => { void clearBlocks(); setShowChecklist(false); }}
+                disabled={busy === "clear-blocks"}
+                className="gap-1.5"
+              >
+                <ShieldAlert className="h-3.5 w-3.5" />
+                Clear Blocks
+              </Button>
+            )}
+            {pendingHlsCount > 0 && localQueueItems.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => { void prepareHls(); setShowChecklist(false); }}
+                disabled={busy === "prepare-hls"}
+                className="gap-1.5"
+              >
+                <Zap className="h-3.5 w-3.5" />
+                Prepare HLS
+              </Button>
+            )}
+            <Button variant="default" size="sm" onClick={() => setShowChecklist(false)} className="ml-auto">
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Status bar */}
       <div className="flex flex-wrap items-center gap-2">
