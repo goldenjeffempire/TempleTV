@@ -67,6 +67,7 @@ import { seoRoutes } from "./modules/seo/seo.routes.js";
 import { wellKnownRoutes } from "./modules/well-known/well-known.routes.js";
 import { metricsRoutes } from "./modules/metrics/metrics.routes.js";
 import { httpRequestDuration, httpRequestTotal, SERVICE_LABELS } from "./infrastructure/metrics.js";
+import { registerSlowRequestHook } from "./infrastructure/slow-request-capture.js";
 const API_PREFIX = "/api/v1";
 
 export async function buildApp(): Promise<FastifyInstance> {
@@ -470,6 +471,10 @@ export async function buildApp(): Promise<FastifyInstance> {
     httpRequestTotal.inc({ method, route, status_code: statusCode, ...SERVICE_LABELS });
     done();
   });
+
+  // Register slow-request capture hook — fires on every response and buffers
+  // any request taking longer than 1 000 ms for the diagnostics dashboard.
+  registerSlowRequestHook(app);
 
   app.addHook("onRequest", adminCsrfHook);
   app.addHook("preHandler", attachPrincipal());

@@ -8,11 +8,16 @@ import { logger } from "./logger.js";
  *
  * Use `cache.get/set/del`. For multi-instance coherency you MUST
  * provision Redis — the in-process backend is per-pod.
+ *
+ * Named caches can be registered via `registerNamedCache()` for
+ * introspection by the `GET /admin/diagnostics/memory` endpoint.
  */
 export interface Cache {
   get<T = unknown>(key: string): Promise<T | null>;
   set<T = unknown>(key: string, value: T, ttlSeconds?: number): Promise<void>;
   del(key: string): Promise<void>;
+  /** Current number of live (non-expired) entries. */
+  size(): number;
   readonly backend: "redis" | "memory";
 }
 
@@ -23,10 +28,6 @@ class MemoryCache implements Cache {
    * moves to the tail (most-recently-used). On overflow we evict from
    * the head (least-recently-used). This is O(1) for all operations
    * because Map iteration starts at the insertion head.
-   *
-   * Compared with the old FIFO eviction this ensures hot cache entries
-   * (e.g. `/admin/stats`, the broadcast guide) are never evicted while
-   * cold entries from one-off page loads are pruned first.
    */
   private readonly MAX_SIZE = 10_000;
   private map = new Map<string, { v: unknown; expiresAt: number | null }>();
@@ -45,9 +46,6 @@ class MemoryCache implements Cache {
     return hit.v as T;
   }
   async set<T>(key: string, value: T, ttlSeconds?: number): Promise<void> {
-    // Evict LRU entry (map head) when the cache is at capacity.
-    // Delete before potential re-insertion to avoid counting an existing
-    // key as a new entry.
     if (this.map.has(key)) {
       this.map.delete(key);
     } else if (this.map.size >= this.MAX_SIZE) {
@@ -62,12 +60,16 @@ class MemoryCache implements Cache {
   async del(key: string): Promise<void> {
     this.map.delete(key);
   }
+  size(): number {
+    // Purge expired entries on introspection so the count is accurate.
+    const now = Date.now();
+    for (const [k, v] of this.map) {
+      if (v.expiresAt !== null && v.expiresAt < now) this.map.delete(k);
+    }
+    return this.map.size;
+  }
 }
 
-// Hard cap on a single Redis value's payload size before we JSON.parse it.
-// Prevents a misbehaving / hostile cache value from OOM-ing the API process
-// before the try/catch around JSON.parse can fire. 8 MiB is well above the
-// largest legitimate cached payload (catalog ≈ 500 KiB, broadcast guide ≈ 50 KiB).
 const REDIS_MAX_VALUE_BYTES = 8 * 1024 * 1024;
 
 class RedisCache implements Cache {
@@ -82,7 +84,6 @@ class RedisCache implements Cache {
         { key, bytes: raw.length, cap: REDIS_MAX_VALUE_BYTES },
         "cache: Redis value exceeds JSON.parse safety cap — discarding",
       );
-      // Evict the oversized entry so it does not keep getting fetched.
       await this.client.del(key).catch(() => {});
       return null;
     }
@@ -103,6 +104,11 @@ class RedisCache implements Cache {
   async del(key: string): Promise<void> {
     await this.client.del(key);
   }
+  /** Redis DBSIZE is not used here (it's a cluster-wide count and expensive).
+   *  Returns -1 to signal "remote cache — size not locally tracked." */
+  size(): number {
+    return -1;
+  }
 }
 
 let _cache: Cache | null = null;
@@ -112,5 +118,48 @@ export function cache(): Cache {
   const r = getRedis();
   _cache = r ? new RedisCache(r) : new MemoryCache();
   logger.info({ backend: _cache.backend }, "cache backend resolved");
+  // Register under a stable name for diagnostics introspection.
+  registerNamedCache("main", _cache);
   return _cache;
+}
+
+// ── Named cache registry ──────────────────────────────────────────────────────
+// Any module that maintains an in-process cache (LRU, Map, etc.) can register
+// it here so the memory diagnostics endpoint reports live cache sizes.
+
+interface NamedCache {
+  name: string;
+  getSize: () => number;
+}
+
+const _namedCaches: NamedCache[] = [];
+
+/**
+ * Register a cache instance under a human-readable name.
+ * Idempotent — registering the same name twice replaces the previous entry.
+ */
+export function registerNamedCache(name: string, c: Cache): void {
+  const idx = _namedCaches.findIndex((n) => n.name === name);
+  const entry: NamedCache = { name, getSize: () => c.size() };
+  if (idx >= 0) _namedCaches[idx] = entry;
+  else _namedCaches.push(entry);
+}
+
+/**
+ * Register an arbitrary size-reporting function under a name.
+ * Use this for non-Cache Map/Set instances (e.g. dedup stores, token maps).
+ */
+export function registerNamedStore(name: string, getSize: () => number): void {
+  const idx = _namedCaches.findIndex((n) => n.name === name);
+  const entry: NamedCache = { name, getSize };
+  if (idx >= 0) _namedCaches[idx] = entry;
+  else _namedCaches.push(entry);
+}
+
+/** Returns a snapshot of all registered cache sizes for diagnostics. */
+export function getRegisteredCacheStats(): Array<{ name: string; size: number }> {
+  return _namedCaches.map(({ name, getSize }) => ({
+    name,
+    size: (() => { try { return getSize(); } catch { return -1; } })(),
+  }));
 }

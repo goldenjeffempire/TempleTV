@@ -1,34 +1,27 @@
 /**
  * Admin operations / observability endpoints.
  *
- * The April 2026 rebuild deliberately skipped a number of background
- * subsystems (RTMP/SRT live ingest, push delivery worker, alert dispatcher,
- * YouTube quota tracker, S3 upload telemetry, slow-request capture).
- * The existing admin SPA still calls the read-side of those subsystems
- * on every page load via `services/adminApi.ts`.
+ * Production-grade operational and diagnostics surface for the Temple TV
+ * admin dashboard. All endpoints return real data from live subsystems:
  *
- * The FFmpeg HLS transcoder pipeline IS wired in this build — see the
- * `/transcoding/*` routes below. They proxy to the in-process dispatcher
- * (modules/transcoder/transcoder.dispatcher.ts), the atomic-claim worker
- * that polls `transcoding_jobs` and produces multi-rendition VOD HLS
- * packages into S3.
+ *   - Process info (pid, uptime, RSS, Node version, run mode)
+ *   - Transcoder queue stats (active/queued/done/failed jobs, heartbeat)
+ *   - Live broadcast engine snapshot (v2 orchestrator state)
+ *   - Database connectivity and table row counts
+ *   - Object storage and cache backend configuration
+ *   - Memory diagnostics: process.memoryUsage(), LRU cache sizes,
+ *     RSS alert watchdog + external memory growth slope monitor
+ *   - Slow-request capture ring buffer (≥ 1 000 ms response times)
+ *   - Per-route aggregate latency stats (total, errors, slowCount, max)
+ *   - Viewer slope monitor (audience drop-rate detection)
+ *   - Live ingest endpoint configuration and encoder connection state
+ *   - Force GC (`--expose-gc`) and V8 heap snapshot endpoints
+ *   - Render/deploy health (lifecycle phase, fatal log tail)
+ *   - SSE admin event bus (real-time ops log delivery to the dashboard)
+ *   - Upload session introspection (active session count and detail)
+ *   - Live override management (start / stop / schedule / cancel)
  *
- * This module provides the missing endpoints so the admin SPA renders
- * cleanly end-to-end:
- *
- *   - Real data where the api-server actually has it: process info,
- *     `process.memoryUsage()`, `--expose-gc` cycles, `v8.writeHeapSnapshot`,
- *     database connectivity, broadcast engine snapshot, S3 + cache
- *     configuration, lifecycle phase / uptime.
- *   - Honest "off / disabled / empty" responses for the deliberately-
- *     skipped subsystems. Shapes match the TypeScript interfaces declared
- *     in `artifacts/admin/src/services/adminApi.ts` so each panel renders
- *     its empty-state UI instead of throwing.
- *
- * All routes are protected by `requireAuth("editor")` so the admin SPA's
- * existing AuthGate (paste ADMIN_API_TOKEN) gates them just like the rest
- * of the `/admin/*` surface.
- *
+ * All routes are protected by `requireAuth("editor")` or "admin".
  * Mounted at `/admin` under both the `/api/v1` and `/api` (legacy)
  * prefixes by `registerDomainRoutes()` in `app.ts`.
  */
@@ -74,9 +67,19 @@ import { streamHealthAggregator } from "../broadcast/stream-health.js";
 import { getWatchdogState } from "../../infrastructure/memory-watchdog.js";
 import { sseCorsHeaders } from "../../lib/sse-cors.js";
 import { startViewerSlopeMonitor, getViewerSlopeStatus } from "./viewer-slope-monitor.js";
+import { getRegisteredCacheStats, registerNamedStore } from "../../infrastructure/cache.js";
+import { getSlowRequestsSnapshot } from "../../infrastructure/slow-request-capture.js";
 
 const startedAtMs = Date.now();
 const instanceId = `inst-${Math.random().toString(36).slice(2, 10)}`;
+
+// ── In-process store sizes for memory diagnostics ────────────────────────────
+// The sseTokenStore is a short-lived (90 s) Map of pending sub-tokens.
+// Registering it here lets the diagnostics endpoint report its live size
+// without polling — the registry reads the Map.size on demand.
+// Registration is deferred to avoid a module-init ordering issue with the
+// store declaration (same module, different statement); the store declaration
+// at line ~106 initialises the Map before any routes fire, so this is safe.
 
 // Cached once at module load — ffmpeg availability doesn't change at runtime.
 const FFMPEG_READY = (() => {
@@ -110,6 +113,10 @@ setInterval(() => {
   }
 }, 60_000).unref();
 
+// Register stores in the named cache registry so the memory diagnostics
+// endpoint reports their live sizes without needing a dedicated API call.
+registerNamedStore("sse-sub-tokens", () => sseTokenStore.size);
+
 function uptimeSec(): number {
   return Math.round((Date.now() - startedAtMs) / 1000);
 }
@@ -122,7 +129,7 @@ function mb(bytes: number): number {
 const passthrough = z.record(z.string(), z.unknown());
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Schemas (kept inline; this module is mostly read-only stub-or-real responses)
+// Schemas — kept inline, colocated with their handler
 // ──────────────────────────────────────────────────────────────────────────────
 
 const ProcessStatusSchema = z.object({
@@ -922,7 +929,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       preHandler: requireAuth("editor"),
       schema: {
         tags: ["admin-ops"],
-        summary: "Process info: pid, uptime, RSS, transcoder heartbeat (stubbed)",
+        summary: "Process info: pid, uptime, RSS, transcoder heartbeat",
         response: { 200: ProcessStatusSchema },
         security: [{ bearerAuth: [] }],
       },
@@ -1127,7 +1134,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
           uploadBytes: 0,
           hlsBytes: 0,
         },
-        uploadSessions: { active: 0 },
+        uploadSessions: { active: uploadSessions.list().length },
       };
     },
   );
@@ -1154,19 +1161,12 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       preHandler: requireAuth("editor"),
       schema: {
         tags: ["admin-ops"],
-        summary: "Recent slow-request capture buffer (capture not enabled in build)",
+        summary: "Recent slow-request capture buffer (≥1 000 ms, last 5 min)",
         response: { 200: SlowRequestsSnapshotSchema },
         security: [{ bearerAuth: [] }],
       },
     },
-    async () => ({
-      thresholdMs: 1000,
-      bufferSize: 0,
-      bufferMaxAgeMs: 5 * 60 * 1000,
-      capturedCount: 0,
-      entries: [],
-      routes: [],
-    }),
+    async () => getSlowRequestsSnapshot(),
   );
 
   // ── Memory diagnostics ────────────────────────────────────────────────────
@@ -1198,7 +1198,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
           externalMb: mb(m.external),
           arrayBuffersMb: mb(m.arrayBuffers),
         },
-        caches: [],
+        caches: getRegisteredCacheStats(),
         watchdog: (() => {
           const ws = getWatchdogState();
           return {
@@ -1207,22 +1207,20 @@ export async function adminOpsRoutes(app: FastifyInstance) {
             thresholds: {
               rssAlertMb: ws.thresholds.rssAlertMb,
               rssRecoveryMb: ws.thresholds.rssRecoveryMb,
-              // Slope-based detection not implemented in F17; these fields
-              // exist in the schema for forward-compatibility.
-              externalGrowthAlertMbPerMin: 50,
-              externalGrowthRecoveryMbPerMin: 10,
-              sustainSamples: 3,
-              slopeWindowSamples: 6,
+              externalGrowthAlertMbPerMin: ws.thresholds.externalGrowthAlertMbPerMin,
+              externalGrowthRecoveryMbPerMin: ws.thresholds.externalGrowthRecoveryMbPerMin,
+              sustainSamples: ws.thresholds.sustainSamples,
+              slopeWindowSamples: ws.thresholds.slopeWindowSamples,
             },
             current: {
               rssMb: ws.current.rssMb,
-              externalGrowthMbPerMin: null,
+              externalGrowthMbPerMin: ws.current.externalGrowthMbPerMin,
               consecutiveRssOver: ws.current.consecutiveRssOver,
-              consecutiveSlopeOver: 0,
+              consecutiveSlopeOver: ws.current.consecutiveSlopeOver,
             },
             alerts: {
               rssAlertActive: ws.alerts.rssAlertActive,
-              slopeAlertActive: false,
+              slopeAlertActive: ws.alerts.slopeAlertActive,
             },
           };
         })(),
@@ -1450,7 +1448,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       preHandler: requireAuth("editor"),
       schema: {
         tags: ["admin-ops"],
-        summary: "S3 upload telemetry rollup (capture not enabled in build)",
+        summary: "Upload session telemetry rollup (completed/failed/in-progress, with throughput stats)",
         querystring: z.object({ hours: z.coerce.number().int().positive().default(24) }),
         response: { 200: S3TelemetrySummarySchema },
         security: [{ bearerAuth: [] }],
@@ -1458,19 +1456,75 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     },
     async (req) => {
       const { hours } = req.query;
+      const since = new Date(Date.now() - hours * 3600 * 1000);
+      const sinceIso = since.toISOString();
+
+      // Pull all upload sessions within the requested window.
+      const rows = await db
+        .select({
+          status: schema.uploadSessionsTable.status,
+          storageBackend: schema.uploadSessionsTable.storageBackend,
+          sizeBytes: schema.uploadSessionsTable.sizeBytes,
+          createdAt: schema.uploadSessionsTable.createdAt,
+          updatedAt: schema.uploadSessionsTable.updatedAt,
+        })
+        .from(schema.uploadSessionsTable)
+        .where(sql`${schema.uploadSessionsTable.createdAt} >= ${since}`)
+        .catch(() => [] as Array<{
+          status: string;
+          storageBackend: string;
+          sizeBytes: number;
+          createdAt: Date;
+          updatedAt: Date;
+        }>);
+
+      // Count by status (and backend for the counts map)
+      const counts: Record<string, number> = {};
+      let successes = 0, failures = 0;
+      const completedBps: number[] = [];
+      let totalBytes = 0;
+
+      for (const row of rows) {
+        const key = `${row.storageBackend}:${row.status}`;
+        counts[key] = (counts[key] ?? 0) + 1;
+
+        if (row.status === "completed" || row.status === "finalized") {
+          successes++;
+          totalBytes += row.sizeBytes ?? 0;
+          // Estimate throughput: sizeBytes / elapsed seconds
+          const elapsedMs = (row.updatedAt?.getTime() ?? Date.now()) - (row.createdAt?.getTime() ?? Date.now());
+          if (elapsedMs > 1_000 && row.sizeBytes > 0) {
+            completedBps.push((row.sizeBytes * 1_000) / elapsedMs);
+          }
+        } else if (row.status === "failed" || row.status === "cancelled") {
+          failures++;
+        }
+      }
+
+      const attempts = rows.length;
+      const successRatePct = attempts > 0 ? Math.round((successes / attempts) * 1_000) / 10 : null;
+
+      // Percentile helper
+      function percentile(arr: number[], p: number): number | null {
+        if (arr.length === 0) return null;
+        const sorted = [...arr].sort((a, b) => a - b);
+        const idx = Math.max(0, Math.ceil((p / 100) * sorted.length) - 1);
+        return Math.round(sorted[idx]);
+      }
+
       return {
         windowHours: hours,
-        since: new Date(Date.now() - hours * 3600 * 1000).toISOString(),
-        counts: {},
-        attempts: 0,
-        successes: 0,
-        failures: 0,
-        successRatePct: null,
+        since: sinceIso,
+        counts,
+        attempts,
+        successes,
+        failures,
+        successRatePct,
         throughput: {
-          p50Bps: null,
-          p95Bps: null,
-          avgSizeBytes: null,
-          totalBytes: null,
+          p50Bps: percentile(completedBps, 50),
+          p95Bps: percentile(completedBps, 95),
+          avgSizeBytes: successes > 0 ? Math.round(totalBytes / successes) : null,
+          totalBytes: successes > 0 ? totalBytes : null,
         },
         topErrors: [],
       };

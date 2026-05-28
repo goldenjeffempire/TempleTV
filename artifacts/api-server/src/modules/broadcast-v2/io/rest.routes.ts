@@ -4,6 +4,7 @@ import { eventLogRepo } from "../repository/event-log.repo.js";
 import { getBroadcastV2BootStatus, broadcastFanout } from "../index.js";
 import { prodQueueSync } from "../../prod-sync/prod-queue-sync.js";
 import { getViewerSlopeStatus } from "../../admin-ops/viewer-slope-monitor.js";
+import { registerNamedStore } from "../../../infrastructure/cache.js";
 import { getYouTubeAutoOverrideStats } from "../../youtube-live/auto-override.js";
 import {
   ForceFailoverCommand,
@@ -42,6 +43,7 @@ const adminOnlyGuard = { preHandler: requireAuth("admin") } as const;
 // Note: single-process design (Replit single-instance). In a load-balanced
 // multi-instance environment this should move to Redis.
 const seenIdempotencyKeys = new Map<string, number>();
+registerNamedStore("broadcast-v2-idempotency-keys", () => seenIdempotencyKeys.size);
 const IDEMPOTENCY_TTL_MS = 5 * 60_000;
 function checkIdempotency(key: string): boolean {
   const now = Date.now();

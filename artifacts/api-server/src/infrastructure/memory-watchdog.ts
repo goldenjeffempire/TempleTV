@@ -1,16 +1,23 @@
 /**
- * F17: Memory pressure watchdog.
+ * Memory pressure watchdog.
  *
- * Samples process.memoryUsage().rss on a fixed interval and emits a
- * structured "ops-alert" SSE event via the broadcastEngine when RSS
- * exceeds the MEMORY_WARN_RSS_MB threshold. The admin console receives
- * these events and can surface a warning banner so operators know about
- * impending OOM before the process is killed.
+ * Samples process.memoryUsage() on a fixed interval and:
  *
- * The watchdog also maintains module-level state that the
- * GET /admin/diagnostics/memory endpoint reads to populate the
- * `watchdog` section of the response (replacing the previous
- * hardcoded `enabled: false`).
+ *   1. RSS alert — emits a structured "ops-alert" SSE event when RSS
+ *      exceeds MEMORY_WARN_RSS_MB for SUSTAIN_SAMPLES consecutive readings.
+ *      Recovers when RSS drops 200 MB below the threshold.
+ *
+ *   2. External memory slope alert — tracks the rate of change of the
+ *      `external` heap (native bindings, Buffer allocations) over a
+ *      rolling SLOPE_WINDOW_SAMPLES window and alerts when sustained
+ *      growth exceeds EXTERNAL_GROWTH_ALERT_MB_PER_MIN.
+ *
+ *   3. Critical escalation — in production only, voluntarily exits after
+ *      CRITICAL_SAMPLES_FOR_EXIT consecutive over-threshold RSS samples so
+ *      the supervisor (Replit, k8s) can restart cleanly.
+ *
+ * State is exposed via getWatchdogState() for the
+ * GET /admin/diagnostics/memory endpoint.
  */
 
 import { logger } from "./logger.js";
@@ -19,33 +26,18 @@ import { processRssGauge, SERVICE_LABELS } from "./metrics.js";
 
 const SAMPLE_INTERVAL_MS = 30_000;
 const SUSTAIN_SAMPLES = 3;
-/**
- * Critical-pressure escalation:
- *   • OVER threshold for this many consecutive samples → graceful exit
- *   • At 30 s/sample × 10 = 5 minutes of sustained pressure
- *
- * Rationale: at this point the process is at high risk of OOM-kill, which is
- * abrupt and kills in-flight uploads / SSE connections without grace. A
- * voluntary `process.exit(1)` lets the supervisor (deployments, k8s, Replit)
- * restart cleanly while in-flight work drains via the SIGTERM handler.
- *
- * Disabled in development (NODE_ENV !== "production") so working with a
- * memory-hungry repl doesn't keep cycling the dev server.
- */
 const CRITICAL_SAMPLES_FOR_EXIT = 10;
-/**
- * Maximum time the watchdog gives the SIGTERM/graceful-shutdown handler to
- * drain in-flight SSE/WS/upload work before it force-exits. 30 s aligns with
- * common cloud-supervisor `terminationGracePeriodSeconds` defaults (k8s 30 s,
- * Replit deployments 30 s) so the supervisor's hard kill arrives at or after
- * our voluntary force-exit, preserving controlled shutdown semantics.
- */
 const FORCE_EXIT_GRACE_MS = 30_000;
-/**
- * Latches the moment we kick off the critical-exit dance so a continuing
- * stream of over-threshold samples can't schedule a second SIGTERM or stack
- * additional force-exit timers on top of the first one.
- */
+
+/** Rolling window size (samples) for external memory slope calculation. */
+const SLOPE_WINDOW_SAMPLES = 6;
+/** Alert when external memory is growing faster than this (MB / min). */
+const EXTERNAL_GROWTH_ALERT_MB_PER_MIN = 50;
+/** Recovery threshold (MB / min) — slope must fall below this to clear alert. */
+const EXTERNAL_GROWTH_RECOVERY_MB_PER_MIN = 10;
+/** How many consecutive over-slope samples before the alert fires. */
+const CONSECUTIVE_SLOPE_FOR_ALERT = 3;
+
 let criticalExitInFlight = false;
 
 export interface WatchdogState {
@@ -54,24 +46,34 @@ export interface WatchdogState {
   thresholds: {
     rssAlertMb: number;
     rssRecoveryMb: number;
+    externalGrowthAlertMbPerMin: number;
+    externalGrowthRecoveryMbPerMin: number;
+    sustainSamples: number;
+    slopeWindowSamples: number;
   };
   current: {
     rssMb: number;
     consecutiveRssOver: number;
+    externalGrowthMbPerMin: number | null;
+    consecutiveSlopeOver: number;
   };
   alerts: {
     rssAlertActive: boolean;
+    slopeAlertActive: boolean;
   };
 }
 
 let interval: NodeJS.Timeout | null = null;
 let consecutiveRssOver = 0;
+let consecutiveSlopeOver = 0;
 let rssAlertActive = false;
+let slopeAlertActive = false;
 let lastRssMb = 0;
+let lastExternalGrowthMbPerMin: number | null = null;
 
-// Lazy-imported to avoid a circular-dependency boot-order issue.
-// broadcastEngine → queue.engine → this watchdog must not import
-// broadcastEngine at module init time; we import it on first sample.
+/** Rolling window of { external bytes, timestamp ms } pairs. */
+const externalWindow: Array<{ external: number; ts: number }> = [];
+
 type BroadcastEngineEvent = { type: string; data: unknown };
 let _emit: ((e: BroadcastEngineEvent) => void) | null = null;
 
@@ -81,6 +83,18 @@ async function loadEmitter() {
   _emit = (e) => broadcastEngine.emit("event", e);
 }
 
+/** Calculate external memory growth rate (MB/min) from the rolling window. */
+function calcExternalGrowthMbPerMin(): number | null {
+  if (externalWindow.length < 2) return null;
+  const oldest = externalWindow[0];
+  const newest = externalWindow[externalWindow.length - 1];
+  const dtMs = newest.ts - oldest.ts;
+  if (dtMs < 1_000) return null;
+  const deltaBytes = newest.external - oldest.external;
+  const dtMin = dtMs / 60_000;
+  return (deltaBytes / (1024 * 1024)) / dtMin;
+}
+
 function sample() {
   const mem = process.memoryUsage();
   const rssMb = Math.round(mem.rss / (1024 * 1024));
@@ -88,6 +102,7 @@ function sample() {
   processRssGauge.set(SERVICE_LABELS, mem.rss);
   const thresholdMb = env.MEMORY_WARN_RSS_MB;
 
+  // ── RSS tracking ───────────────────────────────────────────────────────────
   if (rssMb >= thresholdMb) {
     consecutiveRssOver++;
   } else {
@@ -106,7 +121,6 @@ function sample() {
       });
     }
     consecutiveRssOver = 0;
-    return;
   }
 
   if (consecutiveRssOver >= SUSTAIN_SAMPLES && !rssAlertActive) {
@@ -133,28 +147,67 @@ function sample() {
         consecutiveSamples: consecutiveRssOver,
       },
     });
-  } else if (rssAlertActive) {
-    // Repeat alert every 5 minutes (10 samples × 30 s) while still high
-    if (consecutiveRssOver % 10 === 0) {
+  } else if (rssAlertActive && consecutiveRssOver % 10 === 0) {
+    _emit?.({
+      type: "ops-alert",
+      data: {
+        level: "warn",
+        code: "memory-pressure",
+        message: `RSS still elevated: ${rssMb} MB (threshold: ${thresholdMb} MB, ${consecutiveRssOver} samples over)`,
+        rssMb,
+        thresholdMb,
+        consecutiveSamples: consecutiveRssOver,
+      },
+    });
+  }
+
+  // ── External memory slope tracking ────────────────────────────────────────
+  externalWindow.push({ external: mem.external, ts: Date.now() });
+  if (externalWindow.length > SLOPE_WINDOW_SAMPLES) externalWindow.shift();
+
+  const growthRate = calcExternalGrowthMbPerMin();
+  lastExternalGrowthMbPerMin = growthRate !== null ? Math.round(growthRate * 10) / 10 : null;
+
+  if (growthRate !== null && growthRate > EXTERNAL_GROWTH_ALERT_MB_PER_MIN) {
+    consecutiveSlopeOver++;
+    if (consecutiveSlopeOver >= CONSECUTIVE_SLOPE_FOR_ALERT && !slopeAlertActive) {
+      slopeAlertActive = true;
+      logger.warn(
+        { growthMbPerMin: Math.round(growthRate * 10) / 10, threshold: EXTERNAL_GROWTH_ALERT_MB_PER_MIN },
+        "[memory-watchdog] external memory growth rate exceeded threshold",
+      );
       _emit?.({
         type: "ops-alert",
         data: {
           level: "warn",
-          code: "memory-pressure",
-          message: `RSS still elevated: ${rssMb} MB (threshold: ${thresholdMb} MB, ${consecutiveRssOver} samples over)`,
-          rssMb,
-          thresholdMb,
-          consecutiveSamples: consecutiveRssOver,
+          code: "memory-external-growth",
+          message: `External memory growing at ${Math.round(growthRate * 10) / 10} MB/min (threshold: ${EXTERNAL_GROWTH_ALERT_MB_PER_MIN} MB/min) — possible native memory leak`,
+          growthMbPerMin: Math.round(growthRate * 10) / 10,
+          threshold: EXTERNAL_GROWTH_ALERT_MB_PER_MIN,
         },
       });
     }
+  } else if (slopeAlertActive && (growthRate === null || growthRate < EXTERNAL_GROWTH_RECOVERY_MB_PER_MIN)) {
+    slopeAlertActive = false;
+    consecutiveSlopeOver = 0;
+    logger.info(
+      { growthMbPerMin: lastExternalGrowthMbPerMin },
+      "[memory-watchdog] external memory growth rate recovered",
+    );
+    _emit?.({
+      type: "ops-alert",
+      data: {
+        level: "info",
+        code: "memory-external-recovered",
+        message: `External memory growth rate recovered (${lastExternalGrowthMbPerMin ?? 0} MB/min)`,
+        growthMbPerMin: lastExternalGrowthMbPerMin ?? 0,
+      },
+    });
+  } else if (!slopeAlertActive) {
+    consecutiveSlopeOver = 0;
   }
 
-  // ── Critical escalation: voluntary exit so the supervisor restarts us ───
-  // Only in production — in dev a runaway memory bug shouldn't keep cycling
-  // the local server. The orchestrator restores broadcast position from
-  // broadcast_runtime_state and players reconnect via WS, so viewer impact
-  // is bounded by the restart time (~5 s on Replit).
+  // ── Critical escalation (production only) ────────────────────────────────
   if (
     env.NODE_ENV === "production" &&
     consecutiveRssOver >= CRITICAL_SAMPLES_FOR_EXIT &&
@@ -183,15 +236,6 @@ function sample() {
         graceMs: FORCE_EXIT_GRACE_MS,
       },
     });
-    // Two-stage shutdown that cooperates with the SIGTERM handler:
-    //   1. SIGTERM kicks off graceful drain (close server, end SSE, flush DB).
-    //      The handler is expected to call process.exit(0) on its own when
-    //      drain completes — we wait for that.
-    //   2. If drain doesn't complete within FORCE_EXIT_GRACE_MS, we force-exit
-    //      to guarantee the supervisor restarts us before the OS OOM-killer
-    //      strikes. The `.unref()` on the timer means a *successful* graceful
-    //      drain can still exit cleanly through the SIGTERM handler without
-    //      this timer blocking the event loop.
     process.kill(process.pid, "SIGTERM");
     const forceExitTimer = setTimeout(() => {
       logger.fatal(
@@ -206,7 +250,6 @@ function sample() {
 
 export function startMemoryWatchdog(): void {
   if (interval) return;
-  // Pre-load the emitter reference asynchronously (fire-and-forget).
   loadEmitter().catch(() => { /* non-fatal */ });
   interval = setInterval(() => {
     loadEmitter().then(() => sample()).catch(() => { /* non-fatal */ });
@@ -232,13 +275,20 @@ export function getWatchdogState(): WatchdogState {
     thresholds: {
       rssAlertMb: env.MEMORY_WARN_RSS_MB,
       rssRecoveryMb: env.MEMORY_WARN_RSS_MB - 200,
+      externalGrowthAlertMbPerMin: EXTERNAL_GROWTH_ALERT_MB_PER_MIN,
+      externalGrowthRecoveryMbPerMin: EXTERNAL_GROWTH_RECOVERY_MB_PER_MIN,
+      sustainSamples: SUSTAIN_SAMPLES,
+      slopeWindowSamples: SLOPE_WINDOW_SAMPLES,
     },
     current: {
       rssMb: lastRssMb,
       consecutiveRssOver,
+      externalGrowthMbPerMin: lastExternalGrowthMbPerMin,
+      consecutiveSlopeOver,
     },
     alerts: {
       rssAlertActive,
+      slopeAlertActive,
     },
   };
 }
