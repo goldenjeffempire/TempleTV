@@ -81,6 +81,8 @@ interface BroadcastQueueRow {
   hasHls: boolean;
   /** Error message from the last failed transcoding job, or null when not failed. */
   transcodingError: string | null;
+  /** Absolute URL of the locally-uploaded video (prod-sync items only). */
+  localVideoUrl: string | null;
 }
 
 interface SourceHealthEntry {
