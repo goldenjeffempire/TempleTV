@@ -50,13 +50,18 @@ interface RenditionSpec {
 // runTranscode filters this list to avoid upscaling by checking the source
 // video's actual height and dropping any renditions taller than the source.
 const ALL_RENDITIONS: RenditionSpec[] = [
-  // level "3.0" — baseline decoder for legacy STBs and Smart TV chipsets
-  { name: "360p",  width: 640,  height: 360,  videoBitrateK: 400,  maxrateK: 550,  bufsizeK: 800,  audioBitrateK: 64,  level: "3.0" },
-  // level "3.1" — covers 720p@30 and lower; widely supported across all smart TV SDKs
-  { name: "480p",  width: 854,  height: 480,  videoBitrateK: 800,  maxrateK: 1000, bufsizeK: 1500, audioBitrateK: 96,  level: "3.1" },
-  { name: "720p",  width: 1280, height: 720,  videoBitrateK: 1800, maxrateK: 2200, bufsizeK: 3300, audioBitrateK: 128, level: "3.1" },
-  // level "4.0" — required for 1080p@30; supported on all modern devices (2013+)
-  { name: "1080p", width: 1920, height: 1080, videoBitrateK: 3500, maxrateK: 4500, bufsizeK: 6750, audioBitrateK: 192, level: "4.0" },
+  // level "3.0" — baseline decoder for legacy STBs and Smart TV chipsets.
+  // Bitrate raised 400→500k (+25%) for sharper SD output on portrait-heavy
+  // sermon content; maxrate/bufsize ratio kept at 1.4×/2.8× for VBV stability.
+  { name: "360p",  width: 640,  height: 360,  videoBitrateK: 500,  maxrateK: 700,  bufsizeK: 1400, audioBitrateK: 96,  level: "3.0" },
+  // level "3.1" — covers 720p@30 and lower; widely supported across all smart TV SDKs.
+  // 480p raised 800→1000k, audio 96→128k for clear face+text sharpness at mid-range.
+  { name: "480p",  width: 854,  height: 480,  videoBitrateK: 1000, maxrateK: 1300, bufsizeK: 2600, audioBitrateK: 128, level: "3.1" },
+  // 720p raised 1800→2500k — perceptible quality jump vs. 1080p for ABR step-up.
+  { name: "720p",  width: 1280, height: 720,  videoBitrateK: 2500, maxrateK: 3200, bufsizeK: 6400, audioBitrateK: 160, level: "3.1" },
+  // level "4.0" — required for 1080p@30; supported on all modern devices (2013+).
+  // 1080p raised 3500→4500k for cinema-grade sharpness on large displays.
+  { name: "1080p", width: 1920, height: 1080, videoBitrateK: 4500, maxrateK: 5800, bufsizeK: 11600, audioBitrateK: 192, level: "4.0" },
 ];
 
 // 2-second segments align with the 2-second keyframe interval so every
@@ -144,6 +149,22 @@ function buildFfmpegArgs(
       `-b:v:${i}`, `${r.videoBitrateK}k`,
       `-maxrate:v:${i}`, `${r.maxrateK}k`,
       `-bufsize:v:${i}`, `${r.bufsizeK}k`,
+      // GOP (Group of Pictures) alignment — cap to 60 frames (2 s at 30 fps).
+      // Combined with force_key_frames this guarantees every HLS segment begins
+      // on an IDR frame, which is required for seamless ABR level switching.
+      // Without -g the encoder may place IDR frames up to 250 frames apart
+      // (FFmpeg default = 12×fps) causing cross-segment B/P-frame references
+      // that break independent_segments decoding on Samsung/LG decoders.
+      `-g:v:${i}`, "60",
+      `-keyint_min:v:${i}`, "48",
+      // BT.709 color metadata — required for modern HDR-capable displays to
+      // apply the correct EOTF. Without these flags the container signals
+      // "unspecified" color primaries and the display applies a default (often
+      // BT.601/sRGB) that causes the image to appear desaturated or washed-out
+      // on calibrated monitors, Samsung QLED/LG OLED, and Apple displays.
+      `-colorspace:v:${i}`, "bt709",
+      `-color_primaries:v:${i}`, "bt709",
+      `-color_trc:v:${i}`, "bt709",
     );
   });
 

@@ -202,21 +202,32 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
   const hls = new Hls({
     // ── Latency / buffer ─────────────────────────────────────────────
     lowLatencyMode: false,          // stability over latency for broadcast replay
-    backBufferLength: 60,           // keep 60 s behind playhead — lets devices
-                                    //   resume instantly after brief screen-dim/lock
-    maxBufferLength: 60,            // build up 60 s ahead — reduces mid-segment stalls
-    maxMaxBufferLength: 120,        // allow up to 2 min on very fast connections
+    backBufferLength: 60,           // keep 60 s behind playhead — instant resume after
+                                    //   screen-dim/lock/tab-switch without re-buffering
+    maxBufferLength: 60,            // build 60 s ahead — eliminates mid-segment rebuffers
+    maxMaxBufferLength: 120,        // allow up to 2 min buffer on very fast connections
 
     // ── ABR / quality ────────────────────────────────────────────────
-    startLevel: -1,                 // auto — pick starting quality by bandwidth probe
-    capLevelToPlayerSize: true,     // don't load 1080p into a 480p container
-    abrBandWidthFactor: 0.95,       // conservative BW estimate (prefer stability)
-    abrBandWidthUpFactor: 0.70,     // slow quality upgrades (avoid oscillation)
+    startLevel: -1,                 // auto — let EWMA bandwidth probe pick first level
+    capLevelToPlayerSize: true,     // never load 1080p into a 480p container
+    // Start ABR with an optimistic 8 Mbps baseline. On fast connections this
+    // causes hls.js to probe the highest rendition first instead of always
+    // opening at 360p; on slow links it converges down within 2–3 segments.
+    // 8 Mbps is above our highest rendition (4.5 Mbps 1080p) so ABR always
+    // starts with the best quality the container size permits.
+    abrEwmaDefaultEstimate: 8_000_000,
+    abrBandWidthFactor: 0.90,       // conservative BW estimate — prefer stream stability
+    abrBandWidthUpFactor: 0.75,     // moderate upgrade speed — ramps up once link is stable
 
     // ── Reliability ──────────────────────────────────────────────────
-    enableWorker: true,             // offload muxer/demuxer to Web Worker
+    enableWorker: true,             // offload muxer/demuxer to Web Worker thread
     autoStartLoad: true,
-    startFragPrefetch: true,        // fetch next frag before current ends (zero-gap)
+    startFragPrefetch: true,        // fetch next fragment before current ends (zero-gap)
+    // Enable software AES-128 fallback for Smart TV chipsets lacking hardware
+    // crypto acceleration (some WebOS 3.x, Tizen 2.x). Without this, HW
+    // crypto failures cause silent stalls with no error event.
+    enableSoftwareAES: true,
+    maxFragLookUpTolerance: 0.2,    // tighter fragment boundary matching
 
     // ── Retry budgets ────────────────────────────────────────────────
     fragLoadingMaxRetry: 10,
@@ -378,7 +389,9 @@ export function LiveBroadcastV2({
     server?.next?.thumbnailUrl ??
     null;
 
-  const objectFit: "cover" | "contain" = "contain";
+  // hero → object-cover fills frame edge-to-edge (centre-crop on non-16:9).
+  // player → object-contain shows full frame; ambient blur fills letterbox.
+  const objectFit: "cover" | "contain" = variant === "hero" ? "cover" : "contain";
 
   return (
     <div
@@ -459,6 +472,12 @@ export function LiveBroadcastV2({
           objectPosition: "center center",
           zIndex: 2,
           display: "block",
+          // GPU compositing — promotes the video element to its own compositor
+          // layer, enabling zero-copy hardware decoding on Chromium-based browsers
+          // and preventing repaints from UI overlays (badges, title chip) from
+          // invalidating the video decode pipeline.
+          willChange: "transform",
+          transform: "translateZ(0)",
         }}
         playsInline
         autoPlay
@@ -476,6 +495,8 @@ export function LiveBroadcastV2({
           zIndex: 1,
           opacity: 0,
           display: "block",
+          willChange: "transform",
+          transform: "translateZ(0)",
         }}
         playsInline
         muted
@@ -642,27 +663,61 @@ export function LiveBroadcastV2({
         </div>
       </div>
 
-      {/* Bottom-left: title chip */}
+      {/* Bottom gradient + title block — player variant only */}
       {variant === "player" && (
         <div
           style={{
             position: "absolute",
-            bottom: "clamp(12px, 2vh, 24px)",
-            left: "clamp(12px, 2vw, 24px)",
+            bottom: 0,
+            left: 0,
+            right: 0,
             zIndex: 20,
-            maxWidth: "70%",
-            background: "rgba(0,0,0,0.6)",
-            backdropFilter: "blur(8px)",
-            WebkitBackdropFilter: "blur(8px)",
-            padding: "clamp(6px, 0.8vh, 10px) clamp(10px, 1.2vw, 16px)",
-            borderRadius: 10,
-            color: "#fff",
-            fontSize: "clamp(12px, 1.2vw, 18px)",
-            lineHeight: 1.3,
-            paddingBottom: "max(env(safe-area-inset-bottom, 0px), clamp(6px, 0.8vh, 10px))",
+            // Tall cinematic gradient — fades black from the bottom third up
+            // so the title is always legible over any content colour.
+            background: "linear-gradient(to top, rgba(0,0,0,0.88) 0%, rgba(0,0,0,0.55) 40%, transparent 100%)",
+            padding: "clamp(32px, 5vh, 64px) clamp(16px, 3vw, 40px) clamp(14px, 2.5vh, 28px)",
+            paddingBottom: "max(env(safe-area-inset-bottom, 0px), clamp(14px, 2.5vh, 28px))",
+            display: "flex",
+            flexDirection: "column",
+            gap: "clamp(3px, 0.5vh, 6px)",
+            opacity: isOnAir ? 1 : 0,
+            transition: "opacity 600ms ease",
+            pointerEvents: "none",
           }}
         >
-          {title}
+          {/* Live badge */}
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            marginBottom: "clamp(2px, 0.4vh, 5px)",
+          }}>
+            <span style={{
+              fontSize: "clamp(9px, 0.85vw, 11px)",
+              fontWeight: 700,
+              letterSpacing: "0.14em",
+              color: "rgba(255,255,255,0.55)",
+              textTransform: "uppercase",
+            }}>
+              Now Playing
+            </span>
+          </div>
+          {/* Programme title */}
+          <p style={{
+            margin: 0,
+            fontSize: "clamp(14px, 1.8vw, 26px)",
+            fontWeight: 700,
+            letterSpacing: "0.01em",
+            color: "#fff",
+            lineHeight: 1.2,
+            textShadow: "0 1px 8px rgba(0,0,0,0.6)",
+            display: "-webkit-box",
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: "vertical",
+            overflow: "hidden",
+          }}>
+            {title}
+          </p>
         </div>
       )}
 

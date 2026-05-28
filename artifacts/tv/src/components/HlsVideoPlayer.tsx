@@ -216,22 +216,33 @@ export function HlsVideoPlayer({
         setLoaded(slot, url);
         return;
       }
+      let mediaErrCount = 0;
       const hls = new HlsLib({
         enableWorker: true,
-        maxBufferLength: 30,
-        backBufferLength: 30,
-        maxMaxBufferLength: 60,
-        startLevel: -1,        // auto-select quality for VOD
-        capLevelToPlayerSize: true,
+        // 60 s forward buffer — eliminates mid-sermon rebuffers on typical
+        // broadband; backBuffer keeps 60 s for instant rewind without re-fetch.
+        maxBufferLength: 60,
+        backBufferLength: 60,
+        maxMaxBufferLength: 120,
+        startLevel: -1,              // auto-select by bandwidth probe
+        capLevelToPlayerSize: true,  // don't load 1080p into a small container
         debug: false,
-        // Retry tuning — same profile as LiveBroadcastV2 for consistency
+        // Start ABR with an 8 Mbps optimistic estimate — ensures fast
+        // connections open at the highest available rendition instead of 360p.
+        abrEwmaDefaultEstimate: 8_000_000,
+        abrBandWidthFactor: 0.90,
+        abrBandWidthUpFactor: 0.75,
+        // Fetch next fragment before current one ends (zero-gap transitions).
+        startFragPrefetch: true,
+        // SW AES fallback for Smart TV runtimes without HW crypto.
+        enableSoftwareAES: true,
+        maxFragLookUpTolerance: 0.2,
+        // Retry tuning
         fragLoadingMaxRetry: 8,
         fragLoadingRetryDelay: 300,
         manifestLoadingMaxRetry: 6,
         levelLoadingMaxRetry: 6,
         nudgeMaxRetry: 5,
-        abrBandWidthFactor: 0.95,
-        abrBandWidthUpFactor: 0.70,
       });
       hls.attachMedia(video);
       hls.loadSource(url);
@@ -245,9 +256,24 @@ export function HlsVideoPlayer({
         setQualityLabel(levelLabel(hls.levels[d.level]?.height));
       });
       hls.on(HlsLib.Events.ERROR, (_e, data) => {
-        if (data.fatal && slot === activeSlotRef.current) {
-          handleError(slot);
+        if (!data.fatal) return;
+        if (slot !== activeSlotRef.current) return;
+        // Two-stage MEDIA_ERROR recovery — flush MSE pipeline before
+        // giving up. Handles codec/decoder reset issues on Samsung/LG TVs.
+        if (data.type === HlsLib.ErrorTypes.MEDIA_ERROR) {
+          if (mediaErrCount === 0) {
+            mediaErrCount++;
+            hls.recoverMediaError();
+            return;
+          }
+          if (mediaErrCount === 1) {
+            mediaErrCount++;
+            hls.swapAudioCodec();
+            hls.recoverMediaError();
+            return;
+          }
         }
+        handleError(slot);
       });
       setHls(slot, hls);
     }).catch(() => { video.src = url; setLoaded(slot, url); });
@@ -507,15 +533,20 @@ export function HlsVideoPlayer({
       {/* Slot A — active/inactive surface.
           background is intentionally omitted: the ambient layer or the
           container's own bg-#000 shows through the transparent letterbox
-          areas that object-contain leaves around non-16:9 content.       */}
+          areas that object-contain leaves around non-16:9 content.
+          willChange+translateZ promote the element to its own GPU compositor
+          layer, enabling zero-copy hardware decode and preventing overlay
+          repaints (controls, title, badge) from invalidating the video pipeline. */}
       <video
         ref={videoA}
         style={{
           position: "absolute", inset: 0, width: "100%", height: "100%",
           objectFit: "contain",
           opacity: activeSlot === "A" ? 1 : 0,
-          transition: "opacity 0.15s ease",
+          transition: "opacity 0.18s ease",
           zIndex: activeSlot === "A" ? 2 : 1,
+          willChange: "transform",
+          transform: "translateZ(0)",
         }}
         playsInline autoPlay muted={activeSlot !== "A"}
         onTimeUpdate={activeSlot === "A" ? handleTimeUpdate : undefined}
@@ -530,8 +561,10 @@ export function HlsVideoPlayer({
           position: "absolute", inset: 0, width: "100%", height: "100%",
           objectFit: "contain",
           opacity: activeSlot === "B" ? 1 : 0,
-          transition: "opacity 0.15s ease",
+          transition: "opacity 0.18s ease",
           zIndex: activeSlot === "B" ? 2 : 1,
+          willChange: "transform",
+          transform: "translateZ(0)",
         }}
         playsInline autoPlay muted={activeSlot !== "B"}
         onTimeUpdate={activeSlot === "B" ? handleTimeUpdate : undefined}
@@ -611,33 +644,75 @@ export function HlsVideoPlayer({
       {!isLive && controlsVisible && (
         <div style={{
           position: "absolute", bottom: 0, left: 0, right: 0, zIndex: 30,
-          background: "linear-gradient(transparent, rgba(0,0,0,0.85))",
-          padding: "32px 40px 24px",
+          // Taller gradient for better legibility over bright content
+          background: "linear-gradient(to top, rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.6) 55%, transparent 100%)",
+          padding: "56px 40px 28px",
         }}>
-          <div style={{ fontSize: 16, fontWeight: 600, color: "#fff", marginBottom: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-            {title}
+          {/* Title + quality row */}
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 14, gap: 16 }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.12em", color: "rgba(255,255,255,0.45)", textTransform: "uppercase", marginBottom: 4 }}>
+                Now Playing
+              </div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: "#fff", lineHeight: 1.25, maxWidth: "80vw", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                {title}
+              </div>
+            </div>
+            <div style={{
+              flexShrink: 0, background: "rgba(255,255,255,0.12)", border: "1px solid rgba(255,255,255,0.2)",
+              borderRadius: 6, padding: "4px 10px", fontSize: 11, fontWeight: 700,
+              color: "rgba(255,255,255,0.7)", backdropFilter: "blur(8px)", alignSelf: "flex-end",
+            }}>
+              {qualityLabel}
+            </div>
           </div>
-          {/* Progress bar */}
+
+          {/* Time display */}
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 500, color: "rgba(255,255,255,0.55)", marginBottom: 8 }}>
+            <span>{fmtTime(currentTime)}</span>
+            <span style={{ color: "rgba(255,255,255,0.35)" }}>
+              {duration > 0 ? `−${fmtTime(Math.max(0, duration - currentTime))}` : ""}
+            </span>
+          </div>
+
+          {/* Progress bar — 6px with interactive scrub */}
           <div
             style={{
-              height: 4, borderRadius: 2, background: "rgba(255,255,255,0.2)",
-              marginBottom: 8, cursor: "pointer", position: "relative",
+              height: 6, borderRadius: 3, background: "rgba(255,255,255,0.18)",
+              marginBottom: 16, cursor: "pointer", position: "relative",
             }}
             onClick={(e) => {
               const v = getVideo(activeSlotRef.current);
               if (!v || !duration) return;
               const rect = e.currentTarget.getBoundingClientRect();
-              const pct = (e.clientX - rect.left) / rect.width;
+              const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
               v.currentTime = pct * duration;
             }}
           >
-            <div style={{ width: `${progress}%`, height: "100%", background: "#a855f7", borderRadius: 2, transition: "width 0.5s linear" }} />
+            {/* Buffered range — light tint showing what's preloaded */}
+            <div style={{
+              position: "absolute", top: 0, left: 0, height: "100%", borderRadius: 3,
+              background: "rgba(255,255,255,0.15)",
+              width: (() => {
+                const v = videoA.current ?? videoB.current;
+                if (!v || !duration || !v.buffered.length) return "0%";
+                const end = v.buffered.end(v.buffered.length - 1);
+                return `${Math.min(100, (end / duration) * 100)}%`;
+              })(),
+            }} />
+            {/* Playback fill */}
+            <div style={{ width: `${progress}%`, height: "100%", background: "#a855f7", borderRadius: 3, transition: "width 0.4s linear", position: "relative" }}>
+              {/* Scrub thumb */}
+              <div style={{
+                position: "absolute", right: -6, top: "50%", transform: "translateY(-50%)",
+                width: 14, height: 14, borderRadius: "50%", background: "#fff",
+                boxShadow: "0 0 6px rgba(168,85,247,0.8)",
+              }} />
+            </div>
           </div>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "rgba(255,255,255,0.5)" }}>
-            <span>{fmtTime(currentTime)}</span>
-            <span>{fmtTime(duration)}</span>
-          </div>
-          <div style={{ marginTop: 8, fontSize: 11, color: "rgba(255,255,255,0.3)", textAlign: "center" }}>
+
+          {/* Key hint row */}
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.28)", textAlign: "center", letterSpacing: "0.04em" }}>
             ← −15s &nbsp;·&nbsp; SPACE Play/Pause &nbsp;·&nbsp; → +15s &nbsp;·&nbsp; F Fullscreen &nbsp;·&nbsp; BACK Exit
           </div>
         </div>

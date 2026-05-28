@@ -200,7 +200,10 @@ const Env = z.object({
   // minimises CPU time on the Replit free tier; use "medium" for better quality.
   TRANSCODER_PRESET: z.string().default("veryfast"),
   // ffmpeg Constant Rate Factor. Lower = higher quality / larger file.
-  TRANSCODER_CRF: z.coerce.number().int().min(0).max(51).default(23),
+  // CRF 21 produces visibly sharper output vs. the old default of 23
+  // at the cost of ~15-20% larger files — worthwhile for broadcast-quality
+  // sermon content where face/text sharpness is critical.
+  TRANSCODER_CRF: z.coerce.number().int().min(0).max(51).default(21),
   // When set to "1" the transcoder scratch dir is kept after job completion
   // for post-mortem inspection.  Defaults to false (scratch dir deleted).
   TRANSCODER_KEEP_SCRATCH: z

@@ -1325,7 +1325,9 @@ const styles = StyleSheet.create({
     width: "100%",
     height: "100%",
     zIndex: 0,
-    opacity: 0.35,
+    // Raised from 0.35 → 0.45: stronger ambient fill makes letterbox/pillarbox
+    // areas clearly branded rather than near-black, matching Netflix/Apple TV+ UX.
+    opacity: 0.45,
     resizeMode: "cover",
   },
   poster: {
@@ -1364,7 +1366,9 @@ const styles = StyleSheet.create({
     bottom: 0,
     width: "100%",
     height: "100%",
-    backgroundColor: "rgba(0,0,0,0.7)",
+    // Slightly deeper scrim (0.7→0.78) so overlay text is legible over
+    // bright sermon thumbnails without compromising ambient colour feel.
+    backgroundColor: "rgba(0,0,0,0.78)",
     alignItems: "center",
     justifyContent: "center",
     zIndex: 20,
