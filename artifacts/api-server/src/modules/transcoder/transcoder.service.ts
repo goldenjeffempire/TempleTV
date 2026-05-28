@@ -426,6 +426,26 @@ async function probeResolution(inputPath: string): Promise<{ width: number; heig
  * re-download the source instead of running ffmpeg against bad bytes.
  */
 async function downloadSourceToTempFile(objectKey: string, destPath: string): Promise<void> {
+  // Remote HTTP(S) URL — download directly from the external server rather than
+  // from local object storage. This supports prod-sync queue items whose source
+  // lives on the production API (no local storage blob exists for them).
+  if (/^https?:\/\//i.test(objectKey)) {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 20 * 60 * 1000); // 20-min timeout for large files
+    try {
+      const res = await fetch(objectKey, { signal: ac.signal });
+      if (!res.ok || !res.body) {
+        throw new Error(
+          `transcoder: remote source download failed — ${res.status} ${res.statusText} (url=${objectKey})`,
+        );
+      }
+      await pipeline(res.body as unknown as NodeJS.ReadableStream, createWriteStream(destPath));
+    } finally {
+      clearTimeout(t);
+    }
+    return;
+  }
+
   const head = await storage().headObject(objectKey).catch(() => null);
   const { body } = await storage().getObject(objectKey);
   await pipeline(body, createWriteStream(destPath));

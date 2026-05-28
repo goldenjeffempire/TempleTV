@@ -407,6 +407,7 @@ async function pollOnce(): Promise<void> {
           thumbnailUrl: newState.thumbnailUrl,
           durationSecs: newState.durationSecs,
           localVideoUrl: newState.localUrl,
+          hlsMasterUrl: newState.hlsUrl,
           videoSource: newState.videoSource,
           isActive: newState.isActive,
           sortOrder: newState.sortOrder,
@@ -418,6 +419,7 @@ async function pollOnce(): Promise<void> {
             thumbnailUrl: newState.thumbnailUrl,
             durationSecs: newState.durationSecs,
             localVideoUrl: newState.localUrl,
+            hlsMasterUrl: newState.hlsUrl,
             videoSource: newState.videoSource,
             // Only deactivate when upstream marks an item unreachable (isActive=false).
             // Never re-activate a row that an admin has manually deactivated —

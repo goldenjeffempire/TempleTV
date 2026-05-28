@@ -27,6 +27,7 @@ import { queueIntegrityValidator } from "../engine/queue-integrity-validator.js"
 import { workerSupervisor } from "../engine/worker-supervisor.js";
 import { orphanCleanupWorker } from "../engine/orphan-cleanup.js";
 import { playbackAnalytics } from "../engine/playback-analytics.js";
+import { randomUUID } from "node:crypto";
 
 const adminGuard = { preHandler: requireAuth("editor") } as const;
 const adminOnlyGuard = { preHandler: requireAuth("admin") } as const;
@@ -800,5 +801,76 @@ export async function restRoutes(app: FastifyInstance) {
       missingPlayable: totals.missingPlayable,
     };
   });
+
+  // ── Remote-transcode endpoint ─────────────────────────────────────────────
+  //
+  // POST /broadcast-v2/queue/:id/transcode-remote
+  //
+  // Intended for prod-sync queue items that have a remote `localVideoUrl` (pointing
+  // to the production API) but no local managed_videos entry (videoId === null).
+  // Creates a managed_videos placeholder, stores the remote URL as the objectPath
+  // (the transcoder's downloadSourceToTempFile detects http(s):// keys and fetches
+  // from the external server directly), then enqueues local HLS transcoding.
+  app.post<{ Params: { id: string } }>(
+    "/broadcast-v2/queue/:id/transcode-remote",
+    { preHandler: requireAuth("admin") },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+
+      const [queueItem] = await db
+        .select()
+        .from(schema.broadcastQueueTable)
+        .where(eq(schema.broadcastQueueTable.id, id))
+        .limit(1);
+
+      if (!queueItem) {
+        return reply.code(404).send({ error: "Queue item not found" });
+      }
+      if (queueItem.videoId) {
+        return reply.code(409).send({
+          error: "Queue item already has a linked managed video. Use the standard retry flow.",
+        });
+      }
+      if (!queueItem.localVideoUrl || !/^https?:\/\//i.test(queueItem.localVideoUrl)) {
+        return reply.code(400).send({
+          error: "Queue item has no accessible remote source URL to download from.",
+        });
+      }
+
+      const sourceUrl = queueItem.localVideoUrl;
+      const videoId = randomUUID();
+
+      // Create managed_videos placeholder.
+      // objectPath stores the HTTP URL — downloadSourceToTempFile in the transcoder
+      // detects http(s):// and fetches from the remote server directly.
+      await db.insert(schema.videosTable).values({
+        id: videoId,
+        title: queueItem.title,
+        videoSource: "local",
+        objectPath: sourceUrl,
+        transcodingStatus: "queued",
+      });
+
+      // Link broadcast_queue row to the new managed_videos entry
+      await db
+        .update(schema.broadcastQueueTable)
+        .set({ videoId })
+        .where(eq(schema.broadcastQueueTable.id, id));
+
+      // Enqueue HLS transcoding (uses sourceUrl as the objectPath/videoPath)
+      await enqueueTranscode({ videoId, videoPath: sourceUrl, priority: 5 });
+      transcoderDispatcher.nudge();
+
+      // Reload orchestrator so the updated row is visible immediately
+      void broadcastOrchestrator.reload().catch(() => {});
+
+      req.log.info({ itemId: id, videoId, sourceUrl }, "[broadcast-v2] remote transcode queued");
+      return reply.code(202).send({
+        ok: true,
+        videoId,
+        message: "Remote source download and HLS transcoding queued.",
+      });
+    },
+  );
 
 }

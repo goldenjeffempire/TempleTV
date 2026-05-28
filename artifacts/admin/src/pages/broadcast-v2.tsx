@@ -363,6 +363,8 @@ interface SortableItemProps {
   onReactivate: (id: string) => void;
   onRetryHls: (videoId: string) => void;
   isRetryingHls: boolean;
+  onTranscodeLocally: (itemId: string) => void;
+  isTranscodingLocally: boolean;
 }
 
 function SortableQueueItem({
@@ -378,6 +380,8 @@ function SortableQueueItem({
   onReactivate,
   onRetryHls,
   isRetryingHls,
+  onTranscodeLocally,
+  isTranscodingLocally,
 }: SortableItemProps) {
   const {
     attributes,
@@ -592,6 +596,28 @@ function SortableQueueItem({
           return null;
         })()}
 
+      {/* Transcode-locally badge — prod-sync items that have no local managed video */}
+      {!item.videoId && !item.hasHls && item.localVideoUrl && (
+        <div className="flex items-center gap-1 shrink-0">
+          <Badge
+            variant="outline"
+            className="gap-1 text-[10px] text-slate-500 border-slate-300 dark:border-slate-600"
+            title="No HLS — source lives on the production server. Click 'Transcode' to download and encode locally."
+          >
+            No HLS
+          </Badge>
+          <button
+            onClick={() => onTranscodeLocally(item.id)}
+            disabled={isTranscodingLocally}
+            className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-blue-700 ring-1 ring-blue-300 hover:bg-blue-50 disabled:opacity-50 dark:text-blue-400 dark:ring-blue-700 dark:hover:bg-blue-950/30"
+            title="Download source from production and queue for local HLS transcoding."
+          >
+            <RotateCw className={`h-2.5 w-2.5 ${isTranscodingLocally ? "animate-spin" : ""}`} />
+            Transcode
+          </button>
+        </div>
+      )}
+
       {isCurrent && (
         <Badge variant="default" className="shrink-0">
           On air
@@ -778,6 +804,23 @@ export default function BroadcastV2Page() {
     },
     onError: (err) => {
       toast.error(err instanceof HttpError ? err.message : "Failed to retry HLS transcoding.");
+    },
+  });
+
+  // Download a prod-sync queue item's remote source and queue it for local HLS transcoding.
+  const transcodeLocallyMutation = useMutation({
+    mutationFn: (itemId: string) =>
+      api.post<{ ok: true; videoId: string; message: string }>(
+        `/broadcast-v2/queue/${itemId}/transcode-remote`,
+        {},
+      ),
+    onSuccess: (data) => {
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
+      toast.success(`Download started — HLS transcoding queued (id: ${data.videoId.slice(0, 8)}…)`);
+    },
+    onError: (err) => {
+      toast.error(err instanceof HttpError ? err.message : "Failed to start remote transcode.");
     },
   });
 
@@ -2661,6 +2704,8 @@ export default function BroadcastV2Page() {
                         onReactivate={(id) => reactivateMutation.mutate(id)}
                         onRetryHls={(videoId) => retryHlsMutation.mutate(videoId)}
                         isRetryingHls={retryHlsMutation.isPending}
+                        onTranscodeLocally={(itemId) => transcodeLocallyMutation.mutate(itemId)}
+                        isTranscodingLocally={transcodeLocallyMutation.isPending}
                       />
                     );
                   })}
