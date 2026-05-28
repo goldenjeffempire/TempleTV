@@ -70,6 +70,7 @@ import type { Sermon } from "@/types";
 import { ChatPanel } from "@/components/ChatPanel";
 import { FloatingReactions, type FloatingReactionsHandle } from "@/components/FloatingReactions";
 import { V2PlayerContainer } from "@/components/V2PlayerContainer";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { getApiBase } from "@/lib/apiBase";
 import { usePageSeo } from "@/hooks/usePageSeo";
 import { usePlayer } from "@/context/PlayerContext";
@@ -286,11 +287,13 @@ function BroadcastHlsPlayer({ muted, ...rest }: BroadcastHlsPlayerProps) {
     }
   }, []);
   return (
-    <V2PlayerContainer
-      baseUrl={`${apiBase}/api/broadcast-v2`}
-      onFatal={handleFatal}
-      muted={muted}
-    />
+    <ErrorBoundary>
+      <V2PlayerContainer
+        baseUrl={`${apiBase}/api/broadcast-v2`}
+        onFatal={handleFatal}
+        muted={muted}
+      />
+    </ErrorBoundary>
   );
 }
 
@@ -371,6 +374,28 @@ export default function PlayerScreen() {
         playThroughEarpieceAndroid: false,
       }).catch(() => {});
     };
+  }, []);
+
+  // Audio session heartbeat — re-asserts audio mode when the app foregrounds.
+  // Long background sessions (30+ min) can have audio focus revoked by the OS
+  // while another app (navigation, phone call, Siri) held the audio session.
+  // Without this, the user returns to the broadcast and gets silence until they
+  // manually interact with the player.
+  useEffect(() => {
+    if (Platform.OS === "web") return undefined;
+    const sub = AppState.addEventListener("change", (nextState: AppStateStatus) => {
+      if (nextState === "active") {
+        Audio.setAudioModeAsync({
+          playsInSilentModeIOS: true,
+          staysActiveInBackground: true,
+          interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+          interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+          shouldDuckAndroid: false,
+          playThroughEarpieceAndroid: false,
+        }).catch(() => {});
+      }
+    });
+    return () => sub.remove();
   }, []);
 
   const { setIsBroadcastMode, isPlaying, playerPlayRef, playerPauseRef, playerSeekRef } = usePlayer();

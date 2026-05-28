@@ -90,7 +90,7 @@ const SEEK_STEP          = 15;
 const CONTROLS_HIDE_MS   = 5_000;
 const PROGRESS_TICK_MS   = 5_000;
 const MAX_RETRIES        = 3;
-const WATCHDOG_MS        = 15_000;
+const WATCHDOG_MS        = 9_000;
 
 type Slot = "A" | "B";
 

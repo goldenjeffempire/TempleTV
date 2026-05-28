@@ -343,7 +343,7 @@ export function LiveBroadcastV2({
     if (snapshot.state === "OFFLINE_HOLD") return { primary: "Reconnecting to broadcast…" };
     if (snapshot.state === "FATAL") return {
       primary: "We encountered a playback issue.",
-      secondary: "Please refresh the page or try again in a moment.",
+      secondary: "Press Try Again to reconnect to the broadcast.",
       showRefresh: true,
     };
     if (server?.failover.active) return { primary: server.failover.reason ?? "On standby" };
@@ -657,7 +657,7 @@ export function LiveBroadcastV2({
               onMouseEnter={(e) => { (e.target as HTMLButtonElement).style.background = "rgba(255,255,255,0.25)"; }}
               onMouseLeave={(e) => { (e.target as HTMLButtonElement).style.background = "rgba(255,255,255,0.15)"; }}
             >
-              Refresh page
+              Try Again
             </button>
           )}
         </div>

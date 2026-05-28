@@ -1,12 +1,20 @@
 import { useEffect, useState } from "react";
 
-export function Clock() {
-  const [time, setTime] = useState(() => new Date());
+/**
+ * Wall-clock display for the TV header.
+ *
+ * Accepts an optional `offsetMs` (default 0) computed by the caller as
+ * `Date.now() - serverTimeMs` from the latest broadcast snapshot. This
+ * corrects for TV devices whose local system clock is significantly wrong
+ * (common on hospitality TVs and older Smart TV firmware).
+ */
+export function Clock({ offsetMs = 0 }: { offsetMs?: number }) {
+  const [time, setTime] = useState(() => new Date(Date.now() + offsetMs));
 
   useEffect(() => {
-    const id = setInterval(() => setTime(new Date()), 1000);
+    const id = setInterval(() => setTime(new Date(Date.now() + offsetMs)), 1000);
     return () => clearInterval(id);
-  }, []);
+  }, [offsetMs]);
 
   const hours = time.getHours();
   const minutes = time.getMinutes();

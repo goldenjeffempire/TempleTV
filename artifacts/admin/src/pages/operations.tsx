@@ -27,7 +27,8 @@ interface SystemMetrics {
   uptimeSec: number;
   version: string;
   nodeVersion: string;
-  activeConnections: number;
+  activeSseConnections: number;
+  activeWsConnections: number;
   requestsPerMinute: number;
 }
 
@@ -372,7 +373,13 @@ export default function OperationsPage() {
         <MetricCard title="CPU Usage" value={data ? `${data.cpu}%` : null} icon={<Cpu size={16} />} loading={isLoading} highlight={data && data.cpu > 80 ? "danger" : data && data.cpu > 60 ? "warning" : undefined} />
         <MetricCard title="Memory" value={data ? `${memPct}%` : null} icon={<MemoryStick size={16} />} loading={isLoading} subtitle={data ? `${data.memoryUsedMb}MB / ${data.memoryTotalMb}MB` : undefined} highlight={memPct > 85 ? "danger" : memPct > 70 ? "warning" : undefined} />
         <MetricCard title="API Uptime" value={uptimeStr} icon={<Clock size={16} />} loading={isLoading} />
-        <MetricCard title="Connections" value={data?.activeConnections} icon={<Zap size={16} />} loading={isLoading} subtitle="Active right now" />
+        <MetricCard
+          title="Connections"
+          value={data ? data.activeSseConnections + data.activeWsConnections : undefined}
+          icon={<Zap size={16} />}
+          loading={isLoading}
+          subtitle={data ? `SSE: ${data.activeSseConnections} · WS: ${data.activeWsConnections}` : "Active right now"}
+        />
       </div>
 
       {/* Broadcast engine quick metrics */}

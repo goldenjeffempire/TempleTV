@@ -97,9 +97,16 @@ export function VideoDetails({ video, relatedVideos, onPlay, onBack, onPlayRelat
     return () => window.removeEventListener("keydown", handler);
   }, [focused, playFocus, savedProgress, relatedIdx, relatedVideos, onPlay, onBack, onPlayRelated, video, toggle]);
 
-  const publishedDate = video.publishedAt
-    ? new Date(video.publishedAt).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })
-    : "";
+  const publishedDate = (() => {
+    if (!video.publishedAt) return "";
+    try {
+      const d = new Date(video.publishedAt);
+      if (isNaN(d.getTime())) return "";
+      return d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+    } catch {
+      return "";
+    }
+  })();
 
   return (
     <div style={{ width: "100vw", height: "100vh", display: "flex", flexDirection: "column", overflow: "hidden", background: "#0a0a0f", position: "relative" }}>

@@ -47,6 +47,7 @@ import { env, isProd } from "../../config/env.js";
 import { db } from "../../infrastructure/db.js";
 import { getRedis } from "../../infrastructure/redis.js";
 import { sseCounter } from "../../infrastructure/sse-counter.js";
+import { wsCounter } from "../../infrastructure/ws-counter.js";
 import { storage } from "../../infrastructure/storage.js";
 import { uploadSessions } from "../media-uploads/upload-sessions.js";
 import { cache } from "../../infrastructure/cache.js";
@@ -1861,7 +1862,8 @@ export async function adminOpsRoutes(app: FastifyInstance) {
             uptimeSec: z.number(),
             version: z.string(),
             nodeVersion: z.string(),
-            activeConnections: z.number(),
+            activeSseConnections: z.number(),
+            activeWsConnections: z.number(),
             requestsPerMinute: z.number(),
           }),
         },
@@ -1883,7 +1885,8 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         uptimeSec: uptimeSec(),
         version: env.APP_VERSION ?? process.env.npm_package_version ?? "1.0.0",
         nodeVersion: process.version,
-        activeConnections: sseCounter.get(),
+        activeSseConnections: sseCounter.get(),
+        activeWsConnections: wsCounter.get(),
         requestsPerMinute: 0,
       };
     },

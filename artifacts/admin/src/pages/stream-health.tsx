@@ -413,6 +413,17 @@ export default function StreamHealthPage() {
                   </div>
                   <span className="text-sm font-semibold tabular-nums">{recoveryCount}</span>
                 </div>
+                {analytics.bufferUtilizationPct !== undefined && (
+                  <div className="flex items-center justify-between py-2 border-t">
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full bg-blue-500" />
+                      <span className="text-sm">Buffer utilization</span>
+                    </div>
+                    <span className={`text-sm font-semibold tabular-nums${analytics.bufferUtilizationPct > 80 ? " text-amber-600 dark:text-amber-400" : ""}`}>
+                      {analytics.bufferUtilizationPct}%
+                    </span>
+                  </div>
+                )}
               </div>
               {stallCount > 5 && (
                 <div className="mt-3 flex items-center gap-2 rounded bg-amber-50 px-2.5 py-2 text-xs text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">

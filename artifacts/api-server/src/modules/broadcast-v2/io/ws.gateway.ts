@@ -5,6 +5,7 @@ import { eventLogRepo } from "../repository/event-log.repo.js";
 import { playbackAnalytics } from "../engine/playback-analytics.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { activeWsConnections, SERVICE_LABELS } from "../../../infrastructure/metrics.js";
+import { wsCounter } from "../../../infrastructure/ws-counter.js";
 
 /**
  * Per-IP WebSocket connection counter.
@@ -66,6 +67,7 @@ export async function wsRoutes(app: FastifyInstance) {
       socket.on("close", releaseCounter);
     }
     activeWsConnections.inc({ surface: "broadcast-v2", ...SERVICE_LABELS });
+    wsCounter.inc();
 
     const send = (frame: V2ServerFrame) => {
       try {
@@ -188,6 +190,7 @@ export async function wsRoutes(app: FastifyInstance) {
       // already fired (e.g. client disconnected during synchronous setup).
       releaseCounter();
       activeWsConnections.dec({ surface: "broadcast-v2", ...SERVICE_LABELS });
+      wsCounter.dec();
       playbackAnalytics.record({
         type: "session_close",
         itemId: null,

@@ -7,6 +7,7 @@ import { runtimeRepo } from "../repository/runtime.repo.js";
 import { checkpointRepo } from "../repository/checkpoint.repo.js";
 import { queueRepo, countActiveRaw, isKnownBadUrl, markBadUrl, clearAllBadUrls, clearBadUrl, BAD_URL_TTL_MS, incrementBadUrlSkipCount, resetBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, reEnableAllSuspended, type RawQueueRow } from "../repository/queue.repo.js";
 import { faststartRecoveryWorker } from "./faststart-recovery.js";
+import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { playbackAnalytics } from "./playback-analytics.js";
 import { scanLibraryAndEnqueue } from "../../broadcast/auto-enqueue.service.js";
 import type {
@@ -1476,6 +1477,8 @@ class BroadcastOrchestrator extends EventEmitter {
           this.cycleStartedAtMs = Date.now();
           this.consecutiveSkips = 0;
           this.autoSkipAttempts = 0;
+          // Notify admin SSE bus so the dashboard can surface an alert banner.
+          adminEventBus.push("emergency-filler-activated");
           this.emitSnapshot();
         }
       }
