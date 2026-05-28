@@ -8,7 +8,8 @@ import { broadcastService } from "../broadcast/broadcast.service.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { clearSuspended, clearBadUrl } from "../broadcast-v2/repository/queue.repo.js";
 import { NotFoundError, BadRequestError } from "../../shared/errors.js";
-import { boostTranscodePriority } from "../transcoder/transcoder.queue.js";
+import { boostTranscodePriority, enqueueTranscode } from "../transcoder/transcoder.queue.js";
+import { transcoderDispatcher } from "../transcoder/transcoder.dispatcher.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { logger } from "../../infrastructure/logger.js";
 
@@ -194,9 +195,23 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
         }
       }
       return {
-        items: rows.map((row) =>
-          toDto({ ...row, ...(row.videoId ? (hlsMap.get(row.videoId) ?? {}) : {}) }),
-        ),
+        items: rows.map((row) => {
+          // Merge: video-level HLS data from managed_videos (set by the transcoder)
+          // takes precedence over queue-row fields for transcodingStatus and error.
+          // For hlsMasterUrl specifically we COALESCE both sources so that a
+          // queue-level HLS override (set by prod-sync or an operator) is never
+          // silently erased by a null video-level entry — hasHls must reflect any
+          // reachable HLS URL, not just the one written by the local transcoder.
+          const videoMeta = row.videoId ? (hlsMap.get(row.videoId) ?? {}) : {};
+          const coalesced = {
+            ...row,
+            ...videoMeta,
+            hlsMasterUrl: (videoMeta as { hlsMasterUrl?: string | null }).hlsMasterUrl
+              ?? row.hlsMasterUrl
+              ?? null,
+          };
+          return toDto(coalesced);
+        }),
       };
     },
   );
@@ -293,11 +308,6 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
           localVideoUrl: video.localVideoUrl ?? null,
           videoSource: (video.videoSource as "youtube" | "local" | "hls") ?? "youtube",
         });
-        // Boost transcoding priority so broadcast-queue items get HLS encoded
-        // ahead of library videos that are not yet in the active rotation.
-        if (inserted.videoId) {
-          void boostTranscodePriority(inserted.videoId, 10);
-        }
         const hlsById = inserted.videoId
           ? await db
               .select({ transcodingStatus: videosTable.transcodingStatus, hlsMasterUrl: videosTable.hlsMasterUrl })
@@ -305,6 +315,35 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
               .where(eq(videosTable.id, inserted.videoId))
               .then((r) => r[0])
           : undefined;
+        // Ensure HLS is queued for this broadcast-queue item.
+        //
+        // IMPORTANT: we call enqueueTranscode (not just boostTranscodePriority)
+        // because boostTranscodePriority is a no-op when no transcoding job row
+        // exists yet — it only UPDATEs existing queued rows. If the video was
+        // added before the transcoder ran, or its job was cancelled/deleted,
+        // boostTranscodePriority silently does nothing and the item stays as raw
+        // MP4 forever (shows as "missing HLS" in the admin status bar).
+        //
+        // enqueueTranscode is fully idempotent:
+        //   • No existing job → INSERT a new queued job at priority 10
+        //   • Existing failed job → re-arm it (reset attempts, status = queued)
+        //   • Existing queued/processing job → leave it, return existing id
+        // Then nudge the dispatcher so it picks the job up immediately.
+        if (inserted.videoId && video.localVideoUrl && !hlsById?.hlsMasterUrl) {
+          void enqueueTranscode({
+            videoId: inserted.videoId,
+            videoPath: video.localVideoUrl,
+            priority: 10,
+          }).then(() => {
+            transcoderDispatcher.nudge();
+          }).catch((err: unknown) => {
+            logger.warn({ err, videoId: inserted.videoId }, "admin-broadcast: auto-enqueue HLS failed (non-fatal)");
+          });
+        } else if (inserted.videoId) {
+          // HLS already ready — just promote any existing queued job to p10
+          // so this item isn't stuck behind lower-priority library encodes.
+          void boostTranscodePriority(inserted.videoId, 10);
+        }
         return toDto({ ...inserted, ...hlsById });
       }
 
@@ -330,9 +369,7 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
         }
       }
       const insertedExplicit = await broadcastService.addToQueue(explicit);
-      if (insertedExplicit.videoId) {
-        void boostTranscodePriority(insertedExplicit.videoId, 10);
-      }
+      // Query FIRST so we have hlsMasterUrl before deciding which path to take.
       const hlsExplicit = insertedExplicit.videoId
         ? await db
             .select({ transcodingStatus: videosTable.transcodingStatus, hlsMasterUrl: videosTable.hlsMasterUrl })
@@ -340,6 +377,23 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
             .where(eq(videosTable.id, insertedExplicit.videoId))
             .then((r) => r[0])
         : undefined;
+      if (insertedExplicit.videoId) {
+        const explicitLocalUrl = explicit.localVideoUrl ?? null;
+        if (explicitLocalUrl && !hlsExplicit?.hlsMasterUrl) {
+          // Same idempotent enqueue pattern as the slim path above.
+          void enqueueTranscode({
+            videoId: insertedExplicit.videoId,
+            videoPath: explicitLocalUrl,
+            priority: 10,
+          }).then(() => {
+            transcoderDispatcher.nudge();
+          }).catch((err: unknown) => {
+            logger.warn({ err, videoId: insertedExplicit.videoId }, "admin-broadcast: auto-enqueue HLS (explicit path) failed (non-fatal)");
+          });
+        } else {
+          void boostTranscodePriority(insertedExplicit.videoId, 10);
+        }
+      }
       return toDto({ ...insertedExplicit, ...hlsExplicit });
     },
   );

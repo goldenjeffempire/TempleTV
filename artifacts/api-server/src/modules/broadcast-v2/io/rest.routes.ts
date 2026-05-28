@@ -73,6 +73,62 @@ _idempotencyGcTimer.unref?.();
 // across the lifetime of the API process.
 const PROCESS_BOOTED_AT_MS = Date.now();
 
+// ── Auto-enqueue missing HLS ─────────────────────────────────────────────────
+// Scans every active queue item backed by a local video that has no
+// hlsMasterUrl and enqueues a high-priority HLS job for each one.
+//
+// Used by both the /prepare-hls operator endpoint and the boot-time background
+// scan so the same idempotent logic runs in both contexts.
+//
+// enqueueTranscode handles all cases:
+//   • No job exists          → INSERT a new queued job at priority 10
+//   • Existing failed job    → re-arm (reset attempts, status = queued)
+//   • Queued/processing job  → leave it, return existing id (idempotent)
+//   • Done job with HLS set  → skipped by the hlsMasterUrl IS NULL filter
+async function autoEnqueueMissingHls(): Promise<{ triggered: number }> {
+  const q = schema.broadcastQueueTable;
+  const v = schema.videosTable;
+  const rows = await db
+    .select({
+      videoId: q.videoId,
+      localVideoUrl: v.localVideoUrl,
+      hlsMasterUrl: v.hlsMasterUrl,
+      transcodingStatus: v.transcodingStatus,
+    })
+    .from(q)
+    .leftJoin(v, eq(q.videoId, v.id))
+    .where(
+      and(
+        eq(q.isActive, true),
+        isNotNull(q.videoId),
+        isNull(v.hlsMasterUrl),
+      ),
+    );
+
+  let triggered = 0;
+  for (const row of rows) {
+    if (!row.videoId || !row.localVideoUrl) continue;
+    if (row.transcodingStatus === "hls_ready") continue;
+    await enqueueTranscode({
+      videoId: row.videoId,
+      videoPath: row.localVideoUrl,
+      priority: 10,
+    }).catch((err: unknown) => {
+      logger.warn({ err, videoId: row.videoId }, "[broadcast-v2] auto-enqueue-missing-hls: enqueueTranscode error (non-fatal)");
+    });
+    // Also boost any already-queued job — enqueueTranscode doesn't change
+    // priority on existing queued rows so we need the explicit boost.
+    void boostTranscodePriority(row.videoId, 10);
+    triggered++;
+  }
+  if (triggered > 0) {
+    void broadcastOrchestrator.reload();
+    transcoderDispatcher.nudge();
+  }
+  logger.info({ triggered }, "[broadcast-v2] auto-enqueue-missing-hls: scan complete");
+  return { triggered };
+}
+
 // ── Remote-transcode disk pre-flight ────────────────────────────────────────
 //
 // Before the route creates any DB rows or kicks off a download it checks:
@@ -648,59 +704,16 @@ export async function restRoutes(app: FastifyInstance) {
   });
 
   // ── Admin: trigger HLS transcoding for all queue items missing it ─────
-  // Scans every active queue item backed by a local video with no
-  // hlsMasterUrl and enqueues a high-priority HLS job for each one.
-  // Idempotent — enqueueTranscode deduplicates against existing queued jobs;
-  // boostTranscodePriority promotes any already-queued job to priority=10.
-  // Useful when videos were added to the queue before the transcoder was
-  // running, or after a failed transcoding run that left items as raw MP4.
-  // Scans all active queue items and enqueues HLS transcoding for each one
-  // that's missing an hlsMasterUrl. 3/min — spawns real FFmpeg processes.
+  // Delegates to autoEnqueueMissingHls() — the same function that runs
+  // automatically 15 s after boot. Idempotent; rate-limited to 3/min
+  // because each call may spawn real FFmpeg processes.
   app.post("/prepare-hls", { ...adminGuard, config: { rateLimit: { max: 3, timeWindow: "1 minute" } } }, async (req, reply) => {
     reply.header("Cache-Control", "no-store, max-age=0");
     const parsed = StopOverrideCommand.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     if (!checkIdempotency(parsed.data.idempotencyKey)) return { ok: true, triggered: 0, duplicate: true };
 
-    const q = schema.broadcastQueueTable;
-    const v = schema.videosTable;
-    const rows = await db
-      .select({
-        videoId: q.videoId,
-        localVideoUrl: v.localVideoUrl,
-        hlsMasterUrl: v.hlsMasterUrl,
-        transcodingStatus: v.transcodingStatus,
-      })
-      .from(q)
-      .leftJoin(v, eq(q.videoId, v.id))
-      .where(
-        and(
-          eq(q.isActive, true),
-          isNotNull(q.videoId),
-          isNull(v.hlsMasterUrl),
-        ),
-      );
-
-    let triggered = 0;
-    for (const row of rows) {
-      if (!row.videoId || !row.localVideoUrl) continue;
-      if (row.transcodingStatus === "hls_ready") continue;
-      await enqueueTranscode({
-        videoId: row.videoId,
-        videoPath: row.localVideoUrl,
-        priority: 10,
-      }).catch((err: unknown) => {
-        logger.warn({ err, videoId: row.videoId }, "[broadcast-v2] prepare-hls: enqueueTranscode error (non-fatal)");
-      });
-      // Also boost any job that already exists in queued state (enqueueTranscode
-      // is idempotent and won't change priority of an existing job).
-      void boostTranscodePriority(row.videoId, 10);
-      triggered++;
-    }
-    if (triggered > 0) {
-      void broadcastOrchestrator.reload();
-      transcoderDispatcher.nudge();
-    }
+    const { triggered } = await autoEnqueueMissingHls();
     logger.info({ triggered }, "[broadcast-v2] prepare-hls: triggered HLS jobs for queue items");
     return { ok: true as const, triggered };
   });
@@ -965,5 +978,23 @@ export async function restRoutes(app: FastifyInstance) {
       });
     },
   );
+
+  // ── Boot-time auto-enqueue scan ──────────────────────────────────────────
+  // Automatically fixes "missing HLS" on startup — handles the case where
+  // queue items existed before the transcoder ran, after a crash recovery,
+  // or after a failed job was cleared without re-arming.
+  //
+  // 15 s delay: lets the DB connection pool warm up, the transcoder
+  // dispatcher start its poll loop, and the orchestrator complete its first
+  // reload before we spawn FFmpeg processes.
+  //
+  // Idempotent — autoEnqueueMissingHls() never double-enqueues; items with
+  // a live queued/processing job or a completed hlsMasterUrl are skipped.
+  const _bootHlsScanTimer = setTimeout(() => {
+    autoEnqueueMissingHls().catch((err: unknown) => {
+      logger.warn({ err }, "[broadcast-v2] boot-time auto-enqueue HLS scan failed (non-fatal)");
+    });
+  }, 15_000);
+  _bootHlsScanTimer.unref?.();
 
 }
