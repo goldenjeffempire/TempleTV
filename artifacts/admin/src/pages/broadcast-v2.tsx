@@ -170,6 +170,10 @@ interface EngineHealth {
     allBlockedSinceMs: number | null;
     allBlockedDurationMs: number | null;
   };
+  skipInfo?: {
+    consecutiveSkips: number;
+    lastDeadAirAt: number | null;
+  };
   airingHistory?: AiringEntry[];
 }
 
@@ -726,6 +730,9 @@ export default function BroadcastV2Page() {
   // Dismissible dead-air banner. Auto-reset when a current item is found so
   // the banner reappears if the broadcast drops to dead air again.
   const [deadAirDismissed, setDeadAirDismissed] = useState(false);
+  // Dismissible consecutive-skips banner. Auto-reset when consecutiveSkips
+  // drops back to 0 (a successful item play).
+  const [consecutiveSkipsDismissed, setConsecutiveSkipsDismissed] = useState(false);
   // Launch Checklist modal.
   const [showChecklist, setShowChecklist] = useState(false);
 
@@ -1066,6 +1073,16 @@ export default function BroadcastV2Page() {
   useEffect(() => {
     if (!isAllBlocked) setAllBlockedDismissed(false);
   }, [isAllBlocked]);
+
+  // Consecutive-skips warning: ≥2 items have been skipped back-to-back
+  // without a successful play. This is an early signal of an emerging
+  // all-blocked or total-exhaustion condition — surface it before dead air
+  // actually occurs so operators can act proactively.
+  const consecutiveSkips = engineHealth?.skipInfo?.consecutiveSkips ?? 0;
+  const isConsecutiveSkipsWarning = consecutiveSkips >= 2 && !isAllBlocked && !isStuck;
+  useEffect(() => {
+    if (!isConsecutiveSkipsWarning) setConsecutiveSkipsDismissed(false);
+  }, [isConsecutiveSkipsWarning]);
 
   // Circuit-open workers: any background worker whose circuit breaker has
   // tripped. Workers auto-reset after 10 minutes but the banner surfaces the
@@ -1777,6 +1794,53 @@ export default function BroadcastV2Page() {
               aria-label="Dismiss dead-air alert"
               onClick={() => setDeadAirDismissed(true)}
               className="shrink-0 rounded p-0.5 hover:bg-orange-200/60 dark:hover:bg-orange-800/40"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Consecutive-skips early warning — dismissible amber banner.
+          Fires when ≥2 items have been skipped back-to-back without a
+          successful play, before the broadcast reaches full dead air. */}
+      {isConsecutiveSkipsWarning && !consecutiveSkipsDismissed && (
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-md border border-amber-300/60 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-700/60 dark:bg-amber-950/30 dark:text-amber-200"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+          <div className="flex-1">
+            <strong>{consecutiveSkips} consecutive item{consecutiveSkips !== 1 ? "s" : ""} skipped.</strong>{" "}
+            The broadcast engine is having trouble playing items back-to-back — this may
+            indicate broken source URLs or a stuck cycle. Check the Source Health panel
+            for blocked items, or reload the queue to resync the cycle position.
+            {engineHealth?.skipInfo?.lastDeadAirAt != null && (
+              <span className="ml-1 opacity-75">
+                (Last exhaustion: {new Date(engineHealth.skipInfo.lastDeadAirAt).toLocaleTimeString()})
+              </span>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!!busy}
+              onClick={() => void adminPost("/broadcast-v2/reload")}
+              className="h-7 px-2 text-xs border-amber-400/70 text-amber-800 hover:bg-amber-100 dark:text-amber-200 dark:border-amber-600/70 dark:hover:bg-amber-900/30"
+            >
+              {busy === "/broadcast-v2/reload" ? (
+                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+              ) : (
+                <RotateCw className="mr-1 h-3 w-3" />
+              )}
+              Reload
+            </Button>
+            <button
+              type="button"
+              aria-label="Dismiss consecutive-skips warning"
+              onClick={() => setConsecutiveSkipsDismissed(true)}
+              className="shrink-0 rounded p-0.5 hover:bg-amber-200/60 dark:hover:bg-amber-800/40"
             >
               <X className="h-4 w-4" />
             </button>

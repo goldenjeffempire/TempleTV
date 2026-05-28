@@ -90,6 +90,12 @@ const Env = z.object({
 
   BROADCAST_PRELOAD_LEAD_MS: z.coerce.number().int().nonnegative().default(90_000),
   BROADCAST_FAILOVER_HLS_URL: z.string().optional(),
+  // HLS or MP4 URL played when the orchestrator has cycled through every
+  // queue item consecutively without successfully playing any of them
+  // (total queue exhaustion). Acts as a last-resort emergency filler so
+  // viewers always see *something* rather than a blank screen.
+  // Leave unset to keep the current behaviour (off-air on exhaustion).
+  BROADCAST_EMERGENCY_FILLER_URL: z.string().optional(),
 
   RATE_LIMIT_DEFAULT_PER_MINUTE: z.coerce.number().int().positive().default(120),
   RATE_LIMIT_AUTH_PER_MINUTE: z.coerce.number().int().positive().default(20),

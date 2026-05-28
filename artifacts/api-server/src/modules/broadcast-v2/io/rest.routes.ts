@@ -209,6 +209,7 @@ export async function restRoutes(app: FastifyInstance) {
       allBlocked,
       /** True when queue has items but nothing is on air and sources are not all blocked. */
       deadAir: !stuck && !allBlocked.allSourcesBlocked && itemCount > 0 && snap.current === null && snap.mode !== "override",
+      skipInfo: broadcastOrchestrator.getSkipInfo(),
       redis: {
         connected: broadcastFanout.isConnected(),
         role: broadcastFanout.getRole(),

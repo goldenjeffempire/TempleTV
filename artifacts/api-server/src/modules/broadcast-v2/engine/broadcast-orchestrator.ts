@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { logger } from "../../../infrastructure/logger.js";
+import { env } from "../../../config/env.js";
 import { broadcastSequence, broadcastQueueDepth, broadcastQueueStuck, setBroadcastMode, SERVICE_LABELS } from "../../../infrastructure/metrics.js";
 import { eventLogRepo } from "../repository/event-log.repo.js";
 import { runtimeRepo } from "../repository/runtime.repo.js";
@@ -1094,6 +1095,20 @@ class BroadcastOrchestrator extends EventEmitter {
   // ── Tick: detect transitions and emit preload/advance ──────────────────
 
   private autoSkipAttempts = 0;
+  /**
+   * Consecutive skip counter — incremented each time an item is skipped
+   * (both operator-triggered and auto-skip in tick). Reset to 0 whenever an
+   * item successfully becomes the current item (broadcast resumes normally).
+   *
+   * When consecutiveSkips reaches the number of queue items, the orchestrator
+   * has cycled through every item without successfully playing any of them
+   * (total queue exhaustion). If BROADCAST_EMERGENCY_FILLER_URL is configured,
+   * an emergency override is engaged so viewers always see content.
+   */
+  private consecutiveSkips = 0;
+  /** Wall-clock ms when the orchestrator last detected total queue exhaustion
+   *  (consecutiveSkips >= items.length). Null if no exhaustion has occurred. */
+  private lastDeadAirAt: number | null = null;
   /** Timestamp (ms) when we first detected items loaded but all URLs blocked.
    *  Null when not in that state. Used for auto-recovery after the TTL window. */
   private allBlockedSinceMs: number | null = null;
@@ -1307,6 +1322,7 @@ class BroadcastOrchestrator extends EventEmitter {
       // source. Auto-skip up to 5 consecutive items before going quiet.
       if (this.items.length > 0 && this.cycleDurationMs > 0 && this.autoSkipAttempts < 5) {
         this.autoSkipAttempts += 1;
+        this.consecutiveSkips += 1;
         // Advance the cycle anchor by one item-duration to skip the bad slot.
         const elapsed = ((Date.now() - this.cycleStartedAtMs) % this.cycleDurationMs + this.cycleDurationMs) % this.cycleDurationMs;
         let acc = 0;
@@ -1319,6 +1335,38 @@ class BroadcastOrchestrator extends EventEmitter {
             break;
           }
           acc += span;
+        }
+        // Total queue exhaustion: every item has been consecutively skipped.
+        // Engage an emergency filler override so viewers see content rather
+        // than a blank screen while the operator resolves the broken items.
+        if (
+          this.consecutiveSkips >= Math.max(1, this.items.length) &&
+          env.BROADCAST_EMERGENCY_FILLER_URL
+        ) {
+          this.lastDeadAirAt = Date.now();
+          const fillerUrl = env.BROADCAST_EMERGENCY_FILLER_URL;
+          logger.error(
+            {
+              channel: this.channelId,
+              consecutiveSkips: this.consecutiveSkips,
+              itemCount: this.items.length,
+              fillerUrl,
+            },
+            "[broadcast-v2] TOTAL QUEUE EXHAUSTION — all items unresolvable; engaging emergency filler override",
+          );
+          void this.bump("dead_air.detected", {
+            consecutiveSkips: this.consecutiveSkips,
+            itemCount: this.items.length,
+          });
+          void this.startOverride({
+            kind: "hls",
+            url: fillerUrl,
+            title: "Emergency Filler",
+            endsAtMs: null,
+            resumeQueueOnEnd: false,
+          }).catch((err: unknown) =>
+            logger.warn({ err }, "[broadcast-v2] failed to engage emergency filler override (non-fatal)"),
+          );
         }
       }
       // All-sources-blocked auto-recovery: when items are loaded but every URL
@@ -1349,6 +1397,7 @@ class BroadcastOrchestrator extends EventEmitter {
     }
     this.allBlockedSinceMs = null;
     this.autoSkipAttempts  = 0;
+    this.consecutiveSkips  = 0;
     // Drift-correct self-heal is handled by selfHealStaleTimer (SELF_HEAL_STALE_MS)
     // which runs outside the tick loop so no DB work ever happens inside tick().
 
@@ -1553,8 +1602,38 @@ class BroadcastOrchestrator extends EventEmitter {
     if (!snap.current) return;
     const remainingMs = snap.current.endsAtMs - Date.now();
     this.cycleStartedAtMs -= remainingMs;
+    this.consecutiveSkips += 1;
     await this.bump("item.skipped", { itemId: snap.current.id });
     this.emitSnapshot();
+    // Total queue exhaustion check: if every queue item has now been skipped
+    // consecutively, engage the emergency filler override (if configured).
+    if (
+      this.consecutiveSkips >= Math.max(1, this.items.length) &&
+      env.BROADCAST_EMERGENCY_FILLER_URL
+    ) {
+      this.lastDeadAirAt = Date.now();
+      const fillerUrl = env.BROADCAST_EMERGENCY_FILLER_URL;
+      logger.error(
+        {
+          channel: this.channelId,
+          consecutiveSkips: this.consecutiveSkips,
+          itemCount: this.items.length,
+          fillerUrl,
+        },
+        "[broadcast-v2] TOTAL QUEUE EXHAUSTION (operator skip) — engaging emergency filler override",
+      );
+      void this.bump("dead_air.detected", {
+        consecutiveSkips: this.consecutiveSkips,
+        itemCount: this.items.length,
+      });
+      await this.startOverride({
+        kind: "hls",
+        url: fillerUrl,
+        title: "Emergency Filler",
+        endsAtMs: null,
+        resumeQueueOnEnd: false,
+      });
+    }
   }
 
   /**
@@ -1618,9 +1697,10 @@ class BroadcastOrchestrator extends EventEmitter {
     }
 
     this.cycleStartedAtMs -= remainingMs;
-    // Item played successfully to its natural end — reset the URL-failure
-    // counter so past probe/stall failures don't accumulate across restarts
-    // or transient CDN blips.
+    // Item played successfully to its natural end — reset consecutive skip
+    // counter and URL-failure counter so past probe/stall failures don't
+    // accumulate across restarts or transient CDN blips.
+    this.consecutiveSkips = 0;
     resetBadUrlSkipCount(itemId);
     await this.bump("item.advanced", { itemId, title: snap.current.title, naturalEnd: true });
     this.emitSnapshot();
@@ -2016,6 +2096,28 @@ class BroadcastOrchestrator extends EventEmitter {
       allSourcesBlocked: blocked,
       allBlockedSinceMs: this.allBlockedSinceMs,
       allBlockedDurationMs: blocked ? Date.now() - this.allBlockedSinceMs! : null,
+    };
+  }
+
+  /**
+   * Consecutive-skip and dead-air diagnostics for /health.
+   *
+   * consecutiveSkips counts how many items have been skipped back-to-back
+   * (auto-skip or operator skip) since the last successful item play. When
+   * this equals items.length every queue item has been cycled through without
+   * successfully playing — total queue exhaustion.
+   *
+   * lastDeadAirAt is the wall-clock ms when the most recent exhaustion event
+   * occurred (emergency filler engaged). Null if no exhaustion has occurred
+   * since startup.
+   */
+  getSkipInfo(): {
+    consecutiveSkips: number;
+    lastDeadAirAt: number | null;
+  } {
+    return {
+      consecutiveSkips: this.consecutiveSkips,
+      lastDeadAirAt: this.lastDeadAirAt,
     };
   }
 

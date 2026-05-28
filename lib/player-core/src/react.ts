@@ -492,10 +492,12 @@ export function useV2Broadcast(opts: UseV2BroadcastOptions): UseV2BroadcastResul
   }, [session, baseUrl, enableStallReport]);
 
   // SKIP_PENDING escape valve: if the machine stays in SKIP_PENDING for more
-  // than 20 s (report-stall POST silently failed, or the server's skip
+  // than 8 s (report-stall POST silently failed, or the server's skip
   // snapshot was lost in transit), force-reconnect the transport to fetch
   // a fresh snapshot.  This breaks the deadlock where the transport is
   // technically "connected" but delivering stale frames.
+  // Reduced from 20 s → 8 s: 20 s of dead air per stalled item is too long
+  // for 24/7 broadcast — a stall is always recoverable within 2 tick cycles.
   useEffect(() => {
     if (!session || !enableStallReport) return;
     let escapeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -505,7 +507,7 @@ export function useV2Broadcast(opts: UseV2BroadcastOptions): UseV2BroadcastResul
           escapeTimer = setTimeout(() => {
             escapeTimer = null;
             session.transport.forceReconnect();
-          }, 20_000);
+          }, 8_000);
         }
       } else if (escapeTimer !== null) {
         clearTimeout(escapeTimer);

@@ -91,4 +91,5 @@ export type V2EventType =
   | "override.ended"
   | "failover.engaged"
   | "failover.cleared"
-  | "checkpoint.updated";
+  | "checkpoint.updated"
+  | "dead_air.detected";
