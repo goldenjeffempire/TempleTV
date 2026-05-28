@@ -34,6 +34,7 @@ import {
   CircleCheck,
   CircleX,
   CircleAlert,
+  Zap,
 } from "lucide-react";
 import { BroadcastUploadPanel } from "@/components/broadcast/BroadcastUploadPanel";
 import {
