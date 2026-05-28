@@ -70,11 +70,12 @@ interface Props {
 }
 
 // ── hls.js attachment ─────────────────────────────────────────────────────────
-// Mirrors the production attachHls in LiveBroadcastV2.tsx so the admin preview
-// uses the same ABR, buffer, and error-recovery settings as real viewers.
+// Exact mirror of the production attachHls in LiveBroadcastV2.tsx. Keeping these
+// in sync ensures the admin preview uses identical ABR, buffer, stall-recovery,
+// and error-handling behaviour to what real viewers experience on TV / web.
 
 function attachHls(video: HTMLVideoElement, url: string): () => void {
-  // Native HLS (Safari / WebKit-based browsers)
+  // ── Native HLS path (Safari / WebKit-based browsers) ────────────────────────
   if (video.canPlayType("application/vnd.apple.mpegurl")) {
     let nativeRetried = false;
     const handleNativeError = () => {
@@ -104,18 +105,56 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
 
   let mediaErrorCount = 0;
 
+  // ── ABR quality cap on stall ─────────────────────────────────────────────────
+  // When hls.js detects a fragment-load timeout or error, immediately drop to the
+  // lowest available rendition. This prevents a single high-bitrate stall from
+  // consuming the entire frag retry budget when a lower rendition would succeed.
+  // The ABR engine ramps back up once bandwidth is confirmed stable (30 s).
+  let stallLevelDropped = false;
+  const handleHlsStallDrop = (_evt: unknown, data: { fatal: boolean; details: string }) => {
+    if (data.fatal) return;
+    if (stallLevelDropped) return;
+    const isLoadStall =
+      data.details === Hls.ErrorDetails.FRAG_LOAD_TIMEOUT ||
+      data.details === Hls.ErrorDetails.FRAG_LOAD_ERROR ||
+      data.details === Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT ||
+      data.details === Hls.ErrorDetails.LEVEL_LOAD_TIMEOUT;
+    if (!isLoadStall) return;
+    if (hls.currentLevel > 0) {
+      stallLevelDropped = true;
+      hls.currentLevel = 0;
+      setTimeout(() => { stallLevelDropped = false; hls.currentLevel = -1; }, 30_000);
+    }
+  };
+
   const hls = new Hls({
-    lowLatencyMode: false,
-    backBufferLength: 60,
-    maxBufferLength: 60,
-    maxMaxBufferLength: 120,
-    startLevel: -1,
-    capLevelToPlayerSize: true,
-    abrBandWidthFactor: 0.95,
-    abrBandWidthUpFactor: 0.70,
-    enableWorker: true,
+    // ── Latency / buffer ─────────────────────────────────────────────────────
+    lowLatencyMode: false,           // stability over latency for broadcast replay
+    backBufferLength: 60,            // keep 60 s behind playhead — instant resume after
+                                     //   screen-dim / tab-switch without re-buffering
+    maxBufferLength: 60,             // build 60 s ahead — eliminates mid-segment rebuffers
+    maxMaxBufferLength: 120,         // allow up to 2 min buffer on very fast connections
+    maxBufferHole: 0.5,              // bridge fragment discontinuities up to 500 ms smoothly
+
+    // ── ABR / quality ─────────────────────────────────────────────────────────
+    startLevel: -1,                  // auto — let EWMA bandwidth probe pick first level
+    capLevelToPlayerSize: true,      // never load 1080p into a small container
+    // 8 Mbps optimistic start — above our highest rendition (4.5 Mbps 1080p) so
+    // ABR always opens at the best quality the container size permits.
+    abrEwmaDefaultEstimate: 8_000_000,
+    abrBandWidthFactor: 0.90,        // conservative BW estimate — prefer stream stability
+    abrBandWidthUpFactor: 0.80,      // ramps up once link is confirmed stable
+
+    // ── Reliability ───────────────────────────────────────────────────────────
+    enableWorker: true,              // offload muxer/demuxer to Web Worker thread
     autoStartLoad: true,
-    startFragPrefetch: true,
+    startFragPrefetch: true,         // fetch next fragment before current ends (zero-gap)
+    // Software AES-128 fallback — prevents silent stalls on browsers/extensions
+    // that intercept or lack hardware crypto acceleration.
+    enableSoftwareAES: true,
+    maxFragLookUpTolerance: 0.2,     // tighter fragment boundary matching
+
+    // ── Retry budgets ─────────────────────────────────────────────────────────
     fragLoadingMaxRetry: 10,
     fragLoadingRetryDelay: 500,
     fragLoadingMaxRetryTimeout: 8_000,
@@ -126,6 +165,8 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
     nudgeMaxRetry: 8,
     nudgeOffset: 0.3,
   });
+
+  hls.on(Hls.Events.ERROR, handleHlsStallDrop);
 
   hls.on(Hls.Events.ERROR, (_evt, data) => {
     if (!data.fatal) return;
@@ -139,10 +180,8 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
   hls.loadSource(url);
   hls.attachMedia(video);
 
-  // Recalibrate HLS ABR after fullscreen transitions so capLevelToPlayerSize
-  // reads the correct viewport dimensions rather than pre-transition values.
-  // Without this, a stale quality cap can trigger a level-switch pipeline
-  // flush that freezes video while audio continues for 1-3 s.
+  // After a fullscreen transition hls.js may have stale capLevelToPlayerSize
+  // dimensions. Force an ABR re-evaluation at the new viewport size.
   const onFsChange = () => {
     if (!document.fullscreenElement) return;
     requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -514,10 +553,41 @@ export function BroadcastPreviewV2({ className }: Props) {
   });
 
   const title = server?.override?.title ?? server?.current?.title ?? null;
+  // Thumbnail used for the cinematic ambient blur fill behind the video frame.
+  // Falls back through: current item → next item → nothing (plain black).
+  const ambientThumb =
+    server?.current?.thumbnailUrl ??
+    server?.next?.thumbnailUrl ??
+    null;
 
   return (
     <div className={`relative bg-black rounded-lg overflow-hidden select-none ${className ?? ""}`}>
-      {/* Two persistent video buffers — FSM/adapter owns opacity + zIndex */}
+      {/* ── Cinematic ambient fill ─────────────────────────────────────────────
+          Fills any letterbox / pillarbox areas produced by object-contain with a
+          blurred, darkened version of the thumbnail rather than raw black. Matches
+          the TV player ambient layer exactly (same filter values, same scale trick
+          to hide soft blur edges). Invisible until a thumbnail is available.    */}
+      {ambientThumb && (
+        <div
+          aria-hidden
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 0,
+            backgroundImage: `url(${ambientThumb})`,
+            backgroundSize: "cover",
+            backgroundPosition: "center",
+            filter: "blur(40px) brightness(0.18) saturate(1.4)",
+            transform: "scale(1.12)",
+            pointerEvents: "none",
+          }}
+        />
+      )}
+
+      {/* Two persistent video buffers — FSM/adapter owns opacity + zIndex.
+          GPU compositing hints (willChange + translateZ) promote each buffer to
+          its own compositor layer — hardware-accelerated decode path on Chromium
+          and prevents UI overlay repaints from invalidating the video pipeline. */}
       <video
         ref={(el) => {
           aRef.current = el;
@@ -527,7 +597,7 @@ export function BroadcastPreviewV2({ className }: Props) {
         playsInline
         autoPlay
         muted={muted}
-        style={{ zIndex: 2 }}
+        style={{ zIndex: 2, display: "block", willChange: "transform", transform: "translateZ(0)" }}
       />
       <video
         ref={(el) => {
@@ -538,7 +608,7 @@ export function BroadcastPreviewV2({ className }: Props) {
         playsInline
         autoPlay
         muted={muted}
-        style={{ zIndex: 1, opacity: 0 }}
+        style={{ zIndex: 1, opacity: 0, display: "block", willChange: "transform", transform: "translateZ(0)" }}
       />
 
       {/* YouTube override placeholder.

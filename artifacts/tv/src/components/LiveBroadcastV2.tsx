@@ -217,7 +217,9 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
     // starts with the best quality the container size permits.
     abrEwmaDefaultEstimate: 8_000_000,
     abrBandWidthFactor: 0.90,       // conservative BW estimate — prefer stream stability
-    abrBandWidthUpFactor: 0.75,     // moderate upgrade speed — ramps up once link is stable
+    abrBandWidthUpFactor: 0.80,     // ramps up once link is confirmed stable
+    maxBufferHole: 0.5,             // bridge fragment discontinuities ≤ 500 ms seamlessly
+                                    //   instead of stalling while seeking past the gap
 
     // ── Reliability ──────────────────────────────────────────────────
     enableWorker: true,             // offload muxer/demuxer to Web Worker thread

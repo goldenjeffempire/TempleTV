@@ -101,9 +101,13 @@ function buildFfmpegArgs(
   const filterParts: string[] = [];
   filterParts.push(`[0:v]split=${renditions.length}` + renditions.map((_, i) => `[vsplit${i}]`).join(""));
   renditions.forEach((r, i) => {
+    // flags=lanczos: Lanczos resampling gives significantly sharper results than
+    // the FFmpeg bilinear default when downscaling HD source to 360p/480p/720p.
+    // setsar=1: normalises the Sample Aspect Ratio to 1:1 after pad so players
+    // receive an unambiguous DAR and do not apply unexpected stretch corrections.
     filterParts.push(
-      `[vsplit${i}]scale=w=${r.width}:h=${r.height}:force_original_aspect_ratio=decrease,` +
-      `pad=${r.width}:${r.height}:(ow-iw)/2:(oh-ih)/2[v${i}out]`,
+      `[vsplit${i}]scale=w=${r.width}:h=${r.height}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+      `pad=${r.width}:${r.height}:(ow-iw)/2:(oh-ih)/2,setsar=1[v${i}out]`,
     );
   });
 
