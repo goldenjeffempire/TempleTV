@@ -16,6 +16,16 @@ export const broadcastQueueTable = pgTable("broadcast_queue", {
   isActive: boolean("is_active").notNull().default(true),
   sortOrder: integer("sort_order").notNull().default(0),
   addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
+  // ── Scheduled programming ──────────────────────────────────────────────────
+  // When set, this item is pinned to a specific wall-clock air time. The
+  // broadcast scheduler enforces this slot; items between two anchored rows
+  // have their projected times computed from the previous anchor + cumulative
+  // durations. Null means "floating" — play when the natural queue rotation
+  // reaches this item.
+  scheduledAt: timestamp("scheduled_at", { withTimezone: true }),
+  // Human-readable block label shown in the schedule editor, e.g.
+  // "Sunday Morning Service", "Wednesday Bible Study", "Daily Devotional".
+  scheduleLabel: text("schedule_label"),
 }, (table) => [
   // Hot path: `buildBroadcastCurrentPayload` and the admin queue list both
   // run `WHERE is_active = true ORDER BY sort_order ASC`. A composite index

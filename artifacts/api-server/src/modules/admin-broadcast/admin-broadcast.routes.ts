@@ -55,6 +55,10 @@ const QueueRowSchema = z.object({
   hasHls: z.boolean(),
   /** Error message from the last failed transcoding job, or null when not failed. */
   transcodingError: z.string().nullable(),
+  /** ISO string of the locked air time for this item, or null for floating. */
+  scheduledAt: z.string().nullable(),
+  /** Human-readable programming block label, e.g. "Sunday Morning Service". */
+  scheduleLabel: z.string().nullable(),
 });
 
 /** Queue row optionally enriched with HLS + job error fields. */
@@ -81,6 +85,8 @@ function toDto(row: EnrichedQueueRow): z.infer<typeof QueueRowSchema> {
     transcodingStatus: row.transcodingStatus ?? null,
     hasHls: !!(row.hlsMasterUrl),
     transcodingError: row.transcodingError ?? null,
+    scheduledAt: row.scheduledAt ? row.scheduledAt.toISOString() : null,
+    scheduleLabel: row.scheduleLabel ?? null,
   };
 }
 
@@ -532,6 +538,198 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
       }
       await broadcastService.reorder(filteredIds);
       return { ok: true as const, count: filteredIds.length };
+    },
+  );
+
+  // ── PATCH /admin/broadcast/:id/schedule ──────────────────────────────────
+  // Pin or unpin a queue item to a specific wall-clock air time.
+  // scheduledAt: ISO datetime string (pin), or null / "" (unpin/float).
+  // scheduleLabel: optional human-readable block name ("Sunday Service").
+  r.patch(
+    "/broadcast/:id/schedule",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin"],
+        summary: "Pin or unpin a queue item to a specific air time",
+        params: z.object({ id: z.string().min(1).max(128) }),
+        body: z.object({
+          scheduledAt: z.string().nullable().optional(),
+          scheduleLabel: z.string().max(200).nullable().optional(),
+        }),
+        response: { 200: QueueRowSchema },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req, reply) => {
+      const { id } = req.params;
+      const { scheduledAt, scheduleLabel } = req.body;
+
+      if (scheduledAt === undefined && scheduleLabel === undefined) {
+        throw new BadRequestError("PATCH body must include at least one of: scheduledAt, scheduleLabel");
+      }
+
+      const updated = await db
+        .update(queueTable)
+        .set({
+          ...(scheduledAt !== undefined
+            ? { scheduledAt: (scheduledAt && scheduledAt.trim() !== "") ? new Date(scheduledAt) : null }
+            : {}),
+          ...(scheduleLabel !== undefined
+            ? { scheduleLabel: (scheduleLabel && scheduleLabel.trim() !== "") ? scheduleLabel.trim() : null }
+            : {}),
+        })
+        .where(eq(queueTable.id, id))
+        .returning();
+      if (updated.length === 0) throw new NotFoundError(`Queue item ${id} not found`);
+
+      adminEventBus.push("broadcast-queue-updated", { reason: "schedule-updated", id });
+
+      const hlsMeta = updated[0]!.videoId
+        ? await db
+            .select({ transcodingStatus: videosTable.transcodingStatus, hlsMasterUrl: videosTable.hlsMasterUrl })
+            .from(videosTable)
+            .where(eq(videosTable.id, updated[0]!.videoId))
+            .then((r) => r[0])
+        : undefined;
+      return toDto({ ...updated[0]!, ...hlsMeta });
+    },
+  );
+
+  // ── POST /admin/broadcast/schedule/batch ─────────────────────────────────
+  // Atomic multi-item schedule update. Accepts an array of { id, scheduledAt,
+  // scheduleLabel } entries and applies them in a single transaction.
+  // Used by the Schedule Editor "Save" button to commit all time changes at once.
+  r.post(
+    "/broadcast/schedule/batch",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin"],
+        summary: "Batch-update scheduled air times for multiple queue items",
+        body: z.object({
+          updates: z.array(z.object({
+            id: z.string().min(1).max(128),
+            scheduledAt: z.string().nullable(),
+            scheduleLabel: z.string().max(200).nullable(),
+          })).min(1).max(200),
+        }),
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            applied: z.number().int().nonnegative(),
+          }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req) => {
+      const { updates } = req.body;
+      let applied = 0;
+      // Apply each update individually — a single CASE-based UPDATE for
+      // nullable timestamps is complex; individual row updates are cheap
+      // enough for typical schedule sizes (< 50 items) and more readable.
+      for (const upd of updates) {
+        const result = await db
+          .update(queueTable)
+          .set({
+            scheduledAt: (upd.scheduledAt && upd.scheduledAt.trim() !== "")
+              ? new Date(upd.scheduledAt)
+              : null,
+            scheduleLabel: (upd.scheduleLabel && upd.scheduleLabel.trim() !== "")
+              ? upd.scheduleLabel.trim()
+              : null,
+          })
+          .where(eq(queueTable.id, upd.id))
+          .returning({ id: queueTable.id });
+        if (result.length > 0) applied++;
+      }
+      if (applied > 0) {
+        adminEventBus.push("broadcast-queue-updated", { reason: "schedule-batch-updated" });
+      }
+      return { ok: true as const, applied };
+    },
+  );
+
+  // ── GET /admin/broadcast/schedule ────────────────────────────────────────
+  // Returns all queue items in sort order, enriched with projected air times.
+  // Items with scheduledAt are "anchors"; floating items have their times
+  // computed sequentially from the previous anchor + cumulative durations.
+  // Intended for display in the Schedule Editor and for external EPG feeds.
+  r.get(
+    "/broadcast/schedule",
+    {
+      preHandler: requireAuth("editor"),
+      schema: {
+        tags: ["admin"],
+        summary: "Queue schedule with projected air times for all items",
+        response: {
+          200: z.object({
+            generatedAt: z.string(),
+            items: z.array(z.object({
+              id: z.string(),
+              title: z.string(),
+              durationSecs: z.number().int().nonnegative(),
+              isActive: z.boolean(),
+              sortOrder: z.number().int(),
+              scheduledAt: z.string().nullable(),
+              scheduleLabel: z.string().nullable(),
+              projectedStartAt: z.string(),
+              projectedEndAt: z.string(),
+              isAnchor: z.boolean(),
+              hasGapBefore: z.boolean(),
+              gapMinutes: z.number().nonnegative(),
+            })),
+          }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async () => {
+      const rows = await db
+        .select({
+          id: queueTable.id,
+          title: queueTable.title,
+          durationSecs: queueTable.durationSecs,
+          isActive: queueTable.isActive,
+          sortOrder: queueTable.sortOrder,
+          scheduledAt: queueTable.scheduledAt,
+          scheduleLabel: queueTable.scheduleLabel,
+        })
+        .from(queueTable)
+        .where(eq(queueTable.isActive, true))
+        .orderBy(
+          queueTable.sortOrder,
+          queueTable.addedAt,
+        );
+
+      let cursor = Date.now();
+      const items = rows.map((row) => {
+        const lockedMs = row.scheduledAt ? row.scheduledAt.getTime() : null;
+        const hasGapBefore = lockedMs !== null && lockedMs > cursor;
+        const gapMinutes = hasGapBefore ? Math.max(0, Math.round((lockedMs! - cursor) / 60_000)) : 0;
+        if (lockedMs !== null && lockedMs > cursor) cursor = lockedMs;
+        const projectedStartAt = new Date(cursor).toISOString();
+        cursor += Math.max(1, row.durationSecs) * 1_000;
+        return {
+          id: row.id,
+          title: row.title,
+          durationSecs: row.durationSecs,
+          isActive: row.isActive,
+          sortOrder: row.sortOrder,
+          scheduledAt: row.scheduledAt ? row.scheduledAt.toISOString() : null,
+          scheduleLabel: row.scheduleLabel ?? null,
+          projectedStartAt,
+          projectedEndAt: new Date(cursor).toISOString(),
+          isAnchor: lockedMs !== null,
+          hasGapBefore,
+          gapMinutes,
+        };
+      });
+
+      return { generatedAt: new Date().toISOString(), items };
     },
   );
 

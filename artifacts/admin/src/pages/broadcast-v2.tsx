@@ -37,7 +37,15 @@ import {
   CircleX,
   CircleAlert,
   Zap,
+  CalendarDays,
+  CalendarClock,
+  Pin,
+  PinOff,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { BroadcastUploadPanel } from "@/components/broadcast/BroadcastUploadPanel";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
@@ -85,11 +93,21 @@ interface BroadcastQueueRow {
   transcodingError: string | null;
   /** Absolute URL of the locally-uploaded video (prod-sync items only). */
   localVideoUrl: string | null;
+  /** ISO string of the locked air time for this item, or null for floating. */
+  scheduledAt: string | null;
+  /** Human-readable programming block label. */
+  scheduleLabel: string | null;
 }
 
 interface SourceHealthEntry {
   status: "ok" | "bad";
   badUntilMs: number | null;
+}
+
+interface ScheduleUpdate {
+  id: string;
+  scheduledAt: string | null;
+  scheduleLabel: string | null;
 }
 
 interface QueueSyncStatus {
@@ -930,6 +948,8 @@ function BroadcastV2PageInner() {
     }
   }, [queueData]);
 
+  const [showScheduleEditor, setShowScheduleEditor] = useState(false);
+
   const reorderDebounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(reorderDebounceRef.current), []);
 
@@ -942,6 +962,18 @@ function BroadcastV2PageInner() {
       );
       setLocalOrder((queueData?.items ?? []).map((i) => i.id));
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+    },
+  });
+
+  const saveScheduleMutation = useMutation({
+    mutationFn: (updates: ScheduleUpdate[]) =>
+      api.post<{ ok: boolean; applied: number }>("/admin/broadcast/schedule/batch", { updates }),
+    onSuccess: (result) => {
+      toast.success(`Schedule saved — ${result.applied} item${result.applied !== 1 ? "s" : ""} updated.`);
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+    },
+    onError: (err) => {
+      toast.error(err instanceof HttpError ? err.message : "Schedule save failed.");
     },
   });
 
@@ -2774,6 +2806,349 @@ function BroadcastV2PageInner() {
           )}
         </CardContent>
       </Card>
+
+      {/* ── Schedule editor ───────────────────────────────────────────────── */}
+      <Card>
+        <CardHeader
+          className="flex flex-row items-center justify-between gap-2 cursor-pointer select-none py-3"
+          onClick={() => setShowScheduleEditor((v) => !v)}
+          role="button"
+          aria-expanded={showScheduleEditor}
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <CalendarDays className="h-4 w-4 text-muted-foreground shrink-0" />
+            <CardTitle className="text-base">Schedule editor</CardTitle>
+            {queueItems.filter((i) => i.scheduledAt).length > 0 && (
+              <Badge variant="secondary" className="text-[10px] h-4 gap-1">
+                <Pin className="h-2.5 w-2.5" />
+                {queueItems.filter((i) => i.scheduledAt).length} pinned
+              </Badge>
+            )}
+          </div>
+          <div className="flex items-center gap-2 shrink-0 text-muted-foreground">
+            <span className="text-xs hidden sm:inline">Set air times for programming blocks</span>
+            {showScheduleEditor
+              ? <ChevronUp className="h-4 w-4" />
+              : <ChevronDown className="h-4 w-4" />}
+          </div>
+        </CardHeader>
+        {showScheduleEditor && (
+          <CardContent className="pt-0">
+            <ScheduleEditorPanel
+              items={orderedQueueItems}
+              onSave={(updates) => saveScheduleMutation.mutate(updates)}
+              isSaving={saveScheduleMutation.isPending}
+            />
+          </CardContent>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+// ── ScheduleEditorPanel ──────────────────────────────────────────────────────
+
+function toDateTimeLocalValue(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function formatProjectedTime(d: Date): string {
+  return d.toLocaleString([], {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
+function fmtDuration(secs: number): string {
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  if (h > 0) return `${h}h ${m > 0 ? `${m}m` : ""}`.trim();
+  if (m > 0) return `${m}m${s > 0 ? ` ${s}s` : ""}`;
+  return `${s}s`;
+}
+
+interface ProjectedQueueItem {
+  item: BroadcastQueueRow;
+  projectedStart: Date;
+  isAnchor: boolean;
+  hasGapBefore: boolean;
+  gapMinutes: number;
+}
+
+function projectSchedule(
+  items: BroadcastQueueRow[],
+  localSchedule: Map<string, { scheduledAt: string; scheduleLabel: string }>,
+): ProjectedQueueItem[] {
+  let cursor = Date.now();
+  return items
+    .filter((i) => i.isActive)
+    .map((item) => {
+      const editedAt = localSchedule.get(item.id)?.scheduledAt ?? item.scheduledAt ?? "";
+      const lockedMs = editedAt.trim() ? (() => { try { const t = new Date(editedAt).getTime(); return isNaN(t) ? null : t; } catch { return null; } })() : null;
+      const isAnchor = lockedMs !== null;
+      const hasGapBefore = isAnchor && lockedMs > cursor;
+      const gapMinutes = hasGapBefore ? Math.max(0, Math.round((lockedMs - cursor) / 60_000)) : 0;
+      if (isAnchor && lockedMs > cursor) cursor = lockedMs;
+      const projectedStart = new Date(cursor);
+      cursor += Math.max(1, item.durationSecs) * 1_000;
+      return { item, projectedStart, isAnchor, hasGapBefore, gapMinutes };
+    });
+}
+
+interface ScheduleEditorPanelProps {
+  items: BroadcastQueueRow[];
+  onSave: (updates: ScheduleUpdate[]) => void;
+  isSaving: boolean;
+}
+
+function ScheduleEditorPanel({ items, onSave, isSaving }: ScheduleEditorPanelProps) {
+  const [localSchedule, setLocalSchedule] = useState<Map<string, { scheduledAt: string; scheduleLabel: string }>>(() => {
+    const m = new Map<string, { scheduledAt: string; scheduleLabel: string }>();
+    for (const item of items) {
+      m.set(item.id, { scheduledAt: item.scheduledAt ?? "", scheduleLabel: item.scheduleLabel ?? "" });
+    }
+    return m;
+  });
+
+  // Sync with incoming items without blowing away local edits for existing items
+  useEffect(() => {
+    setLocalSchedule((prev) => {
+      const next = new Map(prev);
+      const incomingIds = new Set(items.map((i) => i.id));
+      for (const id of next.keys()) {
+        if (!incomingIds.has(id)) next.delete(id);
+      }
+      for (const item of items) {
+        if (!next.has(item.id)) {
+          next.set(item.id, { scheduledAt: item.scheduledAt ?? "", scheduleLabel: item.scheduleLabel ?? "" });
+        }
+      }
+      return next;
+    });
+  }, [items]);
+
+  const projected = useMemo(() => projectSchedule(items, localSchedule), [items, localSchedule]);
+
+  const setItemField = useCallback(
+    (id: string, field: "scheduledAt" | "scheduleLabel", value: string) => {
+      setLocalSchedule((prev) => {
+        const next = new Map(prev);
+        const cur = next.get(id) ?? { scheduledAt: "", scheduleLabel: "" };
+        next.set(id, { ...cur, [field]: value });
+        return next;
+      });
+    },
+    [],
+  );
+
+  const unpinItem = useCallback((id: string) => {
+    setLocalSchedule((prev) => {
+      const next = new Map(prev);
+      const cur = next.get(id) ?? { scheduledAt: "", scheduleLabel: "" };
+      next.set(id, { ...cur, scheduledAt: "" });
+      return next;
+    });
+  }, []);
+
+  const clearAll = useCallback(() => {
+    setLocalSchedule((prev) => {
+      const next = new Map(prev);
+      for (const [id, val] of next) next.set(id, { ...val, scheduledAt: "" });
+      return next;
+    });
+  }, []);
+
+  const dirtyCount = useMemo(
+    () =>
+      items.filter((item) => {
+        const local = localSchedule.get(item.id);
+        return (
+          (local?.scheduledAt ?? "") !== (item.scheduledAt ?? "") ||
+          (local?.scheduleLabel ?? "") !== (item.scheduleLabel ?? "")
+        );
+      }).length,
+    [items, localSchedule],
+  );
+
+  const pinnedCount = projected.filter((p) => p.isAnchor).length;
+
+  const handleSave = useCallback(() => {
+    const updates: ScheduleUpdate[] = items.map((item) => {
+      const local = localSchedule.get(item.id);
+      return {
+        id: item.id,
+        scheduledAt: local?.scheduledAt?.trim() || null,
+        scheduleLabel: local?.scheduleLabel?.trim() || null,
+      };
+    });
+    onSave(updates);
+  }, [items, localSchedule, onSave]);
+
+  const activeItems = items.filter((i) => i.isActive);
+  if (activeItems.length === 0) {
+    return <p className="text-sm text-muted-foreground py-3">No active queue items to schedule.</p>;
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* Toolbar */}
+      <div className="flex items-center justify-between gap-2 flex-wrap pt-1">
+        <p className="text-xs text-muted-foreground">
+          {pinnedCount > 0 ? (
+            <>
+              <span className="font-medium text-foreground">{pinnedCount}</span> anchor
+              {pinnedCount !== 1 ? "s" : ""} pinned — other items float in queue order.
+            </>
+          ) : (
+            "No anchors set. Pin items to lock them to specific air times."
+          )}
+        </p>
+        <div className="flex items-center gap-2">
+          {pinnedCount > 0 && (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-7 gap-1 text-xs text-muted-foreground"
+              onClick={clearAll}
+              disabled={isSaving}
+            >
+              <PinOff className="h-3 w-3" />
+              Clear all times
+            </Button>
+          )}
+          <Button
+            type="button"
+            size="sm"
+            className="h-7 gap-1.5 text-xs"
+            onClick={handleSave}
+            disabled={isSaving || dirtyCount === 0}
+            title={dirtyCount === 0 ? "No unsaved changes" : `Save ${dirtyCount} change${dirtyCount !== 1 ? "s" : ""}`}
+          >
+            {isSaving ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <CalendarClock className="h-3 w-3" />
+            )}
+            {isSaving ? "Saving…" : dirtyCount > 0 ? `Save (${dirtyCount})` : "Up to date"}
+          </Button>
+        </div>
+      </div>
+
+      <p className="text-[11px] text-muted-foreground/60 -mt-1">
+        Pinned items air at their exact time. Floating items play in queue order after the last anchor. Use the drag handles above to reorder.
+      </p>
+
+      {/* Timeline list */}
+      <div className="rounded-md border divide-y">
+        {projected.map(({ item, projectedStart, isAnchor, hasGapBefore, gapMinutes }, idx) => {
+          const local = localSchedule.get(item.id) ?? { scheduledAt: "", scheduleLabel: "" };
+          const dtValue = local.scheduledAt?.trim()
+            ? (() => {
+                try {
+                  return toDateTimeLocalValue(new Date(local.scheduledAt));
+                } catch {
+                  return "";
+                }
+              })()
+            : "";
+
+          return (
+            <div key={item.id}>
+              {hasGapBefore && (
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-amber-50 dark:bg-amber-950/20 text-[11px] text-amber-600 dark:text-amber-400">
+                  <Clock className="h-3 w-3 shrink-0" />
+                  {gapMinutes >= 60
+                    ? `${Math.floor(gapMinutes / 60)}h ${gapMinutes % 60}m gap / filler block before this item`
+                    : `${gapMinutes}m gap before this item`}
+                </div>
+              )}
+              <div
+                className={[
+                  "flex items-start gap-3 px-3 py-3",
+                  isAnchor ? "bg-blue-50/40 dark:bg-blue-950/10" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+              >
+                {/* Index + anchor indicator */}
+                <div className="flex flex-col items-center gap-0.5 pt-1 w-5 shrink-0">
+                  <span className="text-[11px] tabular-nums text-muted-foreground leading-none">{idx + 1}</span>
+                  {isAnchor && <Pin className="h-2.5 w-2.5 text-blue-500" />}
+                </div>
+
+                <div className="flex-1 min-w-0 space-y-2">
+                  {/* Title + duration + projected time */}
+                  <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                    <span className="truncate text-sm font-medium max-w-[240px]">{item.title}</span>
+                    <span className="text-xs text-muted-foreground shrink-0">{fmtDuration(item.durationSecs)}</span>
+                    <span
+                      className={[
+                        "text-xs shrink-0 flex items-center gap-1",
+                        isAnchor
+                          ? "text-blue-600 dark:text-blue-400 font-medium"
+                          : "text-muted-foreground",
+                      ].join(" ")}
+                    >
+                      {isAnchor ? <Pin className="h-2.5 w-2.5" /> : <Clock className="h-2.5 w-2.5" />}
+                      {isAnchor
+                        ? formatProjectedTime(projectedStart)
+                        : `~${formatProjectedTime(projectedStart)}`}
+                    </span>
+                  </div>
+
+                  {/* Controls */}
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] text-muted-foreground shrink-0">Air time:</span>
+                      <input
+                        type="datetime-local"
+                        value={dtValue}
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          setItemField(
+                            item.id,
+                            "scheduledAt",
+                            raw ? new Date(raw).toISOString() : "",
+                          );
+                        }}
+                        className="h-7 rounded border border-input bg-background px-2 py-0 text-xs tabular-nums text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                        title="Pin this item to a specific air time"
+                      />
+                      {isAnchor && (
+                        <button
+                          type="button"
+                          onClick={() => unpinItem(item.id)}
+                          title="Remove time pin — item becomes floating"
+                          className="h-7 w-7 rounded border border-input flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                        >
+                          <PinOff className="h-3 w-3" />
+                        </button>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] text-muted-foreground shrink-0">Block label:</span>
+                      <Input
+                        value={local.scheduleLabel}
+                        onChange={(e) => setItemField(item.id, "scheduleLabel", e.target.value)}
+                        placeholder="e.g. Sunday Morning Service"
+                        className="h-7 text-xs w-48 py-0"
+                        maxLength={200}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
