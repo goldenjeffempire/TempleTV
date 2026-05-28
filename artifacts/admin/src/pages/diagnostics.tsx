@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer,
-} from "recharts";
+} from "@/lib/recharts-shim";
 import {
   ScanSearch, Cpu, MemoryStick, Clock, Radio, Clapperboard,
   Activity, Users, RefreshCw, CheckCircle2, AlertTriangle,
