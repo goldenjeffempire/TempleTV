@@ -23,7 +23,7 @@
     "logcat": "bash scripts/logcat.sh",
     "screenshot": "bash scripts/screenshot.sh",
     "record": "bash scripts/record.sh",
-    "eas:build": "bash scripts/eas-build.sh",
+    "eas:build": "GIT_INDEX_FILE=/tmp/eas-build-index bash scripts/eas-build.sh",
     "release:patch": "bash scripts/release.sh",
     "release:rollback": "bash scripts/release-rollback.sh",
     "android:clean": "cd android && ./gradlew clean",
