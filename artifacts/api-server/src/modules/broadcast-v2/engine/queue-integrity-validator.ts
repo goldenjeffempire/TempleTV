@@ -116,7 +116,14 @@ class QueueIntegrityValidatorImpl {
 
         if (row.durationSecs === 1800) {
           const vDur = row.vDuration ? parseFloat(row.vDuration) : 0;
-          if (!vDur || isNaN(vDur)) {
+          // HLS and DASH items self-report duration via their manifests; the
+          // 1800 s stored value is an expected placeholder that the orchestrator
+          // never relies on for scheduling (it uses live playback telemetry for
+          // HLS transitions). YouTube items similarly have no local ffprobe
+          // target. Only flag the warning for local MP4-only items.
+          const hasHls = !!(row.qHlsUrl || row.vHlsUrl);
+          const isYoutube = row.vSource === "youtube";
+          if (!hasHls && !isYoutube && (!vDur || isNaN(vDur))) {
             issues.push({
               severity: "warn",
               itemId: row.id,

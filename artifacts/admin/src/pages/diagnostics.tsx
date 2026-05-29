@@ -12,7 +12,7 @@ import {
   AreaChart, Area, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer,
 } from "@/lib/recharts-shim";
 import {
-  ScanSearch, Cpu, MemoryStick, Clock, Radio, Clapperboard,
+  Cpu, MemoryStick, Clock, Radio, Clapperboard,
   Activity, Users, RefreshCw, CheckCircle2, AlertTriangle,
   TrendingDown, TrendingUp, Server, Zap, HardDrive,
 } from "lucide-react";

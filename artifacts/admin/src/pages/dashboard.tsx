@@ -92,8 +92,8 @@ export default function Dashboard() {
   const { data: readyz } = useQuery({
     queryKey: ["readyz"],
     queryFn: () => api.get<ReadyzResponse>("/readyz"),
-    refetchInterval: 30_000,
-    staleTime: 25_000,
+    refetchInterval: 15_000,
+    staleTime: 12_000,
   });
 
   const { data: transcodingQueue, isLoading: transcodingLoading } = useQuery({
@@ -112,11 +112,14 @@ export default function Dashboard() {
   const { data: engineHealth } = useQuery({
     queryKey: ["dashboard-engine-health"],
     queryFn: () => api.get<EngineHealthSummary>("/broadcast-v2/health").catch(() => null),
-    refetchInterval: 30_000,
-    staleTime: 25_000,
+    refetchInterval: 10_000,
+    staleTime: 8_000,
   });
 
-  useSSEEvent("broadcast-queue-updated", () => { void qc.invalidateQueries({ queryKey: ["admin-stats"] }); });
+  useSSEEvent("broadcast-queue-updated", () => {
+    void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+    void qc.invalidateQueries({ queryKey: ["dashboard-engine-health"] });
+  });
   useSSEEvent("transcoding-update", () => { void qc.invalidateQueries({ queryKey: ["transcoding-queue"] }); });
   useSSEEvent("videos-library-updated", () => { void qc.invalidateQueries({ queryKey: ["admin-stats"] }); });
 

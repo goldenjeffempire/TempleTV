@@ -22,7 +22,15 @@ const durationProbeCache = new Map<string, { secs: number | null; at: number }>(
  */
 const DURATION_PROBE_TTL_SUCCESS_MS = 24 * 60 * 60 * 1000;
 const DURATION_PROBE_TTL_FAILURE_MS =  5 * 60 * 1000;
-const DURATION_PROBE_TIMEOUT_MS = 20_000;
+/**
+ * Increased from 20 s to 45 s. Remote MP4 files served without faststart
+ * (moov atom at the end) require ffprobe to issue two HTTP range requests —
+ * one to the start (ftyp/mdat) and one to the end (moov). On a 100+ Mbps
+ * link with 200+ ms cross-continental RTT, two range requests + header parse
+ * can exceed 20 s for large files (> 1 GB). 45 s gives a comfortable margin
+ * while still failing fast enough not to block the entire sync cycle.
+ */
+const DURATION_PROBE_TIMEOUT_MS = 45_000;
 
 /**
  * Probe the real duration of a remote video file via ffprobe.
@@ -61,8 +69,12 @@ async function probeDurationSecs(url: string): Promise<{ secs: number | null; fr
         "-v", "quiet",
         "-print_format", "json",
         "-show_format",
-        "-analyzeduration", "5000000",
-        "-probesize", "5000000",
+        // Increase analyzeduration and probesize for remote files that may
+        // have the moov atom far into the file (non-faststart). The values
+        // below allow ffprobe to read up to ~50 MB of index data which is
+        // more than sufficient to locate the moov atom of any real sermon file.
+        "-analyzeduration", "20000000",
+        "-probesize", "20000000",
         url,
       ]);
     } catch {

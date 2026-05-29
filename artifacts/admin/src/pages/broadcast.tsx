@@ -1382,7 +1382,8 @@ export default function BroadcastPage() {
   } = useQuery({
     queryKey: ["broadcast-queue"],
     queryFn: () => api.get<{ items: BroadcastQueueItem[] }>("/admin/broadcast"),
-    refetchInterval: 30_000,
+    refetchInterval: 15_000,
+    staleTime: 10_000,
   });
 
   // V2 snapshot — authoritative "now playing" and mode source
@@ -1397,7 +1398,8 @@ export default function BroadcastPage() {
     queryKey: ["broadcast-v2-health"],
     queryFn: () =>
       api.get<V2HealthResponse>("/broadcast-v2/health").catch(() => null),
-    refetchInterval: 30_000,
+    refetchInterval: 15_000,
+    staleTime: 12_000,
   });
 
   // V2 source-health — per-item bad-URL cache status.

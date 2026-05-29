@@ -91,6 +91,15 @@ const CONTROLS_HIDE_MS   = 5_000;
 const PROGRESS_TICK_MS   = 5_000;
 const MAX_RETRIES        = 3;
 const WATCHDOG_MS        = 9_000;
+/**
+ * How long a `stalled` or `waiting` event may persist before we attempt
+ * a load() + play() recovery. 15 s gives hls.js enough time to exhaust
+ * its own retry cycle (fragLoadingMaxRetry×delay ≈ 8 s) before we step
+ * in — preventing a double-recovery on transient congestion. Chosen to
+ * be longer than WATCHDOG_MS (9 s) so the one-shot initial-load watchdog
+ * fires first; this timer covers stalls during ongoing playback.
+ */
+const STALL_FAIL_MS      = 15_000;
 
 type Slot = "A" | "B";
 
@@ -150,6 +159,7 @@ export function HlsVideoPlayer({
   const usingFailover = useRef(false);
   const currentFailoverUrl = useRef<string | null>(null);
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // UI state
   const [loading, setLoading]         = useState(true);
@@ -511,12 +521,78 @@ export function HlsVideoPlayer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLive]);
 
+  // ── Continuous stall watchdog ─────────────────────────────────────────────
+  //
+  // hls.js handles most HLS-level stalls internally via its retry/error cycle.
+  // However, on Smart TV browsers (Tizen, webOS) the underlying <video> element
+  // can stall without firing an hls.js fatal error — manifesting as a frozen
+  // frame while audio continues (or silence). The `stalled` and `waiting` events
+  // from the video element bridge this gap:
+  //
+  //   stalled — browser stopped downloading data (network-level stall)
+  //   waiting  — playback paused waiting for more data (MSE buffer drained)
+  //
+  // When either fires we arm a timer. If the video doesn't recover within
+  // STALL_FAIL_MS the timer fires a load() + play() recovery attempt —
+  // identical to what the one-shot WATCHDOG_MS timer does after canplay,
+  // but applicable throughout the entire playback lifetime.
+  //
+  // The timer is cancelled immediately when the video proves it has recovered:
+  //   `playing`    — decoder resumed
+  //   `timeupdate` — time is advancing (proxy for "playing without stutter")
+  //   `canplay`    — buffer refilled
+  //
+  // We re-run this effect whenever the active slot or the current URL changes
+  // so listeners always target the correct <video> element.
+
+  useEffect(() => {
+    const v = getVideo(activeSlotRef.current);
+    if (!v) return;
+
+    const clearStall = () => {
+      if (stallTimerRef.current) {
+        clearTimeout(stallTimerRef.current);
+        stallTimerRef.current = null;
+      }
+    };
+
+    const onStall = () => {
+      clearStall();
+      stallTimerRef.current = setTimeout(() => {
+        const vid = getVideo(activeSlotRef.current);
+        if (vid && !vid.paused && vid.readyState < 3) {
+          vid.load();
+          vid.play().catch(() => {});
+        }
+      }, STALL_FAIL_MS);
+    };
+
+    v.addEventListener("stalled", onStall);
+    v.addEventListener("waiting", onStall);
+    v.addEventListener("playing", clearStall);
+    v.addEventListener("timeupdate", clearStall);
+    v.addEventListener("canplay", clearStall);
+
+    return () => {
+      clearStall();
+      v.removeEventListener("stalled", onStall);
+      v.removeEventListener("waiting", onStall);
+      v.removeEventListener("playing", clearStall);
+      v.removeEventListener("timeupdate", clearStall);
+      v.removeEventListener("canplay", clearStall);
+    };
+  // activeSlot state drives slot change re-runs; hlsUrl ensures we
+  // reattach when a new stream loads into the same slot.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSlot, hlsUrl]);
+
   // ── Cleanup ───────────────────────────────────────────────────────────────
 
   useEffect(() => {
     return () => {
       if (controlsHideTimer.current) clearTimeout(controlsHideTimer.current);
       if (watchdogRef.current) clearTimeout(watchdogRef.current);
+      if (stallTimerRef.current) clearTimeout(stallTimerRef.current);
       if (seekOsdTimer.current) clearTimeout(seekOsdTimer.current);
       if (progressTimer.current) clearInterval(progressTimer.current);
       try { getHls("A")?.destroy(); } catch { /* noop */ }

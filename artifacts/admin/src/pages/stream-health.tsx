@@ -56,6 +56,8 @@ interface DiagnosticsAnalytics {
   totalSessions: number;
   eventCounts: Record<string, number>;
   lastEventAtMs: number | null;
+  /** Percentage of buffer capacity currently in use (0–100). Optional — only present when the engine exposes it. */
+  bufferUtilizationPct?: number;
 }
 
 interface ScanItemResult {

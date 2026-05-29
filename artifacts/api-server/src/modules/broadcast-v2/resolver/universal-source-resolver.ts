@@ -37,6 +37,29 @@ const ALLOWED_HOST_SUFFIXES: ReadonlyArray<string> = [
   ".r2.dev",
   // Backblaze B2 + CDN partners
   ".backblazeb2.com",
+  // Akamai CDN — common enterprise media delivery network
+  ".akamaized.net",
+  ".akamaihd.net",
+  ".edgekey.net",
+  ".edgesuite.net",
+  // Fastly CDN — used by many media platforms and CDN resellers
+  ".fastly.net",
+  ".fastlylb.net",
+  // JW Player / Wowza CDN delivery
+  ".jwpcdn.com",
+  ".jwplatform.com",
+  ".wowza.com",
+  // Azure Media Services / Azure CDN
+  ".azureedge.net",
+  ".azurefd.net",
+  ".streaming.media.azure.net",
+  // Mux — video infrastructure platform
+  ".mux.com",
+  ".muxdata.com",
+  // Dailymotion — public video platform
+  "dailymotion.com",
+  ".dailymotion.com",
+  ".dmcdn.net",
   // First-party Temple TV origins. The bare domain and its api/cdn
   // subdomains must both match — `endsWith(".templetv.org.ng")`
   // would skip the apex, and a bare `templetv.org.ng` entry is also
