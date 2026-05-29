@@ -41,6 +41,10 @@ on:
 env:
   NODE_VERSION: '20.18.0'
   PNPM_VERSION: '10.26.1'
+  # Redirect git index to /tmp so EAS CLI can write the lock file in
+  # restricted sandbox environments (Replit, some CI runners) without hitting
+  # a "could not lock index" error during the project archive upload step.
+  GIT_INDEX_FILE: /tmp/eas-build-index
 
 jobs:
   submit:
