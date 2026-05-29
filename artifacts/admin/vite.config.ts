@@ -92,6 +92,10 @@ export default defineConfig({
   esbuild: {
     drop: process.env.NODE_ENV === "production" ? ["console", "debugger"] : [],
   },
+  optimizeDeps: {
+    include: ["date-fns", "date-fns/locale"],
+    force: false,
+  },
   server: {
     port,
     host: "0.0.0.0",
