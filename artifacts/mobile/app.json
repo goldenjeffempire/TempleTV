@@ -2,7 +2,7 @@
   "expo": {
     "name": "Temple TV",
     "slug": "temple-tv-mobile",
-    "version": "1.0.11",
+    "version": "1.0.12",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "templetv",
@@ -27,7 +27,7 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.templetv.app",
       "googleServicesFile": "./GoogleService-Info.plist",
-      "buildNumber": "202605241125",
+      "buildNumber": "202605290000",
       "requireFullScreen": false,
       "config": {
         "usesNonExemptEncryption": false
@@ -90,7 +90,7 @@
     },
     "android": {
       "package": "com.templetv.jctm",
-      "versionCode": 47,
+      "versionCode": 48,
       "allowBackup": false,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon-foreground.png",
@@ -242,7 +242,7 @@
             "enableProguardInReleaseBuilds": true,
             "enableShrinkResourcesInReleaseBuilds": true,
             "usesCleartextTraffic": false,
-            "extraProguardRules": "-keep class com.facebook.hermes.** { *; }\n-keep class com.facebook.jni.** { *; }\n-keep class com.doublesymmetry.trackplayer.** { *; }\n-keep class com.doublesymmetry.kotlinaudio.** { *; }\n-keep class com.guichaguri.trackplayer.** { *; }\n-keep class com.brentvatne.** { *; }\n-keep class com.swmansion.reanimated.** { *; }\n-keep class com.swmansion.gesturehandler.** { *; }\n-keep class com.swmansion.rnscreens.** { *; }\n-keep class com.th3rdwave.safeareacontext.** { *; }\n-keep class com.reactnativekeyboardcontroller.** { *; }\n-keep class expo.modules.** { *; }\n-keep class com.reactnativecommunity.asyncstorage.** { *; }\n-keep class com.reactnativecommunity.webview.** { *; }\n-dontwarn com.reactnativecommunity.webview.**\n-keep class com.horcrux.svg.** { *; }\n-keep class com.facebook.react.** { *; }\n-keep interface com.facebook.react.** { *; }\n-keep class com.facebook.react.turbomodule.** { *; }\n-keep class com.facebook.react.fabric.** { *; }\n-keep class com.facebook.react.bridge.** { *; }\n-keep class com.facebook.react.uimanager.** { *; }\n-keep class com.facebook.react.modules.** { *; }\n-keep class com.facebook.react.runtime.** { *; }\n-keep class com.facebook.react.animated.** { *; }\n-keepclassmembers class * extends com.facebook.react.bridge.ReactContextBaseJavaModule { public *; }\n-keep class * implements com.facebook.react.bridge.NativeModule { *; }\n-keepclassmembers class * { @com.facebook.react.bridge.ReactMethod <methods>; }\n-keep class androidx.media3.** { *; }\n-keep interface androidx.media3.** { *; }\n-keep class com.google.android.exoplayer2.** { *; }\n-dontwarn androidx.media3.**\n-keep class kotlin.** { *; }\n-keep class kotlin.jvm.** { *; }\n-keepclassmembers class **$WhenMappings { <fields>; }\n-keep class kotlinx.coroutines.** { *; }\n-dontwarn kotlin.**\n-dontwarn kotlinx.**\n-keep class okhttp3.** { *; }\n-keep interface okhttp3.** { *; }\n-keep class okio.** { *; }\n-dontwarn okhttp3.**\n-dontwarn okio.**\n-keep class io.sentry.** { *; }\n-dontwarn io.sentry.**\n-keepattributes Signature\n-keepattributes *Annotation*\n-keepattributes EnclosingMethod\n-keepattributes InnerClasses\n-dontwarn org.codehaus.mojo.animal_sniffer.IgnoreJRERequirement\n-keep class com.facebook.soloader.** { *; }\n-dontwarn com.facebook.soloader.**\n-keep class com.facebook.react.defaults.** { *; }\n-keepattributes SourceFile\n-keepattributes LineNumberTable\n-renamesourcefileattribute SourceFile",
+            "extraProguardRules": "-keep class com.facebook.hermes.** { *; }\n-keep class com.facebook.jni.** { *; }\n-keep class com.doublesymmetry.trackplayer.** { *; }\n-keep class com.doublesymmetry.kotlinaudio.** { *; }\n-keep class com.guichaguri.trackplayer.** { *; }\n-keep class com.brentvatne.** { *; }\n-keep class com.swmansion.reanimated.** { *; }\n-keep class com.swmansion.gesturehandler.** { *; }\n-keep class com.swmansion.rnscreens.** { *; }\n-keep class com.th3rdwave.safeareacontext.** { *; }\n-keep class com.reactnativekeyboardcontroller.** { *; }\n-keep class expo.modules.** { *; }\n-keep class com.reactnativecommunity.asyncstorage.** { *; }\n-keep class com.reactnativecommunity.webview.** { *; }\n-dontwarn com.reactnativecommunity.webview.**\n-keep class com.horcrux.svg.** { *; }\n-keep class com.facebook.react.** { *; }\n-keep interface com.facebook.react.** { *; }\n-keep class com.facebook.react.turbomodule.** { *; }\n-keep class com.facebook.react.fabric.** { *; }\n-keep class com.facebook.react.bridge.** { *; }\n-keep class com.facebook.react.uimanager.** { *; }\n-keep class com.facebook.react.modules.** { *; }\n-keep class com.facebook.react.runtime.** { *; }\n-keep class com.facebook.react.animated.** { *; }\n-keepclassmembers class * extends com.facebook.react.bridge.ReactContextBaseJavaModule { public *; }\n-keep class * implements com.facebook.react.bridge.NativeModule { *; }\n-keepclassmembers class * { @com.facebook.react.bridge.ReactMethod <methods>; }\n-keep class androidx.media3.** { *; }\n-keep interface androidx.media3.** { *; }\n-keep class com.google.android.exoplayer2.** { *; }\n-dontwarn androidx.media3.**\n-keep class kotlin.** { *; }\n-keep class kotlin.jvm.** { *; }\n-keepclassmembers class **$WhenMappings { <fields>; }\n-keep class kotlinx.coroutines.** { *; }\n-dontwarn kotlin.**\n-dontwarn kotlinx.**\n-keep class okhttp3.** { *; }\n-keep interface okhttp3.** { *; }\n-keep class okio.** { *; }\n-dontwarn okhttp3.**\n-dontwarn okio.**\n-keep class io.sentry.** { *; }\n-dontwarn io.sentry.**\n-keepattributes Signature\n-keepattributes *Annotation*\n-keepattributes EnclosingMethod\n-keepattributes InnerClasses\n-dontwarn org.codehaus.mojo.animal_sniffer.IgnoreJRERequirement\n-keep class com.facebook.soloader.** { *; }\n-dontwarn com.facebook.soloader.**\n-keep class com.facebook.react.defaults.** { *; }\n-keepattributes SourceFile\n-keepattributes LineNumberTable\n-renamesourcefileattribute SourceFile\n-keep class com.google.firebase.** { *; }\n-keep class com.google.firebase.messaging.** { *; }\n-dontwarn com.google.firebase.**\n-keep class com.google.android.gms.** { *; }\n-dontwarn com.google.android.gms.**\n-keepclassmembers enum * { public static **[] values(); public static ** valueOf(java.lang.String); }\n-keep class * implements android.os.Parcelable { public static final android.os.Parcelable$Creator *; }",
             "enableMinifyInReleaseBuilds": true
           },
           "ios": {

@@ -8,16 +8,29 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
-### Security
-- **SSRF allowlist hardening** in `broadcast-v2/resolver/universal-source-resolver.ts`: reject userinfo URLs (`http://user@host/`); deny private/loopback/link-local/CGNAT/multicast IPv4 literals; deny IPv6 loopback / ULA (`fc00::/7`) / link-local (`fe80::/10`). `localhost`/`127.0.0.1` permitted in dev/test only; gated by `NODE_ENV !== "production"`.
+---
 
-### Reliability
-- **Reconnect storm mitigation**: `lib/player-core/src/transport.ts` `forceReconnect()` now jitters 0–300 ms before reopening the WebSocket. Prevents thundering-herd on the gateway when a fleet of mobile clients all hit the 14 s watchdog after a brief server hiccup.
-- **Boot retry backoff fix**: `broadcast-v2/index.ts` `ensureBroadcastV2Started()` increments `startAttempts` only on actual start failure. Concurrent route warmups no longer burn through the 5 → 15 → 30 → 60 s tiers in seconds.
-- **Upload finalize → orchestrator reload**: `chunked-upload.routes.ts` finalize now pushes `broadcast-queue-updated` alongside `videos-library-updated` so v2 reload is triggered immediately on every finalize path (faststart still triggers its own reload on moov relocation — the upload-time push is the safety net).
+## v1.0.12 — 2026-05-29
+
+### Changed
+- **Version bump**: Android `versionCode` 47 → 48, iOS `buildNumber` `202605290000`. EAS production-android and production-ios profiles both carry `EXPO_PUBLIC_SENTRY_DSN` for consistent crash reporting.
+
+### Security / ProGuard
+- **Firebase / GMS keep rules**: Added `-keep class com.google.firebase.**`, `-keep class com.google.android.gms.**`, and `-dontwarn` suppressions. Prevents R8 from stripping FCM receiver and Play-Services classes in minified production builds, which caused silent push-notification failures on some devices.
+- **Enum safety rule**: Added `-keepclassmembers enum * { public static **[] values(); public static ** valueOf(java.lang.String); }` to prevent R8 from removing enum entries referenced only by reflection (affects media-session state enums in `kotlin-audio-engine`).
+- **Parcelable creator rule**: Added `-keep class * implements android.os.Parcelable { ... }` to preserve generated `CREATOR` fields required by Android IPC / Intent extras.
+
+### Fixed
+- **production-ios Sentry DSN missing** from `eas.json`: `EXPO_PUBLIC_SENTRY_DSN` was set in `production` and `production-android` but absent from `production-ios`. Crash reports from iOS production builds were silently dropped. Now consistent across all production profiles.
+
+### Reliability (server — carried from Unreleased)
+- **SSRF allowlist hardening** in `broadcast-v2/resolver/universal-source-resolver.ts`: reject userinfo URLs (`http://user@host/`); deny private/loopback/link-local/CGNAT/multicast IPv4 literals; deny IPv6 loopback / ULA (`fc00::/7`) / link-local (`fe80::/10`). `localhost`/`127.0.0.1` permitted in dev/test only; gated by `NODE_ENV !== "production"`.
+- **Reconnect storm mitigation**: `lib/player-core/src/transport.ts` `forceReconnect()` now jitters 0–300 ms before reopening the WebSocket.
+- **Boot retry backoff fix**: `broadcast-v2/index.ts` `ensureBroadcastV2Started()` increments `startAttempts` only on actual start failure.
+- **Upload finalize → orchestrator reload**: `chunked-upload.routes.ts` finalize now pushes `broadcast-queue-updated` alongside `videos-library-updated`.
 - **AppState listener leak guard**: `V2PlayerContainer.tsx` adds a `mounted` flag so queued AppState `change` events flushed after unmount cannot poke transport methods.
 - **Orientation lock race fix**: `app/player.tsx` `enterFullscreen` / `exitFullscreen` use an `orientationIntentRef` so a stale `LANDSCAPE` promise resolving after a quick back-tap re-applies the current intent (PORTRAIT_UP), eliminating the "home tab stuck in landscape" bug.
-- **Prod-sync ghost sweep**: `prod-queue-sync.ts` tracks `lastSeenAtMs` per item id; items absent from upstream for >10 minutes are deactivated locally (rows preserved — re-appearance via the upsert path instantly re-activates). Closes the "additive-only over weeks" divergence.
+- **Prod-sync ghost sweep**: `prod-queue-sync.ts` tracks `lastSeenAtMs` per item id; items absent from upstream for >10 minutes are deactivated locally.
 
 ---
 
