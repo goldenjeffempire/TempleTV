@@ -1,0 +1,13 @@
+{
+  "name": "expo-pip-android",
+  "version": "1.0.0",
+  "description": "Android Picture-in-Picture native module for Temple TV",
+  "private": true,
+  "main": "src/index",
+  "scripts": {},
+  "peerDependencies": {
+    "expo": "*",
+    "expo-modules-core": "*",
+    "react-native": "*"
+  }
+}

@@ -48,6 +48,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { useKeepAwake } from "expo-keep-awake";
 import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from "expo-av";
+import { usePictureInPicture } from "@/hooks/usePictureInPicture";
 import * as ScreenOrientation from "expo-screen-orientation";
 import { useColors } from "@/hooks/useColors";
 import { YoutubePlayer } from "@/components/YoutubePlayer";
@@ -535,6 +536,18 @@ export default function PlayerScreen() {
   // 16:9 so standard broadcasts / YouTube look correct before onLoad fires.
   // Updated by LocalVideoPlayer.onAspectRatioChange once the source loads.
   const [videoAspectRatio, setVideoAspectRatio] = useState(16 / 9);
+
+  // ── Picture-in-Picture ────────────────────────────────────────────────────
+  // Android-only. The manifest already declares android:supportsPictureInPicture
+  // (via with-android-activity-flags.js). The hook wraps the expo-pip-android
+  // native module which calls Activity.enterPictureInPictureMode().
+  // autoEnterOnBackground is handled explicitly in the AppState handler below
+  // so we can keep the fullscreen Modal open while the video fills the PiP window.
+  const { isInPip, isSupported: isPipSupported, enterPip } = usePictureInPicture({
+    aspectRatioWidth: Math.max(1, Math.round(videoAspectRatio * 9)),
+    aspectRatioHeight: 9,
+    autoEnterOnBackground: false,
+  });
   // Last-known playback position (ms). Written by handleProgressWithPosition
   // so that entering/exiting fullscreen can seek the new player instance to
   // where the previous one stopped, giving a seamless visual transition.
@@ -741,13 +754,32 @@ export default function PlayerScreen() {
     if (Platform.OS === "web") return undefined;
     const sub = AppState.addEventListener("change", (nextState: AppStateStatus) => {
       if ((nextState === "background" || nextState === "inactive") && isFullscreen) {
-        ScreenOrientation.lockAsync(
-          ScreenOrientation.OrientationLock.PORTRAIT_UP,
-        ).catch(() => {});
+        if (isPipSupported && !isYoutube) {
+          // Keep the fullscreen Modal open — the video fills the PiP window.
+          // If the system rejects the PiP request (locked screen, display off,
+          // TV device, etc.) fall back to restoring portrait orientation.
+          enterPip().then((entered) => {
+            if (!entered) {
+              ScreenOrientation.lockAsync(
+                ScreenOrientation.OrientationLock.PORTRAIT_UP,
+              ).catch(() => {});
+            }
+          }).catch(() => {
+            ScreenOrientation.lockAsync(
+              ScreenOrientation.OrientationLock.PORTRAIT_UP,
+            ).catch(() => {});
+          });
+        } else {
+          // Non-PiP path: restore portrait so landscape lock doesn't bleed
+          // into other apps after the user switches away.
+          ScreenOrientation.lockAsync(
+            ScreenOrientation.OrientationLock.PORTRAIT_UP,
+          ).catch(() => {});
+        }
       }
     });
     return () => sub.remove();
-  }, [isFullscreen]);
+  }, [isFullscreen, isPipSupported, isYoutube, enterPip]);
 
   // Restore portrait lock whenever the player screen is torn down, regardless
   // of how navigation happened (deep-link push, OS back gesture that bypasses
@@ -1096,7 +1128,7 @@ export default function PlayerScreen() {
           {/* Autoplay countdown overlay — covers the player surface when a
               VOD ends and another item is queued. Self-hides on Cancel /
               Play Now / video advance / unmount. */}
-          {countdown !== null && nextSermon && (
+          {countdown !== null && nextSermon && !isInPip && (
             <CountdownOverlay
               next={nextSermon}
               count={countdown}
@@ -1186,6 +1218,21 @@ export default function PlayerScreen() {
             <Text style={[styles.actionLabel, { color: c.mutedForeground }]}>Share</Text>
           </Pressable>
 
+          {/* PiP action — Android only, hidden for YouTube (manages its own PiP). */}
+          {Platform.OS === "android" && isPipSupported && !isYoutube && (
+            <Pressable
+              onPress={enterPip}
+              style={styles.actionItem}
+              accessibilityLabel="Picture in Picture — watch in a small floating window"
+              accessibilityRole="button"
+            >
+              <View style={[styles.actionCircle, { backgroundColor: c.card, borderColor: c.border }]}>
+                <Feather name="monitor" size={19} color={c.foreground} />
+              </View>
+              <Text style={[styles.actionLabel, { color: c.mutedForeground }]}>Mini Player</Text>
+            </Pressable>
+          )}
+
           {isLive && (
             <Pressable
               onPress={() => setShowChat((v) => !v)}
@@ -1249,7 +1296,8 @@ export default function PlayerScreen() {
       </ScrollView>
 
       {/* ── Live Chat Panel — floats over full screen ─────────────────── */}
-      <ChatPanel visible={isLive && showChat} onClose={() => setShowChat(false)} />
+      {/* Chat panel is hidden during PiP — the window is too small for interaction. */}
+      <ChatPanel visible={isLive && showChat && !isInPip} onClose={() => setShowChat(false)} />
 
       {/* ── Fullscreen Modal ──────────────────────────────────────────────
           Renders the active player in a full-device overlay so the video
@@ -1331,8 +1379,9 @@ export default function PlayerScreen() {
               regardless of whether the controls are hidden. */}
           {isLive && <FloatingReactions ref={fsReactionsRef} />}
 
-          {/* Autoplay countdown overlay — fullscreen surface */}
-          {countdown !== null && nextSermon && (
+          {/* Autoplay countdown overlay — fullscreen surface.
+              Hidden during PiP — the window is too small for meaningful interaction. */}
+          {countdown !== null && nextSermon && !isInPip && (
             <CountdownOverlay
               next={nextSermon}
               count={countdown}
@@ -1374,6 +1423,19 @@ export default function PlayerScreen() {
                     <View style={styles.fsLiveBadgeWrap}>
                       <LiveBadge />
                     </View>
+                  )}
+                  {/* PiP button — Android only. Shrinks the fullscreen video into
+                      a floating window so the user can multitask while watching. */}
+                  {Platform.OS === "android" && isPipSupported && !isYoutube && (
+                    <Pressable
+                      onPress={enterPip}
+                      style={styles.fsIconBtn}
+                      hitSlop={16}
+                      accessibilityLabel="Picture in Picture"
+                      accessibilityRole="button"
+                    >
+                      <Feather name="monitor" size={18} color="#fff" />
+                    </Pressable>
                   )}
                 </View>
               </LinearGradient>

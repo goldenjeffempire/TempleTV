@@ -1,6 +1,6 @@
 {
   "name": "@workspace/mobile",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "private": true,
   "main": "./index.ts",
   "scripts": {
@@ -82,6 +82,7 @@
   "dependencies": {
     "@sentry/react-native": "~7.2.0",
     "expo-av": "~16.0.8",
+    "expo-pip-android": "file:./modules/expo-pip-android",
     "react-native-sse": "^1.2.1",
     "expo-clipboard": "~8.0.8",
     "expo-file-system": "~19.0.22",
@@ -106,7 +107,8 @@
     "doctor": {
       "reactNativeDirectoryCheck": {
         "exclude": [
-          "react-native-track-player"
+          "react-native-track-player",
+          "expo-pip-android"
         ]
       }
     }

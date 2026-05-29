@@ -255,6 +255,7 @@
       "./plugins/with-kotlin-version.js",
       "./plugins/with-foreground-service-type.js",
       "./plugins/with-android-activity-flags.js",
+      "./plugins/with-edge-to-edge.js",
       ["expo-screen-orientation", { "initialOrientation": "DEFAULT" }]
     ],
     "extra": {
