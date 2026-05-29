@@ -47,11 +47,11 @@ export interface AiringEntry {
  * sources benefit too: manifest + several segments are prefetched, so the
  * swap is truly instantaneous.
  *
- * Raised from 60 s → 90 s: the extra 30 s provides a safety margin for
- * large files on slow/congested connections where the first bytes can take
- * several seconds to arrive, and for MP4 sources where the browser must
- * download the moov atom before `canplay` fires.  The eager post-handoff
- * preload in the player FSM starts the load even earlier, so 90 s here is
+ * Raised from 90 s → 120 s: the extra 30 s provides an additional safety
+ * margin for large files on slow/congested connections where the first bytes
+ * can take several seconds to arrive, and for MP4 sources where the browser
+ * must download the moov atom before `canplay` fires.  The eager post-handoff
+ * preload in the player FSM starts the load even earlier, so 120 s here is
  * now the fallback window rather than the sole guarantee.
  */
 const PRELOAD_LEAD_MS = 120_000;

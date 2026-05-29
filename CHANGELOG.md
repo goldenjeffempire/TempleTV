@@ -13,7 +13,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## v1.0.12 — 2026-05-29
 
 ### Changed
-- **Version bump**: Android `versionCode` 47 → 48, iOS `buildNumber` `202605290000`. EAS production-android and production-ios profiles both carry `EXPO_PUBLIC_SENTRY_DSN` for consistent crash reporting.
+- **Version bump**: Android `versionCode` 48 → 49, iOS `buildNumber` `202605290001`. EAS production-android and production-ios profiles both carry `EXPO_PUBLIC_SENTRY_DSN` for consistent crash reporting.
+- **EAS Node upgrade**: All EAS build profiles (development, development-device, preview, staging, production, production-ios, production-android, firetv, androidtv, appletv) upgraded from Node `20.18.0` → `22.14.0` (Active LTS). The `appletv` profile was also missing the `node` key entirely — added.
+
+### Fixed
+- **`apiBase.ts` console.warn in production builds**: Protocol auto-fix warning (`EXPO_PUBLIC_API_URL` missing `https://`) was emitted unconditionally in release builds. Guarded with `__DEV__` so it only surfaces during development; the auto-fix still applies silently in production.
+- **`SEED_ADMIN_FORCE` production safety guard**: `main.ts` now emits a `logger.error`-level alert when `SEED_ADMIN_FORCE=true` is detected with `NODE_ENV=production`, making the destructive every-boot account wipe impossible to miss in production log aggregation. The behaviour is unchanged — set `SEED_ADMIN_FORCE=false` in production secrets to disable.
+- **`PRELOAD_LEAD_MS` comment drift in broadcast orchestrator**: Comment said "Raised from 60 s → 90 s" and "so 90 s here is now the fallback window" while the constant was already `120_000` ms. Updated to "Raised from 90 s → 120 s" and "so 120 s here is now the fallback window" to match the code.
 
 ### Security / ProGuard
 - **Firebase / GMS keep rules**: Added `-keep class com.google.firebase.**`, `-keep class com.google.android.gms.**`, and `-dontwarn` suppressions. Prevents R8 from stripping FCM receiver and Play-Services classes in minified production builds, which caused silent push-notification failures on some devices.

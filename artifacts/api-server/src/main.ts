@@ -63,6 +63,19 @@ async function seedAdminIfConfigured(): Promise<void> {
     const displayName = email.split("@")[0] ?? "Admin";
 
     if (env.SEED_ADMIN_FORCE) {
+      // Safety: wiping all elevated accounts on every boot is almost always
+      // unintentional in production. Emit an error-level alert so it is
+      // impossible to miss in production monitoring / log aggregation.
+      // The wipe still proceeds — set SEED_ADMIN_FORCE=false (or unset it)
+      // in your production environment to disable this destructive behaviour.
+      if (env.NODE_ENV === "production") {
+        logger.error(
+          { email: normalizedEmail },
+          "[seed] DANGER: SEED_ADMIN_FORCE=true in production — ALL elevated " +
+          "accounts will be DELETED on every boot. This is irreversible. " +
+          "Set SEED_ADMIN_FORCE=false in production secrets to disable.",
+        );
+      }
       // 1. Wipe all elevated accounts and their refresh tokens.
       const elevated = await db
         .select({ id: usersTable.id })

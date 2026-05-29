@@ -32,7 +32,9 @@ export function getApiBase(): string {
     // to "api.templetv.org.ng" instead of "https://api.templetv.org.ng".
     // Failing silently here would make every API call fail on native with a
     // cryptic "Network request failed" error, so we fix and warn instead.
-    if (typeof console !== "undefined") {
+    // Guard with __DEV__ — production builds have the correct protocol set by
+    // EAS build profiles and should not emit console noise on any mis-hit.
+    if (__DEV__ && typeof console !== "undefined") {
       console.warn(
         `[apiBase] EXPO_PUBLIC_API_URL "${apiUrl}" is missing a protocol; ` +
         `auto-fixing with https://. Update the env var to silence this warning.`,

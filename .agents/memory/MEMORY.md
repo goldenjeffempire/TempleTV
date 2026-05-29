@@ -26,3 +26,4 @@
 - [Missing HLS false-negative fix — boostTranscodePriority vs enqueueTranscode](missing-hls-fix.md) — boostTranscodePriority is a no-op when no job exists; must call enqueueTranscode for true idempotent create-or-rearmate behavior.
 - [Android 15 edge-to-edge + PiP](android15-edge-to-edge-pip.md) — edge-to-edge plugin modifies AppTheme styles; local Expo module (expo-pip-android) provides PiP; hook uses relative import not package name for TS resolution.
 - [Enterprise hardening sprint 5](enterprise-hardening-sprint-5.md) — queue-validator HLS PLACEHOLDER_DURATION false-positive; TV stall watchdog; CDN allowlist (Akamai/Fastly/Azure/Mux/etc.); prod-sync ffprobe 20→45 s; admin polling 30→10-15 s; 3 TS type fixes.
+- [EAS build profile conventions](eas-build-conventions.md) — production-android has autoIncrement:false → bump app.json versionCode manually each release; appletv profile had no node key (now added); all profiles use node 22.14.0.
