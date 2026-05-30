@@ -107,7 +107,7 @@ export function useFavorites() {
   const persist = useCallback(async (updated: Sermon[]) => {
     setFavorites(updated);
     setFavoriteIds(new Set(updated.map((s) => s.id)));
-    await AsyncStorage.setItem(STORAGE_KEYS.favorites, JSON.stringify(updated));
+    await AsyncStorage.setItem(STORAGE_KEYS.favorites, JSON.stringify(updated)).catch(() => {});
   }, []);
 
   const addFavorite = useCallback(

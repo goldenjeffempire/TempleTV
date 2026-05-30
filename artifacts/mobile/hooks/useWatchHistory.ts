@@ -128,7 +128,7 @@ export function useWatchHistory() {
       latestHistoryRef.current = updated; // keep ref in sync immediately
       setHistory(updated);
       setHistoryIds(new Set(updated.map((h) => h.sermon.youtubeId)));
-      await AsyncStorage.setItem(STORAGE_KEYS.watchHistory, JSON.stringify(updated));
+      await AsyncStorage.setItem(STORAGE_KEYS.watchHistory, JSON.stringify(updated)).catch(() => {});
       hasAuthToken().then((loggedIn) => {
         if (!loggedIn) return;
         apiSyncHistory({

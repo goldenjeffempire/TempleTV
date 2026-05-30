@@ -127,6 +127,17 @@ export async function scheduledNotificationsRoutes(app: FastifyInstance) {
         throw new BadRequestError("scheduledAt is in the past");
       }
 
+      // Validate videoId references a real video so the deep-link in the
+      // delivered notification doesn't 404 when a viewer taps on it.
+      if (body.videoId) {
+        const [videoRow] = await db
+          .select({ id: schema.videosTable.id })
+          .from(schema.videosTable)
+          .where(eq(schema.videosTable.id, body.videoId))
+          .limit(1);
+        if (!videoRow) throw new NotFoundError(`Video ${body.videoId} not found`);
+      }
+
       const id = nanoid();
       const [row] = await db
         .insert(scheduled)

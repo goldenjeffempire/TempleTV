@@ -99,7 +99,7 @@ export default function DonateScreen() {
 
   const openLink = (url: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    Linking.openURL(url);
+    Linking.openURL(url).catch(() => {});
   };
 
   const copyToClipboard = async (key: string, value: string) => {

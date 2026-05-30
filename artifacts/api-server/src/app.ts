@@ -291,28 +291,32 @@ export async function buildApp(): Promise<FastifyInstance> {
     //  only open once; they should never trigger the counter.
     allowList: (req: import("fastify").FastifyRequest) => {
       const url = req.url ?? "";
+      // Strip the query string so an attacker cannot bypass path checks by
+      // appending e.g. "?ref=/hls/" or "?/broadcast-v2/state" to an
+      // otherwise rate-limited route.
+      const path = url.split("?")[0] ?? "";
       // Dev TV proxy
-      if (url.startsWith("/tv/")) return true;
+      if (path.startsWith("/tv/")) return true;
       // Dev Mobile (Expo web) proxy + Expo HMR WebSocket paths
-      if (url.startsWith("/mobile/") || url.startsWith("/mobile?")) return true;
-      if (url.startsWith("/artifacts/mobile/")) return true;
-      if (url === "/hot" || url.startsWith("/hot?")) return true;
-      if (url === "/message" || url.startsWith("/message?")) return true;
-      if (url.startsWith("/assets/") || url.startsWith("/assets?")) return true;
+      if (path.startsWith("/mobile/") || path.startsWith("/mobile")) return true;
+      if (path.startsWith("/artifacts/mobile/")) return true;
+      if (path === "/hot") return true;
+      if (path === "/message") return true;
+      if (path.startsWith("/assets/")) return true;
       // Broadcast v2 real-time paths
-      if (url.includes("/broadcast-v2/state")) return true;
-      if (url.includes("/broadcast-v2/health")) return true;
-      if (url.includes("/broadcast-v2/events")) return true;
-      if (url.includes("/broadcast-v2/ws")) return true;
-      if (url.includes("/broadcast-v2/rehydrate")) return true;
+      if (path.includes("/broadcast-v2/state")) return true;
+      if (path.includes("/broadcast-v2/health")) return true;
+      if (path.includes("/broadcast-v2/events")) return true;
+      if (path.includes("/broadcast-v2/ws")) return true;
+      if (path.includes("/broadcast-v2/rehydrate")) return true;
       // Midnight Prayers real-time paths
-      if (url.includes("/midnight-prayers/state")) return true;
-      if (url.includes("/midnight-prayers/config")) return true;
-      if (url.includes("/midnight-prayers/events")) return true;
-      if (url.includes("/midnight-prayers/ws")) return true;
+      if (path.includes("/midnight-prayers/state")) return true;
+      if (path.includes("/midnight-prayers/config")) return true;
+      if (path.includes("/midnight-prayers/events")) return true;
+      if (path.includes("/midnight-prayers/ws")) return true;
       // HLS segments + media proxy (high-volume streaming)
-      if (url.includes("/hls/")) return true;
-      if (url.includes("/media-proxy")) return true;
+      if (path.includes("/hls/")) return true;
+      if (path.includes("/media-proxy")) return true;
       // SSE and WebSocket upgrade connections
       const upgrade = req.headers["upgrade"];
       if (typeof upgrade === "string" && upgrade.toLowerCase() === "websocket") return true;

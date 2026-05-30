@@ -499,12 +499,12 @@ export default function SettingsScreen() {
           icon="youtube"
           label="YouTube Channel"
           description={APP_CONFIG.channelName}
-          onPress={() => Linking.openURL(APP_CONFIG.channelUrl)}
+          onPress={() => Linking.openURL(APP_CONFIG.channelUrl).catch(() => {})}
         />
         <Row
           icon="globe"
           label="Website"
-          onPress={() => Linking.openURL("https://jctm.org.ng")}
+          onPress={() => Linking.openURL("https://jctm.org.ng").catch(() => {})}
         />
         <Row
           icon="heart"
@@ -515,17 +515,17 @@ export default function SettingsScreen() {
         <Row
           icon="mail"
           label="Contact"
-          onPress={() => Linking.openURL("mailto:info@templetv.org.ng")}
+          onPress={() => Linking.openURL("mailto:info@templetv.org.ng").catch(() => {})}
         />
         <Row
           icon="shield"
           label="Privacy Policy"
-          onPress={() => Linking.openURL("https://templetv.org.ng/privacy")}
+          onPress={() => Linking.openURL("https://templetv.org.ng/privacy").catch(() => {})}
         />
         <Row
           icon="file-text"
           label="Terms of Service"
-          onPress={() => Linking.openURL("https://templetv.org.ng/terms")}
+          onPress={() => Linking.openURL("https://templetv.org.ng/terms").catch(() => {})}
         />
       </GlassCard>
 

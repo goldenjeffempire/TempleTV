@@ -258,6 +258,15 @@ export default function VideosPage() {
     });
   }, [qc]);
 
+  // Clamp page to totalPages when bulk deletions or filter changes shrink
+  // the result set below the current page — otherwise the user sees an
+  // empty list with no way to navigate back unless they manually change page.
+  useEffect(() => {
+    if (data && data.totalPages > 0 && page > data.totalPages) {
+      setPage(data.totalPages);
+    }
+  }, [data, page]);
+
   // ── Mutations ──────────────────────────────────────────────────────────────
 
   const updateMutation = useMutation({

@@ -101,6 +101,9 @@ export default function UsersPage() {
     (u.displayName ?? "").toLowerCase().includes(search.toLowerCase()),
   );
 
+  // Capture before the render map shadows the `user` variable with each row.
+  const currentUserId = user?.id;
+
   if (!isAdmin) {
     return (
       <div className="p-6 flex flex-col items-center justify-center min-h-[60vh] gap-3">
@@ -215,7 +218,11 @@ export default function UsersPage() {
                       {["editor", "moderator", "user"].map(role => (
                         <DropdownMenuItem
                           key={role}
-                          disabled={user.role === role || updateRoleMutation.isPending}
+                          disabled={
+                            user.role === role ||
+                            updateRoleMutation.isPending ||
+                            user.id === currentUserId
+                          }
                           onClick={() => updateRoleMutation.mutate({ id: user.id, role })}
                           className="capitalize"
                         >

@@ -147,6 +147,16 @@ export async function wsRoutes(app: FastifyInstance) {
         return;
       }
       if (msg.type === "resume") {
+        // Buffer any real-time frames that arrive while the DB replay is
+        // awaiting so the client always receives events in strict order:
+        //   recover (history) → snapshot (authoritative) → live frames.
+        // Without this gate, an orchestrator "frame" event emitted during
+        // the async replayFrom call can reach the client before the recover
+        // and snapshot frames, causing out-of-order FSM transitions.
+        const frameQueue: V2ServerFrame[] = [];
+        const bufferFrame = (f: V2ServerFrame) => { frameQueue.push(f); };
+        broadcastOrchestrator.off("frame", onFrame);
+        broadcastOrchestrator.on("frame", bufferFrame);
         try {
           const events = await eventLogRepo.replayFrom(broadcastOrchestrator.channelId, msg.lastSequence, 500);
           send({
@@ -172,14 +182,16 @@ export async function wsRoutes(app: FastifyInstance) {
         // After replay, send a fresh authoritative snapshot so the client
         // is aligned with server state even if the recover frame contained
         // no events (e.g. after a server restart that reset the event log).
-        // The client's transport will call /state anyway but this saves a
-        // round-trip and closes the race window where the WS snapshot and
-        // the REST /state response could interleave with different sequences.
         send({
           type: "snapshot",
           sequence: broadcastOrchestrator.getSequence(),
           state: broadcastOrchestrator.snapshot(),
         });
+        // Flush any frames buffered during the DB await, then restore the
+        // live listener so subsequent events flow normally.
+        for (const f of frameQueue) send(f);
+        broadcastOrchestrator.off("frame", bufferFrame);
+        broadcastOrchestrator.on("frame", onFrame);
       }
     });
 
