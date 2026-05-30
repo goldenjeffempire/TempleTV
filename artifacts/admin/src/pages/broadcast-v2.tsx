@@ -427,6 +427,10 @@ interface SortableItemProps {
   isRetryingHls: boolean;
   onTranscodeLocally: (itemId: string) => void;
   isTranscodingLocally: boolean;
+  onPlayNow: (itemId: string) => void;
+  isPlayingNow: boolean;
+  /** Seconds until this item will air (null when current or unknown). */
+  secondsUntilAir: number | null;
 }
 
 function SortableQueueItem({
@@ -444,6 +448,9 @@ function SortableQueueItem({
   isRetryingHls,
   onTranscodeLocally,
   isTranscodingLocally,
+  onPlayNow,
+  isPlayingNow,
+  secondsUntilAir,
 }: SortableItemProps) {
   const {
     attributes,
@@ -519,6 +526,16 @@ function SortableQueueItem({
           <span>{Math.round(item.durationSecs)}s</span>
           <span className="opacity-50">·</span>
           <span className="uppercase">{item.videoSource}</span>
+          {secondsUntilAir !== null && !isCurrent && item.isActive && (
+            <span className="opacity-60 tabular-nums" title="Estimated time until this item airs">
+              airs in{" "}
+              {secondsUntilAir >= 3600
+                ? `~${Math.round(secondsUntilAir / 3600)}h`
+                : secondsUntilAir >= 60
+                ? `~${Math.round(secondsUntilAir / 60)}m`
+                : `~${secondsUntilAir}s`}
+            </span>
+          )}
           {!item.isActive &&
             (autoSuspendedIds.has(item.id) ? (
               <>
@@ -688,6 +705,21 @@ function SortableQueueItem({
         <Badge variant="secondary" className="shrink-0">
           Next
         </Badge>
+      )}
+
+      {/* Play Now — instantly promotes this item to the front of the queue
+          and advances the orchestrator. Disabled when already on air. */}
+      {item.isActive && !isCurrent && (
+        <button
+          onClick={() => onPlayNow(item.id)}
+          disabled={isPlayingNow}
+          className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-300 hover:bg-emerald-50 disabled:opacity-50 dark:text-emerald-400 dark:ring-emerald-700 dark:hover:bg-emerald-950/30 shrink-0"
+          title="Play this item immediately — promotes it to the front of the queue and skips to it."
+          aria-label={`Play "${item.title}" now`}
+        >
+          <Zap className={`h-2.5 w-2.5 ${isPlayingNow ? "animate-pulse" : ""}`} />
+          Play now
+        </button>
       )}
 
       {/* Remove item — warns when on air */}
@@ -911,6 +943,25 @@ function BroadcastV2PageInner() {
     },
   });
 
+  // Play Now — promotes a queue item to the front and instantly skips to it.
+  // Uses the atomic /play-now endpoint which combines reorder + reload + skip
+  // in a single round-trip, eliminating the race window of doing them separately.
+  const playNowMutation = useMutation({
+    mutationFn: (itemId: string) =>
+      api.post<{ ok: boolean; sequence: number }>("/broadcast-v2/play-now", {
+        queueItemId: itemId,
+        idempotencyKey: crypto.randomUUID(),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      toast.success("Switched — item is now on air.");
+    },
+    onError: (err) => {
+      toast.error(err instanceof HttpError ? err.message : "Play Now failed — check engine health.");
+    },
+  });
+
   // Sync library → queue: scans managed_videos for playable rows not yet in
   // broadcast_queue and inserts them. Idempotent — safe to call repeatedly.
   const syncLibraryMutation = useMutation({
@@ -1080,6 +1131,47 @@ function BroadcastV2PageInner() {
   const autoSuspendedIds = new Set(
     (diagnostics?.autoSuspended ?? []).map((s) => s.itemId),
   );
+
+  // Compute approximate seconds-until-air for every active queue item.
+  // Uses server?.current?.endsAtMs as the anchor (recomputed on every server
+  // snapshot update; not ticked every second to avoid re-rendering the list).
+  //
+  // Algorithm: walk orderedQueueItems starting from the current item, summing
+  // durations. Items before current wrap around (they appear in the next cycle).
+  const secondsUntilAirByItemId = useMemo((): Record<string, number | null> => {
+    const result: Record<string, number | null> = {};
+    const currentId = server?.current?.id;
+    const endsAtMs  = server?.current?.endsAtMs;
+    if (!currentId || !endsAtMs) return result;
+
+    const nowMs = Date.now();
+    const remainingMs = Math.max(0, endsAtMs - nowMs);
+
+    const currentIdx = orderedQueueItems.findIndex((i) => i.id === currentId);
+    if (currentIdx === -1) return result;
+
+    let cumulativeMs = remainingMs;
+
+    // Items AFTER current — air in this cycle.
+    for (let i = currentIdx + 1; i < orderedQueueItems.length; i++) {
+      const it = orderedQueueItems[i];
+      if (it.isActive) {
+        result[it.id] = Math.round(cumulativeMs / 1000);
+        cumulativeMs += it.durationSecs * 1000;
+      }
+    }
+
+    // Items BEFORE current — wrap around to next cycle.
+    for (let i = 0; i < currentIdx; i++) {
+      const it = orderedQueueItems[i];
+      if (it.isActive) {
+        result[it.id] = Math.round(cumulativeMs / 1000);
+        cumulativeMs += it.durationSecs * 1000;
+      }
+    }
+
+    return result;
+  }, [server?.current?.id, server?.current?.endsAtMs, orderedQueueItems]);
   // HLS readiness summary across locally-hosted items in the queue.
   const localQueueItems = queueItems.filter((i) => i.videoId !== null);
   const pendingHlsCount = localQueueItems.filter((i) => !i.hasHls).length;
@@ -1547,6 +1639,7 @@ function BroadcastV2PageInner() {
           every second just to update the progress bar and elapsed-time display. */}
       <OnAirStatusBar
         currentItem={server?.current}
+        nextTitle={server?.next?.title ?? null}
         activeQueueCount={activeQueueCount}
         viewerCount={diagnostics?.analytics?.activeSessions ?? null}
         sequence={server?.sequence}
@@ -2175,6 +2268,15 @@ function BroadcastV2PageInner() {
         </CardContent>
       </Card>
 
+      {/* ── Stream Quality Panel ────────────────────────────────────────────── */}
+      <StreamQualityPanel
+        uptimeMs={engineHealth?.uptimeMs ?? 0}
+        continuousOnAirMs={engineHealth?.continuousOnAirMs ?? null}
+        consecutiveSkips={engineHealth?.skipInfo?.consecutiveSkips ?? 0}
+        eventCounts={diagnostics?.analytics?.eventCounts ?? {}}
+        activeSessions={diagnostics?.analytics?.activeSessions ?? 0}
+      />
+
       <AirHistoryCard history={engineHealth?.airingHistory} />
 
       {/* ── Engine Diagnostics panel ────────────────────────────────────────── */}
@@ -2764,6 +2866,9 @@ function BroadcastV2PageInner() {
                         isRetryingHls={retryHlsMutation.isPending}
                         onTranscodeLocally={(itemId) => transcodeLocallyMutation.mutate(itemId)}
                         isTranscodingLocally={transcodeLocallyMutation.isPending}
+                        onPlayNow={(itemId) => playNowMutation.mutate(itemId)}
+                        isPlayingNow={playNowMutation.isPending}
+                        secondsUntilAir={secondsUntilAirByItemId[item.id] ?? null}
                       />
                     );
                   })}
@@ -3246,17 +3351,140 @@ function formatAgo(ms: number): string {
   return `${Math.round(diff / 3_600_000)}h ago`;
 }
 
+// ─── StreamQualityPanel ───────────────────────────────────────────────────────
+// Compact stream health grade derived from stall/skip analytics and on-air
+// uptime. Self-contained: reads from engineHealth and diagnostics via props.
+// Placed between the Live Preview section and Engine Health card so operators
+// get an at-a-glance broadcast quality score without scrolling past workers
+// and queue validation.
+interface StreamQualityPanelProps {
+  uptimeMs: number;
+  continuousOnAirMs: number | null;
+  consecutiveSkips: number;
+  eventCounts: Record<string, number>;
+  activeSessions: number;
+}
+function StreamQualityPanel({ uptimeMs, continuousOnAirMs, consecutiveSkips, eventCounts, activeSessions }: StreamQualityPanelProps) {
+  const uptimeHrs = uptimeMs / 3_600_000;
+  const stallCount = eventCounts["stall"] ?? 0;
+  const skipCount  = eventCounts["item.advanced"] ?? 0;
+
+  // Stall rate per hour — only meaningful after at least 1 minute of uptime.
+  const stallRatePerHr = uptimeHrs > 0 ? stallCount / uptimeHrs : 0;
+
+  // On-air % during current engine session (continuousOnAirMs / uptimeMs).
+  const onAirPct =
+    continuousOnAirMs !== null && uptimeMs > 0
+      ? Math.min(100, Math.round((continuousOnAirMs / uptimeMs) * 100))
+      : null;
+
+  // Health grade:
+  //   A — no stalls, ≤0 consecutive skips, on-air ≥90%
+  //   B — ≤2 stalls/hr or ≤1 consecutive skip
+  //   C — >2 stalls/hr or ≥2 consecutive skips or on-air <80%
+  //   D — >5 stalls/hr or ≥3 consecutive skips or not airing
+  let grade: "A" | "B" | "C" | "D";
+  if (stallRatePerHr > 5 || consecutiveSkips >= 3 || onAirPct === 0) {
+    grade = "D";
+  } else if (stallRatePerHr > 2 || consecutiveSkips >= 2 || (onAirPct !== null && onAirPct < 80)) {
+    grade = "C";
+  } else if (stallRatePerHr > 0 || consecutiveSkips >= 1) {
+    grade = "B";
+  } else {
+    grade = "A";
+  }
+
+  const gradeColor =
+    grade === "A" ? "text-emerald-600 dark:text-emerald-400 border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-950/20"
+    : grade === "B" ? "text-blue-600 dark:text-blue-400 border-blue-300 dark:border-blue-700 bg-blue-50 dark:bg-blue-950/20"
+    : grade === "C" ? "text-amber-600 dark:text-amber-400 border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/20"
+    : "text-red-600 dark:text-red-400 border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-950/20";
+
+  const fmtRate = (r: number) =>
+    r < 0.1 ? "< 0.1/hr" : r < 1 ? `${r.toFixed(1)}/hr` : `${Math.round(r)}/hr`;
+
+  const fmtDur = (ms: number) => {
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return `${s}s`;
+    if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+    return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+  };
+
+  return (
+    <Card>
+      <CardHeader className="pb-2 pt-4">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Activity className="h-4 w-4 text-muted-foreground" />
+          Stream Quality
+          <span
+            className={`ml-auto text-lg font-bold w-8 h-8 rounded-md border flex items-center justify-center ${gradeColor}`}
+            title={`Grade ${grade} — based on stall rate, skip count, and on-air uptime`}
+          >
+            {grade}
+          </span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="pb-4">
+        <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs sm:grid-cols-4">
+          <div>
+            <div className="text-muted-foreground">Stall reports</div>
+            <div className={`font-semibold tabular-nums ${stallCount > 0 ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}`}>
+              {stallCount} total
+            </div>
+            {uptimeHrs >= (1 / 60) && (
+              <div className="text-[10px] text-muted-foreground">{fmtRate(stallRatePerHr)}</div>
+            )}
+          </div>
+
+          <div>
+            <div className="text-muted-foreground">Consecutive skips</div>
+            <div className={`font-semibold tabular-nums ${consecutiveSkips > 0 ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}`}>
+              {consecutiveSkips}
+            </div>
+            <div className="text-[10px] text-muted-foreground">resets on natural end</div>
+          </div>
+
+          <div>
+            <div className="text-muted-foreground">On-air uptime</div>
+            {onAirPct !== null ? (
+              <>
+                <div className={`font-semibold tabular-nums ${onAirPct < 80 ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}`}>
+                  {onAirPct}%
+                </div>
+                <div className="text-[10px] text-muted-foreground">
+                  {fmtDur(continuousOnAirMs ?? 0)} continuous
+                </div>
+              </>
+            ) : (
+              <div className="text-muted-foreground font-semibold">—</div>
+            )}
+          </div>
+
+          <div>
+            <div className="text-muted-foreground">Active sessions</div>
+            <div className="font-semibold tabular-nums">{activeSessions}</div>
+            {skipCount > 0 && (
+              <div className="text-[10px] text-muted-foreground">{skipCount} items aired</div>
+            )}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 // ─── OnAirStatusBar ──────────────────────────────────────────────────────────
 // Holds its own 1-second interval so the parent BroadcastV2PageInner component
 // does NOT re-render every second just to update the progress bar / countdown.
 // Only this small component re-renders on each tick.
 interface OnAirStatusBarProps {
   currentItem: { startsAtMs: number; endsAtMs: number; title?: string | null } | null | undefined;
+  nextTitle: string | null | undefined;
   activeQueueCount: number;
   viewerCount: number | null;
   sequence: number | undefined;
 }
-function OnAirStatusBar({ currentItem, activeQueueCount, viewerCount, sequence }: OnAirStatusBarProps) {
+function OnAirStatusBar({ currentItem, nextTitle, activeQueueCount, viewerCount, sequence }: OnAirStatusBarProps) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1_000);
@@ -3357,6 +3585,15 @@ function OnAirStatusBar({ currentItem, activeQueueCount, viewerCount, sequence }
           className="mt-2.5 h-1.5"
           aria-label={`${onAirProgressPct}% through current item`}
         />
+      )}
+
+      {/* Up next teaser — shown when current item has less than 5 min remaining
+          or any time a next item is known, so operators can prepare. */}
+      {nextTitle && currentItem && (
+        <p className="mt-1.5 truncate text-[11px] text-muted-foreground">
+          <span className="mr-1 font-medium">Up next:</span>
+          {nextTitle}
+        </p>
       )}
     </div>
   );
