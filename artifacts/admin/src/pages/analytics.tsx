@@ -1,7 +1,7 @@
-import { Component, useMemo, useState } from "react";
+import { Component, useMemo, useState, useEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api, isTransientError} from "@/lib/api";
+import { api, isTransientError } from "@/lib/api";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
 import { MetricCard } from "@/components/shared/metric-card";
@@ -9,7 +9,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { BarChart2, Eye, Clock, Film, Tv2, Smartphone, Monitor, TrendingUp, CheckCircle2, RefreshCw, Download } from "lucide-react";
+import {
+  BarChart2, Eye, Clock, Film, Tv2, Smartphone, Monitor,
+  TrendingUp, CheckCircle2, RefreshCw, Download, Users, Zap, Radio,
+} from "lucide-react";
 import { exportRowsAsCsv } from "@/lib/csv-export";
 import { toast } from "sonner";
 import {
@@ -25,39 +28,25 @@ import {
   YAxis,
   Tooltip,
   CartesianGrid,
+  Legend,
+  ReferenceLine,
 } from "@/lib/recharts-shim";
 import { format, parseISO } from "date-fns";
 
 // ── Chart-level error boundary ─────────────────────────────────────────────
-// Prevents a Recharts render error (e.g. bad data shape, SVG bug) from
-// crashing the entire analytics page. Each chart section is wrapped
-// independently so the rest of the page stays functional.
 interface ChartEBState { failed: boolean; message: string }
 class ChartErrorBoundary extends Component<{ children: ReactNode; label?: string }, ChartEBState> {
   state: ChartEBState = { failed: false, message: "" };
-
   static getDerivedStateFromError(err: Error): ChartEBState {
     return { failed: true, message: err.message };
   }
-
-  componentDidCatch(err: Error) {
-    console.error("[ChartErrorBoundary]", err);
-  }
-
+  componentDidCatch(err: Error) { console.error("[ChartErrorBoundary]", err); }
   render() {
     if (this.state.failed) {
       return (
         <div className="flex flex-col items-center justify-center h-56 gap-2 text-sm text-muted-foreground">
-          <span className="text-xs text-destructive/80">
-            {this.props.label ?? "Chart"} failed to render
-          </span>
-          <button
-            type="button"
-            className="text-xs text-primary underline underline-offset-2"
-            onClick={() => this.setState({ failed: false, message: "" })}
-          >
-            Retry
-          </button>
+          <span className="text-xs text-destructive/80">{this.props.label ?? "Chart"} failed to render</span>
+          <button type="button" className="text-xs text-primary underline underline-offset-2" onClick={() => this.setState({ failed: false, message: "" })}>Retry</button>
         </div>
       );
     }
@@ -78,13 +67,41 @@ interface AnalyticsOverview {
   generatedAt: string;
 }
 
+interface ConcurrentBucket {
+  ts: string;
+  concurrent: number;
+  tv: number;
+  mobile: number;
+  web: number;
+}
+
+interface ConcurrentViewers {
+  buckets: ConcurrentBucket[];
+  peak: { concurrent: number; ts: string };
+  granularity: "hour" | "4h" | "day";
+  generatedAt: string;
+}
+
+interface DailyPlatformDay {
+  date: string;
+  tv: number;
+  mobile: number;
+  web: number;
+  total: number;
+}
+
+interface DailyPlatformTrends {
+  days: DailyPlatformDay[];
+  generatedAt: string;
+}
+
 const RANGE_OPTIONS: { label: string; value: RangeKey }[] = [
   { label: "7 days", value: "7d" },
   { label: "30 days", value: "30d" },
   { label: "90 days", value: "90d" },
 ];
 
-const PLATFORM_ICONS: Record<string, React.ReactNode> = {
+const PLATFORM_ICONS: Record<string, ReactNode> = {
   tv: <Tv2 size={13} />,
   mobile: <Smartphone size={13} />,
   web: <Monitor size={13} />,
@@ -108,45 +125,80 @@ function fmtSecs(secs: number): string {
 }
 
 function fmtDate(dateStr: string): string {
+  try { return format(parseISO(dateStr), "MMM d"); } catch { return dateStr; }
+}
+
+function fmtBucketTs(ts: string, gran: "hour" | "4h" | "day"): string {
   try {
-    return format(parseISO(dateStr), "MMM d");
-  } catch {
-    return dateStr;
-  }
+    const d = new Date(ts);
+    if (gran === "day") return format(d, "MMM d");
+    return format(d, "MMM d HH:mm");
+  } catch { return ts; }
+}
+
+// ── Live viewer count — polls /broadcast/viewers every 5 s ─────────────────
+function useLiveViewerCount() {
+  const [count, setCount] = useState<number | null>(null);
+  const [prev, setPrev] = useState<number | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    async function poll() {
+      try {
+        const res = await api.get<{ channelId: string; count: number }>("/broadcast/viewers");
+        if (!mounted) return;
+        setCount((c) => { setPrev(c); return res.count; });
+      } catch { /* silent — offline or no viewers endpoint */ }
+    }
+    void poll();
+    intervalRef.current = setInterval(() => void poll(), 5000);
+    return () => {
+      mounted = false;
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, []);
+
+  const trend: "up" | "down" | "flat" =
+    prev === null || count === null || count === prev ? "flat"
+    : count > prev ? "up" : "down";
+
+  return { count, trend };
 }
 
 export default function AnalyticsPage() {
   const [range, setRange] = useState<RangeKey>("30d");
+  const { count: liveCount, trend: liveTrend } = useLiveViewerCount();
 
   const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ["analytics-overview", range],
-    queryFn: () =>
-      api.get<AnalyticsOverview>(`/admin/analytics/overview?range=${range}`),
-    // Analytics overview contains daily aggregates; 2-minute staleTime avoids
-    // unnecessary refetches as the admin navigates between pages while still
-    // reflecting any data that updates within a session (e.g. today's count).
+    queryFn: () => api.get<AnalyticsOverview>(`/admin/analytics/overview?range=${range}`),
     staleTime: 120_000,
   });
 
-  // Memoize chart transforms so Recharts tooltip hover (which triggers a
-  // re-render of the parent) doesn't rebuild the entire dataset on every
-  // mouse move. Without memoization a 90-day range rebuilds ~90 objects
-  // dozens of times per second while the user hovers the chart.
+  const concurrentRange: RangeKey = range === "90d" ? "90d" : range === "30d" ? "30d" : "7d";
+  const { data: concData, isLoading: concLoading } = useQuery({
+    queryKey: ["analytics-concurrent", concurrentRange],
+    queryFn: () => api.get<ConcurrentViewers>(`/admin/analytics/concurrent?range=${concurrentRange}`),
+    staleTime: 60_000,
+  });
+
+  const { data: platData, isLoading: platLoading } = useQuery({
+    queryKey: ["analytics-platform-trends", range],
+    queryFn: () => api.get<DailyPlatformTrends>(`/admin/analytics/platform-trends?range=${range}`),
+    staleTime: 60_000,
+  });
+
   const chartData = useMemo(
-    () =>
-      (data?.dailyViews ?? []).map((d) => ({
-        date: fmtDate(d.date),
-        views: d.views,
-      })),
+    () => (data?.dailyViews ?? []).map((d) => ({ date: fmtDate(d.date), views: d.views })),
     [data?.dailyViews],
   );
 
   const topVideosChart = useMemo(
-    () =>
-      (data?.topVideos ?? []).slice(0, 8).map((v) => ({
-        name: v.title.length > 22 ? v.title.slice(0, 22) + "…" : v.title,
-        views: v.viewCount,
-      })),
+    () => (data?.topVideos ?? []).slice(0, 8).map((v) => ({
+      name: v.title.length > 22 ? v.title.slice(0, 22) + "…" : v.title,
+      views: v.viewCount,
+    })),
     [data?.topVideos],
   );
 
@@ -155,11 +207,47 @@ export default function AnalyticsPage() {
     [data?.platformBreakdown],
   );
 
+  // Concurrent chart data — tick labels thinned for readability
+  const concChartData = useMemo(() => {
+    const buckets = concData?.buckets ?? [];
+    const gran = concData?.granularity ?? "hour";
+    // For 7d hourly (168 pts) thin to every 6th; 30d 4h (180 pts) every 6th; 90d daily keep all
+    const step = gran === "day" ? 1 : gran === "4h" ? 6 : 6;
+    return buckets.map((b, i) => ({
+      ts: fmtBucketTs(b.ts, gran),
+      rawTs: b.ts,
+      concurrent: b.concurrent,
+      tv: b.tv,
+      mobile: b.mobile,
+      web: b.web,
+      labelTs: i % step === 0 ? fmtBucketTs(b.ts, gran) : "",
+    }));
+  }, [concData]);
+
+  const peakTs = useMemo(() => {
+    if (!concData?.peak.ts || !concData.peak.concurrent) return null;
+    return fmtBucketTs(concData.peak.ts, concData.granularity ?? "hour");
+  }, [concData]);
+
+  const platChartData = useMemo(
+    () => (platData?.days ?? []).map((d) => ({
+      date: fmtDate(d.date),
+      tv: d.tv,
+      mobile: d.mobile,
+      web: d.web,
+    })),
+    [platData?.days],
+  );
+
+  function handleRefreshAll() {
+    void refetch();
+  }
+
   return (
     <div className="p-4 sm:p-6 max-w-6xl mx-auto space-y-6">
       <PageHeader
         title="Analytics"
-        description="Viewer engagement, watch-time trends and content performance."
+        description="Viewer engagement, concurrent audiences, watch-time trends and content performance."
         actions={
           <div className="flex items-center gap-2">
             <div className="flex gap-1 border rounded-md p-0.5">
@@ -182,7 +270,6 @@ export default function AnalyticsPage() {
               disabled={!data || isFetching || (data.dailyViews?.length ?? 0) === 0}
               onClick={() => {
                 if (!data) return;
-                // Range-tagged filename so multiple exports don't collide.
                 exportRowsAsCsv(
                   `temple-tv-analytics-${range}-${new Date().toISOString().slice(0, 10)}`,
                   data.dailyViews ?? [],
@@ -199,8 +286,8 @@ export default function AnalyticsPage() {
               <Download size={12} />
               <span className="hidden sm:inline">Export</span>
             </Button>
-            <Button variant="outline" size="sm" onClick={() => void refetch()} className="gap-1.5 h-7" aria-label="Refresh analytics">
-              <RefreshCw size={12} />
+            <Button variant="outline" size="sm" onClick={handleRefreshAll} className="gap-1.5 h-7" aria-label="Refresh analytics">
+              <RefreshCw size={12} className={isFetching ? "animate-spin" : ""} />
             </Button>
           </div>
         }
@@ -214,20 +301,34 @@ export default function AnalyticsPage() {
         />
       )}
 
-      {/* Top metrics */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <MetricCard
-          title="Total Views"
-          value={data?.totalViews?.toLocaleString()}
-          icon={<Eye size={16} />}
-          loading={isLoading}
-        />
-        <MetricCard
-          title="Sessions"
-          value={data?.totalSessions?.toLocaleString()}
-          icon={<TrendingUp size={16} />}
-          loading={isLoading}
-        />
+      {/* ── Row 1: key metrics including live count ── */}
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+        {/* Live viewer count — real-time */}
+        <Card className="lg:col-span-1 border-primary/30 bg-primary/5">
+          <CardContent className="p-4 flex flex-col gap-1">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground font-medium">Live Now</span>
+              <div className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                <Radio size={11} className="text-green-500" />
+              </div>
+            </div>
+            <div className="flex items-end gap-1.5">
+              <span className="text-2xl font-bold tabular-nums leading-none">
+                {liveCount !== null ? liveCount.toLocaleString() : "—"}
+              </span>
+              {liveTrend !== "flat" && (
+                <span className={`text-xs mb-0.5 font-medium ${liveTrend === "up" ? "text-green-500" : "text-red-500"}`}>
+                  {liveTrend === "up" ? "↑" : "↓"}
+                </span>
+              )}
+            </div>
+            <p className="text-[10px] text-muted-foreground">concurrent viewers</p>
+          </CardContent>
+        </Card>
+
+        <MetricCard title="Total Views" value={data?.totalViews?.toLocaleString()} icon={<Eye size={16} />} loading={isLoading} />
+        <MetricCard title="Sessions" value={data?.totalSessions?.toLocaleString()} icon={<TrendingUp size={16} />} loading={isLoading} />
         <MetricCard
           title="Completion Rate"
           value={data ? `${Math.round((data.completionRate ?? 0) * 100)}%` : undefined}
@@ -242,8 +343,105 @@ export default function AnalyticsPage() {
         />
       </div>
 
+      {/* ── Row 2: Concurrent viewers over time (full width) ── */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Users size={15} /> Concurrent Viewers Over Time
+              {concData?.peak.concurrent ? (
+                <Badge variant="secondary" className="text-[10px] gap-1 font-normal">
+                  <Zap size={9} className="text-amber-500" />
+                  Peak: {concData.peak.concurrent.toLocaleString()}
+                  {concData.peak.ts ? ` · ${fmtBucketTs(concData.peak.ts, concData.granularity)}` : ""}
+                </Badge>
+              ) : null}
+            </CardTitle>
+            <span className="text-[10px] text-muted-foreground">
+              {concData?.granularity === "hour" ? "Hourly" : concData?.granularity === "4h" ? "4-hour" : "Daily"} buckets
+            </span>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <ChartErrorBoundary label="Concurrent viewers chart">
+            {concLoading ? (
+              <Skeleton className="h-56 w-full" />
+            ) : concChartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={240}>
+                <AreaChart data={concChartData} margin={{ left: 0, right: 8, top: 8, bottom: 4 }}>
+                  <defs>
+                    <linearGradient id="concGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.22} />
+                      <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
+                    </linearGradient>
+                    <linearGradient id="tvGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.15} />
+                      <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
+                    </linearGradient>
+                    <linearGradient id="mobileGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#22c55e" stopOpacity={0.15} />
+                      <stop offset="95%" stopColor="#22c55e" stopOpacity={0} />
+                    </linearGradient>
+                    <linearGradient id="webGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.15} />
+                      <stop offset="95%" stopColor="#f59e0b" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
+                  <XAxis
+                    dataKey="labelTs"
+                    tick={{ fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    interval={0}
+                  />
+                  <YAxis
+                    tick={{ fontSize: 11 }}
+                    tickLine={false}
+                    axisLine={false}
+                    width={28}
+                    allowDecimals={false}
+                  />
+                  <Tooltip
+                    contentStyle={{ background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
+                    labelFormatter={(_, payload) => {
+                      const raw = (payload as Array<{ payload: ConcurrentBucket & { rawTs: string } }>)?.[0]?.payload?.rawTs;
+                      try { return raw ? format(new Date(raw), "MMM d, HH:mm") : ""; } catch { return ""; }
+                    }}
+                    formatter={(v: number, name: string) => [v.toLocaleString(), name === "concurrent" ? "Total" : name.charAt(0).toUpperCase() + name.slice(1)]}
+                  />
+                  <Legend
+                    iconType="square"
+                    iconSize={8}
+                    formatter={(value: string) => <span style={{ fontSize: 11 }}>{value === "concurrent" ? "Total" : value.charAt(0).toUpperCase() + value.slice(1)}</span>}
+                  />
+                  {/* Peak reference line */}
+                  {peakTs && concData!.peak.concurrent > 0 && (
+                    <ReferenceLine
+                      x={peakTs}
+                      stroke="#f59e0b"
+                      strokeDasharray="4 3"
+                      strokeWidth={1.5}
+                      label={{ value: "Peak", position: "insideTopRight", fontSize: 10, fill: "#f59e0b" }}
+                    />
+                  )}
+                  <Area type="monotone" dataKey="tv" stroke={PLATFORM_COLORS.tv} strokeWidth={1.5} fill="url(#tvGrad)" dot={false} activeDot={{ r: 3 }} />
+                  <Area type="monotone" dataKey="mobile" stroke={PLATFORM_COLORS.mobile} strokeWidth={1.5} fill="url(#mobileGrad)" dot={false} activeDot={{ r: 3 }} />
+                  <Area type="monotone" dataKey="web" stroke={PLATFORM_COLORS.web} strokeWidth={1.5} fill="url(#webGrad)" dot={false} activeDot={{ r: 3 }} />
+                  <Area type="monotone" dataKey="concurrent" stroke="hsl(var(--primary))" strokeWidth={2} fill="url(#concGrad)" dot={false} activeDot={{ r: 4, fill: "hsl(var(--primary))" }} />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex items-center justify-center h-56 text-sm text-muted-foreground">
+                No concurrent viewer data for this period
+              </div>
+            )}
+          </ChartErrorBoundary>
+        </CardContent>
+      </Card>
+
+      {/* ── Row 3: Daily views trend + Platform breakdown ── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Daily views trend — spans 2 columns */}
         <Card className="lg:col-span-2">
           <CardHeader className="pb-3">
             <CardTitle className="text-sm flex items-center gap-2">
@@ -252,45 +450,37 @@ export default function AnalyticsPage() {
           </CardHeader>
           <CardContent>
             <ChartErrorBoundary label="Daily views chart">
-            {isLoading ? (
-              <Skeleton className="h-56 w-full" />
-            ) : chartData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={220}>
-                <AreaChart data={chartData} margin={{ left: 0, right: 8, top: 4, bottom: 4 }}>
-                  <defs>
-                    <linearGradient id="viewsGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.25} />
-                      <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" opacity={0.12} />
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} interval="preserveStartEnd" />
-                  <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} width={32} />
-                  <Tooltip
-                    contentStyle={{ background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
-                    formatter={(v: number) => [v.toLocaleString(), "Sessions"]}
-                  />
-                  <Area
-                    type="monotone"
-                    dataKey="views"
-                    stroke="hsl(var(--primary))"
-                    strokeWidth={2}
-                    fill="url(#viewsGrad)"
-                    dot={false}
-                    activeDot={{ r: 4, fill: "hsl(var(--primary))" }}
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="flex items-center justify-center h-56 text-sm text-muted-foreground">
-                No session data for this period yet
-              </div>
-            )}
+              {isLoading ? (
+                <Skeleton className="h-56 w-full" />
+              ) : chartData.length > 0 ? (
+                <ResponsiveContainer width="100%" height={220}>
+                  <AreaChart data={chartData} margin={{ left: 0, right: 8, top: 4, bottom: 4 }}>
+                    <defs>
+                      <linearGradient id="viewsGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.25} />
+                        <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" opacity={0.12} />
+                    <XAxis dataKey="date" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} interval="preserveStartEnd" />
+                    <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} width={32} />
+                    <Tooltip
+                      contentStyle={{ background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
+                      formatter={(v: number) => [v.toLocaleString(), "Sessions"]}
+                    />
+                    <Area type="monotone" dataKey="views" stroke="hsl(var(--primary))" strokeWidth={2} fill="url(#viewsGrad)" dot={false} activeDot={{ r: 4, fill: "hsl(var(--primary))" }} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="flex items-center justify-center h-56 text-sm text-muted-foreground">
+                  No session data for this period yet
+                </div>
+              )}
             </ChartErrorBoundary>
           </CardContent>
         </Card>
 
-        {/* Platform breakdown */}
+        {/* Platform breakdown pie */}
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-sm flex items-center gap-2">
@@ -299,71 +489,104 @@ export default function AnalyticsPage() {
           </CardHeader>
           <CardContent>
             <ChartErrorBoundary label="Platform breakdown chart">
-            {isLoading ? (
-              <Skeleton className="h-56 w-full" />
-            ) : (data?.platformBreakdown?.length ?? 0) > 0 ? (
-              <div className="space-y-3">
-                <ResponsiveContainer width="100%" height={140}>
-                  <PieChart>
-                    <Pie
-                      data={data?.platformBreakdown ?? []}
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={38}
-                      outerRadius={60}
-                      paddingAngle={3}
-                      dataKey="sessions"
-                      nameKey="platform"
-                    >
-                      {(data?.platformBreakdown ?? []).map((entry, index) => (
-                        <Cell
-                          key={entry.platform}
-                          fill={PLATFORM_COLORS[entry.platform] ?? PIE_COLORS[index % PIE_COLORS.length]}
-                        />
-                      ))}
-                    </Pie>
-                    <Tooltip
-                      contentStyle={{ background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
-                      formatter={(v: number) => [v.toLocaleString(), "Sessions"]}
-                    />
-                  </PieChart>
-                </ResponsiveContainer>
-                <div className="space-y-2">
-                  {(data?.platformBreakdown ?? []).map((p, i) => (
-                    <div key={p.platform} className="flex items-center justify-between text-sm">
-                      <div className="flex items-center gap-2">
-                        <div
-                          className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                          style={{ background: PLATFORM_COLORS[p.platform] ?? PIE_COLORS[i % PIE_COLORS.length] }}
-                        />
-                        <span className="flex items-center gap-1 capitalize text-xs">
-                          {PLATFORM_ICONS[p.platform]}
-                          {p.platform}
-                        </span>
+              {isLoading ? (
+                <Skeleton className="h-56 w-full" />
+              ) : (data?.platformBreakdown?.length ?? 0) > 0 ? (
+                <div className="space-y-3">
+                  <ResponsiveContainer width="100%" height={140}>
+                    <PieChart>
+                      <Pie
+                        data={data?.platformBreakdown ?? []}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={38}
+                        outerRadius={60}
+                        paddingAngle={3}
+                        dataKey="sessions"
+                        nameKey="platform"
+                      >
+                        {(data?.platformBreakdown ?? []).map((entry, index) => (
+                          <Cell key={entry.platform} fill={PLATFORM_COLORS[entry.platform] ?? PIE_COLORS[index % PIE_COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip
+                        contentStyle={{ background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
+                        formatter={(v: number) => [v.toLocaleString(), "Sessions"]}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                  <div className="space-y-2">
+                    {(data?.platformBreakdown ?? []).map((p, i) => (
+                      <div key={p.platform} className="flex items-center justify-between text-sm">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: PLATFORM_COLORS[p.platform] ?? PIE_COLORS[i % PIE_COLORS.length] }} />
+                          <span className="flex items-center gap-1 capitalize text-xs">
+                            {PLATFORM_ICONS[p.platform]}
+                            {p.platform}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-medium">{p.sessions.toLocaleString()}</span>
+                          <span className="text-[10px] text-muted-foreground">
+                            {totalPlatformSessions > 0 ? `${Math.round((p.sessions / totalPlatformSessions) * 100)}%` : "0%"}
+                          </span>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-medium">{p.sessions.toLocaleString()}</span>
-                        <span className="text-[10px] text-muted-foreground">
-                          {totalPlatformSessions > 0
-                            ? `${Math.round((p.sessions / totalPlatformSessions) * 100)}%`
-                            : "0%"}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ) : (
-              <div className="flex items-center justify-center h-56 text-sm text-muted-foreground">
-                No platform data yet
-              </div>
-            )}
+              ) : (
+                <div className="flex items-center justify-center h-56 text-sm text-muted-foreground">
+                  No platform data yet
+                </div>
+              )}
             </ChartErrorBoundary>
           </CardContent>
         </Card>
       </div>
 
-      {/* Top videos */}
+      {/* ── Row 4: Daily platform stacked bar (device breakdown over time) ── */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Tv2 size={15} /> Device Sessions Over Time
+            <span className="text-[10px] text-muted-foreground font-normal ml-1">TV · Mobile · Web per day</span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <ChartErrorBoundary label="Device breakdown chart">
+            {platLoading ? (
+              <Skeleton className="h-56 w-full" />
+            ) : platChartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={platChartData} margin={{ left: 0, right: 8, top: 4, bottom: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" opacity={0.12} vertical={false} />
+                  <XAxis dataKey="date" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} interval="preserveStartEnd" />
+                  <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} width={32} allowDecimals={false} />
+                  <Tooltip
+                    contentStyle={{ background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
+                    formatter={(v: number, name: string) => [v.toLocaleString(), name.charAt(0).toUpperCase() + name.slice(1)]}
+                  />
+                  <Legend
+                    iconType="square"
+                    iconSize={8}
+                    formatter={(value: string) => <span style={{ fontSize: 11 }}>{value.charAt(0).toUpperCase() + value.slice(1)}</span>}
+                  />
+                  <Bar dataKey="tv" stackId="a" fill={PLATFORM_COLORS.tv} maxBarSize={40} radius={[0, 0, 0, 0]} />
+                  <Bar dataKey="mobile" stackId="a" fill={PLATFORM_COLORS.mobile} maxBarSize={40} radius={[0, 0, 0, 0]} />
+                  <Bar dataKey="web" stackId="a" fill={PLATFORM_COLORS.web} maxBarSize={40} radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex items-center justify-center h-56 text-sm text-muted-foreground">
+                No device data for this period
+              </div>
+            )}
+          </ChartErrorBoundary>
+        </CardContent>
+      </Card>
+
+      {/* ── Row 5: Top videos bar chart ── */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-sm flex items-center gap-2">
@@ -372,35 +595,31 @@ export default function AnalyticsPage() {
         </CardHeader>
         <CardContent>
           <ChartErrorBoundary label="Top videos chart">
-          {isLoading ? (
-            <Skeleton className="h-56 w-full" />
-          ) : topVideosChart.length > 0 ? (
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={topVideosChart} layout="vertical" margin={{ left: 8, right: 24, top: 4, bottom: 4 }}>
-                <CartesianGrid strokeDasharray="3 3" opacity={0.15} horizontal={false} />
-                <XAxis
-                  type="number"
-                  tick={{ fontSize: 11 }}
-                  tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v)}
-                />
-                <YAxis type="category" dataKey="name" width={150} tick={{ fontSize: 11 }} />
-                <Tooltip
-                  contentStyle={{ background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
-                  formatter={(v: number) => [v.toLocaleString(), "Views"]}
-                />
-                <Bar dataKey="views" fill="hsl(var(--primary))" radius={[0, 4, 4, 0]} maxBarSize={24} />
-              </BarChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="flex items-center justify-center h-56 text-sm text-muted-foreground">
-              No video data yet
-            </div>
-          )}
+            {isLoading ? (
+              <Skeleton className="h-56 w-full" />
+            ) : topVideosChart.length > 0 ? (
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={topVideosChart} layout="vertical" margin={{ left: 8, right: 24, top: 4, bottom: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" opacity={0.15} horizontal={false} />
+                  <XAxis type="number" tick={{ fontSize: 11 }} tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v)} />
+                  <YAxis type="category" dataKey="name" width={150} tick={{ fontSize: 11 }} />
+                  <Tooltip
+                    contentStyle={{ background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
+                    formatter={(v: number) => [v.toLocaleString(), "Views"]}
+                  />
+                  <Bar dataKey="views" fill="hsl(var(--primary))" radius={[0, 4, 4, 0]} maxBarSize={24} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex items-center justify-center h-56 text-sm text-muted-foreground">
+                No video data yet
+              </div>
+            )}
           </ChartErrorBoundary>
         </CardContent>
       </Card>
 
-      {/* Top videos list with thumbnails */}
+      {/* ── Row 6: Top videos list with thumbnails ── */}
       {(data?.topVideos?.length ?? 0) > 0 && (
         <Card>
           <CardHeader className="pb-3">
@@ -412,9 +631,7 @@ export default function AnalyticsPage() {
             <div className="divide-y">
               {(data?.topVideos ?? []).map((video, idx) => (
                 <div key={video.id} className="flex items-center gap-3 px-4 py-2.5">
-                  <span className="w-5 text-center text-xs font-bold text-muted-foreground/50 flex-shrink-0">
-                    {idx + 1}
-                  </span>
+                  <span className="w-5 text-center text-xs font-bold text-muted-foreground/50 flex-shrink-0">{idx + 1}</span>
                   {video.thumbnailUrl && (
                     <img
                       src={video.thumbnailUrl}

@@ -92,3 +92,34 @@ export const AnalyticsOverviewSchema = z.object({
   ),
   generatedAt: z.string(),
 });
+
+export const ConcurrentViewerBucketSchema = z.object({
+  ts: z.string(),
+  concurrent: z.number().int().nonnegative(),
+  tv: z.number().int().nonnegative(),
+  mobile: z.number().int().nonnegative(),
+  web: z.number().int().nonnegative(),
+});
+
+export const ConcurrentViewersSchema = z.object({
+  buckets: z.array(ConcurrentViewerBucketSchema),
+  peak: z.object({
+    concurrent: z.number().int().nonnegative(),
+    ts: z.string(),
+  }),
+  granularity: z.enum(["hour", "4h", "day"]),
+  generatedAt: z.string(),
+});
+
+export const DailyPlatformBucketSchema = z.object({
+  date: z.string(),
+  tv: z.number().int().nonnegative(),
+  mobile: z.number().int().nonnegative(),
+  web: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+});
+
+export const DailyPlatformTrendsSchema = z.object({
+  days: z.array(DailyPlatformBucketSchema),
+  generatedAt: z.string(),
+});

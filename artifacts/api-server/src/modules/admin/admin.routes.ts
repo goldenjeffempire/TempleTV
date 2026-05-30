@@ -8,6 +8,8 @@ import {
   AdminUserSchema,
   AnalyticsOverviewSchema,
   AnalyticsSchema,
+  ConcurrentViewersSchema,
+  DailyPlatformTrendsSchema,
   ListUsersQuerySchema,
   ListUsersResponseSchema,
   UpdateUserRoleBodySchema,
@@ -71,6 +73,42 @@ export async function adminRoutes(app: FastifyInstance) {
       },
     },
     async (req) => adminService.getAnalyticsOverview(req.query.range),
+  );
+
+  r.get(
+    "/analytics/concurrent",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin"],
+        summary: "Concurrent viewer count time-series with per-platform breakdown and peak detection",
+        querystring: z.object({
+          range: z.enum(["7d", "30d", "90d"]).default("7d"),
+        }),
+        response: { 200: ConcurrentViewersSchema },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req) => adminService.getConcurrentViewers(req.query.range),
+  );
+
+  r.get(
+    "/analytics/platform-trends",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin"],
+        summary: "Daily session counts broken down by platform (TV / mobile / web)",
+        querystring: z.object({
+          range: z.enum(["7d", "30d", "90d"]).default("30d"),
+        }),
+        response: { 200: DailyPlatformTrendsSchema },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req) => adminService.getDailyPlatformTrends(req.query.range),
   );
 
   r.delete(

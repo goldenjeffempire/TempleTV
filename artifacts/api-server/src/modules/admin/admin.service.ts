@@ -8,6 +8,11 @@ import type {
   UpdateUserRoleBodySchema,
 } from "./admin.schemas.js";
 
+type ConcurrentBucket = { ts: string; concurrent: number; tv: number; mobile: number; web: number };
+type ConcurrentResult = { buckets: ConcurrentBucket[]; peak: { concurrent: number; ts: string }; granularity: "hour" | "4h" | "day"; generatedAt: string };
+type DailyPlatformDay = { date: string; tv: number; mobile: number; web: number; total: number };
+type DailyPlatformResult = { days: DailyPlatformDay[]; generatedAt: string };
+
 const users = schema.usersTable;
 const videos = schema.videosTable;
 const playlists = schema.playlistsTable;
@@ -283,5 +288,113 @@ export const adminService = {
       .returning({ id: users.id });
     if (!row) throw new NotFoundError("User not found");
     return { deleted: true as const, id: row.id };
+  },
+
+  async getConcurrentViewers(range: "7d" | "30d" | "90d"): Promise<ConcurrentResult> {
+    const CACHE_KEY = `admin:analytics:concurrent:${range}:v4`;
+    const cached = await cache().get<ConcurrentResult>(CACHE_KEY);
+    if (cached) return cached;
+
+    const rangeDays = range === "7d" ? 7 : range === "30d" ? 30 : 90;
+    const gran = range === "7d" ? "1 hour" : range === "30d" ? "4 hours" : "1 day";
+    const granKey: "hour" | "4h" | "day" = range === "7d" ? "hour" : range === "30d" ? "4h" : "day";
+
+    // Generate time buckets and count distinct sessions active at each bucket.
+    // A session is "active" at time T when:
+    //   started_at <= T  AND  (ended_at > T  OR  (ended_at IS NULL AND last_heartbeat_at >= T - 5 min))
+    // The JOIN pre-filters sessions to only those within the query window for index efficiency.
+    const rawRows = await db.execute(sql.raw(`
+      WITH buckets AS (
+        SELECT generate_series(
+          date_trunc('hour', now()) - '${rangeDays} days'::interval,
+          date_trunc('hour', now()),
+          '${gran}'::interval
+        ) AS bucket
+      )
+      SELECT
+        to_char(bucket AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS ts,
+        COALESCE(COUNT(DISTINCT CASE
+          WHEN vs.started_at <= b.bucket
+          AND (vs.ended_at > b.bucket OR (vs.ended_at IS NULL AND vs.last_heartbeat_at >= b.bucket - INTERVAL '5 minutes'))
+          THEN vs.id END), 0)::int AS concurrent,
+        COALESCE(COUNT(DISTINCT CASE
+          WHEN vs.platform = 'tv'
+          AND vs.started_at <= b.bucket
+          AND (vs.ended_at > b.bucket OR (vs.ended_at IS NULL AND vs.last_heartbeat_at >= b.bucket - INTERVAL '5 minutes'))
+          THEN vs.id END), 0)::int AS tv,
+        COALESCE(COUNT(DISTINCT CASE
+          WHEN vs.platform = 'mobile'
+          AND vs.started_at <= b.bucket
+          AND (vs.ended_at > b.bucket OR (vs.ended_at IS NULL AND vs.last_heartbeat_at >= b.bucket - INTERVAL '5 minutes'))
+          THEN vs.id END), 0)::int AS mobile,
+        COALESCE(COUNT(DISTINCT CASE
+          WHEN vs.platform = 'web'
+          AND vs.started_at <= b.bucket
+          AND (vs.ended_at > b.bucket OR (vs.ended_at IS NULL AND vs.last_heartbeat_at >= b.bucket - INTERVAL '5 minutes'))
+          THEN vs.id END), 0)::int AS web
+      FROM buckets b
+      LEFT JOIN viewer_sessions vs ON
+        vs.started_at <= b.bucket
+        AND vs.started_at >= b.bucket - '${rangeDays + 1} days'::interval
+      GROUP BY b.bucket
+      ORDER BY b.bucket
+    `));
+
+    const buckets: ConcurrentBucket[] = (rawRows.rows as Array<Record<string, unknown>>).map((r) => ({
+      ts: String(r["ts"] ?? ""),
+      concurrent: Number(r["concurrent"] ?? 0),
+      tv: Number(r["tv"] ?? 0),
+      mobile: Number(r["mobile"] ?? 0),
+      web: Number(r["web"] ?? 0),
+    }));
+
+    let peak: ConcurrentResult["peak"] = { concurrent: 0, ts: "" };
+    for (const b of buckets) {
+      if (b.concurrent > peak.concurrent) {
+        peak = { concurrent: b.concurrent, ts: b.ts };
+      }
+    }
+
+    const result: ConcurrentResult = { buckets, peak, granularity: granKey, generatedAt: new Date().toISOString() };
+    await cache().set(CACHE_KEY, result, 60);
+    return result;
+  },
+
+  async getDailyPlatformTrends(range: "7d" | "30d" | "90d"): Promise<DailyPlatformResult> {
+    const CACHE_KEY = `admin:analytics:platform-trends:${range}:v2`;
+    const cached = await cache().get<DailyPlatformResult>(CACHE_KEY);
+    if (cached) return cached;
+
+    const sessions = schema.viewerSessionsTable;
+    const rangeDays = range === "7d" ? 7 : range === "30d" ? 30 : 90;
+    const since = new Date(Date.now() - rangeDays * 24 * 60 * 60 * 1000);
+
+    const rows = await db
+      .select({
+        date: sql<string>`date_trunc('day', ${sessions.startedAt})::date::text`,
+        platform: sessions.platform,
+        sessions: count(),
+      })
+      .from(sessions)
+      .where(gte(sessions.startedAt, since))
+      .groupBy(sql`date_trunc('day', ${sessions.startedAt})`, sessions.platform)
+      .orderBy(sql`date_trunc('day', ${sessions.startedAt})`);
+
+    const dayMap = new Map<string, DailyPlatformDay>();
+    for (const r of rows) {
+      const d = r.date;
+      if (!dayMap.has(d)) dayMap.set(d, { date: d, tv: 0, mobile: 0, web: 0, total: 0 });
+      const entry = dayMap.get(d)!;
+      const n = Number(r.sessions);
+      if (r.platform === "tv") entry.tv += n;
+      else if (r.platform === "mobile") entry.mobile += n;
+      else if (r.platform === "web") entry.web += n;
+      entry.total += n;
+    }
+
+    const days = Array.from(dayMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+    const result: DailyPlatformResult = { days, generatedAt: new Date().toISOString() };
+    await cache().set(CACHE_KEY, result, 60);
+    return result;
   },
 };
