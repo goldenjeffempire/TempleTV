@@ -310,7 +310,14 @@ class TranscoderDispatcher {
     lastCompletedStatus: "done" | "failed" | null;
     isRunning: boolean;
     ffmpegAvailable: boolean;
+    stopped: boolean;
+    storageCircuitOpenUntil: number;
+    storageErrorStreak: number;
+    circuitOpen: boolean;
+    circuitOpenRemainingMs: number | null;
   } {
+    const now = Date.now();
+    const circuitOpen = this.storageCircuitOpenUntil > now;
     return {
       lastHeartbeatAt: this.lastHeartbeatAt,
       currentJobId: this.currentJobId,
@@ -320,6 +327,11 @@ class TranscoderDispatcher {
       lastCompletedStatus: this.lastCompletedStatus,
       isRunning: this.running,
       ffmpegAvailable: this.ffmpegAvailable,
+      stopped: this.stopped,
+      storageCircuitOpenUntil: this.storageCircuitOpenUntil,
+      storageErrorStreak: this.storageErrorStreak,
+      circuitOpen,
+      circuitOpenRemainingMs: circuitOpen ? this.storageCircuitOpenUntil - now : null,
     };
   }
 

@@ -874,6 +874,11 @@ export async function adminOpsRoutes(app: FastifyInstance) {
               lastCompletedStatus: z.enum(["done", "failed"]).nullable(),
               isRunning: z.boolean(),
               ffmpegAvailable: z.boolean(),
+              stopped: z.boolean(),
+              storageCircuitOpenUntil: z.number(),
+              storageErrorStreak: z.number(),
+              circuitOpen: z.boolean(),
+              circuitOpenRemainingMs: z.number().nullable(),
             }),
             queue: z.object({
               queued: z.number(),
@@ -918,6 +923,89 @@ export async function adminOpsRoutes(app: FastifyInstance) {
           checkedAt: slope.checkedAt,
         },
         checkedAt: new Date().toISOString(),
+      };
+    },
+  );
+
+  // ── GET /admin/transcoder/health ──────────────────────────────────────────
+  // Focused circuit-breaker + liveness endpoint. Rate-limited, editor-gated.
+  // Surfaced on the Diagnostics page and usable by external monitors that
+  // have a bearer token (e.g. uptime services with API key auth).
+  r.get(
+    "/transcoder/health",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin-ops"],
+        summary: "Transcoder circuit-breaker state + liveness — for monitoring dashboards",
+        response: {
+          200: z.object({
+            ok: z.boolean(),
+            checkedAt: z.string(),
+            dispatcher: z.object({
+              isRunning: z.boolean(),
+              stopped: z.boolean(),
+              ffmpegAvailable: z.boolean(),
+              lastHeartbeatAt: z.number().nullable(),
+              currentJobId: z.string().nullable(),
+              currentJobVideoId: z.string().nullable(),
+              lastCompletedAt: z.number().nullable(),
+              lastCompletedStatus: z.enum(["done", "failed"]).nullable(),
+            }),
+            storageCircuit: z.object({
+              open: z.boolean(),
+              openUntil: z.number(),
+              remainingMs: z.number().nullable(),
+              errorStreak: z.number(),
+              threshold: z.number(),
+              reopenDelayMs: z.number(),
+            }),
+            queue: z.object({
+              queued: z.number(),
+              processing: z.number(),
+              done: z.number(),
+              failed: z.number(),
+            }),
+          }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (_req, reply) => {
+      reply.header("Cache-Control", "no-store, max-age=0");
+      const [stats, hb] = await Promise.all([
+        queueStats().catch(() => ({ activeCount: 0, queuedCount: 0, completedToday: 0, failedToday: 0 })),
+        Promise.resolve(transcoderDispatcher.getHeartbeat()),
+      ]);
+      const ok = hb.ffmpegAvailable && !hb.stopped && !hb.circuitOpen;
+      return {
+        ok,
+        checkedAt: new Date().toISOString(),
+        dispatcher: {
+          isRunning: hb.isRunning,
+          stopped: hb.stopped,
+          ffmpegAvailable: hb.ffmpegAvailable,
+          lastHeartbeatAt: hb.lastHeartbeatAt,
+          currentJobId: hb.currentJobId,
+          currentJobVideoId: hb.currentJobVideoId,
+          lastCompletedAt: hb.lastCompletedAt,
+          lastCompletedStatus: hb.lastCompletedStatus,
+        },
+        storageCircuit: {
+          open: hb.circuitOpen,
+          openUntil: hb.storageCircuitOpenUntil,
+          remainingMs: hb.circuitOpenRemainingMs,
+          errorStreak: hb.storageErrorStreak,
+          threshold: 3,
+          reopenDelayMs: 60_000,
+        },
+        queue: {
+          queued: stats.queuedCount,
+          processing: stats.activeCount,
+          done: stats.completedToday,
+          failed: stats.failedToday,
+        },
       };
     },
   );

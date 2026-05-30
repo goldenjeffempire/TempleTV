@@ -42,6 +42,11 @@ interface TranscoderStatus {
     lastCompletedStatus: "done" | "failed" | null;
     isRunning: boolean;
     ffmpegAvailable: boolean;
+    stopped: boolean;
+    storageCircuitOpenUntil: number;
+    storageErrorStreak: number;
+    circuitOpen: boolean;
+    circuitOpenRemainingMs: number | null;
   };
   queue: {
     queued: number;
@@ -613,6 +618,61 @@ export default function DiagnosticsPage() {
               highlight={tx.queue.failed > 0 ? "danger" : undefined}
               subtitle="failed jobs"
             />
+
+            {/* ── Storage circuit-breaker status ── */}
+            <Card className={cn(
+              "col-span-2 sm:col-span-4",
+              tx.heartbeat.circuitOpen
+                ? "border-red-200 bg-red-50/50 dark:bg-red-950/20 dark:border-red-900/50"
+                : tx.heartbeat.storageErrorStreak > 0
+                  ? "border-amber-200 bg-amber-50/50 dark:bg-amber-950/20 dark:border-amber-900/50"
+                  : "",
+            )}>
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-medium flex items-center gap-2">
+                    <Zap size={14} className="text-muted-foreground" />
+                    Storage Circuit Breaker
+                  </CardTitle>
+                  <StatusPill
+                    ok={!tx.heartbeat.circuitOpen}
+                    label={tx.heartbeat.circuitOpen ? "OPEN — paused" : "Closed — OK"}
+                  />
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Error streak</span>
+                  <span className={cn(
+                    "font-mono text-xs font-semibold",
+                    tx.heartbeat.storageErrorStreak >= 3 ? "text-red-500" :
+                    tx.heartbeat.storageErrorStreak > 0 ? "text-amber-500" : "",
+                  )}>
+                    {tx.heartbeat.storageErrorStreak} / 3
+                  </span>
+                </div>
+                {tx.heartbeat.circuitOpen && tx.heartbeat.circuitOpenRemainingMs !== null && (
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Reopens in</span>
+                    <span className="font-mono text-xs text-red-600 dark:text-red-400 font-semibold">
+                      {fmtMs(tx.heartbeat.circuitOpenRemainingMs)}
+                    </span>
+                  </div>
+                )}
+                {tx.heartbeat.circuitOpen && (
+                  <div className="flex items-center gap-1.5 text-red-600 dark:text-red-400 text-xs pt-1">
+                    <AlertTriangle size={11} />
+                    Job dispatch paused — 3 consecutive storage errors. Auto-resumes after cool-down.
+                  </div>
+                )}
+                {!tx.heartbeat.circuitOpen && tx.heartbeat.storageErrorStreak > 0 && (
+                  <div className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400 text-xs pt-1">
+                    <AlertTriangle size={11} />
+                    {tx.heartbeat.storageErrorStreak} storage error{tx.heartbeat.storageErrorStreak > 1 ? "s" : ""} — circuit trips at 3
+                  </div>
+                )}
+              </CardContent>
+            </Card>
 
             {tx.heartbeat.currentJobId && (
               <Card className="col-span-2 sm:col-span-4 border-amber-200 bg-amber-50/50 dark:bg-amber-950/20 dark:border-amber-900/50">
