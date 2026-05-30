@@ -15,11 +15,11 @@ export declare const NotificationSchema: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     type: string;
     status: string;
-    videoId: string | null;
+    body: string;
     title: string;
     id: string;
     createdAt: string;
-    body: string;
+    videoId: string | null;
     sentAt: string;
     sentCount: number;
     attempts: number;
@@ -28,11 +28,11 @@ export declare const NotificationSchema: z.ZodObject<{
 }, {
     type: string;
     status: string;
-    videoId: string | null;
+    body: string;
     title: string;
     id: string;
     createdAt: string;
-    body: string;
+    videoId: string | null;
     sentAt: string;
     sentCount: number;
     attempts: number;
@@ -66,11 +66,11 @@ export declare const ListNotificationsResponseSchema: z.ZodObject<{
     }, "strip", z.ZodTypeAny, {
         type: string;
         status: string;
-        videoId: string | null;
+        body: string;
         title: string;
         id: string;
         createdAt: string;
-        body: string;
+        videoId: string | null;
         sentAt: string;
         sentCount: number;
         attempts: number;
@@ -79,11 +79,11 @@ export declare const ListNotificationsResponseSchema: z.ZodObject<{
     }, {
         type: string;
         status: string;
-        videoId: string | null;
+        body: string;
         title: string;
         id: string;
         createdAt: string;
-        body: string;
+        videoId: string | null;
         sentAt: string;
         sentCount: number;
         attempts: number;
@@ -96,39 +96,39 @@ export declare const ListNotificationsResponseSchema: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     limit: number;
     offset: number;
-    total: number;
     items: {
         type: string;
         status: string;
-        videoId: string | null;
+        body: string;
         title: string;
         id: string;
         createdAt: string;
-        body: string;
+        videoId: string | null;
         sentAt: string;
         sentCount: number;
         attempts: number;
         scheduledAt: string;
         errorMessage: string | null;
     }[];
+    total: number;
 }, {
     limit: number;
     offset: number;
-    total: number;
     items: {
         type: string;
         status: string;
-        videoId: string | null;
+        body: string;
         title: string;
         id: string;
         createdAt: string;
-        body: string;
+        videoId: string | null;
         sentAt: string;
         sentCount: number;
         attempts: number;
         scheduledAt: string;
         errorMessage: string | null;
     }[];
+    total: number;
 }>;
 export declare const SendPushBodySchema: z.ZodObject<{
     title: z.ZodString;
@@ -138,13 +138,13 @@ export declare const SendPushBodySchema: z.ZodObject<{
     idempotencyKey: z.ZodOptional<z.ZodString>;
 }, "strip", z.ZodTypeAny, {
     type: "test" | "live" | "new_video" | "announcement";
-    title: string;
     body: string;
+    title: string;
     videoId?: string | null | undefined;
     idempotencyKey?: string | undefined;
 }, {
-    title: string;
     body: string;
+    title: string;
     type?: "test" | "live" | "new_video" | "announcement" | undefined;
     videoId?: string | null | undefined;
     idempotencyKey?: string | undefined;
@@ -169,11 +169,11 @@ export declare const SendPushResponseSchema: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     type: string;
     status: string;
-    videoId: string | null;
+    body: string;
     title: string;
     id: string;
     createdAt: string;
-    body: string;
+    videoId: string | null;
     sentAt: string;
     sentCount: number;
     attempts: number;
@@ -185,11 +185,11 @@ export declare const SendPushResponseSchema: z.ZodObject<{
 }, {
     type: string;
     status: string;
-    videoId: string | null;
+    body: string;
     title: string;
     id: string;
     createdAt: string;
-    body: string;
+    videoId: string | null;
     sentAt: string;
     sentCount: number;
     attempts: number;

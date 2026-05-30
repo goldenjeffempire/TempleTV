@@ -556,24 +556,47 @@ export async function authRoutes(app: FastifyInstance) {
         return { error: "Linked user not found" };
       }
 
+      // Sign tokens outside the transaction — crypto ops should not hold a
+      // DB connection open unnecessarily.
       const jti = nanoid(32);
       const accessToken = await signAccessToken({ sub: user.id, email: user.email, role: user.role as Role });
       const refreshToken = await signRefreshToken({ sub: user.id, jti });
-
       const expiresAt = new Date(Date.now() + env.JWT_REFRESH_TTL_SECONDS * 1000);
-      await db.insert(schema.refreshTokensTable).values({
-        id: jti,
-        userId: user.id,
-        tokenHash: sha256hex(refreshToken),
-        expiresAt,
-        ip: req.ip ?? null,
-        userAgent: req.headers["user-agent"] ?? null,
-      });
 
-      await db
-        .update(schema.deviceLinkCodesTable)
-        .set({ consumedAt: new Date() })
-        .where(eq(schema.deviceLinkCodesTable.code, code));
+      // Atomically insert the refresh token and mark the code as consumed.
+      // Without a transaction a concurrent /exchange call could read the same
+      // unconsummed code and issue a second set of tokens for the same pairing.
+      try {
+        await db.transaction(async (tx) => {
+          // Re-read inside the transaction to ensure the code hasn't been
+          // consumed by a concurrent request between our check above and now.
+          const [check] = await tx
+            .select({ consumedAt: schema.deviceLinkCodesTable.consumedAt })
+            .from(schema.deviceLinkCodesTable)
+            .where(eq(schema.deviceLinkCodesTable.code, code))
+            .limit(1);
+          if (check?.consumedAt) throw Object.assign(new Error("already_consumed"), { _deviceLink: true });
+
+          await tx.insert(schema.refreshTokensTable).values({
+            id: jti,
+            userId: user.id,
+            tokenHash: sha256hex(refreshToken),
+            expiresAt,
+            ip: req.ip ?? null,
+            userAgent: req.headers["user-agent"] ?? null,
+          });
+          await tx
+            .update(schema.deviceLinkCodesTable)
+            .set({ consumedAt: new Date() })
+            .where(eq(schema.deviceLinkCodesTable.code, code));
+        });
+      } catch (err: unknown) {
+        if (err instanceof Error && (err as NodeJS.ErrnoException & { _deviceLink?: boolean })._deviceLink) {
+          reply.status(410);
+          return { error: "Code already consumed by a concurrent request" };
+        }
+        throw err;
+      }
 
       return { accessToken, refreshToken, user: { id: user.id, email: user.email, displayName: user.displayName } };
     },

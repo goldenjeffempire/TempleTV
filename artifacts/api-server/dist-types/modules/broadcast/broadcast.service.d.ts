@@ -1,4 +1,3 @@
-import { desc } from "drizzle-orm";
 import type { z } from "zod";
 import type { AddQueueItemSchema } from "./broadcast.schemas.js";
 declare const queueTable: import("drizzle-orm/pg-core").PgTableWithColumns<{
@@ -250,35 +249,35 @@ export declare const broadcastService: {
     snapshot(): import("./queue.engine.js").BroadcastSnapshot;
     listQueue(): Promise<(typeof queueTable.$inferSelect)[]>;
     addToQueue(item: z.infer<typeof AddQueueItemSchema>): Promise<{
-        videoId: string | null;
-        youtubeId: string;
         title: string;
+        id: string;
+        youtubeId: string;
         thumbnailUrl: string;
-        durationSecs: number;
+        videoSource: string;
         localVideoUrl: string | null;
         hlsMasterUrl: string | null;
-        videoSource: string;
-        id: string;
-        sortOrder: number;
         isActive: boolean;
+        videoId: string | null;
+        sortOrder: number;
         addedAt: Date;
         scheduledAt: Date | null;
+        durationSecs: number;
         scheduleLabel: string | null;
     }>;
     removeFromQueue(id: string): Promise<{
-        videoId: string | null;
-        youtubeId: string;
         title: string;
+        id: string;
+        youtubeId: string;
         thumbnailUrl: string;
-        durationSecs: number;
+        videoSource: string;
         localVideoUrl: string | null;
         hlsMasterUrl: string | null;
-        videoSource: string;
-        id: string;
-        sortOrder: number;
         isActive: boolean;
+        videoId: string | null;
+        sortOrder: number;
         addedAt: Date;
         scheduledAt: Date | null;
+        durationSecs: number;
         scheduleLabel: string | null;
     }>;
     reorder(itemIds: string[]): Promise<import("./queue.engine.js").BroadcastSnapshot>;
@@ -299,4 +298,4 @@ export declare const broadcastService: {
         scheduleLabel: string | null;
     }>;
 };
-export { desc };
+export {};

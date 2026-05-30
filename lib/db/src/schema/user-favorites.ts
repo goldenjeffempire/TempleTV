@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, index } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { usersTable } from "./users";
 
 export const userFavoritesTable = pgTable(
@@ -14,7 +14,10 @@ export const userFavoritesTable = pgTable(
   },
   (t) => ({
     userIdx: index("user_favorites_user_id_idx").on(t.userId),
-    userVideoIdx: index("user_favorites_user_video_idx").on(t.userId, t.videoId),
+    // Unique constraint — required for the upsert (ON CONFLICT DO UPDATE) in
+    // the POST /user/favorites route to work atomically and eliminate the
+    // check-then-insert TOCTOU race.
+    userVideoUniqueIdx: uniqueIndex("user_favorites_user_video_uniq_idx").on(t.userId, t.videoId),
   }),
 );
 

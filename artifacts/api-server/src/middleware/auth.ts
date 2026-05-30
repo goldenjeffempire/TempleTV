@@ -36,7 +36,14 @@ async function getCachedSessionsValidAfter(userId: string): Promise<Date | null>
     _svaCache.set(userId, { validAfter, cachedAt: Date.now() });
     return validAfter;
   } catch {
-    return null; // fail open — never lock out users due to a DB glitch
+    // DB is transiently unavailable. Prefer the stale cached entry over
+    // failing open (null) — stale data still enforces the last-known
+    // revocation fence and is always better than a wide-open null return.
+    // Only fall back to null on a cold start (no prior cache entry), where
+    // failing open is the only option that avoids locking out all users
+    // during a transient PG blip at startup.
+    if (cached) return cached.validAfter;
+    return null;
   }
 }
 

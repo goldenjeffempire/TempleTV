@@ -67,6 +67,12 @@ export const SermonCard = React.memo(function SermonCard({
       }}
       onFocus={onFocus}
       onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onClick();
+        }
+      }}
     >
       {/* Thumbnail — cover fill so there are no black bars */}
       {thumbSrc ? (

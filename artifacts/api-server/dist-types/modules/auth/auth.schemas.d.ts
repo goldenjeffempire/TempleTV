@@ -60,8 +60,8 @@ export declare const AuthTokensSchema: z.ZodObject<{
         id: string;
         displayName: string;
     };
-    accessToken: string;
     refreshToken: string;
+    accessToken: string;
     accessTokenExpiresIn: number;
     refreshTokenExpiresIn: number;
 }, {
@@ -71,8 +71,8 @@ export declare const AuthTokensSchema: z.ZodObject<{
         id: string;
         displayName: string;
     };
-    accessToken: string;
     refreshToken: string;
+    accessToken: string;
     accessTokenExpiresIn: number;
     refreshTokenExpiresIn: number;
 }>;
@@ -86,11 +86,11 @@ export declare const MfaChallengeSchema: z.ZodObject<{
     mfaRequired: z.ZodLiteral<true>;
     mfaToken: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    mfaToken: string;
     mfaRequired: true;
+    mfaToken: string;
 }, {
-    mfaToken: string;
     mfaRequired: true;
+    mfaToken: string;
 }>;
 export type MfaChallenge = z.infer<typeof MfaChallengeSchema>;
 /** Discriminated union: either full auth tokens or an MFA challenge. */
@@ -122,8 +122,8 @@ export declare const LoginResponseSchema: z.ZodUnion<[z.ZodObject<{
         id: string;
         displayName: string;
     };
-    accessToken: string;
     refreshToken: string;
+    accessToken: string;
     accessTokenExpiresIn: number;
     refreshTokenExpiresIn: number;
 }, {
@@ -133,19 +133,19 @@ export declare const LoginResponseSchema: z.ZodUnion<[z.ZodObject<{
         id: string;
         displayName: string;
     };
-    accessToken: string;
     refreshToken: string;
+    accessToken: string;
     accessTokenExpiresIn: number;
     refreshTokenExpiresIn: number;
 }>, z.ZodObject<{
     mfaRequired: z.ZodLiteral<true>;
     mfaToken: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    mfaToken: string;
     mfaRequired: true;
+    mfaToken: string;
 }, {
-    mfaToken: string;
     mfaRequired: true;
+    mfaToken: string;
 }>]>;
 export type LoginResponse = z.infer<typeof LoginResponseSchema>;
 export declare const MfaSetupResponseSchema: z.ZodObject<{

@@ -309,6 +309,19 @@ export class PlayerMachine {
     }
   }
 
+  /**
+   * Release all internal resources held by this machine instance.
+   *
+   * Must be called when the owning session/transport is torn down to prevent
+   * the `sourceExpiryTimer` from keeping the machine alive past its intended
+   * lifetime and firing a snapshot request into a dead transport. Listeners
+   * are also cleared so GC can collect them.
+   */
+  destroy(): void {
+    this.clearSourceExpiryTimer();
+    this.listeners.clear();
+  }
+
   getSnapshot(): PlayerSnapshot {
     return this.snapshot;
   }
@@ -367,7 +380,16 @@ export class PlayerMachine {
     // title, failover reason, and "off air" status. lastSequence drives the
     // transport's `resume {lastSequence}` replay on reconnect.
     // Previously this was never set, so every surface always saw null.
-    this.set({ lastServerSnapshot: server, lastSequence: server.sequence });
+    //
+    // Only advance lastSequence when the incoming sequence is strictly higher.
+    // Out-of-order SSE events (e.g. a replayed low-sequence frame arriving
+    // after the transport has already processed a higher one) must not cause
+    // the resume cursor to regress — that would replay already-seen events and
+    // trigger duplicate bind/seek operations in the player FSM.
+    const nextSeq = server.sequence > this.snapshot.lastSequence
+      ? server.sequence
+      : this.snapshot.lastSequence;
+    this.set({ lastServerSnapshot: server, lastSequence: nextSeq });
 
     if (server.mode === "override" && server.override) {
       return this.engageOverride(server.override);

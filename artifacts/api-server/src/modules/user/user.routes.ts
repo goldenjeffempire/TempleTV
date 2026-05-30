@@ -102,6 +102,10 @@ export async function userRoutes(app: FastifyInstance) {
         tags: ["user"],
         summary: "List all favorited videos for the authenticated user",
         security: [{ bearerAuth: [] }],
+        querystring: z.object({
+          limit:  z.coerce.number().int().min(1).max(200).default(50),
+          offset: z.coerce.number().int().min(0).default(0),
+        }),
         response: {
           200: z.object({ favorites: z.array(FavoriteItemSchema) }),
         },
@@ -109,11 +113,15 @@ export async function userRoutes(app: FastifyInstance) {
     },
     async (req) => {
       const userId = req.principal!.id;
+      const limit  = req.query.limit;
+      const offset = req.query.offset;
       const rows = await db
         .select()
         .from(favoritesTable)
         .where(eq(favoritesTable.userId, userId))
-        .orderBy(desc(favoritesTable.createdAt));
+        .orderBy(desc(favoritesTable.createdAt))
+        .limit(limit)
+        .offset(offset);
       const favorites = rows.map((r) => ({
         id: r.id,
         videoId: r.videoId,
@@ -154,42 +162,27 @@ export async function userRoutes(app: FastifyInstance) {
       const videoThumbnail = sanitizeText(req.body.videoThumbnail);
       const videoCategory  = sanitizeText(req.body.videoCategory);
 
-      const existing = await db
-        .select({ id: favoritesTable.id })
-        .from(favoritesTable)
-        .where(and(eq(favoritesTable.userId, userId), eq(favoritesTable.videoId, videoId)))
-        .limit(1);
-
-      if (existing.length > 0) {
-        const row = (await db
-          .select()
-          .from(favoritesTable)
-          .where(eq(favoritesTable.id, existing[0]!.id))
-          .limit(1))[0]!;
-        reply.code(201);
-        return {
-          id: row.id,
-          videoId: row.videoId,
-          videoTitle: row.videoTitle,
-          videoThumbnail: row.videoThumbnail,
-          videoCategory: row.videoCategory,
-          createdAt: row.createdAt.toISOString(),
-        };
-      }
-
-      const inserted = await db
+      // Upsert — conflict on (userId, videoId) updates the display columns so
+      // that a re-favourite after a title/thumbnail change stays fresh.
+      // This eliminates the check-then-insert TOCTOU race where two concurrent
+      // requests could both pass the "does it exist?" check and both attempt an
+      // INSERT, causing one to fail with a unique-constraint violation.
+      const [row] = await db
         .insert(favoritesTable)
         .values({ id: nanoid(), userId, videoId, videoTitle, videoThumbnail, videoCategory })
+        .onConflictDoUpdate({
+          target: [favoritesTable.userId, favoritesTable.videoId],
+          set: { videoTitle, videoThumbnail, videoCategory },
+        })
         .returning();
-      const row = inserted[0]!;
       reply.code(201);
       return {
-        id: row.id,
-        videoId: row.videoId,
-        videoTitle: row.videoTitle,
-        videoThumbnail: row.videoThumbnail,
-        videoCategory: row.videoCategory,
-        createdAt: row.createdAt.toISOString(),
+        id: row!.id,
+        videoId: row!.videoId,
+        videoTitle: row!.videoTitle,
+        videoThumbnail: row!.videoThumbnail,
+        videoCategory: row!.videoCategory,
+        createdAt: row!.createdAt.toISOString(),
       };
     },
   );

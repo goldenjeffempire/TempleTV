@@ -153,13 +153,20 @@ function PageLoader() {
 // Runs once after login completes (component mount). Uses requestIdleCallback
 // where available so the prefetch yields to any pending user interaction
 // frames first, falling back to a simple setTimeout on older browsers.
-function prefetchCommonPages() {
+// Returns the outer setTimeout IDs so callers can cancel them on unmount,
+// preventing orphaned timers when the user logs out before they fire.
+function prefetchCommonPages(): ReturnType<typeof setTimeout>[] {
+  const ids: ReturnType<typeof setTimeout>[] = [];
+
   const schedule = (fn: () => void, delay: number) => {
-    if (typeof requestIdleCallback !== "undefined") {
-      setTimeout(() => requestIdleCallback(fn, { timeout: 5000 }), delay);
-    } else {
-      setTimeout(fn, delay);
-    }
+    const id = setTimeout(() => {
+      if (typeof requestIdleCallback !== "undefined") {
+        requestIdleCallback(fn, { timeout: 5000 });
+      } else {
+        fn();
+      }
+    }, delay);
+    ids.push(id);
   };
 
   // Tier 1 (2 s): the pages ops teams open immediately after logging in.
@@ -186,6 +193,8 @@ function prefetchCommonPages() {
     void import("@/pages/schedule").catch(() => {});
     void import("@/pages/stream-health").catch(() => {});
   }, 10000);
+
+  return ids;
 }
 
 function AuthenticatedApp() {
@@ -194,8 +203,13 @@ function AuthenticatedApp() {
 
   // Background-prefetch page chunks immediately after the authenticated
   // shell mounts so navigating to any admin section is near-instant.
-   
-  useEffect(() => { prefetchCommonPages(); }, []);
+  // We store all timer IDs and clear them on unmount so that a rapid
+  // login → logout cycle doesn't leave orphaned timers referencing
+  // module-import calls for chunks that will never be needed.
+  useEffect(() => {
+    const ids = prefetchCommonPages();
+    return () => { for (const id of ids) clearTimeout(id); };
+  }, []);
 
   return (
     <SSEProvider>

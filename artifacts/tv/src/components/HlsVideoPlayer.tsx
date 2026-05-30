@@ -105,6 +105,7 @@ type Slot = "A" | "B";
 
 function levelLabel(h?: number): string {
   if (!h) return "Auto";
+  if (h >= 2160) return "4K";
   if (h >= 1080) return "1080p";
   if (h >= 720)  return "720p";
   if (h >= 480)  return "480p";
@@ -611,8 +612,21 @@ export function HlsVideoPlayer({
       if (stallTimerRef.current) clearTimeout(stallTimerRef.current);
       if (seekOsdTimer.current) clearTimeout(seekOsdTimer.current);
       if (progressTimer.current) clearInterval(progressTimer.current);
-      try { getHls("A")?.destroy(); } catch { /* noop */ }
-      try { getHls("B")?.destroy(); } catch { /* noop */ }
+      // Destroy hls.js instances and explicitly release the GPU video texture.
+      // On Samsung Tizen and LG webOS the compositor keeps the YUV texture
+      // in VRAM until the <video> src is cleared and load() is called — skipping
+      // this step causes a steady GPU memory leak when navigating between
+      // catalogue items or switching live/VOD modes. hls.destroy() alone only
+      // detaches MSE; it does not release the decoded frame buffer.
+      for (const slot of ["A", "B"] as const) {
+        try { getHls(slot)?.destroy(); } catch { /* noop */ }
+        setHls(slot, null);
+        const v = getVideo(slot);
+        if (v) {
+          try { v.pause(); } catch { /* noop */ }
+          try { v.removeAttribute("src"); v.load(); } catch { /* noop */ }
+        }
+      }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
