@@ -55,21 +55,16 @@ export function useChat(options: ChatClientOptions = {}): UseChatResult {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
+  // Single effect: start on mount / key-change, stop on cleanup.
+  // The useMemo above already calls stop() on the *previous* client before
+  // returning the new one, so this cleanup handles the unmount case and the
+  // React StrictMode double-invoke case — no duplicate connections possible.
   useEffect(() => {
     client.start();
     return () => {
-      // Don't stop on render-cycle teardown — only on unmount or key change
-      // (handled in the memo above). The component-unmount cleanup happens
-      // via the ref pattern; this effect just guarantees `start()` runs.
-    };
-  }, [client]);
-
-  useEffect(() => {
-    return () => {
       client.stop();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [client]);
 
   const subscribe = useMemo(() => (cb: () => void) => client.subscribe(cb), [client]);
   const getSnapshot = useMemo(

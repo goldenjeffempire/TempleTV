@@ -90,14 +90,25 @@ export async function videoServeRoutes(app: FastifyInstance) {
     );
   }
 
-  // Warn operators when HLS_TOKEN_SECRET falls back to the hardcoded default.
-  // In production this means any client can forge a valid token by using the
-  // well-known default value — set HLS_TOKEN_SECRET to a strong random secret.
+  // Guard against the hardcoded default secret reaching production with token
+  // enforcement enabled. Without this, any client that knows the well-known
+  // fallback value ("temple-tv-hls-default") can forge valid HLS tokens.
   if (env.NODE_ENV === "production" && !env.HLS_TOKEN_SECRET) {
-    logger.error(
-      "video-serve: HLS_TOKEN_SECRET is not set — HLS token signing is using " +
-      "the built-in default secret. Set HLS_TOKEN_SECRET to a strong random " +
-      "value (≥32 chars) before enabling REQUIRE_HLS_TOKEN in production.",
+    if (env.REQUIRE_HLS_TOKEN) {
+      // Hard-fail: token enforcement is active but the secret is the public
+      // default. Any client could forge a token — refuse to start.
+      throw new Error(
+        "video-serve: REQUIRE_HLS_TOKEN=true but HLS_TOKEN_SECRET is not set. " +
+        "Set HLS_TOKEN_SECRET to a strong random value (≥32 chars) before " +
+        "starting the server in production.",
+      );
+    }
+    // Soft-warn: token enforcement is off, but operators should still set the
+    // secret so they can enable it safely later.
+    logger.warn(
+      "video-serve: HLS_TOKEN_SECRET is not set — HLS token signing falls back " +
+      "to the built-in default secret. Set HLS_TOKEN_SECRET before enabling " +
+      "REQUIRE_HLS_TOKEN in production.",
     );
   }
 

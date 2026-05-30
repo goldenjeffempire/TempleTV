@@ -23,6 +23,22 @@ const durationProbeCache = new Map<string, { secs: number | null; at: number }>(
 const DURATION_PROBE_TTL_SUCCESS_MS = 24 * 60 * 60 * 1000;
 const DURATION_PROBE_TTL_FAILURE_MS =  5 * 60 * 1000;
 /**
+ * Maximum number of entries in durationProbeCache before a sweep runs.
+ * Each entry is a ~200-byte object (URL string + number + timestamp), so
+ * 2 000 entries ≈ 400 KB — well within budget. The sweep removes all
+ * expired entries (not just the oldest) so the map self-heals over time.
+ */
+const DURATION_PROBE_CACHE_MAX = 2_000;
+
+function pruneExpiredProbeCache(): void {
+  if (durationProbeCache.size < DURATION_PROBE_CACHE_MAX) return;
+  const now = Date.now();
+  for (const [url, entry] of durationProbeCache) {
+    const ttl = entry.secs !== null ? DURATION_PROBE_TTL_SUCCESS_MS : DURATION_PROBE_TTL_FAILURE_MS;
+    if (now - entry.at >= ttl) durationProbeCache.delete(url);
+  }
+}
+/**
  * Increased from 20 s to 45 s. Remote MP4 files served without faststart
  * (moov atom at the end) require ffprobe to issue two HTTP range requests —
  * one to the start (ftyp/mdat) and one to the end (moov). On a 100+ Mbps
@@ -61,9 +77,14 @@ async function probeDurationSecs(url: string): Promise<{ secs: number | null; fr
       resolve(result);
     };
 
-    const timer = setTimeout(() => done(null), DURATION_PROBE_TIMEOUT_MS);
-
+    // Keep a reference to the child so the timeout handler can kill it.
+    // The ref is populated synchronously by spawn() which is always called
+    // before the 45-second timer could ever fire.
     let child: ReturnType<typeof spawn>;
+    const timer = setTimeout(() => {
+      try { child?.kill("SIGKILL"); } catch { /* already exited */ }
+      done(null);
+    }, DURATION_PROBE_TIMEOUT_MS);
     try {
       child = spawn("ffprobe", [
         "-v", "quiet",

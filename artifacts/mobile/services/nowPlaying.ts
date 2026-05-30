@@ -189,28 +189,36 @@ export async function resumeTrackPlayer(): Promise<void> {
   if (!isSetup || Platform.OS === "web" || !TrackPlayer) return;
   try {
     await TrackPlayer.play();
-  } catch {}
+  } catch (err) {
+    if (__DEV__) console.warn("[nowPlaying] resumeTrackPlayer failed:", err);
+  }
 }
 
 export async function pauseTrackPlayer(): Promise<void> {
   if (!isSetup || Platform.OS === "web" || !TrackPlayer) return;
   try {
     await TrackPlayer.pause();
-  } catch {}
+  } catch (err) {
+    if (__DEV__) console.warn("[nowPlaying] pauseTrackPlayer failed:", err);
+  }
 }
 
 export async function seekTrackPlayer(positionSecs: number): Promise<void> {
   if (!isSetup || Platform.OS === "web" || !TrackPlayer) return;
   try {
     await TrackPlayer.seekTo(positionSecs);
-  } catch {}
+  } catch (err) {
+    if (__DEV__) console.warn("[nowPlaying] seekTrackPlayer failed:", err);
+  }
 }
 
 export async function stopTrackPlayer(): Promise<void> {
   if (!isSetup || Platform.OS === "web" || !TrackPlayer) return;
   try {
     await TrackPlayer.reset();
-  } catch {}
+  } catch (err) {
+    if (__DEV__) console.warn("[nowPlaying] stopTrackPlayer failed:", err);
+  }
 }
 
 export async function updateTrackPlayerMetadata(info: {

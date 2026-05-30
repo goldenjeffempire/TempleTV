@@ -141,15 +141,23 @@ function useLiveViewerCount() {
   const [count, setCount] = useState<number | null>(null);
   const [prev, setPrev] = useState<number | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Guards against overlapping async polls: if the previous request hasn't
+  // resolved yet by the time the next interval fires, skip that tick rather
+  // than issuing a second concurrent request to the same endpoint.
+  const inFlightRef = useRef(false);
 
   useEffect(() => {
     let mounted = true;
     async function poll() {
+      if (inFlightRef.current) return;
+      inFlightRef.current = true;
       try {
         const res = await api.get<{ channelId: string; count: number }>("/broadcast/viewers");
         if (!mounted) return;
         setCount((c) => { setPrev(c); return res.count; });
-      } catch { /* silent — offline or no viewers endpoint */ }
+      } catch { /* silent — offline or no viewers endpoint */ } finally {
+        inFlightRef.current = false;
+      }
     }
     void poll();
     intervalRef.current = setInterval(() => void poll(), 5000);
