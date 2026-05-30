@@ -346,7 +346,9 @@ class TranscoderDispatcher {
     // job is claimed — so getHeartbeat() accurately reflects that the dispatcher
     // is alive even when the queue is empty.
     this.lastHeartbeatAt = Date.now();
-    void this.runOnce().finally(() => {
+    void this.runOnce().catch((err) => {
+      logger.warn({ err }, "transcoder: unhandled runOnce error — will retry on next tick");
+    }).finally(() => {
       if (this.stopped) return;
       this.timer = setTimeout(() => this.tick(), env.TRANSCODER_POLL_MS);
     });
@@ -805,6 +807,39 @@ class TranscoderDispatcher {
       }
 
       return { ran: true };
+    } catch (err) {
+      // Reaches here only for pre-claim failures: the candidates SELECT,
+      // the atomic UPDATE claim, or the initial video-status write.
+      // Job-execution errors are caught by the inner try/catch above.
+      // Log and absorb so the tick() caller never sees an unhandled rejection.
+      const message = err instanceof Error ? err.message : String(err);
+      const errCode = (err as NodeJS.ErrnoException).code;
+      const isStorageError =
+        errCode === "ECONNREFUSED" ||
+        errCode === "ECONNRESET" ||
+        errCode === "ETIMEDOUT" ||
+        errCode === "EPIPE" ||
+        message.includes("Connection terminated") ||
+        message.includes("pool") ||
+        message.includes("ECONNREFUSED") ||
+        message.includes("connection refused") ||
+        message.includes("Failed query");
+      if (isStorageError) {
+        this.storageErrorStreak++;
+        if (this.storageErrorStreak >= TranscoderDispatcher.STORAGE_ERROR_THRESHOLD) {
+          this.storageCircuitOpenUntil = Date.now() + TranscoderDispatcher.STORAGE_REOPEN_DELAY_MS;
+          this.storageErrorStreak = 0;
+          logger.error(
+            { errCode, message, cooldownMs: TranscoderDispatcher.STORAGE_REOPEN_DELAY_MS },
+            "transcoder: storage outage detected (pre-claim) — dispatch PAUSED for 60 s",
+          );
+        } else {
+          logger.warn({ err, errCode }, "transcoder: transient DB error in dispatch pre-claim — will retry");
+        }
+      } else {
+        logger.error({ err }, "transcoder: unexpected pre-claim error — will retry on next tick");
+      }
+      return { ran: false };
     } finally {
       this.running = false;
       this.currentJobId = null;
