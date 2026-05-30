@@ -26,7 +26,7 @@
  *
  * Results are cached and exposed via the /diagnostics endpoint. Non-fatal.
  */
-import { asc, eq, inArray } from "drizzle-orm";
+import { asc, eq, inArray, sql } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
@@ -263,6 +263,73 @@ class QueueIntegrityValidatorImpl {
             { err: fixErr, count: missingJoinIds.length },
             "[queue-validator] AUTO-FIX: failed to deactivate MISSING_VIDEO_JOIN items (non-fatal)",
           );
+        }
+      }
+
+      // ── Auto-fix (reverse): re-activate items deactivated by MISSING_VIDEO_JOIN ──
+      // When a managed_videos row is restored after a DB anomaly (e.g. a botched
+      // hard-delete was rolled back, a row was re-imported via YouTube sync, or
+      // an admin manually re-linked a video), the corresponding broadcast_queue
+      // item may still be sitting as is_active=false from a previous validator
+      // run that correctly deactivated it. Without this reverse pass the item
+      // never returns to air — the operator would have to manually toggle it back.
+      //
+      // We only re-activate items that:
+      //   1. Are currently inactive (is_active=false)
+      //   2. Have a non-null videoId (i.e. they were a managed-video queue entry)
+      //   3. Have a valid, resolvable managed_videos join (the row exists again)
+      //   4. Have at least one playable URL (localVideoUrl or hlsMasterUrl) so
+      //      we don't re-activate an item that will immediately auto-skip again
+      //
+      // A separate query is required because the main rows query above only
+      // fetches active items. The reverse pass is lightweight: it only runs
+      // when there are no current MISSING_VIDEO_JOIN errors (i.e. the active
+      // queue is clean), giving it a natural trigger for "all restored" states.
+      if (missingJoinIds.length === 0) {
+        // A separate query is required because the main `rows` query above
+        // only fetches active (is_active=true) items. We need a LEFT JOIN
+        // across inactive rows to find ones whose video row has since returned.
+        type RestoredRow = { id: string; title: string };
+        let restoredRows: RestoredRow[] = [];
+        try {
+          const result = await db.execute<RestoredRow>(sql`
+            SELECT bq.id, bq.title
+            FROM broadcast_queue bq
+            INNER JOIN managed_videos mv ON mv.id = bq.video_id
+            WHERE bq.is_active = false
+              AND bq.video_id IS NOT NULL
+              AND (mv.local_video_url IS NOT NULL OR mv.hls_master_url IS NOT NULL)
+          `);
+          restoredRows = (result.rows as RestoredRow[]) ?? [];
+        } catch (qErr) {
+          logger.debug(
+            { err: qErr },
+            "[queue-validator] reverse-MISSING_VIDEO_JOIN query failed (non-fatal)",
+          );
+        }
+
+        if (restoredRows.length > 0) {
+          const restoredIds = restoredRows.map((r) => r.id);
+          try {
+            await db
+              .update(schema.broadcastQueueTable)
+              .set({ isActive: true })
+              .where(inArray(schema.broadcastQueueTable.id, restoredIds));
+            logger.warn(
+              { count: restoredIds.length, itemIds: restoredIds },
+              "[queue-validator] AUTO-FIX (reverse): re-activated broadcast_queue items " +
+              "whose managed_videos row was restored — items returned to broadcast rotation",
+            );
+            adminEventBus.push("broadcast-queue-updated", {
+              reason: "integrity-fix-restored-video-join",
+              count: restoredIds.length,
+            });
+          } catch (fixErr) {
+            logger.warn(
+              { err: fixErr, count: restoredIds.length },
+              "[queue-validator] AUTO-FIX (reverse): failed to re-activate restored items (non-fatal)",
+            );
+          }
         }
       }
 
