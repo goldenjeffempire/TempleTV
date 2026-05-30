@@ -407,6 +407,7 @@ export default function LibraryScreen() {
     error,
     refreshError,
     loadMore,
+    loadMoreError,
     refetch,
   } = usePaginatedVideos({ search, category, sort, source: "youtube" });
 
@@ -457,6 +458,12 @@ export default function LibraryScreen() {
         Loading more…
       </Text>
     </View>
+  ) : loadMoreError ? (
+    <Pressable onPress={loadMore} style={styles.footerHint} accessibilityRole="button" accessibilityLabel="Retry loading more videos">
+      <Text style={[styles.footerText, { color: c.destructive ?? "#ef4444" }]}>
+        Failed to load more — tap to retry
+      </Text>
+    </Pressable>
   ) : hasMore ? (
     <View style={styles.footerHint}>
       <Text style={[styles.footerText, { color: c.mutedForeground }]}>

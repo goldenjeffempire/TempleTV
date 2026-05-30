@@ -106,7 +106,7 @@ export default function SearchScreen() {
 
   const { isOnline } = useNetworkStatus();
 
-  const { sermons, total, loading, loadingMore, isRefreshing, hasMore, refreshError, loadMore, refetch } = usePaginatedVideos({
+  const { sermons, total, loading, loadingMore, isRefreshing, hasMore, refreshError, loadMoreError, loadMore, refetch } = usePaginatedVideos({
     search: isSearching ? query : "",
     category,
     sort,
@@ -159,6 +159,12 @@ export default function SearchScreen() {
     <View style={styles.footerLoader}>
       <ActivityIndicator size="small" color={c.primary} />
     </View>
+  ) : loadMoreError ? (
+    <Pressable onPress={loadMore} style={styles.footerLoader} accessibilityRole="button" accessibilityLabel="Retry loading more results">
+      <Text style={[styles.footerText, { color: c.destructive ?? "#ef4444" }]}>
+        Failed to load more — tap to retry
+      </Text>
+    </Pressable>
   ) : null;
 
   return (

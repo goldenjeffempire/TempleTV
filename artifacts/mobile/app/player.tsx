@@ -100,10 +100,18 @@ function ReactionButton({
   const c = useColors();
   const scale = useRef(new Animated.Value(1)).current;
   const [sent, setSent] = useState(false);
+  const sentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (sentTimerRef.current) clearTimeout(sentTimerRef.current);
+    };
+  }, []);
 
   const handlePress = () => {
+    if (sentTimerRef.current) clearTimeout(sentTimerRef.current);
     setSent(true);
-    setTimeout(() => setSent(false), 1400);
+    sentTimerRef.current = setTimeout(() => setSent(false), 1400);
     Animated.sequence([
       Animated.spring(scale, { toValue: 1.38, useNativeDriver: true, speed: 55, bounciness: 14 }),
       Animated.spring(scale, { toValue: 1, useNativeDriver: true, speed: 28 }),

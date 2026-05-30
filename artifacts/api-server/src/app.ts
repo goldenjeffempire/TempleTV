@@ -303,17 +303,12 @@ export async function buildApp(): Promise<FastifyInstance> {
       if (path === "/hot") return true;
       if (path === "/message") return true;
       if (path.startsWith("/assets/")) return true;
-      // Broadcast v2 real-time paths
-      if (path.includes("/broadcast-v2/state")) return true;
-      if (path.includes("/broadcast-v2/health")) return true;
-      if (path.includes("/broadcast-v2/events")) return true;
-      if (path.includes("/broadcast-v2/ws")) return true;
-      if (path.includes("/broadcast-v2/rehydrate")) return true;
+      // Broadcast v2 real-time paths — use startsWith with both API prefixes
+      // to prevent bypass via a crafted path like /api/v1/admin/foo/broadcast-v2/state
+      // that contains the substring but is not a real broadcast-v2 route.
+      if (path.startsWith("/api/broadcast-v2/") || path.startsWith("/api/v1/broadcast-v2/")) return true;
       // Midnight Prayers real-time paths
-      if (path.includes("/midnight-prayers/state")) return true;
-      if (path.includes("/midnight-prayers/config")) return true;
-      if (path.includes("/midnight-prayers/events")) return true;
-      if (path.includes("/midnight-prayers/ws")) return true;
+      if (path.startsWith("/api/midnight-prayers/") || path.startsWith("/api/v1/midnight-prayers/")) return true;
       // HLS segments + media proxy (high-volume streaming).
       // Use startsWith to prevent bypass via a crafted path like
       // /api/v1/admin/hls/ that contains "/hls/" in the middle.

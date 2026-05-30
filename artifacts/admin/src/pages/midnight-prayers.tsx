@@ -129,7 +129,7 @@ export default function MidnightPrayersPage() {
     return () => clearInterval(t);
   }, []);
 
-  const { data: queueData, isLoading: queueLoading } = useQuery<MPQueueResponse>({
+  const { data: queueData, isLoading: queueLoading, error: queueError, refetch: refetchQueue } = useQuery<MPQueueResponse>({
     queryKey: ["midnight-prayers/queue"],
     queryFn: () => api.get<MPQueueResponse>("/midnight-prayers/queue"),
     staleTime: 60_000,
@@ -215,6 +215,16 @@ export default function MidnightPrayersPage() {
           </Badge>
         </div>
       </div>
+
+      {queueError && (
+        <div className="flex items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+          <AlertCircle className="h-4 w-4 flex-shrink-0" />
+          <span>Failed to load queue: {queueError instanceof Error ? queueError.message : String(queueError)}</span>
+          <Button variant="ghost" size="sm" className="ml-auto h-6 px-2" onClick={() => void refetchQueue()}>
+            Retry
+          </Button>
+        </div>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-3">
         {/* ── Live Status ─────────────────────────────────────────────────── */}

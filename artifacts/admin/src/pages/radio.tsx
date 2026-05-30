@@ -72,17 +72,12 @@ export default function RadioPage() {
   const [testState, setTestState]     = useState<"idle" | "loading" | "playing" | "error">("idle");
   const audioRef  = useRef<HTMLAudioElement | null>(null);
 
-  // Stop audio and remove the element when the page unmounts so the `playing`
+  // Stop audio and null out handlers when the page unmounts so the `playing`
   // and `error` event listener closures (which call setTestState) don't fire
   // against an unmounted component and leak memory.
   useEffect(() => {
-    return () => {
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current.src = "";
-        audioRef.current = null;
-      }
-    };
+    return () => stopAudio();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Warn the browser before the tab closes / navigates away when there are
@@ -96,22 +91,31 @@ export default function RadioPage() {
     return () => window.removeEventListener("beforeunload", handler);
   }, [dirty]);
 
+  function stopAudio() {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = "";
+      audioRef.current.onplaying = null;
+      audioRef.current.onerror = null;
+      audioRef.current = null;
+    }
+  }
+
   function testStream() {
     const url = streamUrl.trim();
     if (!url) return;
 
-    if (testState === "playing") {
-      audioRef.current?.pause();
-      if (audioRef.current) { audioRef.current.src = ""; }
-      audioRef.current = null;
+    if (testState === "playing" || testState === "loading") {
+      stopAudio();
       setTestState("idle");
       return;
     }
 
+    stopAudio();
     setTestState("loading");
     const audio = new window.Audio(url);
-    audio.addEventListener("playing", () => setTestState("playing"));
-    audio.addEventListener("error",   () => setTestState("error"));
+    audio.onplaying = () => setTestState("playing");
+    audio.onerror   = () => setTestState("error");
     audio.play().catch(() => setTestState("error"));
     audioRef.current = audio;
   }

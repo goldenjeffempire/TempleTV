@@ -361,6 +361,8 @@ export interface PaginatedVideosState {
   error: string | null;
   /** Set when a background refresh fails but existing data is still shown. */
   refreshError: string | null;
+  /** Set when an infinite-scroll page load fails; clears on the next successful loadMore. */
+  loadMoreError: string | null;
   loadMore: () => void;
   refetch: () => void;
 }
@@ -422,6 +424,7 @@ export function usePaginatedVideos(opts: {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
 
   const hasMore = page < totalPages;
 
@@ -478,8 +481,11 @@ export function usePaginatedVideos(opts: {
   const loadMore = useCallback(() => {
     if (loadingMore || !hasMore) return;
     setLoadingMore(true);
+    setLoadMoreError(null);
     void fetchPage(page + 1, false)
-      .catch(() => { /* loadMore failures are silent — user can scroll again */ })
+      .catch((err: unknown) => {
+        setLoadMoreError(err instanceof Error ? err.message : "Failed to load more videos");
+      })
       .finally(() => setLoadingMore(false));
   }, [loadingMore, hasMore, page, fetchPage]);
 
@@ -525,6 +531,7 @@ export function usePaginatedVideos(opts: {
     hasMore,
     error,
     refreshError,
+    loadMoreError,
     loadMore,
     refetch,
   };
