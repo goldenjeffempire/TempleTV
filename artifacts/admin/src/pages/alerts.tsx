@@ -32,7 +32,7 @@ export default function AlertsPage() {
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["alerts"],
-    queryFn: () => api.get<{ alerts: Alert[] }>("/admin/alerts").catch(() => ({ alerts: [] })),
+    queryFn: () => api.get<{ alerts: Alert[] }>("/admin/alerts"),
     refetchInterval: 30_000,
     staleTime: 25_000,
   });

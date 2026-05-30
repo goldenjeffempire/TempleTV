@@ -33,7 +33,7 @@ export default function ChatPage() {
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["chat-messages"],
-    queryFn: () => api.get<{ messages: ChatMessage[]; stats?: ChatStats }>("/admin/chat").catch(() => ({ messages: [], stats: undefined })),
+    queryFn: () => api.get<{ messages: ChatMessage[]; stats?: ChatStats }>("/admin/chat"),
     refetchInterval: 15_000,
     staleTime: 10_000,
   });

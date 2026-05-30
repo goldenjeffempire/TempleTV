@@ -1,4 +1,5 @@
-import { pgTable, text, timestamp, boolean, integer, bigint, index } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, boolean, integer, bigint, index, check } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import type { z } from "zod/v4";
 
@@ -103,6 +104,13 @@ export const videosTable = pgTable("managed_videos", {
   // All other states (none/queued/encoding/ready/hls_ready) are admitted by
   // transcoding_status alone — see idx_managed_videos_source_transcoding above.
   index("idx_managed_videos_broadcast_admission").on(table.videoSource, table.transcodingStatus, table.faststartApplied),
+  // Enforce the closed enum at the database level. Any code path that writes
+  // an unrecognised status (typo, bad migration, rogue SQL) will get a
+  // CHECK violation rather than silently corrupting the state machine.
+  check(
+    "managed_videos_transcoding_status_check",
+    sql`${table.transcodingStatus} IN ('none','queued','encoding','processing','ready','failed')`,
+  ),
   // NOTE: The GIN full-text search index (idx_managed_videos_fts) is created via
   // raw SQL at API startup in infrastructure/db.ts using CREATE INDEX IF NOT EXISTS.
   // Drizzle Kit does not support expression GIN indexes in the schema DSL,

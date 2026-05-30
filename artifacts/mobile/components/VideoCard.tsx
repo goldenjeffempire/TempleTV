@@ -35,7 +35,7 @@ function formatViews(n: number): string {
   return String(n);
 }
 
-export function VideoCard({
+export const VideoCard = React.memo(function VideoCard({
   sermon,
   onPress,
   horizontal = false,
@@ -173,7 +173,7 @@ export function VideoCard({
       </View>
     </Pressable>
   );
-}
+});
 
 const styles = StyleSheet.create({
   // Horizontal (list) layout
