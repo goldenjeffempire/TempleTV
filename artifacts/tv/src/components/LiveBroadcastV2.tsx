@@ -325,6 +325,11 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
     document.removeEventListener("fullscreenchange", onFsChange);
     document.removeEventListener("webkitfullscreenchange", onFsChange);
     try { hls.destroy(); } catch { /* ignore */ }
+    // Explicitly clear the video src after hls.destroy() so that older
+    // Tizen / WebOS runtimes release the GPU texture and audio hardware.
+    // Without this the last decoded frame can stay resident in GPU memory.
+    video.removeAttribute("src");
+    video.load();
   };
 }
 

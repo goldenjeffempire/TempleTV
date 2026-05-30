@@ -153,7 +153,7 @@ class ScheduledNotificationDispatcher {
 
       for (const row of due) {
         try {
-          await notificationsService.sendPush({
+          const pushResult = await notificationsService.sendPush({
             title: row.title,
             body: row.body,
             // The sendPush service narrows `type` to a known enum;
@@ -179,7 +179,9 @@ class ScheduledNotificationDispatcher {
             .set({
               status: "sent",
               sentAt: new Date(),
-              sentCount: 1,
+              // Use the actual delivery count from sendPush instead of the
+              // previous hardcoded 1 — covers multi-platform fan-out correctly.
+              sentCount: pushResult.sentCount ?? pushResult.delivered ?? 1,
               errorMessage: null,
             })
             .where(eq(scheduled.id, row.id));

@@ -130,7 +130,9 @@ function scheduleProactiveRefresh(): void {
   // Guard against corrupted storage: NaN here would make Math.max return NaN
   // and setTimeout fire immediately in a tight refresh loop.
   if (!Number.isFinite(expiryMs)) return;
-  const delay = Math.max(0, expiryMs - Date.now() - PROACTIVE_REFRESH_BEFORE_MS);
+  // Floor at 5 s so that an already-expired token (expiryMs in the past)
+  // doesn't produce a delay of 0 and spin the refresh loop at maximum rate.
+  const delay = Math.max(5_000, expiryMs - Date.now() - PROACTIVE_REFRESH_BEFORE_MS);
   proactiveRefreshTimer = setTimeout(() => {
     proactiveRefreshTimer = null;
     performRefresh().catch(() => {});

@@ -39,7 +39,7 @@ const ROLE_COLORS: Record<string, string> = {
 
 export default function UsersPage() {
   const qc = useQueryClient();
-  const { isAdmin } = useAuth();
+  const { isAdmin, user } = useAuth();
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("all");
   const [deletingUser, setDeletingUser] = useState<AdminUser | null>(null);
@@ -56,8 +56,16 @@ export default function UsersPage() {
   });
 
   const updateRoleMutation = useMutation({
-    mutationFn: ({ id, role }: { id: string; role: string }) =>
-      api.patch(`/admin/users/${id}/role`, { role }),
+    mutationFn: ({ id, role }: { id: string; role: string }) => {
+      // Prevent self-demotion: an admin who demotes themselves will lose
+      // panel access immediately on the next admin-only API call.
+      if (id === user?.id && role !== "admin" && role !== "system") {
+        return Promise.reject(
+          new Error("You cannot demote your own account — ask another admin to change your role."),
+        );
+      }
+      return api.patch(`/admin/users/${id}/role`, { role });
+    },
     onSuccess: (_, { role }) => {
       toast.success(`Role updated to ${role}`);
       void qc.invalidateQueries({ queryKey: ["users"] });
@@ -67,7 +75,10 @@ export default function UsersPage() {
 
   const banChatMutation = useMutation({
     mutationFn: (id: string) => api.post(`/admin/users/${id}/ban`, {}),
-    onSuccess: () => { toast.success("User banned from chat"); },
+    onSuccess: () => {
+      toast.success("User banned from chat");
+      void qc.invalidateQueries({ queryKey: ["users"] });
+    },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to ban user"),
   });
 

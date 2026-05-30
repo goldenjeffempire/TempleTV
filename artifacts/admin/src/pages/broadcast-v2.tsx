@@ -771,6 +771,10 @@ function BroadcastV2PageInner() {
     try {
       await api.post(path, { ...body, idempotencyKey: crypto.randomUUID() });
       toast.success(`OK: ${path.split("/").pop()}`);
+      // Refresh broadcast state so the UI reflects the engine change without
+      // waiting for the next poll cycle (10–15 s).
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
     } catch (e) {
       const detail =
         e instanceof HttpError
@@ -840,6 +844,7 @@ function BroadcastV2PageInner() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       toast.success("Item removed from broadcast queue.");
     },
     onError: (err) => {

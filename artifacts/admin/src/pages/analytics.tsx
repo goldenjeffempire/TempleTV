@@ -122,7 +122,10 @@ export default function AnalyticsPage() {
     queryKey: ["analytics-overview", range],
     queryFn: () =>
       api.get<AnalyticsOverview>(`/admin/analytics/overview?range=${range}`),
-    staleTime: 15_000,
+    // Analytics overview contains daily aggregates; 2-minute staleTime avoids
+    // unnecessary refetches as the admin navigates between pages while still
+    // reflecting any data that updates within a session (e.g. today's count).
+    staleTime: 120_000,
   });
 
   // Memoize chart transforms so Recharts tooltip hover (which triggers a

@@ -253,6 +253,8 @@ export default function VideosPage() {
   useEffect(() => {
     return uploadQueue.onComplete(() => {
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      // Keep the Dashboard "Total Videos" count in sync after uploads complete.
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
     });
   }, [qc]);
 

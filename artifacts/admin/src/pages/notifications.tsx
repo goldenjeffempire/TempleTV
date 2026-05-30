@@ -12,6 +12,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { Bell, Send, Clock, CheckCircle2, XCircle, RefreshCw, Users, Smartphone, Globe } from "lucide-react";
 import { formatDistanceToNow, format } from "date-fns";
@@ -54,6 +58,7 @@ const DEFAULT_FORM: SendForm = { title: "", body: "", type: "announcement", sche
 export default function NotificationsPage() {
   const qc = useQueryClient();
   const [form, setForm] = useState<SendForm>(DEFAULT_FORM);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   const { data: history, isLoading: histLoading, error: histError, refetch: refetchHist } = useQuery({
     queryKey: ["notifications-history"],
@@ -126,7 +131,8 @@ export default function NotificationsPage() {
     if (isScheduled) {
       scheduleMutation.mutate(form);
     } else {
-      sendMutation.mutate(form);
+      // Show confirmation before blasting to all subscribers.
+      setConfirmOpen(true);
     }
   };
 
@@ -390,6 +396,29 @@ export default function NotificationsPage() {
           </Tabs>
         </div>
       </div>
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Send notification now?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will immediately push &ldquo;{form.title}&rdquo; to{" "}
+              {stats && stats.total > 0
+                ? <strong>{stats.total.toLocaleString()} subscriber{stats.total !== 1 ? "s" : ""}</strong>
+                : "all subscribers"}.{" "}
+              This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => sendMutation.mutate(form)}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              <Send size={14} className="mr-1.5" /> Send Now
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

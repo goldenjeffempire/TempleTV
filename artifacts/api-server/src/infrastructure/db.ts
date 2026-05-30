@@ -599,6 +599,14 @@ export function scheduleStaleDataCleanup(): void {
         `DELETE FROM upload_sessions
          WHERE status IN ('completed', 'failed', 'cancelled')
            AND created_at < NOW() - INTERVAL '30 days'`);
+      // Sweep abandoned sessions that were stuck in 'uploading' status —
+      // e.g. client disconnected mid-upload and never resumed. After 48 h
+      // these are definitively abandoned and their storage_blobs rows were
+      // already cleaned up by the orphan-blob sweeper above.
+      await run("upload_sessions_abandoned",
+        `DELETE FROM upload_sessions
+         WHERE status = 'uploading'
+           AND created_at < NOW() - INTERVAL '48 hours'`);
       await run("broadcast_event_log_old",
         "DELETE FROM broadcast_event_log WHERE created_at < NOW() - INTERVAL '14 days'");
 
