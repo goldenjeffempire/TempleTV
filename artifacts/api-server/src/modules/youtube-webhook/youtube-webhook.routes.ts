@@ -1,4 +1,6 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance } from "fastify";
+import { env } from "../../config/env.js";
 import { logger } from "../../infrastructure/logger.js";
 import { youtubeSyncDispatcher } from "../youtube-sync/youtube-sync.dispatcher.js";
 
@@ -68,13 +70,17 @@ export function startWebhookAutoRenewal(baseUrl: string): void {
 export async function subscribeToYouTubePubSubHubbub(baseUrl: string): Promise<void> {
   const callbackUrl = `${baseUrl}/api/youtube/webhook`;
   try {
-    const body = new URLSearchParams({
+    const params: Record<string, string> = {
       "hub.callback": callbackUrl,
       "hub.mode": "subscribe",
       "hub.topic": TOPIC_URL,
       "hub.verify": "async",
       "hub.lease_seconds": String(LEASE_SECS),
-    });
+    };
+    if (env.YOUTUBE_WEBHOOK_SECRET) {
+      params["hub.secret"] = env.YOUTUBE_WEBHOOK_SECRET;
+    }
+    const body = new URLSearchParams(params);
     const res = await fetch(HUB_URL, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -137,6 +143,28 @@ export async function youtubeWebhookRoutes(app: FastifyInstance): Promise<void> 
       : req.body instanceof Buffer
         ? req.body.toString("utf-8")
         : JSON.stringify(req.body ?? "");
+
+    // ── X-Hub-Signature verification ─────────────────────────────────────
+    // When YOUTUBE_WEBHOOK_SECRET is configured (and was passed as hub.secret
+    // during subscription), YouTube signs every POST with:
+    //   X-Hub-Signature: sha1=<hex>
+    // Reject requests with a wrong or missing signature to prevent spoofing.
+    if (env.YOUTUBE_WEBHOOK_SECRET) {
+      const sigHeader = (req.headers as Record<string, string | string[] | undefined>)["x-hub-signature"];
+      const sig = Array.isArray(sigHeader) ? sigHeader[0] : sigHeader;
+      if (!sig || !sig.startsWith("sha1=")) {
+        logger.warn({ reqId: req.id }, "youtube-webhook: missing X-Hub-Signature — rejecting");
+        return reply.status(403).send({ error: "Missing signature" });
+      }
+      const expected = `sha1=${createHmac("sha1", env.YOUTUBE_WEBHOOK_SECRET).update(body).digest("hex")}`;
+      const sigBuf = Buffer.from(sig);
+      const expBuf = Buffer.from(expected);
+      const valid = sigBuf.length === expBuf.length && timingSafeEqual(sigBuf, expBuf);
+      if (!valid) {
+        logger.warn({ reqId: req.id }, "youtube-webhook: invalid X-Hub-Signature — rejecting");
+        return reply.status(403).send({ error: "Invalid signature" });
+      }
+    }
 
     const videoIdMatch = body.match(/<yt:videoId>([^<]+)<\/yt:videoId>/);
     const videoId = videoIdMatch?.[1]?.trim();

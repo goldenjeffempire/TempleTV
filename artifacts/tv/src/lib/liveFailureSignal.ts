@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { resolveApiOrigin } from "./api.js";
 
 /**
  * Per-device "live YouTube embed failed" signal.
@@ -89,7 +90,7 @@ async function postFailureReport(videoId: string, surface: LiveFailureSurface): 
   // Use sendBeacon when available — survives page unload (e.g. when the
   // failure is reported as the user is closing the tab). Fall back to fetch
   // with keepalive so we don't block the UI thread either way.
-  const url = `${window.location.origin}/api/live/report-failure`;
+  const url = `${resolveApiOrigin()}/api/live/report-failure`;
   if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
     try {
       const blob = new Blob([body], { type: "application/json" });

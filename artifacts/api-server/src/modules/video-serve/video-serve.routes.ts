@@ -94,7 +94,7 @@ export async function videoServeRoutes(app: FastifyInstance) {
   // In production this means any client can forge a valid token by using the
   // well-known default value — set HLS_TOKEN_SECRET to a strong random secret.
   if (env.NODE_ENV === "production" && !env.HLS_TOKEN_SECRET) {
-    logger.warn(
+    logger.error(
       "video-serve: HLS_TOKEN_SECRET is not set — HLS token signing is using " +
       "the built-in default secret. Set HLS_TOKEN_SECRET to a strong random " +
       "value (≥32 chars) before enabling REQUIRE_HLS_TOKEN in production.",

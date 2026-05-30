@@ -282,6 +282,12 @@ const Env = z.object({
     .transform((v) => v === true || v === "true" || v === "1")
     .default(false),
   HLS_TOKEN_SECRET: z.string().optional(),
+  // ── YouTube PubSubHubbub webhook security ─────────────────────────────────
+  // Optional shared secret for YouTube WebSub. When set, the hub will sign
+  // each POST with X-Hub-Signature: sha1=<hmac> and the server will verify
+  // it before triggering a sync. Generate a strong random value:
+  //   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+  YOUTUBE_WEBHOOK_SECRET: z.string().min(16).optional(),
   // Token TTL in seconds. Default 1 hour.
   HLS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(3600),
 

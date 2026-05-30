@@ -91,7 +91,7 @@ export async function telemetryRoutes(app: FastifyInstance) {
             buildNumber: body.buildNumber,
             errorName: body.errorName,
             errorMessage: body.errorMessage,
-            url: body.context?.url,
+            url: body.context?.url?.split("?")[0],
             userAgent: body.context?.userAgent,
             occurredAt: body.occurredAt,
           },
