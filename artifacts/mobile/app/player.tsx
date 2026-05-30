@@ -547,6 +547,11 @@ export default function PlayerScreen() {
     aspectRatioWidth: Math.max(1, Math.round(videoAspectRatio * 9)),
     aspectRatioHeight: 9,
     autoEnterOnBackground: false,
+    // Show a restore button inside the PiP overlay window AND a persistent
+    // notification so the user can return to the full player from anywhere
+    // without hunting for the app. Both are auto-dismissed when the player
+    // returns to the foreground (native ActivityLifecycleCallbacks + JS cleanup).
+    showRestoreButton: true,
   });
   // Last-known playback position (ms). Written by handleProgressWithPosition
   // so that entering/exiting fullscreen can seek the new player instance to

@@ -9,6 +9,7 @@
  *     aspectRatioWidth: 16,
  *     aspectRatioHeight: 9,
  *     autoEnterOnBackground: true,   // enter PiP when user presses home
+ *     showRestoreButton: true,       // add restore button + notification
  *   });
  *
  * PiP mode detection:
@@ -16,6 +17,15 @@
  *   via any standard RN API. We detect it by polling `isInPictureInPictureMode()`
  *   on every AppState change (active ↔ background). This is accurate and
  *   battery-neutral since we poll only on state-change events, not on a timer.
+ *
+ * Restore button (showRestoreButton = true):
+ *   • Adds a "fullscreen" icon action to the PiP overlay window itself.
+ *   • Posts a persistent low-priority notification "Playing in mini player —
+ *     tap to return to full screen" so the user can restore from anywhere.
+ *   • Both are automatically dismissed by the native module when the activity
+ *     next resumes (user returned via the button, notification, or task switcher).
+ *   • cancelPipRestoreNotification() is called from JS on PiP exit as a
+ *     belt-and-suspenders cleanup in case the native cancel fires first.
  *
  * iOS / web:
  *   All exported values are safe no-ops — isSupported=false, isInPip=false,
@@ -29,6 +39,7 @@ import {
   enterPictureInPicture,
   isPictureInPictureSupported,
   isInPictureInPictureMode,
+  cancelPipRestoreNotification,
 } from "../modules/expo-pip-android/src";
 
 export interface UsePictureInPictureOptions {
@@ -51,6 +62,15 @@ export interface UsePictureInPictureOptions {
    * Default: false.
    */
   autoEnterOnBackground?: boolean;
+  /**
+   * When true, entering PiP adds a "Return to full screen" button inside the
+   * PiP overlay window AND posts a persistent notification in the notification
+   * drawer so the user can restore the player from anywhere without hunting
+   * for the app. Both are dismissed automatically when the player returns to
+   * the foreground.
+   * Default: true on Android (ignored on iOS/web).
+   */
+  showRestoreButton?: boolean;
 }
 
 export interface UsePictureInPictureResult {
@@ -72,6 +92,7 @@ export function usePictureInPicture(
     aspectRatioWidth = 16,
     aspectRatioHeight = 9,
     autoEnterOnBackground = false,
+    showRestoreButton = true,
   } = options;
 
   const [isInPip, setIsInPip] = useState(false);
@@ -85,16 +106,19 @@ export function usePictureInPicture(
   // over them (avoids re-registering the handler on every option change).
   const aspectRef = useRef({ width: aspectRatioWidth, height: aspectRatioHeight });
   const autoEnterRef = useRef(autoEnterOnBackground);
+  const showRestoreRef = useRef(showRestoreButton);
   useEffect(() => {
     aspectRef.current = { width: aspectRatioWidth, height: aspectRatioHeight };
     autoEnterRef.current = autoEnterOnBackground;
-  }, [aspectRatioWidth, aspectRatioHeight, autoEnterOnBackground]);
+    showRestoreRef.current = showRestoreButton;
+  }, [aspectRatioWidth, aspectRatioHeight, autoEnterOnBackground, showRestoreButton]);
 
   const enterPip = useCallback(async (): Promise<boolean> => {
     if (!isSupported) return false;
     return enterPictureInPicture(
       aspectRef.current.width,
       aspectRef.current.height,
+      showRestoreRef.current,
     );
   }, [isSupported]);
 
@@ -109,15 +133,25 @@ export function usePictureInPicture(
       const inPip = isInPictureInPictureMode();
       setIsInPip(inPip);
 
+      // When transitioning from PiP → active, cancel the restore notification
+      // as a JS-side belt-and-suspenders (the native module's ActivityLifecycle
+      // callbacks already cancel it on onActivityResumed; this covers the case
+      // where the native callback fires before React state updates).
+      if (nextState === "active" && !inPip) {
+        cancelPipRestoreNotification().catch(() => {});
+      }
+
       // Auto-enter PiP when the app is backgrounded (user pressed Home / switched apps).
       if (
         autoEnterRef.current &&
         (nextState === "background" || nextState === "inactive") &&
         !inPip
       ) {
-        enterPictureInPicture(aspectRef.current.width, aspectRef.current.height).catch(
-          () => {},
-        );
+        enterPictureInPicture(
+          aspectRef.current.width,
+          aspectRef.current.height,
+          showRestoreRef.current,
+        ).catch(() => {});
       }
     };
 
