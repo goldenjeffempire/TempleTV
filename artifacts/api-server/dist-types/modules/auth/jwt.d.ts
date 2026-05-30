@@ -13,6 +13,10 @@ export interface RefreshTokenPayload {
     sub: string;
     jti: string;
     type: "refresh";
+    /** Standard JWT "issued at" claim — seconds since epoch. Set automatically
+     *  by SignJWT. Present on all tokens we issue; optional so the interface
+     *  stays forward-compatible if a legacy token omits it. */
+    iat?: number;
 }
 export declare function signAccessToken(p: Omit<AccessTokenPayload, "type">): Promise<string>;
 export declare function signRefreshToken(p: Omit<RefreshTokenPayload, "type">): Promise<string>;

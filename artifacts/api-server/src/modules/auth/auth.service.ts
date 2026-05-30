@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { eq, and, gt, lt, isNull, or } from "drizzle-orm";
+import { eq, and, gt, lt, isNull, isNotNull, or } from "drizzle-orm";
 import { logger } from "../../infrastructure/logger.js";
 import { nanoid } from "nanoid";
 import { db, schema } from "../../infrastructure/db.js";
@@ -56,7 +56,8 @@ async function pruneExpiredRefreshTokens(userId: string): Promise<void> {
           or(
             lt(refreshTokensTable.expiresAt, cutoff),
             and(
-              lt(refreshTokensTable.revokedAt!, cutoff),
+              isNotNull(refreshTokensTable.revokedAt),
+              lt(refreshTokensTable.revokedAt, cutoff),
             ),
           ),
         ),

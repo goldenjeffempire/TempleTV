@@ -5,7 +5,7 @@ import { z } from "zod";
 import { eq, asc, and } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { requireAuth } from "../../middleware/auth.js";
-import { ConflictError, NotFoundError } from "../../shared/errors.js";
+import { ConflictError } from "../../shared/errors.js";
 import { channelRegistry } from "./channel-registry.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { snapshotToCurrentResult } from "../broadcast/broadcast.routes.js";

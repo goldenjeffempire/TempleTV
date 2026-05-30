@@ -18,7 +18,9 @@ import { logger } from "../../infrastructure/logger.js";
  *   GET /api/youtube/videos  → full video list as ApiVideo JSON
  */
 
-const CHANNEL_ID = "UCPFFvkE-KGpR37qJgvYriJg";
+// Prefer the operator-configured YOUTUBE_CHANNEL_ID env var so the channel
+// can be updated without a code change. Fall back to the known Temple TV ID.
+const CHANNEL_ID = env.YOUTUBE_CHANNEL_ID ?? "UCPFFvkE-KGpR37qJgvYriJg";
 const RSS_URL = `https://www.youtube.com/feeds/videos.xml?channel_id=${CHANNEL_ID}`;
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const YT_API_BASE = "https://www.googleapis.com/youtube/v3";

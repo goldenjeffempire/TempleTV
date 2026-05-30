@@ -759,12 +759,6 @@ function BroadcastV2PageInner() {
   // Launch Checklist modal.
   const [showChecklist, setShowChecklist] = useState(false);
 
-  // Ticks every second so the on-air progress bar stays live between SSE frames.
-  const [liveNow, setLiveNow] = useState(() => Date.now());
-  useEffect(() => {
-    const t = setInterval(() => setLiveNow(Date.now()), 1_000);
-    return () => clearInterval(t);
-  }, []);
 
   async function adminPost(path: string, body: Record<string, unknown> = {}) {
     setBusy(path);
@@ -1147,26 +1141,6 @@ function BroadcastV2PageInner() {
     if (processingCount === 0) setProcessingAlertDismissed(false);
   }, [processingCount]);
 
-  // ── On-air progress ──────────────────────────────────────────────────────────
-  // Current item elapsed and total, recomputed every second by the liveNow tick.
-  const currentItem = server?.current ?? null;
-  const onAirElapsedMs = currentItem
-    ? Math.max(0, liveNow - currentItem.startsAtMs)
-    : 0;
-  const onAirTotalMs = currentItem
-    ? Math.max(1, currentItem.endsAtMs - currentItem.startsAtMs)
-    : 1;
-  const onAirProgressPct = Math.min(100, Math.round((onAirElapsedMs / onAirTotalMs) * 100));
-  const onAirElapsedSecs = Math.floor(onAirElapsedMs / 1000);
-  const onAirTotalSecs   = Math.floor(onAirTotalMs  / 1000);
-  const fmtSecs = (s: number) =>
-    s >= 3600
-      ? `${Math.floor(s / 3600)}:${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`
-      : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-  const onAirRemainingSecs = currentItem
-    ? Math.max(0, Math.ceil((currentItem.endsAtMs - liveNow) / 1000))
-    : 0;
-  const viewerCount = diagnostics?.analytics?.activeSessions ?? null;
 
   // Combined "live link health" indicator.
   const fullyConnected = transportConnected && sse.state === "connected";
@@ -1540,96 +1514,15 @@ function BroadcastV2PageInner() {
       </div>
 
       {/* ── On-Air Status Bar ──────────────────────────────────────────── */}
-      {/* Always visible when the broadcast has a current item. Shows: live
-          pulse, item title, per-second progress bar, elapsed / total time,
-          viewer count, and sequence — giving operators a single glance
-          at the full broadcast state without scrolling to the queue. */}
-      <div
-        role="status"
-        aria-label="On-air status"
-        className={[
-          "rounded-lg border px-4 py-3",
-          currentItem
-            ? "border-red-300/70 bg-red-50 dark:border-red-800/60 dark:bg-red-950/20"
-            : "border-border bg-muted/30",
-        ].join(" ")}
-      >
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          {/* Live / Off-air label */}
-          <div className="flex items-center gap-1.5 shrink-0">
-            {currentItem ? (
-              <>
-                <span
-                  className="h-2.5 w-2.5 rounded-full bg-red-500 animate-pulse"
-                  aria-hidden="true"
-                />
-                <span className="text-xs font-bold uppercase tracking-widest text-red-700 dark:text-red-400">
-                  On Air
-                </span>
-              </>
-            ) : (
-              <>
-                <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/40" aria-hidden="true" />
-                <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-                  Off Air
-                </span>
-              </>
-            )}
-          </div>
-
-          {/* Current item title */}
-          <p className="flex-1 min-w-0 truncate text-sm font-medium">
-            {currentItem?.title ?? (activeQueueCount === 0 ? "Queue is empty" : "No item on air")}
-          </p>
-
-          {/* Elapsed / total time */}
-          {currentItem && (
-            <span className="text-xs tabular-nums text-muted-foreground shrink-0">
-              {fmtSecs(onAirElapsedSecs)} / {fmtSecs(onAirTotalSecs)}
-            </span>
-          )}
-
-          {/* Countdown — how much time remains on the current item */}
-          {currentItem && (
-            <span
-              className={[
-                "flex items-center gap-1 text-xs tabular-nums shrink-0",
-                onAirRemainingSecs <= 30
-                  ? "text-amber-500 dark:text-amber-400"
-                  : "text-muted-foreground",
-              ].join(" ")}
-              title="Time remaining on current item"
-            >
-              <Timer className="h-3 w-3" />
-              -{fmtSecs(onAirRemainingSecs)}
-            </span>
-          )}
-
-          {/* Viewer count */}
-          {viewerCount !== null && (
-            <div className="flex items-center gap-1 text-xs text-muted-foreground shrink-0" title="Active sessions in the last hour">
-              <Users className="h-3.5 w-3.5" />
-              <span>{viewerCount}</span>
-            </div>
-          )}
-
-          {/* Sequence */}
-          {server && (
-            <span className="text-xs tabular-nums text-muted-foreground shrink-0" title="Broadcast sequence number">
-              seq {server.sequence}
-            </span>
-          )}
-        </div>
-
-        {/* Progress bar — fills across the full card width */}
-        {currentItem && (
-          <Progress
-            value={onAirProgressPct}
-            className="mt-2.5 h-1.5"
-            aria-label={`${onAirProgressPct}% through current item`}
-          />
-        )}
-      </div>
+      {/* Rendered by OnAirStatusBar — a self-contained component with its own
+          1-second timer. This prevents the 3000+ line parent from re-rendering
+          every second just to update the progress bar and elapsed-time display. */}
+      <OnAirStatusBar
+        currentItem={server?.current}
+        activeQueueCount={activeQueueCount}
+        viewerCount={diagnostics?.analytics?.activeSessions ?? null}
+        sequence={server?.sequence}
+      />
 
       {/* Reconnecting strip */}
       {!fullyConnected && (
@@ -2420,7 +2313,7 @@ function BroadcastV2PageInner() {
                     {diagnostics.autoSuspended.map((item) => {
                       const SUSPENSION_TTL_MS = 5 * 60_000;
                       const recoverAtMs = item.suspendedAtMs + SUSPENSION_TTL_MS;
-                      const secsLeft = Math.max(0, Math.ceil((recoverAtMs - liveNow) / 1000));
+                      const secsLeft = Math.max(0, Math.ceil((recoverAtMs - Date.now()) / 1000));
                       const recovered = secsLeft === 0;
                       const recoveryLabel = recovered
                         ? "Auto-recovered"
@@ -3281,6 +3174,122 @@ function formatAgo(ms: number): string {
   if (diff < 60_000) return `${Math.round(diff / 1000)}s ago`;
   if (diff < 3_600_000) return `${Math.round(diff / 60_000)}m ago`;
   return `${Math.round(diff / 3_600_000)}h ago`;
+}
+
+// ─── OnAirStatusBar ──────────────────────────────────────────────────────────
+// Holds its own 1-second interval so the parent BroadcastV2PageInner component
+// does NOT re-render every second just to update the progress bar / countdown.
+// Only this small component re-renders on each tick.
+interface OnAirStatusBarProps {
+  currentItem: { startsAtMs: number; endsAtMs: number; title?: string | null } | null | undefined;
+  activeQueueCount: number;
+  viewerCount: number | null;
+  sequence: number | undefined;
+}
+function OnAirStatusBar({ currentItem, activeQueueCount, viewerCount, sequence }: OnAirStatusBarProps) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const fmtSecs = (s: number) =>
+    s >= 3600
+      ? `${Math.floor(s / 3600)}:${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`
+      : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+
+  const onAirElapsedMs     = currentItem ? Math.max(0, now - currentItem.startsAtMs) : 0;
+  const onAirTotalMs       = currentItem ? Math.max(1, currentItem.endsAtMs - currentItem.startsAtMs) : 1;
+  const onAirProgressPct   = Math.min(100, Math.round((onAirElapsedMs / onAirTotalMs) * 100));
+  const onAirElapsedSecs   = Math.floor(onAirElapsedMs / 1000);
+  const onAirTotalSecs     = Math.floor(onAirTotalMs  / 1000);
+  const onAirRemainingSecs = currentItem ? Math.max(0, Math.ceil((currentItem.endsAtMs - now) / 1000)) : 0;
+
+  return (
+    <div
+      role="status"
+      aria-label="On-air status"
+      className={[
+        "rounded-lg border px-4 py-3",
+        currentItem
+          ? "border-red-300/70 bg-red-50 dark:border-red-800/60 dark:bg-red-950/20"
+          : "border-border bg-muted/30",
+      ].join(" ")}
+    >
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        {/* Live / Off-air label */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          {currentItem ? (
+            <>
+              <span className="h-2.5 w-2.5 rounded-full bg-red-500 animate-pulse" aria-hidden="true" />
+              <span className="text-xs font-bold uppercase tracking-widest text-red-700 dark:text-red-400">
+                On Air
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/40" aria-hidden="true" />
+              <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+                Off Air
+              </span>
+            </>
+          )}
+        </div>
+
+        {/* Current item title */}
+        <p className="flex-1 min-w-0 truncate text-sm font-medium">
+          {currentItem?.title ?? (activeQueueCount === 0 ? "Queue is empty" : "No item on air")}
+        </p>
+
+        {/* Elapsed / total time */}
+        {currentItem && (
+          <span className="text-xs tabular-nums text-muted-foreground shrink-0">
+            {fmtSecs(onAirElapsedSecs)} / {fmtSecs(onAirTotalSecs)}
+          </span>
+        )}
+
+        {/* Countdown — how much time remains on the current item */}
+        {currentItem && (
+          <span
+            className={[
+              "flex items-center gap-1 text-xs tabular-nums shrink-0",
+              onAirRemainingSecs <= 30
+                ? "text-amber-500 dark:text-amber-400"
+                : "text-muted-foreground",
+            ].join(" ")}
+            title="Time remaining on current item"
+          >
+            <Timer className="h-3 w-3" />
+            -{fmtSecs(onAirRemainingSecs)}
+          </span>
+        )}
+
+        {/* Viewer count */}
+        {viewerCount !== null && (
+          <div className="flex items-center gap-1 text-xs text-muted-foreground shrink-0" title="Active sessions in the last hour">
+            <Users className="h-3.5 w-3.5" />
+            <span>{viewerCount}</span>
+          </div>
+        )}
+
+        {/* Sequence */}
+        {sequence !== undefined && (
+          <span className="text-xs tabular-nums text-muted-foreground shrink-0" title="Broadcast sequence number">
+            seq {sequence}
+          </span>
+        )}
+      </div>
+
+      {/* Progress bar — fills across the full card width */}
+      {currentItem && (
+        <Progress
+          value={onAirProgressPct}
+          className="mt-2.5 h-1.5"
+          aria-label={`${onAirProgressPct}% through current item`}
+        />
+      )}
+    </div>
+  );
 }
 
 export default function BroadcastV2Page() {

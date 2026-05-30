@@ -314,9 +314,11 @@ export async function buildApp(): Promise<FastifyInstance> {
       if (path.includes("/midnight-prayers/config")) return true;
       if (path.includes("/midnight-prayers/events")) return true;
       if (path.includes("/midnight-prayers/ws")) return true;
-      // HLS segments + media proxy (high-volume streaming)
-      if (path.includes("/hls/")) return true;
-      if (path.includes("/media-proxy")) return true;
+      // HLS segments + media proxy (high-volume streaming).
+      // Use startsWith to prevent bypass via a crafted path like
+      // /api/v1/admin/hls/ that contains "/hls/" in the middle.
+      if (path.startsWith("/api/hls/") || path.startsWith("/api/v1/hls/")) return true;
+      if (path.startsWith("/api/media-proxy") || path.startsWith("/api/v1/media-proxy")) return true;
       // SSE and WebSocket upgrade connections
       const upgrade = req.headers["upgrade"];
       if (typeof upgrade === "string" && upgrade.toLowerCase() === "websocket") return true;

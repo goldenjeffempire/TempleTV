@@ -67,6 +67,7 @@ declare const Env: z.ZodObject<{
     CDN_BASE_URL: z.ZodOptional<z.ZodString>;
     REQUIRE_HLS_TOKEN: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
     HLS_TOKEN_SECRET: z.ZodOptional<z.ZodString>;
+    YOUTUBE_WEBHOOK_SECRET: z.ZodOptional<z.ZodString>;
     HLS_TOKEN_TTL_SECONDS: z.ZodDefault<z.ZodNumber>;
     HLS_MAX_CONCURRENT: z.ZodDefault<z.ZodNumber>;
     SHUTDOWN_DRAIN_MS: z.ZodDefault<z.ZodNumber>;
@@ -96,12 +97,12 @@ declare const Env: z.ZodObject<{
     SEED_ADMIN_PASSWORD: z.ZodOptional<z.ZodString>;
     SEED_ADMIN_FORCE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
 }, "strip", z.ZodTypeAny, {
-    DATABASE_URL: string;
     NODE_ENV: "development" | "test" | "production";
     PORT: number;
     TV_DEV_PORT: number;
     MOBILE_DEV_PORT: number;
     LOG_LEVEL: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
+    DATABASE_URL: string;
     JWT_ACCESS_SECRET: string;
     JWT_REFRESH_SECRET: string;
     JWT_ACCESS_TTL_SECONDS: number;
@@ -174,6 +175,7 @@ declare const Env: z.ZodObject<{
     EXPO_ACCESS_TOKEN?: string | undefined;
     CDN_BASE_URL?: string | undefined;
     HLS_TOKEN_SECRET?: string | undefined;
+    YOUTUBE_WEBHOOK_SECRET?: string | undefined;
     APP_VERSION?: string | undefined;
     YOUTUBE_API_KEY?: string | undefined;
     YOUTUBE_CHANNEL_ID?: string | undefined;
@@ -251,6 +253,7 @@ declare const Env: z.ZodObject<{
     CDN_BASE_URL?: string | undefined;
     REQUIRE_HLS_TOKEN?: string | boolean | undefined;
     HLS_TOKEN_SECRET?: string | undefined;
+    YOUTUBE_WEBHOOK_SECRET?: string | undefined;
     HLS_TOKEN_TTL_SECONDS?: number | undefined;
     HLS_MAX_CONCURRENT?: number | undefined;
     SHUTDOWN_DRAIN_MS?: number | undefined;

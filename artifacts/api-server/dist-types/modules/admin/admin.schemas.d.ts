@@ -35,11 +35,11 @@ export declare const ListUsersQuerySchema: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     limit: number;
     offset: number;
-    search?: string | undefined;
     role?: string | undefined;
+    search?: string | undefined;
 }, {
-    search?: string | undefined;
     role?: string | undefined;
+    search?: string | undefined;
     limit?: number | undefined;
     offset?: number | undefined;
 }>;
@@ -78,6 +78,7 @@ export declare const ListUsersResponseSchema: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     limit: number;
     offset: number;
+    total: number;
     items: {
         email: string;
         role: string;
@@ -88,10 +89,10 @@ export declare const ListUsersResponseSchema: z.ZodObject<{
         avatarUrl: string | null;
         emailVerified: boolean;
     }[];
-    total: number;
 }, {
     limit: number;
     offset: number;
+    total: number;
     items: {
         email: string;
         role: string;
@@ -102,7 +103,6 @@ export declare const ListUsersResponseSchema: z.ZodObject<{
         avatarUrl: string | null;
         emailVerified: boolean;
     }[];
-    total: number;
 }>;
 export declare const UpdateUserRoleBodySchema: z.ZodObject<{
     role: z.ZodEnum<["user", "editor", "admin"]>;
@@ -193,11 +193,11 @@ export declare const AdminStatsSchema: z.ZodObject<{
         total: number;
         bySource: Record<string, number>;
     };
-    generatedAt: string;
     broadcast: {
         queueDepth: number;
         activeQueueDepth: number;
     };
+    generatedAt: string;
     schedule: {
         total: number;
         active: number;
@@ -222,11 +222,11 @@ export declare const AdminStatsSchema: z.ZodObject<{
         total: number;
         bySource: Record<string, number>;
     };
-    generatedAt: string;
     broadcast: {
         queueDepth: number;
         activeQueueDepth: number;
     };
+    generatedAt: string;
     schedule: {
         total: number;
         active: number;
@@ -247,13 +247,13 @@ export declare const AnalyticsSchema: z.ZodObject<{
         thumbnailUrl: z.ZodString;
     }, "strip", z.ZodTypeAny, {
         title: string;
-        id: string;
         thumbnailUrl: string;
+        id: string;
         viewCount: number;
     }, {
         title: string;
-        id: string;
         thumbnailUrl: string;
+        id: string;
         viewCount: number;
     }>, "many">;
     totalViews: z.ZodNumber;
@@ -262,8 +262,8 @@ export declare const AnalyticsSchema: z.ZodObject<{
     generatedAt: string;
     topVideos: {
         title: string;
-        id: string;
         thumbnailUrl: string;
+        id: string;
         viewCount: number;
     }[];
     totalViews: number;
@@ -271,8 +271,8 @@ export declare const AnalyticsSchema: z.ZodObject<{
     generatedAt: string;
     topVideos: {
         title: string;
-        id: string;
         thumbnailUrl: string;
+        id: string;
         viewCount: number;
     }[];
     totalViews: number;
@@ -309,26 +309,26 @@ export declare const AnalyticsOverviewSchema: z.ZodObject<{
         thumbnailUrl: z.ZodString;
     }, "strip", z.ZodTypeAny, {
         title: string;
-        id: string;
         thumbnailUrl: string;
+        id: string;
         viewCount: number;
     }, {
         title: string;
-        id: string;
         thumbnailUrl: string;
+        id: string;
         viewCount: number;
     }>, "many">;
     generatedAt: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    generatedAt: string;
     platformBreakdown: {
         platform: string;
         sessions: number;
     }[];
+    generatedAt: string;
     topVideos: {
         title: string;
-        id: string;
         thumbnailUrl: string;
+        id: string;
         viewCount: number;
     }[];
     totalViews: number;
@@ -340,15 +340,15 @@ export declare const AnalyticsOverviewSchema: z.ZodObject<{
         views: number;
     }[];
 }, {
-    generatedAt: string;
     platformBreakdown: {
         platform: string;
         sessions: number;
     }[];
+    generatedAt: string;
     topVideos: {
         title: string;
-        id: string;
         thumbnailUrl: string;
+        id: string;
         viewCount: number;
     }[];
     totalViews: number;

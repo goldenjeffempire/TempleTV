@@ -5,7 +5,7 @@ import { z } from "zod";
 import { eq, asc, desc, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { requireAuth } from "../../middleware/auth.js";
-import { ConflictError, NotFoundError } from "../../shared/errors.js";
+import { NotFoundError } from "../../shared/errors.js";
 import { logger } from "../../infrastructure/logger.js";
 
 export async function seriesRoutes(app: FastifyInstance) {
