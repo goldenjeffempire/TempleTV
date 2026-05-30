@@ -1,4 +1,5 @@
 import net from "node:net";
+import v8 from "node:v8";
 import { sql, ne, inArray, eq as drizzleEq } from "drizzle-orm";
 import { buildApp } from "./app.js";
 import { env } from "./config/env.js";
@@ -200,6 +201,20 @@ function stopWorkers() {
 async function main() {
   const mode = env.RUN_MODE;
   logger.info({ service: "api", env: process.env.NODE_ENV ?? "unknown", runMode: mode }, "process starting");
+  // Log the effective V8 heap limit immediately so production operators can
+  // confirm --max-old-space-size is active without having to parse Node flags.
+  // heap_size_limit == 0 means V8 hasn't committed to a limit yet; any non-zero
+  // value confirms the cap is in force. On free-tier Render this should read
+  // ~230 MiB (V8 adds a small internal overhead above the 220 MiB flag value).
+  const heapStats = v8.getHeapStatistics();
+  logger.info(
+    {
+      heapSizeLimitMb: Math.round(heapStats.heap_size_limit / 1024 / 1024),
+      totalHeapSizeMb: Math.round(heapStats.total_heap_size / 1024 / 1024),
+      nodeOptions: process.env.NODE_OPTIONS ?? "(not set)",
+    },
+    "v8 heap limit — confirm --max-old-space-size is active",
+  );
   logger.info("Prometheus metrics exporter active — scrape GET /metrics with admin token");
 
   // Validate API_ORIGIN at startup — a mis-pointed value is the most common

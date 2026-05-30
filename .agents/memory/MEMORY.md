@@ -1,3 +1,4 @@
+- [Render free-tier startup OOM crash pattern and fixes](render-oom-startup-fix.md) — hardcode --max-old-space-size in start:prod script; TRANSCODER_DISABLE was silently ignored; v8 heap limit logged at boot.
 - [Mobile HLS playback end-guard and drift-seek fixes](mobile-hls-playback.md) — 4-layer fix for "single segment replay" loop: HLS_END_GUARD_MS=8000 > threshold=5000, live HLS retry uses playAsync(), drift guard skips < 30 s re-seeks, machine cap durationSecs-10.
 - [Transcoding pipeline root causes & fixes](transcoding-pipeline.md) — maxAttempts=3 (→5), stuck-watchdog didn't increment attempts, timeout 4h (→2h), -pix_fmt per-rendition bug, 360p fallback, disk pre-flight.
 - [Mobile app hardening — audit outcomes and fixed bugs](mobile-hardening.md) — quick-finish retry race, audio session not restored on unmount, ChatClient NAT ping, fetch AbortController; plus list of confirmed-OK items.
