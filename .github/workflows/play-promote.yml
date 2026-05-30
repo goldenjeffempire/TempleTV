@@ -1,0 +1,122 @@
+# =============================================================================
+# Temple TV — Promote Android build to production on Google Play
+# =============================================================================
+#
+# Use this workflow to promote a build that is already in the internal testing
+# track through to production. Run it AFTER the internal build has been tested
+# and approved by the team.
+#
+# Required secrets:
+#   EXPO_TOKEN                   — EAS personal access token
+#   GOOGLE_SERVICE_ACCOUNT_JSON  — Google Play service account JSON
+#
+# Typical promotion flow:
+#   1. (Internal)   Run store-deploy.yml → track=internal  ← build lands here first
+#   2. (Promote)    Run this workflow    → rollout=10       ← 10% of production users
+#   3. (Expand)     Run this workflow    → rollout=50       ← 50% (monitor crash rate)
+#   4. (Full)       Run this workflow    → rollout=100      ← all users
+# =============================================================================
+
+name: Promote to Production (Google Play)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_id:
+        description: 'EAS Build ID (leave blank to use latest successful build)'
+        required: false
+        type: string
+      rollout_percentage:
+        description: 'Rollout percentage for the production release'
+        required: true
+        default: '10'
+        type: choice
+        options: ['10', '20', '50', '100']
+      version_code:
+        description: 'Android versionCode being promoted (for audit log only)'
+        required: false
+        default: '48'
+        type: string
+
+env:
+  NODE_VERSION: '20.18.0'
+  PNPM_VERSION: '10.26.1'
+  GIT_INDEX_FILE: /tmp/eas-promote-index
+
+jobs:
+  promote:
+    name: Promote versionCode ${{ inputs.version_code }} → production (${{ inputs.rollout_percentage }}%)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: COREPACK_ENABLE_STRICT=0 pnpm install --ignore-scripts --frozen-lockfile
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Write service account key
+        run: |
+          printf '%s' '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' \
+            > artifacts/mobile/google-service-account.json
+
+      - name: Patch eas.json — track=production, rollout=${{ inputs.rollout_percentage }}%
+        working-directory: artifacts/mobile
+        run: |
+          node -e "
+            const fs = require('fs');
+            const eas = JSON.parse(fs.readFileSync('eas.json', 'utf8'));
+            eas.submit.production.android.track = 'production';
+            eas.submit.production.android.rollout = ${{ inputs.rollout_percentage }} / 100;
+            eas.submit.production.android.releaseStatus = 'inProgress';
+            eas.submit.production.android.changesNotSentForReview = false;
+            fs.writeFileSync('eas.json', JSON.stringify(eas, null, 2) + '\n');
+          "
+
+      - name: Submit to production track (${{ inputs.rollout_percentage }}% rollout)
+        working-directory: artifacts/mobile
+        run: |
+          BUILD_FLAG="${{ inputs.build_id != '' && format('--id {0}', inputs.build_id) || '--latest' }}"
+          eas submit \
+            --platform android \
+            --profile production \
+            $BUILD_FLAG \
+            --non-interactive
+          echo "Submitted versionCode ${{ inputs.version_code }} to production at ${{ inputs.rollout_percentage }}% rollout."
+
+      - name: Cleanup credentials
+        if: always()
+        run: rm -f artifacts/mobile/google-service-account.json
+
+      - name: Write job summary
+        if: always()
+        run: |
+          BUILD="${{ inputs.build_id || 'latest' }}"
+          echo "## Play Store Promotion" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field            | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------------------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| versionCode      | ${{ inputs.version_code }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build            | $BUILD |" >> $GITHUB_STEP_SUMMARY
+          echo "| Track            | production |" >> $GITHUB_STEP_SUMMARY
+          echo "| Rollout          | ${{ inputs.rollout_percentage }}% |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Monitor crash rate in [Play Console → Android vitals](https://play.google.com/console) before expanding rollout." >> $GITHUB_STEP_SUMMARY
