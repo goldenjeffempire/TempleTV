@@ -203,11 +203,10 @@ export function BroadcastLiveSheet({
   if (!mounted) return null;
 
   return (
-    <View style={StyleSheet.absoluteFill} pointerEvents={visible ? "auto" : "none"}>
+    <View style={[StyleSheet.absoluteFill, { pointerEvents: visible ? "auto" : "none" }]}>
       {/* Backdrop — tap to dismiss */}
       <Animated.View
-        style={[styles.backdrop, { opacity: backdropOpacity }]}
-        pointerEvents={visible ? "auto" : "none"}
+        style={[styles.backdrop, { opacity: backdropOpacity, pointerEvents: visible ? "auto" : "none" }]}
       >
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Close panel" />
       </Animated.View>

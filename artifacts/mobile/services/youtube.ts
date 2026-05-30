@@ -37,7 +37,14 @@ export function getThumbnailUrl(videoId: string, quality: "default" | "hq" | "ma
 
 async function checkLiveViaOembed(): Promise<LiveCheckResult> {
   const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(getChannelLiveUrl())}&format=json`;
-  const response = await fetchWithRetry(oembedUrl, { signal: AbortSignal.timeout(6000) });
+  // Use plain fetch — 404 means "channel not live" (expected, not an error).
+  // fetchWithRetry logs a dev warning for non-retryable 4xx which is noisy here.
+  let response: Response;
+  try {
+    response = await fetch(oembedUrl, { signal: AbortSignal.timeout(6000) });
+  } catch {
+    return { isLive: false, videoId: null, title: null };
+  }
   if (!response.ok) return { isLive: false, videoId: null, title: null };
   const data = (await response.json()) as { title?: string; html?: string; thumbnail_url?: string };
   // Try extracting videoId from embed HTML first

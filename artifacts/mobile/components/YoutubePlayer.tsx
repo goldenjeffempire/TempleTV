@@ -281,7 +281,7 @@ function WebYoutubePlayer({
         },
       })}
       {!iframeReady && (
-        <View pointerEvents="none" style={styles.loadingOverlay}>
+        <View style={[styles.loadingOverlay, { pointerEvents: "none" }]}>
           <ActivityIndicator size="large" color="#FF0040" />
           <Text style={styles.loadingText}>
             {isLive ? "Connecting to live stream…" : "Loading player…"}

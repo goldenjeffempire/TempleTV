@@ -9,8 +9,8 @@ export declare const PlaylistSchema: z.ZodObject<{
     updatedAt: z.ZodString;
     videoCount: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
-    id: string;
     description: string;
+    id: string;
     name: string;
     loopMode: string;
     isActive: boolean;
@@ -18,8 +18,8 @@ export declare const PlaylistSchema: z.ZodObject<{
     updatedAt: string;
     videoCount: number;
 }, {
-    id: string;
     description: string;
+    id: string;
     name: string;
     loopMode: string;
     isActive: boolean;
@@ -39,22 +39,22 @@ export declare const PlaylistVideoSchema: z.ZodObject<{
     sortOrder: z.ZodNumber;
     addedAt: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    id: string;
     title: string;
-    thumbnailUrl: string;
     duration: string;
+    id: string;
     youtubeId: string;
+    thumbnailUrl: string;
     category: string;
     playlistId: string;
     videoId: string;
     sortOrder: number;
     addedAt: string;
 }, {
-    id: string;
     title: string;
-    thumbnailUrl: string;
     duration: string;
+    id: string;
     youtubeId: string;
+    thumbnailUrl: string;
     category: string;
     playlistId: string;
     videoId: string;
@@ -83,22 +83,22 @@ export declare const PlaylistDetailSchema: z.ZodObject<{
         sortOrder: z.ZodNumber;
         addedAt: z.ZodString;
     }, "strip", z.ZodTypeAny, {
-        id: string;
         title: string;
-        thumbnailUrl: string;
         duration: string;
+        id: string;
         youtubeId: string;
+        thumbnailUrl: string;
         category: string;
         playlistId: string;
         videoId: string;
         sortOrder: number;
         addedAt: string;
     }, {
-        id: string;
         title: string;
-        thumbnailUrl: string;
         duration: string;
+        id: string;
         youtubeId: string;
+        thumbnailUrl: string;
         category: string;
         playlistId: string;
         videoId: string;
@@ -106,46 +106,46 @@ export declare const PlaylistDetailSchema: z.ZodObject<{
         addedAt: string;
     }>, "many">;
 }, "strip", z.ZodTypeAny, {
-    id: string;
     description: string;
+    id: string;
+    name: string;
+    loopMode: string;
+    isActive: boolean;
+    createdAt: string;
+    updatedAt: string;
     videos: {
-        id: string;
         title: string;
-        thumbnailUrl: string;
         duration: string;
+        id: string;
         youtubeId: string;
+        thumbnailUrl: string;
         category: string;
         playlistId: string;
         videoId: string;
         sortOrder: number;
         addedAt: string;
     }[];
-    name: string;
-    loopMode: string;
-    isActive: boolean;
-    createdAt: string;
-    updatedAt: string;
     videoCount: number;
 }, {
-    id: string;
     description: string;
+    id: string;
+    name: string;
+    loopMode: string;
+    isActive: boolean;
+    createdAt: string;
+    updatedAt: string;
     videos: {
-        id: string;
         title: string;
-        thumbnailUrl: string;
         duration: string;
+        id: string;
         youtubeId: string;
+        thumbnailUrl: string;
         category: string;
         playlistId: string;
         videoId: string;
         sortOrder: number;
         addedAt: string;
     }[];
-    name: string;
-    loopMode: string;
-    isActive: boolean;
-    createdAt: string;
-    updatedAt: string;
     videoCount: number;
 }>;
 export declare const ListPlaylistsResponseSchema: z.ZodObject<{
@@ -159,8 +159,8 @@ export declare const ListPlaylistsResponseSchema: z.ZodObject<{
         updatedAt: z.ZodString;
         videoCount: z.ZodNumber;
     }, "strip", z.ZodTypeAny, {
-        id: string;
         description: string;
+        id: string;
         name: string;
         loopMode: string;
         isActive: boolean;
@@ -168,8 +168,8 @@ export declare const ListPlaylistsResponseSchema: z.ZodObject<{
         updatedAt: string;
         videoCount: number;
     }, {
-        id: string;
         description: string;
+        id: string;
         name: string;
         loopMode: string;
         isActive: boolean;
@@ -180,8 +180,8 @@ export declare const ListPlaylistsResponseSchema: z.ZodObject<{
     total: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
     items: {
-        id: string;
         description: string;
+        id: string;
         name: string;
         loopMode: string;
         isActive: boolean;
@@ -192,8 +192,8 @@ export declare const ListPlaylistsResponseSchema: z.ZodObject<{
     total: number;
 }, {
     items: {
-        id: string;
         description: string;
+        id: string;
         name: string;
         loopMode: string;
         isActive: boolean;

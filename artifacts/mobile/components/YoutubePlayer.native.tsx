@@ -519,9 +519,9 @@ export function YoutubePlayer({
         {playerReady && (
           <>
             <View
-              pointerEvents="none"
               style={{
                 position: "absolute",
+                pointerEvents: "none",
                 top: 0, left: 0, right: 0,
                 height: 52,
                 backgroundColor: "rgba(0,0,0,0.88)",

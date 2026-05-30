@@ -194,7 +194,7 @@ function HeroSection({ syncState, fallbackSermon }: HeroSectionProps) {
           uploaded broadcast is active.  `minimal` suppresses the player's
           own overlays so the hero controls (badges, CTA) stay visible. */}
       {hasUploadedBroadcast && (
-        <View style={StyleSheet.absoluteFill} pointerEvents="none">
+        <View style={[StyleSheet.absoluteFill, { pointerEvents: "none" }]}>
           <V2PlayerContainer
             baseUrl={`${getApiBase() ?? ""}/api/broadcast-v2`}
             muted

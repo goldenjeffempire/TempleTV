@@ -50,7 +50,7 @@ export class ErrorBoundary extends Component<Props, State> {
               <p className="text-muted-foreground text-sm mt-2">
                 Our systems detected it automatically — please try again or reload the page.
               </p>
-              {process.env.NODE_ENV === "development" && this.state.error.message && (
+              {import.meta.env.DEV && this.state.error.message && (
                 <pre className="mt-3 text-xs font-mono text-muted-foreground/70 bg-muted rounded-lg p-3 text-left whitespace-pre-wrap break-words">
                   {this.state.error.message}
                 </pre>

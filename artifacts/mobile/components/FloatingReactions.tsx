@@ -84,7 +84,7 @@ export const FloatingReactions = forwardRef<FloatingReactionsHandle, object>(
     useImperativeHandle(ref, () => ({ emit }), [emit]);
 
     return (
-      <View style={StyleSheet.absoluteFill} pointerEvents="none">
+      <View style={[StyleSheet.absoluteFill, { pointerEvents: "none" }]}>
         {particles.map((p) => (
           <Animated.Text
             key={p.id}

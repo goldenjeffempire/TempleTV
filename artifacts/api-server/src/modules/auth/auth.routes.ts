@@ -21,6 +21,7 @@ import { signAccessToken, signRefreshToken } from "./jwt.js";
 import { hashPassword } from "./password.js";
 import { UnauthorizedError } from "../../shared/errors.js";
 import { requireAuth, invalidateSessionsValidAfterCache } from "../../middleware/auth.js";
+import type { Role } from "../../shared/types.js";
 import { env } from "../../config/env.js";
 import { db, schema } from "../../infrastructure/db.js";
 import { nanoid } from "nanoid";
@@ -556,7 +557,7 @@ export async function authRoutes(app: FastifyInstance) {
       }
 
       const jti = nanoid(32);
-      const accessToken = await signAccessToken({ sub: user.id, email: user.email, role: user.role as any });
+      const accessToken = await signAccessToken({ sub: user.id, email: user.email, role: user.role as Role });
       const refreshToken = await signRefreshToken({ sub: user.id, jti });
 
       const expiresAt = new Date(Date.now() + env.JWT_REFRESH_TTL_SECONDS * 1000);

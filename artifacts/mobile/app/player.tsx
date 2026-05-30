@@ -1403,8 +1403,7 @@ export default function PlayerScreen() {
             accessibilityLabel="Toggle player controls"
           >
             <Animated.View
-              style={[StyleSheet.absoluteFill, { opacity: fsControlsOpacity }]}
-              pointerEvents={fsControlsVisible ? "box-none" : "none"}
+              style={[StyleSheet.absoluteFill, { opacity: fsControlsOpacity, pointerEvents: fsControlsVisible ? "box-none" : "none" }]}
             >
               {/* Top gradient + bar */}
               <LinearGradient

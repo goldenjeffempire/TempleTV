@@ -1208,9 +1208,9 @@ export function LocalVideoPlayer({
           sets `loading = false`. */}
       {loading && !webNeedsPlayGesture && (
         <View
-          pointerEvents="none"
           style={{
             ...StyleSheet.absoluteFillObject,
+            pointerEvents: "none",
             zIndex: 9,
             alignItems: "center",
             justifyContent: "center",
@@ -1240,9 +1240,9 @@ export function LocalVideoPlayer({
           you", not a black screen. Auto-dismisses on `online`. */}
       {!isRadioMode && webOfflineWaiting && (
         <View
-          pointerEvents="none"
           style={{
             position: "absolute",
+            pointerEvents: "none",
             top: 12,
             alignSelf: "center",
             flexDirection: "row",

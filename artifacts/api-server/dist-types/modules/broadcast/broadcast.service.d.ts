@@ -250,11 +250,10 @@ export declare const broadcastService: {
     snapshot(): import("./queue.engine.js").BroadcastSnapshot;
     listQueue(): Promise<(typeof queueTable.$inferSelect)[]>;
     addToQueue(item: z.infer<typeof AddQueueItemSchema>): Promise<{
-        id: string;
         title: string;
-        thumbnailUrl: string;
-        durationSecs: number;
+        id: string;
         youtubeId: string;
+        thumbnailUrl: string;
         videoSource: string;
         localVideoUrl: string | null;
         hlsMasterUrl: string | null;
@@ -263,14 +262,14 @@ export declare const broadcastService: {
         sortOrder: number;
         addedAt: Date;
         scheduledAt: Date | null;
+        durationSecs: number;
         scheduleLabel: string | null;
     }>;
     removeFromQueue(id: string): Promise<{
-        id: string;
         title: string;
-        thumbnailUrl: string;
-        durationSecs: number;
+        id: string;
         youtubeId: string;
+        thumbnailUrl: string;
         videoSource: string;
         localVideoUrl: string | null;
         hlsMasterUrl: string | null;
@@ -279,6 +278,7 @@ export declare const broadcastService: {
         sortOrder: number;
         addedAt: Date;
         scheduledAt: Date | null;
+        durationSecs: number;
         scheduleLabel: string | null;
     }>;
     reorder(itemIds: string[]): Promise<import("./queue.engine.js").BroadcastSnapshot>;

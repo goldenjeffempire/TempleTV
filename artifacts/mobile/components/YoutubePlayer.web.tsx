@@ -670,7 +670,7 @@ export function YoutubePlayer({
 
       {/* Normal loading/reconnecting overlay (hidden in radio mode — the card handles UX) */}
       {(loading || reconnecting) && !isRadioMode && (
-        <View style={styles.loadingOverlay} pointerEvents="none">
+        <View style={[styles.loadingOverlay, { pointerEvents: "none" }]}>
           {videoId
             ? React.createElement("img", {
                 src: `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,

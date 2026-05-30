@@ -49,7 +49,6 @@ export function PersistentAudioPlayer() {
   // to initialize playback reliably across browsers.
   return (
     <View
-      pointerEvents="none"
       accessibilityElementsHidden
       importantForAccessibility="no-hide-descendants"
       style={
