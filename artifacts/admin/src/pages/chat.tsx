@@ -120,12 +120,28 @@ export default function ChatPage() {
                     </div>
                     <div className="flex items-center gap-1 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
                       {msg.userId && (
-                        <Button variant="ghost" size="icon" className="h-6 w-6 text-amber-500" title="Ban user" aria-label="Ban user" onClick={() => banMutation.mutate(msg.userId!)}>
-                          <ShieldOff size={12} />
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 text-amber-500"
+                          title="Ban user"
+                          aria-label="Ban user"
+                          disabled={banMutation.isPending && banMutation.variables === msg.userId}
+                          onClick={() => banMutation.mutate(msg.userId!)}
+                        >
+                          <ShieldOff size={12} className={banMutation.isPending && banMutation.variables === msg.userId ? "animate-pulse" : ""} />
                         </Button>
                       )}
-                      <Button variant="ghost" size="icon" className="h-6 w-6 text-red-500" title="Delete" aria-label="Delete message" onClick={() => deleteMutation.mutate(msg.id)}>
-                        <Trash2 size={12} />
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 text-red-500"
+                        title="Delete"
+                        aria-label="Delete message"
+                        disabled={deleteMutation.isPending && deleteMutation.variables === msg.id}
+                        onClick={() => deleteMutation.mutate(msg.id)}
+                      >
+                        <Trash2 size={12} className={deleteMutation.isPending && deleteMutation.variables === msg.id ? "animate-pulse" : ""} />
                       </Button>
                     </div>
                   </div>

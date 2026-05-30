@@ -404,7 +404,7 @@ export default function AnalyticsPage() {
                   />
                   <Tooltip
                     contentStyle={{ background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
-                    labelFormatter={(_, payload) => {
+                    labelFormatter={(_label: unknown, payload: unknown) => {
                       const raw = (payload as Array<{ payload: ConcurrentBucket & { rawTs: string } }>)?.[0]?.payload?.rawTs;
                       try { return raw ? format(new Date(raw), "MMM d, HH:mm") : ""; } catch { return ""; }
                     }}

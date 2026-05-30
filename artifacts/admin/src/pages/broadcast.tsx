@@ -849,6 +849,41 @@ function EmergencyOverridePanel({
   const canStart =
     url.trim().length > 0 && title.trim().length > 0 && !startOverride.isPending;
 
+  /**
+   * Validate the override URL format per kind before firing the mutation.
+   * The server performs SSRF checks too, but catching bad input here gives
+   * operators an immediate, readable error instead of a cryptic API response.
+   */
+  const handleStartOverride = () => {
+    if (!title.trim()) {
+      toast.error("Title is required");
+      return;
+    }
+    const trimmedUrl = url.trim();
+    if (!trimmedUrl) {
+      toast.error("Stream URL is required");
+      return;
+    }
+    if (kind === "rtmp") {
+      if (!trimmedUrl.startsWith("rtmp://") && !trimmedUrl.startsWith("rtmps://")) {
+        toast.error("RTMP URL must start with rtmp:// or rtmps://");
+        return;
+      }
+    } else {
+      try {
+        const parsed = new URL(trimmedUrl);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+          toast.error("URL must start with http:// or https://");
+          return;
+        }
+      } catch {
+        toast.error("URL is not a valid web address — check for typos");
+        return;
+      }
+    }
+    startOverride.mutate();
+  };
+
   return (
     <>
       <Card
@@ -1038,7 +1073,7 @@ function EmergencyOverridePanel({
             <Button
               className="w-full gap-2 bg-red-600 hover:bg-red-700 text-white text-xs"
               size="sm"
-              onClick={() => startOverride.mutate()}
+              onClick={handleStartOverride}
               disabled={!canStart}
             >
               {startOverride.isPending ? (

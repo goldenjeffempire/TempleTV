@@ -12,6 +12,11 @@
  *    so the History page can show both in-progress and completed videos.
  *  • Every save also fire-and-forgets a POST to /api/tv/history for
  *    cross-device continuity (serverSync.ts).
+ *
+ * Write strategy:
+ *  • Writes from saveProgress() are debounced (WRITE_DEBOUNCE_MS) to avoid
+ *    thrashing Smart TV NVRAM on rapid player timer callbacks (typically every
+ *    5 s). clearProgress() always flushes immediately — clearing is critical.
  */
 
 import { logWatch } from "./watchHistory";
@@ -21,6 +26,8 @@ const KEY = "ttv:watch-progress:v1";
 const MAX_ENTRIES = 20;
 const MIN_POSITION_SECS = 10;
 const DONE_RATIO = 0.95;
+/** Coalesce rapid consecutive saveProgress() calls into one localStorage write. */
+const WRITE_DEBOUNCE_MS = 2_000;
 
 export interface WatchEntry {
   videoId: string;
@@ -34,6 +41,10 @@ export interface WatchEntry {
 }
 
 type Store = Record<string, WatchEntry>;
+
+// ── Debounce state ────────────────────────────────────────────────────────────
+let _writeTimer: ReturnType<typeof setTimeout> | null = null;
+let _pendingStore: Store | null = null;
 
 function safeStorage(): Storage | null {
   try {
@@ -65,6 +76,38 @@ function writeStore(store: Store): void {
     s.setItem(KEY, JSON.stringify(store));
   } catch {
     // Quota exceeded — silently skip; watch progress is best-effort.
+  }
+}
+
+/**
+ * Schedule a debounced localStorage write. Rapid consecutive calls (e.g. from
+ * a player timer) coalesce into a single write fired WRITE_DEBOUNCE_MS after
+ * the last call, protecting Smart TV NVRAM from unnecessary wear.
+ */
+function scheduleWrite(store: Store): void {
+  _pendingStore = store;
+  if (_writeTimer !== null) return; // will flush _pendingStore when it fires
+  _writeTimer = setTimeout(() => {
+    _writeTimer = null;
+    if (_pendingStore !== null) {
+      writeStore(_pendingStore);
+      _pendingStore = null;
+    }
+  }, WRITE_DEBOUNCE_MS);
+}
+
+/**
+ * Flush any pending debounced write immediately. Called before clearProgress()
+ * to ensure the latest in-progress state is persisted before clearing the entry.
+ */
+function flushWrite(): void {
+  if (_writeTimer !== null) {
+    clearTimeout(_writeTimer);
+    _writeTimer = null;
+  }
+  if (_pendingStore !== null) {
+    writeStore(_pendingStore);
+    _pendingStore = null;
   }
 }
 
@@ -110,7 +153,8 @@ export function saveProgress(entry: WatchEntry): void {
   for (const e of all.slice(0, MAX_ENTRIES)) {
     trimmed[e.videoId] = e;
   }
-  writeStore(trimmed);
+  // Debounced write — coalesces rapid timer callbacks into one NVRAM write
+  scheduleWrite(trimmed);
 
   // Mirror every in-progress save to watch history (upsert — moves to front,
   // updates position) so the History page always shows current progress.
@@ -141,6 +185,9 @@ export function saveProgress(entry: WatchEntry): void {
 
 /** Remove a specific video from the progress store. */
 export function clearProgress(videoId: string): void {
+  // Flush any pending debounced write first so the latest in-progress state
+  // is persisted before we delete this entry from the store.
+  flushWrite();
   const store = readStore();
   if (!(videoId in store)) return;
   delete store[videoId];
