@@ -260,6 +260,12 @@ services:
       # stacks/code + ~50 MiB notification dispatcher headroom = ~420 MiB,
       # leaving ~90 MiB margin under the 512 MiB free-tier cgroup ceiling.
       # `--max-http-header-size=16384` accommodates Render's LB headers.
+      #
+      # Belt-and-suspenders: the same flags are hardcoded into the
+      # `start:prod` npm script in artifacts/api-server/package.json.
+      # Command-line flags take precedence over NODE_OPTIONS, so the cap
+      # is enforced even if a Render dashboard override clears NODE_OPTIONS
+      # (which was the root cause of the May 2026 startup OOM crash loop).
       - key: NODE_OPTIONS
         value: "--max-old-space-size=220 --max-http-header-size=16384"
 

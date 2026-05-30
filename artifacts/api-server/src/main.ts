@@ -175,12 +175,13 @@ async function seedPrimaryChannelIfAbsent(): Promise<void> {
 
 async function startWorkers() {
   scheduledNotificationDispatcher.start();
-  // Always start the transcoder — FFmpeg is confirmed available in this environment
-  // and uploads must be processed into HLS for broadcast playback.
-  // TRANSCODER_DISABLE env var is intentionally ignored here; use the
-  // TRANSCODER_POLL_MS env var to slow polling or stop the server entirely
-  // if you need to suppress transcoding.
-  transcoderDispatcher.start();
+  if (env.TRANSCODER_DISABLE) {
+    logger.info(
+      "transcoder dispatcher disabled by TRANSCODER_DISABLE — skipping ffmpeg check and job polling",
+    );
+  } else {
+    transcoderDispatcher.start();
+  }
   cleanupWorker.start();
   if (!env.YOUTUBE_SYNC_DISABLE) {
     youtubeSyncDispatcher.start();

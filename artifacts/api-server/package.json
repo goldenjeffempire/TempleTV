@@ -7,7 +7,7 @@
   "scripts": {
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs",
-    "start:prod": "node --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs",
+    "start:prod": "node --max-old-space-size=220 --max-http-header-size=16384 --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs",
     "typecheck": "NODE_OPTIONS='--max-old-space-size=4096' tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
