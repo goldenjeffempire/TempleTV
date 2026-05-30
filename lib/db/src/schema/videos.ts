@@ -109,7 +109,7 @@ export const videosTable = pgTable("managed_videos", {
   // CHECK violation rather than silently corrupting the state machine.
   check(
     "managed_videos_transcoding_status_check",
-    sql`${table.transcodingStatus} IN ('none','queued','encoding','processing','ready','failed')`,
+    sql`${table.transcodingStatus} IN ('none','queued','encoding','processing','ready','hls_ready','failed')`,
   ),
   // NOTE: The GIN full-text search index (idx_managed_videos_fts) is created via
   // raw SQL at API startup in infrastructure/db.ts using CREATE INDEX IF NOT EXISTS.

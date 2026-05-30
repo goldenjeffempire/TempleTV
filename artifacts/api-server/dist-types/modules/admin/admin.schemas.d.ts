@@ -9,22 +9,22 @@ export declare const AdminUserSchema: z.ZodObject<{
     createdAt: z.ZodString;
     updatedAt: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    email: string;
-    role: string;
     id: string;
     createdAt: string;
     updatedAt: string;
+    email: string;
     displayName: string;
     avatarUrl: string | null;
+    role: string;
     emailVerified: boolean;
 }, {
-    email: string;
-    role: string;
     id: string;
     createdAt: string;
     updatedAt: string;
+    email: string;
     displayName: string;
     avatarUrl: string | null;
+    role: string;
     emailVerified: boolean;
 }>;
 export declare const ListUsersQuerySchema: z.ZodObject<{
@@ -54,22 +54,22 @@ export declare const ListUsersResponseSchema: z.ZodObject<{
         createdAt: z.ZodString;
         updatedAt: z.ZodString;
     }, "strip", z.ZodTypeAny, {
-        email: string;
-        role: string;
         id: string;
         createdAt: string;
         updatedAt: string;
+        email: string;
         displayName: string;
         avatarUrl: string | null;
+        role: string;
         emailVerified: boolean;
     }, {
-        email: string;
-        role: string;
         id: string;
         createdAt: string;
         updatedAt: string;
+        email: string;
         displayName: string;
         avatarUrl: string | null;
+        role: string;
         emailVerified: boolean;
     }>, "many">;
     total: z.ZodNumber;
@@ -78,31 +78,31 @@ export declare const ListUsersResponseSchema: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     limit: number;
     offset: number;
+    total: number;
     items: {
-        email: string;
-        role: string;
         id: string;
         createdAt: string;
         updatedAt: string;
+        email: string;
         displayName: string;
         avatarUrl: string | null;
+        role: string;
         emailVerified: boolean;
     }[];
-    total: number;
 }, {
     limit: number;
     offset: number;
+    total: number;
     items: {
-        email: string;
-        role: string;
         id: string;
         createdAt: string;
         updatedAt: string;
+        email: string;
         displayName: string;
         avatarUrl: string | null;
+        role: string;
         emailVerified: boolean;
     }[];
-    total: number;
 }>;
 export declare const UpdateUserRoleBodySchema: z.ZodObject<{
     role: z.ZodEnum<["user", "editor", "admin"]>;
@@ -188,12 +188,6 @@ export declare const AdminStatsSchema: z.ZodObject<{
         total: number;
         byRole: Record<string, number>;
     };
-    videos: {
-        featured: number;
-        total: number;
-        bySource: Record<string, number>;
-    };
-    generatedAt: string;
     broadcast: {
         queueDepth: number;
         activeQueueDepth: number;
@@ -205,6 +199,12 @@ export declare const AdminStatsSchema: z.ZodObject<{
     notifications: {
         sentLast24h: number;
         sentTotal: number;
+    };
+    generatedAt: string;
+    videos: {
+        featured: number;
+        total: number;
+        bySource: Record<string, number>;
     };
     devices: {
         total: number;
@@ -217,12 +217,6 @@ export declare const AdminStatsSchema: z.ZodObject<{
         total: number;
         byRole: Record<string, number>;
     };
-    videos: {
-        featured: number;
-        total: number;
-        bySource: Record<string, number>;
-    };
-    generatedAt: string;
     broadcast: {
         queueDepth: number;
         activeQueueDepth: number;
@@ -234,6 +228,12 @@ export declare const AdminStatsSchema: z.ZodObject<{
     notifications: {
         sentLast24h: number;
         sentTotal: number;
+    };
+    generatedAt: string;
+    videos: {
+        featured: number;
+        total: number;
+        bySource: Record<string, number>;
     };
     devices: {
         total: number;
@@ -321,10 +321,6 @@ export declare const AnalyticsOverviewSchema: z.ZodObject<{
     generatedAt: z.ZodString;
 }, "strip", z.ZodTypeAny, {
     generatedAt: string;
-    platformBreakdown: {
-        platform: string;
-        sessions: number;
-    }[];
     topVideos: {
         title: string;
         id: string;
@@ -335,16 +331,16 @@ export declare const AnalyticsOverviewSchema: z.ZodObject<{
     totalSessions: number;
     completionRate: number;
     avgWatchSecs: number;
+    platformBreakdown: {
+        platform: string;
+        sessions: number;
+    }[];
     dailyViews: {
         date: string;
         views: number;
     }[];
 }, {
     generatedAt: string;
-    platformBreakdown: {
-        platform: string;
-        sessions: number;
-    }[];
     topVideos: {
         title: string;
         id: string;
@@ -355,6 +351,10 @@ export declare const AnalyticsOverviewSchema: z.ZodObject<{
     totalSessions: number;
     completionRate: number;
     avgWatchSecs: number;
+    platformBreakdown: {
+        platform: string;
+        sessions: number;
+    }[];
     dailyViews: {
         date: string;
         views: number;

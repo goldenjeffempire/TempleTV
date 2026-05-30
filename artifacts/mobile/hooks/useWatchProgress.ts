@@ -34,6 +34,11 @@ export interface ContinueWatchingItem {
 
 export function useWatchProgress() {
   const [progressMap, setProgressMap] = useState<WatchProgressMap>({});
+  // Authoritative in-memory store — kept in sync with React state but used
+  // directly for writes so that concurrent saveProgress calls always compose
+  // on top of the latest data rather than the (potentially stale) React state
+  // snapshot captured in a state updater callback.
+  const progressMapRef = useRef<WatchProgressMap>({});
   const lastSaveRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
@@ -41,7 +46,9 @@ export function useWatchProgress() {
       .then((raw) => {
         if (raw) {
           try {
-            setProgressMap(JSON.parse(raw) as WatchProgressMap);
+            const parsed = JSON.parse(raw) as WatchProgressMap;
+            progressMapRef.current = parsed;
+            setProgressMap(parsed);
           } catch {
             // Corrupted storage — start with empty progress map.
           }
@@ -71,11 +78,19 @@ export function useWatchProgress() {
         ...(meta ?? {}),
       };
 
-      setProgressMap((prev) => {
-        const updated = { ...prev, [videoKey]: entry };
-        AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated)).catch(() => {});
-        return updated;
-      });
+      // Build the new map using the ref (always current) rather than reading
+      // from the React state updater argument. The state updater pattern
+      // (setProgressMap(prev => ...)) seems safe but carries two risks:
+      //   1. Side effects inside a state updater are a React anti-pattern —
+      //      React may call the updater more than once (StrictMode, Concurrent).
+      //   2. Under rapid saves the same `prev` snapshot can be captured by
+      //      two queued updaters that haven't flushed yet, causing one entry
+      //      to silently overwrite the other.
+      // Using a ref as the authoritative in-memory store decouples the AsyncStorage
+      // write from React's render cycle entirely.
+      progressMapRef.current = { ...progressMapRef.current, [videoKey]: entry };
+      setProgressMap(progressMapRef.current);
+      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(progressMapRef.current)).catch(() => {});
     },
     [],
   );
@@ -92,14 +107,14 @@ export function useWatchProgress() {
   );
 
   const clearProgress = useCallback(async (videoKey: string) => {
-    setProgressMap((prev) => {
-      const { [videoKey]: _, ...rest } = prev;
-      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(rest)).catch(() => {});
-      return rest;
-    });
+    const { [videoKey]: _, ...rest } = progressMapRef.current;
+    progressMapRef.current = rest;
+    setProgressMap(rest);
+    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(rest)).catch(() => {});
   }, []);
 
   const clearAllProgress = useCallback(async () => {
+    progressMapRef.current = {};
     setProgressMap({});
     await AsyncStorage.removeItem(STORAGE_KEY);
   }, []);

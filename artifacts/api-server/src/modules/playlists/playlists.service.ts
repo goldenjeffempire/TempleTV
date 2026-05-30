@@ -2,7 +2,7 @@ import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { z } from "zod";
 import { db, schema } from "../../infrastructure/db.js";
-import { NotFoundError, BadRequestError } from "../../shared/errors.js";
+import { NotFoundError, BadRequestError, ConflictError } from "../../shared/errors.js";
 import { isUndefinedColumnError, SAFE_VIDEO_COLS } from "../../infrastructure/db-schema-guard.js";
 import type {
   CreatePlaylistBodySchema,
@@ -136,6 +136,15 @@ export const playlistsService = {
 
     const [head] = await db.select().from(playlists).where(eq(playlists.id, playlistId)).limit(1);
     if (!head) throw new NotFoundError("Playlist not found");
+
+    // Reject duplicates at the service layer before hitting the DB unique
+    // constraint so the client gets a 409 ConflictError rather than a 500.
+    const [existing] = await db
+      .select({ id: playlistVideos.id })
+      .from(playlistVideos)
+      .where(and(eq(playlistVideos.playlistId, playlistId), eq(playlistVideos.videoId, videoId)))
+      .limit(1);
+    if (existing) throw new ConflictError("Video is already in this playlist");
 
     const [{ maxOrder }] = await db
       .select({ maxOrder: sql<number>`coalesce(max(${playlistVideos.sortOrder})::int, 0)` })

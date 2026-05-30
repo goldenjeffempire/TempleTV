@@ -13,8 +13,8 @@ export declare const SERVICE_LABELS: {
     readonly service: "temple-tv-api";
     readonly env: string;
 };
-export declare const httpRequestDuration: Histogram<"service" | "env" | "method" | "route" | "status_code">;
-export declare const httpRequestTotal: Counter<"service" | "env" | "method" | "route" | "status_code">;
+export declare const httpRequestDuration: Histogram<"method" | "service" | "env" | "route" | "status_code">;
+export declare const httpRequestTotal: Counter<"method" | "service" | "env" | "route" | "status_code">;
 export declare const activeSseConnections: Gauge<"service" | "env" | "surface">;
 export declare const activeWsConnections: Gauge<"service" | "env" | "surface">;
 export declare const broadcastSequence: Gauge<"service" | "env" | "channel">;

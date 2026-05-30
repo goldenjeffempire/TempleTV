@@ -73,6 +73,7 @@ async function probeDurationSecs(url: string): Promise<{ secs: number | null; fr
     const done = (result: number | null): void => {
       if (settled) return;
       settled = true;
+      pruneExpiredProbeCache();
       durationProbeCache.set(url, { secs: result, at: Date.now() });
       resolve(result);
     };

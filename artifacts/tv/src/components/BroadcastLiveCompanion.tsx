@@ -1,4 +1,4 @@
-import { useState } from "react";
+// No React state needed — this component is purely props-driven.
 
 /**
  * Passive lean-back live companion strip for the TV player.
@@ -36,22 +36,11 @@ interface Props {
 }
 
 export function BroadcastLiveCompanion({ isLive, viewerCount }: Props) {
-  // Subscribe to live-reaction events on the SAME SSE channel useLiveSync
-  // uses. We open a separate, narrowly-scoped EventSource here rather than
-  // adding another field to BroadcastSyncState because reactions are an
-  // ephemeral signal — they shouldn't trigger re-renders of every consumer
-  // of useLiveSync (Hero, Player, etc.). Keeping the subscription local to
-  // this companion means the chip is the only thing that re-renders on
-  // each reaction, which keeps the player's render budget clean.
-  const [floats, setFloats] = useState<Array<{ id: number; emoji: string }>>([]);
-
-  // Live-reaction events used to ride on the now-deleted broadcast SSE
-  // channel. The new playback WebSocket is intentionally playback-only —
-  // reactions will move to a dedicated channel in a follow-up. Until then
-  // the chip still renders the LIVE indicator and viewer count, just
-  // without the floating emoji bursts. `setFloats` is referenced below to
-  // keep the lint clean and to make the future re-wire trivial.
-  void setFloats;
+  // Floating emoji reactions are a follow-up feature — the v1 SSE channel
+  // that delivered them has been removed and the new playback WebSocket is
+  // intentionally playback-only. The float animation keyframe below is
+  // retained so re-wiring reactions only requires adding state + an event
+  // subscription here, with no CSS changes.
 
   return (
     <div
@@ -118,34 +107,9 @@ export function BroadcastLiveCompanion({ isLive, viewerCount }: Props) {
         </span>
       </div>
 
-      {/* Floating reaction emojis — anchored to the right edge of the chip */}
-      <div
-        style={{
-          position: "absolute",
-          right: -6,
-          top: -8,
-          width: 60,
-          height: 80,
-          pointerEvents: "none",
-          overflow: "visible",
-        }}
-      >
-        {floats.map((f, i) => (
-          <span
-            key={f.id}
-            style={{
-              position: "absolute",
-              right: 8 + (i % 3) * 6,
-              bottom: 0,
-              fontSize: 22,
-              animation: "tvCompanionFloat 2400ms ease-out forwards",
-              filter: "drop-shadow(0 4px 10px rgba(0,0,0,0.5))",
-            }}
-          >
-            {f.emoji}
-          </span>
-        ))}
-      </div>
+      {/* Floating reaction emoji slot — reserved for when live reactions are
+          re-wired to the companion. Add state + EventSource subscription above
+          and render floats here. The @keyframes are already defined below. */}
 
       {/* Keyframes injected once via a sibling <style> — keeping them
           local to the component avoids polluting the global stylesheet.

@@ -445,7 +445,7 @@ export class PlayerMachine {
       // Exception: override mode is always authoritative regardless of
       // endsAtMs (overrides may not have a wall-clock end time, and they
       // are checked above before reaching this branch).
-      if (server.current.endsAtMs <= Date.now()) {
+      if (server.current.endsAtMs <= Date.now() + this.clockOffsetMs) {
         return;
       }
 
@@ -470,7 +470,7 @@ export class PlayerMachine {
       if (
         this.lastEndedItemId !== null &&
         server.current.id === this.lastEndedItemId &&
-        server.current.endsAtMs > Date.now()
+        server.current.endsAtMs > Date.now() + this.clockOffsetMs
       ) {
         // TTL safety valve: if the naturalItemEnd POST failed to reach the
         // server (network error, timeout), the server keeps showing this

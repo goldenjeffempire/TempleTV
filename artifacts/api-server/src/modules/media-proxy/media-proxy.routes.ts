@@ -145,7 +145,23 @@ export async function mediaProxyRoutes(app: FastifyInstance) {
         upstream = await fetch(targetUrl, {
           headers: fetchHeaders,
           signal: ctrl.signal,
+          // Never follow redirects — a redirect could pivot the proxy to an
+          // internal / private address even if the original host was allowed.
+          // SSRF-via-open-redirect: attacker hosts a 301 on *.replit.app →
+          // internal metadata endpoint. Manual mode returns the redirect
+          // response so we can detect and reject it explicitly.
+          redirect: "manual",
         });
+        // Reject any redirect response (3xx). The signing key already validates
+        // the original URL; a redirect bypasses the host allowlist entirely.
+        if (upstream.status >= 300 && upstream.status < 400) {
+          clearTimeout(connectionTimeout);
+          const location = upstream.headers.get("location") ?? "(no Location header)";
+          let locHost = "(unparseable)";
+          try { locHost = new URL(location, targetUrl).host; } catch { /* noop */ }
+          logger.warn({ targetHost: locHost }, "[media-proxy] rejected — upstream attempted redirect (SSRF guard)");
+          return reply.code(403).send({ error: "Upstream redirects are not permitted" });
+        }
         // First-byte received — cancel the connection timeout so the body can
         // stream at whatever pace the network allows without being killed.
         clearTimeout(connectionTimeout);

@@ -203,9 +203,18 @@ declare class BroadcastOrchestrator extends EventEmitter {
      * reports (which take 9–15 s each and require a viewer to be connected).
      */
     private currentItemProbeTimer;
-    /** Consecutive definitive-failure count for the currently-playing item. */
+    /** Consecutive definitive 4xx failure count for the currently-playing item. */
     private currentItemProbeFailures;
-    /** Item ID under observation — resets failure counter on item advance. */
+    /**
+     * Consecutive ambiguous (5xx / timeout / network error) failure count.
+     * Tracked separately from 4xx: 5xx are transient by nature (CDN blip, origin
+     * restart) and a single probe must never drop content. However, 5
+     * consecutive ambiguous failures at the 30 s probe interval means the CDN
+     * has been unresponsive for ≥ 2.5 minutes — at that point the item is
+     * genuinely dead-air for all viewers and auto-skip is warranted.
+     */
+    private currentItemProbeAmbiguousFailures;
+    /** Item ID under observation — resets failure counters on item advance. */
     private currentItemProbeId;
     constructor();
     /**

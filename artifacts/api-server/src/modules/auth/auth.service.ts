@@ -392,14 +392,18 @@ export const authService = {
     const valid = await verifyPassword(body.currentPassword, user.passwordHash);
     if (!valid) throw new UnauthorizedError("Current password is incorrect");
     const newHash = await hashPassword(body.newPassword);
-    await Promise.all([
-      db.update(usersTable)
-        .set({ passwordHash: newHash, updatedAt: new Date(), sessionsValidAfter: new Date() })
-        .where(eq(usersTable.id, userId)),
-      db.update(refreshTokensTable)
-        .set({ revokedAt: new Date() })
-        .where(and(eq(refreshTokensTable.userId, userId), isNull(refreshTokensTable.revokedAt))),
-    ]);
+    const now = new Date();
+    // Atomically update the password hash AND revoke all active sessions so
+    // that a partial write cannot leave the account with a new password but
+    // still-valid old sessions (or vice versa).
+    await db.transaction(async (tx) => {
+      await tx.update(usersTable)
+        .set({ passwordHash: newHash, updatedAt: now, sessionsValidAfter: now })
+        .where(eq(usersTable.id, userId));
+      await tx.update(refreshTokensTable)
+        .set({ revokedAt: now })
+        .where(and(eq(refreshTokensTable.userId, userId), isNull(refreshTokensTable.revokedAt)));
+    });
   },
 
   /**
@@ -459,28 +463,34 @@ export const authService = {
     // Silently return when user not found — anti-enumeration.
     if (!user) return;
 
-    // Invalidate any previous unused tokens for this user so only the
-    // most recent link is valid. We mark them used rather than deleting
-    // so any in-transit links produce a clear "already used" error.
-    await db
-      .update(passwordResetTokensTable)
-      .set({ usedAt: new Date() })
-      .where(
-        and(
-          eq(passwordResetTokensTable.userId, user.id),
-          isNull(passwordResetTokensTable.usedAt),
-        ),
-      );
-
     const rawToken = randomBytes(32).toString("hex");
     const tokenHash = sha256(rawToken);
     const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_MS);
 
-    await db.insert(passwordResetTokensTable).values({
-      id: nanoid(),
-      userId: user.id,
-      tokenHash,
-      expiresAt,
+    // Atomically invalidate previous tokens AND insert the new one so the user
+    // can never end up with zero valid tokens due to a mid-operation failure.
+    // Without a transaction, a crash between the UPDATE and INSERT would leave
+    // the user unable to reset their password (old links invalidated, new one
+    // never created), forcing an operator intervention to unblock them.
+    await db.transaction(async (tx) => {
+      // Invalidate any previous unused tokens for this user so only the
+      // most recent link is valid. We mark them used rather than deleting
+      // so any in-transit links produce a clear "already used" error.
+      await tx
+        .update(passwordResetTokensTable)
+        .set({ usedAt: new Date() })
+        .where(
+          and(
+            eq(passwordResetTokensTable.userId, user.id),
+            isNull(passwordResetTokensTable.usedAt),
+          ),
+        );
+      await tx.insert(passwordResetTokensTable).values({
+        id: nanoid(),
+        userId: user.id,
+        tokenHash,
+        expiresAt,
+      });
     });
 
     sendPasswordResetEmail({ email: user.email, displayName: user.displayName }, rawToken);

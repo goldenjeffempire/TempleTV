@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, boolean, integer, index } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, boolean, integer, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import type { z } from "zod/v4";
 
@@ -31,6 +31,11 @@ export const playlistVideosTable = pgTable(
     playlistOrderIdx: index("playlist_videos_playlist_order_idx").on(t.playlistId, t.sortOrder),
     // Allows efficient reverse lookups: "which playlists contain this video?"
     videoIdx: index("playlist_videos_video_id_idx").on(t.videoId),
+    // Prevent adding the same video to a playlist more than once.
+    // The application's add-to-playlist route relies on this unique constraint
+    // for ON CONFLICT DO NOTHING idempotency instead of a check-then-insert
+    // pattern that would be vulnerable to concurrent request races.
+    playlistVideoUniqIdx: uniqueIndex("playlist_videos_playlist_video_uniq_idx").on(t.playlistId, t.videoId),
   }),
 );
 

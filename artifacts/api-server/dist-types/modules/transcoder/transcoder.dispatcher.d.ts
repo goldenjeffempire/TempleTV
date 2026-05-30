@@ -76,6 +76,11 @@ declare class TranscoderDispatcher {
         lastCompletedStatus: "done" | "failed" | null;
         isRunning: boolean;
         ffmpegAvailable: boolean;
+        stopped: boolean;
+        storageCircuitOpenUntil: number;
+        storageErrorStreak: number;
+        circuitOpen: boolean;
+        circuitOpenRemainingMs: number | null;
     };
     stop(): void;
     /**

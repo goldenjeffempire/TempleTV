@@ -242,6 +242,23 @@ declare const queueTable: import("drizzle-orm/pg-core").PgTableWithColumns<{
             identity: undefined;
             generated: undefined;
         }, {}, {}>;
+        validatorDeactivatedReason: import("drizzle-orm/pg-core").PgColumn<{
+            name: "validator_deactivated_reason";
+            tableName: "broadcast_queue";
+            dataType: "string";
+            columnType: "PgText";
+            data: string;
+            driverParam: string;
+            notNull: false;
+            hasDefault: false;
+            isPrimaryKey: false;
+            isAutoincrement: false;
+            hasRuntimeDefault: false;
+            enumValues: [string, ...string[]];
+            baseColumn: never;
+            identity: undefined;
+            generated: undefined;
+        }, {}, {}>;
     };
     dialect: "pg";
 }>;
@@ -249,36 +266,38 @@ export declare const broadcastService: {
     snapshot(): import("./queue.engine.js").BroadcastSnapshot;
     listQueue(): Promise<(typeof queueTable.$inferSelect)[]>;
     addToQueue(item: z.infer<typeof AddQueueItemSchema>): Promise<{
+        sortOrder: number;
+        isActive: boolean;
         title: string;
+        durationSecs: number;
+        videoSource: string;
         id: string;
         youtubeId: string;
         thumbnailUrl: string;
-        videoSource: string;
         localVideoUrl: string | null;
         hlsMasterUrl: string | null;
-        isActive: boolean;
         videoId: string | null;
-        sortOrder: number;
         addedAt: Date;
         scheduledAt: Date | null;
-        durationSecs: number;
         scheduleLabel: string | null;
+        validatorDeactivatedReason: string | null;
     }>;
     removeFromQueue(id: string): Promise<{
+        sortOrder: number;
+        isActive: boolean;
         title: string;
+        durationSecs: number;
+        videoSource: string;
         id: string;
         youtubeId: string;
         thumbnailUrl: string;
-        videoSource: string;
         localVideoUrl: string | null;
         hlsMasterUrl: string | null;
-        isActive: boolean;
         videoId: string | null;
-        sortOrder: number;
         addedAt: Date;
         scheduledAt: Date | null;
-        durationSecs: number;
         scheduleLabel: string | null;
+        validatorDeactivatedReason: string | null;
     }>;
     reorder(itemIds: string[]): Promise<import("./queue.engine.js").BroadcastSnapshot>;
     toggleActive(id: string, isActive: boolean): Promise<{
@@ -296,6 +315,7 @@ export declare const broadcastService: {
         addedAt: Date;
         scheduledAt: Date | null;
         scheduleLabel: string | null;
+        validatorDeactivatedReason: string | null;
     }>;
 };
 export {};
