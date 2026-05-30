@@ -5,6 +5,7 @@ import { z } from "zod";
 import { eq, asc, and } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { requireAuth } from "../../middleware/auth.js";
+import { ConflictError, NotFoundError } from "../../shared/errors.js";
 import { channelRegistry } from "./channel-registry.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { snapshotToCurrentResult } from "../broadcast/broadcast.routes.js";
@@ -141,19 +142,26 @@ export async function channelsRoutes(app: FastifyInstance) {
     },
     async (req, reply) => {
       const id = crypto.randomUUID();
-      const [ch] = await db.insert(schema.channelsTable).values({
-        id,
-        name: req.body.name,
-        slug: req.body.slug,
-        description: req.body.description ?? "",
-        color: req.body.color ?? "#DC2626",
-        failoverHlsUrl: req.body.failoverHlsUrl ?? null,
-        isPrimary: false,
-        isActive: true,
-        sortOrder: 0,
-      }).returning();
-      await channelRegistry.getOrCreate(id);
-      return reply.code(201).send(ch);
+      try {
+        const [ch] = await db.insert(schema.channelsTable).values({
+          id,
+          name: req.body.name,
+          slug: req.body.slug,
+          description: req.body.description ?? "",
+          color: req.body.color ?? "#DC2626",
+          failoverHlsUrl: req.body.failoverHlsUrl ?? null,
+          isPrimary: false,
+          isActive: true,
+          sortOrder: 0,
+        }).returning();
+        await channelRegistry.getOrCreate(id);
+        return reply.code(201).send(ch);
+      } catch (err: unknown) {
+        if ((err as { code?: string }).code === "23505") {
+          throw new ConflictError(`A channel with slug "${req.body.slug}" already exists`);
+        }
+        throw err;
+      }
     },
   );
 

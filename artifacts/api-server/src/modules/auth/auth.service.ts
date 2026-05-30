@@ -277,6 +277,17 @@ export const authService = {
     const user = userRows[0];
     if (!user) throw new UnauthorizedError("User no longer exists");
 
+    // Guard: if the user changed their password (or an admin force-invalidated
+    // sessions), reject any refresh token issued before sessionsValidAfter.
+    // This closes the gap where extend() previously issued a new access token
+    // from a stale refresh token that pre-dated the password change.
+    if (user.sessionsValidAfter) {
+      const tokenIssuedAtMs = (decoded.iat ?? 0) * 1000;
+      if (tokenIssuedAtMs < user.sessionsValidAfter.getTime()) {
+        throw new UnauthorizedError("Session invalidated — please sign in again");
+      }
+    }
+
     // Issue a new access token in-memory (no DB write in the happy path).
     const role = coerceRole(user.role);
     const accessToken = await signAccessToken({ sub: user.id, email: user.email, role });

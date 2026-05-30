@@ -152,7 +152,7 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
           </div>
         </Link>
         {onClose && (
-          <Button variant="ghost" size="icon" className="h-7 w-7 lg:hidden" onClick={onClose}>
+          <Button variant="ghost" size="icon" className="h-7 w-7 lg:hidden" onClick={onClose} aria-label="Close menu">
             <X size={14} />
           </Button>
         )}

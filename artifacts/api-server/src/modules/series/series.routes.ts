@@ -5,7 +5,7 @@ import { z } from "zod";
 import { eq, asc, desc, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { requireAuth } from "../../middleware/auth.js";
-import { NotFoundError } from "../../shared/errors.js";
+import { ConflictError, NotFoundError } from "../../shared/errors.js";
 import { logger } from "../../infrastructure/logger.js";
 
 export async function seriesRoutes(app: FastifyInstance) {
@@ -288,14 +288,40 @@ export async function seriesRoutes(app: FastifyInstance) {
         .where(eq(schema.seriesEpisodesTable.seriesId, req.params.id))
         .then(([r]) => Number(r?.nextEp ?? 1));
 
-      const [episode] = await db.insert(schema.seriesEpisodesTable).values({
-        id: crypto.randomUUID(),
-        seriesId: req.params.id,
-        videoId,
-        episodeNumber: resolvedEpNum,
-        title: title ?? null,
-        description: description ?? null,
-      }).returning();
+      let episode;
+      try {
+        [episode] = await db.insert(schema.seriesEpisodesTable).values({
+          id: crypto.randomUUID(),
+          seriesId: req.params.id,
+          videoId,
+          episodeNumber: resolvedEpNum,
+          title: title ?? null,
+          description: description ?? null,
+        }).returning();
+      } catch (err: unknown) {
+        // Two concurrent requests can race on MAX()+1 for the same series.
+        // Retry once with a fresh MAX() to resolve the conflict.
+        if ((err as { code?: string }).code === "23505") {
+          const retryEpNum = await db
+            .select({
+              nextEp: sql<number>`coalesce(max(${schema.seriesEpisodesTable.episodeNumber}), 0) + 1`,
+            })
+            .from(schema.seriesEpisodesTable)
+            .where(eq(schema.seriesEpisodesTable.seriesId, req.params.id))
+            .then(([r]) => Number(r?.nextEp ?? 1));
+          [episode] = await db.insert(schema.seriesEpisodesTable).values({
+            id: crypto.randomUUID(),
+            seriesId: req.params.id,
+            videoId,
+            episodeNumber: retryEpNum,
+            title: title ?? null,
+            description: description ?? null,
+          }).returning();
+          logger.warn({ seriesId: req.params.id, resolved: retryEpNum }, "series: episode number conflict resolved on retry");
+        } else {
+          throw err;
+        }
+      }
 
       // Atomic increment — avoids the fetch-all-then-count round-trip.
       // GREATEST(..., 0) guards against a race where the count could

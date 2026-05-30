@@ -301,7 +301,7 @@ export default function Dashboard() {
                     )}
                   </div>
                   <Link href="/broadcast-v2">
-                    <button className="text-[10px] text-primary hover:underline shrink-0">
+                    <button className="text-[10px] text-primary hover:underline shrink-0" aria-label="Go to Broadcast Control">
                       Control →
                     </button>
                   </Link>

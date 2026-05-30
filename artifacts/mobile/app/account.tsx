@@ -132,7 +132,11 @@ export default function AccountScreen() {
         text: "Sign Out",
         style: "destructive",
         onPress: async () => {
-          await signOut();
+          try {
+            await signOut();
+          } catch {
+            // Best-effort — local session is cleared regardless of network errors.
+          }
           router.replace("/(tabs)/settings");
         },
       },

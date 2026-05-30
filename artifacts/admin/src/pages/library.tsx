@@ -200,9 +200,11 @@ export default function LibraryPage() {
       const parts = [`${result.total} videos synced`, `${result.inserted} new`, `${result.updated} updated`];
       if (result.deleted > 0) parts.push(`${result.deleted} expired removed`);
       toast.success(`Sync complete — ${parts.join(" · ")}`, { duration: 6000 });
+      setPage(1);
       void qc.invalidateQueries({ queryKey: ["youtube-sync-status"] });
       void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
       void qc.invalidateQueries({ queryKey: ["youtube-sync-history"] });
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
     },
     onError: (err) => {
       const msg = (err as Error).message ?? "Sync failed";
@@ -214,6 +216,7 @@ export default function LibraryPage() {
   useSSEEvent("videos-library-updated", () => {
     void qc.invalidateQueries({ queryKey: ["youtube-sync-status"] });
     void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
+    void qc.invalidateQueries({ queryKey: ["admin-stats"] });
   });
 
   const isSyncing = syncMutation.isPending || (status?.syncInProgress ?? false);
