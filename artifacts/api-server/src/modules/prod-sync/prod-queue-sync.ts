@@ -178,6 +178,9 @@ const lastSeenAtMs = new Map<string, number>();
 const GHOST_GRACE_MS = 10 * 60 * 1000;
 
 let pollTimer: NodeJS.Timeout | null = null;
+// Consecutive failure counter — resets to 0 on any successful poll.
+// Used to suppress repetitive WARN logs when the upstream is extended-down.
+let consecutivePollFailures = 0;
 let stats = {
   enabled: false,
   upstreamUrl: null as string | null,
@@ -189,6 +192,7 @@ let stats = {
   lastSkippedUnreachableCount: 0,
   totalPolls: 0,
   totalUpserts: 0,
+  consecutiveFailures: 0,
 };
 
 /**
@@ -282,12 +286,34 @@ async function pollOnce(): Promise<void> {
     }
     payload = (await res.json()) as UpstreamGuideResponse;
   } catch (err) {
+    consecutivePollFailures++;
+    stats.consecutiveFailures = consecutivePollFailures;
     stats.lastPollAtMs = Date.now();
     stats.lastPollOk = false;
     stats.lastPollError = err instanceof Error ? err.message : String(err);
-    logger.warn({ err, url }, "[prod-sync] upstream poll failed");
+    // Emit WARN on the 1st failure and every 10th thereafter (~5 min at the
+    // default 30 s interval). Intermediate failures are logged at DEBUG to
+    // prevent log spam when the upstream is extended-down (e.g. maintenance).
+    // The `consecutiveFailures` field in getStatus() always reflects the
+    // true current count for monitoring dashboards.
+    const shouldWarn = consecutivePollFailures === 1 || consecutivePollFailures % 10 === 0;
+    if (shouldWarn) {
+      logger.warn(
+        { err, url, consecutiveFailures: consecutivePollFailures },
+        "[prod-sync] upstream poll failed",
+      );
+    } else {
+      logger.debug(
+        { url, consecutiveFailures: consecutivePollFailures },
+        "[prod-sync] upstream poll failed (suppressed — upstream still down)",
+      );
+    }
     return;
   }
+
+  // Reset consecutive failure counter and expose in stats on any successful fetch.
+  consecutivePollFailures = 0;
+  stats.consecutiveFailures = 0;
 
   const items = Array.isArray(payload?.items) ? payload.items : [];
   // NOTE: we deliberately do NOT early-return on empty payloads. An empty

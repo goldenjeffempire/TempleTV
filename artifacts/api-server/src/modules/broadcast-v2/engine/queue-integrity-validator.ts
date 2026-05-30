@@ -230,6 +230,49 @@ class QueueIntegrityValidatorImpl {
         }
       }
 
+      // ── Auto-fix: deactivate ORPHANED_VIDEO_REF items with permanently failed transcoding ──
+      // Items whose referenced video exists but has no playable URLs AND whose
+      // transcodingStatus='failed' will never become playable. They cause repeated
+      // auto-skip cycles (one per orchestrator tick), burning skip budget and
+      // flooding logs with WARN-level "resolveSource returned null" messages.
+      //
+      // Safety guard: only deactivate when vStatus='failed'. Items with vStatus in
+      // {queued, encoding, processing} are actively being transcoded — deactivating
+      // them would remove content that will be playable within minutes. Items with
+      // vStatus='hls_ready' and no URL are handled by the startup partial-success
+      // recovery in transcoder.dispatcher.ts and will self-heal on next restart.
+      const orphanedFailedIds = rows
+        .filter((r) => {
+          const isOrphaned = r.videoId !== null && r.videoId2 !== null && !r.vLocalUrl && !r.vHlsUrl;
+          const isTerminallyFailed = r.vStatus === "failed";
+          return isOrphaned && isTerminallyFailed;
+        })
+        .map((r) => r.id);
+
+      if (orphanedFailedIds.length > 0) {
+        try {
+          await db
+            .update(schema.broadcastQueueTable)
+            .set({ isActive: false })
+            .where(inArray(schema.broadcastQueueTable.id, orphanedFailedIds));
+          logger.error(
+            { count: orphanedFailedIds.length, itemIds: orphanedFailedIds },
+            "[queue-validator] AUTO-FIX: deactivated ORPHANED_VIDEO_REF items whose transcoding permanently failed " +
+            "(video row exists but has no playable URLs and transcodingStatus='failed') — " +
+            "removed from broadcast rotation; re-transcode or re-upload the source file to restore",
+          );
+          adminEventBus.push("broadcast-queue-updated", {
+            reason: "integrity-fix-orphaned-video-ref",
+            count: orphanedFailedIds.length,
+          });
+        } catch (fixErr) {
+          logger.warn(
+            { err: fixErr, count: orphanedFailedIds.length },
+            "[queue-validator] AUTO-FIX: failed to deactivate ORPHANED_VIDEO_REF items (non-fatal)",
+          );
+        }
+      }
+
       const errorIds = new Set(issues.filter((i) => i.severity === "error" && i.itemId).map((i) => i.itemId!));
       const healthyItems = rows.filter((r) => !errorIds.has(r.id)).length;
       const report: ValidationReport = {

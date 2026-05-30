@@ -9,6 +9,7 @@ declare let stats: {
     lastSkippedUnreachableCount: number;
     totalPolls: number;
     totalUpserts: number;
+    consecutiveFailures: number;
 };
 export declare const prodQueueSync: {
     start(): void;

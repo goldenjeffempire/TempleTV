@@ -1297,8 +1297,15 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
         "transcoder: CODECS attribute injected into master.m3u8",
       );
     } catch (codecsErr) {
-      // Non-fatal: the playlist works without CODECS; log and continue.
-      logger.warn({ err: codecsErr, videoId: req.videoId }, "transcoder: CODECS injection failed (non-fatal)");
+      // Non-fatal: HLS assets are still uploaded; the playlist works on most
+      // clients. However, missing CODECS attributes cause hardware-decoder
+      // selection failures on Samsung Tizen (>=4.x) and LG webOS (3.x), resulting
+      // in black screens for TV viewers. Log at ERROR so monitoring surfaces this.
+      logger.error(
+        { err: codecsErr, videoId: req.videoId },
+        "transcoder: CODECS injection failed — Smart TV viewers (Tizen/webOS) may see black screens " +
+        "on this video; HLS assets will still be uploaded without CODECS attr",
+      );
     }
 
     // ── Final upload pass ────────────────────────────────────────────────────

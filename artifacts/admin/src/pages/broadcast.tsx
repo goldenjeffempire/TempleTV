@@ -2034,7 +2034,7 @@ export default function BroadcastPage() {
                               removeMutation.variables === item.id
                             }
                             isPlayingNow={nowPlaying?.id === item.id}
-                            isDragDisabled={isSyncing || playNowMutation.isPending}
+                            isDragDisabled={isSyncing || playNowMutation.isPending || removeMutation.isPending}
                           />
                         );
                       })}

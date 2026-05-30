@@ -273,9 +273,12 @@ export function useV2BroadcastNative(opts: UseV2BroadcastNativeOptions): UseV2Br
     };
   }, [session, baseUrl]);
 
-  // SKIP_PENDING escape valve: matches the web hook — force-reconnect after
-  // 20 s if the machine stays stuck in SKIP_PENDING (report-stall POST
-  // failed, or the server's skip snapshot was dropped mid-flight).
+  // SKIP_PENDING escape valve: force-reconnect after 8 s if the machine
+  // stays stuck in SKIP_PENDING (report-stall POST failed, or the server's
+  // skip snapshot was dropped mid-flight). Matches the web hook (react.ts)
+  // which was reduced from 20 s → 8 s — 20 s of dead air per stalled item
+  // is unacceptable for 24/7 broadcast; a stall is always recoverable
+  // within 2 server tick cycles (total ≤ 4 s).
   useEffect(() => {
     if (!session) return;
     let escapeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -285,7 +288,7 @@ export function useV2BroadcastNative(opts: UseV2BroadcastNativeOptions): UseV2Br
           escapeTimer = setTimeout(() => {
             escapeTimer = null;
             session.transport.forceReconnect();
-          }, 20_000);
+          }, 8_000);
         }
       } else if (escapeTimer !== null) {
         clearTimeout(escapeTimer);

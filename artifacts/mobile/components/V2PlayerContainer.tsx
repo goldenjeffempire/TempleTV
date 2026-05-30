@@ -223,12 +223,14 @@ const HLS_LIVE_SYNC_INTERVAL_MS = 30_000;
  * PREPARING_ACTIVE or RECOVERING indefinitely — audio may play (from a prior
  * successful load) but "Tuning in…" never clears.
  *
- * 12 s: chosen above BUFFERING_STALL_THRESHOLD_MS (15 s here is the
- * buffering watchdog; this load-timeout is 12 s so it doesn't compete).
- * Only fires for truly silent failures where isBuffering stays false
- * (manifest fetch never started, codec negotiation hung, etc.).
- * Reduced from 25 s so the FSM recovers twice as fast on completely
- * silent ExoPlayer failures.
+ * 12 s: chosen BELOW BUFFERING_STALL_THRESHOLD_MS (15 s) so the two
+ * watchdogs target different failure classes without racing each other.
+ * LOAD_TIMEOUT catches "ExoPlayer never emitted isBuffering=true" (silent
+ * codec / manifest failures). BUFFERING_STALL catches "isBuffering=true
+ * but no frames arrive" (partial content, slow segment download). Both
+ * can be active simultaneously but LOAD_TIMEOUT fires first and clears
+ * the stall watchdog via the error path. Reduced from 25 s to recover
+ * twice as fast on completely silent ExoPlayer silent failures.
  */
 const LOAD_TIMEOUT_MS = 12_000;
 
