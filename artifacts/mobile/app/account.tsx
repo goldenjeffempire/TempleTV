@@ -179,7 +179,7 @@ export default function AccountScreen() {
   return (
     <KeyboardAvoidingView
       style={{ flex: 1, backgroundColor: c.background }}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
       <StatusBar barStyle={c.isMidnightTheme ? "light-content" : "dark-content"} />
 

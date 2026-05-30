@@ -52,11 +52,13 @@ function useMidnightPrayersSwitch(mainBaseUrl: string): string {
   const [inWindow, setInWindow] = useState(false);
 
   useEffect(() => {
+    const ctrl = new AbortController();
     const apiOrigin = resolveApiOrigin();
-    fetch(`${apiOrigin}/api/midnight-prayers/config`)
+    fetch(`${apiOrigin}/api/midnight-prayers/config`, { signal: ctrl.signal })
       .then((r) => (r.ok ? (r.json() as Promise<MPScheduleConfig>) : null))
       .then((data) => { if (data) setCfg(data); })
       .catch(() => { /* ignore — stay on main channel */ });
+    return () => ctrl.abort();
   }, []);
 
   useEffect(() => {

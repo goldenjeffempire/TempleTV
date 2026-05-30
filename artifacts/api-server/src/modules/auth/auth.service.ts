@@ -515,20 +515,22 @@ export const authService = {
     const now = new Date();
 
     // Execute atomically: mark token used + update password + bump
-    // sessionsValidAfter in parallel.  sessionsValidAfter must be set so that
-    // any in-flight access tokens (which are validated in-process against a
-    // 30 s cache of this column) are immediately rejected — matching the
-    // behaviour of changePassword(), which already does this.
-    await Promise.all([
-      db
+    // sessionsValidAfter in a single transaction.  Using Promise.all without
+    // a transaction would leave the token reusable if the password update
+    // fails, or the password changed but the token still valid if the first
+    // update fails — both are security bugs.  The transaction also prevents
+    // a second concurrent reset request from racing through between the two
+    // writes.
+    await db.transaction(async (tx) => {
+      await tx
         .update(passwordResetTokensTable)
         .set({ usedAt: now })
-        .where(eq(passwordResetTokensTable.id, tokenRow.id)),
-      db
+        .where(eq(passwordResetTokensTable.id, tokenRow.id));
+      await tx
         .update(usersTable)
         .set({ passwordHash: newHash, sessionsValidAfter: now, updatedAt: now })
-        .where(eq(usersTable.id, tokenRow.userId)),
-    ]);
+        .where(eq(usersTable.id, tokenRow.userId));
+    });
 
     // Revoke all existing refresh tokens so every active session is
     // invalidated — standard security practice after a password change.

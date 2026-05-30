@@ -39,7 +39,13 @@ export function useWatchProgress() {
   useEffect(() => {
     AsyncStorage.getItem(STORAGE_KEY)
       .then((raw) => {
-        if (raw) setProgressMap(JSON.parse(raw) as WatchProgressMap);
+        if (raw) {
+          try {
+            setProgressMap(JSON.parse(raw) as WatchProgressMap);
+          } catch {
+            // Corrupted storage — start with empty progress map.
+          }
+        }
       })
       .catch(() => {});
   }, []);

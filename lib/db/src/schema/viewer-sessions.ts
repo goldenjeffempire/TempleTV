@@ -35,6 +35,10 @@ export const viewerSessionsTable = pgTable(
     index("idx_viewer_sessions_channel").on(t.channelId, t.endedAt),
     index("idx_viewer_sessions_device").on(t.deviceId, t.startedAt),
     index("idx_viewer_sessions_started").on(t.startedAt),
+    // Analytics queries joining/filtering by video (e.g. "total watch time per
+    // video", "viewers-by-video" dashboard panels) do a full table scan without
+    // this index — the table grows at ~1 row/viewer/video and is never trimmed.
+    index("idx_viewer_sessions_video_id").on(t.videoId),
   ],
 );
 

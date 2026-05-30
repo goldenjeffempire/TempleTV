@@ -19,6 +19,11 @@ export const userWatchHistoryTable = pgTable(
     // Supports JOIN queries from the video detail page (e.g. "has user watched
     // this video before?" lookup) and batch history queries grouped by video.
     videoIdx: index("user_watch_history_video_id_idx").on(t.videoId),
+    // Composite index for "has this user watched this specific video?" queries
+    // (used on video detail and continue-watching panels). The individual
+    // userId and videoId indexes do not satisfy this equally well — Postgres
+    // would need a bitmap AND between two index scans without it.
+    userVideoIdx: index("user_watch_history_user_video_idx").on(t.userId, t.videoId),
   }),
 );
 

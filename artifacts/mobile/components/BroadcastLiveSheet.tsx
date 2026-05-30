@@ -377,7 +377,7 @@ function ChatTab({ isLive, viewers }: { isLive: boolean; viewers: number | null 
 
   return (
     <KeyboardAvoidingView
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
       style={{ gap: 12 }}
     >
       {/* Header strip — same status pills as the previous placeholder so

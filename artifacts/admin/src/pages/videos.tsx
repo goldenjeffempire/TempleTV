@@ -636,7 +636,7 @@ export default function VideosPage() {
         </div>
 
         {/* Source */}
-        <Select value={sourceFilter} onValueChange={(v) => { setSourceFilter(v); setPage(1); }}>
+        <Select value={sourceFilter} onValueChange={(v) => { setSourceFilter(v); setPage(1); setSelectedIds(new Set()); }}>
           <SelectTrigger className="h-8 text-sm w-36">
             <SelectValue placeholder="Source" />
           </SelectTrigger>
@@ -648,7 +648,7 @@ export default function VideosPage() {
         </Select>
 
         {/* Category */}
-        <Select value={categoryFilter} onValueChange={(v) => { setCategoryFilter(v); setPage(1); }}>
+        <Select value={categoryFilter} onValueChange={(v) => { setCategoryFilter(v); setPage(1); setSelectedIds(new Set()); }}>
           <SelectTrigger className="h-8 text-sm w-36">
             <SelectValue placeholder="Category" />
           </SelectTrigger>
@@ -661,7 +661,7 @@ export default function VideosPage() {
         </Select>
 
         {/* Status */}
-        <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v); setPage(1); }}>
+        <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v); setPage(1); setSelectedIds(new Set()); }}>
           <SelectTrigger className="h-8 text-sm w-36">
             <SelectValue placeholder="Status" />
           </SelectTrigger>
@@ -676,7 +676,7 @@ export default function VideosPage() {
         </Select>
 
         {/* Sort */}
-        <Select value={sortOrder} onValueChange={(v) => { setSortOrder(v); setPage(1); }}>
+        <Select value={sortOrder} onValueChange={(v) => { setSortOrder(v); setPage(1); setSelectedIds(new Set()); }}>
           <SelectTrigger className="h-8 text-sm w-40">
             <ArrowUpDown size={12} className="mr-1 text-muted-foreground" />
             <SelectValue placeholder="Sort" />

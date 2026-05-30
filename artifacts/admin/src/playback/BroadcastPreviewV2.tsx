@@ -111,6 +111,12 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
   // consuming the entire frag retry budget when a lower rendition would succeed.
   // The ABR engine ramps back up once bandwidth is confirmed stable (30 s).
   let stallLevelDropped = false;
+  // Track the ABR recovery timer so we can cancel it when the HLS instance is
+  // destroyed. Without this, a 30 s timer created just before navigation fires
+  // after hls.destroy(), calling hls.currentLevel = -1 on a dead instance —
+  // which silently throws on some hls.js versions and lingers in memory.
+  let stallRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+
   const handleHlsStallDrop = (_evt: unknown, data: { fatal: boolean; details: string }) => {
     if (data.fatal) return;
     if (stallLevelDropped) return;
@@ -123,7 +129,10 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
     if (hls.currentLevel > 0) {
       stallLevelDropped = true;
       hls.currentLevel = 0;
-      setTimeout(() => { stallLevelDropped = false; hls.currentLevel = -1; }, 30_000);
+      stallRecoveryTimer = setTimeout(() => {
+        stallRecoveryTimer = null;
+        try { stallLevelDropped = false; hls.currentLevel = -1; } catch { /* destroyed */ }
+      }, 30_000);
     }
   };
 
@@ -197,6 +206,7 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
   return () => {
     document.removeEventListener("fullscreenchange", onFsChange);
     document.removeEventListener("webkitfullscreenchange", onFsChange);
+    if (stallRecoveryTimer !== null) clearTimeout(stallRecoveryTimer);
     try { hls.destroy(); } catch { /* ignore */ }
   };
 }

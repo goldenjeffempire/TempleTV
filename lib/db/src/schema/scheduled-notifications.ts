@@ -16,6 +16,9 @@ export const scheduledNotificationsTable = pgTable("scheduled_notifications", {
   // Hot-path dispatcher query: WHERE status = 'pending' AND scheduled_at <= now()
   // Without this composite index the dispatcher does a full table scan every 30 s.
   index("idx_scheduled_notifications_status_at").on(table.status, table.scheduledAt),
+  // Lookup by videoId: used by the "notify when ready" flow to find pending
+  // notifications tied to a specific video (e.g. after transcoding completes).
+  index("idx_scheduled_notifications_video_id").on(table.videoId),
 ]);
 
 export type ScheduledNotification = typeof scheduledNotificationsTable.$inferSelect;

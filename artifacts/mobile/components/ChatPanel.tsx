@@ -102,7 +102,7 @@ export function ChatPanel({ visible, onClose }: ChatPanelProps) {
     <View style={styles.overlay}>
       <KeyboardAvoidingView
         style={styles.panel}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
         {/* Header */}
         <View style={styles.header}>
