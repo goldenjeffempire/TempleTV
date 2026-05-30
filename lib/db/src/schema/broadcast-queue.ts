@@ -26,6 +26,14 @@ export const broadcastQueueTable = pgTable("broadcast_queue", {
   // Human-readable block label shown in the schedule editor, e.g.
   // "Sunday Morning Service", "Wednesday Bible Study", "Daily Devotional".
   scheduleLabel: text("schedule_label"),
+  /**
+   * Set by the queue-integrity-validator when it auto-deactivates a row.
+   * Values: "missing_video_join" (video row was hard-deleted).
+   * Cleared (set to null) when the reverse auto-fix re-activates the row.
+   * NULL for rows deactivated by operators or by other code paths — this
+   * ensures the reverse pass never touches intentionally-disabled content.
+   */
+  validatorDeactivatedReason: text("validator_deactivated_reason"),
 }, (table) => [
   // Hot path: `buildBroadcastCurrentPayload` and the admin queue list both
   // run `WHERE is_active = true ORDER BY sort_order ASC`. A composite index

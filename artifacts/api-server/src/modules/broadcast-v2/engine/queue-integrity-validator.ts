@@ -244,7 +244,15 @@ class QueueIntegrityValidatorImpl {
         try {
           await db
             .update(schema.broadcastQueueTable)
-            .set({ isActive: false })
+            .set({
+              isActive: false,
+              // Record the specific reason for deactivation so the reverse pass
+              // below can ONLY re-activate rows this validator deactivated —
+              // never rows disabled by operators or other code paths. Without
+              // this marker, is_active=false alone is insufficient to distinguish
+              // "validator auto-deactivated" from "intentionally off by operator".
+              validatorDeactivatedReason: "missing_video_join",
+            })
             .where(inArray(schema.broadcastQueueTable.id, missingJoinIds));
           logger.error(
             { count: missingJoinIds.length, itemIds: missingJoinIds },
@@ -281,14 +289,15 @@ class QueueIntegrityValidatorImpl {
       //   4. Have at least one playable URL (localVideoUrl or hlsMasterUrl) so
       //      we don't re-activate an item that will immediately auto-skip again
       //
-      // A separate query is required because the main rows query above only
-      // fetches active items. The reverse pass is lightweight: it only runs
-      // when there are no current MISSING_VIDEO_JOIN errors (i.e. the active
-      // queue is clean), giving it a natural trigger for "all restored" states.
-      if (missingJoinIds.length === 0) {
-        // A separate query is required because the main `rows` query above
-        // only fetches active (is_active=true) items. We need a LEFT JOIN
-        // across inactive rows to find ones whose video row has since returned.
+      // Run reverse pass regardless of whether any MISSING_VIDEO_JOIN issues
+      // fired this cycle: the video restoration may have happened between two
+      // validator runs, so the active-queue scan above would show 0 issues but
+      // the inactive rows (still deactivated from a previous run) need restoring.
+      // Safety: only re-activate rows whose `validatorDeactivatedReason` is
+      // explicitly "missing_video_join" — this ensures we never touch rows that
+      // operators intentionally disabled or that other code paths deactivated
+      // for unrelated reasons.
+      {
         type RestoredRow = { id: string; title: string };
         let restoredRows: RestoredRow[] = [];
         try {
@@ -297,7 +306,7 @@ class QueueIntegrityValidatorImpl {
             FROM broadcast_queue bq
             INNER JOIN managed_videos mv ON mv.id = bq.video_id
             WHERE bq.is_active = false
-              AND bq.video_id IS NOT NULL
+              AND bq.validator_deactivated_reason = 'missing_video_join'
               AND (mv.local_video_url IS NOT NULL OR mv.hls_master_url IS NOT NULL)
           `);
           restoredRows = (result.rows as RestoredRow[]) ?? [];
@@ -313,7 +322,13 @@ class QueueIntegrityValidatorImpl {
           try {
             await db
               .update(schema.broadcastQueueTable)
-              .set({ isActive: true })
+              .set({
+                isActive: true,
+                // Clear the deactivation marker now that the row is back in rotation
+                // so a future operator disable is not incorrectly treated as a prior
+                // validator deactivation.
+                validatorDeactivatedReason: null,
+              })
               .where(inArray(schema.broadcastQueueTable.id, restoredIds));
             logger.warn(
               { count: restoredIds.length, itemIds: restoredIds },
