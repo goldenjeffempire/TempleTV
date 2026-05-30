@@ -1,4 +1,4 @@
-import { asc, desc, eq, inArray, max, sql } from "drizzle-orm";
+import { asc, eq, inArray, max, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, schema } from "../../infrastructure/db.js";
 import { broadcastEngine } from "./queue.engine.js";
@@ -116,4 +116,3 @@ export const broadcastService = {
   },
 };
 
-export { desc };

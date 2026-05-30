@@ -55,9 +55,15 @@ const DEFAULT_MAX_DELAY_MS = 10_000;
  */
 const FETCH_TIMEOUT_MS = 15_000;
 
-/** Default retryable predicate: 5xx and 429 */
+/**
+ * Default retryable predicate: 5xx, 429, and 408.
+ * 408 (Request Timeout) is common on mobile "zombie" connections — the
+ * carrier's NAT/proxy times out the TCP connection after a period of
+ * inactivity, causing the next request to silently hang until the OS
+ * eventually surfaces a 408. These are always transient and safe to retry.
+ */
 function defaultIsRetryable(res: Response): boolean {
-  return res.status === 429 || res.status >= 500;
+  return res.status === 408 || res.status === 429 || res.status >= 500;
 }
 
 /**

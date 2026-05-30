@@ -614,10 +614,26 @@ export async function authRoutes(app: FastifyInstance) {
         return { error: "Code has already been claimed" };
       }
 
-      await db
+      // Use a conditional UPDATE (WHERE claimed_at IS NULL) instead of a
+      // plain update to prevent a TOCTOU race: two concurrent /claim requests
+      // can both pass the `row.claimedAt` check above, then both attempt to
+      // set the claim. The first wins; the second's UPDATE matches 0 rows and
+      // we return 409 — exactly as if the race never happened.
+      const updated = await db
         .update(schema.deviceLinkCodesTable)
         .set({ userId: req.principal!.id, claimedAt: new Date() })
-        .where(eq(schema.deviceLinkCodesTable.code, code));
+        .where(
+          and(
+            eq(schema.deviceLinkCodesTable.code, code),
+            isNull(schema.deviceLinkCodesTable.claimedAt),
+          ),
+        )
+        .returning({ id: schema.deviceLinkCodesTable.code });
+
+      if (updated.length === 0) {
+        reply.status(409);
+        return { error: "Code has already been claimed" };
+      }
 
       return { ok: true };
     },

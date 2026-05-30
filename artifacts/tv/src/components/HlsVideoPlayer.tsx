@@ -201,7 +201,12 @@ export function HlsVideoPlayer({
     setHls(slot, null);
 
     if (isTizen() && window.webapis?.avplay) {
+      // Tizen 5+ has native HLS support via the browser engine; set src and
+      // mark the slot loaded. `setLoaded` must be called so the preload effect
+      // doesn't re-fetch the same URL and so instant-swap detection works.
       video.src = url;
+      video.load();
+      setLoaded(slot, url);
       return;
     }
 
@@ -373,17 +378,28 @@ export function HlsVideoPlayer({
 
     // Check if the inactive slot already has this URL preloaded.
     if (getLoaded(inactive) === hlsUrl) {
-      // Instant swap.
+      // Instant swap: the inactive slot already has the desired content
+      // buffered, so we can transition with zero rebuffer time.
       const incoming = getVideo(inactive)!;
       const outgoing = getVideo(slot);
       incoming.muted  = false;
       incoming.volume = 1;
       incoming.play().catch(() => {});
       try { outgoing?.pause(); } catch { /* noop */ }
+      // Clear the outgoing slot's loaded-URL so the preload effect treats it
+      // as available for the NEXT nextHlsUrl. Without this, the outgoing slot
+      // retains the old URL, and a subsequent nextHlsUrl that matches it would
+      // be a false-positive "already preloaded" hit.
+      setLoaded(slot, null);
       const nextSlot: Slot = slot === "A" ? "B" : "A";
       activeSlotRef.current = nextSlot;
       setActiveSlot(nextSlot);
       setLoading(false);
+      // Start the stall watchdog for the newly-active slot so that a preloaded
+      // video that stalls mid-play (HLS buffer underrun after the swap) is
+      // caught and recovered — the watchdog is normally started in the
+      // canplay handler of the fresh-load path but is bypassed here.
+      startWatchdog();
       return;
     }
 

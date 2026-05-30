@@ -16,6 +16,9 @@ export const userWatchHistoryTable = pgTable(
   (t) => ({
     userIdx: index("user_watch_history_user_id_idx").on(t.userId),
     userWatchedIdx: index("user_watch_history_user_watched_idx").on(t.userId, t.watchedAt),
+    // Supports JOIN queries from the video detail page (e.g. "has user watched
+    // this video before?" lookup) and batch history queries grouped by video.
+    videoIdx: index("user_watch_history_video_id_idx").on(t.videoId),
   }),
 );
 

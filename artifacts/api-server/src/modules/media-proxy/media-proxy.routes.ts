@@ -107,12 +107,18 @@ export async function mediaProxyRoutes(app: FastifyInstance) {
       }
 
       if (!verifySig(targetUrl, sig)) {
-        logger.warn({ targetUrl }, "[media-proxy] rejected — invalid signature");
+        // Log only the host (never the full URL) — query params may carry
+        // user-identifying tokens or signed path segments (PII in logs risk).
+        let targetHost = "(unparseable)";
+        try { targetHost = new URL(targetUrl).host; } catch { /* noop */ }
+        logger.warn({ targetHost }, "[media-proxy] rejected — invalid signature");
         return reply.code(403).send({ error: "Invalid signature" });
       }
 
       if (!isAllowedHost(targetUrl)) {
-        logger.warn({ targetUrl }, "[media-proxy] rejected — host not in allowlist");
+        let targetHost = "(unparseable)";
+        try { targetHost = new URL(targetUrl).host; } catch { /* noop */ }
+        logger.warn({ targetHost }, "[media-proxy] rejected — host not in allowlist");
         return reply.code(403).send({ error: "Target host not in proxy allowlist" });
       }
 

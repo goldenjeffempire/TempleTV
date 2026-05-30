@@ -286,8 +286,31 @@ function RootLayoutNav() {
     if (!isNativeBuild) return;
 
     let subscription: { remove: () => void } | null = null;
+    let foregroundSubscription: { remove: () => void } | null = null;
 
     import("expo-notifications").then((Notifications) => {
+      // ── Foreground notification handler ─────────────────────────────────────
+      // When the app is open and a push arrives, the system banner shows but
+      // the app receives no in-app signal unless we listen here. For "live"
+      // pushes this is critical — operators start a broadcast and expect every
+      // open viewer to be prompted immediately, not only those who happen to
+      // tap a banner from the background.
+      foregroundSubscription = Notifications.addNotificationReceivedListener((notification) => {
+        const data = notification.request.content.data as Record<string, unknown>;
+        const type = data?.type as string | undefined;
+        // For live-start alerts received in the foreground, emit a custom event
+        // that the player/channel screens can subscribe to so they can show an
+        // in-app "Live now — tap to join" banner without requiring a tap on the
+        // system notification. Other types are informational; the banner is enough.
+        if (type === "live_started" || type === "live_now" || type === "live") {
+          // Fire a synthetic linking event routed through the same deep-link
+          // guard so all in-app surfaces handle it uniformly.
+          import("@/services/liveNotificationBus")
+            .then(({ liveNotificationBus }) => liveNotificationBus.emit())
+            .catch(() => {/* non-fatal: bus may not be initialised on this screen */});
+        }
+      });
+
       subscription = Notifications.addNotificationResponseReceivedListener((response) => {
         const data = response.notification.request.content.data as Record<string, unknown>;
         const type = data?.type as string | undefined;
@@ -358,6 +381,7 @@ function RootLayoutNav() {
     });
 
     return () => {
+      foregroundSubscription?.remove();
       subscription?.remove();
       if (notifListenerRef.current) clearTimeout(notifListenerRef.current);
     };
