@@ -272,8 +272,17 @@ export class V2Transport {
   private wsPreferSseUntilWsOpens = false;
   /** Rolling count of SSE reconnects since `wsPreferSseUntilWsOpens` was set. */
   private sseReconnectCount = 0;
-  /** How many consecutive SSE reconnects to skip before probing WS once. */
-  private readonly WS_PROBE_INTERVAL_SSE_ROUNDS = 20;
+  /**
+   * How many consecutive SSE reconnects to skip before probing WS once.
+   *
+   * Reduced from 20 → 5. A brief 30–60 s outage (e.g. server restart, mobile
+   * network hand-off) previously kept clients on SSE for 4–8 minutes before
+   * re-probing WebSocket. At 5 rounds the probe fires after ~3 reconnect cycles
+   * (~60–90 s), returning to the lower-overhead WebSocket transport much faster
+   * while still protecting against networks where WS is permanently blocked
+   * (the probe fails → stays on SSE for another 5 rounds).
+   */
+  private readonly WS_PROBE_INTERVAL_SSE_ROUNDS = 5;
 
   /**
    * Heartbeat watchdog timer — checks every 15 s whether a frame has

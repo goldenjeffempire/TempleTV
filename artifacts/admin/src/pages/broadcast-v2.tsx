@@ -194,6 +194,13 @@ interface EngineHealth {
     lastDeadAirAt: number | null;
   };
   airingHistory?: AiringEntry[];
+  /** True when EMERGENCY_FILLER_URL is configured on the server. */
+  emergencyFillerConfigured?: boolean;
+  /**
+   * Milliseconds since the broadcast was last continuously on air.
+   * Null when the broadcast is currently off-air.
+   */
+  continuousOnAirMs?: number | null;
 }
 
 interface AiringEntry {
@@ -756,6 +763,9 @@ function BroadcastV2PageInner() {
   // items and falls back to EMERGENCY_FILLER_URL. Dismissed manually.
   const [fillerActiveDismissed, setFillerActiveDismissed] = useState(false);
   const [fillerActiveAt, setFillerActiveAt] = useState<number | null>(null);
+  // Emergency filler not-configured warning — shown when the health endpoint
+  // reports emergencyFillerConfigured === false. Dismissed manually.
+  const [fillerNotConfiguredDismissed, setFillerNotConfiguredDismissed] = useState(false);
   // Launch Checklist modal.
   const [showChecklist, setShowChecklist] = useState(false);
 
@@ -1117,6 +1127,24 @@ function BroadcastV2PageInner() {
   useEffect(() => {
     if (!isAllBlocked) setAllBlockedDismissed(false);
   }, [isAllBlocked]);
+
+  // Emergency filler not configured: health endpoint explicitly says the env
+  // var is absent. Only show after health data is loaded so we don't flash
+  // a false warning on cold boot before the first fetch completes.
+  const isFillerNotConfigured =
+    engineHealth !== undefined && engineHealth.emergencyFillerConfigured === false;
+
+  // Continuous on-air uptime — format ms into a human-readable string for display.
+  const continuousOnAirMs = engineHealth?.continuousOnAirMs ?? null;
+  function formatOnAirDuration(ms: number): string {
+    const totalSecs = Math.floor(ms / 1000);
+    const h = Math.floor(totalSecs / 3600);
+    const m = Math.floor((totalSecs % 3600) / 60);
+    const s = totalSecs % 60;
+    if (h > 0) return `${h}h ${m}m`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
+  }
 
   // Consecutive-skips warning: ≥2 items have been skipped back-to-back
   // without a successful play. This is an early signal of an emerging
@@ -1743,6 +1771,35 @@ function BroadcastV2PageInner() {
         </div>
       )}
 
+      {/* Emergency filler not-configured warning — shown when the health
+          endpoint reports EMERGENCY_FILLER_URL is absent on the server.
+          This is a persistent configuration gap, not a transient event, so
+          the banner resets only on page reload (manual dismiss persists for
+          the session).  Dismissed manually; auto-reset when configured. */}
+      {isFillerNotConfigured && !fillerNotConfiguredDismissed && (
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-md border border-yellow-300/60 bg-yellow-50 px-4 py-3 text-sm text-yellow-900 dark:border-yellow-700/60 dark:bg-yellow-950/30 dark:text-yellow-200"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-500" />
+          <div className="flex-1">
+            <strong>No emergency filler URL configured.</strong>{" "}
+            If all queue items become unplayable the broadcast will go to dead air with no
+            fallback content. Set{" "}
+            <code className="font-mono text-xs">EMERGENCY_FILLER_URL</code> in your server
+            environment to an https:// HLS (.m3u8) or MP4 stream for 24/7 broadcast resilience.
+          </div>
+          <button
+            type="button"
+            aria-label="Dismiss emergency filler not-configured warning"
+            onClick={() => setFillerNotConfiguredDismissed(true)}
+            className="shrink-0 rounded p-0.5 hover:bg-yellow-200/60 dark:hover:bg-yellow-800/40"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
       {/* Emergency filler alert — shown when the orchestrator exhausts all
           queue items and inserts the fallback EMERGENCY_FILLER_URL stream.
           Triggered via the "emergency-filler-activated" SSE event so it
@@ -1871,6 +1928,19 @@ function BroadcastV2PageInner() {
             >
               Clear failover
             </Button>
+            {/* Continuous on-air uptime — shown when the broadcast is live */}
+            {continuousOnAirMs !== null && (
+              <div className="flex items-center justify-between rounded-md border border-green-200/60 bg-green-50/60 px-3 py-2 dark:border-green-800/40 dark:bg-green-950/20">
+                <div className="flex items-center gap-1.5 text-xs text-green-800 dark:text-green-300">
+                  <span className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
+                  On air
+                </div>
+                <span className="text-xs font-mono tabular-nums text-green-700 dark:text-green-400">
+                  {formatOnAirDuration(continuousOnAirMs)}
+                </span>
+              </div>
+            )}
+
             {/* Clear blocks — only shown when at least one URL is blocked */}
             {blockedCount > 0 && (
               <Button

@@ -335,6 +335,25 @@ class BroadcastOrchestrator extends EventEmitter {
    * Throttled to at most once per 5 minutes.
    */
   private lastStuckAlertMs = 0;
+  /**
+   * Wall-clock timestamp when the broadcast first had a live item on air
+   * in the current uninterrupted run. Reset to null when the broadcast goes
+   * dark (dead air, all-blocked, or queue empty). Used by /health to surface
+   * "continuous on-air duration" to operators and monitoring dashboards.
+   */
+  private onAirSinceMs: number | null = null;
+  /**
+   * Interval handle for the current-item dead-stream health probe.
+   * Fires every 30 s while the broadcast is running, probes the currently-
+   * playing item's source URL, and auto-skips after 3 consecutive definitive
+   * 4xx failures — detecting dead CDN URLs without waiting for viewer stall
+   * reports (which take 9–15 s each and require a viewer to be connected).
+   */
+  private currentItemProbeTimer: NodeJS.Timeout | null = null;
+  /** Consecutive definitive-failure count for the currently-playing item. */
+  private currentItemProbeFailures = 0;
+  /** Item ID under observation — resets failure counter on item advance. */
+  private currentItemProbeId: string | null = null;
 
   constructor() {
     super();
@@ -569,6 +588,16 @@ class BroadcastOrchestrator extends EventEmitter {
     }, SELF_HEAL_STALE_MS);
     this.selfHealStaleTimer.unref?.();
 
+    // ── Current-item dead-stream probe ────────────────────────────────────
+    // Probes the CURRENTLY-PLAYING item's URL every 30 s.  Complements the
+    // preload-window probe (which only fires for the NEXT item) by catching
+    // CDN URLs that go dead while they are already on air. Auto-skips after
+    // 3 consecutive definitive 4xx responses (never on ambiguous / timeouts).
+    this.currentItemProbeTimer = setInterval(() => {
+      this.probeCurrentItem();
+    }, 30_000);
+    this.currentItemProbeTimer.unref?.();
+
     logger.info(
       { items: this.items.length, sequence: this.sequence,
         tickMs: TICK_MS, selfHealEmptyMs: SELF_HEAL_EMPTY_MS,
@@ -579,18 +608,20 @@ class BroadcastOrchestrator extends EventEmitter {
   }
 
   stop(): void {
-    if (this.tickTimer)          clearInterval(this.tickTimer);
-    if (this.checkpointTimer)    clearInterval(this.checkpointTimer);
-    if (this.trimTimer)          clearInterval(this.trimTimer);
-    if (this.keepAliveTimer)     clearInterval(this.keepAliveTimer);
-    if (this.selfHealEmptyTimer) clearInterval(this.selfHealEmptyTimer);
-    if (this.selfHealStaleTimer) clearInterval(this.selfHealStaleTimer);
-    this.tickTimer          = null;
-    this.checkpointTimer    = null;
-    this.trimTimer          = null;
-    this.keepAliveTimer     = null;
-    this.selfHealEmptyTimer = null;
-    this.selfHealStaleTimer = null;
+    if (this.tickTimer)               clearInterval(this.tickTimer);
+    if (this.checkpointTimer)         clearInterval(this.checkpointTimer);
+    if (this.trimTimer)               clearInterval(this.trimTimer);
+    if (this.keepAliveTimer)          clearInterval(this.keepAliveTimer);
+    if (this.selfHealEmptyTimer)      clearInterval(this.selfHealEmptyTimer);
+    if (this.selfHealStaleTimer)      clearInterval(this.selfHealStaleTimer);
+    if (this.currentItemProbeTimer)   clearInterval(this.currentItemProbeTimer);
+    this.tickTimer               = null;
+    this.checkpointTimer         = null;
+    this.trimTimer               = null;
+    this.keepAliveTimer          = null;
+    this.selfHealEmptyTimer      = null;
+    this.selfHealStaleTimer      = null;
+    this.currentItemProbeTimer   = null;
     this.started = false;
   }
 
@@ -1520,12 +1551,20 @@ class BroadcastOrchestrator extends EventEmitter {
         }
       }
 
+      // Dead air: reset the continuous on-air uptime counter so the banner
+      // shows how long we have been dark, not how long the previous run was.
+      this.onAirSinceMs = null;
+
       // Self-heal is handled by dedicated selfHealEmptyTimer (SELF_HEAL_EMPTY_MS)
       // which fires outside this tight loop so tickInner() stays DB-free.
       return;
     }
     this.allBlockedSinceMs = null;
     this.autoSkipAttempts  = 0;
+    // Start the continuous on-air uptime clock the first time an item becomes
+    // current after boot or after a dead-air gap. onAirSinceMs stays pinned
+    // until the next dead-air / all-blocked event resets it to null above.
+    if (this.onAirSinceMs === null) this.onAirSinceMs = Date.now();
     // NOTE: consecutiveSkips is intentionally NOT reset here. It resets only
     // in naturalItemEnd() (confirmed successful play) so the dead-air counter
     // is not cleared the instant a new item becomes current but before it plays.
@@ -2119,6 +2158,89 @@ class BroadcastOrchestrator extends EventEmitter {
   }
 
   /**
+   * Probe the CURRENTLY-PLAYING item's source URL in the background.
+   *
+   * Called every 30 s from `currentItemProbeTimer` while the broadcast is
+   * running. Designed to detect CDN URLs that go dead mid-stream — a failure
+   * class that `scheduleProactiveProbe()` cannot cover (it only runs for the
+   * NEXT item at preload time, before it ever starts playing).
+   *
+   * Rules:
+   *  • Only runs when mode === "queue" and a current item exists.
+   *  • Skips if < 15 s remain on the item (let it finish naturally).
+   *  • Skips YouTube sources — HEAD probes return HTML, creating false positives.
+   *  • Resets the per-item failure counter when the current item changes.
+   *  • Auto-skips after 3 consecutive definitive 4xx responses (`reachable === false`).
+   *  • `null` (ambiguous / timeout / 5xx) never increments the counter — a single
+   *    CDN blip must never drop healthy content from the rotation.
+   */
+  private probeCurrentItem(): void {
+    if (!this.started || this.mode !== "queue") return;
+    const snap = this.snapshot();
+    if (!snap.current) return;
+
+    // Let naturally-ending items finish rather than cutting them short.
+    const remainingMs = snap.current.endsAtMs - Date.now();
+    if (remainingMs < 15_000) return;
+
+    // YouTube embeds return HTML on HEAD — use the specialised YouTube probe
+    // instead (it only fires at preload time from scheduleProactiveProbe).
+    if (snap.current.source?.kind === "youtube") return;
+
+    const url = snap.current.source?.url;
+    if (!url) return;
+
+    // Reset failure counter when the playing item changes between probe fires.
+    if (this.currentItemProbeId !== snap.current.id) {
+      this.currentItemProbeId = snap.current.id;
+      this.currentItemProbeFailures = 0;
+    }
+
+    const item = snap.current;
+
+    void (async () => {
+      const reachable = await this.probeUrlReachability(url);
+      if (reachable === false) {
+        this.currentItemProbeFailures += 1;
+        logger.warn(
+          {
+            itemId: item.id,
+            title: item.title,
+            url,
+            failures: this.currentItemProbeFailures,
+            remainingMs,
+          },
+          `[broadcast-v2] current-item probe: URL returned 4xx (failure ${this.currentItemProbeFailures}/3)`,
+        );
+        if (this.currentItemProbeFailures >= 3) {
+          logger.error(
+            { itemId: item.id, title: item.title, url },
+            "[broadcast-v2] current-item probe: 3 consecutive 4xx failures — marking bad and auto-skipping dead stream",
+          );
+          this.currentItemProbeFailures = 0;
+          this.currentItemProbeId = null;
+          markBadUrl(url);
+          if (item.failoverSource?.url) markBadUrl(item.failoverSource.url);
+          const failCount = incrementBadUrlSkipCount(item.id);
+          if (failCount >= BAD_URL_SKIP_THRESHOLD) {
+            autoSuspendQueueItem(item.id, item.title ?? null, failCount, url);
+          }
+          await this.skip();
+        }
+      } else if (reachable === true && this.currentItemProbeFailures > 0) {
+        // Recovered after previous failure(s) — reset so the counter doesn't
+        // carry stale failures forward to a future period of instability.
+        logger.info(
+          { itemId: item.id, url, previousFailures: this.currentItemProbeFailures },
+          "[broadcast-v2] current-item probe: URL reachable again — resetting failure counter",
+        );
+        this.currentItemProbeFailures = 0;
+      }
+      // reachable === null (ambiguous / timeout / 5xx): do nothing.
+    })();
+  }
+
+  /**
    * Force-flush the current playback position to the database immediately,
    * bypassing the dirty-flag guard and the periodic timer.
    *
@@ -2325,6 +2447,21 @@ class BroadcastOrchestrator extends EventEmitter {
       consecutiveSkips: this.consecutiveSkips,
       lastDeadAirAt: this.lastDeadAirAt,
     };
+  }
+
+  /**
+   * Continuous on-air duration for /health and monitoring dashboards.
+   *
+   * Returns milliseconds since the first item began airing in the current
+   * uninterrupted run, or null when the broadcast is currently off-air
+   * (empty queue, all-blocked, dead air, or override mode with no queue item).
+   *
+   * Resets on every dead-air event so the counter measures uninterrupted
+   * broadcast uptime only — a freshly-recovered broadcast starts at 0.
+   */
+  getContinuousOnAirMs(): number | null {
+    if (this.onAirSinceMs === null) return null;
+    return Date.now() - this.onAirSinceMs;
   }
 
   /**
