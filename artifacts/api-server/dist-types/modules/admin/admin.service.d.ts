@@ -1,5 +1,32 @@
 import type { z } from "zod";
 import type { ListUsersQuerySchema, UpdateUserRoleBodySchema } from "./admin.schemas.js";
+type ConcurrentBucket = {
+    ts: string;
+    concurrent: number;
+    tv: number;
+    mobile: number;
+    web: number;
+};
+type ConcurrentResult = {
+    buckets: ConcurrentBucket[];
+    peak: {
+        concurrent: number;
+        ts: string;
+    };
+    granularity: "hour" | "4h" | "day";
+    generatedAt: string;
+};
+type DailyPlatformDay = {
+    date: string;
+    tv: number;
+    mobile: number;
+    web: number;
+    total: number;
+};
+type DailyPlatformResult = {
+    days: DailyPlatformDay[];
+    generatedAt: string;
+};
 export declare const adminService: {
     listUsers(query: z.infer<typeof ListUsersQuerySchema>): Promise<{
         items: {
@@ -91,4 +118,7 @@ export declare const adminService: {
         deleted: true;
         id: string;
     }>;
+    getConcurrentViewers(range: "7d" | "30d" | "90d"): Promise<ConcurrentResult>;
+    getDailyPlatformTrends(range: "7d" | "30d" | "90d"): Promise<DailyPlatformResult>;
 };
+export {};

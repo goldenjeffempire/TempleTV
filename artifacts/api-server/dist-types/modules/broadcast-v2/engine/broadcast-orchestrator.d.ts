@@ -188,6 +188,25 @@ declare class BroadcastOrchestrator extends EventEmitter {
      * Throttled to at most once per 5 minutes.
      */
     private lastStuckAlertMs;
+    /**
+     * Wall-clock timestamp when the broadcast first had a live item on air
+     * in the current uninterrupted run. Reset to null when the broadcast goes
+     * dark (dead air, all-blocked, or queue empty). Used by /health to surface
+     * "continuous on-air duration" to operators and monitoring dashboards.
+     */
+    private onAirSinceMs;
+    /**
+     * Interval handle for the current-item dead-stream health probe.
+     * Fires every 30 s while the broadcast is running, probes the currently-
+     * playing item's source URL, and auto-skips after 3 consecutive definitive
+     * 4xx failures — detecting dead CDN URLs without waiting for viewer stall
+     * reports (which take 9–15 s each and require a viewer to be connected).
+     */
+    private currentItemProbeTimer;
+    /** Consecutive definitive-failure count for the currently-playing item. */
+    private currentItemProbeFailures;
+    /** Item ID under observation — resets failure counter on item advance. */
+    private currentItemProbeId;
     constructor();
     /**
      * Boot the orchestrator. NEVER throws — any failure falls back to a safe
@@ -438,6 +457,24 @@ declare class BroadcastOrchestrator extends EventEmitter {
      */
     private scheduleProactiveProbe;
     /**
+     * Probe the CURRENTLY-PLAYING item's source URL in the background.
+     *
+     * Called every 30 s from `currentItemProbeTimer` while the broadcast is
+     * running. Designed to detect CDN URLs that go dead mid-stream — a failure
+     * class that `scheduleProactiveProbe()` cannot cover (it only runs for the
+     * NEXT item at preload time, before it ever starts playing).
+     *
+     * Rules:
+     *  • Only runs when mode === "queue" and a current item exists.
+     *  • Skips if < 15 s remain on the item (let it finish naturally).
+     *  • Skips YouTube sources — HEAD probes return HTML, creating false positives.
+     *  • Resets the per-item failure counter when the current item changes.
+     *  • Auto-skips after 3 consecutive definitive 4xx responses (`reachable === false`).
+     *  • `null` (ambiguous / timeout / 5xx) never increments the counter — a single
+     *    CDN blip must never drop healthy content from the rotation.
+     */
+    private probeCurrentItem;
+    /**
      * Force-flush the current playback position to the database immediately,
      * bypassing the dirty-flag guard and the periodic timer.
      *
@@ -538,6 +575,17 @@ declare class BroadcastOrchestrator extends EventEmitter {
         consecutiveSkips: number;
         lastDeadAirAt: number | null;
     };
+    /**
+     * Continuous on-air duration for /health and monitoring dashboards.
+     *
+     * Returns milliseconds since the first item began airing in the current
+     * uninterrupted run, or null when the broadcast is currently off-air
+     * (empty queue, all-blocked, dead air, or override mode with no queue item).
+     *
+     * Resets on every dead-air event so the counter measures uninterrupted
+     * broadcast uptime only — a freshly-recovered broadcast starts at 0.
+     */
+    getContinuousOnAirMs(): number | null;
     /**
      * Returns the airing history ring buffer: the last AIRING_HISTORY_MAX items
      * that aired on this channel (newest first) plus the currently-airing item

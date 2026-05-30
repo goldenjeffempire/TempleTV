@@ -431,6 +431,9 @@ interface SortableItemProps {
   isPlayingNow: boolean;
   /** Seconds until this item will air (null when current or unknown). */
   secondsUntilAir: number | null;
+  /** Re-probe duration via ffprobe for items stuck at 1800 s placeholder. */
+  onReprobe: (itemId: string) => void;
+  isReprobing: boolean;
 }
 
 function SortableQueueItem({
@@ -451,6 +454,8 @@ function SortableQueueItem({
   onPlayNow,
   isPlayingNow,
   secondsUntilAir,
+  onReprobe,
+  isReprobing,
 }: SortableItemProps) {
   const {
     attributes,
@@ -692,6 +697,31 @@ function SortableQueueItem({
           >
             <RotateCw className={`h-2.5 w-2.5 ${isTranscodingLocally ? "animate-spin" : ""}`} />
             Transcode
+          </button>
+        </div>
+      )}
+
+      {/* Placeholder duration badge — 1800 s is the upload-time default that
+          indicates ffprobe never ran successfully. The item will still air but
+          the schedule timing will be inaccurate until the duration is resolved. */}
+      {Math.round(item.durationSecs) === 1800 && (
+        <div className="flex items-center gap-1 shrink-0">
+          <Badge
+            variant="outline"
+            className="gap-1 text-[10px] text-amber-600 border-amber-300 dark:border-amber-700"
+            title="Duration is the 1800 s upload-time placeholder — ffprobe may not have run yet. Schedule timing will be inaccurate. Click Reprobe to attempt a real-time re-probe."
+          >
+            <AlertTriangle className="h-2.5 w-2.5" />
+            Duration?
+          </Badge>
+          <button
+            onClick={() => onReprobe(item.id)}
+            disabled={isReprobing}
+            className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-amber-300 hover:bg-amber-50 disabled:opacity-50 dark:text-amber-400 dark:ring-amber-700 dark:hover:bg-amber-950/30"
+            title="Run ffprobe to determine the real video duration and fix the schedule timing."
+          >
+            <RotateCw className={`h-2.5 w-2.5 ${isReprobing ? "animate-spin" : ""}`} />
+            Reprobe
           </button>
         </div>
       )}
@@ -962,6 +992,31 @@ function BroadcastV2PageInner() {
     },
   });
 
+  // Re-probe duration via ffprobe for items stuck at the 1800 s placeholder.
+  // Spawns ffprobe on the server against the item's source URL and writes the
+  // real duration back to broadcast_queue (and managed_videos if linked).
+  const reprobeMutation = useMutation({
+    mutationFn: (itemId: string) =>
+      api.post<{ ok: boolean; oldDurSecs: number; newDurSecs: number }>(
+        `/broadcast-v2/queue/${itemId}/reprobe`,
+        {},
+      ),
+    onSuccess: (result) => {
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      const diff = result.newDurSecs - result.oldDurSecs;
+      toast.success(
+        `Duration updated: ${result.oldDurSecs}s → ${result.newDurSecs}s (${diff > 0 ? "+" : ""}${diff}s).`,
+      );
+    },
+    onError: (err) => {
+      toast.error(
+        err instanceof HttpError
+          ? err.message
+          : "ffprobe re-probe failed — check server logs.",
+      );
+    },
+  });
+
   // Sync library → queue: scans managed_videos for playable rows not yet in
   // broadcast_queue and inserts them. Idempotent — safe to call repeatedly.
   const syncLibraryMutation = useMutation({
@@ -1105,6 +1160,44 @@ function BroadcastV2PageInner() {
   useSSEEvent("emergency-filler-activated", () => {
     setFillerActiveDismissed(false);
     setFillerActiveAt(Date.now());
+  });
+
+  // Real-time stall counter — incremented the instant a stall report fires a
+  // skip, without waiting for the next diagnostics poll (up to 15 s lag).
+  // Used to augment the StreamQualityPanel's analytics.eventCounts["stall"]
+  // value so operators see the counter go up live rather than after a delay.
+  const [realtimeStallCount, setRealtimeStallCount] = useState(0);
+  useSSEEvent("broadcast-v2-stall", (data: unknown) => {
+    setRealtimeStallCount((n) => n + 1);
+    // Also immediately refresh diagnostics so the StreamQualityPanel and
+    // consecutive-skips banner pick up the updated state without waiting.
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+    const d = data as { itemTitle?: string; autoSuspended?: boolean } | null;
+    if (d?.autoSuspended) {
+      toast.warning(`Auto-suspended: "${d.itemTitle ?? "item"}" — repeated stream failures.`);
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+    }
+  });
+
+  // Queue validator real-time alerting — fired whenever the issue set changes.
+  // Immediately refreshes the diagnostics panel and toasts for critical errors.
+  useSSEEvent("broadcast-v2-queue-issues", (data: unknown) => {
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+    const d = data as { errors: number; warnings: number; total: number } | null;
+    if (!d) return;
+    if (d.errors > 0) {
+      toast.error(
+        `Queue validation: ${d.errors} critical issue${d.errors > 1 ? "s" : ""} detected — check Engine Diagnostics.`,
+        { duration: 8000 },
+      );
+    } else if (d.warnings > 0) {
+      toast.warning(
+        `Queue validation: ${d.warnings} warning${d.warnings > 1 ? "s" : ""} — check Engine Diagnostics.`,
+        { duration: 5000 },
+      );
+    }
+    // No toast when issues clear — diagnostics refresh is sufficient.
   });
 
   const server = snapshot.lastServerSnapshot;
@@ -2275,6 +2368,7 @@ function BroadcastV2PageInner() {
         consecutiveSkips={engineHealth?.skipInfo?.consecutiveSkips ?? 0}
         eventCounts={diagnostics?.analytics?.eventCounts ?? {}}
         activeSessions={diagnostics?.analytics?.activeSessions ?? 0}
+        realtimeStallCount={realtimeStallCount}
       />
 
       <AirHistoryCard history={engineHealth?.airingHistory} />
@@ -2869,6 +2963,8 @@ function BroadcastV2PageInner() {
                         onPlayNow={(itemId) => playNowMutation.mutate(itemId)}
                         isPlayingNow={playNowMutation.isPending}
                         secondsUntilAir={secondsUntilAirByItemId[item.id] ?? null}
+                        onReprobe={(itemId) => reprobeMutation.mutate(itemId)}
+                        isReprobing={reprobeMutation.isPending}
                       />
                     );
                   })}
@@ -3363,10 +3459,13 @@ interface StreamQualityPanelProps {
   consecutiveSkips: number;
   eventCounts: Record<string, number>;
   activeSessions: number;
+  /** Real-time stall increments from SSE — added to analytics.eventCounts["stall"]
+   *  so the count updates immediately when a stall fires, not after the next poll. */
+  realtimeStallCount?: number;
 }
-function StreamQualityPanel({ uptimeMs, continuousOnAirMs, consecutiveSkips, eventCounts, activeSessions }: StreamQualityPanelProps) {
+function StreamQualityPanel({ uptimeMs, continuousOnAirMs, consecutiveSkips, eventCounts, activeSessions, realtimeStallCount = 0 }: StreamQualityPanelProps) {
   const uptimeHrs = uptimeMs / 3_600_000;
-  const stallCount = eventCounts["stall"] ?? 0;
+  const stallCount = (eventCounts["stall"] ?? 0) + realtimeStallCount;
   const skipCount  = eventCounts["item.advanced"] ?? 0;
 
   // Stall rate per hour — only meaningful after at least 1 minute of uptime.

@@ -23,6 +23,7 @@
 import { asc, eq } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
+import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 
 export type IssueSeverity = "error" | "warn" | "info";
 
@@ -208,11 +209,21 @@ class QueueIntegrityValidatorImpl {
             "[queue-validator] validation found issues",
           );
           this.lastIssueSig = sig;
+          // Push SSE so the admin dashboard learns of new issues immediately —
+          // without waiting for the next diagnostics poll.
+          adminEventBus.push("broadcast-v2-queue-issues", {
+            errors: report.summary.errors,
+            warnings: report.summary.warnings,
+            total: rows.length,
+            issues: issues.map((i) => ({ code: i.code, severity: i.severity, message: i.message })),
+          });
         }
       } else {
         if (this.lastIssueSig !== "") {
           logger.info({ total: rows.length }, "[queue-validator] all queue items healthy");
           this.lastIssueSig = "";
+          // Notify that all issues have cleared.
+          adminEventBus.push("broadcast-v2-queue-issues", { errors: 0, warnings: 0, total: rows.length, issues: [] });
         }
       }
       return report;

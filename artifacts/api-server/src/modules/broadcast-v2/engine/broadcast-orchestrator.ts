@@ -1494,6 +1494,14 @@ class BroadcastOrchestrator extends EventEmitter {
             source: { kind: isHls ? "hls" : "mp4", url: fillerUrl, expiresAtMs: null },
             failoverSource: null,
           };
+          // Ensure the emergency filler URL is NOT in the bad-URL cache.
+          // If a stall vote previously blacklisted this same URL (e.g. a CDN
+          // outage hit both queue items AND the filler), the filler item would
+          // immediately project as null → another skip → filler inserted again
+          // → infinite dead-air spiral with no exit. Clearing the entry before
+          // insertion guarantees at least one playback attempt regardless of
+          // prior stall reports.
+          clearBadUrl(fillerUrl);
           logger.error(
             {
               channel: this.channelId,
@@ -1825,6 +1833,7 @@ class BroadcastOrchestrator extends EventEmitter {
       this.cycleDurationMs = this.items.reduce((s, r) => s + r.durationSecs * 1000, 0);
       this.cycleStartedAtMs = Date.now();
       this.consecutiveSkips = 0;
+      adminEventBus.push("emergency-filler-activated", {});
       this.emitSnapshot();
     }
   }
@@ -1895,6 +1904,12 @@ class BroadcastOrchestrator extends EventEmitter {
     // accumulate across restarts or transient CDN blips.
     this.consecutiveSkips = 0;
     resetBadUrlSkipCount(itemId);
+    // Persist the updated cycle anchor immediately so a crash in the next few
+    // seconds doesn't lose the natural-end advancement. The periodic
+    // checkpointTimer (every 5 s) would eventually save it, but a 5-second
+    // window during which the server could restart and replay the same item
+    // is unacceptable for accurate 24/7 scheduling.
+    void this.persistCheckpoint();
     await this.bump("item.advanced", { itemId, title: snap.current.title, naturalEnd: true });
     this.emitSnapshot();
     logger.info(

@@ -143,6 +143,33 @@ export default defineConfig({
           timeout: 0,
           proxyTimeout: 0,
         },
+        // broadcast-v2 SSE event stream — infinite timeout required so the
+        // dev proxy does not close the long-lived event stream.
+        "/api/broadcast-v2/events": {
+          target,
+          changeOrigin: true,
+          secure: false,
+          timeout: 0,
+          proxyTimeout: 0,
+        },
+        // broadcast-v2 WebSocket control plane — explicit WS upgrade rule.
+        // The generic /api catch-all also has ws:true, but listing it here
+        // makes the intent clear and avoids any future ordering surprises.
+        "/api/broadcast-v2/ws": {
+          target,
+          changeOrigin: true,
+          secure: false,
+          ws: true,
+        },
+        // reprobe runs ffprobe server-side (45 s cap) — give the dev proxy
+        // a generous timeout so it doesn't 504 before ffprobe finishes.
+        "/api/broadcast-v2/queue": {
+          target,
+          changeOrigin: true,
+          secure: false,
+          timeout: 60_000,
+          proxyTimeout: 60_000,
+        },
         "/api": {
           target,
           changeOrigin: true,

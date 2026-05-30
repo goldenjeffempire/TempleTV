@@ -18,6 +18,7 @@ import { requireAuth } from "../../../middleware/auth.js";
 import { broadcastService } from "../../broadcast/broadcast.service.js";
 import { scanLibraryAndEnqueue, listMissingFromQueue } from "../../broadcast/auto-enqueue.service.js";
 import { markBadUrl, clearAllBadUrls, getItemsHealth, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, getRecentlySuspended, reEnableAllSuspended } from "../repository/queue.repo.js";
+import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { faststartRecoveryWorker } from "../engine/faststart-recovery.js";
 import { db, schema } from "../../../infrastructure/db.js";
 import { eq, and, isNull, isNotNull, sql } from "drizzle-orm";
@@ -31,6 +32,7 @@ import { orphanCleanupWorker } from "../engine/orphan-cleanup.js";
 import { playbackAnalytics } from "../engine/playback-analytics.js";
 import { randomUUID } from "node:crypto";
 import { statfs } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import os from "node:os";
 import { env } from "../../../config/env.js";
@@ -558,6 +560,17 @@ export async function restRoutes(app: FastifyInstance) {
         await autoSuspendQueueItem(parsed.data.itemId, itemTitle, failCount);
         void broadcastOrchestrator.reload();
       }
+      // Push a real-time event to all connected admin SSE clients so the
+      // Master Control dashboard reflects stalls immediately — without waiting
+      // for the next diagnostics poll (up to 15 s later). The event carries
+      // enough detail for the StreamQualityPanel and alert banners to update.
+      adminEventBus.push("broadcast-v2-stall", {
+        itemId: parsed.data.itemId,
+        itemTitle: snapForBlacklist.current?.title ?? null,
+        failCount,
+        autoSuspended: failCount >= BAD_URL_SKIP_THRESHOLD,
+        ts: Date.now(),
+      });
       return { ok: true, acted: true, skipped: true, failCount };
     }
     return { ok: true, acted: false, count };
@@ -663,8 +676,15 @@ export async function restRoutes(app: FastifyInstance) {
     //    bridge debounce that broadcastService's adminEventBus push triggers).
     await broadcastOrchestrator.reload();
 
-    // 3. Skip so the orchestrator advances to the now-front item.
-    await broadcastOrchestrator.skip();
+    // 3. Skip so the orchestrator advances to the now-front item — but ONLY
+    //    if the target item is not already current. Skipping an already-current
+    //    item would advance to the item AFTER it (wrong behaviour). After
+    //    reload() the snapshot reflects the new sort order, so we can reliably
+    //    check whether the target is now playing before deciding to skip.
+    const snapAfterReload = broadcastOrchestrator.snapshot();
+    if (snapAfterReload.current?.id !== targetId) {
+      await broadcastOrchestrator.skip();
+    }
 
     return { ok: true, sequence: broadcastOrchestrator.getSequence() };
   });
@@ -993,6 +1013,94 @@ export async function restRoutes(app: FastifyInstance) {
         videoId,
         message: "Remote source download and HLS transcoding queued.",
       });
+    },
+  );
+
+  // ── Duration re-probe ────────────────────────────────────────────────────
+  //
+  // POST /broadcast-v2/queue/:id/reprobe
+  //
+  // Re-runs ffprobe against the queue item's best available source URL and
+  // writes the real duration to broadcast_queue.duration_secs (and
+  // managed_videos.duration_secs when a linked video row exists). Designed
+  // for items stuck at the 1800 s upload-time placeholder (ffprobe failed
+  // during upload finalize). Returns the old and new duration in seconds.
+  app.post<{ Params: { id: string } }>(
+    "/broadcast-v2/queue/:id/reprobe",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+    },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+
+      const [queueItem] = await db
+        .select()
+        .from(schema.broadcastQueueTable)
+        .where(eq(schema.broadcastQueueTable.id, id))
+        .limit(1);
+      if (!queueItem) return reply.code(404).send({ error: "Queue item not found" });
+
+      // Prefer HLS master playlist (lighter probe — ffprobe reads only the
+      // manifest) over a raw MP4 URL (requires downloading container header).
+      const probeUrl = queueItem.hlsMasterUrl ?? queueItem.localVideoUrl;
+      if (!probeUrl) return reply.code(400).send({ error: "Queue item has no probeable source URL" });
+
+      const oldDurSecs = queueItem.durationSecs;
+
+      // ffprobe: extract duration from the container format headers only.
+      // 45-second timeout matches the prod-sync probe budget.
+      const newDur = await new Promise<number | null>((resolve) => {
+        const proc = spawn("ffprobe", [
+          "-v", "error",
+          "-show_entries", "format=duration",
+          "-of", "default=noprint_wrappers=1:nokey=1",
+          probeUrl,
+        ]);
+        let out = "";
+        const timer = setTimeout(() => { proc.kill(); resolve(null); }, 45_000);
+        proc.stdout.on("data", (chunk: Buffer) => { out += chunk.toString(); });
+        proc.on("close", (code) => {
+          clearTimeout(timer);
+          const v = parseFloat(out.trim());
+          resolve(code === 0 && Number.isFinite(v) && v > 0 ? v : null);
+        });
+        proc.on("error", () => { clearTimeout(timer); resolve(null); });
+      });
+
+      if (newDur === null) {
+        return reply.code(422).send({ error: "ffprobe could not determine duration for this source URL" });
+      }
+
+      const newDurSecs = Math.round(newDur);
+
+      // Write new duration to broadcast_queue
+      await db
+        .update(schema.broadcastQueueTable)
+        .set({ durationSecs: newDurSecs })
+        .where(eq(schema.broadcastQueueTable.id, id));
+
+      // Also sync to managed_videos when a linked video row exists.
+      // managed_videos.duration is a text column ("1800", "3723", etc.) that
+      // stores seconds as a string — see faststart-recovery.ts for precedent.
+      if (queueItem.videoId) {
+        await db
+          .update(schema.videosTable)
+          .set({ duration: String(newDurSecs) })
+          .where(eq(schema.videosTable.id, queueItem.videoId))
+          .catch((err: unknown) => {
+            req.log.warn({ err, videoId: queueItem.videoId }, "[broadcast-v2] reprobe: managed_videos update failed (non-fatal)");
+          });
+      }
+
+      // Reload orchestrator so the updated duration is used immediately
+      void broadcastOrchestrator.reload().catch(() => {});
+
+      req.log.info(
+        { itemId: id, oldDurSecs, newDurSecs, probeUrl },
+        "[broadcast-v2] duration re-probed successfully",
+      );
+      return { ok: true, oldDurSecs, newDurSecs };
     },
   );
 
