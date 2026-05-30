@@ -412,9 +412,12 @@ export default function NotificationsPage() {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => sendMutation.mutate(form)}
+              disabled={sendMutation.isPending}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              <Send size={14} className="mr-1.5" /> Send Now
+              {sendMutation.isPending
+                ? <><span className="mr-1.5 h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent inline-block" />Sending…</>
+                : <><Send size={14} className="mr-1.5" />Send Now</>}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

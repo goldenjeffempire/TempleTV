@@ -204,11 +204,7 @@ export const authService = {
       }
     }
 
-    await db
-      .update(refreshTokensTable)
-      .set({ revokedAt: new Date() })
-      .where(eq(refreshTokensTable.id, decoded.jti));
-
+    // Fetch the user before entering the transaction — read-only, no hold needed.
     const userRows = await db
       .select()
       .from(usersTable)
@@ -217,11 +213,48 @@ export const authService = {
     const user = userRows[0];
     if (!user) throw new UnauthorizedError("User no longer exists");
 
-    const { tokens } = await issueTokens(
-      { id: user.id, email: user.email, role: coerceRole(user.role), displayName: user.displayName },
-      ctx,
-    );
-    return tokens;
+    // Generate new token values outside the transaction. JWT signing is pure
+    // crypto — no DB I/O — so doing it outside minimises the transaction's
+    // connection-pool hold time.
+    const newJti = nanoid(32);
+    const [newAccessToken, newRefreshToken] = await Promise.all([
+      signAccessToken({ sub: user.id, email: user.email, role: coerceRole(user.role) }),
+      signRefreshToken({ sub: user.id, jti: newJti }),
+    ]);
+    const newExpiresAt = new Date(Date.now() + env.JWT_REFRESH_TTL_SECONDS * 1000);
+
+    // Atomically revoke the consumed token and insert the replacement so a
+    // DB failure between the two writes never permanently logs the user out
+    // (old token gone, no new token issued).
+    await db.transaction(async (tx) => {
+      await tx
+        .update(refreshTokensTable)
+        .set({ revokedAt: new Date() })
+        .where(eq(refreshTokensTable.id, decoded.jti));
+      await tx.insert(refreshTokensTable).values({
+        id: newJti,
+        userId: user.id,
+        tokenHash: sha256(newRefreshToken),
+        expiresAt: newExpiresAt,
+        ip: ctx?.ip ?? null,
+        userAgent: ctx?.userAgent ?? null,
+      });
+    });
+
+    void pruneExpiredRefreshTokens(user.id);
+
+    return {
+      accessToken: newAccessToken,
+      refreshToken: newRefreshToken,
+      accessTokenExpiresIn: env.JWT_ACCESS_TTL_SECONDS,
+      refreshTokenExpiresIn: env.JWT_REFRESH_TTL_SECONDS,
+      user: {
+        id: user.id,
+        email: user.email,
+        role: coerceRole(user.role),
+        displayName: user.displayName,
+      },
+    };
   },
 
   async logout(refreshToken?: string): Promise<void> {

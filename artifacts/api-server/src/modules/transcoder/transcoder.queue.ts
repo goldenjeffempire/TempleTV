@@ -45,20 +45,24 @@ export async function enqueueTranscode(args: {
   if (existing[0]) {
     const row = existing[0];
     if (row.status === "failed") {
-      await db.update(jobs)
-        .set({
-          status: "queued",
-          attempts: 0,
-          progress: 0,
-          errorMessage: null,
-          nextRetryAt: null,
-          startedAt: null,
-          completedAt: null,
-          videoPath: args.videoPath,
-          priority,
-        })
-        .where(eq(jobs.id, row.id));
-      await db.update(videos).set({ transcodingStatus: "queued" }).where(eq(videos.id, args.videoId));
+      // Atomically reset the job and flip the video status so a DB failure
+      // between the two writes cannot leave them in inconsistent states.
+      await db.transaction(async (tx) => {
+        await tx.update(jobs)
+          .set({
+            status: "queued",
+            attempts: 0,
+            progress: 0,
+            errorMessage: null,
+            nextRetryAt: null,
+            startedAt: null,
+            completedAt: null,
+            videoPath: args.videoPath,
+            priority,
+          })
+          .where(eq(jobs.id, row.id));
+        await tx.update(videos).set({ transcodingStatus: "queued" }).where(eq(videos.id, args.videoId));
+      });
       logger.info({ jobId: row.id, videoId: args.videoId }, "transcoder: re-armed failed job");
       return { id: row.id, reused: true };
     }
@@ -67,14 +71,18 @@ export async function enqueueTranscode(args: {
   }
 
   const id = randomUUID();
-  await db.insert(jobs).values({
-    id,
-    videoId: args.videoId,
-    videoPath: args.videoPath,
-    status: "queued",
-    priority,
+  // Atomically insert the job and flip the video status so a DB failure
+  // between the two writes cannot leave them in inconsistent states.
+  await db.transaction(async (tx) => {
+    await tx.insert(jobs).values({
+      id,
+      videoId: args.videoId,
+      videoPath: args.videoPath,
+      status: "queued",
+      priority,
+    });
+    await tx.update(videos).set({ transcodingStatus: "queued" }).where(eq(videos.id, args.videoId));
   });
-  await db.update(videos).set({ transcodingStatus: "queued" }).where(eq(videos.id, args.videoId));
   logger.info({ jobId: id, videoId: args.videoId, videoPath: args.videoPath }, "transcoder: enqueued");
   return { id, reused: false };
 }

@@ -214,9 +214,15 @@ export async function channelsRoutes(app: FastifyInstance) {
       if (!ch) return reply.code(404).send({ error: "Channel not found" });
       if (ch.isPrimary) return reply.code(400).send({ error: "Cannot delete the primary channel" });
 
+      // Delete queue items and channel row atomically so a partial failure
+      // never leaves orphaned queue rows pointing at a non-existent channel.
+      await db.transaction(async (tx) => {
+        await tx.delete(schema.channelQueueTable).where(eq(schema.channelQueueTable.channelId, req.params.id));
+        await tx.delete(schema.channelsTable).where(eq(schema.channelsTable.id, req.params.id));
+      });
+      // Remove from in-memory registry AFTER the DB transaction commits so
+      // a DB failure leaves the registry consistent with the DB state.
       await channelRegistry.remove(req.params.id);
-      await db.delete(schema.channelQueueTable).where(eq(schema.channelQueueTable.channelId, req.params.id));
-      await db.delete(schema.channelsTable).where(eq(schema.channelsTable.id, req.params.id));
       return reply.code(204).send(null);
     },
   );

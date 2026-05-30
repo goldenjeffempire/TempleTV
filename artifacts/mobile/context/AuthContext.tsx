@@ -54,6 +54,9 @@ const USER_SCOPED_STORAGE_PREFIXES = [
   "@temple_tv/watch_history",
   "@temple_tv/playlists",
   "@temple_tv/cloud_sync",
+  // Video catalog cache (useVideos.ts CACHE_KEY) — must be cleared on sign-out
+  // so a second user on the same device never sees the first user's cached library.
+  "@temple_tv/videos_v2",
 ];
 
 async function clearUserScopedCaches(): Promise<void> {
