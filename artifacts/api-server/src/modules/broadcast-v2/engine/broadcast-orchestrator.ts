@@ -350,9 +350,18 @@ class BroadcastOrchestrator extends EventEmitter {
    * reports (which take 9–15 s each and require a viewer to be connected).
    */
   private currentItemProbeTimer: NodeJS.Timeout | null = null;
-  /** Consecutive definitive-failure count for the currently-playing item. */
+  /** Consecutive definitive 4xx failure count for the currently-playing item. */
   private currentItemProbeFailures = 0;
-  /** Item ID under observation — resets failure counter on item advance. */
+  /**
+   * Consecutive ambiguous (5xx / timeout / network error) failure count.
+   * Tracked separately from 4xx: 5xx are transient by nature (CDN blip, origin
+   * restart) and a single probe must never drop content. However, 5
+   * consecutive ambiguous failures at the 30 s probe interval means the CDN
+   * has been unresponsive for ≥ 2.5 minutes — at that point the item is
+   * genuinely dead-air for all viewers and auto-skip is warranted.
+   */
+  private currentItemProbeAmbiguousFailures = 0;
+  /** Item ID under observation — resets failure counters on item advance. */
   private currentItemProbeId: string | null = null;
 
   constructor() {
@@ -2205,10 +2214,11 @@ class BroadcastOrchestrator extends EventEmitter {
     const url = snap.current.source?.url;
     if (!url) return;
 
-    // Reset failure counter when the playing item changes between probe fires.
+    // Reset failure counters when the playing item changes between probe fires.
     if (this.currentItemProbeId !== snap.current.id) {
       this.currentItemProbeId = snap.current.id;
       this.currentItemProbeFailures = 0;
+      this.currentItemProbeAmbiguousFailures = 0;
     }
 
     const item = snap.current;
@@ -2233,6 +2243,7 @@ class BroadcastOrchestrator extends EventEmitter {
             "[broadcast-v2] current-item probe: 3 consecutive 4xx failures — marking bad and auto-skipping dead stream",
           );
           this.currentItemProbeFailures = 0;
+          this.currentItemProbeAmbiguousFailures = 0;
           this.currentItemProbeId = null;
           markBadUrl(url);
           if (item.failoverSource?.url) markBadUrl(item.failoverSource.url);
@@ -2242,16 +2253,52 @@ class BroadcastOrchestrator extends EventEmitter {
           }
           await this.skip();
         }
-      } else if (reachable === true && this.currentItemProbeFailures > 0) {
-        // Recovered after previous failure(s) — reset so the counter doesn't
-        // carry stale failures forward to a future period of instability.
-        logger.info(
-          { itemId: item.id, url, previousFailures: this.currentItemProbeFailures },
-          "[broadcast-v2] current-item probe: URL reachable again — resetting failure counter",
-        );
+      } else if (reachable === true) {
+        // Recovered — reset both failure counters so stale counts don't carry
+        // forward into a future instability window on the same item.
+        if (this.currentItemProbeFailures > 0 || this.currentItemProbeAmbiguousFailures > 0) {
+          logger.info(
+            {
+              itemId: item.id,
+              url,
+              previousDefinitiveFailures: this.currentItemProbeFailures,
+              previousAmbiguousFailures: this.currentItemProbeAmbiguousFailures,
+            },
+            "[broadcast-v2] current-item probe: URL reachable again — resetting failure counters",
+          );
+        }
         this.currentItemProbeFailures = 0;
+        this.currentItemProbeAmbiguousFailures = 0;
+      } else {
+        // reachable === null: ambiguous (5xx / timeout / network error).
+        // Track separately. After 5 consecutive ambiguous results (≥ 2.5 min
+        // at the 30 s probe interval) the CDN is likely genuinely down and the
+        // broadcast is airing dead-air for all viewers — auto-skip.
+        // The threshold is higher than the 4xx threshold (3) because 5xx can
+        // be transient; we tolerate more variance before giving up.
+        this.currentItemProbeAmbiguousFailures += 1;
+        if (this.currentItemProbeAmbiguousFailures >= 5) {
+          logger.error(
+            {
+              itemId: item.id,
+              title: item.title,
+              url,
+              ambiguousFailures: this.currentItemProbeAmbiguousFailures,
+            },
+            "[broadcast-v2] current-item probe: 5 consecutive 5xx/timeout failures (≥ 2.5 min) — CDN likely dead, auto-skipping to next item",
+          );
+          this.currentItemProbeAmbiguousFailures = 0;
+          this.currentItemProbeFailures = 0;
+          this.currentItemProbeId = null;
+          markBadUrl(url);
+          if (item.failoverSource?.url) markBadUrl(item.failoverSource.url);
+          const failCount = incrementBadUrlSkipCount(item.id);
+          if (failCount >= BAD_URL_SKIP_THRESHOLD) {
+            autoSuspendQueueItem(item.id, item.title ?? null, failCount, url);
+          }
+          await this.skip();
+        }
       }
-      // reachable === null (ambiguous / timeout / 5xx): do nothing.
     })();
   }
 

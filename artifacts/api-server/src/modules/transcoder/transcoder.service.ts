@@ -1001,12 +1001,30 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
       activeSourcePath = recovered;
     }
 
-    // Run duration, resolution, and audio probes in parallel (all are ffprobe calls).
-    const [durationSecs, srcResolution, hasAudio] = await Promise.all([
+    // Run duration and audio probes in parallel. Resolution is probed separately
+    // with up to 3 attempts before falling back to 360p-only — a transient
+    // ffprobe timeout must never permanently downgrade video quality for a
+    // source file that is actually 1080p. Three attempts at 3 s each adds at
+    // most 6 s to transcoding jobs where probeResolution fails transiently.
+    const [durationSecs, hasAudio] = await Promise.all([
       probeDurationSecs(activeSourcePath),
-      probeResolution(activeSourcePath),
       probeHasAudio(activeSourcePath),
     ]);
+
+    const RESOLUTION_PROBE_ATTEMPTS = 3;
+    const RESOLUTION_PROBE_RETRY_MS = 3_000;
+    let srcResolution: { width: number; height: number } | null = null;
+    for (let attempt = 1; attempt <= RESOLUTION_PROBE_ATTEMPTS; attempt++) {
+      srcResolution = await probeResolution(activeSourcePath);
+      if (srcResolution !== null) break;
+      if (attempt < RESOLUTION_PROBE_ATTEMPTS) {
+        logger.warn(
+          { videoId: req.videoId, attempt, maxAttempts: RESOLUTION_PROBE_ATTEMPTS },
+          `transcoder: resolution probe returned null (attempt ${attempt}/${RESOLUTION_PROBE_ATTEMPTS}) — retrying to avoid false 360p-only fallback`,
+        );
+        await new Promise<void>((r) => setTimeout(r, RESOLUTION_PROBE_RETRY_MS));
+      }
+    }
     if (!hasAudio) {
       logger.info(
         { videoId: req.videoId },
@@ -1297,14 +1315,22 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
         "transcoder: CODECS attribute injected into master.m3u8",
       );
     } catch (codecsErr) {
-      // Non-fatal: HLS assets are still uploaded; the playlist works on most
-      // clients. However, missing CODECS attributes cause hardware-decoder
-      // selection failures on Samsung Tizen (>=4.x) and LG webOS (3.x), resulting
-      // in black screens for TV viewers. Log at ERROR so monitoring surfaces this.
+      // Fatal: uploading an HLS master playlist without CODECS attributes causes
+      // hardware-decoder selection failures on Samsung Tizen (>=4.x) and LG webOS
+      // (3.x), resulting in black screens for all TV viewers. Rather than uploading
+      // broken output silently, fail the job so it retries automatically. The FFmpeg
+      // encode succeeded — the failure is in post-processing, so a retry will
+      // re-run the full encode from scratch and is likely to succeed.
       logger.error(
         { err: codecsErr, videoId: req.videoId },
-        "transcoder: CODECS injection failed — Smart TV viewers (Tizen/webOS) may see black screens " +
-        "on this video; HLS assets will still be uploaded without CODECS attr",
+        "transcoder: CODECS injection failed — aborting to prevent distributing black-screen HLS to Smart TVs; job will retry automatically",
+      );
+      throw Object.assign(
+        new Error(
+          `CODECS injection into master.m3u8 failed: ${codecsErr instanceof Error ? codecsErr.message : String(codecsErr)}. ` +
+          "Upload aborted to prevent distributing broken HLS that causes black screens on Samsung Tizen / LG webOS.",
+        ),
+        { cause: codecsErr },
       );
     }
 

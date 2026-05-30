@@ -176,6 +176,7 @@ class QueueIntegrityValidatorImpl {
         ids.push(row.id);
         sortOrders.set(row.sortOrder, ids);
       }
+      const duplicateItemIds: string[] = [];
       for (const [order, ids] of sortOrders) {
         if (ids.length > 1) {
           issues.push({
@@ -185,6 +186,41 @@ class QueueIntegrityValidatorImpl {
             code: "DUPLICATE_SORT_ORDER",
             message: `sort_order=${order} shared by ${ids.length} items: ${ids.join(", ")}`,
           });
+          for (const id of ids) duplicateItemIds.push(id);
+        }
+      }
+
+      // ── Auto-fix: reassign sort_order for DUPLICATE_SORT_ORDER items ───────
+      // Duplicate sort_order values cause non-deterministic queue ordering —
+      // the DB query uses ORDER BY sort_order, so ties resolve to arbitrary
+      // DB page order, which can differ between reloads. The fix reassigns
+      // ALL active items (not just the duplicates) to a clean monotonic
+      // sequence (gap of 10) in the order they appear in the current query
+      // result. rows is already ordered by asc(sortOrder) so the existing
+      // intended sequence is preserved.
+      if (duplicateItemIds.length > 0) {
+        try {
+          await db.transaction(async (tx) => {
+            for (let i = 0; i < rows.length; i++) {
+              await tx
+                .update(schema.broadcastQueueTable)
+                .set({ sortOrder: (i + 1) * 10 })
+                .where(eq(schema.broadcastQueueTable.id, rows[i]!.id));
+            }
+          });
+          logger.warn(
+            { count: duplicateItemIds.length, totalReassigned: rows.length },
+            "[queue-validator] AUTO-FIX: reassigned sort_order for all active items to restore deterministic queue ordering",
+          );
+          adminEventBus.push("broadcast-queue-updated", {
+            reason: "integrity-fix-duplicate-sort-order",
+            count: duplicateItemIds.length,
+          });
+        } catch (fixErr) {
+          logger.warn(
+            { err: fixErr, count: duplicateItemIds.length },
+            "[queue-validator] AUTO-FIX: failed to reassign sort_order for DUPLICATE_SORT_ORDER items (non-fatal)",
+          );
         }
       }
 

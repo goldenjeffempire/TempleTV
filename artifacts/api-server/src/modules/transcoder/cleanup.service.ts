@@ -150,32 +150,37 @@ async function validateHlsOutput(videoId: string): Promise<HlsValidationResult> 
       continue;
     }
 
-    // 3. Sample segment existence — check first, last, and evenly-spaced
-    //    intermediate segments (up to HLS_VALIDATE_SAMPLE_COUNT total).
-    //    Checking only boundary segments misses corrupt middle segments that
-    //    would cause playback to stall mid-video after source deletion.
-    //    A single `WHERE key = ANY(...)` query keeps the cost O(1) regardless
-    //    of how many samples we take.
-    const HLS_VALIDATE_SAMPLE_COUNT = 10;
-    const sampledIndices = new Set<number>([0, segmentUris.length - 1]);
-    if (segmentUris.length > 2) {
-      const step = Math.max(1, Math.floor(segmentUris.length / (HLS_VALIDATE_SAMPLE_COUNT - 2)));
-      for (let i = step; i < segmentUris.length - 1 && sampledIndices.size < HLS_VALIDATE_SAMPLE_COUNT; i += step) {
-        sampledIndices.add(i);
-      }
-    }
-    const keysToCheck = Array.from(sampledIndices).map((idx) =>
-      resolveHlsKey(rendKey, segmentUris[idx]!),
-    );
-    const segCheckResult = await db.execute(sql`
-      SELECT key FROM storage_blobs WHERE key = ANY(${keysToCheck}::text[])
+    // Count-based segment validation: verify that the number of segment files
+    // in storage matches the number listed in the playlist exactly.
+    //
+    // Why count-based instead of sampling N segments:
+    //   Sample-based approaches (e.g. first/last/10 evenly-spaced) can miss
+    //   corrupt or missing segments in the middle of the rendition. A 60-min
+    //   sermon at 2 s segments = ~1800 segments; sampling 10 checks only 0.6%.
+    //   A single COUNT query is O(1) in storage_blobs for a prefix scan and
+    //   catches any gap regardless of where it falls in the timeline.
+    //
+    // The rendition directory prefix is the playlist key up to the last '/'.
+    // Segments live at e.g. transcoded/{videoId}/v0/seg00001.ts.
+    // We filter out .m3u8 playlist files so only raw segment files are counted.
+    const rendDir = rendKey.substring(0, rendKey.lastIndexOf("/") + 1);
+    const countResult = await db.execute(sql`
+      SELECT COUNT(*) AS cnt FROM storage_blobs
+      WHERE key LIKE ${rendDir + "%"}
+        AND key NOT LIKE ${"%.m3u8"}
+        AND key NOT LIKE ${"%.json"}
     `);
-    const foundKeys = new Set((segCheckResult.rows as Array<{ key: string }>).map((r) => r.key));
+    const storedCount = parseInt(
+      String((countResult.rows[0] as { cnt: string | number }).cnt ?? 0),
+      10,
+    );
 
-    for (const k of keysToCheck) {
-      if (!foundKeys.has(k)) {
-        errors.push(`segment missing: ${k}`);
-      }
+    if (storedCount < segmentUris.length) {
+      errors.push(
+        `rendition ${rendKey}: manifest references ${segmentUris.length} segment(s) but ` +
+        `only ${storedCount} segment file(s) found in storage — ` +
+        `${segmentUris.length - storedCount} missing (would cause mid-video playback stall after source deletion)`,
+      );
     }
 
     totalSegmentCount += segmentUris.length;
@@ -347,10 +352,10 @@ async function runCleanupForVideo(
     log.debug("[cleanup] already deleted — skipping");
     return true;
   }
-  if (row.sourceCleanupStatus === "failed") {
-    log.warn("[cleanup] previous attempts exhausted — skipping (manual intervention needed)");
-    return false;
-  }
+  // Note: "failed" status is NOT a permanent bail-out — the sweep will reset
+  // attempts and reschedule 24 h from now (see max-attempts handling below),
+  // so the only terminal state is "deleted". We leave the previous guard
+  // comment here for documentation purposes but do not short-circuit on it.
 
   const attempts = (row.sourceCleanupAttempts ?? 0) + 1;
 
@@ -360,25 +365,33 @@ async function runCleanupForVideo(
     const validation = await validateHlsOutput(videoId);
 
     if (!validation.valid) {
-      const willGiveUp = attempts >= CLEANUP_MAX_ATTEMPTS;
+      // On hitting max attempts, reset the counter and schedule a 24-hour
+      // retry rather than marking "failed" permanently. HLS validation failures
+      // are typically transient (storage blip, interrupted upload of final
+      // segments) and will self-heal — permanently giving up leaves the raw
+      // source blob (potentially GBs) in storage indefinitely.
+      // "failed" is reserved for truly unrecoverable DB-level errors in the
+      // catch block below.
+      const hitMaxAttempts = attempts >= CLEANUP_MAX_ATTEMPTS;
       log.error(
         {
           validationErrors: validation.errors,
           attempts,
           maxAttempts: CLEANUP_MAX_ATTEMPTS,
-          action: willGiveUp ? "marking failed" : "will retry",
+          action: hitMaxAttempts ? "resetting attempt counter and scheduling 24-h retry" : "will retry with backoff",
         },
         "[cleanup] HLS validation FAILED — source NOT deleted",
       );
       await db
         .update(videos)
         .set({
-          sourceCleanupStatus: willGiveUp ? "failed" : "scheduled",
-          sourceCleanupAttempts: attempts,
-          // Push the retry window back with exponential backoff.
-          sourceCleanupAfter: willGiveUp
-            ? null
-            : new Date(Date.now() + Math.min(3_600_000 * 2 ** attempts, 24 * 3_600_000)),
+          sourceCleanupStatus: "scheduled",
+          sourceCleanupAttempts: hitMaxAttempts ? 0 : attempts,
+          sourceCleanupAfter: new Date(
+            Date.now() + (hitMaxAttempts
+              ? 24 * 3_600_000                                            // daily retry after max-attempts reset
+              : Math.min(3_600_000 * 2 ** attempts, 24 * 3_600_000)),    // normal exponential backoff
+          ),
         })
         .where(eq(videos.id, videoId));
       return false;
@@ -415,7 +428,7 @@ async function runCleanupForVideo(
 
     return true;
   } catch (err) {
-    const willGiveUp = attempts >= CLEANUP_MAX_ATTEMPTS;
+    const hitMaxAttempts = attempts >= CLEANUP_MAX_ATTEMPTS;
     log.error(
       { err, attempts, maxAttempts: CLEANUP_MAX_ATTEMPTS },
       "[cleanup] cleanup attempt failed",
@@ -423,11 +436,15 @@ async function runCleanupForVideo(
     await db
       .update(videos)
       .set({
-        sourceCleanupStatus: willGiveUp ? "failed" : "scheduled",
-        sourceCleanupAttempts: attempts,
-        sourceCleanupAfter: willGiveUp
-          ? null
-          : new Date(Date.now() + Math.min(3_600_000 * 2 ** attempts, 24 * 3_600_000)),
+        // Same self-healing reset logic as the validation-failure path: never
+        // mark "failed" permanently. Reset attempts at max and retry daily.
+        sourceCleanupStatus: "scheduled",
+        sourceCleanupAttempts: hitMaxAttempts ? 0 : attempts,
+        sourceCleanupAfter: new Date(
+          Date.now() + (hitMaxAttempts
+            ? 24 * 3_600_000
+            : Math.min(3_600_000 * 2 ** attempts, 24 * 3_600_000)),
+        ),
       })
       .where(eq(videos.id, videoId))
       .catch((dbErr) =>

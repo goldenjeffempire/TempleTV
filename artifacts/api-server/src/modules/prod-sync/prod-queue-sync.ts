@@ -196,6 +196,35 @@ let stats = {
 };
 
 /**
+ * Concurrency limiter for ffprobe processes spawned by probeDurationSecs.
+ *
+ * A large sync payload (e.g. 50 items all with durationSecs=1800) would
+ * spawn 50 concurrent ffprobe processes if run inside a bare Promise.all.
+ * On a resource-constrained server this exhausts PID limits and can OOM
+ * the Node process. This semaphore limits concurrent ffprobe invocations
+ * to FFPROBE_MAX_CONCURRENT regardless of how many items need probing.
+ *
+ * Implemented as a simple counter + callback queue — no external deps.
+ */
+const FFPROBE_MAX_CONCURRENT = 4;
+let ffprobeRunning = 0;
+const ffprobeWaiters: Array<() => void> = [];
+
+async function withFfprobeSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (ffprobeRunning >= FFPROBE_MAX_CONCURRENT) {
+    await new Promise<void>((resolve) => ffprobeWaiters.push(resolve));
+  }
+  ffprobeRunning++;
+  try {
+    return await fn();
+  } finally {
+    ffprobeRunning--;
+    const next = ffprobeWaiters.shift();
+    if (next) next();
+  }
+}
+
+/**
  * Per-URL reachability cache. We HEAD-probe each candidate source URL
  * once every PROBE_TTL_MS to avoid hammering the upstream CDN on every
  * 30 s sync cycle. The probe exists because prod has historically
@@ -216,19 +245,38 @@ async function isReachable(url: string): Promise<boolean> {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), PROBE_TIMEOUT_MS);
-    // HEAD first; some origins (e.g. signed-URL CDNs) reject HEAD with
-    // 405 — fall back to a Range GET in that case so we still get a
-    // truthful answer without downloading the body.
-    let res = await fetch(url, { method: "HEAD", signal: ctrl.signal });
-    if (res.status === 405 || res.status === 501) {
-      res = await fetch(url, {
-        method: "GET",
-        headers: { Range: "bytes=0-0" },
-        signal: ctrl.signal,
-      });
+
+    if (url.includes(".m3u8")) {
+      // HLS manifest: do a full GET and verify the response body is a valid
+      // playlist (contains #EXTM3U and at least one stream or segment entry).
+      // A HEAD probe returns 200 for stale CDN-cached manifests that contain
+      // zero segments — content validation catches this before the item airs
+      // and the orchestrator discovers a 404-on-every-segment dead stream.
+      const res = await fetch(url, { method: "GET", signal: ctrl.signal });
+      clearTimeout(t);
+      if (!res.ok) {
+        ok = false;
+      } else {
+        const text = await res.text();
+        ok =
+          text.includes("#EXTM3U") &&
+          (text.includes("#EXT-X-STREAM-INF") ||
+            text.includes("#EXTINF") ||
+            text.includes("#EXT-X-TARGETDURATION"));
+      }
+    } else {
+      // Non-HLS: HEAD first; fall back to Range GET for CDNs that reject HEAD.
+      let res = await fetch(url, { method: "HEAD", signal: ctrl.signal });
+      if (res.status === 405 || res.status === 501) {
+        res = await fetch(url, {
+          method: "GET",
+          headers: { Range: "bytes=0-0" },
+          signal: ctrl.signal,
+        });
+      }
+      clearTimeout(t);
+      ok = res.ok || res.status === 206;
     }
-    clearTimeout(t);
-    ok = res.ok || res.status === 206;
   } catch {
     ok = false;
   }
@@ -360,7 +408,7 @@ async function pollOnce(): Promise<void> {
       // instant (no ffprobe spawned after the first successful probe).
       let probedDurationSecs: number | null = null;
       if (reachable && localUrl && !hlsUrl && safeSource === "local" && Number(item.durationSecs) === 1800) {
-        const probeResult = await probeDurationSecs(localUrl);
+        const probeResult = await withFfprobeSlot(() => probeDurationSecs(localUrl));
         probedDurationSecs = probeResult.secs;
         // Only log when a fresh ffprobe was actually run — cache hits are silent
         // to avoid "ffprobe resolved…" appearing on every 30 s poll cycle.
@@ -496,34 +544,51 @@ async function pollOnce(): Promise<void> {
   // it from rotation. The row is preserved — re-appearance in any future
   // poll re-activates via the normal upsert path above. This closes the
   // "additive-only over weeks" gap from the May 2026 audit.
+  //
+  // Safety guard: skip the ghost deactivation pass when all items in the
+  // current payload were unreachable (anyReachable=false) and the payload
+  // is non-empty. This situation arises when the CDN is entirely down but
+  // the upstream API itself is reachable — all item probe URLs fail while
+  // the upstream guide fetch succeeds. Running the sweep in this state would
+  // deactivate items that prod can't serve right now but which will return
+  // once the CDN recovers, producing a total queue wipe. Skipping keeps the
+  // local queue intact; the orchestrator's auto-skip loop handles the outage.
+  // The sweep resumes on the next cycle where at least one item is reachable.
   const nowSweepMs = Date.now();
   const currentIds = new Set(resolved.map((r) => r.item.id));
   for (const id of currentIds) lastSeenAtMs.set(id, nowSweepMs);
   let ghostDeactivated = 0;
-  for (const [id, seenAt] of lastSeenAtMs) {
-    if (currentIds.has(id)) continue;
-    if (nowSweepMs - seenAt < GHOST_GRACE_MS) continue;
-    const prev = prevItemPollState.get(id);
-    if (!prev || !prev.isActive) {
-      // Already deactivated — drop the tracking entry so the map does
-      // not grow unbounded for items that prod removed long ago.
-      lastSeenAtMs.delete(id);
-      continue;
-    }
-    try {
-      await db
-        .update(schema.broadcastQueueTable)
-        .set({ isActive: false })
-        .where(sql`${schema.broadcastQueueTable.id} = ${id}`);
-      prevItemPollState.set(id, { ...prev, isActive: false });
-      lastSeenAtMs.delete(id);
-      ghostDeactivated += 1;
-      logger.info(
-        { itemId: id, missingForMs: nowSweepMs - seenAt },
-        "[prod-sync] item missing upstream beyond grace window — deactivated locally (ghost sweep)",
-      );
-    } catch (err) {
-      logger.warn({ err, itemId: id }, "[prod-sync] ghost deactivation failed");
+  if (!anyReachable && items.length > 0) {
+    logger.debug(
+      { itemCount: items.length },
+      "[prod-sync] ghost sweep skipped — no upstream items were reachable this cycle (CDN outage guard); queue left intact",
+    );
+  } else {
+    for (const [id, seenAt] of lastSeenAtMs) {
+      if (currentIds.has(id)) continue;
+      if (nowSweepMs - seenAt < GHOST_GRACE_MS) continue;
+      const prev = prevItemPollState.get(id);
+      if (!prev || !prev.isActive) {
+        // Already deactivated — drop the tracking entry so the map does
+        // not grow unbounded for items that prod removed long ago.
+        lastSeenAtMs.delete(id);
+        continue;
+      }
+      try {
+        await db
+          .update(schema.broadcastQueueTable)
+          .set({ isActive: false })
+          .where(sql`${schema.broadcastQueueTable.id} = ${id}`);
+        prevItemPollState.set(id, { ...prev, isActive: false });
+        lastSeenAtMs.delete(id);
+        ghostDeactivated += 1;
+        logger.info(
+          { itemId: id, missingForMs: nowSweepMs - seenAt },
+          "[prod-sync] item missing upstream beyond grace window — deactivated locally (ghost sweep)",
+        );
+      } catch (err) {
+        logger.warn({ err, itemId: id }, "[prod-sync] ghost deactivation failed");
+      }
     }
   }
 
