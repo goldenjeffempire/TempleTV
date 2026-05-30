@@ -2,7 +2,7 @@
  * Queue / media relationship integrity validator.
  *
  * Validates the active broadcast queue against the media library and
- * reports structural problems without taking any destructive action:
+ * reports structural problems. Auto-fixes actionable issues:
  *
  *   ORPHANED_VIDEO_REF     — queue item references a video that has no
  *                            playable URLs (video was deleted or never fully
@@ -15,12 +15,18 @@
  *                            queue ordering becomes non-deterministic
  *   EXCESSIVE_DURATION     — item duration > 12 h (likely data corruption)
  *   MISSING_VIDEO_JOIN     — videoId is set but the joined video row is NULL
- *                            (foreign-key violation — video was hard-deleted)
+ *                            (foreign-key violation — video was hard-deleted).
+ *                            AUTO-FIXED: item is deactivated (is_active=false)
+ *                            so the orchestrator stops serving it. Without this
+ *                            fix, items whose referenced video was hard-deleted
+ *                            keep entering the broadcast cycle — they have no
+ *                            playable URL (if the queue row itself has no URL)
+ *                            and cause repeated auto-skip cycles, or they air
+ *                            a stale URL that will 404 to every client.
  *
- * Results are cached and exposed via the /diagnostics endpoint. Non-fatal:
- * reports problems but never mutates DB state or orchestrator behaviour.
+ * Results are cached and exposed via the /diagnostics endpoint. Non-fatal.
  */
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, inArray } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
@@ -179,6 +185,48 @@ class QueueIntegrityValidatorImpl {
             code: "DUPLICATE_SORT_ORDER",
             message: `sort_order=${order} shared by ${ids.length} items: ${ids.join(", ")}`,
           });
+        }
+      }
+
+      // ── Auto-fix: deactivate MISSING_VIDEO_JOIN items ─────────────────────
+      // Items whose referenced managed_videos row no longer exists (hard-deleted)
+      // must be removed from active broadcast rotation. Without this fix:
+      //   • The orchestrator's loadActive() LEFT JOIN returns them with null
+      //     video columns. If the queue row has its own localVideoUrl, the item
+      //     airs from a potentially stale/404 URL with no fallback.
+      //   • If the queue row has no URL, toItem() fails → auto-skip cycle fires
+      //     every tick, burning skip budget and flooding logs.
+      // Deactivating is non-destructive (is_active=false, row preserved) and
+      // immediately consistent: the next orchestrator reload won't load these
+      // items. The auto-enqueue pipeline (enqueueIfMissing) now correctly
+      // ignores inactive rows, so the video would be re-added if it were
+      // somehow re-uploaded — but that can't happen for hard-deleted videos.
+      const missingJoinIds = issues
+        .filter((i) => i.severity === "error" && i.code === "MISSING_VIDEO_JOIN" && i.itemId)
+        .map((i) => i.itemId!);
+      if (missingJoinIds.length > 0) {
+        try {
+          await db
+            .update(schema.broadcastQueueTable)
+            .set({ isActive: false })
+            .where(inArray(schema.broadcastQueueTable.id, missingJoinIds));
+          logger.error(
+            { count: missingJoinIds.length, itemIds: missingJoinIds },
+            "[queue-validator] AUTO-FIX: deactivated MISSING_VIDEO_JOIN items " +
+            "(referenced managed_videos rows were hard-deleted) — " +
+            "these items are removed from broadcast rotation",
+          );
+          // Trigger orchestrator reload so the engine immediately stops serving
+          // the deactivated items without waiting for the next drift-poll.
+          adminEventBus.push("broadcast-queue-updated", {
+            reason: "integrity-fix-missing-video-join",
+            count: missingJoinIds.length,
+          });
+        } catch (fixErr) {
+          logger.warn(
+            { err: fixErr, count: missingJoinIds.length },
+            "[queue-validator] AUTO-FIX: failed to deactivate MISSING_VIDEO_JOIN items (non-fatal)",
+          );
         }
       }
 

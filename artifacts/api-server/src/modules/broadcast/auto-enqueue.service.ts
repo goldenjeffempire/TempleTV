@@ -87,14 +87,23 @@ export async function enqueueIfMissing(opts: {
     }
 
     // De-dup against both videoId (canonical) and youtubeId (legacy rows).
-    // Either match means we already have this content queued — skip silently.
+    // IMPORTANT: filter to is_active = true only. An inactive queue row means
+    // the item was previously dequeued (operator-deactivated, integrity-fix, etc.)
+    // and is no longer in broadcast rotation. Treating it as "already queued"
+    // would permanently block the video from re-entering the broadcast — the
+    // orchestrator only loads is_active = true rows, so inactive rows are
+    // effectively invisible to it. The correct behaviour is to insert a fresh
+    // active row so the video re-enters rotation.
     const existing = await db
       .select({ id: queueTable.id })
       .from(queueTable)
       .where(
-        or(
-          eq(queueTable.videoId, row.id),
-          row.youtubeId ? eq(queueTable.youtubeId, row.youtubeId) : sql`false`,
+        and(
+          eq(queueTable.isActive, true),
+          or(
+            eq(queueTable.videoId, row.id),
+            row.youtubeId ? eq(queueTable.youtubeId, row.youtubeId) : sql`false`,
+          ),
         ),
       )
       .limit(1);
@@ -203,11 +212,18 @@ export async function scanLibraryAndEnqueue(opts: {
           // NOT EXISTS subquery — keeps the JOIN cheap and the candidate set
           // small; the dedupe inside enqueueIfMissing is the authoritative
           // backstop for the race where two concurrent scans run at once.
+          //
+          // IMPORTANT: restrict to is_active = true. An inactive queue row
+          // means the video was previously dequeued and is no longer in
+          // broadcast rotation. Without this filter the scan would treat
+          // videos with only inactive rows as "already queued" and never
+          // re-add them, silently blocking re-entry into the broadcast.
           sql`NOT EXISTS (
             SELECT 1 FROM ${queueTable}
-            WHERE ${queueTable.videoId} = ${videosTable.id}
-               OR (${videosTable.youtubeId} IS NOT NULL
-                   AND ${queueTable.youtubeId} = ${videosTable.youtubeId})
+            WHERE ${queueTable.isActive} = true
+              AND (${queueTable.videoId} = ${videosTable.id}
+                   OR (${videosTable.youtubeId} IS NOT NULL
+                       AND ${queueTable.youtubeId} = ${videosTable.youtubeId}))
           )`,
         ),
       )
@@ -308,11 +324,16 @@ export async function listMissingFromQueue(limit = 50): Promise<
       })
       .from(videosTable)
       .where(
+        // IMPORTANT: restrict NOT EXISTS to is_active = true so we surface
+        // videos whose only queue entry is inactive (deactivated/orphaned).
+        // Without this filter, videos with inactive rows appear "queued" to
+        // the diagnostics endpoint while the orchestrator never plays them.
         sql`NOT EXISTS (
           SELECT 1 FROM ${queueTable}
-          WHERE ${queueTable.videoId} = ${videosTable.id}
-             OR (${videosTable.youtubeId} IS NOT NULL
-                 AND ${queueTable.youtubeId} = ${videosTable.youtubeId})
+          WHERE ${queueTable.isActive} = true
+            AND (${queueTable.videoId} = ${videosTable.id}
+                 OR (${videosTable.youtubeId} IS NOT NULL
+                     AND ${queueTable.youtubeId} = ${videosTable.youtubeId}))
         )`,
       )
       .orderBy(desc(videosTable.importedAt))
