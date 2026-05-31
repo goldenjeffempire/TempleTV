@@ -610,6 +610,15 @@ export async function ensureUserSchemaColumns(): Promise<void> {
       ALTER TABLE managed_videos
         ADD COLUMN IF NOT EXISTS broadcast_only BOOLEAN NOT NULL DEFAULT false
     `);
+    // Transcoding failure reason — added May 2026.
+    // Human-readable error message written whenever transcodingStatus is set
+    // to 'failed'. Cleared (set to NULL) when a re-transcode is enqueued.
+    // Surfaced in the admin video library so operators can distinguish
+    // recoverable failures (retry) from unrecoverable ones (re-upload).
+    await client.query(`
+      ALTER TABLE managed_videos
+        ADD COLUMN IF NOT EXISTS transcoding_error_message TEXT
+    `);
 
     // ── Data self-heal: broadcast_queue placeholder duration ──────────────
     // Queue rows are inserted at upload-finalize time with a 1800-second

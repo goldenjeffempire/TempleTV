@@ -20,6 +20,11 @@ export const videosTable = pgTable("managed_videos", {
   localVideoUrl: text("local_video_url"),
   hlsMasterUrl: text("hls_master_url"),
   transcodingStatus: text("transcoding_status").notNull().default("none"),
+  // Human-readable reason for the most recent failure (truncated to 2000 chars).
+  // Set when transcodingStatus transitions to 'failed' — cleared on re-transcode.
+  // Shown in the admin video library so operators know whether to re-upload or
+  // just retry (e.g. "moov atom missing — re-upload required" vs. "disk full").
+  transcodingErrorMessage: text("transcoding_error_message"),
   // ── Upload metadata (Postgres = source of truth, bucket = bytes) ─────────
   originalFilename: text("original_filename"),
   mimeType: text("mime_type"),

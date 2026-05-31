@@ -64,6 +64,11 @@ interface AdminVideo {
    * null  → not applicable (YouTube video).
    */
   sourceAvailable: boolean | null;
+  /**
+   * Human-readable reason for the most recent transcoding failure.
+   * null when the video has not failed or was successfully re-queued.
+   */
+  transcodingErrorMessage: string | null;
 }
 
 interface VideoListResponse {
@@ -948,29 +953,40 @@ export default function VideosPage() {
                         : v.transcodingStatus || "—"}
                     </Badge>
                     {v.transcodingStatus === "failed" && v.videoSource === "local" && (
-                      v.sourceAvailable === false ? (
-                        <span title="Source file was deleted — delete this video and re-upload a fresh copy to recover.">
-                          <Badge
+                      <>
+                        {v.sourceAvailable === false ? (
+                          <span title="Source file was deleted — delete this video and re-upload a fresh copy to recover.">
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] px-1.5 h-4 border-red-400 text-red-600 dark:text-red-400 flex items-center gap-0.5 cursor-default"
+                            >
+                              <UploadCloud size={9} className="flex-shrink-0" />
+                              Re-upload required
+                            </Badge>
+                          </span>
+                        ) : (
+                          <Button
+                            size="sm"
                             variant="outline"
-                            className="text-[10px] px-1.5 h-4 border-red-400 text-red-600 dark:text-red-400 flex items-center gap-0.5 cursor-default"
+                            className="h-5 text-[10px] px-1.5 border-amber-400 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30 flex items-center gap-0.5"
+                            title="Source file is still available — click to retry HLS transcoding without re-uploading"
+                            disabled={transcodeMutation.isPending}
+                            onClick={(e) => { e.stopPropagation(); transcodeMutation.mutate(v.id); }}
                           >
-                            <UploadCloud size={9} className="flex-shrink-0" />
-                            Re-upload required
-                          </Badge>
-                        </span>
-                      ) : (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-5 text-[10px] px-1.5 border-amber-400 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30 flex items-center gap-0.5"
-                          title="Source file is still available — click to retry HLS transcoding without re-uploading"
-                          disabled={transcodeMutation.isPending}
-                          onClick={(e) => { e.stopPropagation(); transcodeMutation.mutate(v.id); }}
-                        >
-                          <RefreshCw size={9} className="flex-shrink-0" />
-                          Retry Transcoding
-                        </Button>
-                      )
+                            <RefreshCw size={9} className="flex-shrink-0" />
+                            Retry Transcoding
+                          </Button>
+                        )}
+                        {v.transcodingErrorMessage && (
+                          <span
+                            title={v.transcodingErrorMessage}
+                            className="max-w-[160px] truncate text-[10px] leading-tight text-red-600 dark:text-red-400 cursor-help"
+                          >
+                            <AlertTriangle size={9} className="inline mr-0.5 flex-shrink-0" />
+                            {v.transcodingErrorMessage}
+                          </span>
+                        )}
+                      </>
                     )}
                   </div>
 

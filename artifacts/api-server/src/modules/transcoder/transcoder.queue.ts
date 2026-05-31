@@ -86,7 +86,11 @@ export async function enqueueTranscode(args: {
             priority,
           })
           .where(eq(jobs.id, row.id));
-        await tx.update(videos).set({ transcodingStatus: "queued" }).where(eq(videos.id, args.videoId));
+        // Clear the failure reason on managed_videos too — now that we are
+        // re-queueing, the previous error is no longer the current state.
+        await tx.update(videos)
+          .set({ transcodingStatus: "queued", transcodingErrorMessage: null })
+          .where(eq(videos.id, args.videoId));
       });
       logger.info({ jobId: row.id, videoId: args.videoId }, "transcoder: re-armed failed job");
       return { id: row.id, reused: true };
@@ -106,7 +110,10 @@ export async function enqueueTranscode(args: {
       status: "queued",
       priority,
     });
-    await tx.update(videos).set({ transcodingStatus: "queued" }).where(eq(videos.id, args.videoId));
+    // Clear any previous failure reason when a fresh job is created.
+    await tx.update(videos)
+      .set({ transcodingStatus: "queued", transcodingErrorMessage: null })
+      .where(eq(videos.id, args.videoId));
   });
   logger.info({ jobId: id, videoId: args.videoId, videoPath }, "transcoder: enqueued");
   return { id, reused: false };

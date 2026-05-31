@@ -735,6 +735,22 @@ class TranscoderDispatcher {
         // know they need to free storage before re-queuing.
         const isDiskFull = errCode === "ENOSPC" || errCode === "EDQUOT";
 
+        // CORRUPT_SOURCE: the source video file is structurally unrecoverable.
+        // Retrying the same corrupt blob will produce the same failure every time —
+        // the operator must re-upload from the original source. Like ENOSPC, we
+        // immediately mark the job failed without burning any retry slots.
+        //
+        // Detection layers (in order of reliability):
+        //   1. error.code === "CORRUPT_SOURCE" — set by runTranscode when
+        //      detectMdatWithoutMoov() returns true or all remux strategies fail.
+        //   2. Message pattern match — catch corruption errors that propagate
+        //      without a typed code (e.g. from FFmpeg stderr via the remux path,
+        //      or from the early-gate probe running inside the transcoder).
+        const corruptSourcePattern =
+          /moov atom not found|NO moov atom|unrecoverable|unrepairable|structurally corrupt|corrupt.*re-upload|re-upload.*corrupt|invalid data found when processing|output file is empty.*encoded|no streams were found/i;
+        const isCorruptSource =
+          errCode === "CORRUPT_SOURCE" || corruptSourcePattern.test(message);
+
         // ── Storage circuit breaker: detect Postgres/storage outage ────────
         // Infrastructure errors (connection refused, broken pipe, DB pool timeout)
         // are transient and will resolve without operator action. Count consecutive
@@ -765,8 +781,11 @@ class TranscoderDispatcher {
           this.storageErrorStreak = 0; // non-storage error → reset streak
         }
 
-        const attempts = job.attempts + (isDiskFull ? 0 : 1); // don't increment on disk-full
-        const exceeded = isDiskFull || attempts >= job.maxAttempts;
+        // Neither disk-full nor corrupt-source should burn through retry slots —
+        // waiting and retrying the same broken input is pointless.
+        const isImmediateFail = isDiskFull || isCorruptSource;
+        const attempts = job.attempts + (isImmediateFail ? 0 : 1);
+        const exceeded = isImmediateFail || attempts >= job.maxAttempts;
         const backoffMs = Math.min(60_000 * 2 ** attempts, 30 * 60_000);
         const nextRetry = new Date(Date.now() + backoffMs);
 
@@ -782,8 +801,17 @@ class TranscoderDispatcher {
           })
           .where(eq(jobs.id, job.id));
 
+        // Truncate error message to 2000 chars to avoid DB bloat from FFmpeg
+        // stderr dumps. The full error is always in application logs.
+        const truncatedMessage = message.slice(0, 2000);
         await db.update(videos)
-          .set({ transcodingStatus: exceeded ? "failed" : "queued" })
+          .set({
+            transcodingStatus: exceeded ? "failed" : "queued",
+            // Write failure reason to managed_videos so admin UI can show WHY
+            // a video failed without requiring a separate transcoding_jobs join.
+            // Only set on terminal failure — cleared on re-queue via enqueueTranscode.
+            ...(exceeded ? { transcodingErrorMessage: truncatedMessage } : {}),
+          })
           .where(eq(videos.id, job.videoId));
 
         adminEventBus.push("transcoding-update", {
@@ -796,7 +824,13 @@ class TranscoderDispatcher {
           nextRetryAt: exceeded ? null : nextRetry.toISOString(),
         });
 
-        if (isDiskFull) {
+        if (isCorruptSource) {
+          logger.error(
+            { err, jobId: job.id, videoId: job.videoId, errCode },
+            "transcoder: job permanently failed — source file is corrupt/unrecoverable; " +
+              "operator must re-upload from original source",
+          );
+        } else if (isDiskFull) {
           logger.error({
             err,
             jobId: job.id,

@@ -1254,7 +1254,13 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 skipTranscodeEnqueue = true;
                 await db
                   .update(videos)
-                  .set({ transcodingStatus: "failed" })
+                  .set({
+                    transcodingStatus: "failed",
+                    transcodingErrorMessage:
+                      "Upload rejected: the video file is corrupt or incomplete " +
+                      "(container validation failed before processing). " +
+                      "Please re-upload from the original source file.",
+                  })
                   .where(eq(videos.id, videoId))
                   .catch(() => {});
                 adminEventBus.push("videos-library-updated", { videoId, reason: "corrupt-upload-early-gate" });
@@ -1303,7 +1309,13 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                   skipTranscodeEnqueue = true;
                   await db
                     .update(videos)
-                    .set({ transcodingStatus: "failed" })
+                    .set({
+                      transcodingStatus: "failed",
+                      transcodingErrorMessage:
+                        "Upload failed: the video container is structurally damaged and cannot be repaired " +
+                        "(faststart failed — moov atom missing or all remux strategies exhausted). " +
+                        "Please re-upload from the original source file.",
+                    })
                     .where(eq(videos.id, videoId))
                     .catch(() => {});
                   adminEventBus.push("videos-library-updated", { videoId, reason: "corrupt-upload-failed" });
@@ -1582,7 +1594,13 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               skipTranscodeEnqueueB = true;
               await db
                 .update(videos)
-                .set({ transcodingStatus: "failed" })
+                .set({
+                  transcodingStatus: "failed",
+                  transcodingErrorMessage:
+                    "Upload rejected: the video file is corrupt or incomplete " +
+                    "(container validation failed before processing). " +
+                    "Please re-upload from the original source file.",
+                })
                 .where(eq(videos.id, videoIdB))
                 .catch(() => {});
               adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "corrupt-upload-early-gate" });
@@ -1641,7 +1659,13 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               skipTranscodeEnqueueB = true;
               await db
                 .update(videos)
-                .set({ transcodingStatus: "failed" })
+                .set({
+                  transcodingStatus: "failed",
+                  transcodingErrorMessage:
+                    "Upload failed: the video container is structurally damaged and cannot be repaired " +
+                    "(faststart failed — moov atom missing or all remux strategies exhausted). " +
+                    "Please re-upload from the original source file.",
+                })
                 .where(eq(videos.id, videoIdB))
                 .catch(() => {});
               adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "corrupt-upload-failed" });

@@ -1026,11 +1026,13 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
       // operator-facing error immediately instead of burning through remux attempts.
       const mdatNoMoov = await detectMdatWithoutMoov(sourceTempPath);
       if (mdatNoMoov) {
-        throw new Error(
-          "transcoder: source MP4 has media data (mdat) but NO moov atom. " +
-          "The recording or export was interrupted before the moov could be written. " +
-          "The codec configuration (SPS/PPS) stored in the moov is permanently lost — " +
-          "no recovery is possible from the stored blob. Re-upload from the original source file.",
+        throw Object.assign(
+          new Error(
+            "Video file is unrecoverable: the recording was interrupted before the moov atom " +
+            "(codec configuration) could be written. The file has media data but no moov — " +
+            "no repair is possible. Please re-upload from the original source.",
+          ),
+          { code: "CORRUPT_SOURCE" },
         );
       }
 
@@ -1041,9 +1043,13 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
       const remuxedPath = path.join(scratchDir, "source.remuxed.mp4");
       const recovered = await remuxForFaststart(sourceTempPath, remuxedPath, req.videoId);
       if (!recovered) {
-        throw new Error(
-          "transcoder: source MP4 container is unrepairable (moov atom missing and all remux strategies failed). " +
-            "The upload may be corrupt — re-upload required.",
+        throw Object.assign(
+          new Error(
+            "Video container is unrepairable: all remux recovery strategies failed. " +
+            "The file is structurally corrupt (missing or damaged moov atom). " +
+            "Please re-upload from the original source.",
+          ),
+          { code: "CORRUPT_SOURCE" },
         );
       }
       activeSourcePath = recovered;

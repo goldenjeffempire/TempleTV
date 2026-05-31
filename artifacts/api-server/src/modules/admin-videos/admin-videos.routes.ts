@@ -56,6 +56,14 @@ const VideoRowSchema = z.object({
    * does NOT require a storage round-trip; purely DB-derived.
    */
   sourceAvailable: z.boolean().nullable(),
+  /**
+   * Human-readable reason for the most recent transcoding failure.
+   * Set when transcodingStatus transitions to 'failed'; cleared on re-queue.
+   * null when the video has never failed or was successfully re-queued.
+   * Distinguishes recoverable failures (e.g. "disk full — retry") from
+   * unrecoverable ones (e.g. "moov atom missing — re-upload required").
+   */
+  transcodingErrorMessage: z.string().nullable(),
 });
 
 const ListQuerySchema = z.object({
@@ -137,6 +145,7 @@ function toDto(row: typeof videos.$inferSelect): z.infer<typeof VideoRowSchema> 
     mimeType: row.mimeType,
     originalFilename: row.originalFilename,
     sourceAvailable,
+    transcodingErrorMessage: row.transcodingErrorMessage ?? null,
   };
 }
 
