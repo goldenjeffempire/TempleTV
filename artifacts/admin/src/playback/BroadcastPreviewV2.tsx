@@ -138,12 +138,16 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
 
   const hls = new Hls({
     // ── Latency / buffer ─────────────────────────────────────────────────────
-    // Mirror of the production TV player config — ensures admin preview exhibits
-    // exactly the same buffering behaviour as what real viewers experience.
+    // Mirrors the production TV player config so admin preview exhibits the
+    // same buffering behaviour viewers experience. Buffers reduced from 60/90 s
+    // to 30 s to match the TV player update — prevents excessive memory use on
+    // the admin tab when the operator leaves the broadcast page open for hours.
+    // backBufferLength kept at 30 s (not 0) so admin operators can scrub back
+    // to review the last half-minute of air without re-fetching.
     lowLatencyMode: false,           // stability over latency for broadcast replay
-    backBufferLength: 90,            // keep 90 s behind playhead — instant resume
-    maxBufferLength: 60,             // build 60 s ahead — eliminates mid-segment rebuffers
-    maxMaxBufferLength: 120,         // allow up to 2 min buffer on very fast connections
+    backBufferLength: 30,            // keep 30 s behind playhead — operator review window
+    maxBufferLength: 30,             // build 30 s ahead — ample for smooth preview
+    maxMaxBufferLength: 60,          // cap at 60 s on very fast connections
     highBufferWatchdogPeriod: 3,     // nudge stalled high-buffer streams every 3 s
     maxBufferHole: 0.25,             // crisper segment joins (was 0.5)
 

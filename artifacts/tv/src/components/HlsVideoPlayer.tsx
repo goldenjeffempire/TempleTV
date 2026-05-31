@@ -235,11 +235,17 @@ export function HlsVideoPlayer({
       let mediaErrCount = 0;
       const hls = new HlsLib({
         enableWorker: true,
-        // 60 s forward buffer — eliminates mid-sermon rebuffers on typical
-        // broadband; backBuffer keeps 60 s for instant rewind without re-fetch.
-        maxBufferLength: 60,
-        backBufferLength: 60,
-        maxMaxBufferLength: 120,
+        // 30 s forward buffer is sufficient for smooth broadcast replay on
+        // typical broadband; the previous 60 s caused gradual VRAM exhaustion
+        // on Samsung Tizen / LG webOS after hours of continuous 24/7 playback
+        // (these chipsets have ~1.5–2 GB total and keep YUV textures in GPU
+        // memory proportional to the buffered segment count).
+        // backBufferLength 0: broadcast TV never seeks backward — freeing back-
+        // buffer VRAM immediately after the playhead advances gives a
+        // significant long-session stability improvement on TV hardware.
+        maxBufferLength: 30,
+        backBufferLength: 0,
+        maxMaxBufferLength: 60,
         startLevel: -1,              // auto-select by bandwidth probe
         capLevelToPlayerSize: true,  // don't load 1080p into a small container
         debug: false,
@@ -253,6 +259,9 @@ export function HlsVideoPlayer({
         // SW AES fallback for Smart TV runtimes without HW crypto.
         enableSoftwareAES: true,
         maxFragLookUpTolerance: 0.2,
+        // Retry on MSE append errors (codec/buffer pipeline hiccups on Tizen)
+        // before escalating to a fatal error and triggering a full reload.
+        appendErrorMaxRetry: 3,
         // Retry tuning
         lowLatencyMode: false,
         fragLoadingMaxRetry: 10,

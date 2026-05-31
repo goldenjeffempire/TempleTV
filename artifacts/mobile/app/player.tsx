@@ -636,9 +636,12 @@ export default function PlayerScreen() {
   }, [fsDuration, playerSeekRef, scheduleFsHide]);
 
   // Adaptive player height: respect the video's actual aspect ratio rather
-  // than hardcoding 16:9.  Clamped to 55% of screen height in portrait so
-  // vertical / square sources don't push metadata below the fold.
-  const MAX_PORTRAIT_HEIGHT = Math.round(height * 0.55);
+  // than hardcoding 16:9.  Clamped to 60% of screen height in portrait —
+  // raised from 55% to use the extra real-estate on modern tall phones
+  // (19.5:9 aspect ratio) while still reserving the lower 40% for sermon
+  // metadata, chat, and related videos. Vertical/square sources are still
+  // capped so they don't push content below the fold.
+  const MAX_PORTRAIT_HEIGHT = Math.round(height * 0.60);
   const playerHeight = isLandscape
     ? height
     : Math.min(Math.round(width / videoAspectRatio), MAX_PORTRAIT_HEIGHT);

@@ -204,10 +204,16 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
   const hls = new Hls({
     // ── Latency / buffer ─────────────────────────────────────────────
     lowLatencyMode: false,          // stability over latency for broadcast replay
-    backBufferLength: 90,           // keep 90 s behind playhead — instant resume after
-                                    //   screen-dim/lock/tab-switch without re-buffering
-    maxBufferLength: 60,            // build 60 s ahead — eliminates mid-segment rebuffers
-    maxMaxBufferLength: 120,        // allow up to 2 min buffer on very fast connections
+    // 30 s forward buffer is sufficient for smooth broadcast replay.
+    // The previous 60 s caused gradual VRAM exhaustion on Samsung Tizen /
+    // LG webOS after hours of 24/7 playback — these chipsets keep YUV
+    // textures in GPU memory proportional to buffered segment count.
+    // backBufferLength 0: broadcast never seeks backward; freeing back-buffer
+    // VRAM immediately after the playhead advances gives a significant
+    // long-session stability improvement on TV hardware.
+    backBufferLength: 0,
+    maxBufferLength: 30,            // build 30 s ahead — ample for smooth relay
+    maxMaxBufferLength: 60,         // cap at 60 s on very fast connections
     highBufferWatchdogPeriod: 3,    // nudge stalled high-buffer streams every 3 s
 
     // ── ABR / quality ────────────────────────────────────────────────
