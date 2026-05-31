@@ -313,31 +313,67 @@ export default function VideosPage() {
   const featureMutation = useMutation({
     mutationFn: ({ id, featured }: { id: string; featured: boolean }) =>
       api.patch(`/admin/videos/${id}`, { featured }),
-    onSuccess: (_, { featured }) => {
-      toast.success(featured ? "Video featured" : "Video unfeatured");
-      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+    onMutate: async ({ id, featured }) => {
+      await qc.cancelQueries({ queryKey: ["admin-videos"] });
+      const prev = qc.getQueriesData<VideoListResponse>({ queryKey: ["admin-videos"] });
+      qc.setQueriesData<VideoListResponse>(
+        { queryKey: ["admin-videos"] },
+        (old) => old ? { ...old, videos: old.videos.map((v) => v.id === id ? { ...v, featured } : v) } : old,
+      );
+      return { prev };
     },
-    onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed"),
+    onSuccess: (_data, { featured }) => {
+      toast.success(featured ? "Video featured" : "Video unfeatured");
+    },
+    onError: (_e, _vars, ctx) => {
+      if (ctx?.prev) ctx.prev.forEach(([key, data]) => qc.setQueryData(key, data));
+      toast.error("Failed");
+    },
+    onSettled: () => void qc.invalidateQueries({ queryKey: ["admin-videos"] }),
   });
 
   const lockMutation = useMutation({
     mutationFn: ({ id, metadataLocked }: { id: string; metadataLocked: boolean }) =>
       api.patch(`/admin/videos/${id}`, { metadataLocked }),
-    onSuccess: (_, { metadataLocked }) => {
-      toast.success(metadataLocked ? "Metadata locked — YouTube sync won't overwrite" : "Metadata unlocked");
-      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+    onMutate: async ({ id, metadataLocked }) => {
+      await qc.cancelQueries({ queryKey: ["admin-videos"] });
+      const prev = qc.getQueriesData<VideoListResponse>({ queryKey: ["admin-videos"] });
+      qc.setQueriesData<VideoListResponse>(
+        { queryKey: ["admin-videos"] },
+        (old) => old ? { ...old, videos: old.videos.map((v) => v.id === id ? { ...v, metadataLocked } : v) } : old,
+      );
+      return { prev };
     },
-    onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed"),
+    onSuccess: (_data, { metadataLocked }) => {
+      toast.success(metadataLocked ? "Metadata locked — YouTube sync won't overwrite" : "Metadata unlocked");
+    },
+    onError: (_e, _vars, ctx) => {
+      if (ctx?.prev) ctx.prev.forEach(([key, data]) => qc.setQueryData(key, data));
+      toast.error("Failed");
+    },
+    onSettled: () => void qc.invalidateQueries({ queryKey: ["admin-videos"] }),
   });
 
   const publishMutation = useMutation({
     mutationFn: ({ id, broadcastOnly }: { id: string; broadcastOnly: boolean }) =>
       api.patch(`/admin/videos/${id}`, { broadcastOnly }),
-    onSuccess: (_, { broadcastOnly }) => {
-      toast.success(broadcastOnly ? "Hidden from public library" : "Published to public library");
-      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+    onMutate: async ({ id, broadcastOnly }) => {
+      await qc.cancelQueries({ queryKey: ["admin-videos"] });
+      const prev = qc.getQueriesData<VideoListResponse>({ queryKey: ["admin-videos"] });
+      qc.setQueriesData<VideoListResponse>(
+        { queryKey: ["admin-videos"] },
+        (old) => old ? { ...old, videos: old.videos.map((v) => v.id === id ? { ...v, broadcastOnly } : v) } : old,
+      );
+      return { prev };
     },
-    onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed"),
+    onSuccess: (_data, { broadcastOnly }) => {
+      toast.success(broadcastOnly ? "Hidden from public library" : "Published to public library");
+    },
+    onError: (_e, _vars, ctx) => {
+      if (ctx?.prev) ctx.prev.forEach(([key, data]) => qc.setQueryData(key, data));
+      toast.error("Failed");
+    },
+    onSettled: () => void qc.invalidateQueries({ queryKey: ["admin-videos"] }),
   });
 
   const transcodeMutation = useMutation({

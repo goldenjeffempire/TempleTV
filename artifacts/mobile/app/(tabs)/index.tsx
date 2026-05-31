@@ -117,7 +117,7 @@ interface HeroSectionProps {
   fallbackSermon: Sermon | null;
 }
 
-function HeroSection({ syncState, fallbackSermon }: HeroSectionProps) {
+const HeroSection = React.memo(function HeroSection({ syncState, fallbackSermon }: HeroSectionProps) {
   const c = useColors();
   const { width } = useWindowDimensions();
   const heroHeight = Math.round(width * 0.58);
@@ -249,11 +249,11 @@ function HeroSection({ syncState, fallbackSermon }: HeroSectionProps) {
       </LinearGradient>
     </Pressable>
   );
-}
+});
 
 // ─── Category Row ─────────────────────────────────────────────────────────────
 
-function CategoryRow({
+const CategoryRow = React.memo(function CategoryRow({
   category,
   sermons,
 }: {
@@ -284,7 +284,7 @@ function CategoryRow({
       />
     </View>
   );
-}
+});
 
 // ─── Skeleton Rows ────────────────────────────────────────────────────────────
 

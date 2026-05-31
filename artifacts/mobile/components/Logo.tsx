@@ -68,7 +68,8 @@ export function Logo({
   return (
     <Image
       source={require("@/assets/images/temple-tv-logo.png")}
-      style={[{ width, height, resizeMode: "contain" }, style]}
+      resizeMode="contain"
+      style={[{ width, height }, style]}
       accessible={!decorative}
       accessibilityRole={decorative ? undefined : "image"}
       accessibilityLabel={decorative ? undefined : "Temple TV"}

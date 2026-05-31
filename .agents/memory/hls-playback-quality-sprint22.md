@@ -1,6 +1,6 @@
 ---
-name: HLS.js & transcoder playback quality sprints 22-24
-description: Multi-sprint improvements to HLS.js config, transcoder pipeline, GPU compositing, and TV safe-area coverage across all player surfaces
+name: HLS.js & transcoder playback quality sprints 22-25
+description: Multi-sprint improvements to HLS.js config, transcoder pipeline, GPU compositing, TV safe-area coverage, CSS containment, and cross-surface memoization
 ---
 
 ## HLS.js config — all three TV surfaces now fully aligned
@@ -50,3 +50,32 @@ All TV UI elements now use `--tv-safe-h` / `--tv-safe-v` CSS vars (defined in `i
 **Why:** Without `contain`, 60fps badge-pulse animation triggers full-page layout recalculation on every frame on Tizen 4-6 / webOS 5-6.
 
 **How to apply:** Any new fullscreen player container should get `contain: "layout style paint"` + `isolation: "isolate"`. If the container supports fullscreen, conditionally drop `paint` while in fullscreen state.
+
+## Sprint 25 — CSS containment, cross-surface memoization, optimistic updates
+
+### TV `index.css` — card + row containment
+- `.tt-card`: added `contain: layout` — isolates card-level layout changes from sibling cards during hover/focus. Do NOT add `contain: paint` — it clips `transform: scale(1.04)` composited animations.
+- `.tv-row`: added `will-change: opacity` + `contain: layout` — row focus fades now run fully on compositor thread, rows are layout-isolated from each other.
+
+### `HlsVideoPlayer.tsx` — config completeness
+Added `workerPath: undefined` and `autoStartLoad: true` (both were defaults; now explicit for documentation parity with `LiveBroadcastV2`).
+
+### Mobile `index.tsx` — `HeroSection` + `CategoryRow` memoized
+Both wrapped with `React.memo`. `HeroSection` re-renders only when `syncState` or `fallbackSermon` reference changes. `CategoryRow` re-renders only when `sermons` or `category` changes. Important: the `React.memo(function Name(){}` form — close with `});`, not `}`.
+
+### Mobile `library.tsx` — `ContinueWatchingRow` hardened
+- `PLACEHOLDER_IMG = require(...)` hoisted to module level (was inside component body — `require()` on every render is cached by Metro but wastes a property lookup per render).
+- Wrapped with `React.memo`.
+- `navigateToItem` wrapped with `useCallback(fn, [])` — stable reference across re-renders.
+
+### Admin `videos.tsx` — optimistic updates for toggle mutations
+`featureMutation`, `lockMutation`, `publishMutation` all upgraded from invalidate-on-success to full optimistic pattern:
+1. `onMutate`: `cancelQueries` + `getQueriesData` snapshot + `setQueriesData` optimistic patch
+2. `onError`: restore snapshot via `ctx.prev.forEach(([key, data]) => qc.setQueryData(key, data))`
+3. `onSettled`: invalidate (moved from `onSuccess`)
+
+Context type is inferred by TanStack Query — no explicit generic needed.
+
+### Mobile type bug fixes
+- `ChatPanel.tsx`: `state === "error"` was dead code — `ChatConnectionState` never includes `"error"`. Removed.
+- `search.tsx`: `styles.footerText` was used but never defined in `StyleSheet.create`. Added `{ fontSize: 13, textAlign: "center" }`.

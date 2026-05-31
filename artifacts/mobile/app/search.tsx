@@ -443,6 +443,7 @@ const styles = StyleSheet.create({
   },
   list: { paddingTop: 4 },
   footerLoader: { paddingVertical: 16, alignItems: "center" },
+  footerText: { fontSize: 13, textAlign: "center" },
 
   recentWrap: { paddingHorizontal: 16, paddingTop: 16 },
   recentHeader: {

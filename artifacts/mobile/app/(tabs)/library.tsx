@@ -33,6 +33,8 @@ import type { Sermon, SermonCategory, SortMode } from "@/types";
 import { useWatchProgress, type ContinueWatchingItem } from "@/hooks/useWatchProgress";
 import { playbackQueue } from "@/lib/playbackQueue";
 
+const PLACEHOLDER_IMG = require("@/assets/images/sermon-placeholder.png");
+
 const CATEGORIES: { label: string; value: SermonCategory }[] = [
   { label: "All", value: "All" },
   { label: "Deliverance", value: "Deliverance" },
@@ -150,13 +152,10 @@ function ModePill({
   );
 }
 
-function ContinueWatchingRow({ items }: { items: ContinueWatchingItem[] }) {
+const ContinueWatchingRow = React.memo(function ContinueWatchingRow({ items }: { items: ContinueWatchingItem[] }) {
   const c = useColors();
-  if (items.length === 0) return null;
 
-  const PLACEHOLDER_IMG = require("@/assets/images/sermon-placeholder.png");
-
-  const navigateToItem = (item: ContinueWatchingItem) => {
+  const navigateToItem = useCallback((item: ContinueWatchingItem) => {
     router.push({
       pathname: "/player",
       params: {
@@ -168,7 +167,9 @@ function ContinueWatchingRow({ items }: { items: ContinueWatchingItem[] }) {
         startPositionSecs: String(Math.floor(item.position)),
       },
     });
-  };
+  }, []);
+
+  if (items.length === 0) return null;
 
   return (
     <View style={cwStyles.section}>
@@ -212,7 +213,7 @@ function ContinueWatchingRow({ items }: { items: ContinueWatchingItem[] }) {
       />
     </View>
   );
-}
+});
 
 const cwStyles = StyleSheet.create({
   section: {

@@ -130,7 +130,7 @@ export function ChatPanel({ visible, onClose }: ChatPanelProps) {
             <Text style={styles.emptyText}>
               {state === "open"
                 ? "Be the first to say something!"
-                : state === "error" || state === "closed"
+                : state === "closed"
                 ? "Chat unavailable"
                 : "Connecting to chat…"}
             </Text>
