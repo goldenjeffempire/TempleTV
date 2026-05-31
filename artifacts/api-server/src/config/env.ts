@@ -147,13 +147,15 @@ const Env = z.object({
   // Typical production config on a 512 MB host:
   //   MEMORY_WARN_RSS_MB=380   MEMORY_RESTART_RSS_MB=490
   MEMORY_WARN_RSS_MB: z.coerce.number().int().positive().default(380),
-  MEMORY_RESTART_RSS_MB: z.coerce.number().int().positive().default(490),
+  MEMORY_RESTART_RSS_MB: z.coerce.number().int().positive().default(600),
 
   // pg connection pool maximum. Each replica holds at most this many live
   // connections to Postgres/Neon. 20 is safe for a 2 GiB / 1-vCPU container.
   // Raise if you move to a larger dyno or see connection-timeout spikes.
-  // Tuned down to 10 for Replit's constrained environment.
-  DB_POOL_MAX: z.coerce.number().int().positive().default(10),
+  // Set to 20 so concurrent chunk uploads (up to 6 via the semaphore) +
+  // background completeMultipartUpload (advisory lock = 1) + general API
+  // queries all have ample pool headroom without starvation.
+  DB_POOL_MAX: z.coerce.number().int().positive().default(20),
 
   // Maximum wall-clock time (ms) a single SQL statement may run before
   // PostgreSQL cancels it. Protects the pool from runaway full-table-scans,

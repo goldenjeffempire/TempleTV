@@ -53,6 +53,40 @@ const sessions = schema.uploadSessionsTable;
 const chunks = schema.uploadChunksTable;
 const videos = schema.videosTable;
 
+// ─── Chunk-write concurrency semaphore ────────────────────────────────────────
+// Each in-flight chunk upload holds an 8 MiB body buffer in Node.js heap for
+// the entire duration of the uploadPart DB write (typically 13-15 s under
+// concurrent background-assembly I/O pressure). Without a cap, 3 concurrent
+// files × 4 parallel chunks = 12 × 8 MiB ≈ 96 MiB of simultaneous Buffer
+// allocations. Combined with V8 heap fragmentation and the pg hex-encoding
+// overhead this pushes RSS well above the memory-watchdog restart threshold.
+//
+// Limiting concurrent DB writes to 6 keeps peak chunk-buffer memory under
+// ~50 MiB while still saturating a 10-connection pg pool. Override via
+// MAX_CONCURRENT_CHUNK_DB_OPS env var if you raise DB_POOL_MAX.
+const MAX_CONCURRENT_CHUNK_DB_OPS = Number(process.env["MAX_CONCURRENT_CHUNK_DB_OPS"] ?? 6);
+let _activeChunkDbOps = 0;
+const _chunkDbQueue: Array<() => void> = [];
+
+function acquireChunkDbSlot(): Promise<void> {
+  if (_activeChunkDbOps < MAX_CONCURRENT_CHUNK_DB_OPS) {
+    _activeChunkDbOps++;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => _chunkDbQueue.push(resolve));
+}
+
+function releaseChunkDbSlot(): void {
+  const next = _chunkDbQueue.shift();
+  if (next) {
+    // Pass the active slot directly to the next waiter — do NOT decrement
+    // _activeChunkDbOps so the counter stays consistent.
+    next();
+  } else {
+    _activeChunkDbOps--;
+  }
+}
+
 // Minimum part size used when reassembling db_fallback chunks into a multipart
 // upload. Mirrors S3's 5 MiB floor so sessions can be migrated without changes.
 
@@ -515,12 +549,14 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         return reply.code(409).send({ ok: true, chunkIndex, storageBackend: existingChunk.storageBackend });
       }
 
-      const body = req.body as Buffer;
+      let body = req.body as Buffer;
       if (!body || body.length === 0) {
         return reply.code(400).send({ error: "Empty chunk body" });
       }
 
-      // Verify SHA-256 integrity
+      // Verify SHA-256 integrity before acquiring the DB slot so we don't
+      // hold a semaphore permit while doing CPU work.
+      const sizeBytes = body.length;
       const actualChecksum = createHash("sha256").update(body).digest("hex");
       if (actualChecksum !== checksum) {
         return reply.code(422).send({
@@ -532,57 +568,76 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
 
       const chunkId = randomUUID();
 
-      if (session.storageBackend !== "db_fallback" && session.uploadId && session.objectKey) {
-        // Upload directly to object storage as a multipart part (1-based partNumber)
-        const partNumber = chunkIndex + 1;
-        try {
-          const { etag } = await storage().uploadPart({
-            key: session.objectKey,
-            uploadId: session.uploadId,
-            partNumber,
-            body,
-          });
+      // Acquire a DB-write slot before touching storage. The semaphore caps
+      // concurrent 8 MiB body buffers in flight so peak RSS stays bounded even
+      // under a 3-file simultaneous upload with 4 parallel chunks each.
+      await acquireChunkDbSlot();
+      try {
+        if (session.storageBackend !== "db_fallback" && session.uploadId && session.objectKey) {
+          // Upload directly to object storage as a multipart part (1-based partNumber)
+          const partNumber = chunkIndex + 1;
+          try {
+            const { etag } = await storage().uploadPart({
+              key: session.objectKey,
+              uploadId: session.uploadId,
+              partNumber,
+              body,
+            });
 
-          await db.insert(chunks).values({
-            id: chunkId,
-            sessionId,
-            chunkIndex,
-            checksum,
-            sizeBytes: body.length,
-            s3Etag: etag,
-            storageBackend: "db",
-          });
+            // body is no longer needed — release the 8 MiB buffer for GC
+            // before the next await (the chunks INSERT) so it isn't kept alive
+            // across the full ~13-15 s DB write.
+            body = Buffer.alloc(0);
+            (req as any).body = null;
 
-          return reply.send({ ok: true, chunkIndex, storageBackend: "db" });
-        } catch (err) {
-          req.log.warn(
-            { err, sessionId, chunkIndex, partNumber },
-            "[chunk] uploadPart failed — chunk NOT saved; client will retry",
-          );
-          // Do NOT fall through to DB fallback: the session was opened in object storage
-          // mode and all previous chunks went there. Switching mid-session to db_fallback
-          // would produce an irrecoverable mixed state at finalize time. Instead return
-          // 503 so the client's retry logic backs off and re-attempts.
-          return reply.code(503).send({
-            error:
-              "Object storage is temporarily unavailable. The chunk was not saved. " +
-              "It will be retried automatically with exponential backoff.",
-          });
+            await db.insert(chunks).values({
+              id: chunkId,
+              sessionId,
+              chunkIndex,
+              checksum,
+              sizeBytes,
+              s3Etag: etag,
+              storageBackend: "db",
+            });
+
+            return reply.send({ ok: true, chunkIndex, storageBackend: "db" });
+          } catch (err) {
+            req.log.warn(
+              { err, sessionId, chunkIndex, partNumber },
+              "[chunk] uploadPart failed — chunk NOT saved; client will retry",
+            );
+            // Do NOT fall through to DB fallback: the session was opened in object storage
+            // mode and all previous chunks went there. Switching mid-session to db_fallback
+            // would produce an irrecoverable mixed state at finalize time. Instead return
+            // 503 so the client's retry logic backs off and re-attempts.
+            return reply.code(503).send({
+              error:
+                "Object storage is temporarily unavailable. The chunk was not saved. " +
+                "It will be retried automatically with exponential backoff.",
+            });
+          }
         }
+
+        // DB fallback mode: store raw bytes as BYTEA.
+        // body is passed as fallbackData — cannot null it before the INSERT.
+        await db.insert(chunks).values({
+          id: chunkId,
+          sessionId,
+          chunkIndex,
+          checksum,
+          sizeBytes,
+          fallbackData: body,
+          storageBackend: "db_fallback",
+        });
+
+        // Release the 8 MiB buffer now that it's persisted to the DB.
+        body = Buffer.alloc(0);
+        (req as any).body = null;
+
+        return reply.send({ ok: true, chunkIndex, storageBackend: "db_fallback" });
+      } finally {
+        releaseChunkDbSlot();
       }
-
-      // DB fallback mode: store raw bytes as BYTEA
-      await db.insert(chunks).values({
-        id: chunkId,
-        sessionId,
-        chunkIndex,
-        checksum,
-        sizeBytes: body.length,
-        fallbackData: body,
-        storageBackend: "db_fallback",
-      });
-
-      return reply.send({ ok: true, chunkIndex, storageBackend: "db_fallback" });
     },
   );
 

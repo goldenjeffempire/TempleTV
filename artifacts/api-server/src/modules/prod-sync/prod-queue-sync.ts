@@ -260,6 +260,18 @@ const probeCache = new Map<string, { ok: boolean; checkedAtMs: number }>();
 const PROBE_TTL_MS = 5 * 60 * 1000;
 const PROBE_TIMEOUT_MS = 4_000;
 
+// Prune stale probeCache entries every 10 minutes to prevent unbounded Map growth.
+// Entries older than 2× PROBE_TTL_MS (10 min) can never be served from cache
+// again (they'll be re-probed on next access), so they're dead weight in memory.
+setInterval(() => {
+  const now = Date.now();
+  for (const [url, entry] of probeCache) {
+    if (now - entry.checkedAtMs > PROBE_TTL_MS * 2) {
+      probeCache.delete(url);
+    }
+  }
+}, 10 * 60 * 1000).unref();
+
 async function isReachable(url: string): Promise<boolean> {
   const cached = probeCache.get(url);
   if (cached && Date.now() - cached.checkedAtMs < PROBE_TTL_MS) return cached.ok;
