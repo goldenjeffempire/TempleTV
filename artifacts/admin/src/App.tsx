@@ -74,7 +74,12 @@ class ErrorBoundary extends Component<{ children: ReactNode }, EBState> {
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
-    console.error("[ErrorBoundary] Uncaught render error:", error, info.componentStack);
+    const S = (window as unknown as { Sentry?: { captureException?: (e: unknown, ctx?: unknown) => void } }).Sentry;
+    if (S?.captureException) {
+      S.captureException(error, { contexts: { react: { componentStack: info.componentStack } } });
+    } else if (import.meta.env.DEV) {
+      console.error("[ErrorBoundary] Uncaught render error:", error, info.componentStack);
+    }
   }
 
   render() {
@@ -123,7 +128,12 @@ class PanelErrorBoundary extends Component<{ children: ReactNode }, EBState> {
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
-    console.error("[PanelErrorBoundary] Panel render error:", error, info.componentStack);
+    const S = (window as unknown as { Sentry?: { captureException?: (e: unknown, ctx?: unknown) => void } }).Sentry;
+    if (S?.captureException) {
+      S.captureException(error, { contexts: { react: { componentStack: info.componentStack } } });
+    } else if (import.meta.env.DEV) {
+      console.error("[PanelErrorBoundary] Panel render error:", error, info.componentStack);
+    }
   }
 
   render() {

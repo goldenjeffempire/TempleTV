@@ -40,7 +40,11 @@ class ChartErrorBoundary extends Component<{ children: ReactNode; label?: string
   static getDerivedStateFromError(err: Error): ChartEBState {
     return { failed: true, message: err.message };
   }
-  componentDidCatch(err: Error) { console.error("[ChartErrorBoundary]", err); }
+  componentDidCatch(err: Error) {
+    const S = (window as unknown as { Sentry?: { captureException?: (e: unknown) => void } }).Sentry;
+    if (S?.captureException) { S.captureException(err); }
+    else if (import.meta.env.DEV) { console.error("[ChartErrorBoundary]", err); }
+  }
   render() {
     if (this.state.failed) {
       return (

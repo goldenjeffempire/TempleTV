@@ -8,6 +8,7 @@ import type { Role } from "../shared/types.js";
 import { env } from "../config/env.js";
 import { UnauthorizedError, ForbiddenError } from "../shared/errors.js";
 import { db, schema } from "../infrastructure/db.js";
+import { logger } from "../infrastructure/logger.js";
 
 /**
  * Short-lived in-process cache for users.sessions_valid_after.
@@ -43,6 +44,13 @@ async function getCachedSessionsValidAfter(userId: string): Promise<Date | null>
     // failing open is the only option that avoids locking out all users
     // during a transient PG blip at startup.
     if (cached) return cached.validAfter;
+    // No stale cache entry — cold-start DB failure. Fail open (allow all
+    // tokens) to avoid locking every user out during a transient PG blip
+    // at startup. Log a WARN so this is visible in production monitoring.
+    logger.warn(
+      { userId },
+      "[auth] sessions_valid_after: DB unavailable and no cache entry — failing open until DB recovers",
+    );
     return null;
   }
 }

@@ -431,7 +431,14 @@ class QueueIntegrityValidatorImpl {
         try {
           await db
             .update(schema.broadcastQueueTable)
-            .set({ isActive: false })
+            .set({
+              isActive: false,
+              // Tag the row so the reverse pass below can re-activate it if the
+              // video later gains playable URLs (e.g. after a successful re-transcode
+              // or re-upload), and so operators can distinguish validator-disabled
+              // rows from intentionally operator-disabled ones.
+              validatorDeactivatedReason: "orphaned_video_ref",
+            })
             .where(inArray(schema.broadcastQueueTable.id, orphanedFailedIds));
           logger.error(
             { count: orphanedFailedIds.length, itemIds: orphanedFailedIds },
@@ -448,6 +455,55 @@ class QueueIntegrityValidatorImpl {
             { err: fixErr, count: orphanedFailedIds.length },
             "[queue-validator] AUTO-FIX: failed to deactivate ORPHANED_VIDEO_REF items (non-fatal)",
           );
+        }
+      }
+
+      // ── Auto-fix (reverse): re-activate ORPHANED_VIDEO_REF items that now have playable URLs ──
+      // When a video is successfully re-transcoded or re-uploaded after a previous failure,
+      // its broadcast_queue item may still be deactivated from the auto-fix above.
+      // Re-activate it so the content returns to air automatically.
+      {
+        type RevivedRow = { id: string; title: string };
+        let revivedRows: RevivedRow[] = [];
+        try {
+          const result = await db.execute<RevivedRow>(sql`
+            SELECT bq.id, bq.title
+            FROM broadcast_queue bq
+            INNER JOIN managed_videos mv ON mv.id = bq.video_id
+            WHERE bq.is_active = false
+              AND bq.validator_deactivated_reason = 'orphaned_video_ref'
+              AND (mv.local_video_url IS NOT NULL OR mv.hls_master_url IS NOT NULL)
+          `);
+          revivedRows = (result.rows as RevivedRow[]) ?? [];
+        } catch (qErr) {
+          logger.debug(
+            { err: qErr },
+            "[queue-validator] reverse-ORPHANED_VIDEO_REF query failed (non-fatal)",
+          );
+        }
+
+        if (revivedRows.length > 0) {
+          const revivedIds = revivedRows.map((r) => r.id);
+          try {
+            await db
+              .update(schema.broadcastQueueTable)
+              .set({ isActive: true, validatorDeactivatedReason: null })
+              .where(inArray(schema.broadcastQueueTable.id, revivedIds));
+            logger.warn(
+              { count: revivedIds.length, itemIds: revivedIds },
+              "[queue-validator] AUTO-FIX (reverse): re-activated ORPHANED_VIDEO_REF items " +
+              "whose video now has playable URLs — items returned to broadcast rotation",
+            );
+            adminEventBus.push("broadcast-queue-updated", {
+              reason: "integrity-fix-revived-orphaned-video-ref",
+              count: revivedIds.length,
+            });
+          } catch (fixErr) {
+            logger.warn(
+              { err: fixErr, count: revivedIds.length },
+              "[queue-validator] AUTO-FIX (reverse): failed to re-activate ORPHANED_VIDEO_REF items (non-fatal)",
+            );
+          }
         }
       }
 
