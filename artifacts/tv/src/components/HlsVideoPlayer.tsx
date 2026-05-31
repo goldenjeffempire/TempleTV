@@ -235,6 +235,8 @@ export function HlsVideoPlayer({
       let mediaErrCount = 0;
       const hls = new HlsLib({
         enableWorker: true,
+        workerPath: undefined,  // inline Web Worker (no external script needed)
+        autoStartLoad: true,    // begin fragment loading immediately on loadSource()
         // 30 s forward buffer is sufficient for smooth broadcast replay on
         // typical broadband; the previous 60 s caused gradual VRAM exhaustion
         // on Samsung Tizen / LG webOS after hours of continuous 24/7 playback
@@ -699,6 +701,13 @@ export function HlsVideoPlayer({
         // CSS-pseudo-class path and older browsers that fire fullscreenchange
         // without supporting :fullscreen are covered.
         overflow: isFs ? "visible" : "hidden",
+        // contain:paint implies its own paint boundary (similar to overflow:hidden
+        // for compositing), so we disable it in fullscreen for the same reason
+        // we clear overflow. contain:layout+style is always safe — it prevents
+        // overlay repaints (control bar, quality badge, spinner) from triggering
+        // full-page layout recalculations.
+        contain: isFs ? "layout style" : "layout style paint",
+        isolation: "isolate",
       }}
       onMouseMove={showControls}
       onTouchStart={showControls}
@@ -838,7 +847,10 @@ export function HlsVideoPlayer({
         <button
           onClick={onBack}
           style={{
-            position: "absolute", top: 24, left: 32, zIndex: 30,
+            position: "absolute",
+            top: "var(--tv-safe-v, 24px)",
+            left: "var(--tv-safe-h, 32px)",
+            zIndex: 30,
             background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.15)",
             borderRadius: 50, width: 44, height: 44,
             display: "flex", alignItems: "center", justifyContent: "center",
@@ -853,7 +865,10 @@ export function HlsVideoPlayer({
       {/* Quality badge */}
       {controlsVisible && !isLive && (
         <div style={{
-          position: "absolute", top: 24, right: 32, zIndex: 30,
+          position: "absolute",
+          top: "var(--tv-safe-v, 24px)",
+          right: "var(--tv-safe-h, 32px)",
+          zIndex: 30,
           background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.15)",
           borderRadius: 8, padding: "4px 10px",
           fontSize: 12, fontWeight: 700, color: "rgba(255,255,255,0.65)",
@@ -869,7 +884,12 @@ export function HlsVideoPlayer({
           position: "absolute", bottom: 0, left: 0, right: 0, zIndex: 30,
           // Taller gradient for better legibility over bright content
           background: "linear-gradient(to top, rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.6) 55%, transparent 100%)",
-          padding: "56px 40px 28px",
+          // Respect TV safe areas — bottom/left/right edges may be in the overscan
+          // zone on Samsung/LG panels; splitting padding shorthand allows CSS vars.
+          paddingTop: 56,
+          paddingLeft: "var(--tv-safe-h, 40px)",
+          paddingRight: "var(--tv-safe-h, 40px)",
+          paddingBottom: "var(--tv-safe-v, 28px)",
         }}>
           {/* Title + quality row */}
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 14, gap: 16 }}>

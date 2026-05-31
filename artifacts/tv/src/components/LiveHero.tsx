@@ -137,7 +137,7 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
           aria-live="polite"
           style={{
             position: "absolute",
-            top: 24,
+            top: "var(--tv-safe-v, 24px)",
             left: "50%",
             transform: "translateX(-50%)",
             zIndex: 50,

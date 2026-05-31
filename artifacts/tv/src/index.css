@@ -119,7 +119,13 @@ html, body, #root {
 .tt-card {
   transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1),
               box-shadow 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+  /* GPU layer for compositor-accelerated scale + shadow animations. */
   will-change: transform;
+  /* layout containment: size/position changes inside this card (thumbnail
+     swap, text reflow) do not force a layout recalculation in sibling cards
+     or the parent scroll row. On a home page with 60-100 cards this prevents
+     a cascade of inter-card layout work on every hover/focus change. */
+  contain: layout;
   flex-shrink: 0;
   cursor: pointer;
   position: relative;
@@ -160,6 +166,12 @@ html, body, #root {
 /* ── Card Row ─────────────────────────────────────────────────────────────── */
 .tv-row {
   transition: opacity 0.2s ease;
+  /* GPU layer: row focus/unfocus fades (opacity 1 ↔ 0.45) run on the
+     compositor thread without touching the main-thread layout. */
+  will-change: opacity;
+  /* Layout containment isolates each row's internal geometry so focus
+     transitions in one row don't trigger layout in its siblings. */
+  contain: layout;
 }
 
 .tv-rows-active .tv-row:not(.tv-row-focused) {
@@ -198,6 +210,12 @@ html, body, #root {
  *    mix-blend-mode on overlay elements can collapse the video GPU layer.
  */
 video {
+  /* Force GPU compositor layer promotion at parse time — prevents the late
+   * promotion latency hit that can cause an initial decode stall on Samsung
+   * Tizen / LG webOS when the compositor promotes on first paint instead.
+   * backface-visibility:hidden is the older form; will-change:transform is the
+   * modern, explicit path — both are retained for broadest chipset coverage.  */
+  will-change: transform;
   -webkit-backface-visibility: hidden;
   backface-visibility: hidden;
   image-rendering: auto;

@@ -578,7 +578,15 @@ export function BroadcastPreviewV2({ className }: Props) {
     null;
 
   return (
-    <div className={`relative bg-black rounded-lg overflow-hidden select-none ${className ?? ""}`}>
+    <div
+      className={`relative bg-black rounded-lg overflow-hidden select-none ${className ?? ""}`}
+      style={{
+        // Paint isolation — overlay animations (spinner, badge pulse) invalidate
+        // only this subtree, not the surrounding admin page layout.
+        contain: "layout style paint",
+        isolation: "isolate",
+      }}
+    >
       {/* ── Cinematic ambient fill ─────────────────────────────────────────────
           Fills any letterbox / pillarbox areas produced by object-contain with a
           blurred, darkened version of the thumbnail rather than raw black. Matches

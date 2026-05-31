@@ -356,8 +356,9 @@ function LiveBroadcastHlsPlayer({
           onClick={() => void handlePiP()}
           style={{
             position: "absolute",
-            top: 24,
-            left: 86,
+            top: "var(--tv-safe-v, 24px)",
+            // sits to the right of the back button (44px wide) with a 10px gap
+            left: "calc(var(--tv-safe-h, 32px) + 54px)",
             zIndex: 50,
             background: "rgba(0,0,0,0.6)",
             border: "1px solid rgba(255,255,255,0.15)",

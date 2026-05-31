@@ -445,6 +445,16 @@ export function LiveBroadcastV2({
         inset: 0,
         background: "#000",
         overflow: "hidden",
+        // contain: layout + style + paint — creates an independent paint and
+        // layout boundary. Overlay animations (badge pulse, spinner, title chip)
+        // trigger repaints only within this element's subtree, not across the
+        // entire Home/Player page tree. Critical on Tizen 4–6 and webOS 5–6
+        // where a 60 fps badge-pulse animation without containment invalidates
+        // the entire page layout on every frame, causing compositing jank.
+        contain: "layout style paint",
+        // isolation:isolate is belt-and-suspenders: prevents mix-blend-mode on
+        // any descendant overlay from collapsing the video GPU layer.
+        isolation: "isolate",
       }}
     >
       {/* ── Cinematic ambient background ──────────────────────────────────────
@@ -595,8 +605,10 @@ export function LiveBroadcastV2({
       <div
         style={{
           position: "absolute",
-          top: "clamp(12px, 2.5vh, 24px)",
-          right: "clamp(12px, 2.5vw, 24px)",
+          // Use TV safe-area variable when available (TV app), fall back to
+          // responsive clamp for admin preview context which has no --tv-safe-*.
+          top: "var(--tv-safe-v, clamp(12px, 2.5vh, 24px))",
+          right: "var(--tv-safe-h, clamp(12px, 2.5vw, 24px))",
           zIndex: 20,
           display: "flex",
           alignItems: "center",
