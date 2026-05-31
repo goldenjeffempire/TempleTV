@@ -126,7 +126,9 @@ async function autoEnqueueMissingHls(): Promise<{ triggered: number }> {
     triggered++;
   }
   if (triggered > 0) {
-    void broadcastOrchestrator.reload();
+    void broadcastOrchestrator.reload().catch((err) => {
+      logger.warn({ err }, "[broadcast-v2] auto-enqueue-missing-hls: background reload failed (non-fatal)");
+    });
     transcoderDispatcher.nudge();
   }
   logger.info({ triggered }, "[broadcast-v2] auto-enqueue-missing-hls: scan complete");
@@ -558,7 +560,9 @@ export async function restRoutes(app: FastifyInstance) {
       if (failCount >= BAD_URL_SKIP_THRESHOLD) {
         const itemTitle = snapForBlacklist.current?.title ?? null;
         await autoSuspendQueueItem(parsed.data.itemId, itemTitle, failCount);
-        void broadcastOrchestrator.reload();
+        void broadcastOrchestrator.reload().catch((err) => {
+          logger.warn({ err, itemId: parsed.data.itemId }, "[broadcast-v2] stall-report: background reload after auto-suspend failed (non-fatal)");
+        });
       }
       // Push a real-time event to all connected admin SSE clients so the
       // Master Control dashboard reflects stalls immediately — without waiting

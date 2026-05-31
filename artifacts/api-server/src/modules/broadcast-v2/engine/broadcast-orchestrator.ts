@@ -2241,7 +2241,9 @@ class BroadcastOrchestrator extends EventEmitter {
         const failCount = incrementBadUrlSkipCount(item.id);
         if (failCount >= BAD_URL_SKIP_THRESHOLD) {
           autoSuspendQueueItem(item.id, item.title ?? null, failCount, url ?? undefined);
-          void this.reload();
+          void this.reload().catch((err) => {
+            logger.warn({ err, itemId: item.id }, "[broadcast-v2] YouTube probe: background reload after auto-suspend failed (non-fatal)");
+          });
         }
       })();
       return;
@@ -2263,7 +2265,9 @@ class BroadcastOrchestrator extends EventEmitter {
       const failCount = incrementBadUrlSkipCount(item.id);
       if (failCount >= BAD_URL_SKIP_THRESHOLD) {
         autoSuspendQueueItem(item.id, item.title ?? null, failCount, url ?? undefined);
-        void this.reload();
+        void this.reload().catch((err) => {
+          logger.warn({ err, itemId: item.id }, "[broadcast-v2] proactive probe: background reload after auto-suspend failed (non-fatal)");
+        });
       }
     })();
   }

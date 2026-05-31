@@ -169,6 +169,8 @@ function PrayerSection() {
           submitPrayerRequest(null, "Praying with Temple TV").then((ok) => {
             setSending(false);
             if (ok) setSubmitted(true);
+          }).catch(() => {
+            setSending(false);
           });
         }}
         style={({ pressed }) => [styles.prayerBtn, { backgroundColor: c.primary, opacity: sending || pressed ? 0.72 : 1 }]}
