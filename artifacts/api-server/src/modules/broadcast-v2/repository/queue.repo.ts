@@ -30,11 +30,22 @@ import { isUndefinedColumnError } from "../../../infrastructure/db-schema-guard.
  * in dev and a security issue in prod.
  */
 
+// True only when the Node process is explicitly running in production mode.
+// In all other environments (development, test, staging) API_ORIGIN must NOT
+// be treated as "this server's own origin" — it typically points to a remote
+// production server (e.g. https://api.templetv.org.ng set for prod-sync) and
+// must not override REPLIT_DEV_DOMAIN or RENDER_EXTERNAL_URL which DO reflect
+// the actual public address of this dev instance.
+const IS_PROD_NODE_ENV = process.env.NODE_ENV === "production";
+
 export function normalizeQueueUrl(raw: string | null | undefined): string | null {
   if (!raw) return null;
   if (/^https?:\/\//i.test(raw)) return raw;
   // Resolution order (first truthy wins):
-  //   1. API_ORIGIN            — explicit own-origin, always wins (required in production)
+  //   1. API_ORIGIN            — explicit own-origin; ONLY used in production.
+  //                              In dev API_ORIGIN often points to the remote prod
+  //                              server (for prod-sync), so using it here would
+  //                              absolutize local upload paths to the wrong host.
   //   2. RENDER_EXTERNAL_URL   — Render auto-sets this to the service's public HTTPS URL;
   //                              gives zero-config self-origin detection on Render deploys
   //   3. REPLIT_DEV_DOMAIN     — Replit dev environment public domain
@@ -43,7 +54,7 @@ export function normalizeQueueUrl(raw: string | null | undefined): string | null
   //                              accepts these URLs and the player can load uploads from
   //                              the dev server running on the same machine.
   const publicBase = (
-    env.API_ORIGIN ??
+    (IS_PROD_NODE_ENV ? env.API_ORIGIN : undefined) ??
     process.env["RENDER_EXTERNAL_URL"] ??
     process.env["REPLIT_DEV_DOMAIN"]
   )?.replace(/\/+$/, "");
@@ -67,13 +78,21 @@ export function normalizeQueueUrl(raw: string | null | undefined): string | null
 // from external origins are introduced.
 
 /**
- * Returns this server's own absolute public base URL using the same priority
- * order as normalizeQueueUrl (API_ORIGIN > RENDER_EXTERNAL_URL >
- * REPLIT_DEV_DOMAIN > http://localhost:PORT).
+ * Returns this server's own absolute public base URL, used to:
+ *   1. Determine whether a queue item's source URL is "same-origin" (no proxy needed).
+ *   2. Construct the absolute media-proxy URL emitted in broadcast snapshots.
+ *
+ * Resolution order — identical to normalizeQueueUrl but with the same
+ * production-only guard on API_ORIGIN:
+ *   1. API_ORIGIN          — ONLY in production. In dev it points to the remote
+ *                            prod server (for prod-sync), not this dev instance.
+ *   2. RENDER_EXTERNAL_URL — zero-config Render self-detection
+ *   3. REPLIT_DEV_DOMAIN   — Replit dev environment public domain
+ *   4. http://localhost:PORT fallback
  */
 function getOwnBase(): string {
   const publicBase = (
-    env.API_ORIGIN ??
+    (IS_PROD_NODE_ENV ? env.API_ORIGIN : undefined) ??
     process.env["RENDER_EXTERNAL_URL"] ??
     process.env["REPLIT_DEV_DOMAIN"]
   )?.replace(/\/+$/, "");

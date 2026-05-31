@@ -220,6 +220,14 @@ async function main() {
   // Validate API_ORIGIN at startup — a mis-pointed value is the most common
   // cause of broadcast failures (media proxy URLs at wrong host → 404 stalls
   // → bad-URL cache → auto-suspension of all queue items → dead air).
+  //
+  // Important dev/prod distinction: in non-production environments (NODE_ENV ≠
+  // "production"), queue.repo.ts ignores API_ORIGIN for own-origin detection
+  // and media-proxy URL construction, using REPLIT_DEV_DOMAIN / RENDER_EXTERNAL_URL
+  // instead. This prevents a prod-sync API_ORIGIN (e.g. https://api.templetv.org.ng)
+  // from being treated as "same-origin" in dev, which would skip proxying and cause
+  // browser CORP errors when loading prod-sync media.
+  const isProdNodeEnv = process.env.NODE_ENV === "production";
   if (env.API_ORIGIN) {
     const parsed = (() => { try { return new URL(env.API_ORIGIN); } catch { return null; } })();
     if (!parsed) {
@@ -233,6 +241,16 @@ async function main() {
           "MISCONFIGURED: API_ORIGIN points to what looks like an admin frontend domain — it must be the API server URL " +
           "(e.g. https://api.templetv.org.ng), not the admin dashboard. " +
           "Broadcast media proxy URLs will be built at the wrong host → 404 stall reports → dead air.",
+        );
+      } else if (!isProdNodeEnv) {
+        // In dev, API_ORIGIN is typically set to the production server for prod-sync.
+        // queue.repo.ts ignores it for own-origin / proxy decisions in this environment.
+        const devFallback = process.env["RENDER_EXTERNAL_URL"] ?? process.env["REPLIT_DEV_DOMAIN"];
+        logger.info(
+          { API_ORIGIN: env.API_ORIGIN, devOwnOrigin: devFallback ?? "http://localhost (fallback)" },
+          "API_ORIGIN set but NODE_ENV=development — used only for prod-sync URL absolutizing; " +
+          "own-origin/media-proxy URLs will use REPLIT_DEV_DOMAIN/RENDER_EXTERNAL_URL instead " +
+          "(prevents prod-sync items from bypassing the media proxy in dev)",
         );
       } else {
         logger.info({ API_ORIGIN: env.API_ORIGIN }, "API_ORIGIN validated — own-origin and media proxy URLs will use this base");
