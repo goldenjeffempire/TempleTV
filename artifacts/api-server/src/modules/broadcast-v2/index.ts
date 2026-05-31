@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { restRoutes } from "./io/rest.routes.js";
-import { sseRoutes } from "./io/sse.gateway.js";
+import { sseRoutes, closeAllSseSessions } from "./io/sse.gateway.js";
 import { wsRoutes } from "./io/ws.gateway.js";
 import { broadcastOrchestrator } from "./engine/broadcast-orchestrator.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
@@ -304,16 +304,53 @@ export function ensureBroadcastV2Started(): Promise<void> {
 
 /**
  * Graceful shutdown for the broadcast-v2 module.
- * 1. Flushes the current playback position checkpoint to the database so
- *    restarts resume from the exact position rather than the last periodic
- *    checkpoint boundary (up to 5 s stale without this flush).
- * 2. Closes the Redis fan-out subscriber and stops the leader renewal timer.
+ *
+ * Order of operations matters:
+ *  1. Cancel pending boot/fanout retry timers so they never fire after
+ *     shutdown begins (prevents a re-init race during app.close()).
+ *  2. Force-close all open SSE streams so main.ts drain loop completes
+ *     promptly (each connection is in sseCounter — ending them decrements
+ *     the counter so the drain loop exits cleanly instead of timing out).
+ *  3. Stop all supervised workers (media-scanner, orphan-cleanup,
+ *     queue-validator, faststart-recovery, viewer-count-updater) — each
+ *     runs on a timer and may hold open DB connections.
+ *  4. Stop the orchestrator — clears its 7 internal timers (tick,
+ *     checkpoint, trim, keepAlive, selfHealEmpty, selfHealStale,
+ *     currentItemProbe) so the event loop can drain.
+ *  5. Flush the final checkpoint so restarts resume from the exact
+ *     playback position rather than the last periodic boundary.
+ *  6. Close the Redis fan-out subscriber and leader renewal timer.
+ *
  * Called from main.ts shutdown handler before app.close().
  */
 export async function stopBroadcastV2(): Promise<void> {
+  // 1. Cancel pending retry timers first — prevents any re-init after shutdown.
+  if (bootRetryTimer) {
+    clearTimeout(bootRetryTimer);
+    bootRetryTimer = null;
+  }
+  if (fanoutRetryTimer) {
+    clearTimeout(fanoutRetryTimer);
+    fanoutRetryTimer = null;
+  }
+
+  // 2. Force-close all open SSE streams immediately so the main.ts drain loop
+  //    can complete without waiting for the SHUTDOWN_DRAIN_MS timeout.
+  closeAllSseSessions();
+
+  // 3. Stop supervised workers (clears their internal timers + circuit-reset timers).
+  workerSupervisor.stopAll();
+  supervisedWorkersStarted = false;
+
+  // 4. Stop the orchestrator — clears 7 internal setInterval timers.
+  broadcastOrchestrator.stop();
+
+  // 5. Flush checkpoint so restart resumes from the correct playback position.
   await broadcastOrchestrator.flushCheckpointForShutdown().catch((err) =>
     logger.warn({ err }, "[broadcast-v2] final checkpoint flush failed (non-fatal)"),
   );
+
+  // 6. Close Redis fan-out subscriber and leader renewal timer.
   await broadcastFanout.close().catch((err) =>
     logger.warn({ err }, "[broadcast-v2] fanout close error (non-fatal)"),
   );

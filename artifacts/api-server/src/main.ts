@@ -450,6 +450,14 @@ async function main() {
       broadcastScheduler.stop();
       stopKeepAlive();
       stopMemoryWatchdog();
+      // Stop the viewer-slope monitor (1-min setInterval) so it does not
+      // keep the event loop alive after all other subsystems have shut down.
+      try {
+        const { stopViewerSlopeMonitor } = await import("./modules/admin-ops/viewer-slope-monitor.js");
+        stopViewerSlopeMonitor();
+      } catch {
+        /* non-fatal — monitor may not have been started */
+      }
       try {
         const { stopBroadcastV2 } = await import("./modules/broadcast-v2/index.js");
         await stopBroadcastV2();

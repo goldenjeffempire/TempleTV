@@ -4,6 +4,7 @@ import { eventLogRepo } from "../repository/event-log.repo.js";
 import type { V2EventType, V2ServerFrame } from "../domain/types.js";
 import { activeSseConnections, SERVICE_LABELS } from "../../../infrastructure/metrics.js";
 import { logger } from "../../../infrastructure/logger.js";
+import { sseCounter } from "../../../infrastructure/sse-counter.js";
 
 /**
  * Per-IP SSE connection counter. Prevents a single client or runaway browser
@@ -28,6 +29,25 @@ const _sseSweep = setInterval(() => {
 // unref() so this timer does not prevent the process from exiting gracefully.
 (_sseSweep as unknown as { unref?: () => void }).unref?.();
 
+// ── Open-connection registry for graceful shutdown ────────────────────────────
+// Each live SSE connection registers a cleanup callback here. During shutdown,
+// stopBroadcastV2() calls closeAllSseSessions() which invokes every callback,
+// ending the HTTP response streams so clients reconnect cleanly and the main.ts
+// drain loop sees sseCounter reach 0 before app.close() is called.
+const openSseCleanups = new Set<() => void>();
+
+/**
+ * Force-close all open broadcast-v2 SSE connections.
+ * Called during graceful shutdown before app.close() so the main.ts drain
+ * loop can complete without waiting for the SHUTDOWN_DRAIN_MS timeout.
+ */
+export function closeAllSseSessions(): void {
+  for (const cleanup of openSseCleanups) {
+    try { cleanup(); } catch { /* noop */ }
+  }
+  openSseCleanups.clear();
+}
+
 function getSseLimit(): number {
   const val = process.env["MAX_SSE_PER_IP"];
   if (val === undefined || val === "") return 8;
@@ -51,6 +71,9 @@ export async function sseRoutes(app: FastifyInstance) {
       sseConnectionsPerIp.set(ip, current + 1);
     }
     activeSseConnections.inc({ surface: "broadcast-v2", ...SERVICE_LABELS });
+    // Register with the process-wide SSE drain counter so the shutdown
+    // logic in main.ts waits for this connection before calling app.close().
+    sseCounter.inc();
 
     // Register counter cleanup IMMEDIATELY after increment — before any async
     // work (event log replay, etc.) — so a client that disconnects during
@@ -140,18 +163,29 @@ export async function sseRoutes(app: FastifyInstance) {
     }, 10_000);
     heartbeat.unref?.();
 
-    req.raw.on("close", () => {
+    // Idempotent cleanup: called on natural client disconnect OR by
+    // closeAllSseSessions() during graceful shutdown. The `closed` flag
+    // prevents double-decrement of every counter if both paths fire.
+    let closed = false;
+    const cleanup = () => {
+      if (closed) return;
+      closed = true;
+      openSseCleanups.delete(cleanup);
       clearInterval(heartbeat);
       broadcastOrchestrator.off("frame", onFrame);
-      // releaseCounter is idempotent — safe even if the early handler already
+      // releaseCounter is idempotent — safe even if the early handler
       // fired (e.g. client disconnected during event log replay above).
       releaseCounter();
+      sseCounter.dec();
       activeSseConnections.dec({ surface: "broadcast-v2", ...SERVICE_LABELS });
       try {
         reply.raw.end();
       } catch {
         /* noop */
       }
-    });
+    };
+
+    openSseCleanups.add(cleanup);
+    req.raw.on("close", cleanup);
   });
 }
