@@ -203,7 +203,18 @@ function buildFfmpegArgs(
   //
   // CPU overhead: ~6–8 % vs the fast preset baseline. Acceptable for
   // background transcoding on a Replit instance.
-  args.push("-x264-params", "me=umh:subme=7:direct=auto");
+  // me=umh:subme=7:direct=auto: see comment above.
+  // deblock=-1:-1: reduce deblocking aggressiveness by one step on both
+  //   alpha (luma) and beta (chroma) axes. The 'fast' preset's default is
+  //   deblock=0:0 which applies moderate loop deblocking — visually blurring
+  //   high-contrast edges. At CRF=21 and our raised bitrates, the encode has
+  //   enough bits to represent fine detail; reducing deblocking lets that
+  //   detail survive to the output. Most noticeable on on-screen text, speaker
+  //   name lower-thirds, and fine fabric textures in worship/sermon footage.
+  //   At 360p/480p the marginal effect is also positive — the higher bitrates
+  //   ensure macroblocks are already well-coded, so softer deblocking sharpens
+  //   rather than exposing artefacts.
+  args.push("-x264-params", "me=umh:subme=7:direct=auto:deblock=-1:-1");
 
   args.push("-force_key_frames", `expr:gte(t,n_forced*${KEYFRAME_INTERVAL_SECS})`);
   args.push("-sc_threshold", "0");

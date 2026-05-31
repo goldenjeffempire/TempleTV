@@ -249,23 +249,34 @@ export function HlsVideoPlayer({
         startLevel: -1,              // auto-select by bandwidth probe
         capLevelToPlayerSize: true,  // don't load 1080p into a small container
         debug: false,
-        // Start ABR with an 8 Mbps optimistic estimate — ensures fast
-        // connections open at the highest available rendition instead of 360p.
-        abrEwmaDefaultEstimate: 8_000_000,
+        // Start ABR with an optimistic 10 Mbps estimate — same as
+        // LiveBroadcastV2. On fast connections probes the highest rendition
+        // first; on slow links converges down within 2–3 segments.
+        abrEwmaDefaultEstimate: 10_000_000,
         // Conservative bandwidth estimate (0.92) reduces unnecessary quality
         // downswitches during brief link fluctuations — keeps a stable level.
         // Faster up-factor (0.82) recovers quality within 2–3 stable segments
         // after a bandwidth dip without oscillating, matched to LiveBroadcastV2.
         abrBandWidthFactor: 0.92,
         abrBandWidthUpFactor: 0.82,
+        // Fast EWMA reacts quickly to bandwidth drops; slow EWMA provides a
+        // stable long-term baseline for quality selection. Values match
+        // LiveBroadcastV2 — they have been tuned for typical church/LTE links.
+        abrEwmaFastLive: 3.0,
+        abrEwmaSlowLive: 9.0,
+        // Frame-pacing: disable live-sync nudge — queue playback is VOD-style;
+        // nudging causes jarring seek artefacts on Smart TV decoders.
+        liveSyncDurationCount: 3,
+        liveMaxLatencyDurationCount: 10,
         // Fetch next fragment before current one ends (zero-gap transitions).
         startFragPrefetch: true,
         // SW AES fallback for Smart TV runtimes without HW crypto.
         enableSoftwareAES: true,
-        maxFragLookUpTolerance: 0.2,
-        // Retry on MSE append errors (codec/buffer pipeline hiccups on Tizen)
-        // before escalating to a fatal error and triggering a full reload.
-        appendErrorMaxRetry: 3,
+        // Tighter fragment boundary matching reduces gaps at segment joins.
+        maxFragLookUpTolerance: 0.15,
+        // Retry MSE append errors 8× before escalating — matches LiveBroadcastV2.
+        // Codec/pipeline hiccups on Tizen/webOS often clear within 3–5 retries.
+        appendErrorMaxRetry: 8,
         // Buffer health / segment continuity
         // highBufferWatchdogPeriod: nudge stalled high-buffer streams every 3 s
         // (catches the rare case where the decode pipeline is frozen even though
@@ -279,17 +290,20 @@ export function HlsVideoPlayer({
         // progressive: deliver decoded frames as bytes arrive rather than waiting
         // for the full 2 s segment — meaningful latency reduction on slower links.
         progressive: true,
-        // Retry tuning
+        // Retry budgets — aligned with LiveBroadcastV2 for consistent recovery
+        // behaviour across all TV player surfaces. Lower delays (400 ms vs 500)
+        // recover faster from transient CDN hiccups; higher retry counts (12/10)
+        // survive sustained weak-signal environments common on church Wi-Fi.
         lowLatencyMode: false,
-        fragLoadingMaxRetry: 10,
-        fragLoadingRetryDelay: 500,
-        fragLoadingMaxRetryTimeout: 8_000,
-        manifestLoadingMaxRetry: 8,
-        manifestLoadingRetryDelay: 500,
-        levelLoadingMaxRetry: 8,
-        levelLoadingRetryDelay: 500,
-        nudgeMaxRetry: 8,
-        nudgeOffset: 0.3,
+        fragLoadingMaxRetry: 12,
+        fragLoadingRetryDelay: 400,
+        fragLoadingMaxRetryTimeout: 6_000,
+        manifestLoadingMaxRetry: 10,
+        manifestLoadingRetryDelay: 400,
+        levelLoadingMaxRetry: 10,
+        levelLoadingRetryDelay: 400,
+        nudgeMaxRetry: 10,
+        nudgeOffset: 0.2,
       });
       hls.attachMedia(video);
       hls.loadSource(url);
@@ -303,6 +317,18 @@ export function HlsVideoPlayer({
         setQualityLabel(levelLabel(hls.levels[d.level]?.height));
       });
       let stallLevelDropped = false;
+      // Track the recovery timer so we can cancel it if the HLS instance is
+      // destroyed before the 30 s window elapses — prevents calling
+      // hls.currentLevel = -1 on a dead instance.
+      let stallRecoveryTimerHls: ReturnType<typeof setTimeout> | null = null;
+      const originalHlsDestroy = hls.destroy.bind(hls);
+      hls.destroy = () => {
+        if (stallRecoveryTimerHls !== null) {
+          clearTimeout(stallRecoveryTimerHls);
+          stallRecoveryTimerHls = null;
+        }
+        originalHlsDestroy();
+      };
       hls.on(HlsLib.Events.ERROR, (_e, data) => {
         // ABR stall-drop: on non-fatal load stalls, immediately drop to the
         // lowest available rendition (if not already there) to shed a bitrate
@@ -328,7 +354,8 @@ export function HlsVideoPlayer({
               hls.currentLevel = 0; // drop to lowest bitrate
             }
             // Always schedule auto-recovery — fires even when already at level 0.
-            setTimeout(() => {
+            stallRecoveryTimerHls = setTimeout(() => {
+              stallRecoveryTimerHls = null;
               try { stallLevelDropped = false; hls.currentLevel = -1; } catch { /* destroyed */ }
             }, 30_000);
           }

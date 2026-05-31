@@ -54,7 +54,8 @@ export default function ChatOverlay({ compact = false, className }: ChatOverlayP
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className={`fixed bottom-6 right-6 z-30 px-4 py-2 rounded-full bg-black/70 backdrop-blur text-white text-sm font-medium hover:bg-black/85 ${className ?? ""}`}
+        className={`fixed z-30 px-4 py-2 rounded-full bg-black/70 backdrop-blur text-white text-sm font-medium hover:bg-black/85 ${className ?? ""}`}
+        style={{ bottom: "var(--tv-safe-v, 1.5rem)", right: "var(--tv-safe-h, 1.5rem)" }}
         data-testid="chat-overlay-open"
       >
         💬 Live chat · {viewers}
@@ -67,7 +68,8 @@ export default function ChatOverlay({ compact = false, className }: ChatOverlayP
 
   return (
     <div
-      className={`fixed bottom-6 right-6 z-30 w-[360px] max-w-[90vw] rounded-xl overflow-hidden shadow-2xl bg-black/75 backdrop-blur text-white border border-white/10 ${className ?? ""}`}
+      className={`fixed z-30 w-[360px] max-w-[90vw] rounded-xl overflow-hidden shadow-2xl bg-black/75 backdrop-blur text-white border border-white/10 ${className ?? ""}`}
+      style={{ bottom: "var(--tv-safe-v, 1.5rem)", right: "var(--tv-safe-h, 1.5rem)" }}
       data-testid="chat-overlay"
     >
       <div className="flex items-center justify-between px-3 py-2 border-b border-white/10 text-xs">

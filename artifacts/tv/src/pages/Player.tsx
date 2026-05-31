@@ -217,7 +217,7 @@ function YouTubePlayer({
         allowFullScreen
         onLoad={() => setLoading(false)}
       />
-      <button onClick={onBack} style={{ position: "absolute", top: 24, left: 32, zIndex: 30, background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 50, width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#fff", fontSize: 20 }}>←</button>
+      <button onClick={onBack} style={{ position: "absolute", top: "var(--tv-safe-v, 24px)", left: "var(--tv-safe-h, 32px)", zIndex: 30, background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 50, width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#fff", fontSize: 20 }}>←</button>
       {isLive && <BroadcastChannelBug />}
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
@@ -344,7 +344,7 @@ function LiveBroadcastHlsPlayer({
       {/* Back button */}
       <button
         onClick={onBack}
-        style={{ position: "absolute", top: 24, left: 32, zIndex: 50, background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 50, width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#fff", fontSize: 20 }}
+        style={{ position: "absolute", top: "var(--tv-safe-v, 24px)", left: "var(--tv-safe-h, 32px)", zIndex: 50, background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 50, width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#fff", fontSize: 20 }}
         aria-label="Back"
       >
         ←

@@ -46,8 +46,8 @@ export function BroadcastLiveCompanion({ isLive, viewerCount }: Props) {
     <div
       style={{
         position: "absolute",
-        left: 32,
-        bottom: 32,
+        left: "var(--tv-safe-h, 32px)",
+        bottom: "var(--tv-safe-v, 32px)",
         display: "flex",
         alignItems: "center",
         gap: 12,

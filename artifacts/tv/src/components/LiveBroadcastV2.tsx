@@ -179,6 +179,12 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
   // because hls.js may classify a congested link as FRAG_LOAD_ERROR before
   // the timeout fires. Both ultimately indicate "current level too heavy".
   let stallLevelDropped = false;
+  // Track the recovery timer so we can cancel it when the HLS instance is
+  // destroyed (navigation away, buffer swap). Without this, a 30 s timer
+  // created just before navigation fires after hls.destroy(), calling
+  // hls.currentLevel = -1 on a dead instance — which silently throws on
+  // some hls.js versions and holds the stale closure in memory.
+  let stallRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
   const handleHlsStallDrop = (_evt: unknown, data: { fatal: boolean; details: string }) => {
     if (data.fatal) return; // fatal errors handled below in the main error listener
     if (stallLevelDropped) return; // only drop once per hls instance
@@ -194,9 +200,10 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
       stallLevelDropped = true;
       hls.currentLevel = lowestLevel;
       // Allow ABR to recover after 30 s of stable play at the lower level.
-      setTimeout(() => {
+      stallRecoveryTimer = setTimeout(() => {
+        stallRecoveryTimer = null;
         stallLevelDropped = false;
-        hls.currentLevel = -1; // auto
+        try { hls.currentLevel = -1; } catch { /* hls already destroyed */ }
       }, 30_000);
     }
   };
@@ -306,6 +313,18 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
       // The stall watchdog will catch the frozen stream within 15 s.
     }
   });
+
+  // Cancel the stall-recovery timer if it is still pending when this HLS
+  // instance is torn down. Prevents hls.currentLevel = -1 from firing on
+  // a destroyed instance and plugs the 30 s closure memory leak.
+  const originalDestroy = hls.destroy.bind(hls);
+  hls.destroy = () => {
+    if (stallRecoveryTimer !== null) {
+      clearTimeout(stallRecoveryTimer);
+      stallRecoveryTimer = null;
+    }
+    originalDestroy();
+  };
 
   hls.loadSource(url);
   hls.attachMedia(video);
