@@ -117,6 +117,16 @@ setInterval(() => {
 // endpoint reports their live sizes without needing a dedicated API call.
 registerNamedStore("sse-sub-tokens", () => sseTokenStore.size);
 
+// Force-close registry: populated by the admin SSE handler for each open
+// connection. closeAllAdminSseSessions() is called during graceful shutdown so
+// the drain loop completes in O(ms) instead of hitting the drain timeout.
+const openAdminSseCleanups = new Set<() => void>();
+export function closeAllAdminSseSessions(): void {
+  for (const cleanup of openAdminSseCleanups) {
+    try { cleanup(); } catch { /* ignore */ }
+  }
+}
+
 function uptimeSec(): number {
   return Math.round((Date.now() - startedAtMs) / 1000);
 }
@@ -3256,8 +3266,13 @@ export async function adminOpsRoutes(app: FastifyInstance) {
           /* ignore — close handler will clean up */
         }
       }, 5_000);
+      heartbeat.unref?.();
 
+      let adminSseClosed = false;
       const cleanup = () => {
+        if (adminSseClosed) return;
+        adminSseClosed = true;
+        openAdminSseCleanups.delete(cleanup);
         clearInterval(heartbeat);
         broadcastEngine.off("event", onEvent);
         adminEventBus.off("admin-event", onAdminEvent);
@@ -3269,6 +3284,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         }
       };
 
+      openAdminSseCleanups.add(cleanup);
       req.raw.on("close", cleanup);
       req.raw.on("error", cleanup);
     },

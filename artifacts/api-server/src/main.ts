@@ -464,12 +464,35 @@ async function main() {
       } catch {
         // fanout already closed or never started — non-fatal
       }
+      // Force-close all remaining SSE connections from the v1 broadcast,
+      // realtime, and admin-ops handlers. Each cleanup is idempotent and
+      // self-removes from its registry, so calling them here before the
+      // drain loop means the loop completes in O(ms) instead of timing out.
+      try {
+        const { closeAllBroadcastSseSessions } = await import("./modules/broadcast/broadcast.routes.js");
+        closeAllBroadcastSseSessions();
+      } catch { /* non-fatal */ }
+      try {
+        const { closeAllRealtimeSseSessions } = await import("./modules/realtime/sse.gateway.js");
+        closeAllRealtimeSseSessions();
+      } catch { /* non-fatal */ }
+      try {
+        const { closeAllAdminSseSessions } = await import("./modules/admin-ops/admin-ops.routes.js");
+        closeAllAdminSseSessions();
+      } catch { /* non-fatal */ }
+      // Stop the prod-sync poll timer (setInterval) so it does not keep the
+      // event loop alive or spawn ffprobe child processes after shutdown.
+      try {
+        const { prodQueueSync } = await import("./modules/prod-sync/prod-queue-sync.js");
+        prodQueueSync.stop();
+      } catch { /* non-fatal — prod-sync may not have been started */ }
     }
     if (mode === "worker" || mode === "all") stopWorkers();
     if (app) {
       // F20: wait for open SSE connections to drain before closing the server.
-      // This gives long-lived SSE clients a chance to receive their last frame
-      // and reconnect cleanly instead of getting an abrupt TCP reset.
+      // All SSE handlers have already been force-closed above, so this loop
+      // should complete in the first iteration. The timeout is retained as a
+      // safety net for any connections that slipped through.
       const drainMs = env.SHUTDOWN_DRAIN_MS;
       if (drainMs > 0) {
         const openSse = sseCounter.get();

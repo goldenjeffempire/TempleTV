@@ -50,6 +50,16 @@ function sseDecrement(ip: string): void {
   else sseConnections.set(ip, cur - 1);
 }
 
+// Force-close registry: populated by the SSE handler for each open connection.
+// closeAllRealtimeSseSessions() is called during graceful shutdown so the
+// server drain loop completes in O(ms) instead of waiting for the timeout.
+const openRealtimeSseCleanups = new Set<() => void>();
+export function closeAllRealtimeSseSessions(): void {
+  for (const cleanup of openRealtimeSseCleanups) {
+    try { cleanup(); } catch { /* ignore */ }
+  }
+}
+
 export async function sseRoutes(app: FastifyInstance) {
   app.get("/realtime/sse", async (req, reply) => {
     const ip = req.ip ?? "unknown";
@@ -111,8 +121,13 @@ export async function sseRoutes(app: FastifyInstance) {
         /* ignore — close handler will clean up */
       }
     }, 10_000);
+    heartbeat.unref?.();
 
+    let realtimeSseClosed = false;
     const cleanup = () => {
+      if (realtimeSseClosed) return;
+      realtimeSseClosed = true;
+      openRealtimeSseCleanups.delete(cleanup);
       clearInterval(heartbeat);
       broadcastEngine.off("event", onEvent);
       overrideBus.off("change", onOverrideChange);
@@ -126,6 +141,7 @@ export async function sseRoutes(app: FastifyInstance) {
       }
     };
 
+    openRealtimeSseCleanups.add(cleanup);
     req.raw.on("close", cleanup);
     req.raw.on("error", cleanup);
   });

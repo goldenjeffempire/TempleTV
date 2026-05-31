@@ -196,6 +196,16 @@ function sseDecrement(ip: string): void {
   else sseConnections.set(ip, n - 1);
 }
 
+// Force-close registry: populated by the SSE handler for each open connection.
+// closeAllBroadcastSseSessions() is called during graceful shutdown so the
+// server drain loop completes in O(ms) instead of waiting for the timeout.
+const openBroadcastSseCleanups = new Set<() => void>();
+export function closeAllBroadcastSseSessions(): void {
+  for (const cleanup of openBroadcastSseCleanups) {
+    try { cleanup(); } catch { /* ignore */ }
+  }
+}
+
 export async function broadcastRoutes(app: FastifyInstance) {
   const r = app.withTypeProvider<ZodTypeProvider>();
 
@@ -909,8 +919,13 @@ export async function broadcastRoutes(app: FastifyInstance) {
           /* already gone */
         }
       }, 15_000);
+      heartbeat.unref?.();
 
+      let broadcastSseClosed = false;
       const cleanup = () => {
+        if (broadcastSseClosed) return;
+        broadcastSseClosed = true;
+        openBroadcastSseCleanups.delete(cleanup);
         clearInterval(heartbeat);
         broadcastEngine.off("event", onBroadcastEvent);
         overrideBus.off("change", onOverrideChange);
@@ -923,6 +938,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
         try { reply.raw.end(); } catch { /* ignore */ }
       };
 
+      openBroadcastSseCleanups.add(cleanup);
       req.raw.on("close", cleanup);
       req.raw.on("error", cleanup);
     },

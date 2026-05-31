@@ -18,6 +18,16 @@ import { logger } from "../infrastructure/logger.js";
  */
 const _svaCache = new Map<string, { validAfter: Date | null; cachedAt: number }>();
 const _SVA_TTL_MS = 30_000;
+// Periodic GC: entries expire after _SVA_TTL_MS but are only evicted from the
+// Map on the next read for that user. On a 24/7 server with many unique users,
+// the Map would otherwise grow to O(distinct authenticated users) indefinitely.
+// A 5-minute sweep keeps memory tightly bounded with negligible CPU cost.
+setInterval(() => {
+  const cutoff = Date.now() - _SVA_TTL_MS;
+  for (const [uid, entry] of _svaCache) {
+    if (entry.cachedAt < cutoff) _svaCache.delete(uid);
+  }
+}, 5 * 60_000).unref?.();
 
 /**
  * Return the sessions_valid_after timestamp for a user, using the in-process
