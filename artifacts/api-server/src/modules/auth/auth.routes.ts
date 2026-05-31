@@ -279,8 +279,10 @@ export async function authRoutes(app: FastifyInstance) {
     async (req, reply) => {
       // Fire-and-forget: DB + email work happens after the 202 response is
       // sent so the caller cannot use timing side-channels to enumerate emails.
-      authService.forgotPassword(req.body).catch(() => {
-        /* silent — never surface internal errors on this endpoint */
+      authService.forgotPassword(req.body).catch((err: unknown) => {
+        // Log internally so operators can detect SMTP/DB failures, but never
+        // surface the error to the caller (timing-safe enumeration prevention).
+        req.log.error({ err }, "[auth] forgotPassword background task failed — reset email may not have been sent");
       });
       reply.code(202);
       return { message: "If that email is registered, you will receive a reset link shortly." };

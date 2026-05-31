@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, integer, boolean, index } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, integer, boolean, index, uniqueIndex } from "drizzle-orm/pg-core";
 
 /**
  * Series — sermon series / teaching collections with episode hierarchy.
@@ -52,6 +52,11 @@ export const seriesEpisodesTable = pgTable(
   (t) => [
     index("idx_series_episodes_series").on(t.seriesId, t.episodeNumber),
     index("idx_series_episodes_video").on(t.videoId),
+    // Prevent duplicate episode numbers within the same series. The add-episode
+    // route relies on this constraint to catch concurrent MAX()+1 races and retry.
+    uniqueIndex("series_episodes_series_ep_num_uq").on(t.seriesId, t.episodeNumber),
+    // Prevent a video appearing more than once in the same series.
+    uniqueIndex("series_episodes_series_video_uq").on(t.seriesId, t.videoId),
   ],
 );
 

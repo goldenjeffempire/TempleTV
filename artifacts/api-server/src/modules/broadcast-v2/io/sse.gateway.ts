@@ -3,6 +3,7 @@ import { broadcastOrchestrator } from "../engine/broadcast-orchestrator.js";
 import { eventLogRepo } from "../repository/event-log.repo.js";
 import type { V2EventType, V2ServerFrame } from "../domain/types.js";
 import { activeSseConnections, SERVICE_LABELS } from "../../../infrastructure/metrics.js";
+import { logger } from "../../../infrastructure/logger.js";
 
 /**
  * Per-IP SSE connection counter. Prevents a single client or runaway browser
@@ -120,9 +121,14 @@ export async function sseRoutes(app: FastifyInstance) {
             payload: e.payload,
           });
         }
-      } catch {
+      } catch (err) {
         // Replay failure is non-fatal — the snapshot above already gives
-        // the client authoritative current state.
+        // the client authoritative current state. Log so operators can detect
+        // if replay failures become frequent (indicates DB performance issues).
+        logger.warn(
+          { err, channelId: broadcastOrchestrator.channelId, lastSeq },
+          "[broadcast-v2] SSE replay failed — client will rely on snapshot for missed events",
+        );
       }
     }
 

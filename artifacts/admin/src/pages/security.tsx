@@ -48,12 +48,23 @@ type SetupStep = "idle" | "scanning" | "verifying" | "done";
 
 function CodeDisplay({ code }: { code: string }) {
   const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clear the "copied" reset timer on unmount to avoid a setState call on an
+  // unmounted component (which React will warn about and can leak memory).
+  useEffect(() => () => {
+    if (timerRef.current !== null) clearTimeout(timerRef.current);
+  }, []);
+
   return (
     <button
       onClick={() => {
         void navigator.clipboard.writeText(code);
         setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
+        // Cancel any in-flight reset before scheduling a new one, so rapid
+        // clicks don't stack timers and cause the icon to flicker prematurely.
+        if (timerRef.current !== null) clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(() => { timerRef.current = null; setCopied(false); }, 2000);
       }}
       className="flex items-center gap-2 text-sm font-mono bg-muted px-3 py-1.5 rounded hover:bg-muted/80 transition-colors cursor-pointer select-all"
       title="Click to copy"
@@ -66,24 +77,32 @@ function CodeDisplay({ code }: { code: string }) {
 
 function QrCode({ uri }: { uri: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [qrError, setQrError] = useState(false);
 
   useEffect(() => {
+    setQrError(false);
     const canvas = canvasRef.current;
     if (!canvas) return;
     QRCode.toCanvas(canvas, uri, {
       width: 200,
       margin: 2,
       color: { dark: "#000000", light: "#ffffff" },
-    }).catch(() => {});
+    }).catch(() => setQrError(true));
   }, [uri]);
 
   return (
     <div className="flex flex-col items-center gap-3">
-      <canvas
-        ref={canvasRef}
-        className="rounded-lg border shadow-sm"
-        aria-label="Scan this QR code with your authenticator app"
-      />
+      {qrError ? (
+        <div className="w-[200px] h-[200px] flex items-center justify-center rounded-lg border bg-muted text-center p-4 text-sm text-muted-foreground">
+          QR code could not be generated. Use the manual key below.
+        </div>
+      ) : (
+        <canvas
+          ref={canvasRef}
+          className="rounded-lg border shadow-sm"
+          aria-label="Scan this QR code with your authenticator app"
+        />
+      )}
       <p className="text-xs text-muted-foreground text-center max-w-[220px]">
         Scan with Google Authenticator, Authy, or any TOTP app
       </p>

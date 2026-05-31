@@ -187,8 +187,9 @@ export class StateSyncService {
 
   private applyWire(wire: WirePlaybackState, reason: string, leadMs?: number): void {
     // Guard against out-of-order frames: only accept frames with a strictly
-    // newer server timestamp. Allows safe concurrent HTTP + WS paths.
-    if (wire.serverTimeMs < this.lastServerTimeMs) return;
+    // newer server timestamp. Using <= prevents a stale HTTP snapshot (same ms)
+    // from overwriting a fresh WebSocket event that arrived in the same tick.
+    if (wire.serverTimeMs <= this.lastServerTimeMs) return;
     this.lastServerTimeMs = wire.serverTimeMs;
     this.cb.onState(wire, reason, leadMs);
   }

@@ -270,7 +270,14 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
       });
 
       // F02: persist to DB so session survives a server restart.
-      void persistSessionToDb(session);
+      // Log on failure so operators know the session is in-memory only and
+      // would be lost on a restart before any chunk arrives.
+      persistSessionToDb(session).catch((err: unknown) => {
+        req.log.error(
+          { err, sessionId: session.sessionId },
+          "[s3-multipart-init] failed to persist session to DB — session in-memory only until recovered",
+        );
+      });
 
       req.log.info(
         { sessionId: session.sessionId, uploadId, objectKey, totalParts, sizeBytes: body.sizeBytes },

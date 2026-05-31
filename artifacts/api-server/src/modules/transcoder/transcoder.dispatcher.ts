@@ -1,4 +1,4 @@
-import { and, eq, inArray, lt, lte, or, sql, isNull, count } from "drizzle-orm";
+import { and, eq, inArray, lt, lte, ne, or, sql, isNull, count } from "drizzle-orm";
 import { readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -463,7 +463,13 @@ class TranscoderDispatcher {
         await db.update(videos).set({ transcodingStatus: "failed" }).where(inArray(videos.id, failedVideoIds));
       }
       if (requeuedVideoIds.length > 0) {
-        await db.update(videos).set({ transcodingStatus: "queued" }).where(inArray(videos.id, requeuedVideoIds));
+        // Guard: never revert a video that has already reached hls_ready
+        // (e.g. completed by a concurrent replica between the stuck-job scan
+        // and this update). Without the guard a stuck-job watchdog cycle could
+        // downgrade a finished video back to "queued" and re-transcode it.
+        await db.update(videos)
+          .set({ transcodingStatus: "queued" })
+          .where(and(inArray(videos.id, requeuedVideoIds), ne(videos.transcodingStatus, "hls_ready")));
       }
 
       logger.warn(

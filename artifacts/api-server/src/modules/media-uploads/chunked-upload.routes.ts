@@ -178,11 +178,12 @@ async function finalizeFromDbFallback(
         : Buffer.alloc(0);
 
       if (buf.length === 0) {
-        log.warn(
-          { sessionId: session.sessionId, chunkIndex: i },
-          "[finalize-fallback] chunk has empty fallbackData — skipping",
-        );
-        continue;
+        // A missing chunk means the assembled file would be corrupt/truncated.
+        // Fail hard so the client sees a clear error and can re-upload rather
+        // than silently producing a broken video.
+        const msg = `[finalize-fallback] chunk ${i} has empty fallbackData — cannot assemble video (sessionId: ${session.sessionId}). Re-upload required.`;
+        log.error({ sessionId: session.sessionId, chunkIndex: i }, msg);
+        throw new Error(msg);
       }
 
       const { etag } = await storage().uploadPart({

@@ -288,19 +288,29 @@ export async function seriesRoutes(app: FastifyInstance) {
         .where(eq(schema.seriesEpisodesTable.seriesId, req.params.id))
         .then(([r]) => Number(r?.nextEp ?? 1));
 
+      // Wrap INSERT + episodeCount UPDATE in a transaction so a failure between
+      // the two writes never leaves the count permanently out of sync.
       let episode;
       try {
-        [episode] = await db.insert(schema.seriesEpisodesTable).values({
-          id: crypto.randomUUID(),
-          seriesId: req.params.id,
-          videoId,
-          episodeNumber: resolvedEpNum,
-          title: title ?? null,
-          description: description ?? null,
-        }).returning();
+        await db.transaction(async (tx) => {
+          [episode] = await tx.insert(schema.seriesEpisodesTable).values({
+            id: crypto.randomUUID(),
+            seriesId: req.params.id,
+            videoId,
+            episodeNumber: resolvedEpNum,
+            title: title ?? null,
+            description: description ?? null,
+          }).returning();
+          // Atomic increment — avoids the fetch-all-then-count round-trip.
+          await tx
+            .update(schema.seriesTable)
+            .set({ episodeCount: sql`episode_count + 1`, updatedAt: new Date() })
+            .where(eq(schema.seriesTable.id, req.params.id));
+        });
       } catch (err: unknown) {
         // Two concurrent requests can race on MAX()+1 for the same series.
-        // Retry once with a fresh MAX() to resolve the conflict.
+        // The unique constraint on (series_id, episode_number) fires a 23505;
+        // retry once with a fresh MAX() to resolve the conflict.
         if ((err as { code?: string }).code === "23505") {
           const retryEpNum = await db
             .select({
@@ -309,27 +319,25 @@ export async function seriesRoutes(app: FastifyInstance) {
             .from(schema.seriesEpisodesTable)
             .where(eq(schema.seriesEpisodesTable.seriesId, req.params.id))
             .then(([r]) => Number(r?.nextEp ?? 1));
-          [episode] = await db.insert(schema.seriesEpisodesTable).values({
-            id: crypto.randomUUID(),
-            seriesId: req.params.id,
-            videoId,
-            episodeNumber: retryEpNum,
-            title: title ?? null,
-            description: description ?? null,
-          }).returning();
+          await db.transaction(async (tx) => {
+            [episode] = await tx.insert(schema.seriesEpisodesTable).values({
+              id: crypto.randomUUID(),
+              seriesId: req.params.id,
+              videoId,
+              episodeNumber: retryEpNum,
+              title: title ?? null,
+              description: description ?? null,
+            }).returning();
+            await tx
+              .update(schema.seriesTable)
+              .set({ episodeCount: sql`episode_count + 1`, updatedAt: new Date() })
+              .where(eq(schema.seriesTable.id, req.params.id));
+          });
           logger.warn({ seriesId: req.params.id, resolved: retryEpNum }, "series: episode number conflict resolved on retry");
         } else {
           throw err;
         }
       }
-
-      // Atomic increment — avoids the fetch-all-then-count round-trip.
-      // GREATEST(..., 0) guards against a race where the count could
-      // momentarily go negative if two deletions race an add.
-      await db
-        .update(schema.seriesTable)
-        .set({ episodeCount: sql`episode_count + 1`, updatedAt: new Date() })
-        .where(eq(schema.seriesTable.id, req.params.id));
 
       logger.info(
         { seriesId: req.params.id, videoId, episodeNumber: resolvedEpNum, addedBy: req.principal?.email ?? "admin" },
@@ -356,16 +364,18 @@ export async function seriesRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      await db
-        .delete(schema.seriesEpisodesTable)
-        .where(eq(schema.seriesEpisodesTable.id, req.params.episodeId));
-
-      // Atomic decrement — no need to re-count all episodes.
-      // GREATEST(episode_count - 1, 0) prevents underflow on concurrent deletes.
-      await db
-        .update(schema.seriesTable)
-        .set({ episodeCount: sql`greatest(episode_count - 1, 0)`, updatedAt: new Date() })
-        .where(eq(schema.seriesTable.id, req.params.id));
+      // Wrap DELETE + episodeCount decrement in a transaction so a mid-flight
+      // failure never leaves the count permanently out of sync with actual rows.
+      await db.transaction(async (tx) => {
+        await tx
+          .delete(schema.seriesEpisodesTable)
+          .where(eq(schema.seriesEpisodesTable.id, req.params.episodeId));
+        // Atomic decrement — GREATEST(..., 0) prevents underflow on concurrent deletes.
+        await tx
+          .update(schema.seriesTable)
+          .set({ episodeCount: sql`greatest(episode_count - 1, 0)`, updatedAt: new Date() })
+          .where(eq(schema.seriesTable.id, req.params.id));
+      });
 
       return reply.code(204).send(null);
     },
