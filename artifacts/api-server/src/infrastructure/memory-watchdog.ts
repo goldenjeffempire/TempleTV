@@ -12,7 +12,12 @@
  *      rolling SLOPE_WINDOW_SAMPLES window and alerts when sustained
  *      growth exceeds EXTERNAL_GROWTH_ALERT_MB_PER_MIN.
  *
- *   3. Critical escalation — in production only, voluntarily exits after
+ *   3. Heap-used slope alert — tracks the rate of change of V8 `heapUsed`
+ *      (JS objects) over the same rolling window and alerts when sustained
+ *      growth exceeds HEAP_USED_GROWTH_ALERT_MB_PER_MIN. This catches JS
+ *      object leaks that don't show up in the `external` counter.
+ *
+ *   4. Critical escalation — in production only, voluntarily exits after
  *      CRITICAL_SAMPLES_FOR_EXIT consecutive over-threshold RSS samples so
  *      the supervisor (Replit, k8s) can restart cleanly.
  *
@@ -29,13 +34,17 @@ const SUSTAIN_SAMPLES = 3;
 const CRITICAL_SAMPLES_FOR_EXIT = 10;
 const FORCE_EXIT_GRACE_MS = 30_000;
 
-/** Rolling window size (samples) for external memory slope calculation. */
+/** Rolling window size (samples) for slope calculations. */
 const SLOPE_WINDOW_SAMPLES = 6;
 /** Alert when external memory is growing faster than this (MB / min). */
 const EXTERNAL_GROWTH_ALERT_MB_PER_MIN = 50;
-/** Recovery threshold (MB / min) — slope must fall below this to clear alert. */
+/** Recovery threshold (MB / min) — external slope must fall below this to clear alert. */
 const EXTERNAL_GROWTH_RECOVERY_MB_PER_MIN = 10;
-/** How many consecutive over-slope samples before the alert fires. */
+/** Alert when V8 heapUsed is growing faster than this (MB / min). */
+const HEAP_USED_GROWTH_ALERT_MB_PER_MIN = 30;
+/** Recovery threshold (MB / min) — heapUsed slope must fall below this to clear alert. */
+const HEAP_USED_GROWTH_RECOVERY_MB_PER_MIN = 5;
+/** How many consecutive over-slope samples before a slope alert fires. */
 const CONSECUTIVE_SLOPE_FOR_ALERT = 3;
 
 let criticalExitInFlight = false;
@@ -49,6 +58,8 @@ export interface WatchdogState {
     rssRecoveryMb: number;
     externalGrowthAlertMbPerMin: number;
     externalGrowthRecoveryMbPerMin: number;
+    heapUsedGrowthAlertMbPerMin: number;
+    heapUsedGrowthRecoveryMbPerMin: number;
     sustainSamples: number;
     slopeWindowSamples: number;
     criticalSamplesForExit: number;
@@ -59,10 +70,13 @@ export interface WatchdogState {
     consecutiveRssOverRestart: number;
     externalGrowthMbPerMin: number | null;
     consecutiveSlopeOver: number;
+    heapUsedGrowthMbPerMin: number | null;
+    consecutiveHeapOver: number;
   };
   alerts: {
     rssAlertActive: boolean;
     slopeAlertActive: boolean;
+    heapUsedAlertActive: boolean;
   };
 }
 
@@ -74,13 +88,16 @@ let consecutiveRssOver = 0;
  *  process being killed every time RSS exceeds that low watermark. */
 let consecutiveRssOverRestart = 0;
 let consecutiveSlopeOver = 0;
+let consecutiveHeapOver = 0;
 let rssAlertActive = false;
 let slopeAlertActive = false;
+let heapUsedAlertActive = false;
 let lastRssMb = 0;
 let lastExternalGrowthMbPerMin: number | null = null;
+let lastHeapUsedGrowthMbPerMin: number | null = null;
 
-/** Rolling window of { external bytes, timestamp ms } pairs. */
-const externalWindow: Array<{ external: number; ts: number }> = [];
+/** Rolling window of { external bytes, heapUsed bytes, timestamp ms } pairs. */
+const memWindow: Array<{ external: number; heapUsed: number; ts: number }> = [];
 
 type BroadcastEngineEvent = { type: string; data: unknown };
 let _emit: ((e: BroadcastEngineEvent) => void) | null = null;
@@ -93,12 +110,24 @@ async function loadEmitter() {
 
 /** Calculate external memory growth rate (MB/min) from the rolling window. */
 function calcExternalGrowthMbPerMin(): number | null {
-  if (externalWindow.length < 2) return null;
-  const oldest = externalWindow[0];
-  const newest = externalWindow[externalWindow.length - 1];
+  if (memWindow.length < 2) return null;
+  const oldest = memWindow[0];
+  const newest = memWindow[memWindow.length - 1];
   const dtMs = newest.ts - oldest.ts;
   if (dtMs < 1_000) return null;
   const deltaBytes = newest.external - oldest.external;
+  const dtMin = dtMs / 60_000;
+  return (deltaBytes / (1024 * 1024)) / dtMin;
+}
+
+/** Calculate V8 heapUsed growth rate (MB/min) from the rolling window. */
+function calcHeapUsedGrowthMbPerMin(): number | null {
+  if (memWindow.length < 2) return null;
+  const oldest = memWindow[0];
+  const newest = memWindow[memWindow.length - 1];
+  const dtMs = newest.ts - oldest.ts;
+  if (dtMs < 1_000) return null;
+  const deltaBytes = newest.heapUsed - oldest.heapUsed;
   const dtMin = dtMs / 60_000;
   return (deltaBytes / (1024 * 1024)) / dtMin;
 }
@@ -186,19 +215,20 @@ function sample() {
     });
   }
 
-  // ── External memory slope tracking ────────────────────────────────────────
-  externalWindow.push({ external: mem.external, ts: Date.now() });
-  if (externalWindow.length > SLOPE_WINDOW_SAMPLES) externalWindow.shift();
+  // ── Slope tracking (shared rolling window) ────────────────────────────────
+  memWindow.push({ external: mem.external, heapUsed: mem.heapUsed, ts: Date.now() });
+  if (memWindow.length > SLOPE_WINDOW_SAMPLES) memWindow.shift();
 
-  const growthRate = calcExternalGrowthMbPerMin();
-  lastExternalGrowthMbPerMin = growthRate !== null ? Math.round(growthRate * 10) / 10 : null;
+  // ── External memory slope alert ───────────────────────────────────────────
+  const externalGrowthRate = calcExternalGrowthMbPerMin();
+  lastExternalGrowthMbPerMin = externalGrowthRate !== null ? Math.round(externalGrowthRate * 10) / 10 : null;
 
-  if (growthRate !== null && growthRate > EXTERNAL_GROWTH_ALERT_MB_PER_MIN) {
+  if (externalGrowthRate !== null && externalGrowthRate > EXTERNAL_GROWTH_ALERT_MB_PER_MIN) {
     consecutiveSlopeOver++;
     if (consecutiveSlopeOver >= CONSECUTIVE_SLOPE_FOR_ALERT && !slopeAlertActive) {
       slopeAlertActive = true;
       logger.warn(
-        { growthMbPerMin: Math.round(growthRate * 10) / 10, threshold: EXTERNAL_GROWTH_ALERT_MB_PER_MIN },
+        { growthMbPerMin: Math.round(externalGrowthRate * 10) / 10, threshold: EXTERNAL_GROWTH_ALERT_MB_PER_MIN },
         "[memory-watchdog] external memory growth rate exceeded threshold",
       );
       _emit?.({
@@ -206,13 +236,13 @@ function sample() {
         data: {
           level: "warn",
           code: "memory-external-growth",
-          message: `External memory growing at ${Math.round(growthRate * 10) / 10} MB/min (threshold: ${EXTERNAL_GROWTH_ALERT_MB_PER_MIN} MB/min) — possible native memory leak`,
-          growthMbPerMin: Math.round(growthRate * 10) / 10,
+          message: `External memory growing at ${Math.round(externalGrowthRate * 10) / 10} MB/min (threshold: ${EXTERNAL_GROWTH_ALERT_MB_PER_MIN} MB/min) — possible native memory leak`,
+          growthMbPerMin: Math.round(externalGrowthRate * 10) / 10,
           threshold: EXTERNAL_GROWTH_ALERT_MB_PER_MIN,
         },
       });
     }
-  } else if (slopeAlertActive && (growthRate === null || growthRate < EXTERNAL_GROWTH_RECOVERY_MB_PER_MIN)) {
+  } else if (slopeAlertActive && (externalGrowthRate === null || externalGrowthRate < EXTERNAL_GROWTH_RECOVERY_MB_PER_MIN)) {
     slopeAlertActive = false;
     consecutiveSlopeOver = 0;
     logger.info(
@@ -230,6 +260,61 @@ function sample() {
     });
   } else if (!slopeAlertActive) {
     consecutiveSlopeOver = 0;
+  }
+
+  // ── V8 heapUsed slope alert ───────────────────────────────────────────────
+  // Tracks JS object allocations. Positive sustained slope indicates a JS
+  // object leak (closures, Maps/Sets that grow unboundedly, event listener
+  // accumulation, etc.). GC can cause the instantaneous slope to be negative,
+  // so we require CONSECUTIVE_SLOPE_FOR_ALERT samples above threshold before
+  // triggering — this avoids false-positives from normal GC cycles.
+  const heapGrowthRate = calcHeapUsedGrowthMbPerMin();
+  lastHeapUsedGrowthMbPerMin = heapGrowthRate !== null ? Math.round(heapGrowthRate * 10) / 10 : null;
+
+  if (heapGrowthRate !== null && heapGrowthRate > HEAP_USED_GROWTH_ALERT_MB_PER_MIN) {
+    consecutiveHeapOver++;
+    if (consecutiveHeapOver >= CONSECUTIVE_SLOPE_FOR_ALERT && !heapUsedAlertActive) {
+      heapUsedAlertActive = true;
+      logger.warn(
+        { growthMbPerMin: Math.round(heapGrowthRate * 10) / 10, threshold: HEAP_USED_GROWTH_ALERT_MB_PER_MIN },
+        "[memory-watchdog] V8 heapUsed growth rate exceeded threshold — possible JS object leak",
+      );
+      void import("./sentry.js").then(({ captureEvent }) =>
+        captureEvent(
+          `[memory-watchdog] V8 heapUsed growing at ${Math.round(heapGrowthRate * 10) / 10} MB/min — possible JS object leak`,
+          "warning",
+          { growthMbPerMin: Math.round(heapGrowthRate * 10) / 10, threshold: HEAP_USED_GROWTH_ALERT_MB_PER_MIN },
+        ),
+      ).catch(() => {});
+      _emit?.({
+        type: "ops-alert",
+        data: {
+          level: "warn",
+          code: "memory-heap-growth",
+          message: `V8 heapUsed growing at ${Math.round(heapGrowthRate * 10) / 10} MB/min (threshold: ${HEAP_USED_GROWTH_ALERT_MB_PER_MIN} MB/min) — possible JS object leak`,
+          growthMbPerMin: Math.round(heapGrowthRate * 10) / 10,
+          threshold: HEAP_USED_GROWTH_ALERT_MB_PER_MIN,
+        },
+      });
+    }
+  } else if (heapUsedAlertActive && (heapGrowthRate === null || heapGrowthRate < HEAP_USED_GROWTH_RECOVERY_MB_PER_MIN)) {
+    heapUsedAlertActive = false;
+    consecutiveHeapOver = 0;
+    logger.info(
+      { growthMbPerMin: lastHeapUsedGrowthMbPerMin },
+      "[memory-watchdog] V8 heapUsed growth rate recovered",
+    );
+    _emit?.({
+      type: "ops-alert",
+      data: {
+        level: "info",
+        code: "memory-heap-recovered",
+        message: `V8 heapUsed growth rate recovered (${lastHeapUsedGrowthMbPerMin ?? 0} MB/min)`,
+        growthMbPerMin: lastHeapUsedGrowthMbPerMin ?? 0,
+      },
+    });
+  } else if (!heapUsedAlertActive) {
+    consecutiveHeapOver = 0;
   }
 
   // ── Critical escalation (production only) ────────────────────────────────
@@ -314,6 +399,8 @@ export function getWatchdogState(): WatchdogState {
       rssRecoveryMb: env.MEMORY_WARN_RSS_MB - 200,
       externalGrowthAlertMbPerMin: EXTERNAL_GROWTH_ALERT_MB_PER_MIN,
       externalGrowthRecoveryMbPerMin: EXTERNAL_GROWTH_RECOVERY_MB_PER_MIN,
+      heapUsedGrowthAlertMbPerMin: HEAP_USED_GROWTH_ALERT_MB_PER_MIN,
+      heapUsedGrowthRecoveryMbPerMin: HEAP_USED_GROWTH_RECOVERY_MB_PER_MIN,
       sustainSamples: SUSTAIN_SAMPLES,
       slopeWindowSamples: SLOPE_WINDOW_SAMPLES,
       criticalSamplesForExit: CRITICAL_SAMPLES_FOR_EXIT,
@@ -324,10 +411,13 @@ export function getWatchdogState(): WatchdogState {
       consecutiveRssOverRestart,
       externalGrowthMbPerMin: lastExternalGrowthMbPerMin,
       consecutiveSlopeOver,
+      heapUsedGrowthMbPerMin: lastHeapUsedGrowthMbPerMin,
+      consecutiveHeapOver,
     },
     alerts: {
       rssAlertActive,
       slopeAlertActive,
+      heapUsedAlertActive,
     },
   };
 }

@@ -6,6 +6,7 @@ import { logger } from "../../infrastructure/logger.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { isUndefinedColumnError } from "../../infrastructure/db-schema-guard.js";
+import { registerNamedStore } from "../../infrastructure/cache.js";
 import { scanLibraryAndEnqueue } from "../broadcast/auto-enqueue.service.js";
 
 const CHANNEL_ID = "UCPFFvkE-KGpR37qJgvYriJg";
@@ -79,6 +80,7 @@ interface QuotaSnapshot {
 }
 
 const quotaTracker = new Map<string, QuotaEntry>();
+registerNamedStore("youtube-quota-tracker", () => quotaTracker.size);
 let quotaUsed = 0;
 const QUOTA_TOTAL = env.YOUTUBE_QUOTA_DAILY_LIMIT;
 const QUOTA_SNAPSHOT_KEY = "yt:quota:snapshot";

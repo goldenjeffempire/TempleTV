@@ -14,7 +14,7 @@ import {
 import {
   Cpu, MemoryStick, Clock, Radio, Clapperboard,
   Activity, Users, RefreshCw, CheckCircle2, AlertTriangle,
-  TrendingDown, TrendingUp, Server, Zap, HardDrive,
+  TrendingDown, TrendingUp, Server, Zap, HardDrive, Database,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
@@ -63,6 +63,40 @@ interface TranscoderStatus {
     checkedAt: string;
   };
   checkedAt: string;
+}
+
+interface MemoryDiagnostics {
+  generatedAt: string;
+  uptimeSecs: number;
+  memory: {
+    rssMb: number;
+    heapUsedMb: number;
+    heapTotalMb: number;
+    externalMb: number;
+    arrayBuffersMb: number;
+  };
+  caches: Array<{ name: string; size: number }>;
+  watchdog: {
+    enabled: boolean;
+    sampleIntervalMs: number;
+    thresholds: {
+      rssAlertMb: number;
+      externalGrowthAlertMbPerMin: number;
+      heapUsedGrowthAlertMbPerMin: number;
+    };
+    current: {
+      rssMb: number;
+      externalGrowthMbPerMin: number | null;
+      consecutiveSlopeOver: number;
+      heapUsedGrowthMbPerMin: number | null;
+      consecutiveHeapOver: number;
+    };
+    alerts: {
+      rssAlertActive: boolean;
+      slopeAlertActive: boolean;
+      heapUsedAlertActive: boolean;
+    };
+  };
 }
 
 interface BroadcastHealth {
@@ -257,23 +291,34 @@ export default function DiagnosticsPage() {
     retry: false,
   });
 
+  const memDiagQuery = useQuery<MemoryDiagnostics>({
+    queryKey: ["diagnostics", "memory"],
+    queryFn: () => api.get("/api/v1/admin/diagnostics/memory"),
+    refetchInterval: SLOW_POLL_MS,
+    staleTime: SLOW_POLL_MS,
+    retry: false,
+  });
+
   const isRefreshing =
     procQuery.isFetching ||
     transcoderQuery.isFetching ||
     broadcastQuery.isFetching ||
-    streamHealthQuery.isFetching;
+    streamHealthQuery.isFetching ||
+    memDiagQuery.isFetching;
 
   function refetchAll() {
     void procQuery.refetch();
     void transcoderQuery.refetch();
     void broadcastQuery.refetch();
     void streamHealthQuery.refetch();
+    void memDiagQuery.refetch();
   }
 
   const proc = procQuery.data;
   const tx = transcoderQuery.data;
   const bcast = broadcastQuery.data;
   const sh = streamHealthQuery.data;
+  const memDiag = memDiagQuery.data;
 
   const viewerSamples = tx?.viewerSlope.samples ?? [];
 
@@ -350,6 +395,150 @@ export default function DiagnosticsPage() {
           </Card>
         )}
         {procQuery.isLoading && <SectionSkeleton />}
+      </section>
+
+      {/* ── Memory Watchdog · In-Memory Stores ──────────────────────────────── */}
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground/70">
+          Memory Watchdog · In-Memory Stores
+        </h2>
+        {memDiagQuery.isLoading ? (
+          <SectionSkeleton />
+        ) : memDiag ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {/* ── Watchdog state card ── */}
+            <Card className={cn(
+              (memDiag.watchdog.alerts.rssAlertActive ||
+               memDiag.watchdog.alerts.slopeAlertActive ||
+               memDiag.watchdog.alerts.heapUsedAlertActive)
+                ? "border-red-200 bg-red-50/50 dark:bg-red-950/20 dark:border-red-900/50"
+                : "",
+            )}>
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-medium flex items-center gap-2">
+                    <MemoryStick size={14} className="text-muted-foreground" />
+                    Watchdog State
+                  </CardTitle>
+                  <StatusPill
+                    ok={!memDiag.watchdog.alerts.rssAlertActive && !memDiag.watchdog.alerts.slopeAlertActive && !memDiag.watchdog.alerts.heapUsedAlertActive}
+                    label={
+                      memDiag.watchdog.alerts.rssAlertActive || memDiag.watchdog.alerts.slopeAlertActive || memDiag.watchdog.alerts.heapUsedAlertActive
+                        ? "Alert active"
+                        : "All clear"
+                    }
+                  />
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">RSS alert</span>
+                  <Badge className={cn(
+                    "text-[10px] font-semibold px-2 py-0.5",
+                    memDiag.watchdog.alerts.rssAlertActive
+                      ? "bg-red-500/15 text-red-700 dark:text-red-400 border-red-500/25"
+                      : "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/25",
+                  )}>
+                    {memDiag.watchdog.alerts.rssAlertActive ? `ACTIVE — ${memDiag.watchdog.current.rssMb} MB` : "OK"}
+                  </Badge>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Native memory slope</span>
+                  <span className={cn(
+                    "font-mono text-xs font-semibold",
+                    memDiag.watchdog.alerts.slopeAlertActive
+                      ? "text-red-500"
+                      : (memDiag.watchdog.current.externalGrowthMbPerMin ?? 0) > 20
+                        ? "text-amber-500"
+                        : "text-foreground",
+                  )}>
+                    {memDiag.watchdog.current.externalGrowthMbPerMin !== null
+                      ? `${memDiag.watchdog.current.externalGrowthMbPerMin > 0 ? "+" : ""}${memDiag.watchdog.current.externalGrowthMbPerMin.toFixed(1)} MB/min`
+                      : "—"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">JS heap slope</span>
+                  <span className={cn(
+                    "font-mono text-xs font-semibold",
+                    memDiag.watchdog.alerts.heapUsedAlertActive
+                      ? "text-red-500"
+                      : (memDiag.watchdog.current.heapUsedGrowthMbPerMin ?? 0) > 15
+                        ? "text-amber-500"
+                        : "text-foreground",
+                  )}>
+                    {memDiag.watchdog.current.heapUsedGrowthMbPerMin !== null
+                      ? `${memDiag.watchdog.current.heapUsedGrowthMbPerMin > 0 ? "+" : ""}${memDiag.watchdog.current.heapUsedGrowthMbPerMin.toFixed(1)} MB/min`
+                      : "—"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground text-xs">Heap alert threshold</span>
+                  <span className="font-mono text-[11px] text-muted-foreground">
+                    {memDiag.watchdog.thresholds.heapUsedGrowthAlertMbPerMin} MB/min × 3 samples
+                  </span>
+                </div>
+                {(memDiag.watchdog.alerts.slopeAlertActive || memDiag.watchdog.alerts.heapUsedAlertActive) && (
+                  <div className="flex items-start gap-1.5 text-red-600 dark:text-red-400 text-xs pt-1">
+                    <AlertTriangle size={11} className="mt-0.5 shrink-0" />
+                    {memDiag.watchdog.alerts.heapUsedAlertActive
+                      ? "JS heap is growing — possible object leak. Use Heap Snapshot on the API to investigate."
+                      : "Native memory growing — possible Buffer/binding leak."}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* ── Named in-memory stores card ── */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <Database size={14} className="text-muted-foreground" />
+                  In-Memory Stores
+                  <span className="text-[10px] font-normal text-muted-foreground ml-1">
+                    ({memDiag.caches.length} registered)
+                  </span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {memDiag.caches.length > 0 ? (
+                  <div className="divide-y divide-border/40">
+                    {memDiag.caches.map(({ name, size }) => (
+                      <div key={name} className="flex justify-between items-center py-1.5 first:pt-0 last:pb-0">
+                        <span
+                          className="text-[11px] font-mono text-muted-foreground truncate mr-2 max-w-[220px]"
+                          title={name}
+                        >
+                          {name}
+                        </span>
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            "text-[10px] font-mono shrink-0",
+                            size > 5000
+                              ? "border-red-500/40 text-red-600 dark:text-red-400"
+                              : size > 1000
+                                ? "border-amber-500/40 text-amber-600 dark:text-amber-400"
+                                : "",
+                          )}
+                        >
+                          {size.toLocaleString()}
+                        </Badge>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground py-2">No stores registered.</p>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        ) : memDiagQuery.error ? (
+          <ErrorAlert
+            title="Memory diagnostics unavailable"
+            message={memDiagQuery.error instanceof Error ? memDiagQuery.error.message : "Request failed"}
+          />
+        ) : null}
       </section>
 
       {/* ── Broadcast Engine ────────────────────────────────────────────────── */}

@@ -18,6 +18,7 @@
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { registerNamedStore } from "./cache.js";
 
 /** Requests slower than this (ms) are captured. */
 export const SLOW_THRESHOLD_MS = 1_000;
@@ -64,6 +65,7 @@ setInterval(() => {
     if (agg.lastAt < cutoff) routeAggregates.delete(key);
   }
 }, BUFFER_MAX_AGE_MS).unref?.();
+registerNamedStore("slow-request-route-aggregates", () => routeAggregates.size);
 
 /**
  * Normalise a URL path by replacing numeric and UUID-like segments with

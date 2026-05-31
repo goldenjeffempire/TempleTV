@@ -22,6 +22,7 @@ import type { ActiveOverrideEntry } from "../live-overrides/override-bus.js";
 import { signalBus, type OmegaSignal } from "../network/signal-bus.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { env } from "../../config/env.js";
+import { registerNamedStore } from "../../infrastructure/cache.js";
 import { db, schema } from "../../infrastructure/db.js";
 import { sseCounter } from "../../infrastructure/sse-counter.js";
 import { sseCorsHeaders } from "../../lib/sse-cors.js";
@@ -95,6 +96,7 @@ setInterval(
   },
   5 * 60 * 1000,
 ).unref?.();
+registerNamedStore("broadcast-reaction-buckets", () => reactionBuckets.size);
 
 /**
  * Project the engine's internal BroadcastSnapshot into the
@@ -182,6 +184,7 @@ export function snapshotToCurrentResult(
 // (default 8) so operators can tune it without a code change.
 const MAX_SSE_PER_IP = env.MAX_SSE_PER_IP;
 const sseConnections = new Map<string, number>();
+registerNamedStore("broadcast-sse-connections", () => sseConnections.size);
 function sseIncrement(ip: string): number {
   const n = (sseConnections.get(ip) ?? 0) + 1;
   sseConnections.set(ip, n);

@@ -490,6 +490,8 @@ export async function restRoutes(app: FastifyInstance) {
     }
   }, 60_000);
   _stallVotesGcTimer.unref?.();
+  registerNamedStore("broadcast-v2-stall-votes", () => stallVotes.size);
+  registerNamedStore("broadcast-v2-stall-cooldown", () => stallActionCooldown.size);
 
   app.post("/report-stall", {
     config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
