@@ -36,6 +36,34 @@ export declare function closeDb(): Promise<void>;
  */
 export declare function ensureBroadcastV2Tables(): Promise<void>;
 /**
+ * Ensure the midnight_prayers_config table exists and contains the singleton
+ * default row (id = 1).
+ *
+ * Why this function exists:
+ *   The table is defined in the Drizzle schema (lib/db/src/schema/midnight-prayers.ts)
+ *   so `drizzle-kit push` creates it on a fresh deploy.  However, production
+ *   databases provisioned before the midnight-prayers feature was merged won't
+ *   have the table, and Drizzle-kit push is not guaranteed to run on every
+ *   deployment upgrade (manual or CI step that can be skipped).
+ *
+ *   midnightPrayersService.init() runs at app boot and immediately calls
+ *   loadConfig() which queries the table.  Without this guard that query
+ *   throws SQLSTATE 42P01 ("relation does not exist"), crashing the init()
+ *   and leaving the service in an uninitialised state that causes every
+ *   midnight-prayers route to return an error or stale response.
+ *
+ * Safety:
+ *   CREATE TABLE IF NOT EXISTS and INSERT … ON CONFLICT DO NOTHING are both
+ *   fully idempotent — safe to run on every boot regardless of current state.
+ *
+ * Called:
+ *   Awaited in main.ts BEFORE buildApp() so the table is guaranteed to exist
+ *   when midnightPrayersService.init() runs inside buildApp().
+ *   Also called defensively inside MidnightPrayersService.loadConfig() on
+ *   42P01 so a race or missed startup call cannot permanently break the service.
+ */
+export declare function ensureMidnightPrayersTable(): Promise<void>;
+/**
  * Reset managed_videos rows stuck in transcodingStatus='processing'.
  *
  * 'processing' is the transient state set by runFaststart while it atomically

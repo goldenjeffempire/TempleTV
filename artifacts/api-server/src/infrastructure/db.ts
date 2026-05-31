@@ -195,6 +195,82 @@ export async function ensureBroadcastV2Tables(): Promise<void> {
 }
 
 /**
+ * Ensure the midnight_prayers_config table exists and contains the singleton
+ * default row (id = 1).
+ *
+ * Why this function exists:
+ *   The table is defined in the Drizzle schema (lib/db/src/schema/midnight-prayers.ts)
+ *   so `drizzle-kit push` creates it on a fresh deploy.  However, production
+ *   databases provisioned before the midnight-prayers feature was merged won't
+ *   have the table, and Drizzle-kit push is not guaranteed to run on every
+ *   deployment upgrade (manual or CI step that can be skipped).
+ *
+ *   midnightPrayersService.init() runs at app boot and immediately calls
+ *   loadConfig() which queries the table.  Without this guard that query
+ *   throws SQLSTATE 42P01 ("relation does not exist"), crashing the init()
+ *   and leaving the service in an uninitialised state that causes every
+ *   midnight-prayers route to return an error or stale response.
+ *
+ * Safety:
+ *   CREATE TABLE IF NOT EXISTS and INSERT … ON CONFLICT DO NOTHING are both
+ *   fully idempotent — safe to run on every boot regardless of current state.
+ *
+ * Called:
+ *   Awaited in main.ts BEFORE buildApp() so the table is guaranteed to exist
+ *   when midnightPrayersService.init() runs inside buildApp().
+ *   Also called defensively inside MidnightPrayersService.loadConfig() on
+ *   42P01 so a race or missed startup call cannot permanently break the service.
+ */
+export async function ensureMidnightPrayersTable(): Promise<void> {
+  const client = await pool.connect();
+  try {
+    // Create the singleton config table if it doesn't exist.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS midnight_prayers_config (
+        id          INTEGER     PRIMARY KEY DEFAULT 1,
+        enabled     BOOLEAN     NOT NULL DEFAULT true,
+        start_hour  INTEGER     NOT NULL DEFAULT 0,
+        end_hour    INTEGER     NOT NULL DEFAULT 3,
+        timezone    TEXT        NOT NULL DEFAULT 'Africa/Lagos',
+        updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    // Add a CHECK constraint so id is always 1 (singleton pattern).
+    // IF NOT EXISTS on constraints requires PostgreSQL 9.4+ (we target 14+).
+    // We use a DO block because ALTER TABLE ADD CONSTRAINT has no IF NOT EXISTS.
+    await client.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'midnight_prayers_config_singleton'
+            AND conrelid = 'midnight_prayers_config'::regclass
+        ) THEN
+          ALTER TABLE midnight_prayers_config
+            ADD CONSTRAINT midnight_prayers_config_singleton CHECK (id = 1);
+        END IF;
+      END $$
+    `);
+
+    // Seed the singleton default row so loadConfig() always finds a row and
+    // never needs to INSERT during a read path (avoids write-during-read surprises).
+    await client.query(`
+      INSERT INTO midnight_prayers_config (id, enabled, start_hour, end_hour, timezone, updated_at)
+      VALUES (1, true, 0, 3, 'Africa/Lagos', NOW())
+      ON CONFLICT (id) DO NOTHING
+    `);
+
+    logger.info("db: midnight_prayers_config table ensured (table + singleton row)");
+  } catch (err) {
+    // Propagate so the caller can decide whether to abort startup or continue.
+    logger.error({ err }, "db: ensureMidnightPrayersTable failed");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Reset managed_videos rows stuck in transcodingStatus='processing'.
  *
  * 'processing' is the transient state set by runFaststart while it atomically

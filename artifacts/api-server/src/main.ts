@@ -7,7 +7,7 @@ import { logger } from "./infrastructure/logger.js";
 import { broadcastEngine } from "./modules/broadcast/queue.engine.js";
 import { channelRegistry } from "./modules/channels/channel-registry.js";
 import { overrideBus } from "./modules/live-overrides/override-bus.js";
-import { closeDb, db, ensureRuntimeIndexes, ensureBroadcastV2Tables, deactivateUnresolvableQueueRows, resetStuckProcessingVideos, ensureUserSchemaColumns, scheduleStaleDataCleanup } from "./infrastructure/db.js";
+import { closeDb, db, ensureRuntimeIndexes, ensureBroadcastV2Tables, ensureMidnightPrayersTable, deactivateUnresolvableQueueRows, resetStuckProcessingVideos, ensureUserSchemaColumns, scheduleStaleDataCleanup } from "./infrastructure/db.js";
 import { closeRedis } from "./infrastructure/redis.js";
 import { sseCounter } from "./infrastructure/sse-counter.js";
 import { scheduledNotificationDispatcher } from "./modules/scheduled-notifications/dispatcher.js";
@@ -270,6 +270,22 @@ async function main() {
   // refresh_tokens, etc.). Must run BEFORE seedAdminIfConfigured() so the
   // INSERT has all required columns available.
   await ensureUserSchemaColumns();
+
+  // Ensure the midnight_prayers_config table and singleton row exist.
+  // Must run BEFORE buildApp() because midnightPrayersService.init() fires
+  // inside buildApp() and immediately queries this table.  On production
+  // databases provisioned before the midnight-prayers feature was merged,
+  // the table will be absent if `drizzle-kit push` was not re-run after
+  // the feature was deployed — this self-heal closes that gap permanently.
+  await ensureMidnightPrayersTable().catch((err) => {
+    logger.error(
+      { err },
+      "[midnight-prayers] ensureMidnightPrayersTable failed at startup — " +
+        "midnight-prayers routes will fail until the table is present; " +
+        "run `pnpm --filter @workspace/db run push` to create it",
+    );
+    // Non-fatal: the server can still serve all other routes.
+  });
 
   // Auto-seed the admin account on startup (no-op if already exists and
   // SEED_ADMIN_FORCE=false, which is the default for safety).

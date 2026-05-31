@@ -16,7 +16,7 @@
  */
 
 import { eq, and, or, isNotNull } from "drizzle-orm";
-import { db, schema } from "../../infrastructure/db.js";
+import { db, schema, ensureMidnightPrayersTable } from "../../infrastructure/db.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { logger } from "../../infrastructure/logger.js";
 
@@ -180,31 +180,62 @@ class MidnightPrayersService {
   }
 
   async loadConfig(): Promise<void> {
-    try {
-      const rows = await db
-        .select()
-        .from(schema.midnightPrayersConfig)
-        .where(eq(schema.midnightPrayersConfig.id, 1))
-        .limit(1);
+    // Defense-in-depth: if the table is missing (42P01 — "relation does not
+    // exist"), create it now and retry once.  The primary guarantee is that
+    // ensureMidnightPrayersTable() runs in main.ts BEFORE buildApp(), but a
+    // transient race or a missed startup call would otherwise leave the service
+    // permanently broken for the lifetime of the process.
+    const tryLoad = async (): Promise<boolean> => {
+      try {
+        const rows = await db
+          .select()
+          .from(schema.midnightPrayersConfig)
+          .where(eq(schema.midnightPrayersConfig.id, 1))
+          .limit(1);
 
-      if (rows.length > 0) {
-        const r = rows[0]!;
-        this.config = {
-          enabled: r.enabled,
-          startHour: r.startHour,
-          endHour: r.endHour,
-          timezone: r.timezone,
-          updatedAt: r.updatedAt,
-        };
-      } else {
-        // Seed default row
-        await db
-          .insert(schema.midnightPrayersConfig)
-          .values({ id: 1 })
-          .onConflictDoNothing();
+        if (rows.length > 0) {
+          const r = rows[0]!;
+          this.config = {
+            enabled: r.enabled,
+            startHour: r.startHour,
+            endHour: r.endHour,
+            timezone: r.timezone,
+            updatedAt: r.updatedAt,
+          };
+        } else {
+          // Seed default row (table exists but is empty — very unlikely after
+          // ensureMidnightPrayersTable(), but handle it anyway).
+          await db
+            .insert(schema.midnightPrayersConfig)
+            .values({ id: 1 })
+            .onConflictDoNothing();
+        }
+        return true;
+      } catch (err) {
+        // SQLSTATE 42P01 = "relation does not exist"
+        const code = (err as { code?: string }).code;
+        if (code === "42P01") {
+          return false; // signal: table missing, caller should ensure+retry
+        }
+        logger.warn({ err }, "[midnight-prayers] failed to load config — using defaults");
+        return true; // other errors: give up but don't retry
       }
-    } catch (err) {
-      logger.warn({ err }, "[midnight-prayers] failed to load config — using defaults");
+    };
+
+    const loaded = await tryLoad();
+    if (!loaded) {
+      // Table was missing — create it now and retry once.
+      logger.warn(
+        "[midnight-prayers] midnight_prayers_config table missing at loadConfig() time — " +
+          "running ensureMidnightPrayersTable() as fallback (should have run at startup)",
+      );
+      try {
+        await ensureMidnightPrayersTable();
+      } catch (ensureErr) {
+        logger.error({ err: ensureErr }, "[midnight-prayers] ensureMidnightPrayersTable fallback failed — using in-memory defaults");
+        return;
+      }
+      await tryLoad(); // second attempt; errors are logged inside tryLoad()
     }
   }
 
