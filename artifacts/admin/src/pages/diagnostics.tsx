@@ -662,6 +662,9 @@ export default function DiagnosticsPage() {
         ) : null}
       </section>
 
+      {/* ── Memory History ──────────────────────────────────────────────────── */}
+      <MemoryHistorySection />
+
       {/* ── Broadcast Engine ────────────────────────────────────────────────── */}
       <section className="space-y-3">
         <h2 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground/70">

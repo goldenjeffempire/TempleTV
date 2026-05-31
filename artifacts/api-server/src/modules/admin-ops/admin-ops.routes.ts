@@ -1342,6 +1342,72 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     },
   );
 
+  // ── Memory hourly history ──────────────────────────────────────────────────
+  r.get(
+    "/diagnostics/memory/history",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin-ops"],
+        summary: "Memory hourly snapshot history",
+        querystring: z.object({
+          hours: z.coerce.number().int().min(1).max(168).default(24),
+        }),
+        response: {
+          200: z.object({
+            snapshots: z.array(z.object({
+              id: z.number(),
+              snapshotAt: z.string(),
+              rssMb: z.number(),
+              heapUsedMb: z.number(),
+              heapTotalMb: z.number(),
+              externalMb: z.number(),
+              heapUsedGrowthMbPerMin: z.number().nullable(),
+              externalGrowthMbPerMin: z.number().nullable(),
+              namedStores: z.array(z.object({
+                name: z.string(),
+                size: z.number(),
+                peak: z.number(),
+              })),
+            })),
+            totalRows: z.number(),
+            rangeHours: z.number(),
+          }),
+        },
+      },
+    },
+    async (req) => {
+      const { hours } = req.query;
+      const since = new Date(Date.now() - hours * 60 * 60 * 1000);
+      const rows = await db
+        .select()
+        .from(schema.memoryHourlySnapshotsTable)
+        .where(
+          (await import("drizzle-orm").then(({ gte }) => gte))(
+            schema.memoryHourlySnapshotsTable.snapshotAt,
+            since,
+          ),
+        )
+        .orderBy(schema.memoryHourlySnapshotsTable.snapshotAt);
+      return {
+        snapshots: rows.map((r) => ({
+          id: r.id,
+          snapshotAt: r.snapshotAt.toISOString(),
+          rssMb: r.rssMb ?? 0,
+          heapUsedMb: r.heapUsedMb ?? 0,
+          heapTotalMb: r.heapTotalMb ?? 0,
+          externalMb: r.externalMb ?? 0,
+          heapUsedGrowthMbPerMin: r.heapUsedGrowthMbPerMin ?? null,
+          externalGrowthMbPerMin: r.externalGrowthMbPerMin ?? null,
+          namedStores: (r.namedStores as Array<{ name: string; size: number; peak: number }>) ?? [],
+        })),
+        totalRows: rows.length,
+        rangeHours: hours,
+      };
+    },
+  );
+
   // ── Force GC (requires --expose-gc) ───────────────────────────────────────
   r.post(
     "/diagnostics/gc",

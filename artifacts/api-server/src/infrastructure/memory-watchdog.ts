@@ -35,8 +35,12 @@ const SUSTAIN_SAMPLES = 3;
 const CRITICAL_SAMPLES_FOR_EXIT = 10;
 const FORCE_EXIT_GRACE_MS = 30_000;
 
-/** Rolling window size (samples) for slope calculations. */
-const SLOPE_WINDOW_SAMPLES = 6;
+/**
+ * Rolling window size (samples) for slope calculations AND the in-UI sparkline.
+ * 60 samples × 30 s = 30 minutes of data.  A larger window reduces false
+ * positives from momentary GC spikes and gives a useful sparkline history.
+ */
+const SLOPE_WINDOW_SAMPLES = 60;
 /** Alert when external memory is growing faster than this (MB / min). */
 const EXTERNAL_GROWTH_ALERT_MB_PER_MIN = 50;
 /** Recovery threshold (MB / min) — external slope must fall below this to clear alert. */
@@ -389,12 +393,25 @@ export function getMemoryHistory(): Array<{ ts: number; heapUsedMb: number; exte
   }));
 }
 
-/** Emit a structured INFO log summarising current memory state.  Called
- *  from the hourly log interval so operators have a persistent record even
- *  when the diagnostics endpoint is not actively polled. */
+/** Write one row to memory_hourly_snapshots.  Uses a dynamic import so the
+ *  watchdog has no hard dep on DB at module load time (avoids init-order races). */
+async function persistHourlySnapshot(row: {
+  rssMb: number;
+  heapUsedMb: number;
+  heapTotalMb: number;
+  externalMb: number;
+  heapUsedGrowthMbPerMin: number | null;
+  externalGrowthMbPerMin: number | null;
+  namedStores: Array<{ name: string; size: number; peak: number }>;
+}): Promise<void> {
+  const { db, schema } = await import("./db.js");
+  await db.insert(schema.memoryHourlySnapshotsTable).values(row);
+}
+
 function logMemorySummary(): void {
   const m = process.memoryUsage();
   const mb = (b: number) => Math.round((b / (1024 * 1024)) * 10) / 10;
+  const stores = getRegisteredCacheStats().map(({ name, size, peak }) => ({ name, size, peak }));
   logger.info(
     {
       rssMb: mb(m.rss),
@@ -405,10 +422,21 @@ function logMemorySummary(): void {
       externalGrowthMbPerMin: lastExternalGrowthMbPerMin,
       heapUsedGrowthMbPerMin: lastHeapUsedGrowthMbPerMin,
       alerts: { rssAlertActive, slopeAlertActive, heapUsedAlertActive },
-      stores: getRegisteredCacheStats().map(({ name, size, peak }) => ({ name, size, peak })),
+      stores,
     },
     "[memory-watchdog] hourly memory summary",
   );
+  persistHourlySnapshot({
+    rssMb: mb(m.rss),
+    heapUsedMb: mb(m.heapUsed),
+    heapTotalMb: mb(m.heapTotal),
+    externalMb: mb(m.external),
+    heapUsedGrowthMbPerMin: lastHeapUsedGrowthMbPerMin,
+    externalGrowthMbPerMin: lastExternalGrowthMbPerMin,
+    namedStores: stores,
+  }).catch((err) => {
+    logger.warn({ err }, "[memory-watchdog] hourly snapshot persist failed — non-fatal");
+  });
 }
 
 const HOURLY_LOG_INTERVAL_MS = 60 * 60_000;
