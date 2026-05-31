@@ -3,6 +3,7 @@ import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 import { env } from "../../config/env.js";
 import { broadcastService } from "./broadcast.service.js";
+import { ConflictError } from "../../shared/errors.js";
 
 /**
  * Library → Broadcast Queue auto-enqueue pipeline.
@@ -136,6 +137,16 @@ export async function enqueueIfMissing(opts: {
     // queued, just not by this call — so emit a debug-level breadcrumb
     // instead of a WARN to avoid alarming operators when the safety net
     // is doing its job.
+
+    // ConflictError from addToQueue's in-transaction pre-check (Layer 1 guard).
+    // Semantically identical to the 23505 case: the video is already queued.
+    if (err instanceof ConflictError) {
+      logger.debug(
+        { videoId: opts.videoId, reason: opts.reason },
+        "[broadcast] auto-enqueue: duplicate guard fired in addToQueue (already queued)",
+      );
+      return { enqueued: false, skipReason: "already-queued" };
+    }
     const code = (err as { code?: string } | null)?.code;
     if (code === "23505") {
       logger.debug(

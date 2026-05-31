@@ -4,6 +4,7 @@ import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { asc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
+import { ConflictError } from "../../shared/errors.js";
 import {
   AddQueueItemSchema,
   BroadcastCurrentResultSchema,
@@ -342,7 +343,15 @@ export async function broadcastRoutes(app: FastifyInstance) {
           }
         }
       }
-      const created = await broadcastService.addToQueue(req.body);
+      let created;
+      try {
+        created = await broadcastService.addToQueue(req.body);
+      } catch (err) {
+        if (err instanceof ConflictError) {
+          return reply.code(409).send({ error: err.message });
+        }
+        throw err;
+      }
       reply.code(201);
       return created;
     },

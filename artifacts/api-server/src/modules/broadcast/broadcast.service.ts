@@ -1,9 +1,9 @@
-import { asc, eq, inArray, max, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, max, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, schema } from "../../infrastructure/db.js";
 import { broadcastEngine } from "./queue.engine.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
-import { NotFoundError } from "../../shared/errors.js";
+import { ConflictError, NotFoundError } from "../../shared/errors.js";
 import type { z } from "zod";
 import type { AddQueueItemSchema } from "./broadcast.schemas.js";
 
@@ -35,10 +35,32 @@ export const broadcastService = {
       }
     }
 
-    // Wrap the max(sortOrder) read and the INSERT in a transaction so two
-    // concurrent addToQueue calls can't read the same MAX value and produce
-    // duplicate sort_order entries (the DUPLICATE_SORT_ORDER validator warning).
+    // Wrap the pre-check, max(sortOrder) read, and INSERT in a transaction so:
+    //   (a) two concurrent addToQueue calls can't read the same MAX value and
+    //       produce duplicate sort_order entries (DUPLICATE_SORT_ORDER warning).
+    //   (b) the duplicate videoId check and the INSERT are atomic — a second
+    //       concurrent addToQueue for the same video will either be blocked
+    //       by the row-level lock acquired by the first SELECT FOR UPDATE or
+    //       will see the newly-inserted row and throw ConflictError cleanly,
+    //       without relying solely on the DB unique-index 23505 backstop.
     const inserted = await db.transaction(async (tx) => {
+      // ── Duplicate-video guard ────────────────────────────────────────────
+      // Reject the insert before touching sort_order if an active queue row
+      // already references this video. This is Layer 1 of the guard; the
+      // partial unique index `uq_broadcast_queue_video_id_active` is Layer 2
+      // (DB backstop for any concurrent race that slips past this check).
+      if (item.videoId) {
+        const [dup] = await tx
+          .select({ id: queueTable.id })
+          .from(queueTable)
+          .where(and(eq(queueTable.videoId, item.videoId), eq(queueTable.isActive, true)))
+          .limit(1);
+        if (dup) {
+          throw new ConflictError(
+            `Video is already active in the broadcast queue (queue item: ${dup.id})`,
+          );
+        }
+      }
       let sortOrder = item.sortOrder;
       if (sortOrder === undefined) {
         const last = await tx

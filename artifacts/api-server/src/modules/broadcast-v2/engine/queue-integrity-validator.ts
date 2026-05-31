@@ -190,6 +190,66 @@ class QueueIntegrityValidatorImpl {
         }
       }
 
+      // ── DUPLICATE_ACTIVE_VIDEO — same video_id in two or more active rows ──
+      // The partial unique index `uq_broadcast_queue_video_id_active` prevents
+      // new duplicates but cannot retroactively fix rows inserted before the
+      // index existed, rows touched by direct DB operations, or any rare race
+      // that briefly bypassed application-layer guards.
+      const videoIdSeen = new Map<string, string[]>();
+      for (const row of rows) {
+        if (!row.videoId) continue;
+        const ids = videoIdSeen.get(row.videoId) ?? [];
+        ids.push(row.id);
+        videoIdSeen.set(row.videoId, ids);
+      }
+      const duplicateVideoItemIds: string[] = [];
+      for (const [vid, ids] of videoIdSeen) {
+        if (ids.length > 1) {
+          issues.push({
+            severity: "error",
+            itemId: null,
+            itemTitle: null,
+            code: "DUPLICATE_ACTIVE_VIDEO",
+            message: `video_id '${vid}' appears in ${ids.length} active queue items: ${ids.join(", ")}`,
+          });
+          // Mark all but the first (lowest sort_order — already asc-sorted)
+          // for deactivation. Keep ids[0]; suppress ids[1..n].
+          for (let i = 1; i < ids.length; i++) duplicateVideoItemIds.push(ids[i]!);
+        }
+      }
+
+      // ── Auto-fix: deactivate surplus DUPLICATE_ACTIVE_VIDEO items ──────────
+      // Keep the copy with the lowest sort_order (earliest in the broadcast
+      // schedule). Deactivate every extra copy so the orchestrator never
+      // loads the same video twice. Uses is_active=false + marker so operators
+      // can identify why a row was deactivated.
+      if (duplicateVideoItemIds.length > 0) {
+        try {
+          await db
+            .update(schema.broadcastQueueTable)
+            .set({
+              isActive: false,
+              validatorDeactivatedReason: "duplicate_active_video",
+            })
+            .where(inArray(schema.broadcastQueueTable.id, duplicateVideoItemIds));
+          logger.error(
+            { count: duplicateVideoItemIds.length, itemIds: duplicateVideoItemIds },
+            "[queue-validator] AUTO-FIX: deactivated DUPLICATE_ACTIVE_VIDEO surplus items " +
+            "— same video_id appeared more than once in the active queue; " +
+            "lowest-sort_order copy kept, extras deactivated",
+          );
+          adminEventBus.push("broadcast-queue-updated", {
+            reason: "integrity-fix-duplicate-active-video",
+            count: duplicateVideoItemIds.length,
+          });
+        } catch (fixErr) {
+          logger.warn(
+            { err: fixErr, count: duplicateVideoItemIds.length },
+            "[queue-validator] AUTO-FIX: failed to deactivate DUPLICATE_ACTIVE_VIDEO surplus items (non-fatal)",
+          );
+        }
+      }
+
       // ── Auto-fix: reassign sort_order for DUPLICATE_SORT_ORDER items ───────
       // Duplicate sort_order values cause non-deterministic queue ordering —
       // the DB query uses ORDER BY sort_order, so ties resolve to arbitrary
