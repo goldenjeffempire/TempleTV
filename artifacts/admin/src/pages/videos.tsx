@@ -427,19 +427,27 @@ export default function VideosPage() {
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Batch retry failed"),
   });
 
-  // Bulk transcode — fires individual transcode requests for each selected ID
-  // in parallel. Failures are silent per-item so a single bad video doesn't
-  // block the rest; the final toast reports the success count.
+  // Bulk transcode — enqueues each selected video for HLS transcoding.
+  // Fires requests in batches of 5 (browser connection limit per origin is 6)
+  // so selecting 100+ videos doesn't flood the connection pool. Failures are
+  // silent per-item so a single bad video doesn't block the rest; the final
+  // toast reports the success/failure counts.
   const bulkTranscodeMutation = useMutation({
     mutationFn: async (ids: string[]) => {
-      const results = await Promise.all(
-        ids.map((id) =>
-          api.post<{ jobId: string; reused: boolean }>(`/admin/videos/${id}/transcode`)
-            .then(() => true)
-            .catch(() => false)
-        )
-      );
-      return results.filter(Boolean).length;
+      const BATCH = 5;
+      let succeeded = 0;
+      for (let i = 0; i < ids.length; i += BATCH) {
+        const chunk = ids.slice(i, i + BATCH);
+        const results = await Promise.all(
+          chunk.map((id) =>
+            api.post<{ jobId: string; reused: boolean }>(`/admin/videos/${id}/transcode`)
+              .then(() => true)
+              .catch(() => false)
+          )
+        );
+        succeeded += results.filter(Boolean).length;
+      }
+      return succeeded;
     },
     onSuccess: (count, ids) => {
       const failed = ids.length - count;

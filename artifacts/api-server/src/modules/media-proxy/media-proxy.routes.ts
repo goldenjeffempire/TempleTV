@@ -167,8 +167,14 @@ export async function mediaProxyRoutes(app: FastifyInstance) {
         clearTimeout(connectionTimeout);
       } catch (err) {
         clearTimeout(connectionTimeout);
+        // Log only the host — never the full URL which may contain signed
+        // tokens or other credentials in the query-string.
+        let fetchErrHost = targetHost; // already extracted above during allowlist check
+        if (!fetchErrHost) {
+          try { fetchErrHost = new URL(targetUrl).host; } catch { fetchErrHost = "(unparseable)"; }
+        }
         logger.warn(
-          { url: targetUrl, err: String(err) },
+          { targetHost: fetchErrHost, err: String(err) },
           "[media-proxy] upstream fetch failed",
         );
         return reply.code(502).send({ error: "Upstream unavailable" });
@@ -178,8 +184,9 @@ export async function mediaProxyRoutes(app: FastifyInstance) {
 
       // 206 = partial content (Range), 200 = full file, others = errors.
       if (upStatus !== 200 && upStatus !== 206) {
+        // Log only the host — never the full URL which may contain signed tokens.
         logger.warn(
-          { url: targetUrl, status: upStatus },
+          { targetHost, status: upStatus },
           "[media-proxy] upstream returned non-2xx",
         );
         const downStatus = upStatus === 404 ? 404 : upStatus < 500 ? 400 : 502;

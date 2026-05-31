@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, HttpError, isTransientError} from "@/lib/api";
 import { PageHeader } from "@/components/shared/page-header";
@@ -101,6 +101,9 @@ function healthBadge(status: HealthStatus) {
 
 function CopyButton({ value, label }: { value: string; label: string }) {
   const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Clear the timer on unmount so setState never fires on an unmounted component.
+  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -111,7 +114,8 @@ function CopyButton({ value, label }: { value: string; label: string }) {
           onClick={() => {
             void navigator.clipboard.writeText(value);
             setCopied(true);
-            setTimeout(() => setCopied(false), 1500);
+            if (timerRef.current) clearTimeout(timerRef.current);
+            timerRef.current = setTimeout(() => setCopied(false), 1500);
           }}
         >
           <Copy size={12} className={copied ? "text-green-600" : ""} />

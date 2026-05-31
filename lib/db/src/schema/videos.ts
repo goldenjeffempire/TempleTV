@@ -109,6 +109,9 @@ export const videosTable = pgTable("managed_videos", {
   // All other states (none/queued/encoding/ready/hls_ready) are admitted by
   // transcoding_status alone — see idx_managed_videos_source_transcoding above.
   index("idx_managed_videos_broadcast_admission").on(table.videoSource, table.transcodingStatus, table.faststartApplied),
+  // uploaded_by: admin "filter by uploader" queries and audit trail lookups.
+  // Also enables JOIN/WHERE patterns for upload attribution without a full table scan.
+  index("idx_managed_videos_uploaded_by").on(table.uploadedBy),
   // Enforce the closed enum at the database level. Any code path that writes
   // an unrecognised status (typo, bad migration, rogue SQL) will get a
   // CHECK violation rather than silently corrupting the state machine.

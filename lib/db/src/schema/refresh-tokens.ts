@@ -24,6 +24,10 @@ export const refreshTokensTable = pgTable(
     userIdx: index("refresh_tokens_user_id_idx").on(t.userId),
     expiresIdx: index("refresh_tokens_expires_at_idx").on(t.expiresAt),
     replacedByIdx: index("refresh_tokens_replaced_by_id_idx").on(t.replacedById),
+    // Composite index for the changePassword / logout-all hot path:
+    // UPDATE refresh_tokens SET revoked_at = now() WHERE user_id = ? AND revoked_at IS NULL
+    // Without this, the query full-scans all tokens for the user to find active ones.
+    userRevokedIdx: index("refresh_tokens_user_id_revoked_at_idx").on(t.userId, t.revokedAt),
   }),
 );
 

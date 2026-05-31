@@ -395,7 +395,11 @@ interface SortableRowProps {
   isDragDisabled?: boolean;
 }
 
-function SortableRow({
+// Wrapped in React.memo so only the row whose props actually changed
+// re-renders when parent state updates (e.g. dragging, syncing, now-playing).
+// Without memo, every state change in the parent (isSyncing toggle, playNow
+// pending) triggers re-renders for all 100+ queue rows simultaneously.
+const SortableRow = React.memo(function SortableRow({
   item,
   idx,
   health,
@@ -515,7 +519,7 @@ function SortableRow({
       </Button>
     </div>
   );
-}
+});
 
 // ── OrchestratorStatusPanel ────────────────────────────────────────────────────
 
