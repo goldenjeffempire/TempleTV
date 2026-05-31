@@ -44,6 +44,10 @@ export function useFavorites() {
   const [loaded, setLoaded] = useState(false);
   const { token } = useAuth();
   const lastSyncedTokenRef = useRef<string | null>(null);
+  // Ref that mirrors `favorites` state so that addFavorite / removeFavorite
+  // always read the *latest* list even when called in rapid succession before
+  // React has re-rendered (stale-closure race condition).
+  const favoritesRef = useRef<Sermon[]>([]);
 
   useEffect(() => {
     AsyncStorage.getItem(STORAGE_KEYS.favorites)
@@ -51,6 +55,7 @@ export function useFavorites() {
         if (raw) {
           try {
             const parsed = JSON.parse(raw) as Sermon[];
+            favoritesRef.current = parsed;
             setFavorites(parsed);
             // Use sermon.id (db UUID) as the canonical dedup key.
             // This fixes local-video favorites where youtubeId is always "".
@@ -97,6 +102,7 @@ export function useFavorites() {
         if (cloudOnly.length === 0) return;
 
         const merged = [...local, ...cloudOnly];
+        favoritesRef.current = merged;
         setFavorites(merged);
         setFavoriteIds(new Set(merged.map((s) => s.id)));
         await AsyncStorage.setItem(STORAGE_KEYS.favorites, JSON.stringify(merged));
@@ -105,6 +111,9 @@ export function useFavorites() {
   }, [token, loaded]);
 
   const persist = useCallback(async (updated: Sermon[]) => {
+    // Update the ref *before* setState so subsequent calls within the same
+    // event loop tick (before re-render) read the fresh list.
+    favoritesRef.current = updated;
     setFavorites(updated);
     setFavoriteIds(new Set(updated.map((s) => s.id)));
     await AsyncStorage.setItem(STORAGE_KEYS.favorites, JSON.stringify(updated)).catch(() => {});
@@ -112,8 +121,11 @@ export function useFavorites() {
 
   const addFavorite = useCallback(
     async (sermon: Sermon) => {
-      if (favoriteIds.has(sermon.id)) return;
-      await persist([sermon, ...favorites]);
+      // Read favoritesRef (not `favorites` state) so concurrent calls build
+      // on the latest list instead of the stale closure from the last render.
+      const current = favoritesRef.current;
+      if (current.some((s) => s.id === sermon.id)) return;
+      await persist([sermon, ...current]);
       hasAuthToken().then((loggedIn) => {
         if (!loggedIn) return;
         // Cloud sync uses youtubeId for YouTube videos, falling back to id.
@@ -125,14 +137,16 @@ export function useFavorites() {
         }).catch(() => {});
       });
     },
-    [favorites, favoriteIds, persist],
+    [persist],
   );
 
   const removeFavorite = useCallback(
     async (videoId: string) => {
-      // Look up the stored sermon to recover its youtubeId for cloud sync.
-      const toRemove = favorites.find((s) => s.id === videoId);
-      await persist(favorites.filter((s) => s.id !== videoId));
+      // Read favoritesRef (not `favorites` state) so concurrent calls build
+      // on the latest list instead of the stale closure from the last render.
+      const current = favoritesRef.current;
+      const toRemove = current.find((s) => s.id === videoId);
+      await persist(current.filter((s) => s.id !== videoId));
       hasAuthToken().then((loggedIn) => {
         if (!loggedIn) return;
         apiSyncFavorite("remove", {
@@ -143,7 +157,7 @@ export function useFavorites() {
         }).catch(() => {});
       });
     },
-    [favorites, persist],
+    [persist],
   );
 
   const toggleFavorite = useCallback(

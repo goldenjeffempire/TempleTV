@@ -26,10 +26,19 @@ export declare function registerNamedCache(name: string, c: Cache): void;
 /**
  * Register an arbitrary size-reporting function under a name.
  * Use this for non-Cache Map/Set instances (e.g. dedup stores, token maps).
+ * Idempotent — registering the same name twice replaces the function but
+ * preserves any accumulated peak value across hot-module reloads.
  */
 export declare function registerNamedStore(name: string, getSize: () => number): void;
-/** Returns a snapshot of all registered cache sizes for diagnostics. */
+/**
+ * Update the lifetime peak for every registered store without returning data.
+ * Called by the memory watchdog on each 30-second tick so peaks accumulate
+ * accurately even when the diagnostics endpoint is not being polled.
+ */
+export declare function sampleNamedStorePeaks(): void;
+/** Returns a snapshot of all registered cache sizes and lifetime peaks for diagnostics. */
 export declare function getRegisteredCacheStats(): Array<{
     name: string;
     size: number;
+    peak: number;
 }>;

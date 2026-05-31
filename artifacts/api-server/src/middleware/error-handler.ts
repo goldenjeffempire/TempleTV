@@ -1,6 +1,7 @@
 import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { ZodError } from "zod";
 import { AppError } from "../shared/errors.js";
+import { captureException } from "../infrastructure/sentry.js";
 
 interface ProblemDetails {
   type: string;
@@ -44,6 +45,16 @@ export function registerErrorHandler(app: FastifyInstance) {
     const status = (err as FastifyError).statusCode ?? 500;
     if (status >= 500) {
       req.log.error({ err }, "unhandled error");
+      // Report to Sentry with request context so errors are traceable to a
+      // specific user, endpoint, and request ID without leaking PII beyond
+      // what is already in the Sentry project's data-scrubbing rules.
+      void captureException(err, {
+        requestId,
+        userId: req.principal?.id,
+        userRole: req.principal?.role,
+        method: req.method,
+        path: req.routeOptions?.url ?? req.url,
+      });
     } else {
       req.log.warn({ err: { message: err.message, name: err.name } }, "client error");
     }

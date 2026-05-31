@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const KEY = "@temple_tv/notif_prefs";
@@ -21,6 +21,9 @@ export function useNotificationPreferences() {
   const [loaded, setLoaded] = useState(false);
   const [hasSeenOptIn, setHasSeenOptIn] = useState(false);
   const [optInLoaded, setOptInLoaded] = useState(false);
+  // Ref that mirrors `prefs` state so that rapid toggle calls (before re-render)
+  // build on the latest values rather than a stale closure snapshot.
+  const prefsRef = useRef<NotifPrefs>(DEFAULT);
 
   useEffect(() => {
     Promise.all([
@@ -31,7 +34,9 @@ export function useNotificationPreferences() {
         if (raw) {
           try {
             const parsed = JSON.parse(raw) as Partial<NotifPrefs>;
-            setPrefs({ ...DEFAULT, ...parsed });
+            const loaded = { ...DEFAULT, ...parsed };
+            prefsRef.current = loaded;
+            setPrefs(loaded);
           } catch {
             // malformed — use defaults
           }
@@ -46,7 +51,10 @@ export function useNotificationPreferences() {
 
   const save = useCallback(
     async (update: Partial<NotifPrefs>) => {
-      const next: NotifPrefs = { ...prefs, ...update };
+      // Merge into prefsRef.current (not the `prefs` state closure) so
+      // concurrent calls within the same render cycle don't clobber each other.
+      const next: NotifPrefs = { ...prefsRef.current, ...update };
+      prefsRef.current = next;
       setPrefs(next);
       try {
         await AsyncStorage.setItem(KEY, JSON.stringify(next));
@@ -54,7 +62,7 @@ export function useNotificationPreferences() {
         // Non-critical
       }
     },
-    [prefs],
+    [],
   );
 
   const markOptInSeen = useCallback(async () => {

@@ -3,18 +3,6 @@ export type TranscodingJobWithVideo = (typeof schema.transcodingJobsTable.$infer
     videoTitle: string | null;
     videoThumbnail: string | null;
 };
-/**
- * Enqueue a transcoding job for an uploaded video.
- *
- * Idempotent: if there is already a queued/processing job for this
- * video the existing row is returned. If a previously-failed job
- * exists, it is re-armed (status='queued', attempts reset, error
- * cleared) instead of inserting a duplicate.
- *
- * Also flips `managed_videos.transcoding_status` to "queued" so the
- * admin UI shows the right badge immediately, before the dispatcher
- * picks the job up.
- */
 export declare function enqueueTranscode(args: {
     videoId: string;
     videoPath: string;

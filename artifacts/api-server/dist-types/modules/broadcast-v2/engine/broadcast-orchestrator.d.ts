@@ -279,6 +279,20 @@ declare class BroadcastOrchestrator extends EventEmitter {
     /** Timestamp (ms) when we first detected items loaded but all URLs blocked.
      *  Null when not in that state. Used for auto-recovery after the TTL window. */
     private allBlockedSinceMs;
+    /**
+     * How many times the all-blocked TTL recovery cycle has fired without any
+     * item successfully playing to completion (naturalItemEnd).
+     *
+     * Each bad-URL TTL expiry (90 s) that still finds all sources unreachable
+     * increments this counter. After 2 cycles (≥ 3 min of persistent failure),
+     * the emergency filler is engaged — critical for large queues (>5 items)
+     * where autoSkipAttempts < 5 cap prevents consecutiveSkips from ever
+     * reaching items.length and triggering the tick-loop filler path.
+     *
+     * Reset to 0 whenever an item plays to its natural end or a new item
+     * successfully becomes current after a dead-air gap.
+     */
+    private allBlockedRecoveryCycles;
     /** Circuit breaker: consecutive tick() failures before the circuit opens. */
     private readonly TICK_CIRCUIT_THRESHOLD;
     /**

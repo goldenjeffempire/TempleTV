@@ -37,6 +37,7 @@ declare const Env: z.ZodObject<{
     MAX_WS_PER_IP: z.ZodDefault<z.ZodNumber>;
     BCRYPT_ROUNDS: z.ZodDefault<z.ZodNumber>;
     MEMORY_WARN_RSS_MB: z.ZodDefault<z.ZodNumber>;
+    MEMORY_RESTART_RSS_MB: z.ZodDefault<z.ZodNumber>;
     DB_POOL_MAX: z.ZodDefault<z.ZodNumber>;
     DB_STATEMENT_TIMEOUT_MS: z.ZodDefault<z.ZodNumber>;
     SENTRY_DSN: z.ZodOptional<z.ZodString>;
@@ -97,12 +98,12 @@ declare const Env: z.ZodObject<{
     SEED_ADMIN_PASSWORD: z.ZodOptional<z.ZodString>;
     SEED_ADMIN_FORCE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
 }, "strip", z.ZodTypeAny, {
+    DATABASE_URL: string;
     NODE_ENV: "development" | "test" | "production";
     PORT: number;
     TV_DEV_PORT: number;
     MOBILE_DEV_PORT: number;
     LOG_LEVEL: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
-    DATABASE_URL: string;
     JWT_ACCESS_SECRET: string;
     JWT_REFRESH_SECRET: string;
     JWT_ACCESS_TTL_SECONDS: number;
@@ -120,6 +121,7 @@ declare const Env: z.ZodObject<{
     MAX_WS_PER_IP: number;
     BCRYPT_ROUNDS: number;
     MEMORY_WARN_RSS_MB: number;
+    MEMORY_RESTART_RSS_MB: number;
     DB_POOL_MAX: number;
     DB_STATEMENT_TIMEOUT_MS: number;
     RUN_MODE: "api" | "worker" | "all";
@@ -223,6 +225,7 @@ declare const Env: z.ZodObject<{
     MAX_WS_PER_IP?: number | undefined;
     BCRYPT_ROUNDS?: number | undefined;
     MEMORY_WARN_RSS_MB?: number | undefined;
+    MEMORY_RESTART_RSS_MB?: number | undefined;
     DB_POOL_MAX?: number | undefined;
     DB_STATEMENT_TIMEOUT_MS?: number | undefined;
     SENTRY_DSN?: string | undefined;
