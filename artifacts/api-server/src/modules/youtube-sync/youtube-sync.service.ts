@@ -687,7 +687,12 @@ async function upsertBatch(rows: VideoRow[]): Promise<void> {
           title:        sql`excluded.title`,
           description:  sql`excluded.description`,
           thumbnailUrl: sql`excluded.thumbnail_url`,
-          duration:     sql`excluded.duration`,
+          // Preserve an existing non-empty duration when the incoming value is empty
+          // (RSS fallback returns durationSecs=0 → duration="" because it has no
+          // video duration data). Without this guard an RSS-triggered sync would
+          // overwrite a previously-fetched valid duration with an empty string,
+          // breaking duration displays on TV/mobile until the next full API sync.
+          duration: sql`CASE WHEN excluded.duration = '' THEN managed_videos.duration ELSE excluded.duration END`,
           viewCount:    sql`excluded.view_count`,
           publishedAt:  sql`excluded.published_at`,
           // Preserve admin-curated values when metadata_locked = true.
@@ -708,7 +713,7 @@ async function upsertBatch(rows: VideoRow[]): Promise<void> {
           title:        sql`excluded.title`,
           description:  sql`excluded.description`,
           thumbnailUrl: sql`excluded.thumbnail_url`,
-          duration:     sql`excluded.duration`,
+          duration: sql`CASE WHEN excluded.duration = '' THEN managed_videos.duration ELSE excluded.duration END`,
           viewCount:    sql`excluded.view_count`,
           publishedAt:  sql`excluded.published_at`,
           category:     sql`excluded.category`,
@@ -793,6 +798,9 @@ class IngestionQueue {
           item.status = "succeeded";
           item.attempts++;
         }
+        // Persist quota after each successful chunk so a crash mid-sync doesn't
+        // lose the quota consumed so far. persistQuota is idempotent (upsert).
+        void persistQuota();
       } catch (batchErr) {
         const batchMsg = batchErr instanceof Error ? batchErr.message : String(batchErr);
         logger.warn(

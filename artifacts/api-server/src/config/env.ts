@@ -146,8 +146,8 @@ const Env = z.object({
   //
   // Typical production config on a 512 MB host:
   //   MEMORY_WARN_RSS_MB=380   MEMORY_RESTART_RSS_MB=490
-  MEMORY_WARN_RSS_MB: z.coerce.number().int().positive().default(1500),
-  MEMORY_RESTART_RSS_MB: z.coerce.number().int().positive().default(600),
+  MEMORY_WARN_RSS_MB: z.coerce.number().int().positive().default(380),
+  MEMORY_RESTART_RSS_MB: z.coerce.number().int().positive().default(490),
 
   // pg connection pool maximum. Each replica holds at most this many live
   // connections to Postgres/Neon. 20 is safe for a 2 GiB / 1-vCPU container.

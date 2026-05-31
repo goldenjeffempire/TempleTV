@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { getApiBase } from "@/lib/apiBase";
+import { fetchWithRetry } from "@/lib/fetchWithRetry";
 
 export interface PlaylistItem {
   id: string;
@@ -45,8 +46,8 @@ export function usePlaylists() {
     setError(null);
     try {
       const apiBase = getApiBase();
-      const res = await fetch(`${apiBase}/api/playlists?limit=100`, {
-        signal: AbortSignal.timeout(10_000),
+      const res = await fetchWithRetry(`${apiBase}/api/playlists?limit=100`, {
+        signal: AbortSignal.timeout(15_000),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json() as { playlists?: PlaylistItem[]; data?: PlaylistItem[] };
@@ -75,8 +76,8 @@ export function usePlaylistDetail(id: string | null) {
     setError(null);
     try {
       const apiBase = getApiBase();
-      const res = await fetch(`${apiBase}/api/playlists/${playlistId}`, {
-        signal: AbortSignal.timeout(10_000),
+      const res = await fetchWithRetry(`${apiBase}/api/playlists/${playlistId}`, {
+        signal: AbortSignal.timeout(15_000),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json() as { playlist?: PlaylistDetail } | PlaylistDetail;

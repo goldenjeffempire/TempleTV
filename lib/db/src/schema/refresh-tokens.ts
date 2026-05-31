@@ -23,6 +23,7 @@ export const refreshTokensTable = pgTable(
   (t) => ({
     userIdx: index("refresh_tokens_user_id_idx").on(t.userId),
     expiresIdx: index("refresh_tokens_expires_at_idx").on(t.expiresAt),
+    replacedByIdx: index("refresh_tokens_replaced_by_id_idx").on(t.replacedById),
   }),
 );
 
