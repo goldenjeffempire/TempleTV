@@ -52,6 +52,19 @@ const ring: SlowEntry[] = [];
 let capturedCount = 0;
 const routeAggregates = new Map<string, RouteAggregate>();
 
+// ── Periodic GC for route aggregates ───────────────────────────────────────
+// routeAggregates entries are filtered on read (getSlowRequestsSnapshot uses
+// the BUFFER_MAX_AGE_MS cutoff) but never deleted from the Map itself. On a
+// 24/7 server with varied traffic patterns, stale entries accumulate
+// indefinitely. This sweep runs every BUFFER_MAX_AGE_MS and removes routes
+// whose last slow request fell outside the retention window.
+setInterval(() => {
+  const cutoff = Date.now() - BUFFER_MAX_AGE_MS;
+  for (const [key, agg] of routeAggregates) {
+    if (agg.lastAt < cutoff) routeAggregates.delete(key);
+  }
+}, BUFFER_MAX_AGE_MS).unref?.();
+
 /**
  * Normalise a URL path by replacing numeric and UUID-like segments with
  * their parameter placeholders so `/videos/1234` and `/videos/5678` both
