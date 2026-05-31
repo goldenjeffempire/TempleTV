@@ -45,15 +45,18 @@ export interface WatchdogState {
   sampleIntervalMs: number;
   thresholds: {
     rssAlertMb: number;
+    rssRestartMb: number;
     rssRecoveryMb: number;
     externalGrowthAlertMbPerMin: number;
     externalGrowthRecoveryMbPerMin: number;
     sustainSamples: number;
     slopeWindowSamples: number;
+    criticalSamplesForExit: number;
   };
   current: {
     rssMb: number;
     consecutiveRssOver: number;
+    consecutiveRssOverRestart: number;
     externalGrowthMbPerMin: number | null;
     consecutiveSlopeOver: number;
   };
@@ -65,6 +68,11 @@ export interface WatchdogState {
 
 let interval: NodeJS.Timeout | null = null;
 let consecutiveRssOver = 0;
+/** Separate counter that only increments when RSS ≥ MEMORY_RESTART_RSS_MB.
+ *  This decouples the "warn" alert from the "critical exit" trigger so the
+ *  operator can set MEMORY_WARN_RSS_MB low for early visibility without the
+ *  process being killed every time RSS exceeds that low watermark. */
+let consecutiveRssOverRestart = 0;
 let consecutiveSlopeOver = 0;
 let rssAlertActive = false;
 let slopeAlertActive = false;
@@ -101,6 +109,12 @@ function sample() {
   lastRssMb = rssMb;
   processRssGauge.set(SERVICE_LABELS, mem.rss);
   const thresholdMb = env.MEMORY_WARN_RSS_MB;
+  // The restart threshold must be ≥ the warn threshold. If the operator
+  // configures MEMORY_RESTART_RSS_MB lower than MEMORY_WARN_RSS_MB (or
+  // leaves MEMORY_RESTART_RSS_MB at its default while setting a high
+  // MEMORY_WARN_RSS_MB) we clamp to the larger of the two so the process
+  // is never killed before the warn alert has had a chance to fire.
+  const restartThresholdMb = Math.max(env.MEMORY_RESTART_RSS_MB, thresholdMb);
 
   // ── RSS tracking ───────────────────────────────────────────────────────────
   if (rssMb >= thresholdMb) {
@@ -121,6 +135,17 @@ function sample() {
       });
     }
     consecutiveRssOver = 0;
+  }
+
+  // Track a separate counter for the restart (critical-exit) threshold.
+  // This is independent from the warn counter so a server sitting between
+  // the warn threshold and the restart threshold emits alerts but is NOT
+  // killed — which is the expected behaviour when MEMORY_WARN_RSS_MB is
+  // set low for early-warning visibility on a constrained host.
+  if (rssMb >= restartThresholdMb) {
+    consecutiveRssOverRestart++;
+  } else {
+    consecutiveRssOverRestart = 0;
   }
 
   if (consecutiveRssOver >= SUSTAIN_SAMPLES && !rssAlertActive) {
@@ -208,21 +233,31 @@ function sample() {
   }
 
   // ── Critical escalation (production only) ────────────────────────────────
+  // Uses consecutiveRssOverRestart (RSS ≥ MEMORY_RESTART_RSS_MB) rather than
+  // consecutiveRssOver (RSS ≥ MEMORY_WARN_RSS_MB) so a low warn threshold
+  // does NOT cause the process to exit — it only triggers the ops-alert above.
   if (
     env.NODE_ENV === "production" &&
-    consecutiveRssOver >= CRITICAL_SAMPLES_FOR_EXIT &&
+    consecutiveRssOverRestart >= CRITICAL_SAMPLES_FOR_EXIT &&
     !criticalExitInFlight
   ) {
     criticalExitInFlight = true;
     logger.fatal(
-      { rssMb, thresholdMb, consecutiveRssOver, criticalThreshold: CRITICAL_SAMPLES_FOR_EXIT },
+      {
+        rssMb,
+        warnThresholdMb: thresholdMb,
+        restartThresholdMb,
+        consecutiveRssOver,
+        consecutiveRssOverRestart,
+        criticalThreshold: CRITICAL_SAMPLES_FOR_EXIT,
+      },
       "[memory-watchdog] CRITICAL: sustained memory pressure — initiating graceful exit (supervisor will restart)",
     );
     void import("./sentry.js").then(({ captureEvent }) =>
       captureEvent(
-        `[memory-watchdog] CRITICAL: RSS sustained above ${thresholdMb} MB for ${consecutiveRssOver} samples — forcing graceful exit`,
+        `[memory-watchdog] CRITICAL: RSS sustained above restart threshold ${restartThresholdMb} MB for ${consecutiveRssOverRestart} samples — forcing graceful exit`,
         "fatal",
-        { rssMb, thresholdMb, consecutiveRssOver, graceMs: FORCE_EXIT_GRACE_MS },
+        { rssMb, restartThresholdMb, consecutiveRssOverRestart, graceMs: FORCE_EXIT_GRACE_MS },
       ),
     ).catch(() => {});
     _emit?.({
@@ -230,9 +265,9 @@ function sample() {
       data: {
         level: "fatal",
         code: "memory-critical-exit",
-        message: `RSS sustained above ${thresholdMb} MB for ${consecutiveRssOver} samples — process will exit for clean restart in ${FORCE_EXIT_GRACE_MS / 1000}s`,
+        message: `RSS sustained above restart threshold ${restartThresholdMb} MB for ${consecutiveRssOverRestart} samples — process will exit for clean restart in ${FORCE_EXIT_GRACE_MS / 1000}s`,
         rssMb,
-        thresholdMb,
+        restartThresholdMb,
         graceMs: FORCE_EXIT_GRACE_MS,
       },
     });
@@ -269,20 +304,24 @@ export function stopMemoryWatchdog(): void {
 }
 
 export function getWatchdogState(): WatchdogState {
+  const restartMb = Math.max(env.MEMORY_RESTART_RSS_MB, env.MEMORY_WARN_RSS_MB);
   return {
     enabled: interval !== null,
     sampleIntervalMs: SAMPLE_INTERVAL_MS,
     thresholds: {
       rssAlertMb: env.MEMORY_WARN_RSS_MB,
+      rssRestartMb: restartMb,
       rssRecoveryMb: env.MEMORY_WARN_RSS_MB - 200,
       externalGrowthAlertMbPerMin: EXTERNAL_GROWTH_ALERT_MB_PER_MIN,
       externalGrowthRecoveryMbPerMin: EXTERNAL_GROWTH_RECOVERY_MB_PER_MIN,
       sustainSamples: SUSTAIN_SAMPLES,
       slopeWindowSamples: SLOPE_WINDOW_SAMPLES,
+      criticalSamplesForExit: CRITICAL_SAMPLES_FOR_EXIT,
     },
     current: {
       rssMb: lastRssMb,
       consecutiveRssOver,
+      consecutiveRssOverRestart,
       externalGrowthMbPerMin: lastExternalGrowthMbPerMin,
       consecutiveSlopeOver,
     },

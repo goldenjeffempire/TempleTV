@@ -128,11 +128,26 @@ const Env = z.object({
   // NIST SP 800-132 recommends ≥ 10; default 12 is a conservative middle ground.
   BCRYPT_ROUNDS: z.coerce.number().int().min(4).max(20).default(12),
 
-  // F17: RSS memory threshold (MB) above which a structured ops-alert SSE
-  // event is emitted so the admin console can surface a warning banner.
-  // Default 1 500 MB — comfortable headroom on Render's Starter (512 MB RAM)
-  // but intentionally high so dev environments don't spam false alerts.
+  // F17: Two-tier RSS memory threshold.
+  //
+  // MEMORY_WARN_RSS_MB  — ops-alert SSE is emitted after SUSTAIN_SAMPLES (3)
+  //   consecutive samples above this value so the admin console can surface a
+  //   warning banner. Set this low enough to get early notice (e.g. 380 MB on
+  //   a 512 MB host) without causing restarts.
+  //   Default: 1 500 MB (keeps dev environments quiet).
+  //
+  // MEMORY_RESTART_RSS_MB — SIGTERM is sent after CRITICAL_SAMPLES_FOR_EXIT
+  //   (10) consecutive samples above THIS value so the supervisor can restart
+  //   cleanly. Must be ≥ MEMORY_WARN_RSS_MB. Setting it to the same value as
+  //   MEMORY_WARN_RSS_MB (the old behaviour) kills a healthy server whose RSS
+  //   merely sits above the warn threshold — e.g. with --max-old-space-size=460
+  //   a warm Node process regularly uses 380–460 MB RSS via JIT + DB buffers.
+  //   Default: 600 MB (safe headroom above a 460 MB heap limit).
+  //
+  // Typical production config on a 512 MB host:
+  //   MEMORY_WARN_RSS_MB=380   MEMORY_RESTART_RSS_MB=490
   MEMORY_WARN_RSS_MB: z.coerce.number().int().positive().default(1500),
+  MEMORY_RESTART_RSS_MB: z.coerce.number().int().positive().default(600),
 
   // pg connection pool maximum. Each replica holds at most this many live
   // connections to Postgres/Neon. 20 is safe for a 2 GiB / 1-vCPU container.
