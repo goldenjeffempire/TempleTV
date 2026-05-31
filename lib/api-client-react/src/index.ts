@@ -1081,7 +1081,12 @@ export function useImportVideo(opts?: MutationOpts<AdminVideo, ImportVideoVars>)
     onSettled: opts?.mutation?.onSettled,
     retry: opts?.mutation?.retry,
     onSuccess: chainOnSuccess(
-      () => qc.invalidateQueries({ queryKey: ["admin", "videos"] }),
+      () => Promise.all([
+        qc.invalidateQueries({ queryKey: ["admin", "videos"] }),
+        // Also invalidate the admin SPA's own "admin-videos" cache key so both
+        // key formats stay in sync regardless of which hook consumers use.
+        qc.invalidateQueries({ queryKey: ["admin-videos"] }),
+      ]),
       opts?.mutation?.onSuccess,
     ),
   });
@@ -1108,7 +1113,10 @@ export function useUpdateAdminVideo(
     onSettled: opts?.mutation?.onSettled,
     retry: opts?.mutation?.retry,
     onSuccess: chainOnSuccess(
-      () => qc.invalidateQueries({ queryKey: ["admin", "videos"] }),
+      () => Promise.all([
+        qc.invalidateQueries({ queryKey: ["admin", "videos"] }),
+        qc.invalidateQueries({ queryKey: ["admin-videos"] }),
+      ]),
       opts?.mutation?.onSuccess,
     ),
   });
@@ -1124,7 +1132,10 @@ export function useDeleteAdminVideo(
     onSettled: opts?.mutation?.onSettled,
     retry: opts?.mutation?.retry,
     onSuccess: chainOnSuccess(
-      () => qc.invalidateQueries({ queryKey: ["admin", "videos"] }),
+      () => Promise.all([
+        qc.invalidateQueries({ queryKey: ["admin", "videos"] }),
+        qc.invalidateQueries({ queryKey: ["admin-videos"] }),
+      ]),
       opts?.mutation?.onSuccess,
     ),
   });

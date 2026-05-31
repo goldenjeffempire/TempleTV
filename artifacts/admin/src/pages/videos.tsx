@@ -249,17 +249,24 @@ export default function VideosPage() {
   // skeleton flash on background pages while still updating the visible list).
   useSSEEvent("transcoding-update", () => {
     void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+    // When HLS transcoding completes the broadcast_queue row gains a
+    // hlsMasterUrl; the queue UI must also refresh to reflect the upgrade.
+    void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
   });
 
-  // Belt-and-suspenders: when any upload completes, force-invalidate the
-  // admin-videos query so the newly uploaded video appears immediately —
-  // even if the SSE "videos-library-updated" event was missed because the
-  // SSE connection dropped between finalize and event delivery.
+  // Belt-and-suspenders: when any upload completes, force-invalidate both the
+  // admin-videos and broadcast-queue queries so the newly uploaded video
+  // appears immediately in both the library and the broadcast queue —
+  // even if the SSE events were missed because the connection dropped between
+  // finalize and event delivery.
   useEffect(() => {
     return uploadQueue.onComplete(() => {
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
       // Keep the Dashboard "Total Videos" count in sync after uploads complete.
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      // Ensure the broadcast queue UI reflects the newly auto-queued video
+      // even when the SSE "broadcast-queue-updated" event was missed.
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
     });
   }, [qc]);
 

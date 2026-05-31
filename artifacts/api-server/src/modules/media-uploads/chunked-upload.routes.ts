@@ -1287,10 +1287,22 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                     { videoId, queueItemId: enqueueResult.queueItemId },
                     "[finalize:bg] video auto-queued for broadcast immediately after assembly",
                   );
-                  adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize", videoId });
+                } else {
+                  capturedLog.info(
+                    { videoId, queueItemId: enqueueResult.queueItemId },
+                    "[finalize:bg] video already in broadcast queue — skipping duplicate insert",
+                  );
                 }
+                // Always emit broadcast-queue-updated so the admin UI refreshes —
+                // whether the video was freshly enqueued or was already present.
+                // This guarantees the queue panel shows current state even when the
+                // SSE connection was down during the background assembly window.
+                adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize", videoId });
               } catch (enqErr) {
                 capturedLog.warn({ err: enqErr, videoId }, "[finalize:bg] immediate enqueueIfMissing failed (non-fatal)");
+                // Emit broadcast-queue-updated even on failure so clients
+                // reload the queue and see the accurate server-side state.
+                adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize-enqueue-failed", videoId });
               }
             }
 
@@ -1632,13 +1644,22 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                   { videoId: videoIdB, queueItemId: enqueueResultB.queueItemId },
                   "[finalize:db_fallback:bg] video auto-queued for broadcast immediately after assembly",
                 );
-                adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize", videoId: videoIdB });
+              } else {
+                capturedLogB.info(
+                  { videoId: videoIdB, queueItemId: enqueueResultB.queueItemId },
+                  "[finalize:db_fallback:bg] video already in broadcast queue — skipping duplicate insert",
+                );
               }
+              // Always emit regardless of enqueued boolean — the admin UI needs
+              // to refresh whether the video was freshly queued or already present.
+              adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize", videoId: videoIdB });
             } catch (enqErrB) {
               capturedLogB.warn(
                 { err: enqErrB, videoId: videoIdB },
                 "[finalize:db_fallback:bg] immediate enqueueIfMissing failed (non-fatal)",
               );
+              // Emit even on failure so clients reload the queue.
+              adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize-enqueue-failed", videoId: videoIdB });
             }
           }
 

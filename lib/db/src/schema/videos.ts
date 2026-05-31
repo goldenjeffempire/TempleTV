@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, boolean, integer, bigint, index, check } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, boolean, integer, bigint, index, uniqueIndex, check } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import type { z } from "zod/v4";
@@ -116,6 +116,15 @@ export const videosTable = pgTable("managed_videos", {
     "managed_videos_transcoding_status_check",
     sql`${table.transcodingStatus} IN ('none','queued','encoding','processing','ready','hls_ready','failed')`,
   ),
+  // Prevent duplicate video rows when the same file is uploaded multiple times.
+  // A partial unique index (WHERE object_path IS NOT NULL) lets YouTube-synced
+  // rows (where object_path is NULL) co-exist without a constraint violation.
+  // If Drizzle Kit cannot apply this as a partial index it falls back to a
+  // plain unique index; the startup guard in infrastructure/db.ts also ensures
+  // this index exists regardless of what drizzle-kit push manages to apply.
+  uniqueIndex("uq_managed_videos_object_path")
+    .on(table.objectPath)
+    .where(sql`"object_path" IS NOT NULL`),
   // NOTE: The GIN full-text search index (idx_managed_videos_fts) is created via
   // raw SQL at API startup in infrastructure/db.ts using CREATE INDEX IF NOT EXISTS.
   // Drizzle Kit does not support expression GIN indexes in the schema DSL,

@@ -29,4 +29,6 @@ export const adminEventBus = new AdminEventBus();
 // Node's default max-listener ceiling is 10.  Each open admin SSE
 // connection adds one listener; raise the ceiling so a busy ops team
 // with many browser tabs doesn't trigger the spurious warning.
-adminEventBus.setMaxListeners(200);
+// 500 gives comfortable headroom for large orgs with many simultaneous
+// admin sessions without masking genuine listener leaks.
+adminEventBus.setMaxListeners(500);

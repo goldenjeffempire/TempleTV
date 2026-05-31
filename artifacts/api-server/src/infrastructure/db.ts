@@ -464,6 +464,17 @@ export async function ensureRuntimeIndexes(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_viewer_sessions_started_at
         ON viewer_sessions (started_at)
     `);
+    // Partial unique index — prevents duplicate managed_videos rows when the
+    // same file is uploaded twice (same object_path). YouTube-synced rows
+    // (object_path IS NULL) are exempt from the constraint.
+    // We use CREATE UNIQUE INDEX rather than just CREATE INDEX here so the DB
+    // enforces uniqueness at the constraint level independently of Drizzle Kit.
+    // IF NOT EXISTS makes this idempotent on every boot.
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_managed_videos_object_path
+        ON managed_videos (object_path)
+        WHERE object_path IS NOT NULL
+    `);
     logger.info("db: functional and partial indexes ensured");
   } catch (err) {
     // Non-fatal — the search falls back to plainto_tsquery without the index
