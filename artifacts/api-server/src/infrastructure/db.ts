@@ -371,6 +371,23 @@ export async function ensureRuntimeIndexes(): Promise<void> {
         ON broadcast_queue (sort_order, added_at)
         WHERE is_active = true
     `);
+    // Partial index for the scheduled_notification dispatcher.
+    // The dispatcher polls: WHERE status = 'pending' AND scheduled_at <= now()
+    // Without this index the query degrades to a full table scan as the
+    // scheduled_notifications table grows (sent rows accumulate quickly).
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_scheduled_notifications_dispatch
+        ON scheduled_notifications (scheduled_at)
+        WHERE status = 'pending'
+    `);
+    // B-Tree index supporting the admin analytics concurrent-viewers query.
+    // The CTE LEFT JOINs viewer_sessions on started_at — without an index
+    // this is a sequential scan over the entire sessions table for each
+    // analytics request (admin dashboard, 30d/90d range in particular).
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_viewer_sessions_started_at
+        ON viewer_sessions (started_at)
+    `);
     logger.info("db: functional and partial indexes ensured");
   } catch (err) {
     // Non-fatal — the search falls back to plainto_tsquery without the index

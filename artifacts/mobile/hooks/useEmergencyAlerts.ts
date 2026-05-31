@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { EmergencyAlertData } from "@/components/EmergencyBanner";
 import { getApiBase } from "@/lib/apiBase";
+import { fetchWithRetry } from "@/lib/fetchWithRetry";
 
 /**
  * Polls /api/emergency/active on mount and subscribes to the SSE gateway
@@ -15,7 +16,7 @@ export function useEmergencyAlerts() {
   useEffect(() => {
     const apiBase = getApiBase();
     if (!apiBase) return;
-    fetch(`${apiBase}/api/emergency/active`)
+    fetchWithRetry(`${apiBase}/api/emergency/active`, {}, { maxRetries: 3 })
       .then((r) => (r.ok ? r.json() : []))
       .then((alerts: Array<{ id: string; title: string; message: string; severity: string; expiresAt: string | null }>) => {
         const a = alerts[0];

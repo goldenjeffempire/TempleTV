@@ -299,6 +299,12 @@ export const adminService = {
     const gran = range === "7d" ? "1 hour" : range === "30d" ? "4 hours" : "1 day";
     const granKey: "hour" | "4h" | "day" = range === "7d" ? "hour" : range === "30d" ? "4h" : "day";
 
+    // Safety assertion: rangeDays and gran are derived from a Zod-validated
+    // enum ("7d"|"30d"|"90d") at the route level, but we also guard here so
+    // a direct service call cannot inject arbitrary SQL fragments.
+    const safeRangeDays = ([7, 30, 90] as const).includes(rangeDays as 7 | 30 | 90) ? rangeDays : 7;
+    const safeGran = (["1 hour", "4 hours", "1 day"] as const).includes(gran as "1 hour" | "4 hours" | "1 day") ? gran : "1 day";
+
     // Generate time buckets and count distinct sessions active at each bucket.
     // A session is "active" at time T when:
     //   started_at <= T  AND  (ended_at > T  OR  (ended_at IS NULL AND last_heartbeat_at >= T - 5 min))
@@ -306,9 +312,9 @@ export const adminService = {
     const rawRows = await db.execute(sql.raw(`
       WITH buckets AS (
         SELECT generate_series(
-          date_trunc('hour', now()) - '${rangeDays} days'::interval,
+          date_trunc('hour', now()) - '${safeRangeDays} days'::interval,
           date_trunc('hour', now()),
-          '${gran}'::interval
+          '${safeGran}'::interval
         ) AS bucket
       )
       SELECT
@@ -335,7 +341,7 @@ export const adminService = {
       FROM buckets b
       LEFT JOIN viewer_sessions vs ON
         vs.started_at <= b.bucket
-        AND vs.started_at >= b.bucket - '${rangeDays + 1} days'::interval
+        AND vs.started_at >= b.bucket - '${safeRangeDays + 1} days'::interval
       GROUP BY b.bucket
       ORDER BY b.bucket
     `));

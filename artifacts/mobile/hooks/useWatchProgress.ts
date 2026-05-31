@@ -3,6 +3,10 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const STORAGE_KEY = "@temple_tv/watch_progress";
 const SAVE_THROTTLE_MS = 5000;
+// Keep at most this many entries in AsyncStorage. Android's default cap is
+// ~6 MB; each progress entry is ~300–500 bytes so 200 entries stay well
+// under 1 MB while covering any realistic watch history.
+const MAX_PROGRESS_ENTRIES = 200;
 
 interface ProgressEntry {
   position: number;
@@ -88,7 +92,35 @@ export function useWatchProgress() {
       //      to silently overwrite the other.
       // Using a ref as the authoritative in-memory store decouples the AsyncStorage
       // write from React's render cycle entirely.
-      progressMapRef.current = { ...progressMapRef.current, [videoKey]: entry };
+      let updated: WatchProgressMap = { ...progressMapRef.current, [videoKey]: entry };
+
+      // Prune the map if it exceeds the cap. Drop the oldest completed entries
+      // first (pct >= 0.97), then the oldest in-progress entries if still over.
+      const entries = Object.entries(updated);
+      if (entries.length > MAX_PROGRESS_ENTRIES) {
+        const sorted = entries.sort((a, b) => a[1].updatedAt - b[1].updatedAt);
+        const excess = entries.length - MAX_PROGRESS_ENTRIES;
+        // Prefer dropping completed entries first to preserve resume-ability.
+        const completedKeys = new Set(
+          sorted
+            .filter(([, e]) => e.position / e.duration >= 0.97)
+            .slice(0, excess)
+            .map(([k]) => k),
+        );
+        const dropped = completedKeys.size;
+        const remainingExcess = excess - dropped;
+        const oldestKeys = new Set(
+          sorted
+            .filter(([k]) => !completedKeys.has(k))
+            .slice(0, remainingExcess)
+            .map(([k]) => k),
+        );
+        updated = Object.fromEntries(
+          entries.filter(([k]) => !completedKeys.has(k) && !oldestKeys.has(k)),
+        );
+      }
+
+      progressMapRef.current = updated;
       setProgressMap(progressMapRef.current);
       AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(progressMapRef.current)).catch(() => {});
     },

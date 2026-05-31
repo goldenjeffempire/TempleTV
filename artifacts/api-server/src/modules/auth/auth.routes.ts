@@ -70,6 +70,10 @@ export async function authRoutes(app: FastifyInstance) {
     "/register",
     {
       config: authRateLimit,
+      // Email + password payloads are a few hundred bytes. Cap at 1 MiB so a
+      // client cannot trigger a 110 MiB parse by posting a huge JSON body to
+      // a credential endpoint (the global bodyLimit is set for chunk uploads).
+      bodyLimit: 1 * 1024 * 1024,
       schema: {
         tags: ["auth"],
         summary: "Register a new viewer account",
@@ -88,6 +92,7 @@ export async function authRoutes(app: FastifyInstance) {
     "/login",
     {
       config: authRateLimit,
+      bodyLimit: 1 * 1024 * 1024,
       schema: {
         tags: ["auth"],
         summary: "Exchange credentials for a JWT pair (returns MFA challenge if TOTP is enabled)",
@@ -265,6 +270,7 @@ export async function authRoutes(app: FastifyInstance) {
     "/forgot-password",
     {
       config: pwResetRateLimit,
+      bodyLimit: 1 * 1024 * 1024,
       schema: {
         tags: ["auth"],
         summary: "Request a password reset email",
@@ -293,6 +299,7 @@ export async function authRoutes(app: FastifyInstance) {
     "/reset-password",
     {
       config: pwResetRateLimit,
+      bodyLimit: 1 * 1024 * 1024,
       schema: {
         tags: ["auth"],
         summary: "Complete a password reset using the token from the email link",

@@ -16,6 +16,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { SermonCard } from "@/components/SermonCard";
 import { getApiBase } from "@/lib/apiBase";
+import { fetchWithRetry } from "@/lib/fetchWithRetry";
 import type { Sermon } from "@/types";
 import { usePageSeo } from "@/hooks/usePageSeo";
 
@@ -94,7 +95,7 @@ export default function SeriesDetailScreen() {
     setError(null);
     try {
       const apiBase = getApiBase();
-      const res = await fetch(`${apiBase}/api/series/${slug}`);
+      const res = await fetchWithRetry(`${apiBase}/api/series/${slug}`, {}, { maxRetries: 3 });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setData(json);
