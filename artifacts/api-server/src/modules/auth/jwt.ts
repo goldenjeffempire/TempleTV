@@ -60,6 +60,10 @@ export async function verifyAccessToken(token: string): Promise<AccessTokenPaylo
   try {
     const { payload } = await jwtVerify<AccessTokenPayload>(token, accessSecret, {
       algorithms: ["HS256"],
+      // 30-second tolerance absorbs minor NTP drift between the token issuer
+      // and validator when running across multiple replicas or after a clock
+      // adjustment. Tokens are still bounded by JWT_ACCESS_TTL_SECONDS.
+      clockTolerance: 30,
     });
     if (payload.type !== "access") throw new UnauthorizedError("Wrong token type");
     return payload;
@@ -73,6 +77,7 @@ export async function verifyRefreshToken(token: string): Promise<RefreshTokenPay
   try {
     const { payload } = await jwtVerify<RefreshTokenPayload>(token, refreshSecret, {
       algorithms: ["HS256"],
+      clockTolerance: 30,
     });
     if (payload.type !== "refresh") throw new UnauthorizedError("Wrong token type");
     return payload;

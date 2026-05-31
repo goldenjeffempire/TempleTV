@@ -3,6 +3,7 @@ import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { nanoid } from "nanoid";
 import { requireAuth } from "../../middleware/auth.js";
+import { ForbiddenError } from "../../shared/errors.js";
 import {
   AdminStatsSchema,
   AdminUserSchema,
@@ -129,6 +130,12 @@ export async function adminRoutes(app: FastifyInstance) {
       },
     },
     async (req) => {
+      // Prevent admins from deleting their own account — doing so would
+      // immediately revoke their session and leave the platform without an admin
+      // if they are the last one. The action is irreversible from the UI.
+      if (req.params.id === req.principal?.id) {
+        throw new ForbiddenError("You cannot delete your own account");
+      }
       const result = await adminService.deleteUser(req.params.id);
       req.log.warn(
         {
@@ -223,6 +230,11 @@ export async function adminRoutes(app: FastifyInstance) {
       },
     },
     async (req) => {
+      // Prevent self-demotion — an admin demoting themselves could immediately
+      // lose access to the admin panel, locking themselves out with no recourse.
+      if (req.params.id === req.principal?.id) {
+        throw new ForbiddenError("You cannot change your own role");
+      }
       const result = await adminService.updateUserRole(req.params.id, req.body);
       req.log.info(
         {

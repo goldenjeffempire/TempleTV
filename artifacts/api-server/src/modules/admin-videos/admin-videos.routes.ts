@@ -451,6 +451,22 @@ export async function adminVideosRoutes(app: FastifyInstance) {
           .delete(schema.transcodingJobsTable)
           .where(eq(schema.transcodingJobsTable.videoId, id))
           .catch((err) => log.warn({ err, id }, "video-delete: failed to remove transcoding jobs"));
+
+        // 6. Orphan series_episodes rows (no FK cascade on videoId column).
+        //    Without this, the series listing shows episode slots pointing at
+        //    a non-existent video — the join returns null and the episode card
+        //    can't render a title, thumbnail, or playback URL.
+        const removedEpisodes = await db
+          .delete(schema.seriesEpisodesTable)
+          .where(eq(schema.seriesEpisodesTable.videoId, id))
+          .returning({ eid: schema.seriesEpisodesTable.id })
+          .catch((err) => {
+            log.warn({ err, id }, "video-delete: failed to remove orphan series_episodes rows");
+            return [] as { eid: string }[];
+          });
+        if (removedEpisodes.length > 0) {
+          log.info({ id, removedEpisodeCount: removedEpisodes.length }, "video-delete: removed orphan series_episodes");
+        }
       })();
 
       return { ok: true as const };
