@@ -188,8 +188,11 @@ class MediaIntegrityScannerImpl {
 
   stop(): void {
     if (this.timer) {
-      clearInterval(this.timer);
-      clearTimeout(this.timer);
+      if (this.timer instanceof (globalThis as any).Timeout || (typeof this.timer === 'object' && this.timer !== null && 'unref' in this.timer)) {
+        clearTimeout(this.timer as any);
+      } else {
+        clearInterval(this.timer as any);
+      }
       this.timer = null;
     }
   }

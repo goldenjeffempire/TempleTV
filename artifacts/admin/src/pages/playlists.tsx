@@ -48,7 +48,13 @@ export default function PlaylistsPage() {
 
   const createMutation = useMutation({
     mutationFn: (body: typeof form) => api.post("/playlists", body),
-    onSuccess: () => { toast.success("Playlist created"); void qc.invalidateQueries({ queryKey: ["playlists"] }); setOpen(false); setForm({ title: "", description: "" }); },
+    onSuccess: () => {
+      toast.success("Playlist created");
+      void qc.invalidateQueries({ queryKey: ["playlists"] });
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      setOpen(false);
+      setForm({ title: "", description: "" });
+    },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to create"),
   });
 
@@ -60,7 +66,12 @@ export default function PlaylistsPage() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/playlists/${id}`),
-    onSuccess: () => { toast.success("Playlist deleted"); void qc.invalidateQueries({ queryKey: ["playlists"] }); setDeleting(null); },
+    onSuccess: () => {
+      toast.success("Playlist deleted");
+      void qc.invalidateQueries({ queryKey: ["playlists"] });
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      setDeleting(null);
+    },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to delete"),
   });
 

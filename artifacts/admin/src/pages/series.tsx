@@ -509,6 +509,7 @@ export default function SeriesPage() {
     onSuccess: () => {
       toast.success("Series created");
       void qc.invalidateQueries({ queryKey: ["series"] });
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
       setFormOpen(false);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to create"),
@@ -530,6 +531,7 @@ export default function SeriesPage() {
     onSuccess: () => {
       toast.success("Series deleted");
       void qc.invalidateQueries({ queryKey: ["series"] });
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
       setDeleting(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to delete"),

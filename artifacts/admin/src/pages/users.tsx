@@ -69,6 +69,7 @@ export default function UsersPage() {
     onSuccess: (_, { role }) => {
       toast.success(`Role updated to ${role}`);
       void qc.invalidateQueries({ queryKey: ["users"] });
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to update role"),
   });
@@ -87,6 +88,7 @@ export default function UsersPage() {
     onSuccess: () => {
       toast.success("User deleted permanently");
       void qc.invalidateQueries({ queryKey: ["users"] });
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
       setDeletingUser(null);
     },
     onError: (e) => {

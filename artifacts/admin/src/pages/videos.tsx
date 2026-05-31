@@ -336,6 +336,8 @@ export default function VideosPage() {
     },
     onSuccess: (_data, { featured }) => {
       toast.success(featured ? "Video featured" : "Video unfeatured");
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
     },
     onError: (_e, _vars, ctx) => {
       if (ctx?.prev) ctx.prev.forEach(([key, data]) => qc.setQueryData(key, data));
@@ -358,6 +360,7 @@ export default function VideosPage() {
     },
     onSuccess: (_data, { metadataLocked }) => {
       toast.success(metadataLocked ? "Metadata locked — YouTube sync won't overwrite" : "Metadata unlocked");
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
     },
     onError: (_e, _vars, ctx) => {
       if (ctx?.prev) ctx.prev.forEach(([key, data]) => qc.setQueryData(key, data));
@@ -380,6 +383,7 @@ export default function VideosPage() {
     },
     onSuccess: (_data, { broadcastOnly }) => {
       toast.success(broadcastOnly ? "Hidden from public library" : "Published to public library");
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
     },
     onError: (_e, _vars, ctx) => {
       if (ctx?.prev) ctx.prev.forEach(([key, data]) => qc.setQueryData(key, data));

@@ -172,6 +172,11 @@ export const broadcastScheduler = {
       schedulerInterval = null;
     }
   },
+  
+  /** Validates and cleans up the scheduler on process exit. */
+  async shutdown(): Promise<void> {
+    this.stop();
+  },
 
   /** Force an immediate tick (e.g., after admin state change). */
   async runNow(): Promise<void> {

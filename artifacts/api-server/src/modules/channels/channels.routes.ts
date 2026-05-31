@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { eq, asc, and } from "drizzle-orm";
+import { eq, asc, and, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { ConflictError } from "../../shared/errors.js";
@@ -264,20 +264,23 @@ export async function channelsRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const maxSortOrder = await db
-        .select({ sortOrder: schema.channelQueueTable.sortOrder })
-        .from(schema.channelQueueTable)
-        .where(eq(schema.channelQueueTable.channelId, req.params.id))
-        .orderBy(asc(schema.channelQueueTable.sortOrder))
-        .limit(1)
-        .then((rows) => (rows.length > 0 ? rows[rows.length - 1]!.sortOrder + 1 : 0));
-
-      const [item] = await db.insert(schema.channelQueueTable).values({
-        id: crypto.randomUUID(),
-        channelId: req.params.id,
-        ...req.body,
-        sortOrder: maxSortOrder,
-      }).returning();
+      // Compute MAX(sort_order) and INSERT atomically inside a transaction to
+      // prevent TOCTOU races when two operators add items concurrently.
+      // Previous bug: used ASC LIMIT 1 (returns MIN, not MAX) so every item
+      // after the first was assigned sort_order = min+1, causing collisions.
+      const [item] = await db.transaction(async (tx) => {
+        const [maxRow] = await tx
+          .select({ max: sql<number>`COALESCE(MAX(sort_order), -1)` })
+          .from(schema.channelQueueTable)
+          .where(eq(schema.channelQueueTable.channelId, req.params.id));
+        const sortOrder = (maxRow?.max ?? -1) + 1;
+        return tx.insert(schema.channelQueueTable).values({
+          id: crypto.randomUUID(),
+          channelId: req.params.id,
+          ...req.body,
+          sortOrder,
+        }).returning();
+      });
 
       await channelRegistry.reload(req.params.id);
       return reply.code(201).send(item);

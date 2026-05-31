@@ -61,6 +61,7 @@ export function useWatchHistory() {
         if (raw) {
           try {
             const parsed = JSON.parse(raw) as HistoryEntry[];
+            latestHistoryRef.current = parsed;
             setHistory(parsed);
             setHistoryIds(new Set(parsed.map((h) => h.sermon.youtubeId)));
           } catch {

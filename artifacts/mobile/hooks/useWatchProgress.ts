@@ -121,8 +121,8 @@ export function useWatchProgress() {
       }
 
       progressMapRef.current = updated;
-      setProgressMap(progressMapRef.current);
-      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(progressMapRef.current)).catch(() => {});
+      setProgressMap(updated);
+      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated)).catch(() => {});
     },
     [],
   );

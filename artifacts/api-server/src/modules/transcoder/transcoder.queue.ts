@@ -189,54 +189,59 @@ export async function clearJobsByStatus(status: "done" | "failed" | "cancelled" 
 /**
  * Re-arm ALL failed transcoding jobs whose source blob is still available.
  * Returns the number of jobs reset to "queued".
- * Safe to call concurrently — uses a single UPDATE statement.
+ * Wrapped in a transaction so the jobs and managed_videos tables are updated
+ * atomically — a crash between the two updates cannot leave jobs "queued"
+ * while their videos still report "failed" (or vice-versa).
  */
 export async function retryAllFailed(): Promise<number> {
-  const out = await db.update(jobs)
-    .set({
-      status: "queued",
-      attempts: 0,
-      progress: 0,
-      errorMessage: null,
-      nextRetryAt: null,
-      startedAt: null,
-      completedAt: null,
-    })
-    .where(eq(jobs.status, "failed"))
-    .returning({ id: jobs.id, videoId: jobs.videoId });
+  return db.transaction(async (tx) => {
+    const out = await tx.update(jobs)
+      .set({
+        status: "queued",
+        attempts: 0,
+        progress: 0,
+        errorMessage: null,
+        nextRetryAt: null,
+        startedAt: null,
+        completedAt: null,
+      })
+      .where(eq(jobs.status, "failed"))
+      .returning({ id: jobs.id, videoId: jobs.videoId });
 
-  if (out.length > 0) {
-    const videoIds = out.map((r) => r.videoId).filter(Boolean) as string[];
-    if (videoIds.length > 0) {
-      await db.update(videos)
-        .set({ transcodingStatus: "queued" })
-        .where(inArray(videos.id, videoIds));
+    if (out.length > 0) {
+      const videoIds = out.map((r) => r.videoId).filter(Boolean) as string[];
+      if (videoIds.length > 0) {
+        await tx.update(videos)
+          .set({ transcodingStatus: "queued" })
+          .where(inArray(videos.id, videoIds));
+      }
+      logger.info({ count: out.length }, "transcoder: batch-retried all failed jobs");
     }
-    logger.info({ count: out.length }, "transcoder: batch-retried all failed jobs");
-  }
-  return out.length;
+    return out.length;
+  });
 }
 
 export async function retryJob(id: string): Promise<boolean> {
-  const out = await db.update(jobs)
-    .set({
-      status: "queued",
-      attempts: 0,
-      progress: 0,
-      errorMessage: null,
-      nextRetryAt: null,
-      startedAt: null,
-      completedAt: null,
-    })
-    .where(eq(jobs.id, id))
-    .returning({ id: jobs.id });
-  if (out.length > 0) {
-    const j = await getJob(id);
-    if (j) {
-      await db.update(videos).set({ transcodingStatus: "queued" }).where(eq(videos.id, j.videoId));
+  return db.transaction(async (tx) => {
+    const out = await tx.update(jobs)
+      .set({
+        status: "queued",
+        attempts: 0,
+        progress: 0,
+        errorMessage: null,
+        nextRetryAt: null,
+        startedAt: null,
+        completedAt: null,
+      })
+      .where(eq(jobs.id, id))
+      .returning({ id: jobs.id, videoId: jobs.videoId });
+    if (out.length > 0 && out[0]!.videoId) {
+      await tx.update(videos)
+        .set({ transcodingStatus: "queued" })
+        .where(eq(videos.id, out[0]!.videoId));
     }
-  }
-  return out.length > 0;
+    return out.length > 0;
+  });
 }
 
 /**
@@ -246,35 +251,35 @@ export async function retryJob(id: string): Promise<boolean> {
  * Returns true when the job was found and successfully cancelled, false otherwise.
  */
 export async function cancelJob(id: string): Promise<{ ok: boolean; reason?: string }> {
-  // Read current state first so we can give a clear error for in-progress jobs
-  const existing = await db
-    .select({ id: jobs.id, status: jobs.status, videoId: jobs.videoId })
-    .from(jobs)
-    .where(eq(jobs.id, id))
-    .limit(1);
-  const job = existing[0];
-  if (!job) return { ok: false, reason: "not_found" };
-  if (job.status === "processing") {
-    return { ok: false, reason: "processing" };
-  }
-  if (job.status === "done" || job.status === "cancelled") {
-    return { ok: false, reason: "terminal" };
-  }
+  return db.transaction(async (tx) => {
+    // Read current state inside the transaction so the status check and the
+    // update are atomic — no concurrent request can flip the status between
+    // our read (lines below) and our write (update jobs below).
+    const existing = await tx
+      .select({ id: jobs.id, status: jobs.status, videoId: jobs.videoId })
+      .from(jobs)
+      .where(eq(jobs.id, id))
+      .limit(1);
+    const job = existing[0];
+    if (!job) return { ok: false, reason: "not_found" };
+    if (job.status === "processing") return { ok: false, reason: "processing" };
+    if (job.status === "done" || job.status === "cancelled") return { ok: false, reason: "terminal" };
 
-  const out = await db
-    .update(jobs)
-    .set({ status: "cancelled", completedAt: new Date(), errorMessage: "Cancelled by operator" })
-    .where(and(eq(jobs.id, id), inArray(jobs.status, ["queued", "failed"])))
-    .returning({ id: jobs.id, videoId: jobs.videoId });
+    const out = await tx
+      .update(jobs)
+      .set({ status: "cancelled", completedAt: new Date(), errorMessage: "Cancelled by operator" })
+      .where(and(eq(jobs.id, id), inArray(jobs.status, ["queued", "failed"])))
+      .returning({ id: jobs.id, videoId: jobs.videoId });
 
-  if (out.length > 0) {
-    await db
-      .update(videos)
-      .set({ transcodingStatus: "none" })
-      .where(eq(videos.id, out[0]!.videoId));
-    logger.info({ jobId: id, videoId: out[0]!.videoId }, "transcoder: job cancelled by operator");
-  }
-  return { ok: out.length > 0 };
+    if (out.length > 0) {
+      await tx
+        .update(videos)
+        .set({ transcodingStatus: "none" })
+        .where(eq(videos.id, out[0]!.videoId));
+      logger.info({ jobId: id, videoId: out[0]!.videoId }, "transcoder: job cancelled by operator");
+    }
+    return { ok: out.length > 0 };
+  });
 }
 
 export async function queueStats() {

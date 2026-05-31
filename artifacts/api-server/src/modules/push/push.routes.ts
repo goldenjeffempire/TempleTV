@@ -17,7 +17,6 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, schema } from "../../infrastructure/db.js";
 import { env } from "../../config/env.js";
@@ -56,29 +55,25 @@ export async function pushRoutes(app: FastifyInstance) {
       const { token, platform } = req.body;
       const now = new Date();
 
-      const [existing] = await db
-        .select({ id: pushTokens.id })
-        .from(pushTokens)
-        .where(eq(pushTokens.token, token))
-        .limit(1);
+      // Atomic upsert — replaces the previous SELECT-then-INSERT/UPDATE pattern
+      // which had a TOCTOU race: two concurrent registrations for the same token
+      // both read "not found", both attempt INSERT, one is silently dropped by
+      // onConflictDoNothing and returns the wrong `created` value.
+      // On conflict we also update platform so a re-install that switches from
+      // Android→iOS (or vice-versa) gets the right channel.
+      const [row] = await db
+        .insert(pushTokens)
+        .values({ id: nanoid(), token, platform, createdAt: now, lastSeenAt: now })
+        .onConflictDoUpdate({
+          target: pushTokens.token,
+          set: { lastSeenAt: now, platform },
+        })
+        .returning({ createdAt: pushTokens.createdAt });
 
-      if (existing) {
-        await db
-          .update(pushTokens)
-          .set({ lastSeenAt: now })
-          .where(eq(pushTokens.id, existing.id));
-        return { ok: true as const, created: false };
-      }
-
-      await db.insert(pushTokens).values({
-        id: nanoid(),
-        token,
-        platform,
-        createdAt: now,
-        lastSeenAt: now,
-      }).onConflictDoNothing({ target: pushTokens.token });
-
-      return { ok: true as const, created: true };
+      // Insert path: createdAt === now (within clock jitter).
+      // Update path: createdAt is the original registration timestamp, always older.
+      const created = now.getTime() - row!.createdAt.getTime() < 2_000;
+      return { ok: true as const, created };
     },
   );
 
@@ -110,31 +105,28 @@ export async function pushRoutes(app: FastifyInstance) {
       const { endpoint, keys, userAgent } = req.body;
       const now = new Date();
 
-      const [existing] = await db
-        .select({ id: webPush.id })
-        .from(webPush)
-        .where(eq(webPush.endpoint, endpoint))
-        .limit(1);
+      // Atomic upsert — same TOCTOU fix as the Expo token route above.
+      // On conflict we update the crypto keys so a re-subscribed browser
+      // (e.g. after clearing site data) gets fresh p256dh/auth values.
+      const [row] = await db
+        .insert(webPush)
+        .values({
+          id: nanoid(),
+          endpoint,
+          p256dh: keys.p256dh,
+          auth: keys.auth,
+          userAgent: userAgent ?? null,
+          createdAt: now,
+          lastSeenAt: now,
+        })
+        .onConflictDoUpdate({
+          target: webPush.endpoint,
+          set: { p256dh: keys.p256dh, auth: keys.auth, lastSeenAt: now },
+        })
+        .returning({ createdAt: webPush.createdAt });
 
-      if (existing) {
-        await db
-          .update(webPush)
-          .set({ p256dh: keys.p256dh, auth: keys.auth, lastSeenAt: now })
-          .where(eq(webPush.id, existing.id));
-        return { ok: true as const, created: false };
-      }
-
-      await db.insert(webPush).values({
-        id: nanoid(),
-        endpoint,
-        p256dh: keys.p256dh,
-        auth: keys.auth,
-        userAgent: userAgent ?? null,
-        createdAt: now,
-        lastSeenAt: now,
-      }).onConflictDoNothing({ target: webPush.endpoint });
-
-      return { ok: true as const, created: true };
+      const created = now.getTime() - row!.createdAt.getTime() < 2_000;
+      return { ok: true as const, created };
     },
   );
 
