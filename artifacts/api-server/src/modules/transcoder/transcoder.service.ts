@@ -467,7 +467,17 @@ async function probeResolution(inputPath: string): Promise<{ width: number; heig
  * size-mismatch error. Failing here forces the dispatcher's retry loop to
  * re-download the source instead of running ffmpeg against bad bytes.
  */
-async function downloadSourceToTempFile(objectKey: string, destPath: string): Promise<void> {
+async function downloadSourceToTempFile(rawObjectKey: string, destPath: string): Promise<void> {
+  // Defensive normalisation: jobs already sitting in the DB may have been
+  // enqueued with localVideoUrl (/api/v1/uploads/…) instead of the bare
+  // storage key (uploads/…). Strip the API prefix so getObject() finds the
+  // blob. Remote http(s):// keys pass through unchanged.
+  const objectKey = /^https?:\/\//i.test(rawObjectKey)
+    ? rawObjectKey
+    : rawObjectKey.startsWith("/")
+      ? rawObjectKey.replace(/^\/(?:api\/(?:v\d+\/)?)?/, "")
+      : rawObjectKey;
+
   // Remote HTTP(S) URL — download directly from the external server rather than
   // from local object storage. This supports prod-sync queue items whose source
   // lives on the production API (no local storage blob exists for them).

@@ -24,12 +24,37 @@ export type TranscodingJobWithVideo = (typeof schema.transcodingJobsTable.$infer
  * admin UI shows the right badge immediately, before the dispatcher
  * picks the job up.
  */
+/**
+ * Normalise a video source reference to a raw storage key.
+ *
+ * `localVideoUrl` stores the API-serving path   →  /api/v1/uploads/2026/…/uuid.mp4
+ * `objectPath`    stores the raw storage key     →  uploads/2026/…/uuid.mp4
+ *
+ * The transcoder's downloadSourceToTempFile expects either a bare storage key
+ * or an http(s):// URL (for prod-sync remote items). Passing the API URL path
+ * produces an "Object not found in storage" error because the storage table is
+ * keyed by the bare path, not the API route.
+ *
+ * Remote http(s):// URLs are returned unchanged so prod-sync items keep working.
+ */
+function normaliseVideoPath(ref: string): string {
+  if (/^https?:\/\//i.test(ref)) return ref;
+  if (ref.startsWith("/")) {
+    // Strip /api/v1/ or /api/ prefix, then any remaining leading slash.
+    return ref.replace(/^\/(?:api\/(?:v\d+\/)?)?/, "");
+  }
+  return ref;
+}
+
 export async function enqueueTranscode(args: {
   videoId: string;
   videoPath: string;
   priority?: number;
 }): Promise<{ id: string; reused: boolean }> {
   const priority = args.priority ?? 0;
+  // Normalise at the point of DB write so every caller is covered regardless
+  // of whether it passed objectPath (bare key) or localVideoUrl (API path).
+  const videoPath = normaliseVideoPath(args.videoPath);
 
   // Look for an existing live job. We treat queued/processing as live
   // and failed as re-armable.
@@ -57,7 +82,7 @@ export async function enqueueTranscode(args: {
             nextRetryAt: null,
             startedAt: null,
             completedAt: null,
-            videoPath: args.videoPath,
+            videoPath,
             priority,
           })
           .where(eq(jobs.id, row.id));
@@ -77,13 +102,13 @@ export async function enqueueTranscode(args: {
     await tx.insert(jobs).values({
       id,
       videoId: args.videoId,
-      videoPath: args.videoPath,
+      videoPath,
       status: "queued",
       priority,
     });
     await tx.update(videos).set({ transcodingStatus: "queued" }).where(eq(videos.id, args.videoId));
   });
-  logger.info({ jobId: id, videoId: args.videoId, videoPath: args.videoPath }, "transcoder: enqueued");
+  logger.info({ jobId: id, videoId: args.videoId, videoPath }, "transcoder: enqueued");
   return { id, reused: false };
 }
 
