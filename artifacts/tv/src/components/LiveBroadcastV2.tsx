@@ -387,8 +387,8 @@ export function LiveBroadcastV2({
   const overlay = useMemo((): OverlayContent => {
     if (snapshot.state === "OFFLINE_HOLD") return { primary: "Reconnecting to broadcast…" };
     if (snapshot.state === "FATAL") return {
-      primary: "We encountered a playback issue.",
-      secondary: "Press Try Again to reconnect to the broadcast.",
+      primary: "Stream temporarily unavailable.",
+      secondary: "Auto-retrying in 30 seconds — or press Try Again now.",
       showRefresh: true,
     };
     if (server?.failover.active) return { primary: server.failover.reason ?? "On standby" };
@@ -415,9 +415,10 @@ export function LiveBroadcastV2({
     // Recovery states — transient buffer errors, not a true off-air condition.
     if (
       snapshot.state === "RECOVERING_PRIMARY" ||
-      snapshot.state === "RECOVERING_FAILOVER" ||
-      snapshot.state === "SKIP_PENDING"
+      snapshot.state === "RECOVERING_FAILOVER"
     ) return { primary: "Tuning in…" };
+    // SKIP_PENDING: exhausted retries, waiting for server to advance queue.
+    if (snapshot.state === "SKIP_PENDING") return { primary: "Checking stream quality…" };
     // All remaining states: off air only if the server genuinely has no content.
     if (server && !server.current && !server.override) return {
       primary: "Temple TV is currently off-air.",

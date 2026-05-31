@@ -33,7 +33,7 @@ import { isUndefinedColumnError } from "../../../infrastructure/db-schema-guard.
 // True only when the Node process is explicitly running in production mode.
 // In all other environments (development, test, staging) API_ORIGIN must NOT
 // be treated as "this server's own origin" — it typically points to a remote
-// production server (e.g. https://api.templetv.org.ng set for prod-sync) and
+// production server (e.g. https://admin.templetv.org.ng set for prod-sync) and
 // must not override REPLIT_DEV_DOMAIN or RENDER_EXTERNAL_URL which DO reflect
 // the actual public address of this dev instance.
 const IS_PROD_NODE_ENV = process.env.NODE_ENV === "production";
@@ -68,7 +68,7 @@ export function normalizeQueueUrl(raw: string | null | undefined): string | null
 // ── Media proxy helpers ────────────────────────────────────────────────────
 //
 // When a queue item's source URL is on a different origin from this server
-// (e.g. prod-sync items from api.templetv.org.ng), the browser blocks the
+// (e.g. prod-sync items from admin.templetv.org.ng), the browser blocks the
 // media load because the remote server returns `Cross-Origin-Resource-Policy:
 // same-origin`. We rewrite those external MP4 URLs to go through our own
 // /api/v1/media-proxy endpoint which strips the restriction and serves with

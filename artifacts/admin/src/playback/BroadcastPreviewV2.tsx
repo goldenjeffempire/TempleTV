@@ -422,7 +422,7 @@ export function BroadcastPreviewV2({ className }: Props) {
       return { kind: "reconnect" as const, label: "Reconnecting…" };
     }
     if (snapshot.state === "FATAL") {
-      return { kind: "fatal" as const, label: "Broadcast unavailable" };
+      return { kind: "fatal" as const, label: "Stream unavailable — auto-retry in 30 s" };
     }
     if (server?.failover.active) {
       return { kind: "standby" as const, label: server.failover.reason ?? "On standby" };

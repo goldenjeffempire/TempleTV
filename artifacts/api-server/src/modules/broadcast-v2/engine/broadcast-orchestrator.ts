@@ -779,7 +779,7 @@ class BroadcastOrchestrator extends EventEmitter {
         videoId: row.videoId ?? null,
         title: row.title,
         // Use the absolutized thumbnailUrl from toItem() (relative /api/hls/…
-        // paths are rewritten to https://api.templetv.org.ng/api/hls/…) so
+        // paths are rewritten to https://admin.templetv.org.ng/api/hls/…) so
         // all client surfaces (TV, mobile, admin) can render thumbnails without
         // needing to know the API origin.
         thumbnailUrl: v2.thumbnailUrl,
@@ -841,7 +841,7 @@ class BroadcastOrchestrator extends EventEmitter {
       logger.error(
         { queueSize: rawRows.length },
         "[broadcast-v2] ALL queue items rejected at pre-resolution — entering OFF_AIR safe mode. " +
-          "Action required: set API_ORIGIN=https://api.templetv.org.ng in production env (fixes relative URLs), " +
+          "Action required: set API_ORIGIN=https://admin.templetv.org.ng in production env (fixes relative URLs), " +
           "or re-upload / re-transcode the affected videos, then reload the queue from the admin console.",
       );
     } else if (resolved.length < rawRows.length) {

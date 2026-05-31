@@ -501,17 +501,33 @@ export function useV2Broadcast(opts: UseV2BroadcastOptions): UseV2BroadcastResul
   useEffect(() => {
     if (!session || !enableStallReport) return;
     let escapeTimer: ReturnType<typeof setTimeout> | null = null;
+    // Track current SKIP_PENDING item so the timer callback can re-report it.
+    // The primary stall-reporter (above) guards against duplicate same-session
+    // reports via lastReportedId; the escape valve re-reports unconditionally
+    // so the server's per-item skip-count increments even when that guard
+    // blocked an earlier attempt — eventually triggering auto-suspension.
+    let pendingItemId: string | null = null;
     const onSnap = (s: PlayerSnapshot) => {
       if (s.state === "SKIP_PENDING") {
+        pendingItemId = s.lastServerSnapshot?.current?.id ?? null;
         if (escapeTimer === null) {
           escapeTimer = setTimeout(() => {
             escapeTimer = null;
+            if (pendingItemId) {
+              void fetch(`${baseUrl}/report-stall`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ itemId: pendingItemId }),
+                signal: AbortSignal.timeout(5_000),
+              }).catch(() => {});
+            }
             session.transport.forceReconnect();
           }, 8_000);
         }
       } else if (escapeTimer !== null) {
         clearTimeout(escapeTimer);
         escapeTimer = null;
+        pendingItemId = null;
       }
     };
     session.snapshotListeners.add(onSnap);
@@ -522,7 +538,7 @@ export function useV2Broadcast(opts: UseV2BroadcastOptions): UseV2BroadcastResul
         escapeTimer = null;
       }
     };
-  }, [session, enableStallReport]);
+  }, [session, baseUrl, enableStallReport]);
 
   // Periodic position checkpoint — POST /checkpoint every 30 s while PLAYING.
   //

@@ -148,6 +148,19 @@ const PRELOAD_LEAD_MS = 90_000;
  */
 const STALL_THRESHOLD_MS = 15_000;
 
+/**
+ * How many successive same-anchor snapshots while in SKIP_PENDING before
+ * transitioning to FATAL.  Each snapshot represents one escape-valve
+ * forceReconnect cycle (~8 s), so 3 cycles ≈ 24 s of unresolvable stall.
+ */
+const SKIP_PENDING_FATAL_THRESHOLD = 3;
+
+/**
+ * How long (ms) the machine stays in FATAL before automatically retrying
+ * from SYNCING.  Self-heals without user interaction once a stream clears.
+ */
+const FATAL_AUTO_RECOVERY_MS = 30_000;
+
 export class PlayerMachine {
   private snapshot: PlayerSnapshot = {
     state: "BOOTSTRAP",
@@ -250,6 +263,13 @@ export class PlayerMachine {
    *  - `onForceSkip()` is called (operator action — always rebind).
    */
   private skipPendingAnchorMs: number | null = null;
+  /**
+   * Counts successive same-anchor SKIP_PENDING snapshots.  Reaches
+   * SKIP_PENDING_FATAL_THRESHOLD then transitions to FATAL.
+   */
+  private skipPendingCycles = 0;
+  /** Handle for the FATAL → SYNCING auto-recovery timer. */
+  private fatalRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly emit: IntentHandler) {}
 
@@ -319,6 +339,10 @@ export class PlayerMachine {
    */
   destroy(): void {
     this.clearSourceExpiryTimer();
+    if (this.fatalRecoveryTimer !== null) {
+      clearTimeout(this.fatalRecoveryTimer);
+      this.fatalRecoveryTimer = null;
+    }
     this.listeners.clear();
   }
 
@@ -338,6 +362,12 @@ export class PlayerMachine {
 
   private transition(state: PlayerState): void {
     if (this.snapshot.state === state) return;
+    // Cancel FATAL auto-recovery whenever the machine leaves FATAL — whether
+    // via operator retry, the auto-recovery timer itself, or a new snapshot.
+    if (state !== "FATAL" && this.fatalRecoveryTimer !== null) {
+      clearTimeout(this.fatalRecoveryTimer);
+      this.fatalRecoveryTimer = null;
+    }
     this.set({ state });
   }
 
@@ -577,11 +607,30 @@ export class PlayerMachine {
           this.skipPendingAnchorMs !== null &&
           server.current.startsAtMs === this.skipPendingAnchorMs
         ) {
-          // Same slot anchor — do not rebind. Overlay stays visible.
+          // Same slot anchor still airing — count escape-valve reconnect cycles.
+          // Once SKIP_PENDING_FATAL_THRESHOLD is reached the source is considered
+          // permanently unplayable on this client; enter FATAL so the UI shows a
+          // clear "stream temporarily unavailable" message with a 30 s auto-retry
+          // countdown instead of an infinite loading spinner.
+          this.skipPendingCycles++;
+          if (this.skipPendingCycles >= SKIP_PENDING_FATAL_THRESHOLD) {
+            this.skipPendingCycles = 0;
+            this.skipPendingAnchorMs = null;
+            this.transition("FATAL");
+            if (this.fatalRecoveryTimer !== null) clearTimeout(this.fatalRecoveryTimer);
+            this.fatalRecoveryTimer = setTimeout(() => {
+              this.fatalRecoveryTimer = null;
+              if (this.snapshot.state === "FATAL") {
+                this.transition("SYNCING");
+                this.onNeedSnapshotCb?.();
+              }
+            }, FATAL_AUTO_RECOVERY_MS);
+          }
           return;
         }
         // Fresh anchor (or no anchor recorded) — safe to retry.
         this.skipPendingAnchorMs = null;
+        this.skipPendingCycles = 0;
         this.primaryRetries = 0;
         this.bindActive(server.current);
         const positionSecs = resolvePositionSecs(server.current, server.current.startsAtMs, this.clockOffsetMs);

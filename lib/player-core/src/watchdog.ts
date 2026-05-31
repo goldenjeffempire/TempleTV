@@ -25,7 +25,7 @@
 export interface WatchdogConfig {
   /**
    * Threshold for Phase 1: initial load (before any timeupdate progress).
-   * @default 20_000
+   * @default 15_000
    */
   initialLoadThresholdMs?: number;
   /**
@@ -70,7 +70,7 @@ export class Watchdog {
   private readonly stablePlayMs: number;
 
   constructor(private readonly cfg: WatchdogConfig) {
-    this.initialLoadThresholdMs = cfg.initialLoadThresholdMs ?? 20_000;
+    this.initialLoadThresholdMs = cfg.initialLoadThresholdMs ?? 15_000;
     this.rebufferThresholdMs    = cfg.rebufferThresholdMs    ?? 15_000;
     this.stableThresholdMs      = cfg.stableThresholdMs      ?? 25_000;
     this.stablePlayMs           = cfg.stablePlayMs           ?? 30_000;

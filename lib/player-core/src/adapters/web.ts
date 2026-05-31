@@ -34,15 +34,15 @@ export interface WebAdapterCallbacks {
  * How long to wait for `canplay` / `loadedmetadata` after a `bind` before
  * declaring the source unreachable.
  *
- * 20 s gives extra headroom for:
+ * 15 s gives headroom for:
  *   - Non-faststart MP4s routed through the media proxy on high-latency
  *     connections (dev → API → CDN chain can add 2–5 s on cold TCP).
  *   - HLS manifest + first segment on a 2–3 Mbps mobile link.
  * The `progress` extension (BIND_PROGRESS_TIMEOUT_MS = 90 s) kicks in as
  * soon as any bytes arrive, so a large file never hits this deadline while
- * data is flowing.
+ * data is flowing. Reduced from 20 s to cut per-bad-item dead air.
  */
-const BIND_LOAD_TIMEOUT_MS = 20_000;
+const BIND_LOAD_TIMEOUT_MS = 15_000;
 
 /**
  * Extended timeout once `progress` fires during the bind phase.
@@ -55,7 +55,7 @@ const BIND_PROGRESS_TIMEOUT_MS = 90_000;
 
 // Watchdog thresholds — per-phase values passed directly to the Watchdog
 // constructor below. See watchdog.ts for the 3-phase model documentation.
-const WATCHDOG_INITIAL_LOAD_MS = 20_000;
+const WATCHDOG_INITIAL_LOAD_MS = 15_000;
 const WATCHDOG_REBUFFER_MS     = 15_000;
 const WATCHDOG_STABLE_MS       = 25_000;
 const WATCHDOG_STABLE_PLAY_MS  = 30_000;

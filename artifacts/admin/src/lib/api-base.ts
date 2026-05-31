@@ -5,9 +5,11 @@
  * same origin via path-routing) this resolves to a relative `/api` path so the
  * browser stays same-origin and cookies/credentials work without CORS.
  *
- * In a split-domain production setup (e.g. admin.templetv.org.ng for the
- * static SPA + api.templetv.org.ng for the API server), the build SHOULD set
- * `VITE_API_BASE_URL` OR `VITE_API_URL` (e.g. `https://api.templetv.org.ng`).
+ * In a split-domain production setup (e.g. a separate API host), the build
+ * SHOULD set `VITE_API_BASE_URL` OR `VITE_API_URL` to the API origin
+ * (e.g. `https://admin.templetv.org.ng`). The canonical unified deployment
+ * serves both the SPA and the API from admin.templetv.org.ng on the same
+ * origin, in which case no override is needed.
  * Both names are accepted to tolerate variation in deployment env-var naming
  * conventions. The value may include or omit a trailing slash; we normalize.
  * Either name may also include or omit a trailing `/api` path component —
@@ -52,18 +54,18 @@ function inferProductionApiOrigin(): string | null {
   // proxy may assign a subdomain beginning with "admin" to the admin artifact,
   // but the Vite dev server already proxies /api → localhost:5000, so we must
   // use the relative path here rather than rewriting to api.templetv.org.ng.
-  if (/^admin\./i.test(hostname) && !/\.replit\.dev$/i.test(hostname)) {
-    return `${protocol}//${hostname.replace(/^admin\./i, "api.")}`;
-  }
-  // Render's auto-generated URLs follow the pattern
-  // `temple-tv-admin-<hash>.onrender.com`. There is no `admin.` prefix to
-  // rewrite, and the static host has a SPA catch-all that returns
-  // `index.html` for `/api/*` — so a relative base would silently break
-  // every API call. When `VITE_API_URL` was not baked in at build time
-  // (older deploys, or missing env-var binding on the Render static
-  // service), hardcode the production API origin so the panel still works.
+  // NOTE: The canonical production domain is admin.templetv.org.ng which
+  // serves BOTH the admin SPA and the API on the same origin — no cross-origin
+  // rewrite is needed. The old admin.* → api.* inference was for a deprecated
+  // split-domain Render setup and has been removed. When the SPA is served at
+  // admin.templetv.org.ng, all /api/* calls resolve to the same host correctly
+  // via the relative base. Set VITE_API_BASE_URL explicitly for any
+  // non-unified deployment where the API lives on a separate subdomain.
+
+  // Legacy fallback: deprecated Render auto-generated admin service URLs.
+  // These point at admin.templetv.org.ng (the canonical unified domain).
   if (/(^|\.)temple-tv-admin[^.]*\.onrender\.com$/i.test(hostname)) {
-    return "https://api.templetv.org.ng";
+    return "https://admin.templetv.org.ng";
   }
   return null;
 }
@@ -133,7 +135,7 @@ export function getApiBaseInfo(): ApiBaseInfo {
 /**
  * Returns the API root, with no trailing slash. Examples:
  *   apiBase() === "/api"                                 (dev / same-origin)
- *   apiBase() === "https://api.templetv.org.ng/api"      (split-domain prod)
+ *   apiBase() === "https://admin.templetv.org.ng/api"     (split-domain prod)
  */
 export function apiBase(): string {
   return ABSOLUTE_BASE ? `${ABSOLUTE_BASE}/api` : `${RELATIVE_BASE}/api`;
