@@ -15,6 +15,7 @@ import {
   ActivityIndicator,
   FlatList,
   Keyboard,
+  KeyboardAvoidingView,
   Platform,
   Pressable,
   ScrollView,
@@ -168,7 +169,10 @@ export default function SearchScreen() {
   ) : null;
 
   return (
-    <View style={[styles.root, { backgroundColor: c.background }]}>
+    <KeyboardAvoidingView
+      style={[styles.root, { backgroundColor: c.background }]}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+    >
       <StatusBar barStyle={c.isMidnightTheme ? "light-content" : "dark-content"} />
 
       {/* ── Top bar ─────────────────────────────────────────────────────── */}
@@ -300,6 +304,7 @@ export default function SearchScreen() {
               onEndReached={loadMore}
               onEndReachedThreshold={0.4}
               showsVerticalScrollIndicator={false}
+              keyboardDismissMode="on-drag"
               keyboardShouldPersistTaps="handled"
               removeClippedSubviews={Platform.OS === "android"}
               maxToRenderPerBatch={10}
@@ -369,7 +374,7 @@ export default function SearchScreen() {
           </View>
         </ScrollView>
       )}
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 

@@ -4,7 +4,6 @@ import { api, isTransientError} from "@/lib/api";
 import { useSSE, useSSEEvent, useRecentActivity } from "@/contexts/sse-context";
 import { MetricCard } from "@/components/shared/metric-card";
 import { PageHeader } from "@/components/shared/page-header";
-import { ErrorAlert } from "@/components/shared/error-alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -135,15 +134,6 @@ export default function Dashboard() {
     engineHealth.uptimeMs > 30_000 &&
     engineHealth.boot.busBridgeInstalled;
 
-  if (statsError) {
-    return (
-      <div className="p-4 sm:p-6">
-        <PageHeader title="Dashboard" description="System overview" />
-        <ErrorAlert message={(statsError as Error).message} onRetry={() => void refetchStats()} transient={isTransientError(statsError)} />
-      </div>
-    );
-  }
-
   return (
     <div className="p-4 sm:p-6 max-w-7xl mx-auto space-y-6">
       <PageHeader
@@ -179,37 +169,50 @@ export default function Dashboard() {
       />
 
       {/* Stats grid */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <MetricCard
-          title="Total Videos"
-          value={statsLoading ? null : stats?.videos?.total}
-          icon={<Video size={16} />}
-          loading={statsLoading}
-          subtitle={stats ? `${stats.videos.featured} featured` : "In library"}
-        />
-        <MetricCard
-          title="Registered Users"
-          value={statsLoading ? null : stats?.users?.total}
-          icon={<Users size={16} />}
-          loading={statsLoading}
-          subtitle={`${viewerCount} active now`}
-        />
-        <MetricCard
-          title="Transcoding Jobs"
-          value={statsLoading ? null : pendingJobs.length}
-          icon={<Clapperboard size={16} />}
-          loading={statsLoading || transcodingLoading}
-          subtitle="Pending / encoding"
-          highlight={pendingJobs.length > 5 ? "warning" : undefined}
-        />
-        <MetricCard
-          title="Scheduled Notifs"
-          value={statsLoading ? null : (scheduled?.items?.length ?? 0)}
-          icon={<Bell size={16} />}
-          loading={statsLoading}
-          subtitle="Queued to send"
-        />
-      </div>
+      {statsError ? (
+        <div className="flex items-center gap-3 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm">
+          <XCircle size={15} className="text-destructive shrink-0" />
+          <div className="flex-1 min-w-0">
+            <span className="font-medium text-destructive">Stats unavailable — </span>
+            <span className="text-muted-foreground">{isTransientError(statsError) ? "temporary error, retrying…" : (statsError as Error).message}</span>
+          </div>
+          <Button size="sm" variant="outline" className="h-7 text-xs shrink-0" onClick={() => void refetchStats()}>
+            Retry
+          </Button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <MetricCard
+            title="Total Videos"
+            value={statsLoading ? null : stats?.videos?.total}
+            icon={<Video size={16} />}
+            loading={statsLoading}
+            subtitle={stats ? `${stats.videos.featured} featured` : "In library"}
+          />
+          <MetricCard
+            title="Registered Users"
+            value={statsLoading ? null : stats?.users?.total}
+            icon={<Users size={16} />}
+            loading={statsLoading}
+            subtitle={`${viewerCount} active now`}
+          />
+          <MetricCard
+            title="Transcoding Jobs"
+            value={statsLoading ? null : pendingJobs.length}
+            icon={<Clapperboard size={16} />}
+            loading={statsLoading || transcodingLoading}
+            subtitle="Pending / encoding"
+            highlight={pendingJobs.length > 5 ? "warning" : undefined}
+          />
+          <MetricCard
+            title="Scheduled Notifs"
+            value={statsLoading ? null : (scheduled?.items?.length ?? 0)}
+            icon={<Bell size={16} />}
+            loading={statsLoading}
+            subtitle="Queued to send"
+          />
+        </div>
+      )}
 
       {/* Stuck / dead-air action banner — shown when the broadcast engine needs attention */}
       {(isEngineStuck || engineHealth?.deadAir) && (

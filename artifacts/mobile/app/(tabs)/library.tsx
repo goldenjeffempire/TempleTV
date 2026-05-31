@@ -9,6 +9,7 @@ export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
 import {
   ActivityIndicator,
   FlatList,
+  KeyboardAvoidingView,
   Platform,
   Pressable,
   RefreshControl,
@@ -619,7 +620,10 @@ export default function LibraryScreen() {
   );
 
   return (
-    <View style={[styles.container, { backgroundColor: c.background }]}>
+    <KeyboardAvoidingView
+      style={[styles.container, { backgroundColor: c.background }]}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+    >
       <AppHeader />
       {/* Header */}
       <View
@@ -695,6 +699,8 @@ export default function LibraryScreen() {
               removeClippedSubviews={Platform.OS === "android"}
               maxToRenderPerBatch={10}
               windowSize={10}
+              keyboardDismissMode="on-drag"
+              keyboardShouldPersistTaps="handled"
             />
           )}
         </>
@@ -750,7 +756,7 @@ export default function LibraryScreen() {
           )}
         </ScrollView>
       )}
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 

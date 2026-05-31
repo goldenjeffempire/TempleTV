@@ -1054,7 +1054,7 @@ export default function VideosPage() {
         </p>
         {totalPages > 1 && (
           <div className="flex gap-1">
-            <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage(p => p - 1)} className="h-7">
+            <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage(p => p - 1)} className="h-7" aria-label="Previous page">
               <ChevronLeft size={13} />
             </Button>
             {/* Page number pills — show up to 5 */}
@@ -1075,7 +1075,7 @@ export default function VideosPage() {
                 </Button>
               );
             })}
-            <Button size="sm" variant="outline" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)} className="h-7">
+            <Button size="sm" variant="outline" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)} className="h-7" aria-label="Next page">
               <ChevronRight size={13} />
             </Button>
           </div>
