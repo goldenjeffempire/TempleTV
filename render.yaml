@@ -57,9 +57,11 @@
 #       operational without the in-process transcoder. Re-enable by upgrading
 #       to a paid worker service (plan: starter or higher) and restoring
 #       RUN_MODE=api + a separate temple-tv-transcoder worker entry.
-#    4. NODE_OPTIONS max-old-space-size reduced from 256 MiB → 220 MiB to
-#       leave headroom for the in-process notification dispatcher, pino
-#       transport, and pg pool within the 512 MiB free-tier cgroup ceiling.
+#    4. NODE_OPTIONS max-old-space-size: 220 MiB → 256 MiB (May 2026 bump).
+#       Startup burst committed ~250 MiB to V8 heap (179 MiB live objects +
+#       code/large-object overhead), exceeding the 220 MiB cap and causing a
+#       GC-ineffective OOM crash loop. 256 MiB gives V8 enough headroom to GC
+#       during the burst while leaving ~79 MiB margin under the 512 MiB ceiling.
 #    5. No persistent disks — disks require a paid plan; all media I/O goes
 #       via S3 presigned URLs (confirmed already the case in this codebase).
 #    6. No managed databases or managed Redis — DATABASE_URL and REDIS_URL are
@@ -256,9 +258,13 @@ services:
         value: "2"
 
       # Layer 2: hard V8 heap cap sized for free tier.
-      # 220 MiB heap + ~100 MiB external (pg pool, pino, zlib) + ~50 MiB
-      # stacks/code + ~50 MiB notification dispatcher headroom = ~420 MiB,
-      # leaving ~90 MiB margin under the 512 MiB free-tier cgroup ceiling.
+      # 256 MiB old-space + ~32 MiB new-space + ~15 MiB code-space = ~303 MiB
+      # V8 committed ceiling. Add ~100 MiB external (pg pool, pino, zlib) +
+      # ~30 MiB stacks/OS overhead = ~433 MiB total RSS, leaving ~79 MiB
+      # margin under the 512 MiB free-tier cgroup ceiling.
+      # Bumped from 220 → 256 (May 2026): startup burst commits ~250 MiB to
+      # V8 heap (179 MiB live objects + code/large-object overhead) which
+      # exceeded the 220 MiB cap making GC ineffective → OOM crash loop.
       # `--max-http-header-size=16384` accommodates Render's LB headers.
       #
       # Belt-and-suspenders: the same flags are hardcoded into the
@@ -267,7 +273,7 @@ services:
       # is enforced even if a Render dashboard override clears NODE_OPTIONS
       # (which was the root cause of the May 2026 startup OOM crash loop).
       - key: NODE_OPTIONS
-        value: "--max-old-space-size=220 --max-http-header-size=16384"
+        value: "--max-old-space-size=256 --max-http-header-size=16384"
 
       # Layer 3: observability. WARN at 380 MiB RSS — actionable lead time
       # before the 512 MiB cgroup ceiling is hit. Logged via pino + Sentry.
