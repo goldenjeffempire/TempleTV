@@ -64,7 +64,7 @@ import { liveOverridesService } from "../live-overrides/live-overrides.service.j
 import { StartOverrideBodySchema } from "../live-overrides/live-overrides.schemas.js";
 import { schema } from "../../infrastructure/db.js";
 import { streamHealthAggregator } from "../broadcast/stream-health.js";
-import { getWatchdogState } from "../../infrastructure/memory-watchdog.js";
+import { getWatchdogState, getMemoryHistory } from "../../infrastructure/memory-watchdog.js";
 import { sseCorsHeaders } from "../../lib/sse-cors.js";
 import { startViewerSlopeMonitor, getViewerSlopeStatus } from "./viewer-slope-monitor.js";
 import { getRegisteredCacheStats, registerNamedStore } from "../../infrastructure/cache.js";
@@ -389,7 +389,17 @@ const MemoryDiagnosticsSchema = z.object({
     externalMb: z.number(),
     arrayBuffersMb: z.number(),
   }),
-  caches: z.array(z.object({ name: z.string(), size: z.number() })),
+  caches: z.array(z.object({ name: z.string(), size: z.number(), peak: z.number() })),
+  memorySamples: z.array(z.object({
+    ts: z.number(),
+    heapUsedMb: z.number(),
+    externalMb: z.number(),
+  })),
+  heapSpaces: z.array(z.object({
+    spaceName: z.string(),
+    spaceUsedSizeMb: z.number(),
+    spaceSizeMb: z.number(),
+  })),
   watchdog: z.object({
     enabled: z.boolean(),
     sampleIntervalMs: z.number(),
@@ -1292,6 +1302,12 @@ export async function adminOpsRoutes(app: FastifyInstance) {
           arrayBuffersMb: mb(m.arrayBuffers),
         },
         caches: getRegisteredCacheStats(),
+        memorySamples: getMemoryHistory(),
+        heapSpaces: v8.getHeapSpaceStatistics().map((s) => ({
+          spaceName: s.space_name,
+          spaceUsedSizeMb: Math.round((s.space_used_size / (1024 * 1024)) * 100) / 100,
+          spaceSizeMb: Math.round((s.space_size / (1024 * 1024)) * 100) / 100,
+        })),
         watchdog: (() => {
           const ws = getWatchdogState();
           return {

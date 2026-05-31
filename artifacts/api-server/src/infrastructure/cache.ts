@@ -130,6 +130,8 @@ export function cache(): Cache {
 interface NamedCache {
   name: string;
   getSize: () => number;
+  /** Lifetime high-water mark for this store — updated on every sample. */
+  peak: number;
 }
 
 const _namedCaches: NamedCache[] = [];
@@ -140,26 +142,45 @@ const _namedCaches: NamedCache[] = [];
  */
 export function registerNamedCache(name: string, c: Cache): void {
   const idx = _namedCaches.findIndex((n) => n.name === name);
-  const entry: NamedCache = { name, getSize: () => c.size() };
-  if (idx >= 0) _namedCaches[idx] = entry;
+  const entry: NamedCache = { name, getSize: () => c.size(), peak: 0 };
+  if (idx >= 0) _namedCaches[idx] = { ...entry, peak: _namedCaches[idx].peak };
   else _namedCaches.push(entry);
 }
 
 /**
  * Register an arbitrary size-reporting function under a name.
  * Use this for non-Cache Map/Set instances (e.g. dedup stores, token maps).
+ * Idempotent — registering the same name twice replaces the function but
+ * preserves any accumulated peak value across hot-module reloads.
  */
 export function registerNamedStore(name: string, getSize: () => number): void {
   const idx = _namedCaches.findIndex((n) => n.name === name);
-  const entry: NamedCache = { name, getSize };
-  if (idx >= 0) _namedCaches[idx] = entry;
+  const entry: NamedCache = { name, getSize, peak: 0 };
+  if (idx >= 0) _namedCaches[idx] = { ...entry, peak: _namedCaches[idx].peak };
   else _namedCaches.push(entry);
 }
 
-/** Returns a snapshot of all registered cache sizes for diagnostics. */
-export function getRegisteredCacheStats(): Array<{ name: string; size: number }> {
-  return _namedCaches.map(({ name, getSize }) => ({
-    name,
-    size: (() => { try { return getSize(); } catch { return -1; } })(),
-  }));
+/**
+ * Update the lifetime peak for every registered store without returning data.
+ * Called by the memory watchdog on each 30-second tick so peaks accumulate
+ * accurately even when the diagnostics endpoint is not being polled.
+ */
+export function sampleNamedStorePeaks(): void {
+  for (const entry of _namedCaches) {
+    try {
+      const s = entry.getSize();
+      if (s > entry.peak) entry.peak = s;
+    } catch {
+      // non-fatal — store may have been torn down
+    }
+  }
+}
+
+/** Returns a snapshot of all registered cache sizes and lifetime peaks for diagnostics. */
+export function getRegisteredCacheStats(): Array<{ name: string; size: number; peak: number }> {
+  return _namedCaches.map((entry) => {
+    const size = (() => { try { return entry.getSize(); } catch { return -1; } })();
+    if (size > entry.peak) entry.peak = size;
+    return { name: entry.name, size, peak: entry.peak };
+  });
 }

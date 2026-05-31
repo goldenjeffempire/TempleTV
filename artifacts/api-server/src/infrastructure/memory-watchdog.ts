@@ -28,6 +28,7 @@
 import { logger } from "./logger.js";
 import { env } from "../config/env.js";
 import { processRssGauge, SERVICE_LABELS } from "./metrics.js";
+import { sampleNamedStorePeaks, getRegisteredCacheStats } from "./cache.js";
 
 const SAMPLE_INTERVAL_MS = 30_000;
 const SUSTAIN_SAMPLES = 3;
@@ -215,6 +216,12 @@ function sample() {
     });
   }
 
+  // ── Named store peak sampling ─────────────────────────────────────────────
+  // Update lifetime high-water marks for every registered in-memory store so
+  // peaks accumulate accurately on a fixed cadence regardless of whether the
+  // diagnostics endpoint is actively being polled by an operator.
+  sampleNamedStorePeaks();
+
   // ── Slope tracking (shared rolling window) ────────────────────────────────
   memWindow.push({ external: mem.external, heapUsed: mem.heapUsed, ts: Date.now() });
   if (memWindow.length > SLOPE_WINDOW_SAMPLES) memWindow.shift();
@@ -368,6 +375,45 @@ function sample() {
   }
 }
 
+/**
+ * Returns the rolling memory sample window as MB-valued objects for sparkline
+ * rendering.  The window holds up to SLOPE_WINDOW_SAMPLES entries at
+ * SAMPLE_INTERVAL_MS cadence (default: 6 × 30 s = last 3 minutes).
+ */
+export function getMemoryHistory(): Array<{ ts: number; heapUsedMb: number; externalMb: number }> {
+  const MiB = 1024 * 1024;
+  return memWindow.map(({ ts, heapUsed, external }) => ({
+    ts,
+    heapUsedMb: Math.round((heapUsed / MiB) * 10) / 10,
+    externalMb: Math.round((external / MiB) * 10) / 10,
+  }));
+}
+
+/** Emit a structured INFO log summarising current memory state.  Called
+ *  from the hourly log interval so operators have a persistent record even
+ *  when the diagnostics endpoint is not actively polled. */
+function logMemorySummary(): void {
+  const m = process.memoryUsage();
+  const mb = (b: number) => Math.round((b / (1024 * 1024)) * 10) / 10;
+  logger.info(
+    {
+      rssMb: mb(m.rss),
+      heapUsedMb: mb(m.heapUsed),
+      heapTotalMb: mb(m.heapTotal),
+      externalMb: mb(m.external),
+      arrayBuffersMb: mb(m.arrayBuffers),
+      externalGrowthMbPerMin: lastExternalGrowthMbPerMin,
+      heapUsedGrowthMbPerMin: lastHeapUsedGrowthMbPerMin,
+      alerts: { rssAlertActive, slopeAlertActive, heapUsedAlertActive },
+      stores: getRegisteredCacheStats().map(({ name, size, peak }) => ({ name, size, peak })),
+    },
+    "[memory-watchdog] hourly memory summary",
+  );
+}
+
+const HOURLY_LOG_INTERVAL_MS = 60 * 60_000;
+let hourlyLogInterval: NodeJS.Timeout | null = null;
+
 export function startMemoryWatchdog(): void {
   if (interval) return;
   loadEmitter().catch(() => { /* non-fatal */ });
@@ -375,6 +421,8 @@ export function startMemoryWatchdog(): void {
     loadEmitter().then(() => sample()).catch(() => { /* non-fatal */ });
   }, SAMPLE_INTERVAL_MS);
   interval.unref();
+  hourlyLogInterval = setInterval(logMemorySummary, HOURLY_LOG_INTERVAL_MS);
+  hourlyLogInterval.unref();
   logger.info(
     { thresholdMb: env.MEMORY_WARN_RSS_MB, intervalMs: SAMPLE_INTERVAL_MS },
     "[memory-watchdog] started",
@@ -385,6 +433,10 @@ export function stopMemoryWatchdog(): void {
   if (interval) {
     clearInterval(interval);
     interval = null;
+  }
+  if (hourlyLogInterval) {
+    clearInterval(hourlyLogInterval);
+    hourlyLogInterval = null;
   }
 }
 

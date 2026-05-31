@@ -75,7 +75,9 @@ interface MemoryDiagnostics {
     externalMb: number;
     arrayBuffersMb: number;
   };
-  caches: Array<{ name: string; size: number }>;
+  caches: Array<{ name: string; size: number; peak: number }>;
+  memorySamples: Array<{ ts: number; heapUsedMb: number; externalMb: number }>;
+  heapSpaces: Array<{ spaceName: string; spaceUsedSizeMb: number; spaceSizeMb: number }>;
   watchdog: {
     enabled: boolean;
     sampleIntervalMs: number;
@@ -486,8 +488,100 @@ export default function DiagnosticsPage() {
                       : "Native memory growing — possible Buffer/binding leak."}
                   </div>
                 )}
+                {memDiag.heapSpaces.length > 0 && (
+                  <div className="pt-2 border-t border-border/40 mt-2">
+                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground/60 mb-1.5">V8 Heap Spaces</p>
+                    <div className="space-y-1">
+                      {memDiag.heapSpaces.map(({ spaceName, spaceUsedSizeMb, spaceSizeMb }) => {
+                        const pct = spaceSizeMb > 0 ? Math.round((spaceUsedSizeMb / spaceSizeMb) * 100) : 0;
+                        const friendly = spaceName.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+                        return (
+                          <div key={spaceName} className="flex items-center gap-2">
+                            <span className="text-[10px] font-mono text-muted-foreground w-28 shrink-0 truncate" title={spaceName}>
+                              {friendly}
+                            </span>
+                            <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                              <div
+                                className={cn(
+                                  "h-full rounded-full transition-all",
+                                  pct > 85 ? "bg-red-500" : pct > 60 ? "bg-amber-500" : "bg-primary/60",
+                                )}
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                            <span className="text-[10px] font-mono text-muted-foreground shrink-0 w-20 text-right">
+                              {spaceUsedSizeMb.toFixed(1)}/{spaceSizeMb.toFixed(1)} MB
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
+
+            {/* ── Memory history sparkline card — full width ── */}
+            {memDiag.memorySamples.length > 1 && (
+              <Card className="col-span-1 sm:col-span-2">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium flex items-center gap-2">
+                    <Activity size={14} className="text-muted-foreground" />
+                    Heap Usage — Last {Math.round(((memDiag.memorySamples[memDiag.memorySamples.length - 1]?.ts ?? 0) - (memDiag.memorySamples[0]?.ts ?? 0)) / 60_000)} min
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  <ResponsiveContainer width="100%" height={80}>
+                    <AreaChart data={memDiag.memorySamples} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+                      <defs>
+                        <linearGradient id="heapGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
+                          <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0.02} />
+                        </linearGradient>
+                        <linearGradient id="extGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="hsl(38 92% 50%)" stopOpacity={0.3} />
+                          <stop offset="95%" stopColor="hsl(38 92% 50%)" stopOpacity={0.02} />
+                        </linearGradient>
+                      </defs>
+                      <XAxis
+                        dataKey="ts"
+                        tickFormatter={(v: number) => new Date(v).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                        tick={{ fontSize: 9 }}
+                        tickLine={false}
+                        axisLine={false}
+                      />
+                      <YAxis
+                        tick={{ fontSize: 9 }}
+                        tickLine={false}
+                        axisLine={false}
+                        tickFormatter={(v: number) => `${v}MB`}
+                        width={40}
+                      />
+                      <RechartsTooltip
+                        formatter={(value: number, name: string) => [
+                          `${value.toFixed(1)} MB`,
+                          name === "heapUsedMb" ? "JS Heap" : "Native (external)",
+                        ]}
+                        labelFormatter={(ts: number) => new Date(ts).toLocaleTimeString()}
+                        contentStyle={{ fontSize: 11 }}
+                      />
+                      <Area type="monotone" dataKey="heapUsedMb" stroke="hsl(var(--primary))" fill="url(#heapGrad)" strokeWidth={1.5} dot={false} />
+                      <Area type="monotone" dataKey="externalMb" stroke="hsl(38 92% 50%)" fill="url(#extGrad)" strokeWidth={1.5} dot={false} />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                  <div className="flex gap-4 mt-1 justify-end">
+                    <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                      <span className="inline-block w-3 h-0.5 bg-primary rounded" />
+                      JS Heap
+                    </span>
+                    <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                      <span className="inline-block w-3 h-0.5 bg-amber-500 rounded" />
+                      Native (ext)
+                    </span>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
 
             {/* ── Named in-memory stores card ── */}
             <Card>
@@ -502,30 +596,57 @@ export default function DiagnosticsPage() {
               </CardHeader>
               <CardContent>
                 {memDiag.caches.length > 0 ? (
-                  <div className="divide-y divide-border/40">
-                    {memDiag.caches.map(({ name, size }) => (
-                      <div key={name} className="flex justify-between items-center py-1.5 first:pt-0 last:pb-0">
-                        <span
-                          className="text-[11px] font-mono text-muted-foreground truncate mr-2 max-w-[220px]"
-                          title={name}
-                        >
-                          {name}
-                        </span>
-                        <Badge
-                          variant="outline"
-                          className={cn(
-                            "text-[10px] font-mono shrink-0",
-                            size > 5000
-                              ? "border-red-500/40 text-red-600 dark:text-red-400"
-                              : size > 1000
-                                ? "border-amber-500/40 text-amber-600 dark:text-amber-400"
-                                : "",
-                          )}
-                        >
-                          {size.toLocaleString()}
-                        </Badge>
+                  <div>
+                    <div className="flex justify-between text-[10px] text-muted-foreground/60 uppercase tracking-wide mb-1.5 px-0.5">
+                      <span>Store</span>
+                      <div className="flex gap-4">
+                        <span>Now</span>
+                        <span className="w-16 text-right">Peak</span>
                       </div>
-                    ))}
+                    </div>
+                    <div className="divide-y divide-border/40">
+                      {memDiag.caches.map(({ name, size, peak }) => {
+                        const atPeak = size > 0 && size >= peak * 0.9;
+                        const elevated = peak > 5000 || size > 5000;
+                        const warning = peak > 1000 || size > 1000;
+                        return (
+                          <div key={name} className="flex justify-between items-center py-1.5 first:pt-0 last:pb-0">
+                            <span
+                              className="text-[11px] font-mono text-muted-foreground truncate mr-2 max-w-[180px]"
+                              title={name}
+                            >
+                              {name}
+                            </span>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <Badge
+                                variant="outline"
+                                className={cn(
+                                  "text-[10px] font-mono",
+                                  elevated
+                                    ? "border-red-500/40 text-red-600 dark:text-red-400"
+                                    : warning
+                                      ? "border-amber-500/40 text-amber-600 dark:text-amber-400"
+                                      : "",
+                                )}
+                              >
+                                {size.toLocaleString()}
+                              </Badge>
+                              <span
+                                className={cn(
+                                  "text-[10px] font-mono w-16 text-right",
+                                  atPeak && (elevated || warning)
+                                    ? "text-red-500 dark:text-red-400 font-semibold"
+                                    : "text-muted-foreground/60",
+                                )}
+                                title={`Lifetime high-water mark: ${peak.toLocaleString()}`}
+                              >
+                                ↑{peak.toLocaleString()}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 ) : (
                   <p className="text-xs text-muted-foreground py-2">No stores registered.</p>
