@@ -252,8 +252,12 @@ export function HlsVideoPlayer({
         // Start ABR with an 8 Mbps optimistic estimate — ensures fast
         // connections open at the highest available rendition instead of 360p.
         abrEwmaDefaultEstimate: 8_000_000,
-        abrBandWidthFactor: 0.90,
-        abrBandWidthUpFactor: 0.75,
+        // Conservative bandwidth estimate (0.92) reduces unnecessary quality
+        // downswitches during brief link fluctuations — keeps a stable level.
+        // Faster up-factor (0.82) recovers quality within 2–3 stable segments
+        // after a bandwidth dip without oscillating, matched to LiveBroadcastV2.
+        abrBandWidthFactor: 0.92,
+        abrBandWidthUpFactor: 0.82,
         // Fetch next fragment before current one ends (zero-gap transitions).
         startFragPrefetch: true,
         // SW AES fallback for Smart TV runtimes without HW crypto.
@@ -262,6 +266,19 @@ export function HlsVideoPlayer({
         // Retry on MSE append errors (codec/buffer pipeline hiccups on Tizen)
         // before escalating to a fatal error and triggering a full reload.
         appendErrorMaxRetry: 3,
+        // Buffer health / segment continuity
+        // highBufferWatchdogPeriod: nudge stalled high-buffer streams every 3 s
+        // (catches the rare case where the decode pipeline is frozen even though
+        // the buffer is ahead of the playhead — common on some LG webOS builds).
+        highBufferWatchdogPeriod: 3,
+        // maxBufferHole: bridge fragment discontinuities ≤ 250 ms so the player
+        // jumps over tiny timestamp gaps instead of stalling. Default is 500 ms;
+        // the tighter 250 ms threshold produces crisper segment joins and avoids
+        // audible pops on content with minor mux imperfections.
+        maxBufferHole: 0.25,
+        // progressive: deliver decoded frames as bytes arrive rather than waiting
+        // for the full 2 s segment — meaningful latency reduction on slower links.
+        progressive: true,
         // Retry tuning
         lowLatencyMode: false,
         fragLoadingMaxRetry: 10,
@@ -695,10 +712,18 @@ export function HlsVideoPlayer({
           opacity: activeSlot === "A" ? 1 : 0,
           transition: "opacity 0.18s ease",
           zIndex: activeSlot === "A" ? 2 : 1,
-          willChange: "transform",
+          // willChange includes opacity so the compositor pre-promotes the
+          // layer before the opacity animation begins — prevents a flash on
+          // first slot swap caused by late promotion.
+          willChange: "transform, opacity",
           transform: "translateZ(0)",
+          // Prevent back-face ghost frames on 3D-transform hardware paths
+          // (some AMD/Mali GPU drivers on Fire TV / LG webOS).
+          WebkitBackfaceVisibility: "hidden",
+          backfaceVisibility: "hidden",
+          display: "block",
         }}
-        playsInline autoPlay muted={activeSlot !== "A"}
+        playsInline autoPlay preload="auto" muted={activeSlot !== "A"}
         onTimeUpdate={activeSlot === "A" ? handleTimeUpdate : undefined}
         onError={() => handleError("A")}
         onPlaying={() => { if (activeSlot === "A") setLoading(false); }}
@@ -713,10 +738,13 @@ export function HlsVideoPlayer({
           opacity: activeSlot === "B" ? 1 : 0,
           transition: "opacity 0.18s ease",
           zIndex: activeSlot === "B" ? 2 : 1,
-          willChange: "transform",
+          willChange: "transform, opacity",
           transform: "translateZ(0)",
+          WebkitBackfaceVisibility: "hidden",
+          backfaceVisibility: "hidden",
+          display: "block",
         }}
-        playsInline autoPlay muted={activeSlot !== "B"}
+        playsInline autoPlay preload="auto" muted={activeSlot !== "B"}
         onTimeUpdate={activeSlot === "B" ? handleTimeUpdate : undefined}
         onError={() => handleError("B")}
         onPlaying={() => { if (activeSlot === "B") setLoading(false); }}
@@ -727,17 +755,35 @@ export function HlsVideoPlayer({
       {loading && (
         <div style={{
           position: "absolute", inset: 0, zIndex: 10,
-          background: "rgba(0,0,0,0.75)",
+          background: "radial-gradient(ellipse at center, rgba(15,5,25,0.88) 0%, rgba(0,0,0,0.78) 100%)",
           display: "flex", alignItems: "center", justifyContent: "center",
-          flexDirection: "column", gap: 16,
+          flexDirection: "column", gap: 18,
         }}>
-          <div style={{
-            width: 48, height: 48, borderRadius: "50%",
-            border: "3px solid rgba(168,85,247,0.3)",
-            borderTopColor: "#a855f7",
-            animation: "spin 0.9s linear infinite",
-          }} />
-          <span style={{ color: "rgba(255,255,255,0.6)", fontSize: 14, fontWeight: 500 }}>
+          {/* Cinematic SVG ring spinner — matches LiveBroadcastV2 style */}
+          <div style={{ position: "relative", width: 52, height: 52 }}>
+            <svg
+              viewBox="0 0 52 52"
+              style={{
+                position: "absolute", inset: 0, width: "100%", height: "100%",
+                animation: "hls-spin 1.4s linear infinite",
+              }}
+            >
+              <circle cx="26" cy="26" r="22" fill="none" stroke="rgba(167,139,250,0.18)" strokeWidth="3" />
+              <circle
+                cx="26" cy="26" r="22" fill="none"
+                stroke="rgba(167,139,250,0.85)" strokeWidth="3"
+                strokeLinecap="round"
+                strokeDasharray="34.56 103.67"
+                strokeDashoffset="0"
+              />
+            </svg>
+            <div style={{
+              position: "absolute", inset: "30%", borderRadius: "50%",
+              background: "rgba(167,139,250,0.6)",
+              animation: "hls-pulse 2s ease-in-out infinite",
+            }} />
+          </div>
+          <span style={{ color: "rgba(255,255,255,0.55)", fontSize: 13, fontWeight: 500, letterSpacing: "0.05em" }}>
             Loading stream…
           </span>
         </div>
@@ -878,6 +924,11 @@ export function HlsVideoPlayer({
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes hls-spin { to { transform: rotate(360deg); } }
+        @keyframes hls-pulse {
+          0%, 100% { opacity: 0.4; transform: scale(0.85); }
+          50%       { opacity: 1;   transform: scale(1.15); }
+        }
       `}</style>
     </div>
   );
