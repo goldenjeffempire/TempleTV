@@ -1240,6 +1240,20 @@ class BroadcastOrchestrator extends EventEmitter {
   /** Timestamp (ms) when we first detected items loaded but all URLs blocked.
    *  Null when not in that state. Used for auto-recovery after the TTL window. */
   private allBlockedSinceMs: number | null = null;
+  /**
+   * How many times the all-blocked TTL recovery cycle has fired without any
+   * item successfully playing to completion (naturalItemEnd).
+   *
+   * Each bad-URL TTL expiry (90 s) that still finds all sources unreachable
+   * increments this counter. After 2 cycles (≥ 3 min of persistent failure),
+   * the emergency filler is engaged — critical for large queues (>5 items)
+   * where autoSkipAttempts < 5 cap prevents consecutiveSkips from ever
+   * reaching items.length and triggering the tick-loop filler path.
+   *
+   * Reset to 0 whenever an item plays to its natural end or a new item
+   * successfully becomes current after a dead-air gap.
+   */
+  private allBlockedRecoveryCycles = 0;
 
   /** Circuit breaker: consecutive tick() failures before the circuit opens. */
   private readonly TICK_CIRCUIT_THRESHOLD = 5;
@@ -1492,13 +1506,20 @@ class BroadcastOrchestrator extends EventEmitter {
           env.EMERGENCY_FILLER_URL
         ) {
           const fillerUrl = env.EMERGENCY_FILLER_URL;
-          const isHls = fillerUrl.includes(".m3u8");
+          // Use a proper regex so signed/CDN URLs with query params are
+          // correctly classified (e.g. "stream.m3u8?token=abc" or
+          // "playlist.m3u8#variant" are HLS; plain ".m3u8" suffix also works).
+          const isHls = /\.m3u8(?:$|\?|#)/i.test(fillerUrl);
           const fillerItem: CachedQueueItem = {
             id: `emergency-filler-${Date.now()}`,
             videoId: null,
             title: "Emergency Filler",
             thumbnailUrl: null,
-            durationSecs: 300,
+            // 3600 s (1 hour): generous duration prevents premature slot
+            // exhaustion for live HLS filler streams that loop indefinitely.
+            // The filler is removed on the next queue reload (when operators
+            // fix the broken sources), so the exact value rarely matters.
+            durationSecs: 3_600,
             primaryUrl: fillerUrl,
             source: { kind: isHls ? "hls" : "mp4", url: fillerUrl, expiresAtMs: null },
             failoverSource: null,
@@ -1558,12 +1579,55 @@ class BroadcastOrchestrator extends EventEmitter {
           });
         } else if (now - this.allBlockedSinceMs >= BAD_URL_TTL_MS) {
           this.allBlockedSinceMs = null;
+          this.allBlockedRecoveryCycles += 1;
           logger.info(
-            { items: this.items.length },
+            { items: this.items.length, recoveryCycles: this.allBlockedRecoveryCycles },
             "[broadcast-v2] all-sources-blocked TTL expired — auto-clearing bad-URL cache and reloading",
           );
           clearAllBadUrls();
           this.scheduleSelfHealReload("all-blocked-ttl-recovery");
+          // After 2 TTL-recovery cycles (≥ 3 min) with no item playing, engage
+          // the emergency filler. This is the ONLY activation path for large
+          // queues (>5 items) where autoSkipAttempts cap prevents the
+          // consecutiveSkips >= items.length condition from ever firing.
+          // Permanent CDN failures do not self-heal via TTL — the filler keeps
+          // the channel on-air while operators diagnose and fix the sources.
+          if (
+            this.allBlockedRecoveryCycles >= 2 &&
+            env.EMERGENCY_FILLER_URL &&
+            !this.items.some((it) => it.id.startsWith("emergency-filler-"))
+          ) {
+            const fillerUrl = env.EMERGENCY_FILLER_URL;
+            const isHls = /\.m3u8(?:$|\?|#)/i.test(fillerUrl);
+            const fillerItem: CachedQueueItem = {
+              id: `emergency-filler-${Date.now()}`,
+              videoId: null,
+              title: "Emergency Filler",
+              thumbnailUrl: null,
+              durationSecs: 3_600,
+              primaryUrl: fillerUrl,
+              source: { kind: isHls ? "hls" : "mp4", url: fillerUrl, expiresAtMs: null },
+              failoverSource: null,
+            };
+            clearBadUrl(fillerUrl);
+            logger.error(
+              {
+                channel: this.channelId,
+                recoveryCycles: this.allBlockedRecoveryCycles,
+                itemCount: this.items.length,
+                fillerUrl,
+              },
+              "[broadcast-v2] EXTENDED ALL-BLOCKED (2+ TTL cycles, ≥3 min) — inserting emergency filler for persistent CDN failure",
+            );
+            this.items.unshift(fillerItem);
+            this.cycleDurationMs = this.items.reduce((s, r) => s + r.durationSecs * 1000, 0);
+            this.cycleStartedAtMs = Date.now();
+            this.consecutiveSkips = 0;
+            this.autoSkipAttempts = 0;
+            this.allBlockedRecoveryCycles = 0;
+            adminEventBus.push("emergency-filler-activated", {});
+            this.emitSnapshot();
+          }
           return;
         }
       }
@@ -1578,6 +1642,10 @@ class BroadcastOrchestrator extends EventEmitter {
     }
     this.allBlockedSinceMs = null;
     this.autoSkipAttempts  = 0;
+    // A playable item became current — clear the extended-blocking counter so
+    // the next genuine all-blocked streak gets the full 2-cycle grace period
+    // before the emergency filler is engaged.
+    this.allBlockedRecoveryCycles = 0;
     // Start the continuous on-air uptime clock the first time an item becomes
     // current after boot or after a dead-air gap. onAirSinceMs stays pinned
     // until the next dead-air / all-blocked event resets it to null above.
@@ -1818,17 +1886,25 @@ class BroadcastOrchestrator extends EventEmitter {
       env.EMERGENCY_FILLER_URL
     ) {
       const fillerUrl = env.EMERGENCY_FILLER_URL;
-      const isHls = fillerUrl.includes(".m3u8");
+      // Use a proper regex so signed/CDN URLs with query params are correctly
+      // classified (same logic as the tickInner() filler path).
+      const isHls = /\.m3u8(?:$|\?|#)/i.test(fillerUrl);
       const fillerItem: CachedQueueItem = {
         id: `emergency-filler-${Date.now()}`,
         videoId: null,
         title: "Emergency Filler",
         thumbnailUrl: null,
-        durationSecs: 300,
+        durationSecs: 3_600,
         primaryUrl: fillerUrl,
         source: { kind: isHls ? "hls" : "mp4", url: fillerUrl, expiresAtMs: null },
         failoverSource: null,
       };
+      // Clear the filler URL from the bad-URL cache before inserting.
+      // Without this, a prior stall vote (e.g. when a CDN outage hit both
+      // queue items AND the filler) would cause the filler to project as null
+      // immediately on the next tick — triggering another skip — creating an
+      // infinite dead-air spiral with no exit.
+      clearBadUrl(fillerUrl);
       logger.error(
         {
           channel: this.channelId,
@@ -2108,7 +2184,18 @@ class BroadcastOrchestrator extends EventEmitter {
       } finally {
         clearTimeout(timeout);
       }
-      if (res.status === 403 || res.status === 451) return "blocked";
+      // 403 = geo-block / auth required
+      // 404 = video deleted or set to private (not found)
+      // 410 = video permanently removed (Gone)
+      // 451 = legal takedown (Unavailable For Legal Reasons)
+      // All four are definitively unreachable for viewers → mark bad.
+      if (
+        res.status === 403 ||
+        res.status === 404 ||
+        res.status === 410 ||
+        res.status === 451
+      )
+        return "blocked";
       return "ambiguous";
     } catch {
       return "ambiguous"; // AbortError or NetworkError — allow normal retry
