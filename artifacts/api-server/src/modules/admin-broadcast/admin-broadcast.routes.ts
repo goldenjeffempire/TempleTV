@@ -362,7 +362,9 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
         } else if (inserted.videoId) {
           // HLS already ready — just promote any existing queued job to p10
           // so this item isn't stuck behind lower-priority library encodes.
-          void boostTranscodePriority(inserted.videoId, 10);
+          void boostTranscodePriority(inserted.videoId, 10).catch((err: unknown) => {
+            logger.warn({ err, videoId: inserted.videoId }, "admin-broadcast: boostTranscodePriority failed (non-fatal)");
+          });
         }
         return toDto({ ...inserted, ...hlsById });
       }
@@ -411,7 +413,9 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
             logger.warn({ err, videoId: insertedExplicit.videoId }, "admin-broadcast: auto-enqueue HLS (explicit path) failed (non-fatal)");
           });
         } else {
-          void boostTranscodePriority(insertedExplicit.videoId, 10);
+          void boostTranscodePriority(insertedExplicit.videoId, 10).catch((err: unknown) => {
+            logger.warn({ err, videoId: insertedExplicit.videoId }, "admin-broadcast: boostTranscodePriority (explicit path) failed (non-fatal)");
+          });
         }
       }
       return toDto({ ...insertedExplicit, ...hlsExplicit });

@@ -328,6 +328,22 @@ function sample() {
     consecutiveHeapOver = 0;
   }
 
+  // ── Proactive GC nudge ───────────────────────────────────────────────────
+  // When RSS is in the warn zone, nudge V8's garbage collector to free
+  // unreferenced Buffer memory (e.g. completed HLS segment responses waiting
+  // for collection). This can reduce RSS enough to avoid crossing the restart
+  // threshold and triggering a full restart cycle.
+  //
+  // Only runs when Node.js is started with --expose-gc (production start:prod
+  // script does NOT include it by default, so gcFn will be undefined in most
+  // environments and this becomes a no-op).  Set EXPOSE_GC=1 in your process
+  // manager / Render env and add --expose-gc to the start:prod node flags to
+  // enable this safety valve.
+  const gcFn = (global as { gc?: () => void }).gc;
+  if (rssAlertActive && gcFn) {
+    gcFn();
+  }
+
   // ── Critical escalation (production only) ────────────────────────────────
   // Uses consecutiveRssOverRestart (RSS ≥ MEMORY_RESTART_RSS_MB) rather than
   // consecutiveRssOver (RSS ≥ MEMORY_WARN_RSS_MB) so a low warn threshold
@@ -338,9 +354,16 @@ function sample() {
     !criticalExitInFlight
   ) {
     criticalExitInFlight = true;
+    // Snapshot the full memory breakdown at the moment of exit so engineers
+    // can distinguish Buffer pressure (externalMb high) from heap leaks
+    // (heapUsedMb high) when reviewing logs after a restart cycle.
     logger.fatal(
       {
         rssMb,
+        heapUsedMb: Math.round(mem.heapUsed / (1024 * 1024)),
+        heapTotalMb: Math.round(mem.heapTotal / (1024 * 1024)),
+        externalMb: Math.round(mem.external / (1024 * 1024)),
+        arrayBuffersMb: Math.round(mem.arrayBuffers / (1024 * 1024)),
         warnThresholdMb: thresholdMb,
         restartThresholdMb,
         consecutiveRssOver,
@@ -455,6 +478,33 @@ export function startMemoryWatchdog(): void {
     { thresholdMb: env.MEMORY_WARN_RSS_MB, intervalMs: SAMPLE_INTERVAL_MS },
     "[memory-watchdog] started",
   );
+
+  // Warn operators when MEMORY_RESTART_RSS_MB is configured too aggressively
+  // for a server that serves HLS segments.  Under concurrent HLS load each
+  // in-flight segment holds an 8 MiB Buffer; combined with V8 heap and shared
+  // libraries (~300 MB baseline), RSS can easily exceed 430 MB at normal load.
+  //
+  // Recommended minimum: 600 MB.  If you must run below 600 MB, lower
+  // HLS_MAX_CONCURRENT proportionally (default: 50 → each concurrent request
+  // contributes ~8 MiB of Buffer memory).
+  //
+  // Root cause of Render restart loops: MEMORY_RESTART_RSS_MB=430 was set in
+  // the Render environment while HLS_MAX_CONCURRENT was still 200, pushing RSS
+  // to 590 MB and causing restarts every ~5 minutes.
+  const effectiveRestartMb = Math.max(env.MEMORY_RESTART_RSS_MB, env.MEMORY_WARN_RSS_MB);
+  if (effectiveRestartMb < 500) {
+    logger.warn(
+      {
+        MEMORY_RESTART_RSS_MB: env.MEMORY_RESTART_RSS_MB,
+        MEMORY_WARN_RSS_MB: env.MEMORY_WARN_RSS_MB,
+        effectiveRestartMb,
+        recommendedMinimumMb: 600,
+      },
+      "[memory-watchdog] MEMORY_RESTART_RSS_MB is below 500 MB — HLS segment " +
+      "serving pushes RSS to 400+ MB under normal load which will cause frequent " +
+      "restart cycles. Raise MEMORY_RESTART_RSS_MB to ≥ 600 MB in your environment.",
+    );
+  }
 }
 
 export function stopMemoryWatchdog(): void {
