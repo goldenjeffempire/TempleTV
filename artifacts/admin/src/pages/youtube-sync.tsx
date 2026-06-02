@@ -52,8 +52,10 @@ interface QuotaStatus {
 
 function StatusBadge({ status }: { status: string }) {
   if (status === "completed") return <Badge className="bg-green-500/15 text-green-600 border-green-500/30 gap-1"><CheckCircle2 size={11} /> Completed</Badge>;
+  if (status === "completed_with_errors") return <Badge className="bg-orange-500/15 text-orange-600 border-orange-500/30 gap-1"><AlertTriangle size={11} /> Partial</Badge>;
   if (status === "running") return <Badge className="bg-blue-500/15 text-blue-600 border-blue-500/30 gap-1"><Loader2 size={11} className="animate-spin" /> Running</Badge>;
   if (status === "failed") return <Badge className="bg-red-500/15 text-red-600 border-red-500/30 gap-1"><XCircle size={11} /> Failed</Badge>;
+  if (status === "interrupted") return <Badge className="bg-amber-500/15 text-amber-600 border-amber-500/30 gap-1"><AlertTriangle size={11} /> Interrupted</Badge>;
   return <Badge variant="outline">{status}</Badge>;
 }
 
@@ -135,6 +137,30 @@ export default function YoutubeSyncPage() {
         />
       )}
 
+      {/* ── Interrupted-sync recovery banner ─────────────────────────────── */}
+      {!statusLoading && status?.lastSyncStatus === "interrupted" && (
+        <div className="flex items-start gap-3 p-4 rounded-lg bg-amber-500/8 border border-amber-500/25 text-amber-700 dark:text-amber-400">
+          <AlertTriangle size={16} className="flex-shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium">Last sync was interrupted by a server restart</p>
+            <p className="text-xs mt-0.5 text-amber-600/80 dark:text-amber-400/70">
+              The sync process was cut short before it could complete. Videos synced up to the interruption point are safe in the database.
+              Run a manual sync to ensure the library is fully up to date.
+            </p>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="flex-shrink-0 border-amber-500/40 text-amber-700 hover:bg-amber-500/10 dark:text-amber-400"
+            onClick={() => triggerMutation.mutate()}
+            disabled={isSyncing}
+          >
+            {isSyncing ? <Loader2 size={12} className="animate-spin mr-1" /> : <Play size={12} className="mr-1" />}
+            Sync Now
+          </Button>
+        </div>
+      )}
+
       {/* ── Status overview ──────────────────────────────────────────────── */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <Card>
@@ -201,12 +227,17 @@ export default function YoutubeSyncPage() {
         </Card>
       </div>
 
-      {/* ── Last sync detail ─────────────────────────────────────────────── */}
-      {status?.lastSyncAt && (
+      {/* ── Last sync detail — only shown when we have real stats ─────────── */}
+      {status?.lastSyncAt && status.videosFound != null && (
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-sm flex items-center gap-2">
               <Database size={14} /> Last Sync Results
+              {status.lastSyncStatus && (
+                <span className="ml-auto">
+                  <StatusBadge status={status.lastSyncStatus} />
+                </span>
+              )}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -226,7 +257,9 @@ export default function YoutubeSyncPage() {
               <div>
                 <p className="text-xs text-muted-foreground mb-0.5">Source</p>
                 <Badge variant="outline" className="text-[11px]">
-                  {status.lastSyncSource === "api" ? "YouTube API v3" : status.lastSyncSource === "rss" ? "RSS Feed" : (status.lastSyncSource ?? "—")}
+                  {status.lastSyncSource === "youtube_api" ? "YouTube API v3"
+                    : status.lastSyncSource === "rss" ? "RSS Feed"
+                    : (status.lastSyncSource ?? "—")}
                 </Badge>
               </div>
             </div>
@@ -320,7 +353,11 @@ export default function YoutubeSyncPage() {
                         <p className="text-sm font-medium">
                           {item.videosFound != null
                             ? `${item.videosFound.toLocaleString()} found · +${item.videosInserted ?? 0} new · ${item.videosUpdated ?? 0} updated`
-                            : item.status === "running" ? "Running…" : "—"}
+                            : item.status === "running"
+                              ? "Running…"
+                              : item.status === "interrupted"
+                                ? "Interrupted before completion"
+                                : "—"}
                         </p>
                         <Badge variant="outline" className="text-[10px] capitalize">
                           {item.triggeredBy}
