@@ -32,10 +32,15 @@ import { isUndefinedColumnError } from "../../../infrastructure/db-schema-guard.
 
 // True only when the Node process is explicitly running in production mode.
 // In all other environments (development, test, staging) API_ORIGIN must NOT
-// be treated as "this server's own origin" — it typically points to a remote
-// production server (e.g. https://admin.templetv.org.ng set for prod-sync) and
-// must not override REPLIT_DEV_DOMAIN or RENDER_EXTERNAL_URL which DO reflect
-// the actual public address of this dev instance.
+// be used as "this server's own origin" — in a dev environment API_ORIGIN
+// should be unset or point to this server's own public Replit/Render URL.
+// REPLIT_DEV_DOMAIN and RENDER_EXTERNAL_URL auto-reflect the dev instance's
+// actual public address and should be preferred over API_ORIGIN in dev.
+//
+// API_ORIGIN MUST equal this server's own canonical domain in production
+// (e.g. https://api.templetv.org.ng). Do NOT set it to the admin SPA domain
+// (admin.templetv.org.ng) — that would absolutize upload paths to the SPA,
+// which returns HTML for /api/* requests in a standalone SPA deployment.
 const IS_PROD_NODE_ENV = process.env.NODE_ENV === "production";
 
 export function normalizeQueueUrl(raw: string | null | undefined): string | null {
@@ -43,9 +48,9 @@ export function normalizeQueueUrl(raw: string | null | undefined): string | null
   if (/^https?:\/\//i.test(raw)) return raw;
   // Resolution order (first truthy wins):
   //   1. API_ORIGIN            — explicit own-origin; ONLY used in production.
-  //                              In dev API_ORIGIN often points to the remote prod
-  //                              server (for prod-sync), so using it here would
-  //                              absolutize local upload paths to the wrong host.
+  //                              Must equal THIS server's canonical URL
+  //                              (e.g. https://api.templetv.org.ng). Do NOT set
+  //                              it to an admin SPA domain or a remote server URL.
   //   2. RENDER_EXTERNAL_URL   — Render auto-sets this to the service's public HTTPS URL;
   //                              gives zero-config self-origin detection on Render deploys
   //   3. REPLIT_DEV_DOMAIN     — Replit dev environment public domain
@@ -68,7 +73,7 @@ export function normalizeQueueUrl(raw: string | null | undefined): string | null
 // ── Media proxy helpers ────────────────────────────────────────────────────
 //
 // When a queue item's source URL is on a different origin from this server
-// (e.g. prod-sync items from admin.templetv.org.ng), the browser blocks the
+// (e.g. prod-sync items from api.templetv.org.ng in a dev environment), the browser blocks the
 // media load because the remote server returns `Cross-Origin-Resource-Policy:
 // same-origin`. We rewrite those external MP4 URLs to go through our own
 // /api/v1/media-proxy endpoint which strips the restriction and serves with
@@ -84,8 +89,10 @@ export function normalizeQueueUrl(raw: string | null | undefined): string | null
  *
  * Resolution order — identical to normalizeQueueUrl but with the same
  * production-only guard on API_ORIGIN:
- *   1. API_ORIGIN          — ONLY in production. In dev it points to the remote
- *                            prod server (for prod-sync), not this dev instance.
+ *   1. API_ORIGIN          — ONLY in production. Must be THIS server's own
+ *                            canonical URL (e.g. https://api.templetv.org.ng).
+ *                            Do NOT set API_ORIGIN to an admin SPA domain or a
+ *                            remote server URL in dev — use the options below.
  *   2. RENDER_EXTERNAL_URL — zero-config Render self-detection
  *   3. REPLIT_DEV_DOMAIN   — Replit dev environment public domain
  *   4. http://localhost:PORT fallback

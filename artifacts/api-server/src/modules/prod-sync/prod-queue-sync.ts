@@ -321,19 +321,17 @@ async function isReachable(url: string): Promise<boolean> {
 function absolutizeUrl(rawUrl: string | null, base: string): string | null {
   if (!rawUrl) return null;
   if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) {
-    // Rewrite deprecated URLs to the current canonical upstream host.
-    // DB rows may carry HLS/upload URLs pointing to:
-    //   • *.onrender.com  — the old Render service hostname (deprecated)
-    //   • api.templetv.org.ng — the old API subdomain before domain migration
-    // Both are rewritten to PROD_SYNC_API_URL (now admin.templetv.org.ng) so
-    // all client surfaces (admin preview, TV, mobile) can load them without
-    // hitting CORS errors or defunct hostnames.
+    // Rewrite ONLY deprecated *.onrender.com hostnames to the current canonical
+    // upstream base URL. Render.com was the original hosting platform before
+    // the custom domain was configured; any HLS/upload URL still pointing there
+    // is stale and needs to be rewritten so players can reach the media.
+    //
+    // NOTE: api.templetv.org.ng is the CURRENT canonical API domain and must
+    // NOT be rewritten — those URLs are valid and should be served as-is.
+    // Rewriting them to an admin SPA host would return HTML instead of media.
     try {
       const parsed = new URL(rawUrl);
-      if (
-        parsed.hostname.endsWith(".onrender.com") ||
-        parsed.hostname === "api.templetv.org.ng"
-      ) {
+      if (parsed.hostname.endsWith(".onrender.com")) {
         const upstreamParsed = new URL(base);
         parsed.protocol = upstreamParsed.protocol;
         parsed.hostname = upstreamParsed.hostname;
@@ -672,6 +670,31 @@ export const prodQueueSync = {
     stats.enabled = true;
     stats.upstreamUrl = env.PROD_SYNC_API_URL;
     stats.intervalMs = env.PROD_SYNC_INTERVAL_MS;
+
+    // ── Startup sanity-check: PROD_SYNC_API_URL must point to the API ────────
+    // The URL should be the base of the API server (e.g. https://api.templetv.org.ng),
+    // NOT the admin SPA (e.g. https://admin.templetv.org.ng). The admin SPA returns
+    // HTML for every unknown path, so a poll to /api/broadcast/guide would get a
+    // <!DOCTYPE html> response and fail with "Unexpected token '<'" JSON parse error.
+    //
+    // We detect the most common misconfiguration (admin.* hostname) and emit a
+    // clearly-actionable WARN so operators can fix it before wondering why the
+    // broadcast queue is never mirrored.
+    try {
+      const upstreamHost = new URL(env.PROD_SYNC_API_URL).hostname;
+      if (upstreamHost.startsWith("admin.")) {
+        logger.warn(
+          { upstream: env.PROD_SYNC_API_URL },
+          "[prod-sync] PROD_SYNC_API_URL appears to point to an admin SPA domain (hostname starts with 'admin.'). " +
+          "This URL must be the API server base (e.g. https://api.templetv.org.ng), NOT the admin frontend. " +
+          "The SPA returns HTML for /api/* paths, causing every poll to fail with a JSON parse error. " +
+          "Update PROD_SYNC_API_URL to the correct API domain and restart.",
+        );
+      }
+    } catch {
+      // Malformed URL — let the first poll surface the real error
+    }
+
     logger.info(
       { upstream: env.PROD_SYNC_API_URL, intervalMs: env.PROD_SYNC_INTERVAL_MS },
       "[prod-sync] starting cross-env queue sync",

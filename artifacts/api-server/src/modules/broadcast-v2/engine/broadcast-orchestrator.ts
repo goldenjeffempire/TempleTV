@@ -789,10 +789,10 @@ class BroadcastOrchestrator extends EventEmitter {
         id: row.id,
         videoId: row.videoId ?? null,
         title: row.title,
-        // Use the absolutized thumbnailUrl from toItem() (relative /api/hls/…
-        // paths are rewritten to https://admin.templetv.org.ng/api/hls/…) so
-        // all client surfaces (TV, mobile, admin) can render thumbnails without
-        // needing to know the API origin.
+        // Use the absolutized thumbnailUrl from toItem(): relative /api/hls/…
+        // paths are rewritten to the server's own origin (API_ORIGIN in
+        // production, REPLIT_DEV_DOMAIN in dev) so all client surfaces
+        // (TV, mobile, admin) can render thumbnails without knowing the origin.
         thumbnailUrl: v2.thumbnailUrl,
         // Apply a minimum 60 s floor to durationSecs.
         //
@@ -852,7 +852,7 @@ class BroadcastOrchestrator extends EventEmitter {
       logger.error(
         { queueSize: rawRows.length },
         "[broadcast-v2] ALL queue items rejected at pre-resolution — entering OFF_AIR safe mode. " +
-          "Action required: set API_ORIGIN=https://admin.templetv.org.ng in production env (fixes relative URLs), " +
+          "Action required: set API_ORIGIN=https://api.templetv.org.ng in production env (fixes relative upload URLs), " +
           "or re-upload / re-transcode the affected videos, then reload the queue from the admin console.",
       );
     } else if (resolved.length < rawRows.length) {
@@ -1915,11 +1915,16 @@ class BroadcastOrchestrator extends EventEmitter {
     // of the in-memory queue so the channel is never completely dark.
     // Ephemeral: a subsequent reload() (triggered when the operator fixes
     // the broken items) will replace the filler with the real queue.
+    // Use BROADCAST_FAILOVER_HLS_URL as a fallback when EMERGENCY_FILLER_URL
+    // is not set — same purpose, just a different env var name.  Mirrors the
+    // identical logic in tickInner() so both auto-skip and operator-skip paths
+    // behave consistently regardless of which filler env var is configured.
+    const effectiveSkipFillerUrl = env.EMERGENCY_FILLER_URL ?? env.BROADCAST_FAILOVER_HLS_URL;
     if (
       this.consecutiveSkips >= Math.max(1, this.items.length) &&
-      env.EMERGENCY_FILLER_URL
+      effectiveSkipFillerUrl
     ) {
-      const fillerUrl = env.EMERGENCY_FILLER_URL;
+      const fillerUrl = effectiveSkipFillerUrl;
       // Use a proper regex so signed/CDN URLs with query params are correctly
       // classified (same logic as the tickInner() filler path).
       const isHls = /\.m3u8(?:$|\?|#)/i.test(fillerUrl);

@@ -1,22 +1,32 @@
 ---
-name: Broadcast reconnect hardening & domain migration
-description: Domain migration api.→admin.templetv.org.ng, player FATAL state, escape-valve re-report, load timeout reduction.
+name: Broadcast reconnect hardening & canonical domain architecture
+description: Canonical domain layout (api.* = API, admin.* = SPA), PROD_SYNC_API_URL misconfiguration root cause, player FATAL state, escape-valve re-report, load timeout reduction.
 ---
 
-## Domain migration (api.templetv.org.ng → admin.templetv.org.ng)
+## Canonical domain architecture (CURRENT)
 
-**Rule:** The canonical production domain is now `admin.templetv.org.ng` — both the admin SPA and the API are served from the same origin.
+**Rule:** The two canonical production domains are SEPARATE:
+- `api.templetv.org.ng` — API server (Fastify). All `/api/*` routes, HLS, uploads, WebSockets.
+- `admin.templetv.org.ng` — Admin SPA only (React/Vite). Returns HTML for every non-asset path.
 
-**Where to update when this happens again:**
-- `API_ORIGIN` env var (shared) → `https://admin.templetv.org.ng`
-- `PROD_SYNC_API_URL` env var (development) → `https://admin.templetv.org.ng`
-- `CORS_ORIGINS_EXTRA` secret → delete (onrender.com wildcard no longer needed)
-- `render.yaml`: `CORS_ORIGINS_EXTRA: ""`, `API_BASE_URL: https://admin.templetv.org.ng`
-- `api-base.ts`: remove `admin.* → api.*` hostname rewrite inference (was for old split-domain Render setup)
-- `prod-queue-sync.ts absolutizeUrl()`: add `parsed.hostname === "api.templetv.org.ng"` to the onrender.com rewrite condition, so DB rows from before migration still resolve correctly
-- Orchestrator log messages that hardcode the domain
+**`API_ORIGIN` must equal `https://api.templetv.org.ng`** — the server's OWN public origin.
+Setting it to the admin SPA domain causes `normalizeQueueUrl()` / `getOwnBase()` to absolutize
+local upload paths to the SPA, which returns HTML instead of media content.
 
-**Why:** Old split-domain Render setup had admin SPA at admin.* and API at api.*. The new unified setup serves both from admin.*. Without removing the inference, the SPA would rewrite its own origin to a non-existent api.* host.
+**`PROD_SYNC_API_URL` must equal `https://api.templetv.org.ng`** — the upstream API to mirror from.
+Setting it to `admin.templetv.org.ng` makes every `/api/broadcast/guide` poll return `<!DOCTYPE html>`,
+producing `SyntaxError: Unexpected token '<'` on every 30 s tick and silently breaking broadcast
+queue mirroring in development. The server now emits a startup WARN when it detects an `admin.*` hostname.
+
+**`absolutizeUrl()` in `prod-queue-sync.ts`** rewrites ONLY `*.onrender.com` hostnames (deprecated
+old Render hosting). It must NOT rewrite `api.templetv.org.ng` — that is a valid canonical URL.
+
+**Why:** An earlier migration memo incorrectly recorded that both SPA and API were unified under
+`admin.templetv.org.ng`. That architecture was not adopted. The domains are split: API under `api.*`,
+SPA under `admin.*`. Any memo saying otherwise is stale.
+
+**CORS_ORIGINS_EXTRA:** Should include `https://admin.templetv.org.ng` (admin SPA origin) so
+admin dashboard API requests are accepted cross-origin.
 
 ## Player FATAL state from SKIP_PENDING cycles
 

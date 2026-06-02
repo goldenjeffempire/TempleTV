@@ -72,7 +72,7 @@ The broadcast + player + queue + sync stack runs on **v2** (cut over T008, May 2
 
 Dev API can mirror prod's queue into its own DB so engineers see what's airing without touching the prod DB. Module: `artifacts/api-server/src/modules/prod-sync/prod-queue-sync.ts`. Reads upstream's public `/api/broadcast/guide`, upserts by id, rewrites relative `localVideoUrl` to absolute upstream URLs, fires `broadcast-queue-updated` only when rows change. **Ghost sweep**: items absent from upstream for >10 minutes are deactivated locally (rows preserved — re-appearance re-activates).
 
-- `PROD_SYNC_API_URL` — upstream base URL. Unset = sync disabled.
+- `PROD_SYNC_API_URL` — upstream **API** base URL (e.g. `https://api.templetv.org.ng`). Unset = sync disabled. **Must point to the API server, NOT the admin SPA** (`admin.templetv.org.ng`) — the SPA returns HTML for `/api/*` paths and every poll will fail with a JSON parse error. The server detects `admin.*` hostnames at startup and emits a WARN.
 - `PROD_SYNC_INTERVAL_MS` — poll cadence (default 30 000).
 - `PROD_SYNC_DISABLE=1` — escape hatch even when URL is set.
 - **Hard production guard**: `start()` refuses to mirror when `NODE_ENV === "production"`.
