@@ -643,6 +643,36 @@ export async function ensureUserSchemaColumns(): Promise<void> {
         ADD COLUMN IF NOT EXISTS transcoding_error_code TEXT
     `);
 
+    // ── broadcast_queue ───────────────────────────────────────────────────
+    // Columns added to broadcast_queue after the initial production deploy.
+    // All are nullable so IF NOT EXISTS is safe with no DEFAULT clause.
+
+    // HLS master playlist URL — written by the transcoder on job completion.
+    // Takes precedence over local_video_url in the v2 source resolver.
+    await client.query(`
+      ALTER TABLE broadcast_queue
+        ADD COLUMN IF NOT EXISTS hls_master_url TEXT
+    `);
+    // Scheduled programming — pinned wall-clock air time for anchored items.
+    await client.query(`
+      ALTER TABLE broadcast_queue
+        ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ
+    `);
+    // Human-readable block label shown in the schedule editor.
+    await client.query(`
+      ALTER TABLE broadcast_queue
+        ADD COLUMN IF NOT EXISTS schedule_label TEXT
+    `);
+    // Written by the queue-integrity-validator when it auto-deactivates a row.
+    // Values: "missing_video_join", "corrupt_upload", "orphaned_video_ref".
+    // Cleared to NULL when the reverse pass re-activates the row.
+    // NOTE: drizzle-kit push silently skipped this column on existing prod DBs —
+    // this ADD COLUMN IF NOT EXISTS is the authoritative self-heal.
+    await client.query(`
+      ALTER TABLE broadcast_queue
+        ADD COLUMN IF NOT EXISTS validator_deactivated_reason TEXT
+    `);
+
     // ── Data self-heal: broadcast_queue placeholder duration ──────────────
     // Queue rows are inserted at upload-finalize time with a 1800-second
     // placeholder when ffprobe hasn't run yet. Once faststart/ffprobe
