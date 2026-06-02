@@ -40,12 +40,18 @@ const _gcTimer = setInterval(() => {
   const now = Date.now();
   const windowMs = env.AUTH_BF_WINDOW_MS;
   for (const [k, v] of ipBuckets) {
-    if (v.lockedUntilMs <= now && v.failTimes.every((t) => now - t > windowMs)) {
+    // Prune stale fail-times before checking. Without the prune step a
+    // slow-drip attacker (one failure per window interval) keeps one
+    // failTime permanently inside the window, preventing GC and allowing
+    // the Map to grow to O(distinct IPs) over time.
+    v.failTimes = v.failTimes.filter((t) => now - t <= windowMs);
+    if (v.lockedUntilMs <= now && v.failTimes.length === 0) {
       ipBuckets.delete(k);
     }
   }
   for (const [k, v] of emailBuckets) {
-    if (v.lockedUntilMs <= now && v.failTimes.every((t) => now - t > windowMs)) {
+    v.failTimes = v.failTimes.filter((t) => now - t <= windowMs);
+    if (v.lockedUntilMs <= now && v.failTimes.length === 0) {
       emailBuckets.delete(k);
     }
   }

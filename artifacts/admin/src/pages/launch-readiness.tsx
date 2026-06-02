@@ -184,9 +184,9 @@ export default function LaunchReadinessPage() {
             <div className="flex-1">
               <p className="font-bold">{bannerText}</p>
               <p className="text-xs text-muted-foreground">
-                {summary!.ready}/{summary!.total} checks passing
-                {summary!.warnings > 0 ? `, ${summary!.warnings} warning${summary!.warnings !== 1 ? "s" : ""}` : ""}
-                {summary!.blocked > 0 ? `, ${summary!.blocked} blocker${summary!.blocked !== 1 ? "s" : ""}` : ""}
+                {summary?.ready}/{summary?.total} checks passing
+                {(summary?.warnings ?? 0) > 0 ? `, ${summary!.warnings} warning${summary!.warnings !== 1 ? "s" : ""}` : ""}
+                {(summary?.blocked ?? 0) > 0 ? `, ${summary!.blocked} blocker${summary!.blocked !== 1 ? "s" : ""}` : ""}
                 {environment ? ` · ${environment}` : ""}
               </p>
             </div>
@@ -194,12 +194,12 @@ export default function LaunchReadinessPage() {
 
           <div className="grid grid-cols-3 gap-3">
             {[
-              { label: "Total Videos", value: counts!.totalVideos },
-              { label: "HLS Ready", value: counts!.hlsReadyLocalVideos },
-              { label: "Push Subscribers", value: counts!.registeredDevices },
-              { label: "Broadcast Items", value: counts!.activeBroadcastItems },
-              { label: "Schedule Entries", value: counts!.activeScheduleEntries },
-              { label: "Failed Encodes", value: counts!.failedTranscodes },
+              { label: "Total Videos", value: counts?.totalVideos ?? 0 },
+              { label: "HLS Ready", value: counts?.hlsReadyLocalVideos ?? 0 },
+              { label: "Push Subscribers", value: counts?.registeredDevices ?? 0 },
+              { label: "Broadcast Items", value: counts?.activeBroadcastItems ?? 0 },
+              { label: "Schedule Entries", value: counts?.activeScheduleEntries ?? 0 },
+              { label: "Failed Encodes", value: counts?.failedTranscodes ?? 0 },
             ].map((m) => (
               <div key={m.label} className="rounded-lg border bg-card p-3 text-center">
                 <p className="text-xl font-bold">{m.value}</p>
@@ -209,7 +209,7 @@ export default function LaunchReadinessPage() {
           </div>
 
           <div className="space-y-3">
-            {categories!.map((cat) => (
+            {(categories ?? []).map((cat) => (
               <CategoryCard key={cat.key} cat={cat} />
             ))}
           </div>

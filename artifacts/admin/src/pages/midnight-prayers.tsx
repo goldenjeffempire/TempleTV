@@ -350,7 +350,7 @@ export default function MidnightPrayersPage() {
                     <div key={i} className="h-12 rounded-md bg-muted animate-pulse" />
                   ))}
                 </div>
-              ) : !queueData?.videos.length ? (
+              ) : !queueData?.videos?.length ? (
                 <div className="flex flex-col items-center justify-center py-10 text-center text-muted-foreground gap-3">
                   <Moon className="h-10 w-10 opacity-30" />
                   <div>

@@ -414,7 +414,9 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
       uploadSessions.markCompleted(body.sessionId, row.id);
       // F02: update the persisted DB row so recovery after restart returns
       // the completed state and idempotency works across restarts.
-      void markDbSessionCompleted(body.sessionId, row.id);
+      markDbSessionCompleted(body.sessionId, row.id).catch((e: unknown) => {
+        req.log.warn({ err: e }, "[finalize] markDbSessionCompleted background update failed — idempotency window shortened");
+      });
       // Drop the session shortly after so it doesn't pile up in the
       // admin Operations tab. The idempotency window is small (the
       // client retries within 90 s × 3 attempts = ~5 minutes max).
@@ -422,7 +424,9 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
 
       // Proactively bust the public catalogue cache so the new video
       // appears on the next GET /api/videos without waiting for the TTL.
-      void invalidateVideosCatalogCache();
+      invalidateVideosCatalogCache().catch((e: unknown) => {
+        req.log.warn({ err: e }, "[finalize] invalidateVideosCatalogCache failed — next poll will pick up the new video");
+      });
 
       // Push a fresh broadcast snapshot so any SSE-connected client (admin
       // dashboard, TV, mobile) receives an immediate notification that the

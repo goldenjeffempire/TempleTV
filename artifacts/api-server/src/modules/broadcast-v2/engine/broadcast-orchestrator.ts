@@ -1579,6 +1579,12 @@ class BroadcastOrchestrator extends EventEmitter {
           });
         } else if (now - this.allBlockedSinceMs >= BAD_URL_TTL_MS) {
           this.allBlockedSinceMs = null;
+          // Reset autoSkipAttempts so the next tick can attempt skipping again.
+          // Without this reset, queues with more than 5 items (the cap) would
+          // exhaust autoSkipAttempts in the first blocked cycle and never retry
+          // skipping in subsequent BAD_URL_TTL recovery cycles, leaving the
+          // channel permanently stuck in dead air.
+          this.autoSkipAttempts = 0;
           this.allBlockedRecoveryCycles += 1;
           logger.info(
             { items: this.items.length, recoveryCycles: this.allBlockedRecoveryCycles },
@@ -2147,19 +2153,40 @@ class BroadcastOrchestrator extends EventEmitter {
    *     silently drop healthy content from the broadcast rotation.
    */
   private async probeUrlReachability(url: string): Promise<boolean | null> {
+    // HLS manifests: use GET so we can validate the response body starts with
+    // the required #EXTM3U tag. A HEAD request returns 200 even for empty or
+    // stale-invalidated CDN manifests, causing dead streams to pass the filter
+    // and reach the player — where they trigger a 15 s load-timeout stall.
+    const isHls = /\.m3u8(?:$|\?|#)/i.test(url);
     try {
       const ctrl = new AbortController();
       const timeout = setTimeout(() => ctrl.abort(), 5_000);
       let res: Response;
       try {
-        res = await fetch(url, { method: "HEAD", redirect: "follow", signal: ctrl.signal });
+        res = await fetch(url, {
+          method: isHls ? "GET" : "HEAD",
+          redirect: "follow",
+          signal: ctrl.signal,
+        });
       } finally {
         clearTimeout(timeout);
       }
       // 5xx = transient server error — treat as ambiguous, same as a network timeout.
       // Only 4xx = definitively broken (resource gone, auth denied, SSRF blocked).
       if (res.status >= 500) return null;
-      return res.status < 400;
+      if (res.status >= 400) return false;
+      // For HLS manifests, validate that the response body begins with the
+      // required #EXTM3U header. An empty body or an HTML error page served
+      // with HTTP 200 (common on CDN cache-misses) means the stream is broken.
+      if (isHls) {
+        try {
+          const text = await res.text();
+          return text.trimStart().startsWith("#EXTM3U");
+        } catch {
+          return null; // body read failure — ambiguous
+        }
+      }
+      return true;
     } catch {
       return null; // AbortError, NetworkError, or SSRF block — ambiguous
     }

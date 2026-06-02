@@ -85,7 +85,7 @@ export default function LiveMonitorPage() {
               <div className="space-y-2">{[1,2,3].map(i => <Skeleton key={i} className="h-10 w-full" />)}</div>
             ) : (data?.viewersByPlatform?.length ?? 0) > 0 ? (
               <div className="space-y-3">
-                {data!.viewersByPlatform.map(p => (
+                {data?.viewersByPlatform?.map(p => (
                   <div key={p.platform}>
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-sm capitalize">{p.platform}</span>
@@ -119,7 +119,7 @@ export default function LiveMonitorPage() {
               <div className="space-y-2">{[1,2,3].map(i => <Skeleton key={i} className="h-10 w-full" />)}</div>
             ) : (data?.bitrateLadder?.length ?? 0) > 0 ? (
               <div className="space-y-2">
-                {data!.bitrateLadder.map(tier => (
+                {data?.bitrateLadder?.map(tier => (
                   <div key={tier.label} className="flex items-center justify-between py-1.5 border-b last:border-0">
                     <span className="text-sm">{tier.label}</span>
                     <div className="flex items-center gap-2">

@@ -227,6 +227,7 @@ function AuthenticatedApp() {
         <PanelErrorBoundary>
           <UploadQueuePanel />
         </PanelErrorBoundary>
+        <ErrorBoundary>
         <Suspense fallback={<PageLoader />}>
           <Switch>
             <Route path="/"                 component={Dashboard} />
@@ -268,6 +269,7 @@ function AuthenticatedApp() {
             <Route component={NotFound} />
           </Switch>
         </Suspense>
+        </ErrorBoundary>
       </AppLayout>
     </SSEProvider>
   );
