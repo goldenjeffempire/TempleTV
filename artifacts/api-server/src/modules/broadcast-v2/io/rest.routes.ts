@@ -17,7 +17,7 @@ import {
 import { requireAuth } from "../../../middleware/auth.js";
 import { broadcastService } from "../../broadcast/broadcast.service.js";
 import { scanLibraryAndEnqueue, listMissingFromQueue } from "../../broadcast/auto-enqueue.service.js";
-import { markBadUrl, clearAllBadUrls, getItemsHealth, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, getRecentlySuspended, reEnableAllSuspended } from "../repository/queue.repo.js";
+import { markBadUrl, clearAllBadUrls, getItemsHealth, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, getRecentlySuspended, reEnableAllSuspended, normalizeQueueUrl } from "../repository/queue.repo.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { faststartRecoveryWorker } from "../engine/faststart-recovery.js";
 import { db, schema } from "../../../infrastructure/db.js";
@@ -946,7 +946,7 @@ export async function restRoutes(app: FastifyInstance) {
   // (the transcoder's downloadSourceToTempFile detects http(s):// keys and fetches
   // from the external server directly), then enqueues local HLS transcoding.
   app.post<{ Params: { id: string } }>(
-    "/broadcast-v2/queue/:id/transcode-remote",
+    "/queue/:id/transcode-remote",
     {
       preHandler: requireAuth("admin"),
       config: { rateLimit: { max: 10, timeWindow: "10 minutes" } },
@@ -1032,7 +1032,7 @@ export async function restRoutes(app: FastifyInstance) {
   // for items stuck at the 1800 s upload-time placeholder (ffprobe failed
   // during upload finalize). Returns the old and new duration in seconds.
   app.post<{ Params: { id: string } }>(
-    "/broadcast-v2/queue/:id/reprobe",
+    "/queue/:id/reprobe",
     {
       preHandler: requireAuth("editor"),
       config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
@@ -1049,7 +1049,11 @@ export async function restRoutes(app: FastifyInstance) {
 
       // Prefer HLS master playlist (lighter probe — ffprobe reads only the
       // manifest) over a raw MP4 URL (requires downloading container header).
-      const probeUrl = queueItem.hlsMasterUrl ?? queueItem.localVideoUrl;
+      // normalizeQueueUrl absolutizes relative /api/... paths using the
+      // server's own origin so ffprobe can fetch via HTTP.
+      const rawUrl = queueItem.hlsMasterUrl ?? queueItem.localVideoUrl;
+      if (!rawUrl) return reply.code(400).send({ error: "Queue item has no probeable source URL" });
+      const probeUrl = normalizeQueueUrl(rawUrl) ?? rawUrl;
       if (!probeUrl) return reply.code(400).send({ error: "Queue item has no probeable source URL" });
 
       const oldDurSecs = queueItem.durationSecs;
