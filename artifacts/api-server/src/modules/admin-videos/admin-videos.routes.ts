@@ -624,6 +624,89 @@ export async function adminVideosRoutes(app: FastifyInstance) {
     },
   );
 
+  // ── POST /videos/:id/reset-for-reupload ─────────────────────────────────────
+  // Clears a CORRUPT_SOURCE failure so the admin can re-upload the source file.
+  // Nulls objectPath + localVideoUrl (orphaned corrupt blob stays in storage for
+  // the GC sweep) and resets transcodingStatus → 'none'.  Returns the current
+  // video metadata so the caller can pre-fill the upload form without a second
+  // round-trip.
+  r.post(
+    "/videos/:id/reset-for-reupload",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin"],
+        summary: "Reset a corrupt-source video so its source file can be re-uploaded",
+        params: z.object({ id: z.string().min(1).max(128) }),
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            videoId: z.string(),
+            title: z.string(),
+            category: z.string().nullable(),
+            preacher: z.string().nullable(),
+            description: z.string(),
+          }),
+          400: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req, reply) => {
+      const { id } = req.params;
+
+      const [row] = await db
+        .select({
+          id: videos.id,
+          title: videos.title,
+          description: videos.description,
+          category: videos.category,
+          preacher: videos.preacher,
+          videoSource: videos.videoSource,
+          transcodingErrorCode: videos.transcodingErrorCode,
+          transcodingStatus: videos.transcodingStatus,
+        })
+        .from(videos)
+        .where(eq(videos.id, id))
+        .limit(1);
+
+      if (!row) return reply.code(404).send({ error: `Video not found: ${id}` });
+      if (row.videoSource !== "local") {
+        return reply.code(400).send({ error: "Re-upload only applies to locally-uploaded videos." });
+      }
+      if (row.transcodingErrorCode !== "CORRUPT_SOURCE") {
+        return reply.code(400).send({
+          error: `Video is not in CORRUPT_SOURCE state (current: ${row.transcodingErrorCode ?? "none"}).`,
+        });
+      }
+
+      await db
+        .update(videos)
+        .set({
+          transcodingStatus: "none",
+          transcodingErrorCode: null,
+          transcodingErrorMessage: null,
+          objectPath: null,
+          localVideoUrl: null,
+        })
+        .where(eq(videos.id, id));
+
+      adminEventBus.push("videos-library-updated", { videoId: id, reason: "reset-for-reupload" });
+      req.log.info({ videoId: id }, "admin: corrupt video reset for re-upload");
+
+      return reply.code(200).send({
+        ok: true as const,
+        videoId: id,
+        title: row.title,
+        category: row.category ?? null,
+        preacher: row.preacher ?? null,
+        description: row.description ?? "",
+      });
+    },
+  );
+
   // ── POST /videos/bulk-transcode ───────────────────────────────────────────────
   // Queue every local video that does not yet have a completed HLS master URL.
   // Skips videos where objectPath is null (YouTube imports, broken rows).

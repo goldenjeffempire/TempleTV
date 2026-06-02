@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { formatDistanceToNow, format } from "date-fns";
 import { useSSEEvent } from "@/contexts/sse-context";
+import { uploadQueue } from "@/lib/upload-queue";
 
 const CHANNEL_URL = "https://www.youtube.com/@TEMPLETVJCTM";
 
@@ -598,8 +599,72 @@ function VideoCard({ video }: { video: VideoRow }) {
     ? `https://www.youtube.com/watch?v=${video.youtubeId}`
     : null;
 
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const queryClient = useQueryClient();
+
+  const resetMutation = useMutation({
+    mutationFn: () =>
+      api.post(`/api/v1/admin/videos/${video.id}/reset-for-reupload`) as Promise<{
+        ok: boolean;
+        videoId: string;
+        title: string;
+        category: string | null;
+        preacher: string | null;
+        description: string;
+      }>,
+    onSuccess: (_data, _vars) => {
+      void queryClient.invalidateQueries({ queryKey: ["admin-videos"] });
+    },
+    onError: (err: unknown) => {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to reset video — try again.",
+      );
+    },
+  });
+
+  function handleReuploadClick() {
+    fileInputRef.current?.click();
+  }
+
+  async function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!e.target) return;
+    // Reset so the same file can be re-selected if needed
+    (e.target as HTMLInputElement).value = "";
+    if (!file) return;
+
+    try {
+      const meta = await resetMutation.mutateAsync();
+      uploadQueue.enqueue([{
+        file,
+        title: meta.title,
+        category: meta.category ?? "",
+        preacher: meta.preacher ?? "",
+        description: meta.description,
+        featured: false,
+        priority: 0,
+      }]);
+      toast.success(
+        `"${meta.title}" queued for upload. You can delete this entry once the new upload completes.`,
+        { duration: 6000 },
+      );
+    } catch {
+      // resetMutation.onError already surfaced the toast
+    }
+  }
+
   return (
     <Card className="overflow-hidden group hover:border-primary/40 transition-colors flex flex-col">
+      {/* Hidden file input for re-upload */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="video/*"
+        className="sr-only"
+        tabIndex={-1}
+        aria-hidden="true"
+        onChange={handleFileSelected}
+      />
       {/* Thumbnail */}
       <div className="relative aspect-video bg-black overflow-hidden">
         {video.thumbnailUrl ? (
@@ -621,15 +686,26 @@ function VideoCard({ video }: { video: VideoRow }) {
             {formatDurationSecs(video.duration)}
           </span>
         )}
-        {/* Corrupt-source badge — moov atom absent, re-upload is the only fix */}
+        {/* Corrupt-source badge — clickable to pick a replacement file */}
         {video.transcodingErrorCode === "CORRUPT_SOURCE" && (
-          <div
-            className="absolute top-1.5 left-1.5 flex items-center gap-1 bg-red-600/90 text-white text-[10px] font-medium px-1.5 py-0.5 rounded"
-            title={video.transcodingErrorMessage ?? "Moov atom absent — re-upload the source file to fix"}
+          <button
+            type="button"
+            onClick={handleReuploadClick}
+            disabled={resetMutation.isPending}
+            title={
+              resetMutation.isPending
+                ? "Resetting…"
+                : (video.transcodingErrorMessage ?? "Moov atom absent — click to upload a replacement file")
+            }
+            className="absolute top-1.5 left-1.5 flex items-center gap-1 bg-red-600/90 hover:bg-red-500/95 active:bg-red-700 text-white text-[10px] font-medium px-1.5 py-0.5 rounded transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            <UploadCloud size={10} />
-            Re-upload required
-          </div>
+            {resetMutation.isPending ? (
+              <Loader2 size={10} className="animate-spin" />
+            ) : (
+              <UploadCloud size={10} />
+            )}
+            {resetMutation.isPending ? "Resetting…" : "Re-upload required"}
+          </button>
         )}
         {/* Generic transcoding-failed badge (non-CORRUPT_SOURCE) */}
         {video.transcodingStatus === "failed" && video.transcodingErrorCode !== "CORRUPT_SOURCE" && (
