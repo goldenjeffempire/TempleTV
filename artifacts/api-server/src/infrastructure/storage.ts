@@ -84,6 +84,35 @@ const MAX_PUT_BYTES = 5 * 1024 * 1024 * 1024; // 5 GiB
  */
 const WARN_PUT_BYTES = 5 * 1024 * 1024; // 5 MiB
 
+// ── Active-stream tracking for graceful shutdown ──────────────────────────────
+//
+// `getObject` and `getObjectRange` increment this counter when they return a
+// streaming Readable, and decrement it when that stream emits "close".
+//
+// The shutdown handler must call `signalStorageShutdown()` BEFORE closing the
+// DB pool.  Without this guard, in-flight `streamChunked` generators continue
+// issuing SUBSTRING queries against the closing pool and crash with:
+//   "Error: Cannot use a pool after calling end on the pool"
+//
+// Shutdown sequence (in main.ts):
+//   1. signalStorageShutdown()        ← generators stop at next chunk boundary
+//   2. wait for getActiveStorageStreamCount() === 0  (up to ~15 s)
+//   3. closeDb()                      ← safe — no more DB queries in flight
+let _activeStreamCount = 0;
+let _shuttingDown = false;
+
+/** How many storage read streams are currently open (DB queries in-flight). */
+export function getActiveStorageStreamCount(): number { return _activeStreamCount; }
+
+/**
+ * Signal the storage layer that the process is shutting down.
+ * After this call, `streamChunked` generators exit at the next chunk boundary
+ * instead of issuing another SUBSTRING query, preventing the
+ * "Cannot use a pool after calling end" crash that occurs when the pool is
+ * closed while active streams are still reading.
+ */
+export function signalStorageShutdown(): void { _shuttingDown = true; }
+
 export interface MultipartPart {
   partNumber: number;
   etag: string;
@@ -231,11 +260,10 @@ class DatabaseObjectStorage implements ObjectStorage {
         { key, sizeBytes, threshold: MAX_INLINE_READ_BYTES, chunkSize: CHUNK_READ_BYTES },
         "[storage] using chunked streaming path for large blob",
       );
-      return {
-        body: this.streamChunked(key, sizeBytes),
-        contentType,
-        contentLength: sizeBytes,
-      };
+      const body = this.streamChunked(key, sizeBytes);
+      _activeStreamCount++;
+      body.once("close", () => { _activeStreamCount = Math.max(0, _activeStreamCount - 1); });
+      return { body, contentType, contentLength: sizeBytes };
     }
 
     // Fast path: small blob fits safely in a single query result string.
@@ -251,11 +279,10 @@ class DatabaseObjectStorage implements ObjectStorage {
       ? row.data
       : Buffer.from(row.data as unknown as Uint8Array);
 
-    return {
-      body: Readable.from(buf),
-      contentType: row.content_type,
-      contentLength: buf.length,
-    };
+    const body = Readable.from(buf);
+    _activeStreamCount++;
+    body.once("close", () => { _activeStreamCount = Math.max(0, _activeStreamCount - 1); });
+    return { body, contentType: row.content_type, contentLength: buf.length };
   }
 
   /**
@@ -275,6 +302,12 @@ class DatabaseObjectStorage implements ObjectStorage {
     async function* generate() {
       let offset = 1; // PostgreSQL SUBSTRING is 1-indexed
       while (offset <= totalBytes) {
+        // Stop issuing new SUBSTRING queries once the server is shutting down.
+        // This prevents "Cannot use a pool after calling end on the pool" when
+        // the DB pool is closed before all in-flight streamChunked generators
+        // have finished reading.  The Readable downstream will see an early end
+        // which is benign — the client connection is being torn down anyway.
+        if (_shuttingDown) break;
         const result = await db.execute(sql`
           SELECT SUBSTRING(data FROM ${offset} FOR ${chunkSize}) AS chunk
           FROM storage_blobs
@@ -387,6 +420,7 @@ class DatabaseObjectStorage implements ObjectStorage {
       let offset = pgStart;
       const pgEnd = pgStart + length - 1;
       while (offset <= pgEnd) {
+        if (_shuttingDown) break; // same guard as streamChunked
         const remaining = pgEnd - offset + 1;
         const fetchLen = Math.min(chunkSize, remaining);
         const result = await db.execute(sql`
@@ -406,7 +440,10 @@ class DatabaseObjectStorage implements ObjectStorage {
       }
     }
 
-    return { body: Readable.from(generate()), contentType, contentLength: length };
+    const body = Readable.from(generate());
+    _activeStreamCount++;
+    body.once("close", () => { _activeStreamCount = Math.max(0, _activeStreamCount - 1); });
+    return { body, contentType, contentLength: length };
   }
 
   // ── Multipart upload (emulated via storage_blobs temp rows) ─────────────────

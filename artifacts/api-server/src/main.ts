@@ -522,6 +522,29 @@ async function main() {
         logger.error({ err }, "error closing fastify");
       }
     }
+    // Drain active storage read streams before closing the DB pool.
+    // Without this, in-flight streamChunked generators issue SUBSTRING queries
+    // against the closing pool and crash with "Cannot use a pool after calling
+    // end on the pool".  signalStorageShutdown() tells all generators to stop
+    // at their next chunk boundary; we then wait up to 15 s for the counter to
+    // reach zero before proceeding to pool.end().
+    try {
+      const { signalStorageShutdown, getActiveStorageStreamCount } =
+        await import("./infrastructure/storage.js");
+      signalStorageShutdown();
+      const streamDrainDeadlineMs = Date.now() + 15_000;
+      while (getActiveStorageStreamCount() > 0 && Date.now() < streamDrainDeadlineMs) {
+        await new Promise<void>((r) => setTimeout(r, 100));
+      }
+      const remaining = getActiveStorageStreamCount();
+      if (remaining > 0) {
+        logger.warn({ remaining }, "storage stream drain timeout — forcing pool close");
+      } else {
+        logger.info("all storage streams drained — closing db pool");
+      }
+    } catch {
+      /* storage module not loaded (worker-only mode) — skip */
+    }
     await closeDb().catch((err) => logger.warn({ err }, "error closing db pool during shutdown"));
     await closeRedis().catch((err) => logger.warn({ err }, "error closing redis during shutdown"));
     process.exit(0);

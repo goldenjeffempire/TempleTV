@@ -92,22 +92,33 @@ const PROCESS_BOOTED_AT_MS = Date.now();
 async function autoEnqueueMissingHls(): Promise<{ triggered: number }> {
   const q = schema.broadcastQueueTable;
   const v = schema.videosTable;
-  const rows = await db
-    .select({
-      videoId: q.videoId,
-      localVideoUrl: v.localVideoUrl,
-      hlsMasterUrl: v.hlsMasterUrl,
-      transcodingStatus: v.transcodingStatus,
-    })
-    .from(q)
-    .leftJoin(v, eq(q.videoId, v.id))
-    .where(
-      and(
-        eq(q.isActive, true),
-        isNotNull(q.videoId),
-        isNull(v.hlsMasterUrl),
-      ),
-    );
+  let rows: Array<{
+    videoId: string | null;
+    localVideoUrl: string | null;
+    hlsMasterUrl: string | null;
+    transcodingStatus: string | null;
+  }>;
+  try {
+    rows = await db
+      .select({
+        videoId: q.videoId,
+        localVideoUrl: v.localVideoUrl,
+        hlsMasterUrl: v.hlsMasterUrl,
+        transcodingStatus: v.transcodingStatus,
+      })
+      .from(q)
+      .leftJoin(v, eq(q.videoId, v.id))
+      .where(
+        and(
+          eq(q.isActive, true),
+          isNotNull(q.videoId),
+          isNull(v.hlsMasterUrl),
+        ),
+      );
+  } catch (err) {
+    logger.warn({ err }, "[broadcast-v2] auto-enqueue-missing-hls: DB query failed (non-fatal)");
+    return { triggered: 0 };
+  }
 
   let triggered = 0;
   for (const row of rows) {
@@ -122,7 +133,9 @@ async function autoEnqueueMissingHls(): Promise<{ triggered: number }> {
     });
     // Also boost any already-queued job — enqueueTranscode doesn't change
     // priority on existing queued rows so we need the explicit boost.
-    void boostTranscodePriority(row.videoId, 10);
+    void boostTranscodePriority(row.videoId, 10).catch((err: unknown) => {
+      logger.warn({ err, videoId: row.videoId }, "[broadcast-v2] auto-enqueue-missing-hls: boostTranscodePriority error (non-fatal)");
+    });
     triggered++;
   }
   if (triggered > 0) {
@@ -332,16 +345,21 @@ export async function restRoutes(app: FastifyInstance) {
     if (!Number.isFinite(fromSeq) || fromSeq < 0) {
       return reply.code(400).send({ error: "invalid fromSequence" });
     }
-    const events = await eventLogRepo.replayFrom(broadcastOrchestrator.channelId, fromSeq, 200);
-    return {
-      sequence: broadcastOrchestrator.getSequence(),
-      events: events.map((e) => ({
-        sequence: e.sequence,
-        type: e.eventType,
-        payload: e.payload,
-        createdAt: e.createdAt.toISOString(),
-      })),
-    };
+    try {
+      const events = await eventLogRepo.replayFrom(broadcastOrchestrator.channelId, fromSeq, 200);
+      return {
+        sequence: broadcastOrchestrator.getSequence(),
+        events: events.map((e) => ({
+          sequence: e.sequence,
+          type: e.eventType,
+          payload: e.payload,
+          createdAt: e.createdAt.toISOString(),
+        })),
+      };
+    } catch (err) {
+      req.log.warn({ err, fromSeq }, "[broadcast-v2] rehydrate: event log query failed");
+      return reply.code(503).send({ error: "Event log temporarily unavailable — retry in a moment" });
+    }
   });
 
   // ── Admin commands ───────────────────────────────────────────────────
