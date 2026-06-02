@@ -485,7 +485,9 @@ export async function adminVideosRoutes(app: FastifyInstance) {
         if (removedEpisodes.length > 0) {
           log.info({ id, removedEpisodeCount: removedEpisodes.length }, "video-delete: removed orphan series_episodes");
         }
-      })();
+      })().catch((err) =>
+        req.log.warn({ err, id }, "video-delete: unexpected error in cleanup IIFE (non-fatal)"),
+      );
 
       return { ok: true as const };
     },

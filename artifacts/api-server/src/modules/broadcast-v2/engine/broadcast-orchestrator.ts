@@ -2454,7 +2454,9 @@ class BroadcastOrchestrator extends EventEmitter {
           await this.skip();
         }
       }
-    })();
+    })().catch((err) =>
+      logger.warn({ err }, "[broadcast-v2] current-item probe: unexpected error in probe IIFE (non-fatal)"),
+    );
   }
 
   /**
