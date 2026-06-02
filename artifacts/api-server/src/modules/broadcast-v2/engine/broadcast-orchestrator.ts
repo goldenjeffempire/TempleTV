@@ -2305,7 +2305,9 @@ class BroadcastOrchestrator extends EventEmitter {
             logger.warn({ err, itemId: item.id }, "[broadcast-v2] YouTube probe: background reload after auto-suspend failed (non-fatal)");
           });
         }
-      })();
+      })().catch((err: unknown) => {
+        logger.warn({ err, itemId: item.id, url }, "[broadcast-v2] YouTube probe IIFE crashed unexpectedly (non-fatal)");
+      });
       return;
     }
 
@@ -2329,7 +2331,9 @@ class BroadcastOrchestrator extends EventEmitter {
           logger.warn({ err, itemId: item.id }, "[broadcast-v2] proactive probe: background reload after auto-suspend failed (non-fatal)");
         });
       }
-    })();
+    })().catch((err: unknown) => {
+      logger.warn({ err, itemId: item.id, url }, "[broadcast-v2] URL reachability probe IIFE crashed unexpectedly (non-fatal)");
+    });
   }
 
   /**
