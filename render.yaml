@@ -210,7 +210,7 @@ services:
       pnpm run verify:render && \
       pnpm --filter @workspace/db run push-force && \
       pnpm --filter @workspace/api-server run build
-    startCommand: pnpm --filter @workspace/api-server run start:prod
+    startCommand: pnpm --filter @workspace/api-server run start:render-free
 
     # ── Health check ───────────────────────────────────────────────────────
     # Returns 200 ok / 503 starting / 503 draining / 503 db_down.
@@ -267,11 +267,11 @@ services:
       # exceeded the 220 MiB cap making GC ineffective → OOM crash loop.
       # `--max-http-header-size=16384` accommodates Render's LB headers.
       #
-      # Belt-and-suspenders: the same flags are hardcoded into the
-      # `start:prod` npm script in artifacts/api-server/package.json.
-      # Command-line flags take precedence over NODE_OPTIONS, so the cap
-      # is enforced even if a Render dashboard override clears NODE_OPTIONS
-      # (which was the root cause of the May 2026 startup OOM crash loop).
+      # IMPORTANT: NODE_OPTIONS is only a hint here. Node CLI flags set in
+      # the start script (start:prod used to use --max-old-space-size=460)
+      # take precedence over NODE_OPTIONS, silently overriding this cap.
+      # The startCommand now uses `start:render-free` (256 MiB) instead of
+      # `start:prod` (460 MiB) to ensure the free-tier heap cap is enforced.
       - key: NODE_OPTIONS
         value: "--max-old-space-size=256 --max-http-header-size=16384"
 
@@ -280,11 +280,16 @@ services:
       - key: MEMORY_WARN_RSS_MB
         value: "380"
 
-      # Layer 4: in-process self-restart at 430 MiB RSS. Graceful drain +
-      # restart well below the OOM-killer threshold (512 MiB), avoiding an
-      # uncatchable SIGKILL. Render auto-respawns the free-tier instance.
+      # Layer 4: in-process self-restart at 480 MiB RSS. Graceful drain +
+      # restart well below the 512 MiB OOM-killer threshold (~32 MiB margin).
+      # Raised from 430 → 480 (June 2026): the 430 threshold was below the
+      # normal warm RSS of a running process (~450 MB with 256 MiB heap +
+      # glibc arenas + pg pool + pino buffers), causing a restart loop every
+      # ~5 minutes. 480 allows the process to run at steady-state without
+      # triggering, while still catching genuine memory leaks before hitting
+      # the OOM-killer at 512 MiB.
       - key: MEMORY_RESTART_RSS_MB
-        value: "430"
+        value: "480"
 
       # ── Graceful shutdown timing ───────────────────────────────────────────
       # SIGTERM (rolling deploy / scale-in) starts a two-phase drain:

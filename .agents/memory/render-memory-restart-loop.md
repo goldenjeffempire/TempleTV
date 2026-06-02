@@ -59,6 +59,19 @@ Final log line (hidden until re-read): `"Cannot use a pool after calling end on 
 
 With `HLS_MAX_CONCURRENT=50` the Buffer peak is ~400 MiB; combined with V8 heap + shared libs (~300 MB baseline), a comfortable ceiling is 600–700 MB.
 
+## Second restart loop — June 2026 (start:prod overriding NODE_OPTIONS)
+
+**Symptom:** Same `consecutiveRssOverRestart: 10` restart pattern, RSS=548 MB, heapUsed=205 MB on the Render free tier (512 MiB container).
+
+**Root cause:** `render.yaml` set `NODE_OPTIONS=--max-old-space-size=256` but `startCommand` was `pnpm ... run start:prod`. The `start:prod` npm script hardcodes `--max-old-space-size=460` as a CLI flag, which takes precedence over `NODE_OPTIONS`. V8 heap limit was silently 460 MB, not 256 MB. With 460 MB heap + glibc arenas + pg pool, RSS peaked at ~548 MB — well above the 430 MB restart threshold — causing a 5-minute restart loop.
+
+**Fix applied (June 2026):**
+1. `artifacts/api-server/package.json`: added `start:render-free` script with `--max-old-space-size=256` (does NOT override to 460)
+2. `render.yaml` `startCommand`: changed from `start:prod` → `start:render-free`
+3. `render.yaml` `MEMORY_RESTART_RSS_MB`: raised 430 → 480 (steady-state RSS with 256 MB heap is ~380–430 MB; 480 gives headroom without restarting normally, still catches leaks before Render's 512 MB OOM-killer)
+
+**Key invariant:** On Render free tier, always use `start:render-free` (256 MB heap). CLI flags in the npm script silently override `NODE_OPTIONS` — `NODE_OPTIONS` alone is NOT sufficient to cap the heap.
+
 ## How to diagnose future incidents
 
 After this fix the CRITICAL log will include:
