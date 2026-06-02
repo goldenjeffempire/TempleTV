@@ -29,7 +29,7 @@
 
 import { Expo, type ExpoPushMessage, type ExpoPushTicket } from "expo-server-sdk";
 import webpush from "web-push";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 import { env } from "../../config/env.js";
@@ -298,7 +298,14 @@ export async function deliverPushNotification(payload: PushPayload): Promise<voi
     );
     await db
       .update(schema.notificationsTable)
-      .set({ status: "sent", sentCount: expoCount + webCount, attempts: 1 })
+      .set({
+        status: "sent",
+        sentCount: expoCount + webCount,
+        // Increment atomically rather than hardcoding 1 — this function may be
+        // called after the scheduled dispatcher has already incremented attempts
+        // on earlier failed attempts, so overwriting with 1 would lose that history.
+        attempts: sql`${schema.notificationsTable.attempts} + 1`,
+      })
       .where(eq(schema.notificationsTable.id, payload.notificationId));
   } catch (err) {
     logger.error({ err, notificationId: payload.notificationId }, "[push-delivery] delivery failed");
@@ -307,7 +314,7 @@ export async function deliverPushNotification(payload: PushPayload): Promise<voi
       .set({
         status: "failed",
         lastError: err instanceof Error ? err.message.slice(0, 500) : String(err).slice(0, 500),
-        attempts: 1,
+        attempts: sql`${schema.notificationsTable.attempts} + 1`,
       })
       .where(eq(schema.notificationsTable.id, payload.notificationId))
       .catch(() => { /* best effort */ });

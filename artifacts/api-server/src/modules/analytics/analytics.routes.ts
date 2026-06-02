@@ -62,8 +62,13 @@ export async function analyticsRoutes(app: FastifyInstance) {
 
       try {
         if (eventType === "started") {
-          await Promise.all([
-            db
+          // Wrapped in a transaction so session insert and viewCount increment
+          // are atomic — a partial failure (insert OK, update fails) would leave
+          // the session without a corresponding viewCount increment, skewing
+          // analytics. onConflictDoNothing() on the insert means replayed
+          // "started" events (client retry) do not inflate the count.
+          await db.transaction(async (tx) => {
+            await tx
               .insert(sessions)
               .values({
                 id: nanoid(),
@@ -75,13 +80,13 @@ export async function analyticsRoutes(app: FastifyInstance) {
                 startedAt: new Date(),
                 lastHeartbeatAt: new Date(),
               })
-              .onConflictDoNothing(),
+              .onConflictDoNothing();
 
-            db
+            await tx
               .update(videos)
               .set({ viewCount: sql`${videos.viewCount} + 1` })
-              .where(eq(videos.id, videoId)),
-          ]);
+              .where(eq(videos.id, videoId));
+          });
         } else if (eventType === "heartbeat") {
           await db
             .update(sessions)

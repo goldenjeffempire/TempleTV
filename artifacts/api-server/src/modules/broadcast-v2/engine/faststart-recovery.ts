@@ -53,6 +53,12 @@ const logger = rootLogger.child({ service: "faststart-recovery" });
 const MAX_ATTEMPTS = 3;
 const attemptCounts = new Map<string, number>();
 const inFlight = new Set<string>();
+// Tracks when each videoId was added to inFlight so stale entries (hung ffmpeg
+// jobs that never resolve) can be evicted.  Without this TTL, a zombie ffmpeg
+// process that never exits would block all future recovery attempts for that
+// video until the process is restarted.
+const inFlightSince = new Map<string, number>();
+const INFLIGHT_TTL_MS = 30 * 60_000; // 30 minutes — > faststart internal timeout
 
 interface RecoveryStats {
   enabled: boolean;
@@ -175,6 +181,21 @@ async function findCandidates(): Promise<Candidate[]> {
 }
 
 async function dispatchOne(c: Candidate): Promise<boolean> {
+  // Evict stale inFlight entries before the membership check — a zombie ffmpeg
+  // that never exits (or an unhandled rejection that skipped the finally block)
+  // would otherwise block this video indefinitely until process restart.
+  const now = Date.now();
+  for (const [id, addedAt] of inFlightSince) {
+    if (now - addedAt > INFLIGHT_TTL_MS) {
+      inFlight.delete(id);
+      inFlightSince.delete(id);
+      logger.warn(
+        { videoId: id },
+        "faststart-recovery: evicted stale inFlight entry (> 30 min) — likely hung ffmpeg job; allowing retry",
+      );
+    }
+  }
+
   if (inFlight.has(c.videoId)) return false;
   const prev = attemptCounts.get(c.videoId) ?? 0;
   if (prev >= MAX_ATTEMPTS) {
@@ -196,6 +217,7 @@ async function dispatchOne(c: Candidate): Promise<boolean> {
     return false;
   }
   inFlight.add(c.videoId);
+  inFlightSince.set(c.videoId, Date.now());
   attemptCounts.set(c.videoId, prev + 1);
   stats.totalDispatched += 1;
   logger.info(
@@ -226,6 +248,7 @@ async function dispatchOne(c: Candidate): Promise<boolean> {
     );
   } finally {
     inFlight.delete(c.videoId);
+    inFlightSince.delete(c.videoId);
   }
   return true;
 }

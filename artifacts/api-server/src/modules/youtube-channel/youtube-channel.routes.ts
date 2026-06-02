@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { env } from "../../config/env.js";
 import { logger } from "../../infrastructure/logger.js";
+import { trackQuota } from "../youtube-sync/youtube-sync.service.js";
 
 /**
  * YouTube channel content proxy for @TEMPLETVJCTM.
@@ -51,6 +52,7 @@ let xmlCacheExpiresAt = 0;
 async function getUploadsPlaylistId(apiKey: string): Promise<string> {
   const url = `${YT_API_BASE}/channels?part=contentDetails&id=${CHANNEL_ID}&key=${apiKey}`;
   const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+  trackQuota("channels.list", 1);
   if (!res.ok) throw new Error(`channels API responded ${res.status}`);
   const data = await res.json() as {
     items?: { contentDetails: { relatedPlaylists: { uploads: string } } }[]
@@ -86,6 +88,7 @@ async function getAllPlaylistItems(
     const res = await fetch(`${YT_API_BASE}/playlistItems?${params}`, {
       signal: AbortSignal.timeout(12_000),
     });
+    trackQuota("playlistItems.list", 1);
     if (!res.ok) throw new Error(`playlistItems API responded ${res.status}`);
     const data = await res.json() as {
       nextPageToken?: string;
@@ -153,6 +156,7 @@ async function getVideoDetails(
       const res = await fetch(`${YT_API_BASE}/videos?${params}`, {
         signal: AbortSignal.timeout(12_000),
       });
+      trackQuota("videos.list", 1);
       if (!res.ok) continue;
       const data = await res.json() as {
         items?: {

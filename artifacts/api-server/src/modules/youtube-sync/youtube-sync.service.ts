@@ -102,7 +102,7 @@ function todayUtc(): string {
 }
 let quotaResetAt = nextMidnightUtc();
 
-function trackQuota(operation: string, cost: number): void {
+export function trackQuota(operation: string, cost: number): void {
   const now = new Date();
   if (now >= quotaResetAt) {
     quotaUsed = 0;

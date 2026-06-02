@@ -20,8 +20,10 @@ export async function youtubeLiveRoutes(app: FastifyInstance) {
 
   /**
    * Root live-status — consumed by mobile youtube.ts checkLiveViaApiServer().
+   * Rate-limited to 120 req/min (= 2 req/s) — generous enough for all clients
+   * polling at ≥30 s intervals while blocking accidental polling storms.
    */
-  app.get("/", async () => {
+  app.get("/", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async () => {
     const s = ytPoller.getState();
     return {
       isLive: s.isLive,
@@ -36,8 +38,9 @@ export async function youtubeLiveRoutes(app: FastifyInstance) {
   /**
    * Polled-status sibling of /events. TV app's useLiveSync polls this
    * every 30 s as a fallback when SSE drops.
+   * Rate-limited to 120 req/min — same budget as the root endpoint.
    */
-  app.get("/status", async () => {
+  app.get("/status", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async () => {
     const s = ytPoller.getState();
     return {
       isLive: s.isLive,

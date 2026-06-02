@@ -57,12 +57,23 @@ const routeAggregates = new Map<string, RouteAggregate>();
 // routeAggregates entries are filtered on read (getSlowRequestsSnapshot uses
 // the BUFFER_MAX_AGE_MS cutoff) but never deleted from the Map itself. On a
 // 24/7 server with varied traffic patterns, stale entries accumulate
-// indefinitely. This sweep runs every BUFFER_MAX_AGE_MS and removes routes
-// whose last slow request fell outside the retention window.
+// indefinitely. This sweep runs every BUFFER_MAX_AGE_MS and:
+//   1. Removes routes whose last slow request fell outside the retention window.
+//   2. Caps total/totalDurationMs at 10k samples to prevent floating-point
+//      precision drift on long-running processes — once the cap is hit the
+//      counters are reset to a single representative entry that preserves the
+//      current rolling average so the displayed averageMs stays accurate.
+const AGGREGATE_SAMPLE_CAP = 10_000;
 setInterval(() => {
   const cutoff = Date.now() - BUFFER_MAX_AGE_MS;
   for (const [key, agg] of routeAggregates) {
-    if (agg.lastAt < cutoff) routeAggregates.delete(key);
+    if (agg.lastAt < cutoff) {
+      routeAggregates.delete(key);
+    } else if (agg.total > AGGREGATE_SAMPLE_CAP) {
+      const avg = Math.round(agg.totalDurationMs / agg.total);
+      agg.total = 1;
+      agg.totalDurationMs = avg;
+    }
   }
 }, BUFFER_MAX_AGE_MS).unref?.();
 registerNamedStore("slow-request-route-aggregates", () => routeAggregates.size);

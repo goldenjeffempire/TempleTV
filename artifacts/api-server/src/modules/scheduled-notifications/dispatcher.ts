@@ -55,6 +55,7 @@ const scheduled = schema.scheduledNotificationsTable;
  */
 class ScheduledNotificationDispatcher {
   private timer: NodeJS.Timeout | null = null;
+  private stuckInterval: NodeJS.Timeout | null = null;
   private running = false;
   private stopped = false;
 
@@ -96,6 +97,14 @@ class ScheduledNotificationDispatcher {
     this.stopped = false;
     // Run stuck-sending recovery once at startup before the first tick.
     void this.resetStuckSending();
+    // Also run it periodically so rows that get stuck during a long-lived
+    // process (e.g., an unhandled rejection that bypassed the finally block)
+    // are reclaimed without waiting for a process restart.
+    this.stuckInterval = setInterval(() => {
+      void this.resetStuckSending();
+    }, 10 * 60_000); // every 10 minutes
+    this.stuckInterval.unref?.();
+
     const tick = () => {
       if (this.stopped) return;
       void this.runOnce().finally(() => {
@@ -118,6 +127,10 @@ class ScheduledNotificationDispatcher {
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
+    }
+    if (this.stuckInterval) {
+      clearInterval(this.stuckInterval);
+      this.stuckInterval = null;
     }
     logger.info("scheduled-notification dispatcher stopped");
   }

@@ -180,6 +180,14 @@ class YtLivePoller extends EventEmitter {
     const channelId = ytChannelId();
     if (apiKey && channelId) {
       result = await this.pollApi();
+      // If the API returned an error (403 quota exhausted, invalid key, rate
+      // limit, or any network failure), fall back to the RSS feed so live
+      // detection remains accurate even when the Data API v3 key is temporarily
+      // or permanently unavailable. RSS is quota-free and returns live status
+      // via yt:liveBroadcastContent in the XML feed.
+      if (result.detectionMethod === "api-error") {
+        result = await this.pollRss();
+      }
     } else if (channelId) {
       result = await this.pollRss();
     } else {
