@@ -526,20 +526,29 @@ async function main() {
     // Without this, in-flight streamChunked generators issue SUBSTRING queries
     // against the closing pool and crash with "Cannot use a pool after calling
     // end on the pool".  signalStorageShutdown() tells all generators to stop
-    // at their next chunk boundary; we then wait up to 15 s for the counter to
-    // reach zero before proceeding to pool.end().
+    // at their next chunk boundary; we then wait up to streamDrainMs for the
+    // counter to reach zero before proceeding to pool.end().
+    //
+    // Uses SHUTDOWN_DRAIN_MS (same env var as SSE drain) with a 5 s floor so
+    // a very low SHUTDOWN_DRAIN_MS doesn't truncate in-flight segment reads.
+    // Default: max(5 000, SHUTDOWN_DRAIN_MS) = 5 s dev / 10 s production.
     try {
       const { signalStorageShutdown, getActiveStorageStreamCount } =
         await import("./infrastructure/storage.js");
       signalStorageShutdown();
-      const streamDrainDeadlineMs = Date.now() + 15_000;
+      const streamDrainMs = Math.max(env.SHUTDOWN_DRAIN_MS, 5_000);
+      const streamDrainDeadlineMs = Date.now() + streamDrainMs;
+      const activeAtSignal = getActiveStorageStreamCount();
+      if (activeAtSignal > 0) {
+        logger.info({ active: activeAtSignal, streamDrainMs }, "waiting for storage streams to drain");
+      }
       while (getActiveStorageStreamCount() > 0 && Date.now() < streamDrainDeadlineMs) {
         await new Promise<void>((r) => setTimeout(r, 100));
       }
       const remaining = getActiveStorageStreamCount();
       if (remaining > 0) {
-        logger.warn({ remaining }, "storage stream drain timeout — forcing pool close");
-      } else {
+        logger.warn({ remaining, streamDrainMs }, "storage stream drain timeout — forcing pool close");
+      } else if (activeAtSignal > 0) {
         logger.info("all storage streams drained — closing db pool");
       }
     } catch {

@@ -9,6 +9,8 @@ description: Pattern for preventing "Cannot use a pool after calling end on the 
 2. `closeDb()` calls `pool.end()` — pool immediately rejects new queries
 3. In-flight generators are still awaiting their next `db.execute()` — crash: `"Cannot use a pool after calling end on the pool"`
 
+Confirmed in Render production log line 50 (2026-06-02T13:05:11): `_DrizzleQueryError` from `storage.ts:278:24` inside `generate()` during the very SIGTERM that triggered the restart cycle.
+
 ## The fix (implemented)
 **storage.ts** — two module-level additions:
 ```ts
@@ -25,11 +27,14 @@ export function signalStorageShutdown(): void { _shuttingDown = true; }
 ```ts
 const { signalStorageShutdown, getActiveStorageStreamCount } = await import("./infrastructure/storage.js");
 signalStorageShutdown();
-const deadline = Date.now() + 15_000;
+const streamDrainMs = Math.max(env.SHUTDOWN_DRAIN_MS, 5_000);   // min 5 s floor
+const deadline = Date.now() + streamDrainMs;
 while (getActiveStorageStreamCount() > 0 && Date.now() < deadline) {
   await new Promise<void>((r) => setTimeout(r, 100));
 }
 ```
+
+Uses `env.SHUTDOWN_DRAIN_MS` (same var as SSE drain) with a 5 s floor. Deployment sets `SHUTDOWN_DRAIN_MS=10000`, giving a 10 s window. Logs `{ active, streamDrainMs }` at signal time only when there are active streams.
 
 ## HLS_MAX_CONCURRENT
 Lowered default 200 → 50 in `env.ts`.  

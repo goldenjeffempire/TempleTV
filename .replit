@@ -47,7 +47,7 @@ outputType = "console"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 pnpm install --ignore-scripts && pnpm --filter @workspace/db run push && pnpm --filter @workspace/api-server run build && MALLOC_ARENA_MAX=2 PORT=8080 MOBILE_DEV_PORT=18115 node --max-old-space-size=460 --enable-source-maps --import ./artifacts/api-server/dist/instrument.mjs ./artifacts/api-server/dist/index.mjs"
+args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 pnpm install --ignore-scripts && pnpm --filter @workspace/db run push && pnpm --filter @workspace/api-server run build && MALLOC_ARENA_MAX=2 PORT=8080 MOBILE_DEV_PORT=18115 node --max-old-space-size=460 --expose-gc --enable-source-maps --import ./artifacts/api-server/dist/instrument.mjs ./artifacts/api-server/dist/index.mjs"
 waitForPort = 8080
 
 [agent]
