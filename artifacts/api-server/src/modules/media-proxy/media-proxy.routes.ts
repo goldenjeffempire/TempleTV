@@ -122,6 +122,11 @@ export async function mediaProxyRoutes(app: FastifyInstance) {
         return reply.code(403).send({ error: "Target host not in proxy allowlist" });
       }
 
+      // Extract host once for all subsequent log calls. Never log the full URL
+      // which may contain signed tokens or other credentials in the query-string.
+      let targetHost = "(unparseable)";
+      try { targetHost = new URL(targetUrl).host; } catch { /* noop */ }
+
       // Forward Range header so MP4 seeking works (206 partial content).
       const rangeHeader =
         typeof req.headers["range"] === "string" ? req.headers["range"] : undefined;
@@ -169,12 +174,8 @@ export async function mediaProxyRoutes(app: FastifyInstance) {
         clearTimeout(connectionTimeout);
         // Log only the host — never the full URL which may contain signed
         // tokens or other credentials in the query-string.
-        let fetchErrHost = targetHost; // already extracted above during allowlist check
-        if (!fetchErrHost) {
-          try { fetchErrHost = new URL(targetUrl).host; } catch { fetchErrHost = "(unparseable)"; }
-        }
         logger.warn(
-          { targetHost: fetchErrHost, err: String(err) },
+          { targetHost, err: String(err) },
           "[media-proxy] upstream fetch failed",
         );
         return reply.code(502).send({ error: "Upstream unavailable" });

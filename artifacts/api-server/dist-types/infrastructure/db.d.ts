@@ -114,6 +114,24 @@ export declare function ensureRuntimeIndexes(): Promise<void>;
  */
 export declare function ensureUserSchemaColumns(): Promise<void>;
 /**
+ * Mark youtube_sync_log entries stuck at status='running' as 'interrupted'.
+ *
+ * When the API process is killed (SIGKILL, OOM, container restart) while a
+ * sync is in progress the finally-block in syncYouTubeChannel() cannot run,
+ * leaving the row with status='running' and all stat columns NULL forever.
+ * The admin "Sync" panel shows those rows as still in-progress, which is
+ * misleading and can also block manual re-triggers if the service-level
+ * semaphore is not reset.
+ *
+ * Recovery rule: any 'running' row older than 5 minutes at startup must have
+ * been interrupted — a healthy sync never takes that long on this channel
+ * (<1 min in production). We mark them 'interrupted' with a note so operators
+ * can see exactly which runs were cut short and when.
+ *
+ * Called once at boot, non-blocking (errors are swallowed).
+ */
+export declare function recoverStaleSyncLogs(): Promise<void>;
+/**
  * Periodic stale-data cleanup — removes expired/stale rows that accumulate
  * over time in high-churn tables and would never be swept by application logic.
  *

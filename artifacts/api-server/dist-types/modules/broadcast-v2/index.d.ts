@@ -28,10 +28,23 @@ export declare function getBroadcastV2BootStatus(): {
 export declare function ensureBroadcastV2Started(): Promise<void>;
 /**
  * Graceful shutdown for the broadcast-v2 module.
- * 1. Flushes the current playback position checkpoint to the database so
- *    restarts resume from the exact position rather than the last periodic
- *    checkpoint boundary (up to 5 s stale without this flush).
- * 2. Closes the Redis fan-out subscriber and stops the leader renewal timer.
+ *
+ * Order of operations matters:
+ *  1. Cancel pending boot/fanout retry timers so they never fire after
+ *     shutdown begins (prevents a re-init race during app.close()).
+ *  2. Force-close all open SSE streams so main.ts drain loop completes
+ *     promptly (each connection is in sseCounter — ending them decrements
+ *     the counter so the drain loop exits cleanly instead of timing out).
+ *  3. Stop all supervised workers (media-scanner, orphan-cleanup,
+ *     queue-validator, faststart-recovery, viewer-count-updater) — each
+ *     runs on a timer and may hold open DB connections.
+ *  4. Stop the orchestrator — clears its 7 internal timers (tick,
+ *     checkpoint, trim, keepAlive, selfHealEmpty, selfHealStale,
+ *     currentItemProbe) so the event loop can drain.
+ *  5. Flush the final checkpoint so restarts resume from the exact
+ *     playback position rather than the last periodic boundary.
+ *  6. Close the Redis fan-out subscriber and leader renewal timer.
+ *
  * Called from main.ts shutdown handler before app.close().
  */
 export declare function stopBroadcastV2(): Promise<void>;

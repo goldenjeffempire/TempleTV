@@ -35,7 +35,9 @@ export declare function clearJobsByStatus(status: "done" | "failed" | "cancelled
 /**
  * Re-arm ALL failed transcoding jobs whose source blob is still available.
  * Returns the number of jobs reset to "queued".
- * Safe to call concurrently — uses a single UPDATE statement.
+ * Wrapped in a transaction so the jobs and managed_videos tables are updated
+ * atomically — a crash between the two updates cannot leave jobs "queued"
+ * while their videos still report "failed" (or vice-versa).
  */
 export declare function retryAllFailed(): Promise<number>;
 export declare function retryJob(id: string): Promise<boolean>;

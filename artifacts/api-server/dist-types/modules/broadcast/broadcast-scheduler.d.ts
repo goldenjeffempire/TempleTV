@@ -13,6 +13,8 @@
 export declare const broadcastScheduler: {
     start(): void;
     stop(): void;
+    /** Validates and cleans up the scheduler on process exit. */
+    shutdown(): Promise<void>;
     /** Force an immediate tick (e.g., after admin state change). */
     runNow(): Promise<void>;
 };

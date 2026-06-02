@@ -51,7 +51,7 @@ export function extractPgError(err: unknown): PgErrorDetail {
 
   let node: unknown = err;
   while (node instanceof Error) {
-    const n = node as Record<string, unknown>;
+    const n = node as unknown as Record<string, unknown>;
     // node-postgres attaches SQLSTATE as `code`; Drizzle's wrapper does not.
     if (typeof n.code === "string" && /^[0-9A-Z]{5}$/.test(n.code)) {
       return {

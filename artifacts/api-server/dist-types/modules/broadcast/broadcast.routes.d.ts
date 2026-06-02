@@ -21,4 +21,5 @@ export type ReactionType = "amen" | "fire" | "hallelujah";
  * HTTP call.
  */
 export declare function snapshotToCurrentResult(snap: BroadcastSnapshot, active?: ActiveOverrideEntry | null): BroadcastCurrentResultDto;
+export declare function closeAllBroadcastSseSessions(): void;
 export declare function broadcastRoutes(app: FastifyInstance): Promise<void>;

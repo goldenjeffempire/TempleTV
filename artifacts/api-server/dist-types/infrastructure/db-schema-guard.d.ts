@@ -1,4 +1,67 @@
 /**
+ * Structured representation of a PostgreSQL error as surfaced by node-postgres
+ * and optionally wrapped by Drizzle's `_DrizzleQueryError`.
+ *
+ * All fields are optional — a given error may carry only a subset of them
+ * depending on whether the DB server included them in its ErrorResponse wire
+ * message (protocol field availability varies by statement type).
+ */
+export interface PgErrorDetail {
+    /** SQLSTATE code, e.g. "23505" (unique_violation), "42703" (undefined_column) */
+    sqlstate?: string;
+    /** PostgreSQL error severity, e.g. "ERROR", "FATAL" */
+    severity?: string;
+    /** Constraint name for constraint-violation errors */
+    constraint?: string;
+    /** Column name for NOT NULL / type errors */
+    column?: string;
+    /** Table name associated with the error */
+    table?: string;
+    /** PostgreSQL `DETAIL` field — human-readable extra context */
+    detail?: string;
+    /** PostgreSQL `HINT` field */
+    hint?: string;
+    /** Full error message from the innermost node in the error chain */
+    message?: string;
+}
+/**
+ * Walk the Error cause chain (Drizzle wraps pg errors in `_DrizzleQueryError`)
+ * and extract PostgreSQL-specific fields from the first node that carries a
+ * SQLSTATE `code` property.
+ *
+ * Usage in structured log calls:
+ *
+ *   logger.warn(
+ *     { youtubeId, pgErr: extractPgError(err), err },
+ *     "youtube-sync: row failed",
+ *   );
+ *
+ * The `err` field is kept alongside so pino serialises the full stack trace.
+ * `pgErr` provides the fast-lookup fields (sqlstate, constraint, detail)
+ * without having to grep through truncated message strings.
+ */
+export declare function extractPgError(err: unknown): PgErrorDetail;
+/**
+ * Return true when the PostgreSQL SQLSTATE indicates the operation should be
+ * retried (transient infrastructure error), false when it is a permanent
+ * application-level failure (constraint violation, type mismatch, etc.).
+ *
+ * Uses SQLSTATE codes rather than message-string matching so the classification
+ * is not confused by coincidental keyword matches (e.g. a column named
+ * "connection_id" producing a false "connection" hit).
+ *
+ * SQLSTATE classes:
+ *   08xxx — Connection exceptions
+ *   40001 — Serialization failure (REPEATABLE READ / SERIALIZABLE)
+ *   40P01 — Deadlock detected
+ *   57014 — Query canceled (lock timeout, statement timeout)
+ *   53xxx — Insufficient resources (too_many_connections = 53300)
+ *
+ * Everything else (23xxx constraint violations, 42xxx syntax/object-not-found,
+ * 22xxx data exceptions, etc.) is permanent — retrying will not help.
+ */
+export declare function isTransientPgError(err: unknown): boolean;
+/**
  * Walk the Drizzle/pg error chain to detect PostgreSQL SQLSTATE 42703 ("undefined_column").
  *
  * Drizzle wraps the raw `pg` error in `_DrizzleQueryError`, so the SQLSTATE code lives on
@@ -497,4 +560,6 @@ export declare const SAFE_VIDEO_COLS: {
     readonly metadataLocked: import("drizzle-orm").SQL<boolean>;
     readonly faststartApplied: import("drizzle-orm").SQL<boolean>;
     readonly broadcastOnly: import("drizzle-orm").SQL<boolean>;
+    readonly transcodingErrorMessage: import("drizzle-orm").SQL<string | null>;
+    readonly transcodingErrorCode: import("drizzle-orm").SQL<string | null>;
 };
