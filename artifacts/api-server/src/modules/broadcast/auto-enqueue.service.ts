@@ -77,6 +77,9 @@ export async function enqueueIfMissing(opts: {
         youtubeId: videosTable.youtubeId,
         localVideoUrl: videosTable.localVideoUrl,
         hlsMasterUrl: videosTable.hlsMasterUrl,
+        transcodingStatus: videosTable.transcodingStatus,
+        faststartApplied: videosTable.faststartApplied,
+        transcodingErrorCode: videosTable.transcodingErrorCode,
       })
       .from(videosTable)
       .where(eq(videosTable.id, opts.videoId))
@@ -208,6 +211,9 @@ export async function scanLibraryAndEnqueue(opts: {
         youtubeId: videosTable.youtubeId,
         localVideoUrl: videosTable.localVideoUrl,
         hlsMasterUrl: videosTable.hlsMasterUrl,
+        transcodingStatus: videosTable.transcodingStatus,
+        faststartApplied: videosTable.faststartApplied,
+        transcodingErrorCode: videosTable.transcodingErrorCode,
       })
       .from(videosTable)
       .where(
@@ -220,6 +226,17 @@ export async function scanLibraryAndEnqueue(opts: {
             isNotNull(videosTable.hlsMasterUrl),
             isNotNull(videosTable.localVideoUrl),
           ),
+          // Pre-filter: exclude unrecoverable corrupt uploads at the SQL level
+          // to avoid wasting a roundtrip per row inside isPlayableForBroadcast.
+          // CORRUPT_SOURCE means the moov atom was absent — re-upload required.
+          sql`(${videosTable.transcodingErrorCode} IS NULL OR ${videosTable.transcodingErrorCode} != 'CORRUPT_SOURCE')`,
+          // Pre-filter: exclude raw MP4s that are known-unplayable (failed
+          // transcoding + faststart never applied + no HLS manifest).
+          sql`NOT (
+            ${videosTable.transcodingStatus} = 'failed'
+            AND (${videosTable.faststartApplied} = false OR ${videosTable.faststartApplied} IS NULL)
+            AND ${videosTable.hlsMasterUrl} IS NULL
+          )`,
           // NOT EXISTS subquery — keeps the JOIN cheap and the candidate set
           // small; the dedupe inside enqueueIfMissing is the authoritative
           // backstop for the race where two concurrent scans run at once.
@@ -302,16 +319,38 @@ function isPlayableForBroadcast(row: {
   youtubeId: string | null;
   localVideoUrl: string | null;
   hlsMasterUrl: string | null;
+  transcodingStatus?: string | null;
+  faststartApplied?: boolean | null;
+  transcodingErrorCode?: string | null;
 }): boolean {
   // YouTube is library-only — excluded from broadcast entirely.
   if (row.videoSource === "youtube") return false;
-  // HLS is the gold standard (adaptive bitrate, CDN-friendly).
+
+  // HLS is the gold standard (adaptive bitrate, CDN-friendly, moov equivalent
+  // is baked into the playlist manifest). Always safe to broadcast.
   if (row.hlsMasterUrl && row.hlsMasterUrl.trim() !== "") return true;
-  // Raw local upload — queue as soon as the blob is confirmed valid in
-  // storage. Faststart optimises the moov position in-place and HLS
-  // transcoding adds an adaptive manifest; both upgrade the source
-  // automatically without requiring a re-queue.
-  if (row.localVideoUrl && row.localVideoUrl.trim() !== "") return true;
+
+  // Unrecoverable corrupt upload: the source file has no moov atom (or the
+  // moov is so broken that FFmpeg cannot remux it). The raw MP4 cannot be
+  // streamed via HTTP range requests — browsers cannot seek or begin playback
+  // without the moov. Re-uploading the source file is the only fix.
+  if (row.transcodingErrorCode === "CORRUPT_SOURCE") return false;
+
+  // Raw local MP4 (no HLS yet): safe to broadcast ONLY when the moov atom is
+  // positioned at byte 0 (faststartApplied = true). If transcoding permanently
+  // failed (status = 'failed') and faststart was never applied (false/null),
+  // the moov is at EOF — browsers buffer the entire file before playing.
+  // That means the raw URL will stall or error in the player. Exclude it.
+  if (row.localVideoUrl && row.localVideoUrl.trim() !== "") {
+    if (
+      row.transcodingStatus === "failed" &&
+      !row.faststartApplied
+    ) {
+      return false;
+    }
+    return true;
+  }
+
   return false;
 }
 

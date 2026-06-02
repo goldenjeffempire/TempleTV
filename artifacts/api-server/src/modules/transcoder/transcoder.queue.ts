@@ -86,10 +86,10 @@ export async function enqueueTranscode(args: {
             priority,
           })
           .where(eq(jobs.id, row.id));
-        // Clear the failure reason on managed_videos too — now that we are
-        // re-queueing, the previous error is no longer the current state.
+        // Clear all failure state on managed_videos — previous error code/message
+        // are no longer current once a fresh attempt is scheduled.
         await tx.update(videos)
-          .set({ transcodingStatus: "queued", transcodingErrorMessage: null })
+          .set({ transcodingStatus: "queued", transcodingErrorMessage: null, transcodingErrorCode: null })
           .where(eq(videos.id, args.videoId));
       });
       logger.info({ jobId: row.id, videoId: args.videoId }, "transcoder: re-armed failed job");
@@ -110,9 +110,9 @@ export async function enqueueTranscode(args: {
       status: "queued",
       priority,
     });
-    // Clear any previous failure reason when a fresh job is created.
+    // Clear all previous failure state when a fresh job is created.
     await tx.update(videos)
-      .set({ transcodingStatus: "queued", transcodingErrorMessage: null })
+      .set({ transcodingStatus: "queued", transcodingErrorMessage: null, transcodingErrorCode: null })
       .where(eq(videos.id, args.videoId));
   });
   logger.info({ jobId: id, videoId: args.videoId, videoPath }, "transcoder: enqueued");
@@ -195,6 +195,9 @@ export async function clearJobsByStatus(status: "done" | "failed" | "cancelled" 
  */
 export async function retryAllFailed(): Promise<number> {
   return db.transaction(async (tx) => {
+    // Exclude CORRUPT_SOURCE jobs — re-uploading the source is the only fix;
+    // re-queuing would just fail identically on every retry and waste resources.
+    // DISK_FULL jobs ARE re-queued so they run after the operator frees storage.
     const out = await tx.update(jobs)
       .set({
         status: "queued",
@@ -205,14 +208,22 @@ export async function retryAllFailed(): Promise<number> {
         startedAt: null,
         completedAt: null,
       })
-      .where(eq(jobs.status, "failed"))
+      .where(and(
+        eq(jobs.status, "failed"),
+        sql`NOT EXISTS (
+          SELECT 1 FROM managed_videos mv
+          WHERE mv.id = ${jobs.videoId}
+            AND mv.transcoding_error_code = 'CORRUPT_SOURCE'
+        )`,
+      ))
       .returning({ id: jobs.id, videoId: jobs.videoId });
 
     if (out.length > 0) {
       const videoIds = out.map((r) => r.videoId).filter(Boolean) as string[];
       if (videoIds.length > 0) {
+        // Clear error state so the admin UI shows a clean "queued" badge.
         await tx.update(videos)
-          .set({ transcodingStatus: "queued" })
+          .set({ transcodingStatus: "queued", transcodingErrorMessage: null, transcodingErrorCode: null })
           .where(inArray(videos.id, videoIds));
       }
       logger.info({ count: out.length }, "transcoder: batch-retried all failed jobs");
@@ -223,6 +234,23 @@ export async function retryAllFailed(): Promise<number> {
 
 export async function retryJob(id: string): Promise<boolean> {
   return db.transaction(async (tx) => {
+    // Guard: CORRUPT_SOURCE jobs are structurally unrecoverable — the operator
+    // must re-upload the source file. Retrying the same corrupt blob produces
+    // the same failure every time and just burns compute + logging resources.
+    const existing = await tx
+      .select({ id: jobs.id, videoId: jobs.videoId })
+      .from(jobs)
+      .innerJoin(videos, and(eq(videos.id, jobs.videoId), eq(videos.transcodingErrorCode, "CORRUPT_SOURCE")))
+      .where(eq(jobs.id, id))
+      .limit(1);
+    if (existing.length > 0) {
+      logger.warn(
+        { jobId: id, videoId: existing[0]!.videoId },
+        "transcoder: retryJob rejected — video has CORRUPT_SOURCE error; re-upload the source file to fix",
+      );
+      return false;
+    }
+
     const out = await tx.update(jobs)
       .set({
         status: "queued",
@@ -236,8 +264,9 @@ export async function retryJob(id: string): Promise<boolean> {
       .where(eq(jobs.id, id))
       .returning({ id: jobs.id, videoId: jobs.videoId });
     if (out.length > 0 && out[0]!.videoId) {
+      // Clear all failure state so the admin UI shows a clean "queued" badge.
       await tx.update(videos)
-        .set({ transcodingStatus: "queued" })
+        .set({ transcodingStatus: "queued", transcodingErrorMessage: null, transcodingErrorCode: null })
         .where(eq(videos.id, out[0]!.videoId));
     }
     return out.length > 0;

@@ -807,10 +807,15 @@ class TranscoderDispatcher {
         await db.update(videos)
           .set({
             transcodingStatus: exceeded ? "failed" : "queued",
-            // Write failure reason to managed_videos so admin UI can show WHY
-            // a video failed without requiring a separate transcoding_jobs join.
+            // Write failure reason and machine-readable code to managed_videos so:
+            //   (a) admin UI can show WHY a video failed without joining transcoding_jobs.
+            //   (b) auto-enqueue can exclude CORRUPT_SOURCE videos without regex-matching.
+            //   (c) retryAllFailed() can skip permanently-unrecoverable jobs.
             // Only set on terminal failure — cleared on re-queue via enqueueTranscode.
-            ...(exceeded ? { transcodingErrorMessage: truncatedMessage } : {}),
+            ...(exceeded ? {
+              transcodingErrorMessage: truncatedMessage,
+              transcodingErrorCode: isCorruptSource ? "CORRUPT_SOURCE" : isDiskFull ? "DISK_FULL" : null,
+            } : {}),
           })
           .where(eq(videos.id, job.videoId));
 

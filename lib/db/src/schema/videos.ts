@@ -25,6 +25,13 @@ export const videosTable = pgTable("managed_videos", {
   // Shown in the admin video library so operators know whether to re-upload or
   // just retry (e.g. "moov atom missing — re-upload required" vs. "disk full").
   transcodingErrorMessage: text("transcoding_error_message"),
+  // Machine-readable error code for the most recent terminal transcoding failure.
+  // Allows downstream logic to branch on failure type without regex-matching
+  // the human-readable error message.
+  //   'CORRUPT_SOURCE' — moov atom absent or unrecoverable; re-upload required.
+  //   'DISK_FULL'      — ENOSPC/EDQUOT at encode time; free space and retry.
+  //   null             — not failed, failure has no specific code, or cleared on re-transcode.
+  transcodingErrorCode: text("transcoding_error_code"),
   // ── Upload metadata (Postgres = source of truth, bucket = bytes) ─────────
   originalFilename: text("original_filename"),
   mimeType: text("mime_type"),

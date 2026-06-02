@@ -81,6 +81,8 @@ class QueueIntegrityValidatorImpl {
           vDuration: v.duration,
           vSource: v.videoSource,
           vStatus: v.transcodingStatus,
+          vFaststart: v.faststartApplied,
+          vErrCode: v.transcodingErrorCode,
         })
         .from(q)
         .leftJoin(v, eq(q.videoId, v.id))
@@ -119,6 +121,38 @@ class QueueIntegrityValidatorImpl {
             code: "ORPHANED_VIDEO_REF",
             message: `Video '${row.videoId}' exists but has no playable URLs — upload may be incomplete`,
           });
+        }
+
+        // UNPLAYABLE_CORRUPT_UPLOAD: video transcoding permanently failed AND
+        // the source file is known-unplayable (no moov atom / CORRUPT_SOURCE error
+        // OR faststart was never applied). Without HLS there is no fallback stream.
+        // These items WILL cause repeated auto-skip cycles every tick — they must
+        // be deactivated immediately to stop burning skip budget. The auto-fix
+        // below handles the deactivation; the reverse pass re-activates them if
+        // HLS ever becomes available (e.g. via remote re-transcode).
+        if (
+          row.videoId &&
+          row.videoId2 !== null &&
+          !row.qHlsUrl &&
+          !row.vHlsUrl &&
+          row.vStatus === "failed"
+        ) {
+          const isCorrupt = row.vErrCode === "CORRUPT_SOURCE";
+          const noFaststart = !row.vFaststart;
+          if (isCorrupt || noFaststart) {
+            issues.push({
+              severity: "error",
+              itemId: row.id,
+              itemTitle: row.title,
+              code: "UNPLAYABLE_CORRUPT_UPLOAD",
+              message:
+                `Video '${row.videoId}' has transcodingStatus='failed' with ` +
+                (isCorrupt
+                  ? "CORRUPT_SOURCE error — moov atom absent; re-upload the source file"
+                  : "faststartApplied=false — moov at EOF, raw MP4 cannot be streamed") +
+                " and no HLS fallback. Item will skip every tick until deactivated.",
+            });
+          }
         }
 
         if (row.durationSecs === 1800) {
@@ -403,6 +437,101 @@ class QueueIntegrityValidatorImpl {
             logger.warn(
               { err: fixErr, count: restoredIds.length },
               "[queue-validator] AUTO-FIX (reverse): failed to re-activate restored items (non-fatal)",
+            );
+          }
+        }
+      }
+
+      // ── Auto-fix: deactivate UNPLAYABLE_CORRUPT_UPLOAD items ─────────────────
+      // Items whose video has permanently failed transcoding AND has no moov at
+      // byte-0 (CORRUPT_SOURCE or faststart_applied=false) AND has no HLS are
+      // structurally unplayable — every orchestrator tick will auto-skip them,
+      // burning the 5-skip budget and eventually triggering dead-air filler.
+      // Deactivating them stops the skip spiral and lets the validator surface a
+      // clear "re-upload required" message in the diagnostics endpoint.
+      //
+      // Reverse pass below re-activates when HLS becomes available (e.g. after a
+      // successful remote re-transcode triggered by the operator).
+      const corruptUploadItemIds = rows
+        .filter((r) => {
+          if (!r.videoId || r.videoId2 === null) return false;
+          if (r.qHlsUrl || r.vHlsUrl) return false; // HLS available — safe
+          if (r.vStatus !== "failed") return false;  // still transcoding — leave active
+          return r.vErrCode === "CORRUPT_SOURCE" || !r.vFaststart;
+        })
+        .map((r) => r.id);
+
+      if (corruptUploadItemIds.length > 0) {
+        try {
+          await db
+            .update(schema.broadcastQueueTable)
+            .set({
+              isActive: false,
+              validatorDeactivatedReason: "corrupt_upload",
+            })
+            .where(inArray(schema.broadcastQueueTable.id, corruptUploadItemIds));
+          logger.error(
+            { count: corruptUploadItemIds.length, itemIds: corruptUploadItemIds },
+            "[queue-validator] AUTO-FIX: deactivated UNPLAYABLE_CORRUPT_UPLOAD items " +
+            "(transcodingStatus=failed + no faststart/CORRUPT_SOURCE + no HLS) — " +
+            "removed from broadcast rotation; re-upload the source file or trigger a remote re-transcode to restore",
+          );
+          adminEventBus.push("broadcast-queue-updated", {
+            reason: "integrity-fix-corrupt-upload",
+            count: corruptUploadItemIds.length,
+          });
+        } catch (fixErr) {
+          logger.warn(
+            { err: fixErr, count: corruptUploadItemIds.length },
+            "[queue-validator] AUTO-FIX: failed to deactivate UNPLAYABLE_CORRUPT_UPLOAD items (non-fatal)",
+          );
+        }
+      }
+
+      // ── Auto-fix (reverse): re-activate corrupt_upload items that now have HLS ──
+      // When a video that was previously deactivated as corrupt_upload gains an
+      // HLS manifest (operator used the remote re-transcode tool or manually
+      // re-uploaded a fixed source), its queue item must return to rotation.
+      {
+        type RevivedRow = { id: string; title: string };
+        let revivedCorruptRows: RevivedRow[] = [];
+        try {
+          const result = await db.execute<RevivedRow>(sql`
+            SELECT bq.id, bq.title
+            FROM broadcast_queue bq
+            INNER JOIN managed_videos mv ON mv.id = bq.video_id
+            WHERE bq.is_active = false
+              AND bq.validator_deactivated_reason = 'corrupt_upload'
+              AND mv.hls_master_url IS NOT NULL
+          `);
+          revivedCorruptRows = (result.rows as RevivedRow[]) ?? [];
+        } catch (qErr) {
+          logger.debug(
+            { err: qErr },
+            "[queue-validator] reverse-UNPLAYABLE_CORRUPT_UPLOAD query failed (non-fatal)",
+          );
+        }
+
+        if (revivedCorruptRows.length > 0) {
+          const revivedIds = revivedCorruptRows.map((r) => r.id);
+          try {
+            await db
+              .update(schema.broadcastQueueTable)
+              .set({ isActive: true, validatorDeactivatedReason: null })
+              .where(inArray(schema.broadcastQueueTable.id, revivedIds));
+            logger.warn(
+              { count: revivedIds.length, itemIds: revivedIds },
+              "[queue-validator] AUTO-FIX (reverse): re-activated corrupt_upload items " +
+              "whose video now has an HLS manifest — items returned to broadcast rotation",
+            );
+            adminEventBus.push("broadcast-queue-updated", {
+              reason: "integrity-fix-revived-corrupt-upload",
+              count: revivedIds.length,
+            });
+          } catch (fixErr) {
+            logger.warn(
+              { err: fixErr, count: revivedIds.length },
+              "[queue-validator] AUTO-FIX (reverse): failed to re-activate corrupt_upload items (non-fatal)",
             );
           }
         }

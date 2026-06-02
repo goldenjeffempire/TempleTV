@@ -394,12 +394,23 @@ class BroadcastOrchestrator extends EventEmitter {
     // live. It is a warn, not an error, because many dev/staging deployments
     // legitimately have no filler URL and a missing var is not a crash condition.
     if (!env.EMERGENCY_FILLER_URL) {
-      logger.warn(
-        "[broadcast-v2] EMERGENCY_FILLER_URL is not configured. " +
-        "If all queue items become unplayable the broadcast will go to dead air " +
-        "with no fallback content. Configure this env var with a valid https:// " +
-        "HLS or MP4 stream URL for 24/7 broadcast resilience.",
-      );
+      if (env.BROADCAST_FAILOVER_HLS_URL) {
+        // BROADCAST_FAILOVER_HLS_URL is also used as a filler source on queue
+        // exhaustion, so the channel is not completely unprotected. Log at info
+        // so the ops team is aware of the fallback arrangement.
+        logger.info(
+          { fillerUrl: env.BROADCAST_FAILOVER_HLS_URL },
+          "[broadcast-v2] EMERGENCY_FILLER_URL is not configured — " +
+          "BROADCAST_FAILOVER_HLS_URL will be used as emergency filler on queue exhaustion.",
+        );
+      } else {
+        logger.warn(
+          "[broadcast-v2] Neither EMERGENCY_FILLER_URL nor BROADCAST_FAILOVER_HLS_URL is configured. " +
+          "If all queue items become unplayable the broadcast will go to dead air " +
+          "with no fallback content. Configure EMERGENCY_FILLER_URL with a valid https:// " +
+          "HLS or MP4 stream URL for 24/7 broadcast resilience.",
+        );
+      }
     } else {
       // Validate the URL is parseable and uses http(s) so we surface config
       // mistakes before the first real queue-exhaustion event — not during one.
@@ -1501,11 +1512,16 @@ class BroadcastOrchestrator extends EventEmitter {
         // so viewers see something rather than a blank screen. This is an
         // ephemeral in-memory change only — the filler is removed on the next
         // reload() (which fires when the operator fixes the queue items).
+        // Use BROADCAST_FAILOVER_HLS_URL as a fallback filler source when
+        // EMERGENCY_FILLER_URL is not set — both URLs serve the same purpose
+        // (keep the channel on-air during queue exhaustion); the distinction is
+        // only semantic (one is always-on failover, one is emergency-specific).
+        const effectiveFillerUrl = env.EMERGENCY_FILLER_URL ?? env.BROADCAST_FAILOVER_HLS_URL;
         if (
           this.consecutiveSkips >= Math.max(1, this.items.length) &&
-          env.EMERGENCY_FILLER_URL
+          effectiveFillerUrl
         ) {
-          const fillerUrl = env.EMERGENCY_FILLER_URL;
+          const fillerUrl = effectiveFillerUrl;
           // Use a proper regex so signed/CDN URLs with query params are
           // correctly classified (e.g. "stream.m3u8?token=abc" or
           // "playlist.m3u8#variant" are HLS; plain ".m3u8" suffix also works).
@@ -1586,6 +1602,15 @@ class BroadcastOrchestrator extends EventEmitter {
           // channel permanently stuck in dead air.
           this.autoSkipAttempts = 0;
           this.allBlockedRecoveryCycles += 1;
+          // Push a dead-air escalation event on EVERY blocked TTL cycle so
+          // the admin dashboard can surface a banner regardless of whether a
+          // filler URL is configured. External monitors also key off this.
+          adminEventBus.push("dead-air-escalation", {
+            channel: this.channelId,
+            allBlockedRecoveryCycles: this.allBlockedRecoveryCycles,
+            itemCount: this.items.length,
+            hasFillerUrl: !!(env.EMERGENCY_FILLER_URL ?? env.BROADCAST_FAILOVER_HLS_URL),
+          });
           logger.info(
             { items: this.items.length, recoveryCycles: this.allBlockedRecoveryCycles },
             "[broadcast-v2] all-sources-blocked TTL expired — auto-clearing bad-URL cache and reloading",
@@ -1598,12 +1623,15 @@ class BroadcastOrchestrator extends EventEmitter {
           // consecutiveSkips >= items.length condition from ever firing.
           // Permanent CDN failures do not self-heal via TTL — the filler keeps
           // the channel on-air while operators diagnose and fix the sources.
+          // Fall back to BROADCAST_FAILOVER_HLS_URL when EMERGENCY_FILLER_URL
+          // is not set — same purpose, just a different env var name.
+          const effectiveAllBlockedFillerUrl = env.EMERGENCY_FILLER_URL ?? env.BROADCAST_FAILOVER_HLS_URL;
           if (
             this.allBlockedRecoveryCycles >= 2 &&
-            env.EMERGENCY_FILLER_URL &&
+            effectiveAllBlockedFillerUrl &&
             !this.items.some((it) => it.id.startsWith("emergency-filler-"))
           ) {
-            const fillerUrl = env.EMERGENCY_FILLER_URL;
+            const fillerUrl = effectiveAllBlockedFillerUrl;
             const isHls = /\.m3u8(?:$|\?|#)/i.test(fillerUrl);
             const fillerItem: CachedQueueItem = {
               id: `emergency-filler-${Date.now()}`,

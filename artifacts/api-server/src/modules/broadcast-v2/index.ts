@@ -85,8 +85,10 @@ function installBusBridge(): void {
   busBridgeInstalled = true;
 
   let pending: NodeJS.Timeout | null = null;
+  let validatorPending: NodeJS.Timeout | null = null;
   adminEventBus.on("admin-event", (event: { type: string; data?: unknown }) => {
     if (event.type !== "broadcast-queue-updated") return;
+    // Debounce orchestrator reload — coalesces drag-reorder bursts.
     if (pending) clearTimeout(pending);
     pending = setTimeout(() => {
       pending = null;
@@ -97,6 +99,19 @@ function installBusBridge(): void {
         );
     }, 250);
     pending.unref?.();
+    // Also schedule a queue integrity validation shortly after the reload
+    // so auto-fix logic (UNPLAYABLE_CORRUPT_UPLOAD, MISSING_VIDEO_JOIN, etc.)
+    // runs immediately on every queue change — not only on the 10-min schedule.
+    // Use a longer delay (3 s) than the reload debounce (250 ms) so the
+    // orchestrator finishes its reload before the validator reads the queue.
+    if (validatorPending) clearTimeout(validatorPending);
+    validatorPending = setTimeout(() => {
+      validatorPending = null;
+      void queueIntegrityValidator.validate().catch((err) =>
+        logger.debug({ err }, "[broadcast-v2] post-mutation queue validation failed (non-fatal)"),
+      );
+    }, 3_000);
+    validatorPending.unref?.();
   });
   logger.info("[broadcast-v2] admin event bus bridge installed");
 }
