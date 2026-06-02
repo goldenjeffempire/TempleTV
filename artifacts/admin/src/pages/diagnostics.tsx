@@ -257,6 +257,133 @@ function SectionSkeleton() {
   );
 }
 
+function MemoryHistorySection() {
+  const { data } = useQuery<MemoryDiagnostics>({
+    queryKey: ["diagnostics", "memory"],
+    staleTime: Infinity,
+    retry: false,
+  });
+  const samples = data?.memorySamples ?? [];
+  if (samples.length < 2) return null;
+
+  const spanMin = Math.round(
+    ((samples[samples.length - 1]?.ts ?? 0) - (samples[0]?.ts ?? 0)) / 60_000,
+  );
+
+  const recent = [...samples].reverse().slice(0, 12);
+
+  return (
+    <section className="space-y-3">
+      <h2 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground/70">
+        Memory History
+      </h2>
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium flex items-center gap-2">
+            <Activity size={14} className="text-muted-foreground" />
+            Heap + External — Last {spanMin} min
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0 space-y-4">
+          <ResponsiveContainer width="100%" height={140}>
+            <AreaChart data={samples} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+              <defs>
+                <linearGradient id="mhHeapGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.35} />
+                  <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0.02} />
+                </linearGradient>
+                <linearGradient id="mhExtGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="hsl(38 92% 50%)" stopOpacity={0.35} />
+                  <stop offset="95%" stopColor="hsl(38 92% 50%)" stopOpacity={0.02} />
+                </linearGradient>
+              </defs>
+              <XAxis
+                dataKey="ts"
+                tickFormatter={(v: number) =>
+                  new Date(v).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                }
+                tick={{ fontSize: 9 }}
+                tickLine={false}
+                axisLine={false}
+              />
+              <YAxis
+                tick={{ fontSize: 9 }}
+                tickLine={false}
+                axisLine={false}
+                tickFormatter={(v: number) => `${v}MB`}
+                width={40}
+              />
+              <RechartsTooltip
+                formatter={(value: number, name: string) => [
+                  `${(value as number).toFixed(1)} MB`,
+                  name === "heapUsedMb" ? "JS Heap" : "Native (external)",
+                ]}
+                labelFormatter={(ts: number) => new Date(ts).toLocaleTimeString()}
+                contentStyle={{ fontSize: 11 }}
+              />
+              <Area
+                type="monotone"
+                dataKey="heapUsedMb"
+                stroke="hsl(var(--primary))"
+                fill="url(#mhHeapGrad)"
+                strokeWidth={1.5}
+                dot={false}
+              />
+              <Area
+                type="monotone"
+                dataKey="externalMb"
+                stroke="hsl(38 92% 50%)"
+                fill="url(#mhExtGrad)"
+                strokeWidth={1.5}
+                dot={false}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+          <div className="flex gap-4 justify-end">
+            <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+              <span className="inline-block w-3 h-0.5 bg-primary rounded" />
+              JS Heap
+            </span>
+            <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+              <span className="inline-block w-3 h-0.5 bg-amber-500 rounded" />
+              Native (ext)
+            </span>
+          </div>
+
+          {/* Recent samples table */}
+          <div className="border rounded-md overflow-hidden">
+            <div className="grid grid-cols-3 bg-muted/40 px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+              <span>Time</span>
+              <span className="text-right">JS Heap</span>
+              <span className="text-right">Native (ext)</span>
+            </div>
+            <div className="divide-y divide-border/40">
+              {recent.map((s) => (
+                <div
+                  key={s.ts}
+                  className="grid grid-cols-3 px-3 py-1.5 text-[11px] font-mono"
+                >
+                  <span className="text-muted-foreground">
+                    {new Date(s.ts).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      second: "2-digit",
+                    })}
+                  </span>
+                  <span className="text-right">{s.heapUsedMb.toFixed(1)} MB</span>
+                  <span className="text-right text-amber-600 dark:text-amber-400">
+                    {s.externalMb.toFixed(1)} MB
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </section>
+  );
+}
+
 export default function DiagnosticsPage() {
   const POLL_MS = 15_000;
   const SLOW_POLL_MS = 30_000;

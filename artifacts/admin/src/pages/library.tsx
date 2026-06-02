@@ -15,7 +15,7 @@ import { toast } from "sonner";
 import {
   Youtube, RefreshCw, Search, Clock, CheckCircle2, XCircle,
   AlertCircle, ChevronLeft, ChevronRight, Eye, Film, Calendar,
-  TrendingUp, Database, Loader2, WifiOff, History,
+  TrendingUp, Database, Loader2, WifiOff, History, UploadCloud,
 } from "lucide-react";
 import { formatDistanceToNow, format } from "date-fns";
 import { useSSEEvent } from "@/contexts/sse-context";
@@ -77,6 +77,9 @@ interface VideoRow {
   viewCount: number;
   featured: boolean;
   videoSource: string;
+  transcodingStatus?: string | null;
+  transcodingErrorCode?: string | null;
+  transcodingErrorMessage?: string | null;
 }
 
 interface VideosResponse {
@@ -617,6 +620,26 @@ function VideoCard({ video }: { video: VideoRow }) {
           <span className="absolute bottom-1.5 right-1.5 bg-black/80 text-white text-[10px] px-1.5 py-0.5 rounded font-mono">
             {formatDurationSecs(video.duration)}
           </span>
+        )}
+        {/* Corrupt-source badge — moov atom absent, re-upload is the only fix */}
+        {video.transcodingErrorCode === "CORRUPT_SOURCE" && (
+          <div
+            className="absolute top-1.5 left-1.5 flex items-center gap-1 bg-red-600/90 text-white text-[10px] font-medium px-1.5 py-0.5 rounded"
+            title={video.transcodingErrorMessage ?? "Moov atom absent — re-upload the source file to fix"}
+          >
+            <UploadCloud size={10} />
+            Re-upload required
+          </div>
+        )}
+        {/* Generic transcoding-failed badge (non-CORRUPT_SOURCE) */}
+        {video.transcodingStatus === "failed" && video.transcodingErrorCode !== "CORRUPT_SOURCE" && (
+          <div
+            className="absolute top-1.5 left-1.5 flex items-center gap-1 bg-amber-600/90 text-white text-[10px] font-medium px-1.5 py-0.5 rounded"
+            title={video.transcodingErrorMessage ?? "Transcoding failed — check the transcoding panel for details"}
+          >
+            <XCircle size={10} />
+            Transcode failed
+          </div>
         )}
         {/* YouTube link overlay */}
         {ytUrl && (

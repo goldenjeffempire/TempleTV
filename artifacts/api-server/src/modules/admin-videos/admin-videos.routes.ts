@@ -64,6 +64,14 @@ const VideoRowSchema = z.object({
    * unrecoverable ones (e.g. "moov atom missing — re-upload required").
    */
   transcodingErrorMessage: z.string().nullable(),
+  /**
+   * Machine-readable error code for the most recent terminal transcoding failure.
+   *   'CORRUPT_SOURCE' — moov atom absent; re-upload the source file to fix.
+   *   'DISK_FULL'      — ENOSPC/EDQUOT at encode time; free storage and retry.
+   *   null             — no specific code, not failed, or cleared on re-queue.
+   * Use this field (not regex on errorMessage) to branch on failure type.
+   */
+  transcodingErrorCode: z.string().nullable(),
 });
 
 const ListQuerySchema = z.object({
@@ -146,6 +154,7 @@ function toDto(row: typeof videos.$inferSelect): z.infer<typeof VideoRowSchema> 
     originalFilename: row.originalFilename,
     sourceAvailable,
     transcodingErrorMessage: row.transcodingErrorMessage ?? null,
+    transcodingErrorCode: row.transcodingErrorCode ?? null,
   };
 }
 

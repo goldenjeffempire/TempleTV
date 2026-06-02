@@ -44,7 +44,7 @@ const ACTIVE_ENV_VAR_NAME: string | null = import.meta.env.VITE_API_BASE_URL
 function inferProductionApiOrigin(): string | null {
   // SSR/Node contexts have no window; relative paths are correct there.
   if (typeof window === "undefined") return null;
-  const { hostname, protocol } = window.location;
+  const { hostname } = window.location;
   // Convention: a host of `admin.<domain>` implies the API lives at
   // `api.<domain>`. Only triggered when the hostname literally begins with
   // `admin.` so dev URLs (replit-dev domains, localhost, path-routed
