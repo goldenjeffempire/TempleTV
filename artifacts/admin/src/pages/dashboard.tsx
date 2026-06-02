@@ -84,22 +84,22 @@ export default function Dashboard() {
   const { data: stats, isLoading: statsLoading, error: statsError, refetch: refetchStats } = useQuery({
     queryKey: ["admin-stats"],
     queryFn: () => api.get<AdminStats>("/admin/stats"),
-    staleTime: 15_000,
-    refetchInterval: 15_000,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
   });
 
   const { data: readyz } = useQuery({
     queryKey: ["readyz"],
     queryFn: () => api.get<ReadyzResponse>("/readyz"),
-    refetchInterval: 15_000,
-    staleTime: 12_000,
+    refetchInterval: 60_000,
+    staleTime: 30_000,
   });
 
   const { data: transcodingQueue, isLoading: transcodingLoading } = useQuery({
     queryKey: ["transcoding-queue"],
     queryFn: () => api.get<{ jobs: TranscodingJob[] }>("/admin/transcoding/queue").catch(() => ({ jobs: [] as TranscodingJob[] })),
-    refetchInterval: 15_000,
-    staleTime: 12_000,
+    refetchInterval: 60_000,
+    staleTime: 30_000,
   });
 
   const { data: scheduled } = useQuery({
@@ -111,8 +111,8 @@ export default function Dashboard() {
   const { data: engineHealth } = useQuery({
     queryKey: ["dashboard-engine-health"],
     queryFn: () => api.get<EngineHealthSummary>("/broadcast-v2/health").catch(() => null),
-    refetchInterval: 10_000,
-    staleTime: 8_000,
+    refetchInterval: 30_000,
+    staleTime: 25_000,
   });
 
   useSSEEvent("broadcast-queue-updated", () => {

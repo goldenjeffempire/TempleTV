@@ -164,7 +164,7 @@ function useLiveViewerCount() {
       }
     }
     void poll();
-    intervalRef.current = setInterval(() => void poll(), 5000);
+    intervalRef.current = setInterval(() => void poll(), 30_000);
     return () => {
       mounted = false;
       if (intervalRef.current) clearInterval(intervalRef.current);

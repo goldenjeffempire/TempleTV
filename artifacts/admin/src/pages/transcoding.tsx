@@ -42,8 +42,8 @@ export default function TranscodingPage() {
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["transcoding-queue"],
     queryFn: () => api.get<{ jobs: TranscodingJob[] }>("/admin/transcoding/queue"),
-    refetchInterval: 8_000,
-    staleTime: 6_000,
+    refetchInterval: 60_000,
+    staleTime: 30_000,
   });
 
   useSSEEvent("transcoding-update", () => { void qc.invalidateQueries({ queryKey: ["transcoding-queue"] }); });

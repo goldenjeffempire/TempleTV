@@ -85,6 +85,13 @@ let quotaUsed = 0;
 const QUOTA_TOTAL = env.YOUTUBE_QUOTA_DAILY_LIMIT;
 const QUOTA_SNAPSHOT_KEY = "yt:quota:snapshot";
 
+// Thresholds for proactive quota warnings pushed via SSE to admin clients.
+// Two tiers: 80% (warn) and 95% (critical) — only one push per crossing per day.
+const QUOTA_WARN_PCT  = 0.80;
+const QUOTA_CRIT_PCT  = 0.95;
+let _quotaWarnFired   = false; // reset each midnight
+let _quotaCritFired   = false;
+
 function nextMidnightUtc(): Date {
   const d = new Date();
   d.setUTCHours(24, 0, 0, 0);
@@ -101,11 +108,41 @@ function trackQuota(operation: string, cost: number): void {
     quotaUsed = 0;
     quotaTracker.clear();
     quotaResetAt = nextMidnightUtc();
+    _quotaWarnFired = false;
+    _quotaCritFired = false;
   }
   quotaUsed += cost;
   const entry = quotaTracker.get(operation) ?? { cost, count: 0 };
   entry.count++;
   quotaTracker.set(operation, entry);
+
+  // Push a real-time warning to all connected admin clients when quota crosses
+  // a threshold. Each threshold fires at most once per UTC day so the admin
+  // SSE stream isn't spammed on every single API call after the limit is hit.
+  if (QUOTA_TOTAL > 0) {
+    const pct = quotaUsed / QUOTA_TOTAL;
+    if (!_quotaCritFired && pct >= QUOTA_CRIT_PCT) {
+      _quotaCritFired = true;
+      adminEventBus.push("youtube-quota-warning", {
+        level: "critical",
+        used: quotaUsed,
+        total: QUOTA_TOTAL,
+        pct: Math.round(pct * 100),
+        resetsAt: quotaResetAt.toISOString(),
+      });
+      logger.warn({ quotaUsed, QUOTA_TOTAL }, "youtube-sync: quota CRITICAL — >95% used, falling back to RSS");
+    } else if (!_quotaWarnFired && pct >= QUOTA_WARN_PCT) {
+      _quotaWarnFired = true;
+      adminEventBus.push("youtube-quota-warning", {
+        level: "warning",
+        used: quotaUsed,
+        total: QUOTA_TOTAL,
+        pct: Math.round(pct * 100),
+        resetsAt: quotaResetAt.toISOString(),
+      });
+      logger.warn({ quotaUsed, QUOTA_TOTAL }, "youtube-sync: quota WARNING — >80% used");
+    }
+  }
 }
 
 export function getQuotaStatus(): QuotaState {

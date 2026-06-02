@@ -34,8 +34,8 @@ export default function ChatPage() {
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["chat-messages"],
     queryFn: () => api.get<{ messages: ChatMessage[]; stats?: ChatStats }>("/admin/chat"),
-    refetchInterval: 15_000,
-    staleTime: 10_000,
+    refetchInterval: 90_000,
+    staleTime: 60_000,
   });
 
   useSSEEvent("chat-message", () => { void qc.invalidateQueries({ queryKey: ["chat-messages"] }); });

@@ -133,29 +133,29 @@ export default function StreamHealthPage() {
   const { data: readyz, isLoading: readyzLoading, error: readyzError, refetch } = useQuery({
     queryKey: ["readyz"],
     queryFn: () => api.get<ReadyzResponse>("/readyz"),
-    refetchInterval: 15_000,
-    staleTime: 12_000,
+    refetchInterval: 60_000,
+    staleTime: 30_000,
   });
 
   const { data: networkStatus, isLoading: networkLoading } = useQuery({
     queryKey: ["network-status"],
     queryFn: () => api.get<NetworkStatus>("/network/status").catch(() => null),
-    refetchInterval: 15_000,
-    staleTime: 12_000,
+    refetchInterval: 60_000,
+    staleTime: 30_000,
   });
 
   const { data: engineHealth, isLoading: engineLoading } = useQuery({
     queryKey: ["broadcast-v2-engine-health"],
     queryFn: () => api.get<EngineHealth>("/broadcast-v2/health"),
-    refetchInterval: 10_000,
-    staleTime: 8_000,
+    refetchInterval: 30_000,
+    staleTime: 25_000,
   });
 
   const { data: diagnostics } = useQuery({
     queryKey: ["broadcast-v2-diagnostics-health"],
     queryFn: () => api.get<DiagnosticsReport>("/broadcast-v2/diagnostics"),
-    refetchInterval: 10_000,
-    staleTime: 8_000,
+    refetchInterval: 30_000,
+    staleTime: 25_000,
   });
 
   useSSEEvent("stream-health", () => { void qc.invalidateQueries({ queryKey: ["readyz"] }); });

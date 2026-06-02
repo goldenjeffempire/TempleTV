@@ -875,21 +875,19 @@ function BroadcastV2PageInner() {
       api.get<{ healthByItemId: Record<string, SourceHealthEntry> }>(
         "/broadcast-v2/source-health",
       ),
-    refetchInterval: 10_000,
-    staleTime: 8_000,
+    refetchInterval: 30_000,
+    staleTime: 25_000,
   });
   const healthByItemId = healthData?.healthByItemId ?? {};
 
-  // Engine health — polls every 15 s. Unauthenticated on the server but
-  // fetched here through the admin client so the request carries auth headers
-  // (no harm in that — the server ignores them on this route). The 15 s cadence
-  // is short enough to surface a newly-stuck orchestrator within one poll
-  // cycle but long enough to stay well under the server-side 30 req/min cap.
+  // Engine health — polls every 30 s. SSE events (broadcast-queue-updated,
+  // transcoding-update) trigger immediate invalidation for real-time accuracy;
+  // the 30 s poll is a safety-net for any missed SSE frames.
   const { data: engineHealth, isError: engineHealthError } = useQuery({
     queryKey: ["broadcast-v2-engine-health"],
     queryFn: () => api.get<EngineHealth>("/broadcast-v2/health"),
-    refetchInterval: 15_000,
-    staleTime: 12_000,
+    refetchInterval: 30_000,
+    staleTime: 25_000,
   });
 
   // Diagnostics — auth-guarded deep snapshot of all engine subsystems.

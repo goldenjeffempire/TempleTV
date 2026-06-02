@@ -2,10 +2,11 @@ import { lazy, Suspense, useEffect, Component, type ReactNode } from "react";
 import { Router as WouterRouter, Route, Switch, useLocation, Redirect } from "wouter";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAuth } from "@/contexts/use-auth";
-import { SSEProvider } from "@/contexts/sse-context";
+import { SSEProvider, useSSEEvent } from "@/contexts/sse-context";
 import { AppLayout } from "@/components/layout/app-layout";
 import { Skeleton } from "@/components/ui/skeleton";
 import { UploadQueuePanel } from "@/components/upload/UploadQueuePanel";
+import { toast } from "sonner";
 
 const CHUNK_KEY = "ttv_chunk_reload";
 
@@ -207,6 +208,29 @@ function prefetchCommonPages(): ReturnType<typeof setTimeout>[] {
   return ids;
 }
 
+// Listens for YouTube quota threshold SSE events and surfaces them as
+// persistent toasts so operators are alerted in real-time — no polling needed.
+// Must render inside SSEProvider (done below in AuthenticatedApp).
+function YouTubeQuotaMonitor() {
+  useSSEEvent("youtube-quota-warning", (data: unknown) => {
+    const d = data as { level?: string; pct?: number; used?: number; total?: number; resetsAt?: string } | undefined;
+    const pct = d?.pct ?? 0;
+    const resetsAt = d?.resetsAt ? new Date(d.resetsAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "midnight UTC";
+    if (d?.level === "critical") {
+      toast.error(`YouTube API quota CRITICAL — ${pct}% used. Syncs are falling back to RSS (last ~15 videos only). Quota resets at ${resetsAt}.`, {
+        duration: Infinity,
+        id: "yt-quota-critical",
+      });
+    } else {
+      toast.warning(`YouTube API quota at ${pct}% — approaching daily limit. Quota resets at ${resetsAt}.`, {
+        duration: 30_000,
+        id: "yt-quota-warning",
+      });
+    }
+  });
+  return null;
+}
+
 function AuthenticatedApp() {
   const [location] = useLocation();
   useEffect(() => { sessionStorage.removeItem(CHUNK_KEY); }, [location]);
@@ -223,6 +247,7 @@ function AuthenticatedApp() {
 
   return (
     <SSEProvider>
+      <YouTubeQuotaMonitor />
       <AppLayout>
         <PanelErrorBoundary>
           <UploadQueuePanel />

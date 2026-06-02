@@ -351,12 +351,38 @@ export async function playbackRoutes(app: FastifyInstance) {
     };
     signalBus.on("signal", onSignal);
 
-    // Heartbeat so smart-TV / mobile NATs don't drop the socket.
+    // Track last pong/message time for zombie detection.
+    // Initialised to now so a freshly-opened socket is never immediately killed.
+    let lastPongAtMs = Date.now();
+
+    // Heartbeat: app-level JSON ping + native WS-level ping every 25 s.
+    //   • JSON ping: TV / mobile clients respond with { type: "ping" } which
+    //     resets lastPongAtMs (app-level liveness confirmation).
+    //   • socket.ping(): the `ws` library handles the WS protocol pong response
+    //     transparently, firing the "pong" event below. OS TCP stack also uses
+    //     these to detect dead connections without application involvement.
+    //   • Zombie check: if neither native nor app-level pong has arrived in
+    //     60 s (≥ 2 missed cycles), the socket is half-open — terminate it so
+    //     the dangling event listeners (broadcastEngine, overrideBus, signalBus,
+    //     adminEventBus) are freed.
     const heartbeat = setInterval(() => {
       send({ type: "ping", serverTimeMs: Date.now() });
+      try { socket.ping(); } catch { /* client already gone */ }
+
+      if (Date.now() - lastPongAtMs > 60_000) {
+        logger.warn("[playback/ws] terminating zombie session — no pong for 60 s");
+        try { (socket as { terminate?: () => void }).terminate?.(); } catch { /* already closed */ }
+      }
     }, 25_000);
 
+    // Native WS pong: fired automatically by the `ws` library when the remote
+    // end responds to our socket.ping() frames.
+    socket.on("pong", () => {
+      lastPongAtMs = Date.now();
+    });
+
     socket.on("message", (raw: Buffer | string) => {
+      lastPongAtMs = Date.now(); // any message = live client
       try {
         const msg = JSON.parse(raw.toString()) as { type?: string };
         if (msg.type === "ping") {
