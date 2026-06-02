@@ -167,11 +167,14 @@ function startSupervisedWorkers(): void {
   });
 
   // Queue integrity validator: validates active queue on demand; also runs
-  // every 10 min so new additions are caught without manual invocation.
+  // every 5 min so new additions are caught without manual invocation.
+  // Note: the bus bridge (above) also triggers a run 3 s after every
+  // broadcast-queue-updated event — including transcoding failures — so
+  // corrupt/failed items are deactivated well within the 5-min window.
   workerSupervisor.spawn({
     name: "queue-integrity-validator",
     fn: () => queueIntegrityValidator.validate(),
-    intervalMs: 10 * 60_000,
+    intervalMs: 5 * 60_000,
     initialDelayMs: 30_000,
     backoffMs: [5_000, 15_000, 30_000],
   });

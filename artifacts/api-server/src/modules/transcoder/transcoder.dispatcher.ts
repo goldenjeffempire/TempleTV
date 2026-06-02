@@ -829,6 +829,25 @@ class TranscoderDispatcher {
           nextRetryAt: exceeded ? null : nextRetry.toISOString(),
         });
 
+        // When a job permanently fails, push broadcast-queue-updated so the
+        // orchestrator immediately reloads (250 ms debounce) and the queue
+        // integrity validator runs (3 s debounce).  Without this, a corrupt or
+        // max-attempts-exhausted item stays in the active broadcast rotation for
+        // up to 10 minutes — the validator's scheduled interval — burning skip
+        // budget on every orchestrator tick and causing unnecessary dead-air.
+        // The validator's UNPLAYABLE_CORRUPT_UPLOAD auto-fix deactivates the
+        // row within seconds of this push, closing the gap.
+        if (exceeded) {
+          adminEventBus.push("broadcast-queue-updated", {
+            reason: isCorruptSource
+              ? "transcoding-corrupt-source"
+              : isDiskFull
+                ? "transcoding-disk-full"
+                : "transcoding-max-attempts",
+            videoId: job.videoId,
+          });
+        }
+
         if (isCorruptSource) {
           logger.error(
             { err, jobId: job.id, videoId: job.videoId, errCode },
