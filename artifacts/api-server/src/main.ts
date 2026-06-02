@@ -7,7 +7,7 @@ import { logger } from "./infrastructure/logger.js";
 import { broadcastEngine } from "./modules/broadcast/queue.engine.js";
 import { channelRegistry } from "./modules/channels/channel-registry.js";
 import { overrideBus } from "./modules/live-overrides/override-bus.js";
-import { closeDb, db, ensureRuntimeIndexes, ensureBroadcastV2Tables, ensureMidnightPrayersTable, deactivateUnresolvableQueueRows, resetStuckProcessingVideos, ensureUserSchemaColumns, scheduleStaleDataCleanup } from "./infrastructure/db.js";
+import { closeDb, db, ensureRuntimeIndexes, ensureBroadcastV2Tables, ensureMidnightPrayersTable, deactivateUnresolvableQueueRows, resetStuckProcessingVideos, ensureUserSchemaColumns, scheduleStaleDataCleanup, recoverStaleSyncLogs } from "./infrastructure/db.js";
 import { closeRedis } from "./infrastructure/redis.js";
 import { sseCounter } from "./infrastructure/sse-counter.js";
 import { scheduledNotificationDispatcher } from "./modules/scheduled-notifications/dispatcher.js";
@@ -354,6 +354,12 @@ async function main() {
     // without this reset those queue slots would be silently held forever.
     resetStuckProcessingVideos().catch((err) =>
       logger.warn({ err }, "db: resetStuckProcessingVideos failed (non-fatal)"),
+    );
+    // Mark youtube_sync_log rows stuck at 'running' as 'interrupted'.
+    // These accumulate when the process is killed mid-sync; without this
+    // cleanup the admin Sync panel shows them as perpetually in-progress.
+    recoverStaleSyncLogs().catch((err) =>
+      logger.warn({ err }, "db: recoverStaleSyncLogs failed (non-fatal)"),
     );
     // Stale-data GC: expired tokens, stale viewer sessions, old upload sessions,
     // old broadcast event log entries. Runs at 30 s after boot then every 6 h.

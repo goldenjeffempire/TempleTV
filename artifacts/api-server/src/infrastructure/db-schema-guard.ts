@@ -1,6 +1,120 @@
 import { sql } from "drizzle-orm";
 import { schema } from "./db.js";
 
+// ── PostgreSQL / Drizzle error extraction ─────────────────────────────────────
+
+/**
+ * Structured representation of a PostgreSQL error as surfaced by node-postgres
+ * and optionally wrapped by Drizzle's `_DrizzleQueryError`.
+ *
+ * All fields are optional — a given error may carry only a subset of them
+ * depending on whether the DB server included them in its ErrorResponse wire
+ * message (protocol field availability varies by statement type).
+ */
+export interface PgErrorDetail {
+  /** SQLSTATE code, e.g. "23505" (unique_violation), "42703" (undefined_column) */
+  sqlstate?: string;
+  /** PostgreSQL error severity, e.g. "ERROR", "FATAL" */
+  severity?: string;
+  /** Constraint name for constraint-violation errors */
+  constraint?: string;
+  /** Column name for NOT NULL / type errors */
+  column?: string;
+  /** Table name associated with the error */
+  table?: string;
+  /** PostgreSQL `DETAIL` field — human-readable extra context */
+  detail?: string;
+  /** PostgreSQL `HINT` field */
+  hint?: string;
+  /** Full error message from the innermost node in the error chain */
+  message?: string;
+}
+
+/**
+ * Walk the Error cause chain (Drizzle wraps pg errors in `_DrizzleQueryError`)
+ * and extract PostgreSQL-specific fields from the first node that carries a
+ * SQLSTATE `code` property.
+ *
+ * Usage in structured log calls:
+ *
+ *   logger.warn(
+ *     { youtubeId, pgErr: extractPgError(err), err },
+ *     "youtube-sync: row failed",
+ *   );
+ *
+ * The `err` field is kept alongside so pino serialises the full stack trace.
+ * `pgErr` provides the fast-lookup fields (sqlstate, constraint, detail)
+ * without having to grep through truncated message strings.
+ */
+export function extractPgError(err: unknown): PgErrorDetail {
+  if (!(err instanceof Error)) return { message: String(err) };
+
+  let node: unknown = err;
+  while (node instanceof Error) {
+    const n = node as Record<string, unknown>;
+    // node-postgres attaches SQLSTATE as `code`; Drizzle's wrapper does not.
+    if (typeof n.code === "string" && /^[0-9A-Z]{5}$/.test(n.code)) {
+      return {
+        sqlstate:   n.code as string,
+        severity:   typeof n.severity  === "string" ? n.severity  : undefined,
+        constraint: typeof n.constraint === "string" ? n.constraint : undefined,
+        column:     typeof n.column    === "string" ? n.column    : undefined,
+        table:      typeof n.table     === "string" ? n.table     : undefined,
+        detail:     typeof n.detail    === "string" ? n.detail    : undefined,
+        hint:       typeof n.hint      === "string" ? n.hint      : undefined,
+        message:    node.message,
+      };
+    }
+    node = (node as { cause?: unknown }).cause;
+  }
+
+  // No SQLSTATE found — return just the top-level message.
+  return { message: (err as Error).message };
+}
+
+/**
+ * Return true when the PostgreSQL SQLSTATE indicates the operation should be
+ * retried (transient infrastructure error), false when it is a permanent
+ * application-level failure (constraint violation, type mismatch, etc.).
+ *
+ * Uses SQLSTATE codes rather than message-string matching so the classification
+ * is not confused by coincidental keyword matches (e.g. a column named
+ * "connection_id" producing a false "connection" hit).
+ *
+ * SQLSTATE classes:
+ *   08xxx — Connection exceptions
+ *   40001 — Serialization failure (REPEATABLE READ / SERIALIZABLE)
+ *   40P01 — Deadlock detected
+ *   57014 — Query canceled (lock timeout, statement timeout)
+ *   53xxx — Insufficient resources (too_many_connections = 53300)
+ *
+ * Everything else (23xxx constraint violations, 42xxx syntax/object-not-found,
+ * 22xxx data exceptions, etc.) is permanent — retrying will not help.
+ */
+export function isTransientPgError(err: unknown): boolean {
+  const { sqlstate } = extractPgError(err);
+  if (!sqlstate) {
+    // No SQLSTATE — fall back to message-text heuristics for non-pg errors
+    // (e.g. Node.js ECONNRESET, DNS failures before a connection is made).
+    const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+    return (
+      msg.includes("econnreset") ||
+      msg.includes("econnrefused") ||
+      msg.includes("connection terminated") ||
+      msg.includes("connection refused") ||
+      msg.includes("etimedout") ||
+      msg.includes("too many clients")
+    );
+  }
+  return (
+    sqlstate.startsWith("08") ||   // connection exceptions
+    sqlstate === "40001"         || // serialization failure
+    sqlstate === "40P01"         || // deadlock detected
+    sqlstate === "57014"         || // query canceled (lock/stmt timeout)
+    sqlstate.startsWith("53")       // insufficient resources incl. 53300
+  );
+}
+
 const videos = schema.videosTable;
 
 /**
@@ -85,4 +199,8 @@ export const SAFE_VIDEO_COLS = {
   metadataLocked:   sql<boolean>`false`,
   faststartApplied: sql<boolean>`false`,
   broadcastOnly:    sql<boolean>`false`,
+  // Late-added text columns — hardcoded NULL so no column reference appears
+  // in the SQL until the migration adds them.
+  transcodingErrorMessage: sql<string | null>`NULL`,
+  transcodingErrorCode:    sql<string | null>`NULL`,
 } as const;

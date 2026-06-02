@@ -5,7 +5,7 @@ import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
-import { isUndefinedColumnError } from "../../infrastructure/db-schema-guard.js";
+import { isUndefinedColumnError, extractPgError, isTransientPgError } from "../../infrastructure/db-schema-guard.js";
 import { registerNamedStore } from "../../infrastructure/cache.js";
 import { scanLibraryAndEnqueue } from "../broadcast/auto-enqueue.service.js";
 
@@ -276,24 +276,10 @@ function sanitizeEnum<T extends string>(
   return val as T;
 }
 
-/**
- * Returns true for transient database errors that are safe to retry
- * (lock timeouts, serialisation failures, connection interruptions).
- * Returns false for permanent errors (constraint violations, type mismatches)
- * where retrying would simply fail again.
- */
-function isTransientDbError(err: unknown): boolean {
-  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
-  return (
-    msg.includes("lock timeout") ||
-    msg.includes("deadlock") ||
-    msg.includes("serialization failure") ||
-    msg.includes("could not connect") ||
-    msg.includes("connection") ||
-    msg.includes("timeout") ||
-    msg.includes("too many clients")
-  );
-}
+// isTransientPgError is imported from db-schema-guard.ts.
+// It uses PostgreSQL SQLSTATE codes (40001 deadlock, 40P01 serialization,
+// 57014 lock timeout, 08xxx connection, 53xxx insufficient-resources) instead
+// of fragile message-string matching.
 
 // ── Date string validation ────────────────────────────────────────────────────
 
@@ -802,9 +788,13 @@ class IngestionQueue {
         // lose the quota consumed so far. persistQuota is idempotent (upsert).
         void persistQuota();
       } catch (batchErr) {
-        const batchMsg = batchErr instanceof Error ? batchErr.message : String(batchErr);
         logger.warn(
-          { chunkStart: i, chunkSize: pending.length, error: batchMsg.slice(0, 200) },
+          {
+            chunkStart: i,
+            chunkSize: pending.length,
+            pgErr: extractPgError(batchErr),
+            err: batchErr,
+          },
           "youtube-sync: batch upsert failed — falling back to per-row with retry",
         );
 
@@ -827,13 +817,14 @@ class IngestionQueue {
               item.lastError = rowErr instanceof Error ? rowErr.message : String(rowErr);
 
               // Don't retry permanent errors — they will fail on every attempt.
-              if (!isTransientDbError(rowErr)) {
+              if (!isTransientPgError(rowErr)) {
                 logger.warn(
                   {
                     youtubeId: item.row.youtubeId,
                     title: item.row.title.slice(0, 80),
                     attempt: attempt + 1,
-                    error: item.lastError.slice(0, 300),
+                    pgErr: extractPgError(rowErr),
+                    err: rowErr,
                   },
                   "youtube-sync: permanent row error — skipping retries",
                 );
@@ -849,7 +840,7 @@ class IngestionQueue {
                 youtubeId: item.row.youtubeId,
                 title: item.row.title.slice(0, 80),
                 attempts: item.attempts,
-                error: item.lastError?.slice(0, 300),
+                lastError: item.lastError,
               },
               "youtube-sync: row permanently failed after all retries",
             );

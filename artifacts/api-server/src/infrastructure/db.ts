@@ -630,6 +630,18 @@ export async function ensureUserSchemaColumns(): Promise<void> {
       ALTER TABLE managed_videos
         ADD COLUMN IF NOT EXISTS transcoding_error_message TEXT
     `);
+    // Machine-readable error classification code — added June 2026.
+    // Set by the transcoder alongside transcoding_error_message so that
+    // retry logic can distinguish unrecoverable failures (CORRUPT_SOURCE,
+    // DISK_FULL) from retryable ones without parsing free-text messages.
+    // Cleared to NULL when a re-transcode is enqueued.
+    // NOTE: drizzle-kit push silently skips this column on some prod DBs
+    // (schema drift). This explicit ADD COLUMN IF NOT EXISTS is the
+    // belt-and-suspenders guarantee it is always present.
+    await client.query(`
+      ALTER TABLE managed_videos
+        ADD COLUMN IF NOT EXISTS transcoding_error_code TEXT
+    `);
 
     // ── Data self-heal: broadcast_queue placeholder duration ──────────────
     // Queue rows are inserted at upload-finalize time with a 1800-second
@@ -661,6 +673,57 @@ export async function ensureUserSchemaColumns(): Promise<void> {
     // affected routes will persist until the missing column is added, making
     // it easy to spot in logs.
     logger.warn({ err }, "db: ensureUserSchemaColumns failed — some routes may return 500 until columns are present");
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Mark youtube_sync_log entries stuck at status='running' as 'interrupted'.
+ *
+ * When the API process is killed (SIGKILL, OOM, container restart) while a
+ * sync is in progress the finally-block in syncYouTubeChannel() cannot run,
+ * leaving the row with status='running' and all stat columns NULL forever.
+ * The admin "Sync" panel shows those rows as still in-progress, which is
+ * misleading and can also block manual re-triggers if the service-level
+ * semaphore is not reset.
+ *
+ * Recovery rule: any 'running' row older than 5 minutes at startup must have
+ * been interrupted — a healthy sync never takes that long on this channel
+ * (<1 min in production). We mark them 'interrupted' with a note so operators
+ * can see exactly which runs were cut short and when.
+ *
+ * Called once at boot, non-blocking (errors are swallowed).
+ */
+export async function recoverStaleSyncLogs(): Promise<void> {
+  const client = await pool.connect();
+  try {
+    const result = await client.query(`
+      UPDATE youtube_sync_log
+      SET    status       = 'interrupted',
+             completed_at = NOW(),
+             error_message = COALESCE(
+               error_message,
+               'Sync interrupted — server restarted before completion'
+             )
+      WHERE  status     = 'running'
+        AND  started_at < NOW() - INTERVAL '5 minutes'
+    `);
+    const recovered = (result as unknown as { rowCount: number | null }).rowCount ?? 0;
+    if (recovered > 0) {
+      logger.warn(
+        { recovered },
+        "db: marked stale youtube_sync_log rows as 'interrupted' — " +
+          "these syncs were cut short by a server restart; " +
+          "trigger a manual sync from the admin panel to catch up",
+      );
+    } else {
+      logger.info("db: no stale youtube_sync_log rows found at startup");
+    }
+  } catch (err) {
+    // 42P01 = table doesn't exist (first boot before drizzle-kit push).
+    // Any other error is also non-fatal — don't block startup.
+    logger.warn({ err }, "db: recoverStaleSyncLogs failed (non-fatal)");
   } finally {
     client.release();
   }
