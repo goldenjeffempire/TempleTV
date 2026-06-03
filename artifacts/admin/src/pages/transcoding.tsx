@@ -53,6 +53,9 @@ export default function TranscodingPage() {
     onSuccess: () => {
       toast.success("Job requeued for transcoding");
       void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+      // Retry changes the video's transcodingStatus back to "queued" — sync the
+      // Video Library badge so it stops showing "HLS failed" immediately.
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Retry failed"),
   });
@@ -62,6 +65,9 @@ export default function TranscodingPage() {
     onSuccess: () => {
       toast.success("Job cancelled");
       void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+      // Cancel changes transcodingStatus — reflect this in the Video Library
+      // immediately rather than waiting for its next 30 s stale refresh.
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Cancel failed"),
   });
@@ -71,6 +77,10 @@ export default function TranscodingPage() {
     onSuccess: (res) => {
       toast.success(res.message);
       void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+      // Sync the Video Library — bulk transcode sets many transcodingStatus
+      // values to "queued"; without this the library tab continues to show
+      // stale "HLS failed" or "none" badges until the user manually refreshes.
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Bulk transcode failed"),
   });

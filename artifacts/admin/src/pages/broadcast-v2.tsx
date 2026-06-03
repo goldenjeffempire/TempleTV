@@ -1068,6 +1068,12 @@ function BroadcastV2PageInner() {
   const reorderMutation = useMutation({
     mutationFn: (itemIds: string[]) =>
       api.put<{ ok: boolean; count: number }>("/admin/broadcast/reorder", { itemIds }),
+    onSuccess: () => {
+      // Invalidate so any component not subscribed to the optimistic localOrder
+      // state (e.g. the source-health panel) sees the new canonical order from
+      // the server, particularly when the SSE connection is degraded.
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+    },
     onError: (err) => {
       toast.error(
         err instanceof HttpError ? err.message : "Reorder failed — restoring queue from server.",
@@ -1370,7 +1376,14 @@ function BroadcastV2PageInner() {
     setBusy("clear-blocks");
     try {
       await api.post("/broadcast-v2/clear-bad-urls", { idempotencyKey: crypto.randomUUID() });
-      await refetchHealth();
+      // Refetch the specific query instance AND invalidate the query key so
+      // any other mounted component that reads broadcast-v2-engine-health
+      // (e.g. the dashboard stuck-engine banner) is also refreshed immediately
+      // rather than waiting up to 30 s for its own staleTime to elapse.
+      await Promise.all([
+        refetchHealth(),
+        qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] }),
+      ]);
       toast.success("Source blocks cleared — all URLs will retry on next cycle.");
     } catch (e) {
       const detail =

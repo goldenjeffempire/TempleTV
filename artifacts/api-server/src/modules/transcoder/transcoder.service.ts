@@ -1273,10 +1273,24 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
           "transcoder: multi-rendition ffmpeg failed — retrying with 360p-only fallback",
         );
 
-        // Stop the progressive uploader and clear any partially-uploaded keys
-        // from the failed multi-rendition run so the final pass re-uploads them.
+        // Stop the progressive uploader and delete any partially-uploaded
+        // segments from the failed multi-rendition run. Without this cleanup,
+        // stale HLS segment rows accumulate in storage_blobs (and object storage)
+        // and are never GC'd — they are not referenced by any playlist because the
+        // master m3u8 was never finalized for the failed rendition set.
         progressiveActive = false;
         await progressiveLoop.catch(() => {});
+
+        if (uploadedSegmentKeys.size > 0) {
+          const st = storage();
+          // Delete all partially-uploaded segments in parallel; non-fatal since
+          // the orphan-cleanup worker will eventually remove unreferenced objects.
+          await Promise.allSettled(
+            [...uploadedSegmentKeys].map((k) => st.deleteObject(k).catch((err: unknown) => {
+              logger.warn({ err, key: k, videoId: req.videoId }, "transcoder: failed to delete orphaned segment during 360p fallback (non-fatal)");
+            })),
+          );
+        }
         uploadedSegmentKeys.clear();
 
         // Reset progress to 0 so the Admin UI shows "Encoding (0%)" rather

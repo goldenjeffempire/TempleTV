@@ -461,6 +461,10 @@ export default function VideosPage() {
       if (failed > 0) toast.warning(`${failed} video${failed !== 1 ? "s" : ""} could not be queued (already encoding or YouTube source)`);
       setSelectedIds(new Set());
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      // Keep the Transcoding Pipeline tab in sync — jobs appear there the moment
+      // they are enqueued, so a cross-invalidation here avoids the operator
+      // switching tabs and seeing a stale "no jobs" state.
+      void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
     },
     onError: () => toast.error("Bulk transcode request failed"),
   });
@@ -481,6 +485,13 @@ export default function VideosPage() {
       setBulkDeleteOpen(false);
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      // A video may appear as an episode in one or more series, or as an
+      // entry in one or more playlists — bulk delete must invalidate these
+      // caches just as the single-delete mutation already does (lines above).
+      void qc.invalidateQueries({ queryKey: ["series"] });
+      void qc.invalidateQueries({ queryKey: ["series-episodes"] });
+      void qc.invalidateQueries({ queryKey: ["playlists"] });
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
     },
     onError: () => toast.error("Bulk delete failed"),
   });
