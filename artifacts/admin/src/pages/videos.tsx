@@ -317,6 +317,12 @@ export default function VideosPage() {
       // the queue UI shows stale items with broken source URLs until the
       // next natural SSE-triggered invalidation.
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      // A video may appear as an episode in one or more series, or as an
+      // item in a playlist. Invalidate those caches so those pages don't show
+      // ghost "deleted video" entries until the user manually refreshes.
+      void qc.invalidateQueries({ queryKey: ["series"] });
+      void qc.invalidateQueries({ queryKey: ["series-episodes"] });
+      void qc.invalidateQueries({ queryKey: ["playlists"] });
       setDeleteVideo(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Delete failed"),

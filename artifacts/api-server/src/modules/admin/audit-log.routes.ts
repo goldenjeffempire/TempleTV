@@ -37,11 +37,19 @@ export async function auditLogRoutes(app: FastifyInstance) {
     "/audit-log",
     {
       preHandler: requireAuth("admin"),
+      // Strict per-IP limit: this endpoint fans out to 4+ sequential DB scans
+      // and performs in-memory merging. Without a low cap, a single client can
+      // saturate the DB connection pool at the global 120/min default.
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Get admin activity audit log (latest 200 entries)",
         querystring: z.object({
           limit: z.coerce.number().int().min(1).max(200).default(100),
+          // Page offset into the merged, sorted result set. Without this, the
+          // endpoint is stuck at the first `limit` entries regardless of how
+          // many rows exist across the source tables.
+          offset: z.coerce.number().int().min(0).default(0),
           type: z.enum(["video_uploaded", "video_transcoded", "user_created", "schedule_added", "config_changed", "all"]).default("all"),
         }),
         response: {
@@ -53,7 +61,11 @@ export async function auditLogRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const { limit, type } = req.query;
+      const { limit, offset, type } = req.query;
+      // Fetch enough rows from each source table to cover any requested page.
+      // Without this, entries beyond the original hard-coded ceiling (100/50/30)
+      // were never fetched, making offset > 0 return empty results.
+      const fetchLimit = Math.min(limit + offset + 200, 500);
       const entries: AuditEntry[] = [];
 
       // ── Videos (uploaded / transcoded) ────────────────────────────────────
@@ -69,7 +81,7 @@ export async function auditLogRoutes(app: FastifyInstance) {
           })
           .from(schema.videosTable)
           .orderBy(desc(schema.videosTable.importedAt))
-          .limit(100);
+          .limit(fetchLimit);
 
         for (const v of videos) {
           const ts = v.importedAt?.toISOString() ?? new Date().toISOString();
@@ -114,7 +126,7 @@ export async function auditLogRoutes(app: FastifyInstance) {
           })
           .from(schema.usersTable)
           .orderBy(desc(schema.usersTable.createdAt))
-          .limit(50);
+          .limit(fetchLimit);
 
         for (const u of users) {
           const ts = u.createdAt?.toISOString() ?? new Date().toISOString();
@@ -142,7 +154,7 @@ export async function auditLogRoutes(app: FastifyInstance) {
             })
             .from(schema.scheduleTable)
             .orderBy(desc(schema.scheduleTable.createdAt))
-            .limit(50);
+            .limit(fetchLimit);
 
           for (const s of schedItems) {
             const ts = s.createdAt?.toISOString() ?? new Date().toISOString();
@@ -172,7 +184,7 @@ export async function auditLogRoutes(app: FastifyInstance) {
             })
             .from(schema.appConfigTable)
             .orderBy(desc(schema.appConfigTable.updatedAt))
-            .limit(30);
+            .limit(fetchLimit);
 
           for (const c of configs) {
             const ts = c.updatedAt?.toISOString() ?? new Date().toISOString();
@@ -191,9 +203,9 @@ export async function auditLogRoutes(app: FastifyInstance) {
         }
       }
 
-      // Sort all entries newest-first, then apply limit
+      // Sort all entries newest-first, then apply offset + limit
       entries.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-      const sliced = entries.slice(0, limit);
+      const sliced = entries.slice(offset, offset + limit);
 
       return reply.send({ entries: sliced, total: entries.length });
     },

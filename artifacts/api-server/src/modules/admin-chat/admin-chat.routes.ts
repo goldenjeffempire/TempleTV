@@ -76,6 +76,10 @@ export async function adminChatRoutes(app: FastifyInstance) {
         summary: "List recent chat messages with moderation stats",
         querystring: z.object({
           limit: z.coerce.number().int().positive().max(500).optional(),
+          // Cursor-style offset so the moderation panel can page back through
+          // older messages. Without offset, only the most recent `limit` rows
+          // are accessible and historical moderation is impossible.
+          offset: z.coerce.number().int().min(0).optional(),
         }),
         response: {
           200: z.object({
@@ -88,11 +92,13 @@ export async function adminChatRoutes(app: FastifyInstance) {
     },
     async (req) => {
       const limit = req.query.limit ?? 100;
+      const offset = req.query.offset ?? 0;
       const rows = await db
         .select()
         .from(messages)
         .orderBy(desc(messages.createdAt))
-        .limit(limit);
+        .limit(limit)
+        .offset(offset);
 
       const [totalRow] = await db
         .select({ total: count() })
@@ -121,6 +127,8 @@ export async function adminChatRoutes(app: FastifyInstance) {
   );
 
   // ── DELETE /admin/chat/:id ───────────────────────────────────────────────────
+  // RESTful alias for POST /chat/messages/:id/delete below. Kept for backward
+  // compatibility with any client that uses the HTTP DELETE verb directly.
   r.delete(
     "/chat/:id",
     {
@@ -128,9 +136,9 @@ export async function adminChatRoutes(app: FastifyInstance) {
       config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
-        summary: "Soft-delete a chat message (DELETE alias)",
+        summary: "Soft-delete a chat message (RESTful alias)",
         params: z.object({ id: z.string().min(1) }),
-        response: { 200: z.object({ ok: z.literal(true), id: z.string() }) },
+        response: { 200: z.object({ ok: z.literal(true), id: z.string(), deletedAt: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },
@@ -144,7 +152,7 @@ export async function adminChatRoutes(app: FastifyInstance) {
         .returning({ id: messages.id });
       if (updated.length === 0) throw new NotFoundError(`Chat message ${id} not found`);
       chatHub.publishDelete(TEMPLE_TV_LIVE_CHANNEL, id);
-      return { ok: true as const, id };
+      return { ok: true as const, id, deletedAt: now.toISOString() };
     },
   );
 

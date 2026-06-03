@@ -321,6 +321,7 @@ export async function authRoutes(app: FastifyInstance) {
     "/password",
     {
       preHandler: requireAuth(),
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["auth"],
         summary: "Change authenticated user's password",
@@ -328,6 +329,10 @@ export async function authRoutes(app: FastifyInstance) {
         body: z.object({
           currentPassword: z.string().min(1),
           newPassword: z.string().min(8).max(128),
+          // Required when the account has MFA enabled. Prevents a hijacked
+          // session from silently changing the password and locking the
+          // legitimate owner out without needing their second factor.
+          totpCode: z.string().regex(/^\d{6}$/).optional(),
         }),
         response: { 200: z.object({ message: z.string() }) },
       },
@@ -505,6 +510,10 @@ export async function authRoutes(app: FastifyInstance) {
   r.post(
     "/device-link/create",
     {
+      // Strict rate limit: each call inserts a row into device_link_codes.
+      // Without this, a malicious client can flood the table to cause OOM
+      // or exhaust connection pool bandwidth on the cleanup sweep.
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
       schema: {
         tags: ["auth"],
         summary: "Create a device-link pairing code (TV side)",

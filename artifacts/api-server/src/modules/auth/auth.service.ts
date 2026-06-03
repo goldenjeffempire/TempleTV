@@ -385,12 +385,25 @@ export const authService = {
    * Verifies the current password before applying the new one, then
    * invalidates all active sessions for security (same as reset-password).
    */
-  async changePassword(userId: string, body: { currentPassword: string; newPassword: string }): Promise<void> {
+  async changePassword(userId: string, body: { currentPassword: string; newPassword: string; totpCode?: string }): Promise<void> {
     const rows = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
     const user = rows[0];
     if (!user) throw new NotFoundError("User not found");
     const valid = await verifyPassword(body.currentPassword, user.passwordHash);
     if (!valid) throw new UnauthorizedError("Current password is incorrect");
+    // MFA guard: if the account has TOTP enabled, require a valid TOTP code
+    // before accepting the new password. Without this check, a hijacked session
+    // can change the password and lock the legitimate owner out without ever
+    // needing the second factor — a complete MFA bypass.
+    if (user.totpEnabled) {
+      if (!body.totpCode) {
+        throw new UnauthorizedError("TOTP code is required to change password on MFA-enabled accounts");
+      }
+      const { verifyTotpCode } = await import("./totp.js");
+      if (!verifyTotpCode(body.totpCode, user.totpSecret!)) {
+        throw new UnauthorizedError("Invalid TOTP code");
+      }
+    }
     const newHash = await hashPassword(body.newPassword);
     const now = new Date();
     // Atomically update the password hash AND revoke all active sessions so
