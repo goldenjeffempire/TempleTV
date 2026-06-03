@@ -336,6 +336,15 @@ class BroadcastOrchestrator extends EventEmitter {
    */
   private lastStuckAlertMs = 0;
   /**
+   * Wall-clock ms when bump() last incremented the sequence counter.
+   * Used by /health to detect post-start hangs: if sequence has advanced
+   * at least once (sequence > 0) but not changed for an extended period
+   * while the queue is non-empty, the orchestrator is likely hung.
+   * Initialized to Date.now() so a freshly-booted process isn't immediately
+   * flagged as stale (sequence starts at 0, first bump may take several seconds).
+   */
+  private lastSequenceAdvanceMs: number = Date.now();
+  /**
    * Wall-clock timestamp when the broadcast first had a live item on air
    * in the current uninterrupted run. Reset to null when the broadcast goes
    * dark (dead air, all-blocked, or queue empty). Used by /health to surface
@@ -2086,6 +2095,7 @@ class BroadcastOrchestrator extends EventEmitter {
 
   private async bump(eventType: V2EventType, payload: unknown): Promise<void> {
     this.sequence += 1;
+    this.lastSequenceAdvanceMs = Date.now();
     const seq = this.sequence;
     // Persist state and event in the background so the tick loop stays cheap.
     void Promise.all([
@@ -2535,6 +2545,14 @@ class BroadcastOrchestrator extends EventEmitter {
 
   getSequence(): number {
     return this.sequence;
+  }
+
+  /**
+   * Wall-clock ms when the sequence counter last advanced via bump().
+   * Used by /health to detect post-start hangs (sequence > 0 but stalled).
+   */
+  getLastSequenceAdvanceMs(): number {
+    return this.lastSequenceAdvanceMs;
   }
 
   /** Number of in-memory queue items currently driving the broadcast cycle. */

@@ -229,6 +229,9 @@ export class V2Transport {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private lastSequence = 0;
   private stopped = false;
+
+  /** True once stop() has been called. Used by react.ts to cancel naturalEnd retries. */
+  get isStopped(): boolean { return this.stopped; }
   /**
    * Bumped every time we deliberately replace the active socket
    * (start, forceReconnect, scheduleReconnect→tick). Callbacks captured
@@ -493,6 +496,13 @@ export class V2Transport {
       // heartbeats (130 s) converging from 0 on a device with a skewed clock.
       smoothed = rawOffset;
       this.clockEmaInitialized = true;
+    } else if (Math.abs(rawOffset - this.clockOffsetMs) > 5_000) {
+      // Large OS clock correction (NTP step-sync, timezone change, or sleep/wake).
+      // The EMA's α=0.15 would take ~130 heartbeats (130 s) to converge from the
+      // stale value to the new one — during which resolvePositionSecs() computes
+      // wildly wrong seek targets. Re-seed directly so convergence is instant,
+      // matching the bootstrap behaviour for the first frame.
+      smoothed = rawOffset;
     } else {
       smoothed = this.clockOffsetMs * 0.85 + rawOffset * 0.15;
     }

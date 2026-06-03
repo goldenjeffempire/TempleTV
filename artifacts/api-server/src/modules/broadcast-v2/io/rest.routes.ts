@@ -253,10 +253,28 @@ export async function restRoutes(app: FastifyInstance) {
       itemCount > 0 &&
       boot.busBridgeInstalled === true &&
       boot.started === true;
+
+    // Post-start sequence-stale detection: catches hangs where the orchestrator
+    // booted and advanced at least once (sequence > 0) but its tick loop has
+    // since died or gotten stuck. A 5-minute threshold gives enough headroom
+    // for legitimate long-duration items and all-blocked states where no bump()
+    // fires, while still catching a genuinely hung orchestrator within one
+    // monitoring poll cycle. Only flagged when the queue is non-empty — an
+    // empty queue that has never advanced since restart is not stale, just idle.
+    const SEQUENCE_STALE_THRESHOLD_MS = 5 * 60_000; // 5 minutes
+    const lastSequenceAdvanceMs = broadcastOrchestrator.getLastSequenceAdvanceMs();
+    const sequenceStaleSec = Math.floor((Date.now() - lastSequenceAdvanceMs) / 1000);
+    const sequenceStale =
+      sequence > 0 &&
+      itemCount > 0 &&
+      Date.now() - lastSequenceAdvanceMs > SEQUENCE_STALE_THRESHOLD_MS;
+
     const allBlocked = broadcastOrchestrator.getAllBlockedInfo();
     return {
-      ok: !stuck,
+      ok: !stuck && !sequenceStale,
       stuck,
+      sequenceStale,
+      sequenceStaleSec,
       channelId: broadcastOrchestrator.channelId,
       sequence,
       mode: snap.mode,

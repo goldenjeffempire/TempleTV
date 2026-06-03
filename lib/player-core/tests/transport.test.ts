@@ -493,7 +493,7 @@ describe("V2Transport — clock calibration EMA", () => {
     transport.stop();
   });
 
-  it("EMA smooths out jitter — large single spike does not dominate", () => {
+  it("EMA smooths out jitter — small transient spike (< 5 000 ms) does not dominate", () => {
     const { transport } = makeTransport();
     transport.start();
     const ws = MockWebSocket.latest();
@@ -505,12 +505,35 @@ describe("V2Transport — clock calibration EMA", () => {
     }
     const baseline = transport.getClockOffsetMs();
 
-    // Single spike of 10 000 ms — EMA α=0.15 should keep result near baseline
-    ws.simulateMessage({ type: "heartbeat", sequence: 11, serverTimeMs: Date.now() + 10_000 });
+    // Small transient spike of 2 000 ms (network congestion, not an OS clock change).
+    // This is below the 5 000 ms NTP-step threshold, so EMA applies: α=0.15.
+    // Maximum shift: 2 000 * 0.15 = 300 ms (well under 1 s).
+    ws.simulateMessage({ type: "heartbeat", sequence: 11, serverTimeMs: Date.now() + 2_000 });
     const afterSpike = transport.getClockOffsetMs();
 
-    // 10 000 * 0.15 = 1 500 ms shift maximum
-    expect(afterSpike - baseline).toBeLessThan(2_000);
+    // EMA keeps the result close to baseline — spike does not dominate.
+    expect(afterSpike - baseline).toBeLessThan(500);
+    transport.stop();
+  });
+
+  it("large jump (> 5 000 ms) re-seeds EMA immediately rather than applying slow convergence", () => {
+    const { transport } = makeTransport();
+    transport.start();
+    const ws = MockWebSocket.latest();
+    ws.simulateOpen();
+
+    // Establish baseline at 100 ms offset
+    for (let i = 0; i < 10; i++) {
+      ws.simulateMessage({ type: "heartbeat", sequence: i + 1, serverTimeMs: Date.now() + 100 });
+    }
+
+    // Large NTP step-sync: clock jumps by +10 000 ms.
+    // With re-seed: new offset ≈ +10 000 (not EMA-averaged from ~100 ms).
+    ws.simulateMessage({ type: "heartbeat", sequence: 11, serverTimeMs: Date.now() + 10_000 });
+    const afterLargeJump = transport.getClockOffsetMs();
+
+    // Should be close to the new raw offset, not stuck near 100.
+    expect(afterLargeJump).toBeGreaterThan(9_000);
     transport.stop();
   });
 
@@ -643,6 +666,112 @@ describe("V2Transport — frame dispatch", () => {
       try { return JSON.parse(m).type === "resume"; } catch { return false; }
     });
     if (resume) expect(JSON.parse(resume).lastSequence).toBe(10);
+    transport.stop();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Clock EMA — large-jump re-seed (regression: Bug 8)
+//
+// Bug: updateClockOffset() always applied the EMA formula (α=0.15) regardless
+// of how far the new measurement was from the current estimate. When the OS
+// performed an NTP step-sync (adding/subtracting tens of seconds), the EMA
+// took ~130 heartbeats (130 s) to converge, during which resolvePositionSecs()
+// computed wildly wrong seek positions.
+//
+// Fix: if |rawOffset - currentOffset| > 5 000 ms, re-seed the EMA directly
+// (same as the bootstrap path) so convergence is instant.
+// ---------------------------------------------------------------------------
+
+describe("V2Transport — clock EMA large-jump re-seed", () => {
+  it("bootstraps clock offset from the first snapshot frame", () => {
+    const clockOffsets: number[] = [];
+    const { transport } = makeTransport({ onClockCalibration: (ms) => clockOffsets.push(ms) });
+    transport.start();
+    const ws = MockWebSocket.latest();
+    ws.simulateOpen();
+
+    // Send a snapshot with serverTimeMs 2 000 ms ahead of current Date.now().
+    const serverTime = Date.now() + 2_000;
+    ws.simulateMessage({ type: "snapshot", sequence: 1, state: { ...makeSnapshot(), serverTimeMs: serverTime } });
+
+    // First calibration should be seeded directly (not EMA-averaged).
+    expect(clockOffsets.length).toBeGreaterThanOrEqual(1);
+    const firstOffset = clockOffsets[0];
+    // The offset is serverTimeMs − Date.now() which should be close to +2 000.
+    // Allow ±100 ms tolerance for test execution time.
+    expect(firstOffset).toBeGreaterThan(1_900);
+    expect(firstOffset).toBeLessThan(2_100);
+    transport.stop();
+  });
+
+  it("applies EMA smoothing for small clock deltas (< 5 000 ms)", () => {
+    const clockOffsets: number[] = [];
+    const { transport } = makeTransport({ onClockCalibration: (ms) => clockOffsets.push(ms) });
+    transport.start();
+    const ws = MockWebSocket.latest();
+    ws.simulateOpen();
+
+    // Bootstrap at +1 000 ms.
+    ws.simulateMessage({ type: "snapshot", sequence: 1, state: { ...makeSnapshot(), serverTimeMs: Date.now() + 1_000 } });
+    const firstOffset = clockOffsets[0] ?? 0;
+
+    // Send another snapshot at +1 100 ms — delta is only 100 ms, EMA applies.
+    vi.advanceTimersByTime(100);
+    ws.simulateMessage({ type: "snapshot", sequence: 2, state: { ...makeSnapshot(), serverTimeMs: Date.now() + 1_100 } });
+
+    // If EMA was applied: new ≈ 1000*0.85 + 1100*0.15 = 865 + 165 = 1030.
+    // The new offset should be less than the raw +1 100 (EMA damps the jump).
+    if (clockOffsets.length >= 2) {
+      const secondOffset = clockOffsets[clockOffsets.length - 1];
+      // Should be between the first measurement and the new raw, not at the extreme.
+      expect(secondOffset).toBeGreaterThan(firstOffset);
+      expect(secondOffset).toBeLessThan(1_100 + 50); // not fully converged to 1 100
+    }
+    transport.stop();
+  });
+
+  it("re-seeds EMA directly for large jumps (> 5 000 ms) — NTP step-sync scenario", () => {
+    const clockOffsets: number[] = [];
+    const { transport } = makeTransport({ onClockCalibration: (ms) => clockOffsets.push(ms) });
+    transport.start();
+    const ws = MockWebSocket.latest();
+    ws.simulateOpen();
+
+    // Bootstrap at +500 ms.
+    ws.simulateMessage({ type: "snapshot", sequence: 1, state: { ...makeSnapshot(), serverTimeMs: Date.now() + 500 } });
+
+    // Simulate NTP step: server time jumps by +60 000 ms (1 minute ahead).
+    vi.advanceTimersByTime(1_000);
+    const bigJumpTime = Date.now() + 60_000;
+    ws.simulateMessage({ type: "snapshot", sequence: 2, state: { ...makeSnapshot(), serverTimeMs: bigJumpTime } });
+
+    // With the fix: the EMA is re-seeded directly → offset ≈ +60 000.
+    // Without the fix: EMA would give ≈ 500*0.85 + 60 000*0.15 ≈ 9 425 (way off).
+    const latestOffset = clockOffsets[clockOffsets.length - 1];
+    // The re-seeded value should be close to 60 000 (±500 ms tolerance).
+    expect(latestOffset).toBeGreaterThan(59_000);
+    transport.stop();
+  });
+
+  it("re-seeds on large negative jump (OS clock stepped back)", () => {
+    const clockOffsets: number[] = [];
+    const { transport } = makeTransport({ onClockCalibration: (ms) => clockOffsets.push(ms) });
+    transport.start();
+    const ws = MockWebSocket.latest();
+    ws.simulateOpen();
+
+    // Bootstrap at +2 000 ms offset.
+    ws.simulateMessage({ type: "snapshot", sequence: 1, state: { ...makeSnapshot(), serverTimeMs: Date.now() + 2_000 } });
+
+    // OS clock jumps +30 s (our Date.now() is now 30 s ahead of server time).
+    vi.advanceTimersByTime(100);
+    const negativeDriftTime = Date.now() - 30_000; // server trails local by 30 s
+    ws.simulateMessage({ type: "snapshot", sequence: 2, state: { ...makeSnapshot(), serverTimeMs: negativeDriftTime } });
+
+    // Re-seeded value should be close to -30 000.
+    const latestOffset = clockOffsets[clockOffsets.length - 1];
+    expect(latestOffset).toBeLessThan(-28_000);
     transport.stop();
   });
 });

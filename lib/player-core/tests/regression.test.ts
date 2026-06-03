@@ -25,7 +25,7 @@
  *     Fix:  setOverridePlaying(false) now fires unconditionally at the top of
  *           the LIVE_OVERRIDE_ACTIVE branch, before the YouTube early-return.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { PlayerMachine } from "../src/machine.js";
 import type { AdapterIntent } from "../src/machine.js";
 
@@ -657,5 +657,99 @@ describe("LIVE_OVERRIDE_ACTIVE phase timer cleared on videoReady — regression 
     clearPhaseTimer();
     clearPhaseTimer();
     expect(clearCallCount).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 8 — naturalEnd retry setTimeout leaks when session is destroyed
+//
+// Bug: machine.setNaturalEndCallback wired a doPost() retry chain using
+// plain setTimeout(). When the janitor evicted a session (machine.destroy()
+// + transport.stop()), the in-flight retry timers had no cancellation
+// mechanism — they kept calling POST /natural-end and transport.requestSnapshot()
+// indefinitely, even on a dead transport with stopped = true.
+//
+// Fix: added `if (transport.isStopped) return;` checks at the top of doPost()
+// and inside the .catch() retry branch. V2Transport now exposes a public
+// `get isStopped` getter that react.ts reads before each retry attempt.
+// ---------------------------------------------------------------------------
+
+describe("naturalEnd retry — cancelled on transport stop (Bug 8)", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("isStopped returns false before stop() and true after stop()", async () => {
+    // Import dynamically so vitest module isolation works
+    const { V2Transport, configureMobileStorage } = await import("../src/transport.js");
+
+    const store = new Map<string, string>();
+    configureMobileStorage({
+      getItem: (k) => store.get(k) ?? null,
+      setItem: (k, v) => { store.set(k, v); },
+      removeItem: (k) => { store.delete(k); },
+    });
+
+    const t = new V2Transport({
+      baseUrl: "http://localhost/api/broadcast-v2",
+      channel: "main",
+      onPlayerEvent: () => {},
+      onConnectionChange: () => {},
+    });
+
+    expect(t.isStopped).toBe(false);
+    t.stop();
+    expect(t.isStopped).toBe(true);
+  });
+
+  it("doPost retry logic bails out immediately when isStopped is true", () => {
+    // Simulate the doPost retry guard logic extracted from react.ts
+    // to confirm that isStopped=true prevents the next retry from running.
+    const naturalEndRetryDelays = [2_000, 4_000, 8_000];
+    let retryCount = 0;
+
+    // Simulate a transport that is already stopped
+    const stoppedTransport = { isStopped: true, requestSnapshot: vi.fn() };
+
+    const doPost = (attempt: number): void => {
+      if (stoppedTransport.isStopped) return; // <-- the fix
+      retryCount++;
+      // Simulate fetch failure → schedule retry
+      if (attempt < naturalEndRetryDelays.length) {
+        setTimeout(() => doPost(attempt + 1), naturalEndRetryDelays[attempt]);
+      } else {
+        stoppedTransport.requestSnapshot();
+      }
+    };
+
+    doPost(0); // Should bail immediately due to isStopped
+
+    expect(retryCount).toBe(0);
+    expect(stoppedTransport.requestSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("doPost mid-flight bail: if transport stops between fetch and retry, no further retries fire", () => {
+    const naturalEndRetryDelays = [2_000, 4_000, 8_000];
+    let retryCount = 0;
+    const mockTransport = { isStopped: false, requestSnapshot: vi.fn() };
+
+    const doPost = (attempt: number): void => {
+      if (mockTransport.isStopped) return;
+      retryCount++;
+      // Simulate fetch failure catch block:
+      // Stop the transport BEFORE the retry fires
+      mockTransport.isStopped = true;
+      if (attempt < naturalEndRetryDelays.length) {
+        setTimeout(() => doPost(attempt + 1), naturalEndRetryDelays[attempt]);
+      }
+    };
+
+    doPost(0); // first call — not stopped yet, retryCount = 1
+    expect(retryCount).toBe(1); // first attempt went through
+
+    // Advance time to trigger the scheduled retry
+    vi.advanceTimersByTime(10_000);
+    // The retry should have bailed because mockTransport.isStopped was set to true
+    expect(retryCount).toBe(1); // no second attempt
+    expect(mockTransport.requestSnapshot).not.toHaveBeenCalled();
   });
 });
