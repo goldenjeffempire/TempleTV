@@ -855,6 +855,24 @@ export class PlayerMachine {
       state === "HANDOFF"
     ) {
       this.onBufferError(bufferId, "stalled");
+    } else if (
+      state === "RECOVERING_PRIMARY" ||
+      state === "RECOVERING_FAILOVER"
+    ) {
+      // The source being recovered is actively loading. A stall during
+      // recovery means the recovery attempt itself is failing — the
+      // adapter's Watchdog has determined no playback progress after the
+      // threshold. Escalate through the normal error path so primaryRetries
+      // increments correctly and the machine advances to
+      // RECOVERING_FAILOVER → SKIP_PENDING rather than hanging silently
+      // until only the bind load-timeout (15 s) fires.
+      //
+      // No YouTube-override exemption is needed here: RECOVERING_PRIMARY
+      // and RECOVERING_FAILOVER can only be entered from PLAYING states
+      // using native video (HLS / MP4). A YouTube override in
+      // LIVE_OVERRIDE_ACTIVE exits to SYNCING when it ends — never to
+      // RECOVERING_* — so the stall always refers to a native element.
+      this.onBufferError(bufferId, "stalled");
     } else if (state === "LIVE_OVERRIDE_ACTIVE") {
       // Differentiate by override kind:
       //

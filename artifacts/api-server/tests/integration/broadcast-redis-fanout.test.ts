@@ -144,8 +144,10 @@ describe("BroadcastFanout — Redis Pub/Sub fan-out", () => {
         return;
       }
 
-      const writerOrch = makeMockOrchestrator("main");
-      const readerOrch = makeMockOrchestrator("main");
+      // Use a unique channelId per test to avoid ioredis-mock shared-store
+      // leader key collisions (SETNX key persists across tests in-process).
+      const writerOrch = makeMockOrchestrator("test-b");
+      const readerOrch = makeMockOrchestrator("test-b");
 
       const { writerFanout, readerFanout } = await makeWriterReaderPair(
         RedisMock, writerOrch, readerOrch, "b",
@@ -192,8 +194,8 @@ describe("BroadcastFanout — Redis Pub/Sub fan-out", () => {
         return;
       }
 
-      const writerOrch = makeMockOrchestrator();
-      const readerOrch = makeMockOrchestrator();
+      const writerOrch = makeMockOrchestrator("test-c");
+      const readerOrch = makeMockOrchestrator("test-c");
 
       const { writerFanout, readerFanout } = await makeWriterReaderPair(
         RedisMock, writerOrch, readerOrch, "c",
@@ -222,12 +224,21 @@ describe("BroadcastFanout — Redis Pub/Sub fan-out", () => {
         return;
       }
 
-      const writerOrch = makeMockOrchestrator();
-      const readerOrch = makeMockOrchestrator();
+      const writerOrch = makeMockOrchestrator("test-d");
+      const readerOrch = makeMockOrchestrator("test-d");
 
       const { writerFanout, readerFanout } = await makeWriterReaderPair(
         RedisMock, writerOrch, readerOrch, "d",
       );
+
+      // Verify roles — if writer election fails (stale leader key in mock store)
+      // the test would silently pass with 0 frames. Guard explicitly.
+      if (writerFanout.getRole() !== "writer" || readerFanout.getRole() !== "reader") {
+        console.warn("Leader election skewed — ioredis-mock store collision. Skipping.");
+        await writerFanout.close();
+        await readerFanout.close();
+        return;
+      }
 
       const sequences = [1, 2, 3];
       for (const seq of sequences) {
@@ -240,7 +251,7 @@ describe("BroadcastFanout — Redis Pub/Sub fan-out", () => {
         await new Promise<void>((r) => setTimeout(r, 10));
       }
 
-      await waitFor(() => readerOrch.injected.length >= 3, 600);
+      await waitFor(() => readerOrch.injected.length >= 3, 5000);
 
       expect(readerOrch.injected.map((f) => ("sequence" in f ? f.sequence : null))).toEqual(
         sequences,

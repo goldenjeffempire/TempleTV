@@ -891,6 +891,32 @@ class BroadcastOrchestrator extends EventEmitter {
     this.lastReloadError = null;
     this.reloadSuccesses += 1;
     this.cycleDurationMs = this.items.reduce((s, r) => s + r.durationSecs * 1000, 0);
+
+    // Reset dead-air tracking state whenever items load successfully.
+    //
+    // lastDeadAirEscalationMs: the 5-min cooldown is designed to throttle
+    // autonomous retry storms, not to delay recovery after an operator fix.
+    // Resetting it here means the NEXT dead-air event gets an immediate
+    // escalation rather than waiting for the remaining cooldown window from
+    // a previous outage — critical for fast recovery after queue fixes.
+    //
+    // allBlockedSinceMs / allBlockedRecoveryCycles: if the queue was previously
+    // all-blocked (every URL in the bad-URL cache), a successful reload that
+    // cleared those URLs (clearBadUrl loop above) means the broadcast has
+    // recovered. Reset both counters so the NEXT all-blocked window starts
+    // fresh — otherwise a stale cycle count prematurely engages the emergency
+    // filler after just 1 TTL cycle instead of the normal 2.
+    if (resolved.length > 0) {
+      this.lastDeadAirEscalationMs = 0;
+      if (this.allBlockedSinceMs !== null) {
+        this.allBlockedSinceMs = null;
+        this.allBlockedRecoveryCycles = 0;
+        logger.debug(
+          { channel: this.channelId, resolvedCount: resolved.length },
+          "[broadcast-v2] reloadInner: items resolved — reset all-blocked tracking state",
+        );
+      }
+    }
     // Mirror playable-queue depth as a Prometheus gauge for dashboards/alerts.
     broadcastQueueDepth.set({ channel: this.channelId, ...SERVICE_LABELS }, this.items.length);
     // Stuck signal: orchestrator started, queue populated, but no sequence
