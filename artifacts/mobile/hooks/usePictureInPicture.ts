@@ -95,11 +95,23 @@ export function usePictureInPicture(
     showRestoreButton = true,
   } = options;
 
-  const [isInPip, setIsInPip] = useState(false);
-
   const [isSupported] = useState<boolean>(() => {
     if (Platform.OS !== "android") return false;
     return isPictureInPictureSupported();
+  });
+
+  // Bug fix: initialize from the actual PiP mode state rather than hardcoding
+  // false. If the component remounts while the app is already in a PiP window
+  // (e.g. Expo Router re-renders the Player screen after a navigation), the
+  // initial value will be correct and UI elements that hide in PiP will render
+  // properly from the first frame instead of briefly flashing visible.
+  const [isInPip, setIsInPip] = useState<boolean>(() => {
+    if (Platform.OS !== "android") return false;
+    try {
+      return isInPictureInPictureMode();
+    } catch {
+      return false;
+    }
   });
 
   // Keep latest options in refs so the AppState handler doesn't stale-close
@@ -115,11 +127,18 @@ export function usePictureInPicture(
 
   const enterPip = useCallback(async (): Promise<boolean> => {
     if (!isSupported) return false;
-    return enterPictureInPicture(
+    const entered = await enterPictureInPicture(
       aspectRef.current.width,
       aspectRef.current.height,
       showRestoreRef.current,
     );
+    // Bug fix: update isInPip immediately when the system accepts the PiP
+    // request rather than waiting for the next AppState event. Without this,
+    // isInPip stays false until AppState fires, leaving PiP-hidden elements
+    // (controls, countdown overlay, chat) briefly visible inside the PiP
+    // window — a jarring flash on every manual PiP entry.
+    if (entered) setIsInPip(true);
+    return entered;
   }, [isSupported]);
 
   // Poll isInPictureInPictureMode() on every AppState transition.
@@ -147,11 +166,18 @@ export function usePictureInPicture(
         (nextState === "background" || nextState === "inactive") &&
         !inPip
       ) {
+        // Bug fix: chain .then() to set isInPip=true immediately when the
+        // system accepts the PiP request. Without this, the auto-enter path
+        // NEVER sets isInPip=true because the AppState check above runs
+        // BEFORE enterPictureInPicture() completes — so isInPip stays false
+        // for the entire PiP session, leaving controls visible in the PiP window.
         enterPictureInPicture(
           aspectRef.current.width,
           aspectRef.current.height,
           showRestoreRef.current,
-        ).catch(() => {});
+        ).then((entered) => {
+          if (entered) setIsInPip(true);
+        }).catch(() => {});
       }
     };
 

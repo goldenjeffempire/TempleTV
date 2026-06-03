@@ -83,6 +83,21 @@ interface NativeSession {
   connectedListeners: Set<(c: boolean) => void>;
   /** Cleanup returned by machine.subscribe(). */
   machineUnsub: () => void;
+  /**
+   * Debounce timer for forceReconnect calls.
+   *
+   * Multiple V2PlayerContainer instances (e.g. a muted Hero on the home tab
+   * and the full Player screen) share the same singleton session. Both mount
+   * an AppState listener that calls forceReconnect() on foreground — both
+   * fire in the same JS tick. Without debouncing, the second call clears the
+   * reconnect timer the first call just scheduled and emits onConnectionChange
+   * a second time, causing a spurious connected=false React state update.
+   *
+   * A 50 ms debounce window collapses all same-tick calls into one actual
+   * transport.forceReconnect() invocation while remaining fast enough that
+   * the reconnect feels instantaneous to the user.
+   */
+  forceReconnectDebounce: ReturnType<typeof setTimeout> | null;
 }
 
 /** Singleton sessions keyed by baseUrl. Transport persists across React
@@ -207,6 +222,7 @@ function getOrCreateSession(baseUrl: string): NativeSession {
     snapshotListeners: new Set(),
     connectedListeners: new Set(),
     machineUnsub,
+    forceReconnectDebounce: null,
   };
 
   sessions.set(baseUrl, { session, lastIdleAtMs: null });
@@ -318,7 +334,24 @@ export function useV2BroadcastNative(opts: UseV2BroadcastNativeOptions): UseV2Br
     connected,
     buffers,
     reportBufferEvent: (event) => session?.adapter.reportEvent(event),
-    forceReconnect: () => session?.transport.forceReconnect(),
+    /**
+     * Debounced forceReconnect: collapses multiple calls within 50 ms into
+     * one transport.forceReconnect() invocation. This prevents the spurious
+     * double-disconnect that occurs when both a muted Hero V2PlayerContainer
+     * (home tab, cached by Expo Router) and the active Player V2PlayerContainer
+     * each fire their AppState "active" handler in the same JS tick on
+     * app foreground.
+     */
+    forceReconnect: () => {
+      if (!session) return;
+      if (session.forceReconnectDebounce !== null) {
+        clearTimeout(session.forceReconnectDebounce);
+      }
+      session.forceReconnectDebounce = setTimeout(() => {
+        session.forceReconnectDebounce = null;
+        session.transport.forceReconnect();
+      }, 50);
+    },
     notifyOnline: () => session?.machine.send({ type: "online" }),
   };
 }

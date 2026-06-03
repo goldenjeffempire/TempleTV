@@ -323,10 +323,13 @@ function RootLayoutNav() {
           case "live_now":
           case "live": {
             // Live-stream alert — open the player in live mode immediately.
+            // IMPORTANT: player.tsx reads `params.isLive` (not `params.live`).
+            // Using the wrong key leaves isLive=false and the player shows a
+            // blank placeholder instead of the live broadcast.
             router.push({
               pathname: "/player",
               params: {
-                live: "true",
+                isLive: "true",
                 title: "Temple TV Live",
                 preacher: "Temple TV JCTM",
               },
