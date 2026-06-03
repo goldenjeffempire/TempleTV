@@ -142,6 +142,13 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
       ? v2Server.current.thumbnailUrl
       : fallbackSermon?.thumbnailUrl ?? null;
 
+  // True only when there is genuinely nothing to navigate to — no active
+  // broadcast AND no fallback sermon in the library. Both hero Pressables
+  // use this to avoid a silent no-op press that confuses viewers into thinking
+  // the button is broken. The state is transient: as soon as library data or
+  // a broadcast snapshot arrives the button re-enables automatically.
+  const watchNowDisabled = !hasActiveBroadcast && !fallbackSermon;
+
   const handleTuneIn = useCallback(() => {
     if (hasActiveBroadcast) {
       // Navigate to the broadcast player. The V2 engine resolves its own
@@ -152,14 +159,18 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
     } else if (fallbackSermon) {
       navigateToSermon(fallbackSermon);
     }
+    // watchNowDisabled guards against this being called with neither — both
+    // Pressables are disabled when that condition is true.
   }, [hasActiveBroadcast, fallbackSermon]);
 
   return (
     <Pressable
       onPress={handleTuneIn}
+      disabled={watchNowDisabled}
       style={{ width, height: heroHeight }}
       accessibilityRole="button"
       accessibilityLabel={hasActiveBroadcast ? "Watch Now — live broadcast" : "Watch latest sermon"}
+      accessibilityState={{ disabled: watchNowDisabled }}
     >
       {/* Background — always show the thumbnail image as the base layer so
           the hero is never a bare black box.  When a broadcast is active the
@@ -223,14 +234,20 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
             </Text>
           )}
 
-          {/* CTA Button */}
-          <Pressable
-            onPress={handleTuneIn}
-            style={[styles.heroBtn, { backgroundColor: c.primary }]}
-          >
-            <Feather name="play" size={14} color="#fff" />
-            <Text style={styles.heroBtnText}>Watch Now</Text>
-          </Pressable>
+          {/* CTA Button — hidden when neither broadcast nor sermon is available
+              so viewers never see an unresponsive tap target. The outer hero
+              Pressable is also disabled in this state (watchNowDisabled). */}
+          {!watchNowDisabled && (
+            <Pressable
+              onPress={handleTuneIn}
+              style={[styles.heroBtn, { backgroundColor: c.primary }]}
+              accessibilityRole="button"
+              accessibilityLabel={hasActiveBroadcast ? "Watch live broadcast" : "Watch sermon"}
+            >
+              <Feather name="play" size={14} color="#fff" />
+              <Text style={styles.heroBtnText}>Watch Now</Text>
+            </Pressable>
+          )}
         </View>
       </LinearGradient>
     </Pressable>

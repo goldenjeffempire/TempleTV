@@ -1301,6 +1301,12 @@ export function V2PlayerContainer({
   // ensure there is always *something* on screen: the poster fades out
   // only when actual pixels are ready, matching Netflix / Apple TV+ UX.
   const [videoReady, setVideoReady] = useState(false);
+  // Stable callback so BroadcastBuffer (React.memo) doesn't re-render on every
+  // 500 ms position update. An inline lambda `() => setVideoReady(true)` would
+  // create a new function reference each time V2PlayerContainer re-renders
+  // (which happens every progressUpdateIntervalMillis = 500 ms from the buffer
+  // state subscription), defeating the memo entirely for both buffer instances.
+  const handleVideoReady = useCallback(() => setVideoReady(true), []);
   const activeBufferId = buffers.A.active ? "A" : "B";
   useEffect(() => {
     // Entering a non-active-playback state means the current item
@@ -1378,7 +1384,7 @@ export function V2PlayerContainer({
         forceMuted={muted}
         excludeYouTube={minimal}
         suppressEvents={minimal || !!suppressEvents}
-        onVideoReady={buffers.A.active ? () => setVideoReady(true) : undefined}
+        onVideoReady={buffers.A.active ? handleVideoReady : undefined}
       />
       <BroadcastBuffer
         bufferId="B"
@@ -1387,7 +1393,7 @@ export function V2PlayerContainer({
         forceMuted={muted}
         excludeYouTube={minimal}
         suppressEvents={minimal || !!suppressEvents}
-        onVideoReady={buffers.B.active ? () => setVideoReady(true) : undefined}
+        onVideoReady={buffers.B.active ? handleVideoReady : undefined}
       />
 
       {!connected && !minimal && (
