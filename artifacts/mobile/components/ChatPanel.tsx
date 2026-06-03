@@ -162,6 +162,7 @@ export function ChatPanel({ visible, onClose }: ChatPanelProps) {
             onSubmitEditing={handleSend}
             maxLength={500}
             multiline={false}
+            accessibilityLabel="Chat message input"
           />
           <Pressable
             onPress={handleSend}
@@ -173,6 +174,9 @@ export function ChatPanel({ visible, onClose }: ChatPanelProps) {
                 opacity: pressed ? 0.7 : 1,
               },
             ]}
+            accessibilityRole="button"
+            accessibilityLabel="Send message"
+            accessibilityState={{ disabled: !text.trim() }}
           >
             <Feather
               name="send"

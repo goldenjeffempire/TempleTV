@@ -5,7 +5,14 @@
  * change password shortcut, sign-out.
  */
 
-import React, { useCallback, useState } from "react";
+import type { ErrorBoundaryProps } from "expo-router";
+import { ErrorFallback } from "@/components/ErrorFallback";
+
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return <ErrorFallback error={error} resetError={retry} />;
+}
+
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -38,6 +45,11 @@ export default function AccountScreen() {
   const insets = useSafeAreaInsets();
   const c = useColors();
   const { user, isLoggedIn, updateUser, signOut, forgetSession } = useAuth();
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   const [deleting, setDeleting] = useState(false);
   // Custom cross-platform password-confirm modal. We cannot use Alert.prompt
   // because that API is iOS-only — on Android it is a no-op, which would
@@ -113,15 +125,22 @@ export default function AccountScreen() {
       // tokens, but this also flushes user-scoped caches (favorites/history)
       // so a future sign-in on this device starts clean.
       await forgetSession();
-      setDeleteModalOpen(false);
-      setDeletePassword("");
+      // forgetSession clears auth state and may cause this screen to unmount
+      // before these setState calls execute — guard with mountedRef to avoid
+      // "state update on an unmounted component" warnings.
+      if (mountedRef.current) {
+        setDeleteModalOpen(false);
+        setDeletePassword("");
+      }
       Alert.alert("Account deleted", "Your account has been permanently removed.", [
         { text: "OK", onPress: () => router.replace("/(tabs)") },
       ]);
     } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : "Couldn't delete account. Please try again.");
+      if (mountedRef.current) {
+        setDeleteError(err instanceof Error ? err.message : "Couldn't delete account. Please try again.");
+      }
     } finally {
-      setDeleting(false);
+      if (mountedRef.current) setDeleting(false);
     }
   }, [deletePassword, forgetSession]);
 

@@ -42,7 +42,7 @@ import {
 const APP_VERSION =
   Constants.expoConfig?.version ?? "1.0.5";
 
-function ToggleSwitch({ value, onToggle }: { value: boolean; onToggle: () => void }) {
+function ToggleSwitch({ value, onToggle, label }: { value: boolean; onToggle: () => void; label?: string }) {
   const c = useColors();
   return (
     <Pressable
@@ -51,6 +51,9 @@ function ToggleSwitch({ value, onToggle }: { value: boolean; onToggle: () => voi
         onToggle();
       }}
       style={[styles.switch, { backgroundColor: value ? c.primary : c.muted }]}
+      accessibilityRole="switch"
+      accessibilityState={{ checked: value }}
+      accessibilityLabel={label}
     >
       <Animated.View style={[styles.thumb, { transform: [{ translateX: value ? 20 : 0 }] }]} />
     </Pressable>
@@ -78,6 +81,8 @@ function Row({ icon, label, description, onPress, right, danger, value }: RowPro
         { borderBottomColor: c.border },
         pressed && onPress ? { backgroundColor: c.muted + "40" } : {},
       ]}
+      accessibilityRole={onPress ? "button" : "text"}
+      accessibilityLabel={description ? `${label}. ${description}` : label}
     >
       <View
         style={[
@@ -310,6 +315,7 @@ export default function SettingsScreen() {
                     <ToggleSwitch
                       value={notifPrefs.liveAlerts}
                       onToggle={() => saveNotifPrefs({ liveAlerts: !notifPrefs.liveAlerts })}
+                      label="Live Service Alerts"
                     />
                   }
                 />
@@ -320,6 +326,7 @@ export default function SettingsScreen() {
                     <ToggleSwitch
                       value={notifPrefs.newSermonAlerts}
                       onToggle={() => saveNotifPrefs({ newSermonAlerts: !notifPrefs.newSermonAlerts })}
+                      label="New Sermon Alerts"
                     />
                   }
                 />
@@ -330,6 +337,7 @@ export default function SettingsScreen() {
                     <ToggleSwitch
                       value={notifPrefs.emergencyAlerts}
                       onToggle={() => saveNotifPrefs({ emergencyAlerts: !notifPrefs.emergencyAlerts })}
+                      label="Emergency Broadcasts"
                     />
                   }
                 />

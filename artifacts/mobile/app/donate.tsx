@@ -1,4 +1,11 @@
-import React, { useState } from "react";
+import type { ErrorBoundaryProps } from "expo-router";
+import { ErrorFallback } from "@/components/ErrorFallback";
+
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return <ErrorFallback error={error} resetError={retry} />;
+}
+
+import React, { useEffect, useRef, useState } from "react";
 import {
   Linking,
   Pressable,
@@ -96,6 +103,15 @@ export default function DonateScreen() {
   const c = useColors();
   const insets = useSafeAreaInsets();
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  // Track the copied-indicator reset timer so we can clear it on unmount,
+  // preventing a "state update on unmounted component" warning if the user
+  // navigates away before the 1.8 s badge-reset fires.
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
+    };
+  }, []);
 
   const openLink = (url: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -106,7 +122,8 @@ export default function DonateScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     await Clipboard.setStringAsync(value);
     setCopiedKey(key);
-    setTimeout(() => setCopiedKey((k) => (k === key ? null : k)), 1800);
+    if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
+    copyTimerRef.current = setTimeout(() => setCopiedKey((k) => (k === key ? null : k)), 1800);
   };
 
   return (

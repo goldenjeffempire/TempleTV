@@ -1,4 +1,11 @@
-import React, { useCallback, useEffect, useState } from "react";
+import type { ErrorBoundaryProps } from "expo-router";
+import { ErrorFallback } from "@/components/ErrorFallback";
+
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return <ErrorFallback error={error} resetError={retry} />;
+}
+
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -88,6 +95,12 @@ export default function SeriesDetailScreen() {
   const [data, setData] = useState<SeriesDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Guard all post-await setState calls against post-unmount execution.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const load = useCallback(async () => {
     if (!slug) return;
@@ -98,11 +111,13 @@ export default function SeriesDetailScreen() {
       const res = await fetchWithRetry(`${apiBase}/api/series/${slug}`, {}, { maxRetries: 3 });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
+      if (!mountedRef.current) return;
       setData(json);
     } catch (e) {
+      if (!mountedRef.current) return;
       setError(String(e));
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
   }, [slug]);
 
@@ -155,11 +170,13 @@ export default function SeriesDetailScreen() {
 
   const keyExtractor = useCallback((item: Episode) => item.id, []);
 
+  const goBack = () => router.canGoBack() ? router.back() : router.replace("/(tabs)/channels");
+
   if (loading) {
     return (
       <View style={[styles.container, styles.center, { backgroundColor: c.background }]}>
         <View style={[styles.header, { paddingTop: insets.top + 8, backgroundColor: c.background }]}>
-          <Pressable onPress={() => router.canGoBack() ? router.back() : router.replace("/(tabs)/channels")} style={styles.backBtn} hitSlop={8}>
+          <Pressable onPress={goBack} style={styles.backBtn} hitSlop={8} accessibilityLabel="Go back" accessibilityRole="button">
             <Feather name="arrow-left" size={22} color={c.foreground} />
           </Pressable>
         </View>
@@ -173,7 +190,7 @@ export default function SeriesDetailScreen() {
     return (
       <View style={[styles.container, styles.center, { backgroundColor: c.background }]}>
         <View style={[styles.header, { paddingTop: insets.top + 8, backgroundColor: c.background }]}>
-          <Pressable onPress={() => router.canGoBack() ? router.back() : router.replace("/(tabs)/channels")} style={styles.backBtn} hitSlop={8}>
+          <Pressable onPress={goBack} style={styles.backBtn} hitSlop={8} accessibilityLabel="Go back" accessibilityRole="button">
             <Feather name="arrow-left" size={22} color={c.foreground} />
           </Pressable>
         </View>
@@ -183,6 +200,8 @@ export default function SeriesDetailScreen() {
         <Pressable
           onPress={load}
           style={[styles.retryBtn, { backgroundColor: c.primary }]}
+          accessibilityLabel="Retry loading series"
+          accessibilityRole="button"
         >
           <Text style={styles.retryText}>Retry</Text>
         </Pressable>
@@ -194,7 +213,7 @@ export default function SeriesDetailScreen() {
     <View>
       {/* Hero */}
       <View style={[styles.hero, { paddingTop: insets.top + 8 }]}>
-        <Pressable onPress={() => router.canGoBack() ? router.back() : router.replace("/(tabs)/channels")} style={styles.backBtn} hitSlop={8}>
+        <Pressable onPress={goBack} style={styles.backBtn} hitSlop={8} accessibilityLabel="Go back" accessibilityRole="button">
           <Feather name="arrow-left" size={22} color="#fff" />
         </Pressable>
         {data.thumbnailUrl ? (

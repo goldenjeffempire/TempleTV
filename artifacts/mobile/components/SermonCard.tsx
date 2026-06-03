@@ -52,6 +52,8 @@ export const SermonCard = memo(function SermonCard({
       <Pressable
         onPress={handlePress}
         style={({ pressed }) => [{ opacity: pressed ? 0.8 : 1, transform: [{ scale: pressed ? 0.98 : 1 }] }]}
+        accessibilityRole="button"
+        accessibilityLabel={`Play ${sermon.title}${sermon.preacher ? ` by ${sermon.preacher}` : ""}`}
       >
         <GlassCard style={styles.horizontalCard}>
           <View style={styles.horizontalThumbWrap}>
@@ -102,6 +104,8 @@ export const SermonCard = memo(function SermonCard({
         styles.verticalCard,
         { opacity: pressed ? 0.8 : 1, transform: [{ scale: pressed ? 0.97 : 1 }] },
       ]}
+      accessibilityRole="button"
+      accessibilityLabel={`Play ${sermon.title}${sermon.preacher ? ` by ${sermon.preacher}` : ""}`}
     >
       <View style={[styles.thumbContainer, { borderRadius: 12 }]}>
         <SmartImage uri={sermon.thumbnailUrl} style={styles.verticalThumb} />

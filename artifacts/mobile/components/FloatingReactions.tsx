@@ -41,6 +41,13 @@ export const FloatingReactions = forwardRef<FloatingReactionsHandle, object>(
   (_props, ref) => {
     const [particles, setParticles] = useState<Particle[]>([]);
     const counterRef = useRef(0);
+    // Prevent state updates if the component unmounts before the ~1.8 s
+    // animation completes (e.g. user exits the live player mid-reaction).
+    const mountedRef = useRef(true);
+    React.useEffect(() => {
+      mountedRef.current = true;
+      return () => { mountedRef.current = false; };
+    }, []);
 
     const emit = useCallback((emoji: string) => {
       const id = `${Date.now()}-${counterRef.current++}`;
@@ -77,7 +84,11 @@ export const FloatingReactions = forwardRef<FloatingReactionsHandle, object>(
           Animated.timing(scale, { toValue: 0.9, duration: 400, useNativeDriver: true }),
         ]),
       ]).start(() => {
-        setParticles((prev) => prev.filter((p) => p.id !== id));
+        // Guard against post-unmount state update — the animation completes
+        // ~1.8 s after emit(), by which time the player screen may be gone.
+        if (mountedRef.current) {
+          setParticles((prev) => prev.filter((p) => p.id !== id));
+        }
       });
     }, []);
 
