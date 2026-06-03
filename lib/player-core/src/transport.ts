@@ -200,7 +200,23 @@ function loadSnapshotCache(): V2Snapshot | null {
       store.removeItem(SNAPSHOT_CACHE_KEY);
       return null;
     }
-    return env.snapshot as V2Snapshot;
+    const snapshot = env.snapshot as V2Snapshot;
+    // Guard: if the cached snapshot's current item has already ended, drop the
+    // cache rather than replaying it.  A reconnecting client that receives an
+    // expired snapshot would enter PREPARING_ACTIVE for an item that is no
+    // longer airing, keeping it in a stale pre-play state until the server
+    // corrects it via the next heartbeat.  Returning null here sends the
+    // client straight to SYNCING instead, which is the correct blank-slate
+    // state for "we know nothing about what's currently on air".
+    //
+    // endsAtMs=null means the item has no expiry (e.g. a live stream).
+    // We only drop the cache when endsAtMs is a finite number that has passed.
+    const current = snapshot.current as { endsAtMs?: number | null } | null;
+    if (current && typeof current.endsAtMs === "number" && current.endsAtMs < Date.now()) {
+      store.removeItem(SNAPSHOT_CACHE_KEY);
+      return null;
+    }
+    return snapshot;
   } catch {
     return null;
   }
