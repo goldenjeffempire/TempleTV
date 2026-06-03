@@ -421,6 +421,28 @@ export function LiveBroadcastV2({
 
   const server = snapshot.lastServerSnapshot;
 
+  // ── Override loading tracker (TV/web) ─────────────────────────────────────
+  // Tracks whether an HLS/RTMP live override has started producing frames.
+  // Cleared whenever LIVE_OVERRIDE_ACTIVE is (re-)entered so each new override
+  // activation shows the "Tuning in…" loading overlay until the browser fires
+  // `playing` on the active video element.
+  const [overridePlaying, setOverridePlaying] = useState(false);
+  useEffect(() => {
+    if (snapshot.state !== "LIVE_OVERRIDE_ACTIVE") {
+      setOverridePlaying(false);
+      return;
+    }
+    // YouTube override: rendered via iframe — no native <video> event fires.
+    if (server?.override?.kind === "youtube") return;
+    // HLS/RTMP override: watch the active video element for the first `playing`
+    // event.  Once the browser starts rendering frames we clear the overlay.
+    const videoEl = snapshot.activeBufferId === "A" ? videoRefA.current : videoRefB.current;
+    if (!videoEl) return;
+    const onPlaying = () => setOverridePlaying(true);
+    videoEl.addEventListener("playing", onPlaying);
+    return () => videoEl.removeEventListener("playing", onPlaying);
+  }, [snapshot.state, snapshot.activeBufferId, server?.override?.kind]);
+
   type OverlayContent = { primary: string; secondary?: string; showRefresh?: boolean } | null;
 
   const overlay = useMemo((): OverlayContent => {
@@ -458,13 +480,22 @@ export function LiveBroadcastV2({
     ) return { primary: "Tuning in…" };
     // SKIP_PENDING: exhausted retries, waiting for server to advance queue.
     if (snapshot.state === "SKIP_PENDING") return { primary: "Checking stream quality…" };
+    // LIVE_OVERRIDE_ACTIVE with HLS/RTMP: show "Tuning in…" while the manifest
+    // is fetching and the decoder is starting.  Once the browser fires `playing`
+    // (overridePlaying=true) the overlay clears and the live stream is visible.
+    // YouTube overrides are handled via iframe — no native `playing` event
+    // fires and no loading overlay is needed.
+    if (snapshot.state === "LIVE_OVERRIDE_ACTIVE" && server?.override?.kind !== "youtube") {
+      if (!overridePlaying) return { primary: "Tuning in…" };
+      return null;
+    }
     // All remaining states: off air only if the server genuinely has no content.
     if (server && !server.current && !server.override) return {
       primary: "Temple TV is currently off-air.",
       secondary: "We'll be back shortly.",
     };
     return null;
-  }, [snapshot.state, server]);
+  }, [snapshot.state, server, overridePlaying]);
 
   const title = server?.override?.title ?? server?.current?.title ?? "Temple TV Live";
   const isOnAir = !overlay && !!(server?.current || server?.override);

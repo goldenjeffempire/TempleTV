@@ -1211,7 +1211,12 @@ export function V2PlayerContainer({
     snapshot.state === "RECOVERING_PRIMARY" ||
     snapshot.state === "RECOVERING_FAILOVER" ||
     snapshot.state === "SKIP_PENDING" ||
-    snapshot.state === "OFFLINE_HOLD";
+    snapshot.state === "OFFLINE_HOLD" ||
+    // LIVE_OVERRIDE_ACTIVE: phase timer runs during override loading so the
+    // loading overlay message can advance through phases ("Switching to Live
+    // Override" → "Loading Override…" → "Please wait…").  YouTube overrides
+    // use a static overlay that ignores loadingPhase so the timer is harmless.
+    snapshot.state === "LIVE_OVERRIDE_ACTIVE";
 
   useEffect(() => {
     if (!isLoadingState) {
@@ -1258,6 +1263,63 @@ export function V2PlayerContainer({
     !("source" in activeItem) &&   // V2Override has .kind directly, not .source.kind
     activeItem.kind === "youtube";
 
+  // ── First-frame readiness gate ────────────────────────────────────────
+  // Tracks whether the native player (ExoPlayer / AVPlayer) has rendered
+  // its first video frame for the current item. Set to true when
+  // `onReadyForDisplay` fires on the active buffer; reset to false
+  // whenever the FSM leaves the PLAYING family of states (which signals
+  // that the current item has changed or the stream is recovering).
+  //
+  // Why this matters: the FSM transitions to PLAYING as soon as
+  // `buffer-ready` fires (which fires on `onLoad` — metadata ready).
+  // On Android, ExoPlayer can take an additional 100–500 ms after onLoad
+  // to render the first decoded frame (`onReadyForDisplay`). During that
+  // window the overlay is already dismissed (FSM in PLAYING), but the
+  // <Video> surface is still black. Without this gate the user sees a
+  // brief black flash between the tuning overlay disappearing and the
+  // first video frame appearing.
+  //
+  // By keeping the poster visible until `onReadyForDisplay` fires we
+  // ensure there is always *something* on screen: the poster fades out
+  // only when actual pixels are ready, matching Netflix / Apple TV+ UX.
+  //
+  // Declared before overlayContent so the memo can gate the HLS/RTMP
+  // override loading overlay on first-frame availability.
+  const [videoReady, setVideoReady] = useState(false);
+  // Stable callback so BroadcastBuffer (React.memo) doesn't re-render on every
+  // 500 ms position update. An inline lambda `() => setVideoReady(true)` would
+  // create a new function reference each time V2PlayerContainer re-renders
+  // (which happens every progressUpdateIntervalMillis = 500 ms from the buffer
+  // state subscription), defeating the memo entirely for both buffer instances.
+  const handleVideoReady = useCallback(() => setVideoReady(true), []);
+  useEffect(() => {
+    // Entering a non-active-playback state means the current item
+    // changed, the stream is recovering, or we went off-air.
+    // In all cases the next item will need to pass the first-frame
+    // gate again before the poster is hidden.
+    //
+    // LIVE_OVERRIDE_ACTIVE is included in the playing family so that an
+    // HLS/RTMP override can set videoReady=true when its first frame renders.
+    // Without this, the state effect continuously resets videoReady=false
+    // (because LIVE_OVERRIDE_ACTIVE is not PLAYING/HANDOFF/PREPARING_NEXT),
+    // keeping the poster visible forever even after the override video plays.
+    // The activeBindRevision effect still resets videoReady=false whenever a
+    // new override is bound, so the first-frame gate works correctly.
+    const isPlayingFamily =
+      snapshot.state === "PLAYING" ||
+      snapshot.state === "HANDOFF" ||
+      snapshot.state === "PREPARING_NEXT" ||
+      snapshot.state === "LIVE_OVERRIDE_ACTIVE";
+    if (!isPlayingFamily) setVideoReady(false);
+  }, [snapshot.state]);
+  // Also reset when the active buffer's bind revision changes
+  // (HANDOFF swaps A↔B; the newly active buffer may not have
+  // rendered its first frame yet even if the previous buffer had).
+  const activeBindRevision = buffers[activeBufferId].bindRevision;
+  useEffect(() => {
+    setVideoReady(false);
+  }, [activeBindRevision]);
+
   // ── Overlay content ───────────────────────────────────────────────────────
   // Returns { main, sub, showSpinner } or null (no overlay).
   // Phases give users progressively more honest context as time passes —
@@ -1278,6 +1340,20 @@ export function V2PlayerContainer({
         main: overrideTitle ?? "Live YouTube Broadcast",
         sub: "This broadcast is streaming live on YouTube",
         showSpinner: false,
+      };
+    }
+    // HLS/RTMP override — show a loading overlay until the first video frame
+    // renders (videoReady=true). LIVE_OVERRIDE_ACTIVE is a persistent state
+    // that does not transition to PLAYING when the override starts playing,
+    // so we gate on videoReady (first-frame signal) rather than FSM state to
+    // know when the override is actually visible. Once videoReady=true the
+    // overlay disappears and the native video surface is revealed.
+    if (snapshot.state === "LIVE_OVERRIDE_ACTIVE") {
+      if (videoReady) return null;
+      return {
+        main: p === 0 ? "Switching to Live Override" : "Loading Override…",
+        sub: p === 0 ? "Broadcasting live from override source" : "Please wait…",
+        showSpinner: true,
       };
     }
     if (server?.failover.active) {
@@ -1375,61 +1451,7 @@ export function V2PlayerContainer({
       };
     }
     return null;
-  }, [snapshot.state, server, loadingPhase, isOnline, isYouTubeOverride]);
-
-  // ── First-frame readiness gate ────────────────────────────────────────
-  // Tracks whether the native player (ExoPlayer / AVPlayer) has rendered
-  // its first video frame for the current item. Set to true when
-  // `onReadyForDisplay` fires on the active buffer; reset to false
-  // whenever the FSM leaves the PLAYING family of states (which signals
-  // that the current item has changed or the stream is recovering).
-  //
-  // Why this matters: the FSM transitions to PLAYING as soon as
-  // `buffer-ready` fires (which fires on `onLoad` — metadata ready).
-  // On Android, ExoPlayer can take an additional 100–500 ms after onLoad
-  // to render the first decoded frame (`onReadyForDisplay`). During that
-  // window the overlay is already dismissed (FSM in PLAYING), but the
-  // <Video> surface is still black. Without this gate the user sees a
-  // brief black flash between the tuning overlay disappearing and the
-  // first video frame appearing.
-  //
-  // By keeping the poster visible until `onReadyForDisplay` fires we
-  // ensure there is always *something* on screen: the poster fades out
-  // only when actual pixels are ready, matching Netflix / Apple TV+ UX.
-  const [videoReady, setVideoReady] = useState(false);
-  // Stable callback so BroadcastBuffer (React.memo) doesn't re-render on every
-  // 500 ms position update. An inline lambda `() => setVideoReady(true)` would
-  // create a new function reference each time V2PlayerContainer re-renders
-  // (which happens every progressUpdateIntervalMillis = 500 ms from the buffer
-  // state subscription), defeating the memo entirely for both buffer instances.
-  const handleVideoReady = useCallback(() => setVideoReady(true), []);
-  useEffect(() => {
-    // Entering a non-active-playback state means the current item
-    // changed, the stream is recovering, or we went off-air.
-    // In all cases the next item will need to pass the first-frame
-    // gate again before the poster is hidden.
-    //
-    // LIVE_OVERRIDE_ACTIVE is included in the playing family so that an
-    // HLS/RTMP override can set videoReady=true when its first frame renders.
-    // Without this, the state effect continuously resets videoReady=false
-    // (because LIVE_OVERRIDE_ACTIVE is not PLAYING/HANDOFF/PREPARING_NEXT),
-    // keeping the poster visible forever even after the override video plays.
-    // The activeBindRevision effect still resets videoReady=false whenever a
-    // new override is bound, so the first-frame gate works correctly.
-    const isPlayingFamily =
-      snapshot.state === "PLAYING" ||
-      snapshot.state === "HANDOFF" ||
-      snapshot.state === "PREPARING_NEXT" ||
-      snapshot.state === "LIVE_OVERRIDE_ACTIVE";
-    if (!isPlayingFamily) setVideoReady(false);
-  }, [snapshot.state]);
-  // Also reset when the active buffer's bind revision changes
-  // (HANDOFF swaps A↔B; the newly active buffer may not have
-  // rendered its first frame yet even if the previous buffer had).
-  const activeBindRevision = buffers[activeBufferId].bindRevision;
-  useEffect(() => {
-    setVideoReady(false);
-  }, [activeBindRevision]);
+  }, [snapshot.state, server, loadingPhase, isOnline, isYouTubeOverride, videoReady]);
 
   // Poster: show the upcoming/current sermon thumbnail behind the buffers
   // while the player is still tuning in, off-air, reconnecting, or in any
@@ -1456,7 +1478,17 @@ export function V2PlayerContainer({
   const fsmIsWaiting =
     snapshot.state === "PREPARING_ACTIVE" ||
     snapshot.state === "RECOVERING_PRIMARY" ||
-    snapshot.state === "RECOVERING_FAILOVER";
+    snapshot.state === "RECOVERING_FAILOVER" ||
+    // LIVE_OVERRIDE_ACTIVE: arm the 12-second load-timeout and buffering-stall
+    // watchdogs inside BroadcastBuffer so that a silent ExoPlayer failure to
+    // load the HLS/RTMP override URL triggers buffer-error → RECOVERING_PRIMARY
+    // instead of leaving the player stuck indefinitely.  The same-URL fast-path
+    // in BroadcastBuffer (lastLoadedUrlRef) prevents the watchdog from firing
+    // spuriously when a secondary consumer (Player screen) mounts while the
+    // Hero already has the override playing — if the element fires onLoad
+    // quickly the load-timeout is cleared before it can fire; if the URL truly
+    // fails to load within 12 s the timeout is a legitimate recovery signal.
+    snapshot.state === "LIVE_OVERRIDE_ACTIVE";
 
   // Banner text: distinguish "no signal" from "WS disconnected" so viewers
   // understand whether to wait for auto-reconnect (WS) or move somewhere

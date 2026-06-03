@@ -852,7 +852,13 @@ export class PlayerMachine {
       state === "PLAYING" ||
       state === "PREPARING_ACTIVE" ||
       state === "PREPARING_NEXT" ||
-      state === "HANDOFF"
+      state === "HANDOFF" ||
+      // LIVE_OVERRIDE_ACTIVE: an HLS/RTMP override that stalls indefinitely
+      // must escalate to recovery so the broadcast falls back to the queue.
+      // Without this, HLS.js stall events (which the web adapter reports as
+      // buffer-stalled) are silently ignored, leaving the override frozen
+      // on TV/web surfaces with no automatic recovery path.
+      state === "LIVE_OVERRIDE_ACTIVE"
     ) {
       this.onBufferError(bufferId, "stalled");
     }
