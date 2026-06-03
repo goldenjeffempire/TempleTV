@@ -521,6 +521,7 @@ export default function SeriesPage() {
     onSuccess: () => {
       toast.success("Series updated");
       void qc.invalidateQueries({ queryKey: ["series"] });
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
       setEditing(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to update"),
@@ -543,6 +544,7 @@ export default function SeriesPage() {
     onSuccess: (_, { isPublished }) => {
       toast.success(isPublished ? "Series published" : "Series unpublished");
       void qc.invalidateQueries({ queryKey: ["series"] });
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to update"),
   });

@@ -262,7 +262,12 @@ class DatabaseObjectStorage implements ObjectStorage {
       );
       const body = this.streamChunked(key, sizeBytes);
       _activeStreamCount++;
-      body.once("close", () => { _activeStreamCount = Math.max(0, _activeStreamCount - 1); });
+      const decStream = () => { _activeStreamCount = Math.max(0, _activeStreamCount - 1); };
+      body.once("close", decStream);
+      // Also decrement on error so a stream that errors without emitting
+      // "close" does not permanently inflate _activeStreamCount and block
+      // graceful shutdown from completing.
+      body.once("error", decStream);
       return { body, contentType, contentLength: sizeBytes };
     }
 
@@ -281,7 +286,9 @@ class DatabaseObjectStorage implements ObjectStorage {
 
     const body = Readable.from(buf);
     _activeStreamCount++;
-    body.once("close", () => { _activeStreamCount = Math.max(0, _activeStreamCount - 1); });
+    const decInline = () => { _activeStreamCount = Math.max(0, _activeStreamCount - 1); };
+    body.once("close", decInline);
+    body.once("error", decInline);
     return { body, contentType: row.content_type, contentLength: buf.length };
   }
 
@@ -442,7 +449,11 @@ class DatabaseObjectStorage implements ObjectStorage {
 
     const body = Readable.from(generate());
     _activeStreamCount++;
-    body.once("close", () => { _activeStreamCount = Math.max(0, _activeStreamCount - 1); });
+    const decRange = () => { _activeStreamCount = Math.max(0, _activeStreamCount - 1); };
+    body.once("close", decRange);
+    // Also handle error to prevent count from getting stuck when the stream
+    // errors without emitting a close event.
+    body.once("error", decRange);
     return { body, contentType, contentLength: length };
   }
 

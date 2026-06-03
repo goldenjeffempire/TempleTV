@@ -8,6 +8,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Signal, Users, Activity, RefreshCw, Wifi } from "lucide-react";
+import { ErrorAlert } from "@/components/shared/error-alert";
+import { isTransientError } from "@/lib/api";
 
 interface LiveMonitorData {
   viewersByPlatform: Array<{ platform: string; count: number }>;
@@ -21,11 +23,12 @@ export default function LiveMonitorPage() {
   const qc = useQueryClient();
   const { lastStatusPayload } = useSSE();
 
-  const { data, isLoading, refetch } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["live-monitor"],
-    queryFn: () => api.get<LiveMonitorData>("/admin/live/monitor").catch(() => null),
+    queryFn: () => api.get<LiveMonitorData>("/admin/live/monitor"),
     refetchInterval: 30_000,
     staleTime: 25_000,
+    retry: 2,
   });
 
   useSSEEvent("status", () => { void qc.invalidateQueries({ queryKey: ["live-monitor"] }); });
@@ -43,6 +46,14 @@ export default function LiveMonitorPage() {
           </Button>
         }
       />
+
+      {error && (
+        <ErrorAlert
+          message={(error as Error).message}
+          onRetry={() => void refetch()}
+          transient={isTransientError(error)}
+        />
+      )}
 
       {/* Top stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

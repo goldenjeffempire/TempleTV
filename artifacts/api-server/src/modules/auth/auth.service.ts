@@ -127,7 +127,9 @@ export const authService = {
     if (!user) throw new Error("user insert returned no row");
 
     // Fire-and-forget welcome email — never blocks registration.
-    sendWelcomeEmail({ email: user.email, displayName: user.displayName });
+    sendWelcomeEmail({ email: user.email, displayName: user.displayName }).catch((err: unknown) => {
+      logger.warn({ err, userId: user.id }, "[auth] welcome email failed (non-fatal)");
+    });
 
     const { tokens } = await issueTokens({
       id: user.id,
@@ -212,6 +214,18 @@ export const authService = {
       .limit(1);
     const user = userRows[0];
     if (!user) throw new UnauthorizedError("User no longer exists");
+
+    // Guard: if the user changed their password (or an admin force-invalidated
+    // sessions), reject any refresh token issued before sessionsValidAfter.
+    // Without this check a stolen long-lived refresh token can still obtain a
+    // fresh access token even after the account owner resets their password,
+    // because the new access token's iat would be after sessionsValidAfter.
+    if (user.sessionsValidAfter) {
+      const tokenIssuedAtMs = (decoded.iat ?? 0) * 1000;
+      if (tokenIssuedAtMs < user.sessionsValidAfter.getTime()) {
+        throw new UnauthorizedError("Session invalidated — please sign in again");
+      }
+    }
 
     // Generate new token values outside the transaction. JWT signing is pure
     // crypto — no DB I/O — so doing it outside minimises the transaction's
@@ -506,7 +520,9 @@ export const authService = {
       });
     });
 
-    sendPasswordResetEmail({ email: user.email, displayName: user.displayName }, rawToken);
+    sendPasswordResetEmail({ email: user.email, displayName: user.displayName }, rawToken).catch((err: unknown) => {
+      logger.warn({ err, userId: user.id }, "[auth] password reset email failed (non-fatal)");
+    });
   },
 
   /**
@@ -538,12 +554,12 @@ export const authService = {
     const now = new Date();
 
     // Execute atomically: mark token used + update password + bump
-    // sessionsValidAfter in a single transaction.  Using Promise.all without
-    // a transaction would leave the token reusable if the password update
-    // fails, or the password changed but the token still valid if the first
-    // update fails — both are security bugs.  The transaction also prevents
-    // a second concurrent reset request from racing through between the two
-    // writes.
+    // sessionsValidAfter + revoke all active refresh tokens — all in one
+    // transaction.  Using separate queries would leave a window where:
+    //   - the token is marked used but the password not updated (token burned)
+    //   - the password is updated but old sessions remain valid (session gap)
+    // Both are security bugs. Wrapping all four writes in one transaction
+    // eliminates both races and ensures "logout everywhere" is guaranteed.
     await db.transaction(async (tx) => {
       await tx
         .update(passwordResetTokensTable)
@@ -553,18 +569,18 @@ export const authService = {
         .update(usersTable)
         .set({ passwordHash: newHash, sessionsValidAfter: now, updatedAt: now })
         .where(eq(usersTable.id, tokenRow.userId));
+      // Revoke all existing refresh tokens inside the same transaction so a
+      // crash between the password update and this revocation cannot leave
+      // active sessions after a password reset — critical security guarantee.
+      await tx
+        .update(refreshTokensTable)
+        .set({ revokedAt: now })
+        .where(
+          and(
+            eq(refreshTokensTable.userId, tokenRow.userId),
+            isNull(refreshTokensTable.revokedAt),
+          ),
+        );
     });
-
-    // Revoke all existing refresh tokens so every active session is
-    // invalidated — standard security practice after a password change.
-    await db
-      .update(refreshTokensTable)
-      .set({ revokedAt: now })
-      .where(
-        and(
-          eq(refreshTokensTable.userId, tokenRow.userId),
-          isNull(refreshTokensTable.revokedAt),
-        ),
-      );
   },
 };

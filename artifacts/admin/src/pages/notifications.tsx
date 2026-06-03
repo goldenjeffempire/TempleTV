@@ -120,6 +120,7 @@ export default function NotificationsPage() {
     onSuccess: () => {
       toast.success("Scheduled notification cancelled");
       void qc.invalidateQueries({ queryKey: ["scheduled-notifications"] });
+      void qc.invalidateQueries({ queryKey: ["notifications-history"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to cancel"),
   });

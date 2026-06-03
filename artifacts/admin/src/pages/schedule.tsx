@@ -92,8 +92,8 @@ export default function SchedulePage() {
     onSuccess: () => {
       toast.success("Schedule entry created");
       void qc.invalidateQueries({ queryKey: ["schedule"] });
-      // The broadcast queue panel displays schedule labels; keep it in sync.
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
       setAddOpen(false);
       setForm(BLANK_FORM);
     },
@@ -111,6 +111,7 @@ export default function SchedulePage() {
       toast.success("Schedule entry updated");
       void qc.invalidateQueries({ queryKey: ["schedule"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
       setEditEntry(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to update entry"),
@@ -122,6 +123,7 @@ export default function SchedulePage() {
       toast.success("Removed from schedule");
       void qc.invalidateQueries({ queryKey: ["schedule"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
       setDeleteId(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to delete"),

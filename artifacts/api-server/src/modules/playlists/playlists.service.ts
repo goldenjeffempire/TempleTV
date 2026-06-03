@@ -137,20 +137,18 @@ export const playlistsService = {
     const [head] = await db.select().from(playlists).where(eq(playlists.id, playlistId)).limit(1);
     if (!head) throw new NotFoundError("Playlist not found");
 
-    // Reject duplicates at the service layer before hitting the DB unique
-    // constraint so the client gets a 409 ConflictError rather than a 500.
-    const [existing] = await db
-      .select({ id: playlistVideos.id })
-      .from(playlistVideos)
-      .where(and(eq(playlistVideos.playlistId, playlistId), eq(playlistVideos.videoId, videoId)))
-      .limit(1);
-    if (existing) throw new ConflictError("Video is already in this playlist");
-
     const [{ maxOrder }] = await db
       .select({ maxOrder: sql<number>`coalesce(max(${playlistVideos.sortOrder})::int, 0)` })
       .from(playlistVideos)
       .where(eq(playlistVideos.playlistId, playlistId));
 
+    // Use onConflictDoNothing() to handle the TOCTOU race between two
+    // concurrent addVideo calls for the same (playlist, video) pair.
+    // A manual pre-check + insert can have two requests pass the "already
+    // exists?" query simultaneously and both attempt the INSERT, producing a
+    // DB-level unique-constraint violation (500) instead of a 409.
+    // With onConflictDoNothing() the second INSERT silently no-ops; we then
+    // re-fetch the existing row so we can return a consistent DTO.
     const id = nanoid();
     const [inserted] = await db
       .insert(playlistVideos)
@@ -168,8 +166,20 @@ export const playlistsService = {
         category: video.category ?? "",
         sortOrder: Number(maxOrder ?? 0) + 1,
       })
+      .onConflictDoNothing()
       .returning();
-    return toVideoDto(inserted!);
+
+    if (!inserted) {
+      // Another concurrent request won the race — return the existing row.
+      const [existing] = await db
+        .select()
+        .from(playlistVideos)
+        .where(and(eq(playlistVideos.playlistId, playlistId), eq(playlistVideos.videoId, videoId)))
+        .limit(1);
+      if (!existing) throw new ConflictError("Video is already in this playlist");
+      return toVideoDto(existing);
+    }
+    return toVideoDto(inserted);
   },
 
   async removeVideo(playlistId: string, playlistVideoId: string) {

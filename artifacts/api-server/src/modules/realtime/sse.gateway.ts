@@ -35,6 +35,11 @@ import { sseCorsHeaders } from "../../lib/sse-cors.js";
 
 const MAX_SSE_PER_IP = env.MAX_SSE_PER_IP;
 
+// How often we check whether the underlying TCP socket is still writable.
+// If the socket is not writable for ZOMBIE_TIMEOUT_MS we close the connection.
+const SSE_ZOMBIE_CHECK_MS = 30_000;
+const SSE_ZOMBIE_TIMEOUT_MS = 90_000;
+
 // Map<sourceIP, openConnectionCount>
 const sseConnections = new Map<string, number>();
 
@@ -114,14 +119,32 @@ export async function sseRoutes(app: FastifyInstance) {
     };
     overrideBus.on("change", onOverrideChange);
 
+    // Track last successful write for zombie detection.
+    let lastWriteOkMs = Date.now();
+
     const heartbeat = setInterval(() => {
       try {
         reply.raw.write(`event: heartbeat\ndata: ${JSON.stringify({ ts: Date.now() })}\n\n`);
+        lastWriteOkMs = Date.now();
       } catch {
         /* ignore — close handler will clean up */
       }
     }, 10_000);
     heartbeat.unref?.();
+
+    // Zombie detection: SSE has no native ping/pong mechanism. If the TCP
+    // connection goes half-open (silent disconnect without a FIN), the server
+    // continues to hold the socket and event listeners for hours. We check
+    // writability every SSE_ZOMBIE_CHECK_MS and force-close connections that
+    // have not had a successful write in SSE_ZOMBIE_TIMEOUT_MS.
+    const zombieCheck = setInterval(() => {
+      const idleMs = Date.now() - lastWriteOkMs;
+      const socketWritable = !reply.raw.socket?.destroyed && reply.raw.socket?.writable;
+      if (!socketWritable || idleMs > SSE_ZOMBIE_TIMEOUT_MS) {
+        cleanup();
+      }
+    }, SSE_ZOMBIE_CHECK_MS);
+    zombieCheck.unref?.();
 
     let realtimeSseClosed = false;
     const cleanup = () => {
@@ -129,6 +152,7 @@ export async function sseRoutes(app: FastifyInstance) {
       realtimeSseClosed = true;
       openRealtimeSseCleanups.delete(cleanup);
       clearInterval(heartbeat);
+      clearInterval(zombieCheck);
       broadcastEngine.off("event", onEvent);
       overrideBus.off("change", onOverrideChange);
       bumpSseViewers(-1);

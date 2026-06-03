@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, HttpError, isTransientError} from "@/lib/api";
 import { useAuth } from "@/contexts/use-auth";
@@ -41,14 +41,23 @@ export default function UsersPage() {
   const qc = useQueryClient();
   const { isAdmin, user } = useAuth();
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("all");
   const [deletingUser, setDeletingUser] = useState<AdminUser | null>(null);
 
+  // Debounce search input so we only fire a server query after 350 ms of
+  // inactivity rather than on every keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 350);
+    return () => clearTimeout(t);
+  }, [search]);
+
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ["users", roleFilter],
+    queryKey: ["users", roleFilter, debouncedSearch],
     queryFn: () => {
-      const params = new URLSearchParams({ limit: "100" });
+      const params = new URLSearchParams({ limit: "200" });
       if (roleFilter !== "all") params.set("role", roleFilter);
+      if (debouncedSearch.trim()) params.set("search", debouncedSearch.trim());
       return api.get<{ items: AdminUser[]; total: number }>(`/admin/users?${params}`);
     },
     enabled: isAdmin,
