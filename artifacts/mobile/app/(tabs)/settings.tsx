@@ -44,18 +44,41 @@ const APP_VERSION =
 
 function ToggleSwitch({ value, onToggle, label }: { value: boolean; onToggle: () => void; label?: string }) {
   const c = useColors();
+  const translateX = React.useRef(new Animated.Value(value ? 20 : 0)).current;
+  const bgOpacity = React.useRef(new Animated.Value(value ? 1 : 0)).current;
+
+  React.useEffect(() => {
+    Animated.spring(translateX, {
+      toValue: value ? 20 : 0,
+      useNativeDriver: true,
+      speed: 40,
+      bounciness: 6,
+    }).start();
+    Animated.timing(bgOpacity, {
+      toValue: value ? 1 : 0,
+      duration: 160,
+      useNativeDriver: false,
+    }).start();
+  }, [value, translateX, bgOpacity]);
+
+  const backgroundColor = bgOpacity.interpolate({
+    inputRange: [0, 1],
+    outputRange: [c.muted, c.primary],
+  });
+
   return (
     <Pressable
       onPress={() => {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
         onToggle();
       }}
-      style={[styles.switch, { backgroundColor: value ? c.primary : c.muted }]}
       accessibilityRole="switch"
       accessibilityState={{ checked: value }}
       accessibilityLabel={label}
     >
-      <Animated.View style={[styles.thumb, { transform: [{ translateX: value ? 20 : 0 }] }]} />
+      <Animated.View style={[styles.switch, { backgroundColor }]}>
+        <Animated.View style={[styles.thumb, { transform: [{ translateX }] }]} />
+      </Animated.View>
     </Pressable>
   );
 }

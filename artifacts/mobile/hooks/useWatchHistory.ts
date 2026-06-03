@@ -63,7 +63,9 @@ export function useWatchHistory() {
             const parsed = JSON.parse(raw) as HistoryEntry[];
             latestHistoryRef.current = parsed;
             setHistory(parsed);
-            setHistoryIds(new Set(parsed.map((h) => h.sermon.youtubeId)));
+            // Use sermon.id (db UUID) as the canonical dedup key.
+            // This fixes local-video history where youtubeId is always "".
+            setHistoryIds(new Set(parsed.map((h) => h.sermon.id)));
           } catch {
             // Corrupted AsyncStorage data — clear and start fresh so the app
             // doesn't crash on every launch until the user reinstalls.
@@ -86,7 +88,14 @@ export function useWatchHistory() {
         if (raw) {
           try { local = JSON.parse(raw) as HistoryEntry[]; } catch { /* corrupted — treat as empty */ }
         }
-        const localIds = new Set(local.map((h) => h.sermon.youtubeId));
+        // Build a set of ALL identifiers from local entries (both the db UUID
+        // and the youtubeId, when present) so we match cloud videoIds regardless
+        // of whether the server stored a YouTube ID or a platform UUID.
+        const localIds = new Set<string>();
+        for (const h of local) {
+          localIds.add(h.sermon.id);
+          if (h.sermon.youtubeId) localIds.add(h.sermon.youtubeId);
+        }
 
         const cloudOnly = cloudHistory
           .filter((ch) => !localIds.has(ch.videoId))
@@ -112,7 +121,7 @@ export function useWatchHistory() {
           .slice(0, APP_CONFIG.maxHistoryItems);
 
         setHistory(merged);
-        setHistoryIds(new Set(merged.map((h) => h.sermon.youtubeId)));
+        setHistoryIds(new Set(merged.map((h) => h.sermon.id)));
         await AsyncStorage.setItem(STORAGE_KEYS.watchHistory, JSON.stringify(merged));
       })
       .catch(() => {});
@@ -124,16 +133,21 @@ export function useWatchHistory() {
       // Read from ref so rapid back-to-back calls build on top of each other
       // rather than both reading the same stale render-snapshot of `history`.
       const current = latestHistoryRef.current;
-      const filtered = current.filter((h) => h.sermon.youtubeId !== sermon.youtubeId);
+      // Dedup by sermon.id (UUID). Using youtubeId caused all local-platform
+      // videos (youtubeId === "") to collide on the same slot, evicting each
+      // other and making hasWatched() return true for every local video.
+      const filtered = current.filter((h) => h.sermon.id !== sermon.id);
       const updated = [entry, ...filtered].slice(0, APP_CONFIG.maxHistoryItems);
       latestHistoryRef.current = updated; // keep ref in sync immediately
       setHistory(updated);
-      setHistoryIds(new Set(updated.map((h) => h.sermon.youtubeId)));
+      setHistoryIds(new Set(updated.map((h) => h.sermon.id)));
       await AsyncStorage.setItem(STORAGE_KEYS.watchHistory, JSON.stringify(updated)).catch(() => {});
       hasAuthToken().then((loggedIn) => {
         if (!loggedIn) return;
         apiSyncHistory({
-          videoId: sermon.youtubeId,
+          // For local/uploaded videos youtubeId is ""; fall back to the db UUID
+          // so the server receives a meaningful identifier rather than blank.
+          videoId: sermon.youtubeId || sermon.id,
           videoTitle: sermon.title,
           videoThumbnail: sermon.thumbnailUrl,
           videoCategory: sermon.category ?? "sermon",
