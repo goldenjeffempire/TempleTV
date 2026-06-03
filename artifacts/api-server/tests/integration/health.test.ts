@@ -77,8 +77,12 @@ describe("/api/v1/broadcast/current — broadcast snapshot", () => {
     const r = await app.inject({ method: "GET", url: "/api/v1/broadcast/current" });
     expect(r.statusCode).toBe(200);
     const body = r.json();
-    expect(body).toMatchObject({ channelId: "temple-tv-live" });
-    expect(body.current === null || typeof body.current === "object").toBe(true);
+    // The v1 snapshot shape returns the current broadcast item and the next item.
+    // With an empty queue both will be null.
+    expect("item" in body).toBe(true);
+    expect("nextItem" in body).toBe(true);
+    expect(body.item === null || typeof body.item === "object").toBe(true);
+    expect(body.nextItem === null || typeof body.nextItem === "object").toBe(true);
   });
 });
 

@@ -5,6 +5,10 @@ export default defineConfig({
     globals: true,
     environment: "node",
     include: ["tests/**/*.test.ts"],
+    // buildApp() pulls in Drizzle, Fastify plugins, and the broadcast
+    // orchestrator — startup can take 10–25 s in the Replit sandbox.
+    hookTimeout: 30_000,
+    testTimeout: 30_000,
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],

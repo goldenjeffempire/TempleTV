@@ -52,6 +52,22 @@ export interface WatchdogConfig {
   onStall: () => void;
 }
 
+/**
+ * Maximum consecutive notifyActive() calls without an intervening feed()
+ * advance before the stall clock is no longer reset.
+ *
+ * On a "slow death" connection the browser's `progress` event fires as bytes
+ * arrive but `currentTime` never advances (corrupted codec, incompatible
+ * container, or a dead-end buffer drain). After MAX_NOTIFY_ACTIVE_STREAK such
+ * events the watchdog stops resetting the clock so check() can fire and the
+ * FSM can escalate the failure through the recovery path.
+ *
+ * At approximately one `progress` event per second this gives ~40 s of
+ * tolerance for legitimate slow-start / rebuffer scenarios before a
+ * permanently stalled source is declared.
+ */
+const MAX_NOTIFY_ACTIVE_STREAK = 40;
+
 type WatchdogPhase = "initial" | "rebuffer" | "stable";
 
 export class Watchdog {
@@ -61,6 +77,8 @@ export class Watchdog {
   private firstAdvanceMs: number | null = null;
   /** Wall-clock ms when we last entered "stable" continuous play. */
   private stableEnteredMs: number | null = null;
+  /** Consecutive notifyActive() calls without an intervening feed() advance. */
+  private notifyActiveStreak = 0;
   private armed = false;
   private timer: ReturnType<typeof setInterval> | null = null;
 
@@ -82,6 +100,7 @@ export class Watchdog {
     this.lastAdvanceMs = Date.now();
     this.firstAdvanceMs = null;
     this.stableEnteredMs = null;
+    this.notifyActiveStreak = 0;
     this.timer = setInterval(() => this.check(), 500);
     if (typeof this.timer === "object" && this.timer && "unref" in this.timer) {
       (this.timer as unknown as { unref: () => void }).unref();
@@ -94,6 +113,7 @@ export class Watchdog {
     this.timer = null;
     this.firstAdvanceMs = null;
     this.stableEnteredMs = null;
+    this.notifyActiveStreak = 0;
   }
 
   /** Caller must invoke this on every `timeupdate` / equivalent event. */
@@ -101,6 +121,7 @@ export class Watchdog {
     if (!this.armed) return;
     if (Math.abs(positionSecs - this.lastPositionSecs) > 0.05) {
       this.lastPositionSecs = positionSecs;
+      this.notifyActiveStreak = 0; // genuine playback progress — reset slow-death counter
       const now = Date.now();
       this.lastAdvanceMs = now;
 
@@ -136,9 +157,18 @@ export class Watchdog {
    *
    * Also resets stableEnteredMs so a brief rebuffer doesn't count as
    * "stable" time — the device must re-earn the stable threshold.
+   *
+   * Slow-death guard: after MAX_NOTIFY_ACTIVE_STREAK consecutive calls
+   * without any feed() advance, the stall clock is no longer reset.
+   * This ensures connections that deliver bytes (triggering progress events)
+   * but never produce playable frames are still detected and escalated.
    */
   notifyActive(): void {
     if (!this.armed) return;
+    this.notifyActiveStreak++;
+    // Slow-death guard: data flowing but no currentTime advance for too long.
+    // Stop resetting the clock so the stall threshold can fire naturally.
+    if (this.notifyActiveStreak > MAX_NOTIFY_ACTIVE_STREAK) return;
     const now = Date.now();
     this.lastAdvanceMs = now;
     // Rebuffering — reset stable window so a brief pause can't silently
@@ -156,6 +186,11 @@ export class Watchdog {
   /** Expose current threshold for diagnostics / tests. */
   getCurrentThresholdMs(): number {
     return this.thresholdForPhase(this.resolvePhase());
+  }
+
+  /** Expose the notifyActive streak count for diagnostics / tests. */
+  getNotifyActiveStreak(): number {
+    return this.notifyActiveStreak;
   }
 
   private resolvePhase(): WatchdogPhase {

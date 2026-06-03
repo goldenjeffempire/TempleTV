@@ -578,6 +578,22 @@ export default function PlayerScreen() {
   // so that entering/exiting fullscreen can seek the new player instance to
   // where the previous one stopped, giving a seamless visual transition.
   const currentPositionMsRef = useRef(0);
+
+  // ── PiP → fullscreen ghost-state guard ───────────────────────────────────
+  // Entering PiP from fullscreen keeps the Modal open while the video fills
+  // the PiP window.  When the user taps the PiP overlay to return to the
+  // full app, `isInPip` transitions true → false, but `isFullscreen` stays
+  // true without this guard — leaving a ghost fullscreen Modal on top of
+  // the restored portrait player.  Detect the PiP-exit edge and restore
+  // normal portrait mode automatically.
+  const prevIsInPipRef = useRef(false);
+  useEffect(() => {
+    if (prevIsInPipRef.current && !isInPip) {
+      setIsFullscreen(false);
+    }
+    prevIsInPipRef.current = isInPip;
+  }, [isInPip]);
+
   // Position snapshot taken the moment fullscreen is toggled. Passed as
   // startPositionMs to the new player instance inside the Modal.
   const [fsStartPositionMs, setFsStartPositionMs] = useState(0);

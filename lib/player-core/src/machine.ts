@@ -158,8 +158,19 @@ const SKIP_PENDING_FATAL_THRESHOLD = 3;
 /**
  * How long (ms) the machine stays in FATAL before automatically retrying
  * from SYNCING.  Self-heals without user interaction once a stream clears.
+ *
+ * Successive FATAL entries use exponential backoff (capped at
+ * FATAL_BACKOFF_MAX_MS) so many clients sharing a permanently broken source
+ * do not all hammer the API at 30-second intervals in lockstep (thundering
+ * herd).  The attempt counter resets whenever the machine reaches PLAYING.
  */
 const FATAL_AUTO_RECOVERY_MS = 30_000;
+
+/**
+ * Upper ceiling for the FATAL auto-recovery backoff.
+ * Schedule: 30 s → 60 s → 120 s → 240 s (cap) → 240 s → …
+ */
+const FATAL_BACKOFF_MAX_MS = 240_000;
 
 export class PlayerMachine {
   private snapshot: PlayerSnapshot = {
@@ -270,6 +281,12 @@ export class PlayerMachine {
   private skipPendingCycles = 0;
   /** Handle for the FATAL → SYNCING auto-recovery timer. */
   private fatalRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Number of consecutive FATAL entries since the last successful PLAYING
+   * state.  Drives exponential backoff so many clients sharing a broken
+   * source do not all reconnect in lockstep every 30 s.
+   */
+  private fatalAttemptCount = 0;
 
   constructor(private readonly emit: IntentHandler) {}
 
@@ -368,6 +385,10 @@ export class PlayerMachine {
       clearTimeout(this.fatalRecoveryTimer);
       this.fatalRecoveryTimer = null;
     }
+    // Reset the FATAL backoff counter when the machine successfully reaches
+    // PLAYING.  The source proved recoverable so the next FATAL entry (if any)
+    // restarts the backoff from the base 30 s rather than 240 s.
+    if (state === "PLAYING") this.fatalAttemptCount = 0;
     this.set({ state });
   }
 
@@ -618,13 +639,23 @@ export class PlayerMachine {
             this.skipPendingAnchorMs = null;
             this.transition("FATAL");
             if (this.fatalRecoveryTimer !== null) clearTimeout(this.fatalRecoveryTimer);
+            // Exponential backoff: attempt 1 = 30 s, 2 = 60 s, 3 = 120 s, 4+ = 240 s.
+            // Prevents thundering-herd storms where many clients sharing a broken
+            // source all retry simultaneously at the same 30-second cadence.
+            // Note: transition("FATAL") above resets fatalAttemptCount only on
+            // PLAYING, so it accumulates correctly across repeated FATAL entries.
+            this.fatalAttemptCount++;
+            const fatalBackoffMs = Math.min(
+              FATAL_AUTO_RECOVERY_MS * Math.pow(2, this.fatalAttemptCount - 1),
+              FATAL_BACKOFF_MAX_MS,
+            );
             this.fatalRecoveryTimer = setTimeout(() => {
               this.fatalRecoveryTimer = null;
               if (this.snapshot.state === "FATAL") {
                 this.transition("SYNCING");
                 this.onNeedSnapshotCb?.();
               }
-            }, FATAL_AUTO_RECOVERY_MS);
+            }, fatalBackoffMs);
           }
           return;
         }

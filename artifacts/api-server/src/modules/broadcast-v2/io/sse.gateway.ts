@@ -134,9 +134,27 @@ export async function sseRoutes(app: FastifyInstance) {
     // replayFrom call can arrive at the client before the replayed history,
     // causing out-of-order FSM transitions. This mirrors the same pattern used
     // by the WS gateway's `frameQueue` buffer on client "resume" messages.
+    //
+    // Cap: a slow DB query under burst activity could accumulate many live frames
+    // before replay completes. We keep only the last 500 — older ones are
+    // superseded by the snapshot sent above, so dropping the oldest is safe.
+    const FRAME_QUEUE_MAX = 500;
     const frameQueue: V2ServerFrame[] = [];
-    const bufferFrame = (f: V2ServerFrame) => { frameQueue.push(f); };
+    const bufferFrame = (f: V2ServerFrame) => {
+      if (frameQueue.length >= FRAME_QUEUE_MAX) frameQueue.shift();
+      frameQueue.push(f);
+    };
     broadcastOrchestrator.on("frame", bufferFrame);
+
+    // Early-disconnect sentinel: if the client closes the connection DURING the
+    // async replayFrom call below, the `close` event fires before `cleanup()`
+    // is registered further down. Without this sentinel we would leak both the
+    // `onFrame` listener and the `heartbeat` interval into the orchestrator for
+    // the entire lifetime of the process. The `aborted` flag lets us detect this
+    // race after the await and perform an inline teardown instead.
+    let aborted = false;
+    const markAborted = () => { aborted = true; };
+    req.raw.once("close", markAborted);
 
     // Replay any events the client missed while disconnected.
     // The EventSource API automatically carries the last `id:` value as
@@ -166,12 +184,28 @@ export async function sseRoutes(app: FastifyInstance) {
       }
     }
 
+    // Remove the early-disconnect sentinel: from this point the full cleanup()
+    // function registered below takes ownership of connection teardown.
+    req.raw.off("close", markAborted);
+
     // Switch from the buffer to the live listener, flushing any frames that
     // arrived during the DB replay await so no events are silently dropped.
     const onFrame = (frame: V2ServerFrame) => send(frame);
     broadcastOrchestrator.off("frame", bufferFrame);
     for (const f of frameQueue) send(f);
     broadcastOrchestrator.on("frame", onFrame);
+
+    // Guard: if the client disconnected during the async replay phase, `req.raw`
+    // is already destroyed. The `close` event already fired (setting `aborted`)
+    // before `cleanup()` existed. Perform an inline teardown here so neither
+    // `onFrame` nor the heartbeat interval are registered against a dead stream.
+    if (aborted) {
+      broadcastOrchestrator.off("frame", onFrame);
+      releaseCounter();
+      sseCounter.dec();
+      activeSseConnections.dec({ surface: "broadcast-v2", ...SERVICE_LABELS });
+      return;
+    }
 
     const heartbeat = setInterval(() => {
       send({ type: "heartbeat", serverTimeMs: Date.now(), sequence: broadcastOrchestrator.getSequence() });
