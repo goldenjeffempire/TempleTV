@@ -774,16 +774,28 @@ describe("PlayerMachine — LIVE_OVERRIDE_ACTIVE", () => {
     expect(activeItem).toMatchObject({ id: "override-99" });
   });
 
-  it("buffer-stalled in LIVE_OVERRIDE_ACTIVE is ignored — no state change", () => {
+  it("YouTube override: buffer-stalled in LIVE_OVERRIDE_ACTIVE is ignored — no state change", () => {
     // Regression guard: YouTube overrides use an external iframe; the native
-    // <video> element is idle and the watchdog fires buffer-stalled. This must
-    // NOT trigger RECOVERING_PRIMARY (which would kill the iframe display).
+    // <video> element is idle (no src set) so the watchdog fires buffer-stalled
+    // harmlessly. This must NOT trigger RECOVERING_PRIMARY — that would destroy
+    // the YouTube iframe. Machine ignores buffer-stalled when override.kind="youtube".
     const { machine } = makeHarness();
     machine.send({ type: "takeover", override: makeOverride({ kind: "youtube", url: "https://youtube.com/watch?v=abc" }) });
     expect(machine.getSnapshot().state).toBe("LIVE_OVERRIDE_ACTIVE");
     machine.send({ type: "buffer-stalled", bufferId: machine.getSnapshot().activeBufferId });
     // Must stay in LIVE_OVERRIDE_ACTIVE, not escalate to RECOVERING_PRIMARY.
     expect(machine.getSnapshot().state).toBe("LIVE_OVERRIDE_ACTIVE");
+  });
+
+  it("HLS override: buffer-stalled in LIVE_OVERRIDE_ACTIVE escalates to RECOVERING_PRIMARY", () => {
+    // HLS/RTMP overrides use the native video element — a stall means the
+    // stream stopped delivering data. Must escalate so the broadcast automatically
+    // falls back to the queue instead of hanging on a frozen frame indefinitely.
+    const { machine } = makeHarness();
+    machine.send({ type: "takeover", override: makeOverride({ kind: "hls", url: "https://cdn.example.com/live.m3u8" }) });
+    expect(machine.getSnapshot().state).toBe("LIVE_OVERRIDE_ACTIVE");
+    machine.send({ type: "buffer-stalled", bufferId: machine.getSnapshot().activeBufferId });
+    expect(machine.getSnapshot().state).toBe("RECOVERING_PRIMARY");
   });
 
   it("YouTube override: bind emits bind intent with youtube kind", () => {

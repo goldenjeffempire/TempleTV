@@ -852,15 +852,30 @@ export class PlayerMachine {
       state === "PLAYING" ||
       state === "PREPARING_ACTIVE" ||
       state === "PREPARING_NEXT" ||
-      state === "HANDOFF" ||
-      // LIVE_OVERRIDE_ACTIVE: an HLS/RTMP override that stalls indefinitely
-      // must escalate to recovery so the broadcast falls back to the queue.
-      // Without this, HLS.js stall events (which the web adapter reports as
-      // buffer-stalled) are silently ignored, leaving the override frozen
-      // on TV/web surfaces with no automatic recovery path.
-      state === "LIVE_OVERRIDE_ACTIVE"
+      state === "HANDOFF"
     ) {
       this.onBufferError(bufferId, "stalled");
+    } else if (state === "LIVE_OVERRIDE_ACTIVE") {
+      // Differentiate by override kind:
+      //
+      // YouTube overrides: the native <video> element is idle — YouTube
+      // renders entirely via an external iframe. The web adapter binds no
+      // src to the video element, so `timeupdate` never fires and the
+      // Watchdog eventually fires buffer-stalled harmlessly. Escalating
+      // would transition to RECOVERING_PRIMARY and destroy the iframe.
+      //
+      // HLS / RTMP overrides: the native element IS actively loading and
+      // decoding. A stall means the manifest or segments stopped arriving.
+      // Escalate to RECOVERING_PRIMARY so the broadcast automatically
+      // falls back to the regular queue instead of hanging silently.
+      const activeItem = bufferId === "A" ? this.snapshot.bufferA : this.snapshot.bufferB;
+      const isYouTube =
+        activeItem !== null &&
+        !("source" in activeItem) &&
+        (activeItem as V2Override).kind === "youtube";
+      if (!isYouTube) {
+        this.onBufferError(bufferId, "stalled");
+      }
     }
   }
 
