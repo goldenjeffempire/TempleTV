@@ -274,6 +274,16 @@ interface BroadcastHlsPlayerProps {
    * blank/loading screen in the fullscreen overlay.
    */
   muted?:             boolean;
+  /**
+   * When true, all FSM buffer event reporting and watchdog arming are
+   * suppressed in the underlying V2PlayerContainer. Use on the inline
+   * (muted) player instance while the fullscreen Modal player is active —
+   * both share the same singleton session/FSM and the fullscreen player
+   * must be the sole FSM driver. Without this, the inline buffers can fire
+   * spurious buffer-error (load timeout, buffering stall) that interrupts
+   * the fullscreen player's stream and triggers unnecessary recovery.
+   */
+  suppressEvents?:    boolean;
 }
 
 /**
@@ -287,7 +297,7 @@ interface BroadcastHlsPlayerProps {
  * navigate the user back rather than leaving a frozen "Broadcast unavailable"
  * overlay with no escape route.
  */
-function BroadcastHlsPlayer({ muted, ...rest }: BroadcastHlsPlayerProps) {
+function BroadcastHlsPlayer({ muted, suppressEvents, ...rest }: BroadcastHlsPlayerProps) {
   void rest;
   const apiBase = getApiBase() ?? "";
   const handleFatal = useCallback(() => {
@@ -303,6 +313,7 @@ function BroadcastHlsPlayer({ muted, ...rest }: BroadcastHlsPlayerProps) {
         baseUrl={`${apiBase}/api/broadcast-v2`}
         onFatal={handleFatal}
         muted={muted}
+        suppressEvents={suppressEvents}
       />
     </ErrorBoundary>
   );
@@ -771,7 +782,9 @@ export default function PlayerScreen() {
   useEffect(() => {
     if (Platform.OS === "web") return undefined;
     const sub = AppState.addEventListener("change", (nextState: AppStateStatus) => {
-      if ((nextState === "background" || nextState === "inactive") && isFullscreen) {
+      const isGoingToBackground = nextState === "background" || nextState === "inactive";
+
+      if (isGoingToBackground && isFullscreen) {
         if (isPipSupported && !isYoutube) {
           // Keep the fullscreen Modal open — the video fills the PiP window.
           // If the system rejects the PiP request (locked screen, display off,
@@ -794,10 +807,17 @@ export default function PlayerScreen() {
             ScreenOrientation.OrientationLock.PORTRAIT_UP,
           ).catch(() => {});
         }
+      } else if (isGoingToBackground && !isFullscreen && isPipSupported && !isYoutube && isBroadcastV2) {
+        // Auto-enter PiP from portrait mode for live broadcasts.
+        // The Activity shrinks to a PiP window showing the player screen.
+        // The V2PlayerContainer's own AppState effect handles forceReconnect
+        // when the app resumes from PiP. No orientation lock needed since we
+        // are not in landscape fullscreen mode.
+        enterPip().catch(() => {});
       }
     });
     return () => sub.remove();
-  }, [isFullscreen, isPipSupported, isYoutube, enterPip]);
+  }, [isFullscreen, isPipSupported, isYoutube, isBroadcastV2, enterPip]);
 
   // Restore portrait lock whenever the player screen is torn down, regardless
   // of how navigation happened (deep-link push, OS back gesture that bypasses
@@ -1013,6 +1033,7 @@ export default function PlayerScreen() {
               playerHeightOverride={playerHeight}
               onProgress={handleProgress}
               muted={isFullscreen}
+              suppressEvents={isFullscreen}
             />
           ) : isYoutube ? (
             <YoutubePlayer
@@ -1063,6 +1084,7 @@ export default function PlayerScreen() {
               playerHeightOverride={playerHeight}
               onProgress={handleProgress}
               muted={isFullscreen}
+              suppressEvents={isFullscreen}
             />
           ) : (
             <Image
@@ -1409,7 +1431,12 @@ export default function PlayerScreen() {
             />
           )}
 
-          {/* ── Controls overlay — tap anywhere on video to show/hide ── */}
+          {/* ── Controls overlay — tap anywhere on video to show/hide ──
+              Hidden entirely when in PiP mode: the window is too small
+              for any useful interaction, and the controls clutter the
+              video frame. Media controls in PiP are provided by the OS
+              (Android picture-in-picture media action buttons). */}
+          {!isInPip && (
           <Pressable
             style={StyleSheet.absoluteFill}
             onPress={handleFsTap}
@@ -1561,6 +1588,7 @@ export default function PlayerScreen() {
               </LinearGradient>
             </Animated.View>
           </Pressable>
+          )}
         </View>
       </Modal>
     </View>

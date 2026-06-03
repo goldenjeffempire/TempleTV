@@ -249,8 +249,18 @@ interface Props {
    * Suppress the large centered tuning/off-air overlay and reconnecting
    * banner so the surface can be used as a small inline preview without a
    * full-screen takeover. Tap-through is the parent's responsibility.
+   * Also implies suppressEvents=true.
    */
   minimal?: boolean;
+  /**
+   * When true, suppress all FSM buffer event reporting and watchdog arming
+   * from this container's BroadcastBuffer pair. Use when a second
+   * V2PlayerContainer instance is the "primary" FSM driver and this one is
+   * view-only:
+   *   - Inline (muted) player while the fullscreen Modal player is active.
+   * Setting minimal=true implies suppressEvents=true automatically.
+   */
+  suppressEvents?: boolean;
 }
 
 function sourceUrl(state: MobileBufferState, excludeYouTube: boolean): string | null {
@@ -297,6 +307,19 @@ interface BufferProps {
   forceMuted?: boolean;
   excludeYouTube?: boolean;
   /**
+   * When true, ALL FSM event reporting (buffer-ready, buffer-error,
+   * buffer-ended) and watchdog arming (load timeout, buffering stall,
+   * quick-finish retry) are suppressed. Use for view-only instances that
+   * share the singleton session but must NOT compete with the primary
+   * player instance for FSM control:
+   *   - Hero homepage preview (minimal=true) — purely decorative; the
+   *     Player screen owns the FSM when both are simultaneously mounted.
+   *   - Inline (muted) BroadcastHlsPlayer while the fullscreen Modal's
+   *     BroadcastHlsPlayer is active — prevents the inline buffers from
+   *     firing spurious buffer-error/buffer-ready to the shared FSM.
+   */
+  suppressEvents?: boolean;
+  /**
    * Called when the native player renders its first video frame
    * (`onReadyForDisplay`). The parent uses this to keep the poster
    * visible until actual pixels appear on screen, eliminating the
@@ -312,6 +335,7 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
   reportBufferEvent,
   forceMuted = false,
   excludeYouTube = false,
+  suppressEvents = false,
   onVideoReady,
 }: BufferProps) {
   const ref = useRef<Video>(null);
@@ -326,6 +350,24 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
   // swallow the onLoad event when the same URL was rebound after a failure,
   // leaving the FSM stuck in RECOVERING_PRIMARY until the watchdog fired.
   const lastReportedRevision = useRef<number>(-1);
+
+  // Keep suppressEvents in a ref so the stable `emit` callback below can
+  // read the CURRENT value without appearing in its useCallback dep array.
+  // This avoids recreating `emit` (and thereby re-running the play useEffect)
+  // every time the parent toggles suppressEvents (e.g. on fullscreen toggle).
+  const suppressEventsRef = useRef(suppressEvents);
+  suppressEventsRef.current = suppressEvents;
+
+  // Stable wrapper around reportBufferEvent that becomes a no-op while
+  // suppressEvents is true.  All FSM event calls below use `emit` so
+  // view-only instances (hero preview, muted inline player while the
+  // fullscreen Modal is active) cannot interfere with the shared FSM.
+  const emit = useCallback(
+    (...args: Parameters<typeof reportBufferEvent>) => {
+      if (!suppressEventsRef.current) reportBufferEvent(...args);
+    },
+    [reportBufferEvent],
+  );
 
   // Track the URL that expo-av successfully loaded (onLoad fired). Used to
   // detect same-URL recovery rebinds (RECOVERING_PRIMARY/FAILOVER with the
@@ -487,7 +529,7 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
       setLoadedRevision(state.bindRevision);
       if (lastReportedRevision.current !== state.bindRevision) {
         lastReportedRevision.current = state.bindRevision;
-        reportBufferEvent({ type: "buffer-ready", bufferId });
+        emit({ type: "buffer-ready", bufferId });
       }
     } else {
       isSameUrlRecoveryRef.current = false;
@@ -504,11 +546,14 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
       //
       // Only arm for active+playing buffers — preloading the inactive
       // buffer silently is expected and should not trigger recovery.
+      // suppressEvents: do NOT arm the watchdog on view-only instances
+      // (hero preview, muted inline player). Their Videos loading slowly
+      // in the background must not fire spurious buffer-error to the FSM.
       clearLoadTimeout();
-      if (state.playing && state.active) {
+      if (!suppressEvents && state.playing && state.active) {
         loadTimeoutRef.current = setTimeout(() => {
           loadTimeoutRef.current = null;
-          reportBufferEvent({ type: "buffer-error", bufferId, error: "load-timeout" });
+          emit({ type: "buffer-error", bufferId, error: "load-timeout" });
         }, LOAD_TIMEOUT_MS);
       }
     }
@@ -562,7 +607,7 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
           isSameUrlRecoveryRef.current = false; // consume one-shot flag
           playStartMsRef.current = Date.now();
           v.playAsync().catch(() => {
-            reportBufferEvent({ type: "buffer-error", bufferId, error: "play-failed" });
+            emit({ type: "buffer-error", bufferId, error: "play-failed" });
           });
         } else {
           // ── VOD HLS path ───────────────────────────────────────────────
@@ -616,20 +661,20 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
           if (!nearTarget) {
             playStartMsRef.current = Date.now();
             v.playFromPositionAsync(clampedMs).catch(() => {
-              reportBufferEvent({ type: "buffer-error", bufferId, error: "play-failed" });
+              emit({ type: "buffer-error", bufferId, error: "play-failed" });
             });
           }
         }
       } else {
         // ── MP4 / DASH / non-HLS path ──────────────────────────────────
         v.playFromPositionAsync(state.positionSecs * 1000).catch(() => {
-          reportBufferEvent({ type: "buffer-error", bufferId, error: "play-failed" });
+          emit({ type: "buffer-error", bufferId, error: "play-failed" });
         });
       }
     } else {
       v.pauseAsync().catch(() => {});
     }
-  }, [state.playing, state.positionSecs, state.bindRevision, loadedRevision, url, bufferId, reportBufferEvent, isHls]);
+  }, [state.playing, state.positionSecs, state.bindRevision, loadedRevision, url, bufferId, emit, isHls]);
 
   // ── HLS live-sync interval ──────────────────────────────────────────────
   // For HLS buffers that are active and playing, call playAsync() every
@@ -704,7 +749,7 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
         setLoadedRevision(state.bindRevision);
         if (lastReportedRevision.current !== state.bindRevision) {
           lastReportedRevision.current = state.bindRevision;
-          reportBufferEvent({ type: "buffer-ready", bufferId });
+          emit({ type: "buffer-ready", bufferId });
         }
         // Source loaded successfully — disarm both watchdogs.
         clearBufferingWatchdog();
@@ -748,14 +793,14 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
         setLoadedRevision(state.bindRevision);
         if (lastReportedRevision.current !== state.bindRevision) {
           lastReportedRevision.current = state.bindRevision;
-          reportBufferEvent({ type: "buffer-ready", bufferId });
+          emit({ type: "buffer-ready", bufferId });
         }
         onVideoReady?.();
       }}
       onPlaybackStatusUpdate={(status: AVPlaybackStatus) => {
         if (!status.isLoaded) {
           if (status.error) {
-            reportBufferEvent({ type: "buffer-error", bufferId, error: status.error });
+            emit({ type: "buffer-error", bufferId, error: status.error });
           }
           clearBufferingWatchdog();
           return;
@@ -797,7 +842,7 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
           setLoadedRevision(state.bindRevision);
           lastReportedRevision.current = state.bindRevision;
           clearLoadTimeout();
-          reportBufferEvent({ type: "buffer-ready", bufferId });
+          emit({ type: "buffer-ready", bufferId });
         }
 
         if (status.didJustFinish) {
@@ -833,7 +878,7 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
               if (hlsQuickFinishCountRef.current > HLS_MAX_QUICK_FINISH_RETRIES) {
                 // Exhausted retries — escalate to buffer-ended.
                 hlsQuickFinishCountRef.current = 0;
-                reportBufferEvent({ type: "buffer-ended", bufferId });
+                emit({ type: "buffer-ended", bufferId });
               } else {
                 // Retry: brief delay gives the HLS manifest time to refresh
                 // and avoids a tight CPU-spin retry loop.
@@ -860,7 +905,7 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
                     ? ref.current?.playAsync()
                     : ref.current?.playFromPositionAsync(0);
                   retryPromise?.catch(() => {
-                    reportBufferEvent({
+                    emit({
                       type: "buffer-error",
                       bufferId,
                       error: "hls-retry-failed",
@@ -875,18 +920,21 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
             hlsQuickFinishCountRef.current = 0;
           }
 
-          reportBufferEvent({ type: "buffer-ended", bufferId });
+          emit({ type: "buffer-ended", bufferId });
           return;
         }
         // ── isBuffering watchdog ──────────────────────────────────────
         // Only arm the watchdog when this buffer is the active one AND the
         // adapter wants it to be playing. Inactive preload buffers buffering
         // in the background is expected and desirable — don't interfere.
-        if (status.isBuffering && state.playing && state.active) {
+        // suppressEvents: do NOT arm the watchdog on view-only instances —
+        // their isBuffering state (often true while backgrounded) must never
+        // trigger FSM recovery for the primary player instance.
+        if (status.isBuffering && state.playing && state.active && !suppressEventsRef.current) {
           if (!bufferingWatchdogRef.current) {
             bufferingWatchdogRef.current = setTimeout(() => {
               bufferingWatchdogRef.current = null;
-              reportBufferEvent({
+              emit({
                 type: "buffer-error",
                 bufferId,
                 error: "buffering-timeout",
@@ -894,13 +942,13 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
             }, BUFFERING_STALL_THRESHOLD_MS);
           }
         } else {
-          // Not buffering (or not the active playing buffer) — disarm.
+          // Not buffering, not the active playing buffer, or suppressed — disarm.
           clearBufferingWatchdog();
         }
       }}
       onError={(error) => {
         clearBufferingWatchdog();
-        reportBufferEvent({
+        emit({
           type: "buffer-error",
           bufferId,
           error: typeof error === "string" ? error : "media-error",
@@ -1271,6 +1319,7 @@ export function V2PlayerContainer({
         reportBufferEvent={reportBufferEvent}
         forceMuted={muted}
         excludeYouTube={minimal}
+        suppressEvents={minimal || !!suppressEvents}
         onVideoReady={buffers.A.active ? () => setVideoReady(true) : undefined}
       />
       <BroadcastBuffer
@@ -1279,6 +1328,7 @@ export function V2PlayerContainer({
         reportBufferEvent={reportBufferEvent}
         forceMuted={muted}
         excludeYouTube={minimal}
+        suppressEvents={minimal || !!suppressEvents}
         onVideoReady={buffers.B.active ? () => setVideoReady(true) : undefined}
       />
 
