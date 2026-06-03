@@ -18,6 +18,7 @@ export * from "./device-link-codes";
 export * from "./cache";
 export * from "./rate-limit";
 export * from "./prayer-requests";
+export * from "./user-feedback";
 export * from "./s3-upload-telemetry";
 export * from "./chat";
 export * from "./password-reset-tokens";

@@ -325,6 +325,27 @@ export async function submitPrayerRequest(
   }
 }
 
+/** Submit a bug report or feedback. Returns true on success. */
+export async function submitFeedback(payload: {
+  type: "bug" | "suggestion" | "general";
+  subject: string;
+  message: string;
+  platform?: string;
+  appVersion?: string;
+}): Promise<boolean> {
+  try {
+    const res = await publicFetch("/api/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15_000),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 /** Record a view event for a video (best-effort). */
 export async function recordView(videoId: string): Promise<void> {
   try {

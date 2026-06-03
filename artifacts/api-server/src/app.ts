@@ -43,6 +43,7 @@ import { adminBroadcastRoutes } from "./modules/admin-broadcast/admin-broadcast.
 import { adminVideosRoutes } from "./modules/admin-videos/admin-videos.routes.js";
 import { liveIngestRoutes } from "./modules/live-ingest/live-ingest.routes.js";
 import { prayersAdminRoutes } from "./modules/prayers/prayers.routes.js";
+import { feedbackRoutes, feedbackAdminRoutes } from "./modules/feedback/feedback.routes.js";
 import { scheduledNotificationsRoutes } from "./modules/scheduled-notifications/scheduled-notifications.routes.js";
 import { launchReadinessRoutes } from "./modules/launch-readiness/launch-readiness.routes.js";
 import { adminChatRoutes } from "./modules/admin-chat/admin-chat.routes.js";
@@ -562,6 +563,8 @@ export async function buildApp(): Promise<FastifyInstance> {
     await instance.register(adminVideosRoutes, { prefix: "/admin" });
     await instance.register(liveIngestRoutes, { prefix: "/admin" });
     await instance.register(prayersAdminRoutes, { prefix: "/admin" });
+    await instance.register(feedbackRoutes);
+    await instance.register(feedbackAdminRoutes, { prefix: "/admin" });
     await instance.register(scheduledNotificationsRoutes, { prefix: "/admin" });
     // Mirror the public /notifications routes under the /admin prefix so the
     // admin SPA can call GET /admin/notifications (history) and

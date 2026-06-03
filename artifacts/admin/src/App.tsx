@@ -40,6 +40,7 @@ const Series          = lazyPage(() => import("@/pages/series"));
 const Analytics       = lazyPage(() => import("@/pages/analytics"));
 const Users           = lazyPage(() => import("@/pages/users"));
 const Prayers         = lazyPage(() => import("@/pages/prayers"));
+const Feedback        = lazyPage(() => import("@/pages/feedback"));
 const Chat            = lazyPage(() => import("@/pages/chat"));
 const Operations      = lazyPage(() => import("@/pages/operations"));
 const Alerts          = lazyPage(() => import("@/pages/alerts"));
@@ -269,6 +270,7 @@ function AuthenticatedApp() {
             <Route path="/analytics"        component={Analytics} />
             <Route path="/users"            component={Users} />
             <Route path="/prayers"          component={Prayers} />
+            <Route path="/feedback"         component={Feedback} />
             <Route path="/chat"             component={Chat} />
             <Route path="/operations"       component={Operations} />
             <Route path="/alerts"           component={Alerts} />

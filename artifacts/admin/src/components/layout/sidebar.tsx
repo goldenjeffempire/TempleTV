@@ -109,6 +109,7 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
       items: [
         { href: "/notifications", label: "Notifications", icon: <Bell size={16} /> },
         { href: "/prayers", label: "Prayers", icon: <Heart size={16} /> },
+        { href: "/feedback", label: "Feedback", icon: <MessageSquare size={16} /> },
         { href: "/analytics", label: "Analytics", icon: <BarChart2 size={16} /> },
       ],
     },

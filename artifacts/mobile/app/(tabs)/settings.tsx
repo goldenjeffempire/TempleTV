@@ -38,6 +38,7 @@ import {
   requestNotificationPermissions,
   getNotificationPermissionStatus,
 } from "@/services/notifications";
+import { FeedbackModal } from "@/components/FeedbackModal";
 
 const APP_VERSION =
   Constants.expoConfig?.version ?? "1.0.5";
@@ -154,6 +155,7 @@ export default function SettingsScreen() {
   } = useNotificationPreferences();
 
   const [notifGranted, setNotifGranted] = useState(false);
+  const [showFeedback, setShowFeedback] = useState(false);
 
   // Web push state — only meaningful when Platform.OS === "web"
   const [webPushPermission, setWebPushPermission] = useState<NotificationPermission | null>(null);
@@ -544,6 +546,12 @@ export default function SettingsScreen() {
           onPress={() => router.push("/donate")}
         />
         <Row
+          icon="message-circle"
+          label="Send Feedback"
+          description="Report a bug or share an idea"
+          onPress={() => setShowFeedback(true)}
+        />
+        <Row
           icon="mail"
           label="Contact"
           onPress={() => Linking.openURL("mailto:info@templetv.org.ng").catch(() => {})}
@@ -571,6 +579,8 @@ export default function SettingsScreen() {
         </Text>
       </View>
     </ScrollView>
+
+    <FeedbackModal visible={showFeedback} onClose={() => setShowFeedback(false)} />
     </View>
   );
 }
