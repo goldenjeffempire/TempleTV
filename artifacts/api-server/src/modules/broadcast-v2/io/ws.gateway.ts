@@ -98,6 +98,25 @@ export async function wsRoutes(app: FastifyInstance) {
     const onFrame = (frame: V2ServerFrame) => send(frame);
     broadcastOrchestrator.on("frame", onFrame);
 
+    // Track which frame handler is currently registered on the orchestrator
+    // so the "close" event always removes exactly the right function reference.
+    //
+    // Problem this solves: the `resume` message handler swaps onFrame → bufferFrame
+    // on the emitter before an async DB await. If the socket closes while that
+    // await is in-flight the close handler fires with the old `onFrame` reference,
+    // finds nothing to remove (onFrame is no longer registered), and returns —
+    // leaving `bufferFrame` permanently on the emitter. When the await eventually
+    // resolves the code re-registers `onFrame` on a dead socket, creating a
+    // second permanent leak. Together these two phantom listeners accumulate
+    // for the lifetime of the process.
+    //
+    // Fix: one mutable pointer (`activeFrameHandler`) that always reflects
+    // the currently-registered handler. The close handler removes whatever
+    // is pointed at. The resume post-await path skips re-registration when
+    // `socketClosed` is already true.
+    let activeFrameHandler: (f: V2ServerFrame) => void = onFrame;
+    let socketClosed = false;
+
     const heartbeat = setInterval(() => {
       send({ type: "heartbeat", serverTimeMs: Date.now(), sequence: broadcastOrchestrator.getSequence() });
 
@@ -167,8 +186,9 @@ export async function wsRoutes(app: FastifyInstance) {
           if (frameQueue.length >= FRAME_QUEUE_MAX) frameQueue.shift();
           frameQueue.push(f);
         };
-        broadcastOrchestrator.off("frame", onFrame);
+        broadcastOrchestrator.off("frame", activeFrameHandler);
         broadcastOrchestrator.on("frame", bufferFrame);
+        activeFrameHandler = bufferFrame;
         try {
           const events = await eventLogRepo.replayFrom(broadcastOrchestrator.channelId, msg.lastSequence, 500);
           send({
@@ -191,6 +211,13 @@ export async function wsRoutes(app: FastifyInstance) {
             events: [],
           });
         }
+
+        // Socket may have closed while the DB await was in-flight.
+        // If so, the close handler already removed `bufferFrame`
+        // (via activeFrameHandler) — do NOT re-register onFrame on a
+        // dead socket, and do NOT flush buffered frames to a gone client.
+        if (socketClosed) return;
+
         // After replay, send a fresh authoritative snapshot so the client
         // is aligned with server state even if the recover frame contained
         // no events (e.g. after a server restart that reset the event log).
@@ -204,6 +231,7 @@ export async function wsRoutes(app: FastifyInstance) {
         for (const f of frameQueue) send(f);
         broadcastOrchestrator.off("frame", bufferFrame);
         broadcastOrchestrator.on("frame", onFrame);
+        activeFrameHandler = onFrame;
       }
     });
 
