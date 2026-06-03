@@ -38,15 +38,14 @@ import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { AppHeader } from "@/components/AppHeader";
-import { LiveBadge } from "@/components/LiveBadge";
 import { useNetworkStatus } from "@/hooks/useNetworkStatus";
-import { useBroadcastSync } from "@/hooks/useBroadcastSync";
 import { useVideos } from "@/hooks/useVideos";
 import { VideoCard } from "@/components/VideoCard";
 import { SectionHeader } from "@/components/SectionHeader";
 import { SkeletonVerticalCard } from "@/components/SkeletonCard";
 import { V2PlayerContainer } from "@/components/V2PlayerContainer";
 import { getApiBase } from "@/lib/apiBase";
+import { useV2BroadcastNative } from "@workspace/player-core/react-native";
 import type { Sermon, SermonCategory } from "@/types";
 
 const PLACEHOLDER = require("@/assets/images/sermon-placeholder.png");
@@ -100,33 +99,27 @@ function navigateToLive(
 
 // ─── Hero Section ─────────────────────────────────────────────────────────────
 
-function buildThumbnailUrl(item: {
-  thumbnailUrl?: string | null;
-  source?: { kind: string; url: string };
-  youtubeId?: string | null;
-}): string | null {
-  if (item.thumbnailUrl) return item.thumbnailUrl;
-  if (item.source?.kind === "youtube") {
-    return `https://img.youtube.com/vi/${item.source.url}/maxresdefault.jpg`;
-  }
-  return null;
-}
-
 interface HeroSectionProps {
-  syncState: ReturnType<typeof useBroadcastSync>;
   fallbackSermon: Sermon | null;
 }
 
-const HeroSection = React.memo(function HeroSection({ syncState, fallbackSermon }: HeroSectionProps) {
+const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSectionProps) {
   const c = useColors();
   const { width } = useWindowDimensions();
   const heroHeight = Math.round(width * 0.58);
+  const apiBase = getApiBase() ?? "";
 
-  // Use the properly-typed currentItem from BroadcastSyncState
-  const currentItem = syncState.currentItem;
-  const isLiveOverride = !!syncState.liveOverride;
-  const positionSecs = syncState.positionSecs ?? 0;
-  const emergencyBroadcast = syncState.emergencyBroadcast;
+  // Use the V2 FSM snapshot as the single source of truth for broadcast state.
+  // The singleton session is already running (created at app boot). Calling the
+  // hook here adds a React listener to the existing session — no extra network
+  // connection is made. This replaces the old v1-WS (useBroadcastSync) approach
+  // where a temporary disconnection could make the Hero believe the broadcast was
+  // off-air even while V2 was playing normally, causing the V2PlayerContainer to
+  // unmount and forcing an HLS reload on every v1-WS reconnect.
+  const { snapshot: v2Snapshot } = useV2BroadcastNative({
+    baseUrl: `${apiBase}/api/broadcast-v2`,
+  });
+  const v2Server = v2Snapshot.lastServerSnapshot;
 
   // STRICT POLICY: the homepage hero only ever represents an uploaded /
   // local platform broadcast. YouTube items — including YouTube live
@@ -135,37 +128,33 @@ const HeroSection = React.memo(function HeroSection({ syncState, fallbackSermon 
   // accessible from the Library and from the full player page where the
   // YouTube iframe path can render them correctly.
   const hasUploadedBroadcast = !!(
-    currentItem && (currentItem.hlsMasterUrl || currentItem.localVideoUrl)
+    v2Server?.current &&
+    v2Server.current.source?.kind !== "youtube"
   );
-  // The single source of truth for every hero broadcast affordance.
   const hasActiveBroadcast = hasUploadedBroadcast;
 
-  // Hero "live" state is reserved for genuine uploaded broadcasts.
-  // A YouTube live override does NOT colour the hero red anymore — that
-  // policy lives on the dedicated YouTube live surfaces (TV LiveHero,
-  // full-screen player), not on the mobile homepage hero.
-  const isLive = hasUploadedBroadcast && (isLiveOverride || !!emergencyBroadcast);
-  const hlsUrl =
-    hasUploadedBroadcast
-      ? (currentItem?.hlsMasterUrl ?? currentItem?.localVideoUrl ?? null)
-      : null;
   // Only the fallback sermon title is shown in the hero —
   // titles of actively-broadcasting videos are intentionally not displayed.
   const fallbackTitle = fallbackSermon?.title ?? "Temple TV";
-  // Thumbnail behind the hero never sources from YouTube imagery — when
-  // the broadcast is YouTube (or off-air) we use the latest-sermon poster.
+  // Thumbnail: prefer the V2 snapshot thumbnail for the current item so it
+  // matches what the V2 player is actually airing. Falls back to the latest
+  // local sermon poster so the hero surface is never a bare gradient box.
   const thumbUrl =
-    hasUploadedBroadcast && currentItem?.thumbnailUrl
-      ? currentItem.thumbnailUrl
+    hasUploadedBroadcast && v2Server?.current?.thumbnailUrl
+      ? v2Server.current.thumbnailUrl
       : fallbackSermon?.thumbnailUrl ?? null;
 
   const handleTuneIn = useCallback(() => {
-    if (hasActiveBroadcast && hlsUrl) {
-      navigateToLive(hlsUrl, "Temple TV", positionSecs);
+    if (hasActiveBroadcast) {
+      // Navigate to the broadcast player. The V2 engine resolves its own
+      // source — both isLive+isHls and isLive+!isHls player.tsx branches
+      // route to BroadcastHlsPlayer which ignores initialUrl entirely.
+      // positionSecs is also ignored (V2 self-syncs from server clock).
+      navigateToLive("", "Temple TV", 0);
     } else if (fallbackSermon) {
       navigateToSermon(fallbackSermon);
     }
-  }, [hasActiveBroadcast, hlsUrl, positionSecs, fallbackSermon]);
+  }, [hasActiveBroadcast, fallbackSermon]);
 
   return (
     <Pressable
@@ -175,12 +164,11 @@ const HeroSection = React.memo(function HeroSection({ syncState, fallbackSermon 
       accessibilityLabel={hasActiveBroadcast ? "Watch Now — live broadcast" : "Watch latest sermon"}
     >
       {/* Background — always show the thumbnail image as the base layer so
-          the hero is never a bare black box.  When a live uploaded broadcast
-          is active the V2 player renders ON TOP of the thumbnail; once its
-          HLS handshake completes the video covers the poster naturally.
-          This prevents the "ON AIR badge + pure black rectangle" state that
-          occurs while the player is in BOOTSTRAP / SYNCING or when the
-          production V2 orchestrator has no resolved source yet. */}
+          the hero is never a bare black box.  When a broadcast is active the
+          V2 player renders on top; once HLS handshake completes the video
+          covers the poster naturally. This prevents "ON AIR + pure black box"
+          while the player is in BOOTSTRAP / SYNCING or the orchestrator has
+          no resolved source yet. */}
       {thumbUrl ? (
         <Image
           source={{ uri: thumbUrl }}
@@ -190,18 +178,22 @@ const HeroSection = React.memo(function HeroSection({ syncState, fallbackSermon 
       ) : (
         <View style={[StyleSheet.absoluteFill, { backgroundColor: "#1a0030" }]} />
       )}
-      {/* V2 player overlay — mounted on top of the poster only when an
-          uploaded broadcast is active.  `minimal` suppresses the player's
-          own overlays so the hero controls (badges, CTA) stay visible. */}
-      {hasUploadedBroadcast && (
-        <View style={[StyleSheet.absoluteFill, { pointerEvents: "none" }]}>
-          <V2PlayerContainer
-            baseUrl={`${getApiBase() ?? ""}/api/broadcast-v2`}
-            muted
-            minimal
-          />
-        </View>
-      )}
+      {/* V2 player overlay — ALWAYS mounted (muted, minimal) regardless of
+          broadcast state. This keeps the singleton FSM session warm and the
+          A/B expo-av Video nodes alive at all times. Previously this was
+          conditional on hasUploadedBroadcast (derived from v1 WS), which
+          caused the A/B Video nodes to be destroyed and force an HLS reload
+          on every v1-WS reconnect — even when V2 was playing normally.
+          V2PlayerContainer handles off-air gracefully in minimal mode
+          (renders nothing visible). The outer pointerEvents="none" ensures
+          all hero touch events still reach the Pressable above. */}
+      <View style={[StyleSheet.absoluteFill, { pointerEvents: "none" }]}>
+        <V2PlayerContainer
+          baseUrl={`${apiBase}/api/broadcast-v2`}
+          muted
+          minimal
+        />
+      </View>
 
       {/* Gradient overlay */}
       <LinearGradient
@@ -213,8 +205,7 @@ const HeroSection = React.memo(function HeroSection({ syncState, fallbackSermon 
         <View style={styles.heroContent}>
           {/* Badges */}
           <View style={styles.heroBadges}>
-            {isLive && <LiveBadge />}
-            {hasActiveBroadcast && !isLive && (
+            {hasActiveBroadcast && (
               <View style={styles.onAirBadge}>
                 <View style={styles.onAirDot} />
                 <Text style={styles.onAirText}>ON AIR</Text>
@@ -237,10 +228,7 @@ const HeroSection = React.memo(function HeroSection({ syncState, fallbackSermon 
           {/* CTA Button */}
           <Pressable
             onPress={handleTuneIn}
-            style={[
-              styles.heroBtn,
-              { backgroundColor: isLive ? "#ef4444" : c.primary },
-            ]}
+            style={[styles.heroBtn, { backgroundColor: c.primary }]}
           >
             <Feather name="play" size={14} color="#fff" />
             <Text style={styles.heroBtnText}>Watch Now</Text>
@@ -316,7 +304,6 @@ export default function WatchScreen() {
   const insets = useSafeAreaInsets();
   const { isOnline: networkConnected } = useNetworkStatus();
 
-  const syncState = useBroadcastSync();
   const { sermons, byCategory, loading, error, refetch, isStale, refreshFailed } = useVideos();
 
   // Latest sermon as hero fallback (newest first).
@@ -410,7 +397,7 @@ export default function WatchScreen() {
         }
       >
         {/* Hero */}
-        <HeroSection syncState={syncState} fallbackSermon={fallbackSermon} />
+        <HeroSection fallbackSermon={fallbackSermon} />
 
         {/* Error state */}
         {error && sermons.length === 0 && (

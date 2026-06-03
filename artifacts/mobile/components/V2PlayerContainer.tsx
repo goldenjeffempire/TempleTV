@@ -958,7 +958,16 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
   );
 });
 
-// ── Midnight Prayers channel switching ───────────────────────────────────────
+// ── Midnight Prayers channel switching (module-level singleton) ───────────────
+//
+// All V2PlayerContainer instances that share the same mainBaseUrl (e.g. the
+// Hero preview on the home screen and the full Player screen) subscribe to a
+// single shared state object.  This guarantees that the channel switch from
+// /api/broadcast-v2 → /api/midnight-prayers fires for EVERY consumer at the
+// exact same moment so they all keep using the same singleton FSM session key
+// without the brief desync window that the previous per-instance approach
+// could produce (Hero switching before Player, or vice versa, during the 60 s
+// poll window).
 
 interface MPScheduleConfig {
   enabled: boolean;
@@ -974,32 +983,80 @@ function isInMpWindow(cfg: MPScheduleConfig): boolean {
     : h >= cfg.startHour || h < cfg.endHour;
 }
 
+interface _MpSingleton {
+  cfg: MPScheduleConfig | null;
+  inWindow: boolean;
+  listeners: Set<() => void>;
+  fetchInterval: ReturnType<typeof setInterval>;
+  windowInterval: ReturnType<typeof setInterval> | null;
+}
+
+const _mpSingletons = new Map<string, _MpSingleton>();
+
+function _getOrCreateMpSingleton(mainBaseUrl: string): _MpSingleton {
+  const existing = _mpSingletons.get(mainBaseUrl);
+  if (existing) return existing;
+
+  const singleton: _MpSingleton = {
+    cfg: null,
+    inWindow: false,
+    listeners: new Set(),
+    // Placeholder — overwritten immediately below before any async work.
+    fetchInterval: undefined as unknown as ReturnType<typeof setInterval>,
+    windowInterval: null,
+  };
+  _mpSingletons.set(mainBaseUrl, singleton);
+
+  const notifyAll = () => singleton.listeners.forEach((fn) => fn());
+
+  const checkWindow = () => {
+    if (!singleton.cfg) return;
+    const next = isInMpWindow(singleton.cfg);
+    if (next !== singleton.inWindow) {
+      singleton.inWindow = next;
+      notifyAll();
+    }
+  };
+
+  const fetchConfig = () => {
+    const apiOrigin = mainBaseUrl.replace(/\/api\/broadcast-v2.*/, "");
+    fetch(`${apiOrigin}/api/midnight-prayers/config`)
+      .then((r) => (r.ok ? (r.json() as Promise<MPScheduleConfig>) : null))
+      .then((data) => {
+        if (!data) return;
+        singleton.cfg = data;
+        // Start the per-minute window check once we have a valid config.
+        if (!singleton.windowInterval) {
+          singleton.windowInterval = setInterval(checkWindow, 60_000);
+        }
+        const next = isInMpWindow(data);
+        if (next !== singleton.inWindow) {
+          singleton.inWindow = next;
+          notifyAll();
+        }
+      })
+      .catch(() => { /* stay on main channel */ });
+  };
+
+  fetchConfig();
+  singleton.fetchInterval = setInterval(fetchConfig, 60_000);
+
+  return singleton;
+}
+
 function useMidnightPrayersSwitch(mainBaseUrl: string): string {
-  const [cfg, setCfg] = useState<MPScheduleConfig | null>(null);
-  const [inWindow, setInWindow] = useState(false);
+  // Trigger a re-render whenever the singleton broadcasts a change.
+  const [, rerender] = useState(0);
 
   useEffect(() => {
-    // Derive midnight-prayers config endpoint from the main baseUrl
-    const apiOrigin = mainBaseUrl.replace(/\/api\/broadcast-v2.*/, "");
-    const controller = new AbortController();
-    fetch(`${apiOrigin}/api/midnight-prayers/config`, { signal: controller.signal })
-      .then((r) => (r.ok ? (r.json() as Promise<MPScheduleConfig>) : null))
-      .then((data) => { if (data) setCfg(data); })
-      .catch(() => { /* stay on main channel */ });
-    // Abort on mainBaseUrl change or component unmount to prevent setting
-    // state on an already-unmounted component during rapid navigation.
-    return () => controller.abort();
+    const singleton = _getOrCreateMpSingleton(mainBaseUrl);
+    const notify = () => rerender((n) => n + 1);
+    singleton.listeners.add(notify);
+    return () => { singleton.listeners.delete(notify); };
   }, [mainBaseUrl]);
 
-  useEffect(() => {
-    if (!cfg) return;
-    const check = () => setInWindow(isInMpWindow(cfg));
-    check();
-    const t = setInterval(check, 60_000);
-    return () => clearInterval(t);
-  }, [cfg]);
-
-  if (!cfg || !inWindow) return mainBaseUrl;
+  const singleton = _mpSingletons.get(mainBaseUrl);
+  if (!singleton?.cfg || !singleton.inWindow) return mainBaseUrl;
   return mainBaseUrl.replace(/\/api\/broadcast-v2.*/, "/api/midnight-prayers");
 }
 
