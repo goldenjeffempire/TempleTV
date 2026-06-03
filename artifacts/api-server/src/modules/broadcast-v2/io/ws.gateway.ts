@@ -153,8 +153,20 @@ export async function wsRoutes(app: FastifyInstance) {
         // Without this gate, an orchestrator "frame" event emitted during
         // the async replayFrom call can reach the client before the recover
         // and snapshot frames, causing out-of-order FSM transitions.
+        //
+        // FRAME_QUEUE_MAX: mirrors the SSE gateway's 500-frame cap. During
+        // an unusually long DB replay (slow Postgres, high event volume) the
+        // live "frame" events emitted by the orchestrator accumulate here.
+        // Without a cap, a burst of thousands of events could exhaust heap
+        // memory on the Node process. When the cap is exceeded we drop the
+        // oldest frame (shift) so the client receives the most-recent events
+        // and the post-replay snapshot re-aligns any skipped state.
+        const FRAME_QUEUE_MAX = 500;
         const frameQueue: V2ServerFrame[] = [];
-        const bufferFrame = (f: V2ServerFrame) => { frameQueue.push(f); };
+        const bufferFrame = (f: V2ServerFrame) => {
+          if (frameQueue.length >= FRAME_QUEUE_MAX) frameQueue.shift();
+          frameQueue.push(f);
+        };
         broadcastOrchestrator.off("frame", onFrame);
         broadcastOrchestrator.on("frame", bufferFrame);
         try {

@@ -432,7 +432,21 @@ export function LiveBroadcastV2({
       setOverridePlaying(false);
       return;
     }
+    // Always reset when (re-)entering LIVE_OVERRIDE_ACTIVE so each override
+    // activation starts with a clean "Tuning in…" overlay regardless of the
+    // previous override's kind.
+    //
+    // Why this reset is needed even for YouTube overrides: if an HLS override
+    // played (setting overridePlaying=true) and then a YouTube override started
+    // (kind changes while state stays LIVE_OVERRIDE_ACTIVE), this effect re-runs
+    // but the YouTube guard below would return early WITHOUT resetting.
+    // overridePlaying would stay true. When the next HLS override begins, the
+    // effect runs again but overridePlaying is already true from the prior HLS
+    // run — the "Tuning in…" overlay is never shown for the new HLS source.
+    setOverridePlaying(false);
+
     // YouTube override: rendered via iframe — no native <video> event fires.
+    // The reset above ensures a clean state; we don't need a listener here.
     if (server?.override?.kind === "youtube") return;
     // HLS/RTMP override: watch the active video element for the first `playing`
     // event.  Once the browser starts rendering frames we clear the overlay.
