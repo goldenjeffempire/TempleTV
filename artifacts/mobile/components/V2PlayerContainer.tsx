@@ -320,6 +320,24 @@ interface BufferProps {
    */
   suppressEvents?: boolean;
   /**
+   * True when the FSM is actively waiting for this buffer to report
+   * readiness (PREPARING_ACTIVE, RECOVERING_PRIMARY, RECOVERING_FAILOVER).
+   * False when the FSM is already PLAYING or in any other non-waiting state.
+   *
+   * Gates the load-timeout and buffering-stall watchdogs so a freshly-
+   * mounted consumer (e.g. the Player screen opening while the Hero's
+   * singleton session is already PLAYING) cannot accidentally fire
+   * buffer-error into a healthy PLAYING session. Without this guard,
+   * the 12-second load timeout or 15-second buffering watchdog fires
+   * against the fresh Video elements and triggers an unnecessary
+   * RECOVERING_PRIMARY cycle that disrupts the live broadcast.
+   *
+   * Stored in a ref (fsmIsWaitingRef) inside BroadcastBuffer so the
+   * value is current inside timeout/async callbacks without causing
+   * those timers to be re-created on every snapshot update.
+   */
+  fsmIsWaiting: boolean;
+  /**
    * Called when the native player renders its first video frame
    * (`onReadyForDisplay`). The parent uses this to keep the poster
    * visible until actual pixels appear on screen, eliminating the
@@ -336,6 +354,7 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
   forceMuted = false,
   excludeYouTube = false,
   suppressEvents = false,
+  fsmIsWaiting = false,
   onVideoReady,
 }: BufferProps) {
   const ref = useRef<Video>(null);
@@ -357,6 +376,18 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
   // every time the parent toggles suppressEvents (e.g. on fullscreen toggle).
   const suppressEventsRef = useRef(suppressEvents);
   suppressEventsRef.current = suppressEvents;
+
+  // Keep fsmIsWaiting in a ref so timeout callbacks (load timeout, buffering
+  // stall watchdog) read the CURRENT value without appearing in their dep
+  // arrays. This avoids re-creating the timers on every snapshot update.
+  //
+  // Why this matters: the load-timeout and buffering-stall watchdogs must NOT
+  // arm when the FSM is already PLAYING (e.g. Player screen freshly mounting
+  // while Hero was playing). In that case the Video elements are cold-starting
+  // but the FSM is healthy — a spurious buffer-error after 12 s / 15 s would
+  // kick the FSM into RECOVERING_PRIMARY and disrupt an otherwise live stream.
+  const fsmIsWaitingRef = useRef(fsmIsWaiting);
+  fsmIsWaitingRef.current = fsmIsWaiting;
 
   // Stable wrapper around reportBufferEvent that becomes a no-op while
   // suppressEvents is true.  All FSM event calls below use `emit` so
@@ -549,8 +580,17 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
       // suppressEvents: do NOT arm the watchdog on view-only instances
       // (hero preview, muted inline player). Their Videos loading slowly
       // in the background must not fire spurious buffer-error to the FSM.
+      //
+      // fsmIsWaiting: only arm when the FSM is genuinely waiting for this
+      // buffer to signal readiness (PREPARING_ACTIVE / RECOVERING_*). When
+      // the FSM is already PLAYING — e.g. Player screen freshly mounting
+      // while the Hero singleton session was already broadcasting — the
+      // new Video elements are cold-starting but the FSM is healthy. Arming
+      // the watchdog here would fire buffer-error after 12 s if HLS is slow
+      // to load on the fresh elements, kicking the FSM into RECOVERING_PRIMARY
+      // and disrupting a perfectly live stream.
       clearLoadTimeout();
-      if (!suppressEvents && state.playing && state.active) {
+      if (!suppressEvents && state.playing && state.active && fsmIsWaitingRef.current) {
         loadTimeoutRef.current = setTimeout(() => {
           loadTimeoutRef.current = null;
           emit({ type: "buffer-error", bufferId, error: "load-timeout" });
@@ -930,7 +970,13 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
         // suppressEvents: do NOT arm the watchdog on view-only instances —
         // their isBuffering state (often true while backgrounded) must never
         // trigger FSM recovery for the primary player instance.
-        if (status.isBuffering && state.playing && state.active && !suppressEventsRef.current) {
+        if (status.isBuffering && state.playing && state.active && !suppressEventsRef.current && fsmIsWaitingRef.current) {
+          // fsmIsWaiting guard: do NOT arm when the FSM is already PLAYING.
+          // A freshly-mounted Video (e.g. Player screen opening while Hero's
+          // singleton session was broadcasting) starts in isBuffering=true.
+          // Without this guard the 15 s stall watchdog fires buffer-error
+          // and drives the FSM into RECOVERING_PRIMARY — disrupting a live
+          // stream that was healthy before the new consumer mounted.
           if (!bufferingWatchdogRef.current) {
             bufferingWatchdogRef.current = setTimeout(() => {
               bufferingWatchdogRef.current = null;
@@ -942,7 +988,8 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
             }, BUFFERING_STALL_THRESHOLD_MS);
           }
         } else {
-          // Not buffering, not the active playing buffer, or suppressed — disarm.
+          // Not buffering, not the active playing buffer, suppressed, or FSM
+          // not waiting for this buffer's signal — disarm.
           clearBufferingWatchdog();
         }
       }}
@@ -1343,6 +1390,17 @@ export function V2PlayerContainer({
   // OR while the video frame is not yet ready (prevents black flash).
   const showPoster = (!!overlayContent || !videoReady) && !!posterUrl;
 
+  // True when the FSM is actively waiting for an active-buffer signal
+  // (PREPARING_ACTIVE → PLAYING, RECOVERING_* → PLAYING). Used to gate the
+  // load-timeout and buffering-stall watchdogs inside BroadcastBuffer so that
+  // a freshly-mounted secondary consumer (e.g. Player screen opening while the
+  // Hero's singleton session is already PLAYING) cannot accidentally fire
+  // buffer-error into a healthy session and trigger RECOVERING_PRIMARY.
+  const fsmIsWaiting =
+    snapshot.state === "PREPARING_ACTIVE" ||
+    snapshot.state === "RECOVERING_PRIMARY" ||
+    snapshot.state === "RECOVERING_FAILOVER";
+
   // Banner text: distinguish "no signal" from "WS disconnected" so viewers
   // understand whether to wait for auto-reconnect (WS) or move somewhere
   // with better coverage (no signal).
@@ -1384,6 +1442,7 @@ export function V2PlayerContainer({
         forceMuted={muted}
         excludeYouTube={minimal}
         suppressEvents={minimal || !!suppressEvents}
+        fsmIsWaiting={fsmIsWaiting}
         onVideoReady={buffers.A.active ? handleVideoReady : undefined}
       />
       <BroadcastBuffer
@@ -1393,6 +1452,7 @@ export function V2PlayerContainer({
         forceMuted={muted}
         excludeYouTube={minimal}
         suppressEvents={minimal || !!suppressEvents}
+        fsmIsWaiting={fsmIsWaiting}
         onVideoReady={buffers.B.active ? handleVideoReady : undefined}
       />
 
@@ -1423,6 +1483,22 @@ export function V2PlayerContainer({
               </Text>
             </View>
           ) : null}
+        </View>
+      )}
+
+      {/* First-frame loading indicator ─────────────────────────────────────
+          Shown when the FSM is already PLAYING (so overlayContent is null and
+          the full overlay is hidden) but this V2PlayerContainer's Video
+          elements have not yet rendered their first frame — e.g. when the
+          Player screen opens while the Hero's singleton session was already
+          broadcasting. The poster covers the blank Video surface; this small
+          spinner in the corner signals that the stream is buffering without
+          blocking the poster with a dark scrim.
+          Not shown for minimal/hero instances (suppressEvents=true covers them).
+          Not shown when a full overlay is already displaying its own spinner. */}
+      {!videoReady && !overlayContent && !minimal && !!posterUrl && (
+        <View style={styles.firstFrameLoading} pointerEvents="none">
+          <ActivityIndicator color="rgba(255,255,255,0.75)" size="small" />
         </View>
       )}
     </View>
@@ -1502,6 +1578,12 @@ const styles = StyleSheet.create({
   },
   overlaySpinner: {
     marginBottom: 16,
+  },
+  firstFrameLoading: {
+    position: "absolute",
+    bottom: 12,
+    right: 12,
+    zIndex: 15,
   },
   overlayText: {
     color: "#fff",
