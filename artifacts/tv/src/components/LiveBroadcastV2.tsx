@@ -379,7 +379,7 @@ export function LiveBroadcastV2({
     (_video: HTMLVideoElement, _url: string): (() => void) => () => {},
     [],
   );
-  const { snapshot, connected, attach } = useV2Broadcast({ baseUrl: effectiveBaseUrl, attachHls, attachYouTube });
+  const { snapshot, connected, attach, forceReconnect } = useV2Broadcast({ baseUrl: effectiveBaseUrl, attachHls, attachYouTube });
   const fatalFiredRef = useRef(false);
 
   // Local video element refs — shadow attach.A / attach.B so we can find the
@@ -580,12 +580,28 @@ export function LiveBroadcastV2({
           on most browsers; Smart TV platforms typically permit autoplay in
           fullscreen embedded contexts.                                      */}
       {(() => {
+        // Extract YouTube video ID from any supported URL format:
+        //   https://www.youtube.com/watch?v=VIDEOID
+        //   https://youtu.be/VIDEOID
+        //   https://www.youtube.com/embed/VIDEOID
+        // Returns null for unrecognised formats so the iframe is suppressed
+        // rather than loading with an invalid ID (which produces a 404 embed).
+        const extractYouTubeId = (url: string): string | null => {
+          try {
+            const u = new URL(url);
+            if (u.hostname === "youtu.be") {
+              const id = u.pathname.slice(1).split("?")[0];
+              return id || null;
+            }
+            return u.searchParams.get("v");
+          } catch { return null; }
+        };
+
         // Check active override first (LIVE_OVERRIDE_ACTIVE with YouTube kind).
         const overrideKind = server?.override?.kind;
         const overrideUrl  = server?.override?.url;
         if (overrideKind === "youtube" && overrideUrl) {
-          let ytId: string | null = null;
-          try { ytId = new URL(overrideUrl).searchParams.get("v"); } catch { /* ignore */ }
+          const ytId = extractYouTubeId(overrideUrl);
           if (ytId) return (
             <iframe
               key={`override-${ytId}`}
@@ -607,8 +623,7 @@ export function LiveBroadcastV2({
         // Fall back to current queue item's YouTube source.
         const src = server?.current?.source;
         if (src?.kind !== "youtube") return null;
-        let ytId: string | null = null;
-        try { ytId = new URL(src.url).searchParams.get("v"); } catch { /* ignore */ }
+        const ytId = extractYouTubeId(src.url);
         if (!ytId) return null;
         return (
           <iframe
@@ -887,7 +902,17 @@ export function LiveBroadcastV2({
           )}
           {overlay?.showRefresh && (
             <button
-              onClick={() => window.location.reload()}
+              onClick={() => {
+                // Prefer a transport reconnect over a full page reload: it is
+                // faster (no SPA re-init, no new WS handshake from scratch),
+                // and if the FATAL state was caused by a transient network
+                // blip the reconnect self-heals without clearing page state.
+                // Fall back to reload only if the transport fails to produce
+                // a healthy connection within the normal backoff window —
+                // which is handled automatically by the machine's 30 s
+                // FATAL auto-recovery timer in parallel with this action.
+                forceReconnect();
+              }}
               style={{
                 marginTop: "clamp(6px, 1vh, 14px)",
                 padding: "clamp(10px, 1.2vh, 14px) clamp(24px, 3vw, 40px)",

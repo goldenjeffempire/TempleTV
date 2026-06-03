@@ -1320,6 +1320,23 @@ export function V2PlayerContainer({
     setVideoReady(false);
   }, [activeBindRevision]);
 
+  // Stop the phase timer as soon as the HLS/RTMP override video is playing
+  // (videoReady=true). LIVE_OVERRIDE_ACTIVE never transitions to PLAYING, so
+  // the phase timer keeps running indefinitely while `isLoadingState` remains
+  // true — even though overlayContent returns null (no overlay) once
+  // videoReady=true. Clear the interval here to avoid a 5 s re-render loop
+  // that drives no visible UI change and wastes battery on mobile.
+  useEffect(() => {
+    if (
+      snapshot.state === "LIVE_OVERRIDE_ACTIVE" &&
+      videoReady &&
+      phaseTimerRef.current !== null
+    ) {
+      clearInterval(phaseTimerRef.current);
+      phaseTimerRef.current = null;
+    }
+  }, [snapshot.state, videoReady]);
+
   // ── Overlay content ───────────────────────────────────────────────────────
   // Returns { main, sub, showSpinner } or null (no overlay).
   // Phases give users progressively more honest context as time passes —

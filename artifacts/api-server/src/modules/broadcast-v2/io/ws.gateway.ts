@@ -236,8 +236,17 @@ export async function wsRoutes(app: FastifyInstance) {
     });
 
     socket.on("close", () => {
+      // Signal any in-flight `resume` handler so it does not re-register
+      // onFrame on a dead socket after its DB await resolves.
+      socketClosed = true;
       clearInterval(heartbeat);
-      broadcastOrchestrator.off("frame", onFrame);
+      // Remove whichever handler is currently registered — either the live
+      // `onFrame` listener or the `bufferFrame` buffering listener that was
+      // swapped in during a concurrent `resume` message. Using `activeFrameHandler`
+      // instead of the bare `onFrame` reference prevents the phantom-listener
+      // accumulation where a close during a DB await left `bufferFrame` permanently
+      // on the emitter (because `onFrame` was no longer registered at that point).
+      broadcastOrchestrator.off("frame", activeFrameHandler);
       // releaseCounter is idempotent — safe even if the early handler above
       // already fired (e.g. client disconnected during synchronous setup).
       releaseCounter();

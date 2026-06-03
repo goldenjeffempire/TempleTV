@@ -63,6 +63,13 @@ export interface UseV2BroadcastResult {
     A: (el: HTMLVideoElement | null) => void;
     B: (el: HTMLVideoElement | null) => void;
   };
+  /**
+   * Immediately drops the current WS/SSE connection and reconnects with
+   * jittered backoff reset. Use this to recover from FATAL state without
+   * triggering a full page reload — the transport self-heals once the
+   * server is reachable.
+   */
+  forceReconnect: () => void;
 }
 
 // ── Module-level session store ──────────────────────────────────────────────
@@ -796,9 +803,17 @@ export function useV2Broadcast(opts: UseV2BroadcastOptions): UseV2BroadcastResul
     [session, tryAttach],
   );
 
+  // Stable forceReconnect — lets callers (e.g. TV FATAL overlay) trigger an
+  // immediate transport reconnect without a full page reload. Uses the session
+  // reference so the function identity is stable across re-renders.
+  const forceReconnect = useCallback(() => {
+    session?.transport.forceReconnect();
+  }, [session]);
+
   return {
     snapshot,
     connected,
     attach: { A: attachA, B: attachB },
+    forceReconnect,
   };
 }

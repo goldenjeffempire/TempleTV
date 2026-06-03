@@ -15,6 +15,16 @@ export interface WebBuffer {
   el: HTMLVideoElement;
   /** Currently bound source descriptor — for diff/avoid-rebind. */
   boundUrl: string | null;
+  /**
+   * Kind of the currently bound source ("hls", "mp4", "youtube", etc.).
+   * Used by the `play` intent handler to skip native video.play() and
+   * watchdog arming for YouTube sources — which are displayed via an
+   * external iframe and have no native <video> media loaded.
+   * Optional so callers that create WebBuffer literals (e.g. react.ts
+   * `attachElements`) don't need to be updated — undefined is treated
+   * identically to null by all consumers of this field.
+   */
+  boundKind?: string | null;
   /** Optional cleanup for hls.js / dash.js attachments. */
   detach?: () => void;
 }
@@ -251,6 +261,12 @@ export function createWebAdapter(
         return bind(buffers[intent.bufferId], intent.bufferId, intent.item);
       case "play": {
         const buf = buffers[intent.bufferId];
+        // YouTube sources are displayed via an external iframe — the <video>
+        // element has no src and cannot be played. Calling play() would reject
+        // with NotSupportedError, and arming the watchdog would fire
+        // buffer-stalled after WATCHDOG_INITIAL_LOAD_MS with no timeupdate
+        // events, triggering a spurious RECOVERING_PRIMARY cascade. Skip both.
+        if (buf.boundKind === "youtube") return;
         // Only seek if position differs by more than 4 seconds to avoid
         // jarring seeks from minor clock-skew between successive snapshots.
         // 2 s was too tight: the transport's belt-and-suspenders REST fetch
@@ -371,20 +387,32 @@ export function createWebAdapter(
       // YouTube URLs cannot be played natively by the <video> element.
       // Loading them causes an `error` event → buffer-error → RECOVERING_PRIMARY
       // cascade even in LIVE_OVERRIDE_ACTIVE state (onBufferError has no state guard).
-      // Skip native loading entirely. onBufferStalled for LIVE_OVERRIDE_ACTIVE is
-      // already a no-op in the machine (not in the escalation list), so the
-      // watchdog can fire harmlessly while the external YouTube iframe is visible.
+      // Skip native loading entirely.
+      //
+      // Fire buffer-ready immediately so the FSM can transition out of
+      // PREPARING_ACTIVE → PLAYING without waiting for a <video> canplay event
+      // that will never come. For LIVE_OVERRIDE_ACTIVE the machine already
+      // gates stall escalation on override.kind, so a spurious watchdog tick
+      // is harmless — but not firing buffer-ready left the machine stuck in
+      // PREPARING_ACTIVE forever, showing "Tuning in…" indefinitely for any
+      // YouTube item in the broadcast queue.
+      //
       // If an external YouTube handler is provided (e.g., TV iframe), wire it up.
       if (cb.attachYouTube) {
         buf.detach = cb.attachYouTube(buf.el, url);
       }
       buf.boundUrl = url;
+      buf.boundKind = "youtube";
+      // Emit synchronously — safe because `send` only queues a PlayerEvent
+      // into the machine's event buffer; it does not call back into the adapter.
+      cb.send({ type: "buffer-ready", bufferId: id });
       return; // skip armLoadTimer — no native media loading occurs
     } else {
       buf.el.src = url;
       buf.el.load();
     }
     buf.boundUrl = url;
+    buf.boundKind = kind;
     armLoadTimer(id);
   }
 
@@ -402,6 +430,7 @@ export function createWebAdapter(
     buf.el.removeAttribute("src");
     buf.el.load();
     buf.boundUrl = null;
+    buf.boundKind = null;
   }
 
   return { apply, destroy };
