@@ -26,7 +26,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PlayerMachine, type IntentHandler } from "./machine.js";
 import { V2Transport } from "./transport.js";
 import { createWebAdapter, type WebAdapterHandle, type WebBuffer } from "./adapters/web.js";
-import type { PlayerSnapshot } from "./types.js";
+import type { PlayerSnapshot, V2Item, V2Override } from "./types.js";
 
 export interface UseV2BroadcastOptions {
   baseUrl: string;
@@ -458,7 +458,28 @@ function replayStateToAdapter(snap: PlayerSnapshot, adapter: IntentHandler, cloc
         ? (server.current as { startsAtMs: number }).startsAtMs
         : null;
     const nowMs = Date.now() + clockOffsetMs;
-    const positionSecs = startsAtMs ? Math.max(0, (nowMs - startsAtMs) / 1000) : 0;
+    // Mirror resolvePositionSecs() from machine.ts:
+    //   • Only HLS supports wall-clock seeking. MP4/YouTube/DASH always play
+    //     from position 0 — seeking a non-faststart MP4 requires costly moov-atom
+    //     discovery that routinely exhausts the stall watchdog and triggers
+    //     RECOVERING_PRIMARY on SPA remount.
+    //   • For HLS, cap at (durationSecs − 10) to prevent seek-past-end on VOD
+    //     HLS items with overestimated durationSecs. Without this cap, a video
+    //     playing in its final 10 s would be seeked past its encoded end on the
+    //     next SPA remount, immediately firing onended and creating the "single
+    //     segment replay" loop that was fixed on mobile (HLS_END_GUARD_MS) but
+    //     not in this web-side replay path.
+    const sourceKind: string = "source" in activeItem
+      ? (activeItem as V2Item).source.kind
+      : (activeItem as V2Override).kind;
+    let positionSecs = 0;
+    if (sourceKind === "hls" && startsAtMs) {
+      const elapsed = Math.max(0, (nowMs - startsAtMs) / 1000);
+      const dur = "durationSecs" in activeItem
+        ? (activeItem as V2Item).durationSecs
+        : 0;
+      positionSecs = dur > 0 ? Math.min(elapsed, Math.max(0, dur - 10)) : elapsed;
+    }
     adapter({ type: "play", bufferId: activeId, positionSecs });
   }
 

@@ -129,6 +129,12 @@ function startJanitor(): void {
       }
       if (now - entry.lastIdleAtMs >= SESSION_IDLE_EVICT_MS) {
         try {
+          // destroy() clears internal timers (sourceExpiryTimer,
+          // fatalRecoveryTimer) on the PlayerMachine before we drop all
+          // references. Without this call those timers fire into dead state
+          // and keep the RN event loop alive unnecessarily — same issue as
+          // the web hook janitor that already calls machine.destroy().
+          entry.session.machine.destroy();
           entry.session.machineUnsub();
           entry.session.transport.stop?.();
         } catch {
