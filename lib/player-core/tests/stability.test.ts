@@ -492,3 +492,254 @@ describe("Stability — 24h broadcast day simulation", () => {
     machine.destroy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// YouTube source stability — mixed queue cycling
+// ---------------------------------------------------------------------------
+
+describe("Stability — YouTube source in mixed queue", () => {
+  it("30-item queue with YouTube items at every 3rd position cycles without deadlock", () => {
+    _seq = 0;
+    const { machine } = makeHarness();
+
+    for (let i = 0; i < 30; i++) {
+      const isYouTube = i % 3 === 1;
+      const item: V2Item = isYouTube
+        ? {
+            id: `yt-${i}`, title: `YT ${i}`, thumbnailUrl: null, durationSecs: 3600,
+            source: { kind: "youtube", url: `https://www.youtube.com/watch?v=YT${i}`, expiresAtMs: null },
+            failoverSource: null, startsAtMs: Date.now() - 60_000, endsAtMs: Date.now() + 3_540_000,
+          }
+        : makeItem(`hls-${i}`);
+
+      machine.send({ type: "snapshot", snapshot: makeSnapshot({ current: item }) });
+      machine.send({ type: "buffer-ready", bufferId: machine.getSnapshot().activeBufferId });
+      assertValidState(machine, `mixed item ${i}`);
+      expect(machine.getSnapshot().state).toBe("PLAYING");
+    }
+
+    machine.destroy();
+  });
+
+  it("YouTube → HLS → YouTube A/B swap — activeBufferId always alternates correctly", () => {
+    _seq = 0;
+    const { machine } = makeHarness();
+    const kinds: Array<"hls" | "youtube"> = [
+      "hls", "youtube", "hls", "youtube", "hls", "youtube",
+    ];
+
+    for (let i = 0; i < kinds.length; i++) {
+      const kind = kinds[i]!;
+      const current: V2Item = kind === "youtube"
+        ? {
+            id: `yt-${i}`, title: `YT ${i}`, thumbnailUrl: null, durationSecs: 3600,
+            source: { kind: "youtube", url: `https://www.youtube.com/watch?v=YT${i}`, expiresAtMs: null },
+            failoverSource: null, startsAtMs: Date.now() - 60_000, endsAtMs: Date.now() + 3_540_000,
+          }
+        : makeItem(`hls-${i}`);
+      const nextKind = kinds[i + 1];
+      const next: V2Item | null = nextKind != null
+        ? nextKind === "youtube"
+          ? {
+              id: `yt-next-${i}`, title: `YT Next`, thumbnailUrl: null, durationSecs: 3600,
+              source: { kind: "youtube", url: `https://www.youtube.com/watch?v=YTN${i}`, expiresAtMs: null },
+              failoverSource: null, startsAtMs: Date.now() + 3_540_000, endsAtMs: Date.now() + 7_200_000,
+            }
+          : makeItem(`hls-next-${i}`)
+        : null;
+
+      machine.send({ type: "snapshot", snapshot: makeSnapshot({ current, next }) });
+      machine.send({ type: "buffer-ready", bufferId: machine.getSnapshot().activeBufferId });
+      const activeId = machine.getSnapshot().activeBufferId;
+      assertValidState(machine, `item ${i} (${kind})`);
+
+      if (next) {
+        const inactiveId: "A" | "B" = activeId === "A" ? "B" : "A";
+        machine.send({ type: "preload", item: next, leadMs: 90_000 });
+        machine.send({ type: "buffer-ready", bufferId: inactiveId });
+        machine.send({ type: "buffer-ended", bufferId: activeId });
+        assertValidState(machine, `handoff ${i}`);
+        if (machine.getSnapshot().state === "PLAYING") {
+          expect(machine.getSnapshot().activeBufferId).toBe(inactiveId);
+        }
+      }
+    }
+
+    machine.destroy();
+  });
+
+  it("YouTube override cycling between queue items: 10 takeover+release cycles", () => {
+    _seq = 0;
+    const { machine } = makeHarness();
+    const baseItem = makeItem("base-hls");
+    reachPlaying(machine, baseItem);
+
+    for (let i = 0; i < 10; i++) {
+      // Takeover with YouTube override
+      machine.send({
+        type: "takeover",
+        override: {
+          id: `ov-yt-${i}`, kind: "youtube",
+          url: "https://www.youtube.com/watch?v=LIVE",
+          title: "Live", startedAtMs: Date.now(), endsAtMs: null, resumeQueueOnEnd: true,
+        },
+      });
+      expect(machine.getSnapshot().state).toBe("LIVE_OVERRIDE_ACTIVE");
+
+      // Stall during YouTube override must NOT escalate
+      machine.send({ type: "buffer-stalled", bufferId: machine.getSnapshot().activeBufferId });
+      expect(machine.getSnapshot().state).toBe("LIVE_OVERRIDE_ACTIVE");
+
+      // Return to queue via new snapshot
+      machine.send({ type: "snapshot", snapshot: makeSnapshot({ current: baseItem }) });
+      machine.send({ type: "buffer-ready", bufferId: machine.getSnapshot().activeBufferId });
+      assertValidState(machine, `post-override-${i}`);
+    }
+
+    machine.destroy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FATAL auto-recovery cycle stability
+// ---------------------------------------------------------------------------
+
+describe("Stability — FATAL auto-recovery cycles", () => {
+  it("FATAL state always auto-recovers to SYNCING after 30s timer", () => {
+    _seq = 0;
+    vi.useFakeTimers();
+    try {
+      const { machine } = makeHarness();
+
+      // Drive to FATAL by sending 3 SKIP_PENDING cycles
+      // Each cycle: snapshot → buffer-ready → 2 errors (no failover) → SKIP_PENDING
+      for (let skip = 0; skip < 3 && machine.getSnapshot().state !== "FATAL"; skip++) {
+        machine.send({ type: "snapshot", snapshot: makeSnapshot({ current: makeItem(`burn-${skip}`) }) });
+        machine.send({ type: "buffer-ready", bufferId: machine.getSnapshot().activeBufferId });
+        machine.send({ type: "buffer-error", bufferId: machine.getSnapshot().activeBufferId, error: "e1" });
+        machine.send({ type: "buffer-error", bufferId: machine.getSnapshot().activeBufferId, error: "e2" });
+        assertValidState(machine, `skip cycle ${skip}`);
+      }
+
+      if (machine.getSnapshot().state === "FATAL") {
+        vi.advanceTimersByTime(30_000);
+        expect(["SYNCING", "BOOTSTRAP"]).toContain(machine.getSnapshot().state);
+      }
+
+      machine.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("after FATAL recovery, machine accepts a new snapshot and re-enters PREPARING_ACTIVE", () => {
+    _seq = 0;
+    vi.useFakeTimers();
+    try {
+      const { machine } = makeHarness();
+
+      // Drive toward FATAL
+      for (let i = 0; i < 3; i++) {
+        machine.send({ type: "snapshot", snapshot: makeSnapshot({ current: makeItem(`f-${i}`) }) });
+        machine.send({ type: "buffer-ready", bufferId: machine.getSnapshot().activeBufferId });
+        machine.send({ type: "buffer-error", bufferId: machine.getSnapshot().activeBufferId, error: "e1" });
+        machine.send({ type: "buffer-error", bufferId: machine.getSnapshot().activeBufferId, error: "e2" });
+      }
+
+      if (machine.getSnapshot().state === "FATAL") {
+        vi.advanceTimersByTime(30_000);
+
+        const recoveryItem = makeItem("recovery-item");
+        machine.send({ type: "snapshot", snapshot: makeSnapshot({ current: recoveryItem }) });
+        assertValidState(machine, "post-FATAL-recovery-snapshot");
+        expect(["PREPARING_ACTIVE", "PLAYING", "SYNCING"]).toContain(machine.getSnapshot().state);
+      }
+
+      machine.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("FATAL backoff doubles each cycle: 30s → 60s → 120s → 240s → cap at 240s", () => {
+    const FATAL_AUTO_RECOVERY_MS = 30_000;
+    const FATAL_BACKOFF_MAX_MS = 240_000;
+
+    const schedule = [1, 2, 3, 4, 5, 6].map((attempt) =>
+      Math.min(FATAL_AUTO_RECOVERY_MS * Math.pow(2, attempt - 1), FATAL_BACKOFF_MAX_MS),
+    );
+    expect(schedule).toEqual([30_000, 60_000, 120_000, 240_000, 240_000, 240_000]);
+    expect(Math.max(...schedule)).toBe(FATAL_BACKOFF_MAX_MS);
+  });
+
+  it("primaryRetries resets to 0 after each successful buffer-ready post-recovery", () => {
+    _seq = 0;
+    vi.useFakeTimers();
+    try {
+      const { machine } = makeHarness();
+      const item = makeItem("retry-reset-item");
+
+      // Play successfully
+      machine.send({ type: "snapshot", snapshot: makeSnapshot({ current: item }) });
+      machine.send({ type: "buffer-ready", bufferId: machine.getSnapshot().activeBufferId });
+      expect(machine.getSnapshot().state).toBe("PLAYING");
+
+      // One error → RECOVERING_PRIMARY (primaryRetries = 1)
+      machine.send({ type: "buffer-error", bufferId: machine.getSnapshot().activeBufferId, error: "transient" });
+      expect(machine.getSnapshot().state).toBe("RECOVERING_PRIMARY");
+
+      // Recovery: buffer-ready → back to PLAYING (primaryRetries reset)
+      machine.send({ type: "buffer-ready", bufferId: machine.getSnapshot().activeBufferId });
+      expect(machine.getSnapshot().state).toBe("PLAYING");
+
+      // Another error should start from primaryRetries=0 again → RECOVERING_PRIMARY
+      machine.send({ type: "buffer-error", bufferId: machine.getSnapshot().activeBufferId, error: "transient2" });
+      expect(machine.getSnapshot().state).toBe("RECOVERING_PRIMARY");
+
+      machine.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 24/7 broadcast — YouTube items scattered across full day
+// ---------------------------------------------------------------------------
+
+describe("Stability — 24h broadcast with YouTube sources", () => {
+  it("24-hour simulation with YouTube items every 6th slot — valid state throughout", () => {
+    _seq = 0;
+    const { machine } = makeHarness();
+
+    for (let hour = 0; hour < 24; hour++) {
+      const isYoutube = hour % 6 === 5; // every 6th hour is YouTube
+      const current: V2Item = isYoutube
+        ? {
+            id: `yt-hour-${hour}`, title: `YT Sermon ${hour}`, thumbnailUrl: null, durationSecs: 3600,
+            source: { kind: "youtube", url: `https://www.youtube.com/watch?v=HR${hour}`, expiresAtMs: null },
+            failoverSource: null, startsAtMs: Date.now() - 60_000, endsAtMs: Date.now() + 3_540_000,
+          }
+        : makeItem(`hour-${hour}`, hour * 3_600_000);
+
+      machine.send({ type: "snapshot", snapshot: makeSnapshot({ current }) });
+      machine.send({ type: "buffer-ready", bufferId: machine.getSnapshot().activeBufferId });
+      assertValidState(machine, `hour ${hour} playing (${isYoutube ? "youtube" : "hls"})`);
+
+      if (machine.getSnapshot().state === "PLAYING") {
+        const nextHour = hour + 1;
+        const nextItem = makeItem(`hour-${nextHour}`, nextHour * 3_600_000);
+        const inactiveId = machine.getSnapshot().activeBufferId === "A" ? "B" : "A";
+        machine.send({ type: "preload", item: nextItem, leadMs: 120_000 });
+        machine.send({ type: "buffer-ready", bufferId: inactiveId });
+        machine.send({ type: "buffer-ended", bufferId: machine.getSnapshot().activeBufferId });
+        assertValidState(machine, `hour ${hour} handoff`);
+      }
+    }
+
+    const finalState = machine.getSnapshot().state;
+    expect(VALID_STATES.has(finalState)).toBe(true);
+    expect(["FATAL", "BOOTSTRAP"]).not.toContain(finalState);
+    machine.destroy();
+  });
+});

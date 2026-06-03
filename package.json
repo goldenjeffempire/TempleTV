@@ -38,6 +38,11 @@
     "lint": "eslint artifacts/api-server/src artifacts/admin/src artifacts/tv/src lib",
     "lint:strict": "eslint artifacts/api-server/src artifacts/admin/src artifacts/tv/src lib --max-warnings=0",
     "lint:fix": "eslint artifacts/api-server/src artifacts/admin/src artifacts/tv/src lib --fix",
+    "test": "pnpm --filter @workspace/player-core run test && pnpm --filter @workspace/api-server run test",
+    "test:player-core": "pnpm --filter @workspace/player-core run test",
+    "test:api": "pnpm --filter @workspace/api-server run test",
+    "test:watch:player-core": "pnpm --filter @workspace/player-core run test:watch",
+    "test:watch:api": "pnpm --filter @workspace/api-server run test:watch",
     "smoke-test": "bash scripts/smoke-test.sh",
     "post-deploy-check": "bash scripts/post-deploy-check.sh",
     "verify-secrets": "bash scripts/verify-secrets-vault.sh"

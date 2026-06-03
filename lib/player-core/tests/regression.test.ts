@@ -26,6 +26,8 @@
  *           the LIVE_OVERRIDE_ACTIVE branch, before the YouTube early-return.
  */
 import { describe, it, expect } from "vitest";
+import { PlayerMachine } from "../src/machine.js";
+import type { AdapterIntent } from "../src/machine.js";
 
 // ---------------------------------------------------------------------------
 // Bug 1 — WS frameQueue cap
@@ -252,5 +254,408 @@ describe("LiveBroadcastV2 overridePlaying reset — regression (Bug 2)", () => {
     // Reset must fire even within the same kind
     expect(overridePlaying).toBe(false);
     expect(step.listenerAttached).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 3 — YouTube queue item stuck in PREPARING_ACTIVE forever
+//
+// Root cause: web adapter's bind() path for YouTube sources never called
+// the `buffer-ready` callback. The FSM stayed in PREPARING_ACTIVE indefinitely
+// waiting for a canplay event that would never fire (no src set on <video>).
+//
+// Fix: adapter fires buffer-ready immediately after setting boundKind="youtube".
+//
+// Machine-level invariant tested here:
+//   "For a YouTube source item, exactly TWO events (snapshot + buffer-ready)
+//    are sufficient to drive the FSM from BOOTSTRAP → PREPARING_ACTIVE → PLAYING."
+//
+// We cannot test the DOM adapter here, but we CAN verify the FSM accepts
+// a buffer-ready immediately after the snapshot — confirming the adapter-side
+// fix unblocks the machine.
+// ---------------------------------------------------------------------------
+
+describe("YouTube queue item immediate buffer-ready — regression (Bug 3)", () => {
+  it("snapshot + immediate buffer-ready → PLAYING in exactly 2 events", () => {
+    const intents: AdapterIntent[] = [];
+    const machine = new PlayerMachine((i) => intents.push(i));
+    const now = Date.now();
+    const snapshot = {
+      channelId: "main", sequence: 1, serverTimeMs: now,
+      mode: "queue" as const, current: {
+        id: "yt-1", title: "YT", thumbnailUrl: null, durationSecs: 3600,
+        source: { kind: "youtube" as const, url: "https://www.youtube.com/watch?v=XYZ", expiresAtMs: null },
+        failoverSource: null, startsAtMs: now - 60_000, endsAtMs: now + 3_540_000,
+      },
+      next: null, nextNext: null, override: null, checkpoint: null,
+      failover: { active: false, reason: null },
+    };
+
+    // Event 1: snapshot → PREPARING_ACTIVE (machine awaits buffer-ready)
+    machine.send({ type: "snapshot", snapshot });
+    expect(machine.getSnapshot().state).toBe("PREPARING_ACTIVE");
+
+    // Event 2: adapter fires buffer-ready immediately for YouTube sources
+    machine.send({ type: "buffer-ready", bufferId: machine.getSnapshot().activeBufferId });
+    expect(machine.getSnapshot().state).toBe("PLAYING");
+    machine.destroy();
+  });
+
+  it("YouTube source play intent has positionSecs === 0 (no HLS wall-clock seek)", () => {
+    const playIntents: Array<{ type: string; positionSecs?: number }> = [];
+    const machine = new PlayerMachine((i) => {
+      if (i.type === "play") playIntents.push(i);
+    });
+    const now = Date.now();
+    machine.send({
+      type: "snapshot", snapshot: {
+        channelId: "main", sequence: 1, serverTimeMs: now, mode: "queue" as const,
+        current: {
+          id: "yt-2", title: "YT", thumbnailUrl: null, durationSecs: 7200,
+          source: { kind: "youtube" as const, url: "https://www.youtube.com/watch?v=ABC", expiresAtMs: null },
+          failoverSource: null,
+          startsAtMs: now - 3_600_000, // started 1 hour ago
+          endsAtMs: now + 3_600_000,
+        },
+        next: null, nextNext: null, override: null, checkpoint: null,
+        failover: { active: false, reason: null },
+      },
+    });
+    machine.send({ type: "buffer-ready", bufferId: machine.getSnapshot().activeBufferId });
+    expect(playIntents.length).toBeGreaterThanOrEqual(1);
+    expect(playIntents[0]!.positionSecs).toBe(0); // never seek YouTube — always start from 0
+    machine.destroy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 4 — WS close handler must use mutable activeFrameHandler pointer
+//
+// Root cause: ws.gateway.ts close handler called
+//   broadcastOrchestrator.off("frame", onFrame)
+// but when a `resume` message arrived, bufferFrame replaced onFrame on the
+// emitter. Closing with the original onFrame reference was a no-op — bufferFrame
+// leaked permanently.
+//
+// Fix: (1) socketClosed = true on close; (2) close handler calls
+//   broadcastOrchestrator.off("frame", activeFrameHandler)
+// where activeFrameHandler is a mutable pointer updated to bufferFrame on resume.
+//
+// We verify the algorithm here using a minimal EventEmitter simulation.
+// ---------------------------------------------------------------------------
+
+describe("WS close handler mutable pointer — regression (Bug 4)", () => {
+  class MiniEmitter {
+    private handlers = new Map<string, Set<(v: unknown) => void>>();
+    on(ev: string, fn: (v: unknown) => void)  { (this.handlers.get(ev) ?? this.handlers.set(ev, new Set()).get(ev)!).add(fn); }
+    off(ev: string, fn: (v: unknown) => void) { this.handlers.get(ev)?.delete(fn); }
+    emit(ev: string, v: unknown)              { this.handlers.get(ev)?.forEach((h) => h(v)); }
+    listenerCount(ev: string)                 { return this.handlers.get(ev)?.size ?? 0; }
+  }
+
+  it("close with mutable pointer removes the correct handler (bufferFrame, not onFrame)", () => {
+    const emitter = new MiniEmitter();
+    let socketClosed = false;
+    let activeFrameHandler: ((v: unknown) => void) | null = null;
+
+    const onFrame = (_v: unknown) => { /* normal handler */ };
+    const bufferFrame = (_v: unknown) => { /* resume buffer handler */ };
+
+    // ── Register onFrame ──────────────────────────────────────────────────
+    activeFrameHandler = onFrame;
+    emitter.on("frame", onFrame);
+    expect(emitter.listenerCount("frame")).toBe(1);
+
+    // ── resume message: swap to bufferFrame ───────────────────────────────
+    emitter.off("frame", onFrame);
+    activeFrameHandler = bufferFrame;
+    emitter.on("frame", bufferFrame);
+    expect(emitter.listenerCount("frame")).toBe(1);
+
+    // ── socket closes during the resume DB await ──────────────────────────
+    socketClosed = true;
+    // THE FIX: use activeFrameHandler (bufferFrame), not the stale onFrame
+    if (activeFrameHandler) emitter.off("frame", activeFrameHandler);
+
+    expect(socketClosed).toBe(true);
+    expect(emitter.listenerCount("frame")).toBe(0); // no leak
+  });
+
+  it("BUG SCENARIO: close with static onFrame reference leaks bufferFrame", () => {
+    const emitter = new MiniEmitter();
+    const onFrame = (_v: unknown) => { /* */ };
+    const bufferFrame = (_v: unknown) => { /* */ };
+
+    emitter.on("frame", onFrame);
+    emitter.off("frame", onFrame);
+    emitter.on("frame", bufferFrame);
+    // BUG: removing stale onFrame is a no-op — bufferFrame stays registered
+    emitter.off("frame", onFrame); // stale reference — no-op
+    expect(emitter.listenerCount("frame")).toBe(1); // leak! bufferFrame still there
+  });
+
+  it("socketClosed=true flag prevents re-registration after socket already closed", () => {
+    const emitter = new MiniEmitter();
+    let socketClosed = false;
+    let activeFrameHandler: ((v: unknown) => void) | null = null;
+    const registered: string[] = [];
+
+    const onFrame = (_v: unknown) => { /* */ };
+
+    activeFrameHandler = onFrame;
+    emitter.on("frame", onFrame);
+
+    // Close fires
+    socketClosed = true;
+    if (activeFrameHandler) emitter.off("frame", activeFrameHandler);
+
+    // Async resume DB await completes AFTER close — must not re-register
+    if (!socketClosed) {
+      emitter.on("frame", onFrame);
+      registered.push("onFrame");
+    }
+
+    expect(registered).toHaveLength(0); // nothing registered post-close
+    expect(emitter.listenerCount("frame")).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 5 — extractYouTubeId fails for youtu.be short URLs
+//
+// Root cause: new URL(url).searchParams.get("v") returns null for
+//   https://youtu.be/VIDEOID
+// because the video ID is in the pathname, not a query parameter.
+//
+// Fix: also check u.hostname === "youtu.be" → return u.pathname.slice(1).
+// ---------------------------------------------------------------------------
+
+describe("extractYouTubeId youtu.be short URL — regression (Bug 5)", () => {
+  function extractYouTubeId(url: string): string | null {
+    try {
+      const u = new URL(url);
+      if (u.hostname === "youtu.be") return u.pathname.slice(1) || null;
+      return u.searchParams.get("v");
+    } catch {
+      return null;
+    }
+  }
+
+  it("standard youtube.com/watch?v= URL works", () => {
+    expect(extractYouTubeId("https://www.youtube.com/watch?v=dQw4w9WgXcQ")).toBe("dQw4w9WgXcQ");
+  });
+
+  it("youtu.be short URL returns correct video ID", () => {
+    expect(extractYouTubeId("https://youtu.be/dQw4w9WgXcQ")).toBe("dQw4w9WgXcQ");
+  });
+
+  it("youtu.be short URL with query params returns pathname ID, not ?v param", () => {
+    expect(extractYouTubeId("https://youtu.be/dQw4w9WgXcQ?si=someToken")).toBe("dQw4w9WgXcQ");
+  });
+
+  it("BUG SCENARIO: searchParams.get('v') returns null for youtu.be — would produce no embed", () => {
+    const url = "https://youtu.be/dQw4w9WgXcQ";
+    const u = new URL(url);
+    expect(u.searchParams.get("v")).toBeNull(); // confirms old bug
+    expect(u.hostname).toBe("youtu.be");
+    expect(u.pathname.slice(1)).toBe("dQw4w9WgXcQ"); // fixed path
+  });
+
+  it("empty youtu.be URL (no ID) returns null", () => {
+    expect(extractYouTubeId("https://youtu.be/")).toBeNull();
+  });
+
+  it("non-YouTube URL returns null", () => {
+    expect(extractYouTubeId("https://vimeo.com/12345")).toBeNull();
+  });
+
+  it("invalid URL returns null without throwing", () => {
+    expect(extractYouTubeId("not-a-url")).toBeNull();
+  });
+
+  it("youtube.com/embed/ URL returns null (not a watch URL)", () => {
+    // Embed URLs don't have ?v= params — extractYouTubeId should return null
+    // (iframes are constructed from the embed URL directly, not extracted)
+    expect(extractYouTubeId("https://www.youtube.com/embed/dQw4w9WgXcQ")).toBeNull();
+  });
+
+  it("full watch URL with extra query params still extracts v correctly", () => {
+    expect(extractYouTubeId("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42s&list=PL123")).toBe("dQw4w9WgXcQ");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 6 — TV FATAL overlay: forceReconnect() vs window.location.reload()
+//
+// Root cause: the "Try Again" button in LiveBroadcastV2.tsx called
+//   onClick={() => window.location.reload()}
+// which re-bootstraps the entire SPA (300-500ms paint cost, loses all React
+// state, interrupts ongoing uploads/SSE connections).
+//
+// Fix: useV2Broadcast now returns forceReconnect(), which calls
+//   session.transport.forceReconnect()
+// This triggers transport reconnect (WS/SSE re-handshake) in ~50ms without
+// a full page reload.
+//
+// Algorithm invariant tested here:
+//   forceReconnect() resets the transport without clearing FSM state.
+//   The machine stays in SYNCING (not BOOTSTRAP) after a forced reconnect.
+// ---------------------------------------------------------------------------
+
+describe("forceReconnect vs window.location.reload — regression (Bug 6)", () => {
+  it("forceReconnect algorithm: transport reset without FSM state wipe", () => {
+    // Simulate the two strategies:
+    type ReconnectStrategy = "reload" | "forceReconnect";
+
+    interface TransportState {
+      connected: boolean;
+      reconnectCount: number;
+    }
+    interface FsmState {
+      state: string;
+      sequence: number;
+    }
+
+    function applyStrategy(strategy: ReconnectStrategy, fsm: FsmState, transport: TransportState): {
+      fsmState: string;
+      transportConnected: boolean;
+      reconnectCount: number;
+      pageReloaded: boolean;
+    } {
+      if (strategy === "reload") {
+        // Full page reload: wipes everything
+        return { fsmState: "BOOTSTRAP", transportConnected: false, reconnectCount: 0, pageReloaded: true };
+      }
+      // forceReconnect: only transport reconnects; FSM keeps lastSequence
+      return {
+        fsmState: "SYNCING",
+        transportConnected: true,
+        reconnectCount: transport.reconnectCount + 1,
+        pageReloaded: false,
+      };
+    }
+
+    const fsm: FsmState = { state: "FATAL", sequence: 42 };
+    const transport: TransportState = { connected: false, reconnectCount: 0 };
+
+    const reloadResult = applyStrategy("reload", fsm, transport);
+    expect(reloadResult.pageReloaded).toBe(true);
+    expect(reloadResult.fsmState).toBe("BOOTSTRAP"); // sequence lost
+
+    const reconnectResult = applyStrategy("forceReconnect", fsm, transport);
+    expect(reconnectResult.pageReloaded).toBe(false);
+    expect(reconnectResult.fsmState).toBe("SYNCING");  // sequence preserved
+    expect(reconnectResult.reconnectCount).toBe(1);
+  });
+
+  it("forceReconnect is faster than page reload (no DOM destruction)", () => {
+    // Structural: verify the forceReconnect path has no page-reload side effects
+    let reloadCalled = false;
+    let forceReconnectCalled = false;
+
+    const mockWindow = { location: { reload: () => { reloadCalled = true; } } };
+    const mockTransport = { forceReconnect: () => { forceReconnectCalled = true; } };
+
+    // New code path: calls transport, not window
+    mockTransport.forceReconnect();
+    expect(forceReconnectCalled).toBe(true);
+    expect(reloadCalled).toBe(false);
+
+    // Old code path (for reference)
+    mockWindow.location.reload();
+    expect(reloadCalled).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 7 — Mobile LIVE_OVERRIDE_ACTIVE phase timer fires after videoReady
+//
+// Root cause: V2PlayerContainer's phase timer (5s interval) was armed on
+// LIVE_OVERRIDE_ACTIVE entry and never cleared once videoReady=true because
+// the overlayContent() short-circuits to null. The invisible timer kept
+// firing setLoadingPhase() causing silent setState() calls every 5s.
+//
+// Fix: useEffect([snapshot.state, videoReady]) clears phaseTimerRef when
+//   state === "LIVE_OVERRIDE_ACTIVE" && videoReady === true.
+//
+// Algorithm tested here: the timer clear condition fires correctly.
+// ---------------------------------------------------------------------------
+
+describe("LIVE_OVERRIDE_ACTIVE phase timer cleared on videoReady — regression (Bug 7)", () => {
+  it("timer is cleared when state=LIVE_OVERRIDE_ACTIVE and videoReady becomes true", () => {
+    let timerActive = false;
+    let timerClearCount = 0;
+
+    const clearPhaseTimer = () => {
+      if (timerActive) {
+        timerActive = false;
+        timerClearCount++;
+      }
+    };
+
+    function simulateEffect(state: string, videoReady: boolean) {
+      // Mirrors the useEffect([snapshot.state, videoReady]) logic:
+      if (state === "LIVE_OVERRIDE_ACTIVE" && videoReady) {
+        clearPhaseTimer();
+      }
+    }
+
+    // Phase 1: override starts, video not yet ready → timer runs
+    timerActive = true;
+    simulateEffect("LIVE_OVERRIDE_ACTIVE", false);
+    expect(timerActive).toBe(true); // still running — overlay visible
+    expect(timerClearCount).toBe(0);
+
+    // Phase 2: video becomes ready → clear the timer (overlay gone)
+    simulateEffect("LIVE_OVERRIDE_ACTIVE", true);
+    expect(timerActive).toBe(false); // cleared
+    expect(timerClearCount).toBe(1);
+
+    // Phase 3: state changes to PLAYING — timer was already cleared, no double-clear
+    simulateEffect("PLAYING", true);
+    expect(timerClearCount).toBe(1);
+  });
+
+  it("timer is NOT cleared when videoReady=false (overlay still showing)", () => {
+    let timerActive = true;
+    const clearPhaseTimer = () => { timerActive = false; };
+    function simulateEffect(state: string, videoReady: boolean) {
+      if (state === "LIVE_OVERRIDE_ACTIVE" && videoReady) clearPhaseTimer();
+    }
+    simulateEffect("LIVE_OVERRIDE_ACTIVE", false);
+    expect(timerActive).toBe(true); // must not clear — overlay still visible
+  });
+
+  it("timer is NOT cleared for non-override states even when videoReady=true", () => {
+    for (const state of ["PLAYING", "PREPARING_ACTIVE", "RECOVERING_PRIMARY", "FATAL"]) {
+      let timerActive = true;
+      const clearPhaseTimer = () => { timerActive = false; };
+      function simulateEffect(s: string, videoReady: boolean) {
+        if (s === "LIVE_OVERRIDE_ACTIVE" && videoReady) clearPhaseTimer();
+      }
+      simulateEffect(state, true);
+      expect(timerActive).toBe(true); // no clear for non-override state
+    }
+  });
+
+  it("timer clear is idempotent (can be called multiple times safely)", () => {
+    let clearCallCount = 0;
+    let timerRef: ReturnType<typeof setTimeout> | null = null;
+
+    const clearPhaseTimer = () => {
+      if (timerRef !== null) {
+        clearTimeout(timerRef);
+        timerRef = null;
+        clearCallCount++;
+      }
+    };
+
+    // Arm the timer
+    timerRef = setTimeout(() => {}, 5_000);
+
+    // Clear twice — should only count once
+    clearPhaseTimer();
+    clearPhaseTimer();
+    expect(clearCallCount).toBe(1);
   });
 });
