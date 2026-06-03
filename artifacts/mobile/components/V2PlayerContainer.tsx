@@ -106,7 +106,7 @@
  * Used by `app/player.tsx` for the live HLS path (v2 broadcast).
  */
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, AppState, Image, StyleSheet, Text, View } from "react-native";
 import { ResizeMode, Video, type AVPlaybackStatus } from "expo-av";
 import { useV2BroadcastNative } from "@workspace/player-core/react-native";
@@ -1011,6 +1011,7 @@ export function V2PlayerContainer({
   onFatal,
   muted = false,
   minimal = false,
+  suppressEvents = false,
 }: Props) {
   void _channelId;
   const effectiveBaseUrl = useMidnightPrayersSwitch(baseUrl);
