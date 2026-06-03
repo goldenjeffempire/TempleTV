@@ -84,6 +84,21 @@ interface NativeSession {
   /** Cleanup returned by machine.subscribe(). */
   machineUnsub: () => void;
   /**
+   * Count of active useV2BroadcastNative hook instances subscribed to this
+   * session. The janitor uses this — NOT snapshotListeners.size — to decide
+   * whether a session is idle and eligible for eviction.
+   *
+   * Why needed: getOrCreateSession() registers two permanent session-level
+   * listeners (stallListener, escapeValveListener) in snapshotListeners so
+   * they fire exactly once per SKIP_PENDING event regardless of how many
+   * hook instances are active. These permanent listeners keep
+   * snapshotListeners.size ≥ 2 at all times, which would prevent the janitor
+   * from ever detecting an idle session if it checked size > 0. hookCount
+   * tracks only hook-registered listeners so the janitor can evict sessions
+   * whose React consumers have all unmounted.
+   */
+  hookCount: number;
+  /**
    * Debounce timer for forceReconnect calls.
    *
    * Multiple V2PlayerContainer instances (e.g. a muted Hero on the home tab
@@ -116,9 +131,11 @@ function startJanitor(): void {
   janitorInterval = setInterval(() => {
     const now = Date.now();
     for (const [baseUrl, entry] of sessions) {
-      const hasListeners =
-        entry.session.snapshotListeners.size > 0 ||
-        entry.session.connectedListeners.size > 0;
+      // Use hookCount — not snapshotListeners.size — to detect idle sessions.
+      // snapshotListeners always contains the two permanent session-level
+      // listeners (stallListener, escapeValveListener) added at session creation,
+      // so its size is always ≥ 2 and the janitor would never evict.
+      const hasListeners = entry.session.hookCount > 0;
       if (hasListeners) {
         entry.lastIdleAtMs = null;
         continue;
@@ -228,6 +245,7 @@ function getOrCreateSession(baseUrl: string): NativeSession {
     snapshotListeners: new Set(),
     connectedListeners: new Set(),
     machineUnsub,
+    hookCount: 0,
     forceReconnectDebounce: null,
   };
 
@@ -322,6 +340,11 @@ export function useV2BroadcastNative(opts: UseV2BroadcastNativeOptions): UseV2Br
   // typical live-viewing session).
   useEffect(() => {
     if (!session) return;
+    // Track active hook instances so the janitor can detect when no React
+    // consumers remain (hookCount === 0) and evict the idle session.
+    // snapshotListeners.size cannot be used for this because it always
+    // includes the permanent session-level stallListener + escapeValveListener.
+    session.hookCount++;
     const onSnap = (s: PlayerSnapshot) => setSnapshot(s);
     const onConn = (c: boolean) => setConnected(c);
     session.snapshotListeners.add(onSnap);
@@ -330,6 +353,7 @@ export function useV2BroadcastNative(opts: UseV2BroadcastNativeOptions): UseV2Br
     setSnapshot(session.snapshot);
     setConnected(session.connected);
     return () => {
+      session.hookCount--;
       session.snapshotListeners.delete(onSnap);
       session.connectedListeners.delete(onConn);
     };

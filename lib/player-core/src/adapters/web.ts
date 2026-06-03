@@ -367,8 +367,19 @@ export function createWebAdapter(
       }
     } else if (kind === "dash" && cb.attachDash) {
       buf.detach = cb.attachDash(buf.el, url);
-    } else if (kind === "youtube" && cb.attachYouTube) {
-      buf.detach = cb.attachYouTube(buf.el, url);
+    } else if (kind === "youtube") {
+      // YouTube URLs cannot be played natively by the <video> element.
+      // Loading them causes an `error` event → buffer-error → RECOVERING_PRIMARY
+      // cascade even in LIVE_OVERRIDE_ACTIVE state (onBufferError has no state guard).
+      // Skip native loading entirely. onBufferStalled for LIVE_OVERRIDE_ACTIVE is
+      // already a no-op in the machine (not in the escalation list), so the
+      // watchdog can fire harmlessly while the external YouTube iframe is visible.
+      // If an external YouTube handler is provided (e.g., TV iframe), wire it up.
+      if (cb.attachYouTube) {
+        buf.detach = cb.attachYouTube(buf.el, url);
+      }
+      buf.boundUrl = url;
+      return; // skip armLoadTimer — no native media loading occurs
     } else {
       buf.el.src = url;
       buf.el.load();

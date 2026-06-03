@@ -21,7 +21,7 @@
  * chains or flex/grid sizing.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Hls from "hls.js";
 import { useV2Broadcast } from "@workspace/player-core/react";
 import { resolveApiOrigin } from "../lib/api";
@@ -369,7 +369,17 @@ export function LiveBroadcastV2({
   void _channelId;
   const mainBaseUrl = baseUrl ?? `${resolveApiOrigin()}/api/broadcast-v2`;
   const effectiveBaseUrl = useMidnightPrayersSwitch(mainBaseUrl);
-  const { snapshot, connected, attach } = useV2Broadcast({ baseUrl: effectiveBaseUrl, attachHls });
+
+  // YouTube sources (kind="youtube") must not be loaded natively — the
+  // <video> element cannot play them and would fire `error` → buffer-error →
+  // RECOVERING_PRIMARY cascade. Providing a no-op `attachYouTube` signals the
+  // web adapter to skip native loading entirely. The actual YouTube content is
+  // displayed via the iframe rendered below (zIndex 5, above the video buffers).
+  const attachYouTube = useCallback(
+    (_video: HTMLVideoElement, _url: string): (() => void) => () => {},
+    [],
+  );
+  const { snapshot, connected, attach } = useV2Broadcast({ baseUrl: effectiveBaseUrl, attachHls, attachYouTube });
   const fatalFiredRef = useRef(false);
 
   // Local video element refs — shadow attach.A / attach.B so we can find the
@@ -511,16 +521,45 @@ export function LiveBroadcastV2({
         />
       )}
 
-      {/* ── YouTube fallback iframe ────────────────────────────────────────
-          Rendered when the current item is a YouTube source (kind="youtube").
+      {/* ── YouTube iframe ─────────────────────────────────────────────────
+          Rendered when the current item OR the active override is a YouTube
+          source (kind="youtube"). Override is checked first so that an admin
+          YouTube takeover (LIVE_OVERRIDE_ACTIVE) is always rendered here.
           The iframe sits above the native <video> buffers (zIndex 5) but
           below overlays (zIndex 20+). The video buffers stay mounted so the
           player-core FSM continues to run — they are harmlessly invisible
-          behind the iframe.
+          behind the iframe. Native loading of YouTube URLs is suppressed in
+          the web adapter (see web.ts: kind === "youtube" early-return) so the
+          FSM stays in LIVE_OVERRIDE_ACTIVE without entering RECOVERING_PRIMARY.
           autoplay=1 requires the iframe to be rendered after a user gesture
           on most browsers; Smart TV platforms typically permit autoplay in
           fullscreen embedded contexts.                                      */}
       {(() => {
+        // Check active override first (LIVE_OVERRIDE_ACTIVE with YouTube kind).
+        const overrideKind = server?.override?.kind;
+        const overrideUrl  = server?.override?.url;
+        if (overrideKind === "youtube" && overrideUrl) {
+          let ytId: string | null = null;
+          try { ytId = new URL(overrideUrl).searchParams.get("v"); } catch { /* ignore */ }
+          if (ytId) return (
+            <iframe
+              key={`override-${ytId}`}
+              src={`https://www.youtube.com/embed/${ytId}?autoplay=1&rel=0&modestbranding=1&enablejsapi=1`}
+              allow="autoplay; encrypted-media; fullscreen"
+              allowFullScreen
+              style={{
+                position: "absolute",
+                inset: 0,
+                width: "100%",
+                height: "100%",
+                border: "none",
+                zIndex: 5,
+              }}
+              title={server?.override?.title ?? "Temple TV — YouTube Override"}
+            />
+          );
+        }
+        // Fall back to current queue item's YouTube source.
         const src = server?.current?.source;
         if (src?.kind !== "youtube") return null;
         let ytId: string | null = null;

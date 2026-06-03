@@ -31,6 +31,16 @@ import type { PlayerSnapshot, V2Item, V2Override } from "./types.js";
 export interface UseV2BroadcastOptions {
   baseUrl: string;
   attachHls?: (video: HTMLVideoElement, url: string) => () => void;
+  /**
+   * Optional external YouTube handler (e.g., an iframe overlay on TV/web).
+   * When provided and the active item is a YouTube source, the adapter calls
+   * this instead of loading the YouTube URL natively (which always fails).
+   * The callback receives the <video> element (for positioning/sizing hints)
+   * and the YouTube URL, and must return a cleanup function.
+   * If omitted, YouTube sources are still handled safely (no native load
+   * attempt, watchdog stalls are silently ignored in LIVE_OVERRIDE_ACTIVE).
+   */
+  attachYouTube?: (video: HTMLVideoElement, url: string) => () => void;
   enabled?: boolean;
   /**
    * Whether this player instance should fire `report-stall` to the server
@@ -372,6 +382,7 @@ function attachElements(
   elA: HTMLVideoElement,
   elB: HTMLVideoElement,
   attachHls?: (video: HTMLVideoElement, url: string) => () => void,
+  attachYouTube?: (video: HTMLVideoElement, url: string) => () => void,
 ): void {
   // Release any stale elements before wiring new ones.
   detachElements(session);
@@ -384,7 +395,7 @@ function attachElements(
   const adapter = createWebAdapter(
     bufA,
     bufB,
-    { send: (e) => machine.send(e), attachHls },
+    { send: (e) => machine.send(e), attachHls, attachYouTube },
     snap.activeBufferId, // initialActiveId — correct z-index from the start
   );
 
@@ -492,12 +503,12 @@ function replayStateToAdapter(snap: PlayerSnapshot, adapter: IntentHandler, cloc
 // ── React hook ──────────────────────────────────────────────────────────────
 
 export function useV2Broadcast(opts: UseV2BroadcastOptions): UseV2BroadcastResult {
-  const { baseUrl, attachHls, enabled = true, enableStallReport = true } = opts;
+  const { baseUrl, attachHls, attachYouTube, enabled = true, enableStallReport = true } = opts;
 
   // Keep latest option values in a ref so callbacks don't need to be
   // recreated when they change.
-  const optsRef = useRef({ attachHls, enableStallReport });
-  optsRef.current = { attachHls, enableStallReport };
+  const optsRef = useRef({ attachHls, attachYouTube, enableStallReport });
+  optsRef.current = { attachHls, attachYouTube, enableStallReport };
 
   const elsRef = useRef<{ A: HTMLVideoElement | null; B: HTMLVideoElement | null }>({
     A: null,
@@ -758,7 +769,7 @@ export function useV2Broadcast(opts: UseV2BroadcastOptions): UseV2BroadcastResul
     const a = elsRef.current.A;
     const b = elsRef.current.B;
     if (!a || !b) return;
-    attachElements(session, a, b, optsRef.current.attachHls);
+    attachElements(session, a, b, optsRef.current.attachHls, optsRef.current.attachYouTube);
   }, [session, enabled]);
 
   // Stable ref callbacks — defined with useCallback so React sees the same

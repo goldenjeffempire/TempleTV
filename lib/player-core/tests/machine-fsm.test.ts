@@ -773,6 +773,38 @@ describe("PlayerMachine — LIVE_OVERRIDE_ACTIVE", () => {
     const activeItem = snap.activeBufferId === "A" ? snap.bufferA : snap.bufferB;
     expect(activeItem).toMatchObject({ id: "override-99" });
   });
+
+  it("buffer-stalled in LIVE_OVERRIDE_ACTIVE is ignored — no state change", () => {
+    // Regression guard: YouTube overrides use an external iframe; the native
+    // <video> element is idle and the watchdog fires buffer-stalled. This must
+    // NOT trigger RECOVERING_PRIMARY (which would kill the iframe display).
+    const { machine } = makeHarness();
+    machine.send({ type: "takeover", override: makeOverride({ kind: "youtube", url: "https://youtube.com/watch?v=abc" }) });
+    expect(machine.getSnapshot().state).toBe("LIVE_OVERRIDE_ACTIVE");
+    machine.send({ type: "buffer-stalled", bufferId: machine.getSnapshot().activeBufferId });
+    // Must stay in LIVE_OVERRIDE_ACTIVE, not escalate to RECOVERING_PRIMARY.
+    expect(machine.getSnapshot().state).toBe("LIVE_OVERRIDE_ACTIVE");
+  });
+
+  it("YouTube override: bind emits bind intent with youtube kind", () => {
+    const { machine, intents } = makeHarness();
+    const ytOverride = makeOverride({ kind: "youtube", url: "https://youtube.com/watch?v=testId" });
+    intents.length = 0;
+    machine.send({ type: "takeover", override: ytOverride });
+    const bindIntent = intents.find((i) => i.type === "bind");
+    expect(bindIntent).toBeDefined();
+    expect(bindIntent?.type === "bind" && bindIntent.item).toMatchObject({ kind: "youtube" });
+  });
+
+  it("buffer-error in LIVE_OVERRIDE_ACTIVE transitions to RECOVERING_PRIMARY", () => {
+    // buffer-error is not suppressed in LIVE_OVERRIDE_ACTIVE — only buffer-stalled is.
+    // This test documents the current machine behavior.
+    const { machine } = makeHarness();
+    machine.send({ type: "takeover", override: makeOverride() });
+    expect(machine.getSnapshot().state).toBe("LIVE_OVERRIDE_ACTIVE");
+    machine.send({ type: "buffer-error", bufferId: machine.getSnapshot().activeBufferId, error: "media-error" });
+    expect(machine.getSnapshot().state).toBe("RECOVERING_PRIMARY");
+  });
 });
 
 // ---------------------------------------------------------------------------
