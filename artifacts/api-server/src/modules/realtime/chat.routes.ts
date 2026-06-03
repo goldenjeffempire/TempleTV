@@ -145,7 +145,11 @@ function safeSend(socket: ChatSocket, event: ChatServerEvent): void {
 /**
  * Server-initiated keep-alive ping fanout. Single shared interval rather
  * than one per socket — avoids leaking timers when sockets disconnect
- * uncleanly. Started lazily on first WS connect, runs forever.
+ * uncleanly. Started lazily on first WS connect.
+ *
+ * chatHub.pingAll() also sweeps zombie members (no pong in >60 s) and calls
+ * socket.terminate() on them, so the interval does double duty as a cleanup
+ * sweep — preventing half-open sockets from accumulating without bound.
  */
 let pingInterval: ReturnType<typeof setInterval> | null = null;
 function ensurePingLoop(): void {
@@ -153,6 +157,18 @@ function ensurePingLoop(): void {
   pingInterval = setInterval(() => chatHub.pingAll(), 25_000);
   // Don't keep the event loop alive just for pings.
   pingInterval.unref?.();
+}
+
+/**
+ * Stop the chat ping/sweep interval.
+ * Called during graceful shutdown so the timer does not keep the event loop
+ * alive after all other subsystems have stopped.
+ */
+export function stopChatPingInterval(): void {
+  if (pingInterval) {
+    clearInterval(pingInterval);
+    pingInterval = null;
+  }
 }
 
 export async function chatRoutes(app: FastifyInstance) {
@@ -322,7 +338,12 @@ export async function chatRoutes(app: FastifyInstance) {
         } catch {
           return;
         }
-        if (frame.type === "pong") return;
+        if (frame.type === "pong") {
+          // Update liveness timestamp so the zombie sweep in pingAll() does
+          // not terminate this member before the next cleanup cycle.
+          member.lastPongMs = Date.now();
+          return;
+        }
         if (frame.type !== "send") return;
 
         const body = (frame.body ?? "").trim();

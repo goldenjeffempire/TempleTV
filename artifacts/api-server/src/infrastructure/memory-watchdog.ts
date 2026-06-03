@@ -33,7 +33,17 @@ import { sampleNamedStorePeaks, getRegisteredCacheStats } from "./cache.js";
 const SAMPLE_INTERVAL_MS = 30_000;
 const SUSTAIN_SAMPLES = 3;
 const CRITICAL_SAMPLES_FOR_EXIT = 10;
-const FORCE_EXIT_GRACE_MS = 30_000;
+// Grace period between process.kill(SIGTERM) and the hard process.exit(1)
+// fallback. Must exceed the longest realistic shutdown drain sequence:
+//   • SSE force-close + drain   ≈ 0-2 s
+//   • app.close() drain         ≈ 0-5 s
+//   • storage stream drain      ≈ 0-10 s (floor max(5 s, SHUTDOWN_DRAIN_MS))
+//   • DB pool close             ≈ 0-2 s
+// Total worst-case ≈ 20 s. 60 s gives 3× headroom so in-flight HLS streams
+// and long-running uploads can drain without triggering the hard exit.
+// Previously 30 s — which could fire while storage streams were still draining,
+// resulting in "Cannot use a pool after calling end on the pool" errors.
+const FORCE_EXIT_GRACE_MS = 60_000;
 
 /**
  * Rolling window size (samples) for slope calculations AND the in-UI sparkline.
@@ -482,15 +492,14 @@ export function startMemoryWatchdog(): void {
   // Warn operators when MEMORY_RESTART_RSS_MB is configured too aggressively
   // for a server that serves HLS segments.  Under concurrent HLS load each
   // in-flight segment holds an 8 MiB Buffer; combined with V8 heap and shared
-  // libraries (~300 MB baseline), RSS can easily exceed 430 MB at normal load.
+  // libraries (~300 MB baseline), RSS can easily exceed threshold at normal load.
   //
   // Recommended minimum: 600 MB.  If you must run below 600 MB, lower
-  // HLS_MAX_CONCURRENT proportionally (default: 50 → each concurrent request
-  // contributes ~8 MiB of Buffer memory).
+  // HLS_MAX_CONCURRENT proportionally (default: 30 → peak HLS Buffer memory ≈
+  // 240 MB + 150 MB baseline = 390 MB, safely within a 430 MB threshold).
   //
-  // Root cause of Render restart loops: MEMORY_RESTART_RSS_MB=430 was set in
-  // the Render environment while HLS_MAX_CONCURRENT was still 200, pushing RSS
-  // to 590 MB and causing restarts every ~5 minutes.
+  // Previous root cause of Render restart loops: MEMORY_RESTART_RSS_MB=430 with
+  // HLS_MAX_CONCURRENT=50 pushed RSS to 550+ MB → restart cycle every ~5 min.
   const effectiveRestartMb = Math.max(env.MEMORY_RESTART_RSS_MB, env.MEMORY_WARN_RSS_MB);
   if (effectiveRestartMb < 500) {
     logger.warn(

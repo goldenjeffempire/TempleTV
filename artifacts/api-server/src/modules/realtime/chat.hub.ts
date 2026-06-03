@@ -23,6 +23,7 @@
  */
 
 import { EventEmitter } from "node:events";
+import { logger } from "../../infrastructure/logger.js";
 import type {
   ChatMessage,
   ChatServerEvent,
@@ -37,7 +38,12 @@ import type {
 export interface ChatSocket {
   readonly readyState: number;
   send(data: string): void;
+  /** Available when the underlying socket is a `ws` WebSocket instance. */
+  terminate?(): void;
 }
+
+/** How long (ms) a chat socket may go without responding to a ping. */
+const ZOMBIE_TIMEOUT_MS = 60_000;
 
 export interface RoomMember {
   socket: ChatSocket;
@@ -50,6 +56,12 @@ export interface RoomMember {
   sendTokens: number;
   /** Epoch ms when the bucket last refilled. */
   bucketRefilledAtMs: number;
+  /**
+   * Epoch ms when the server last received proof-of-liveness from this member
+   * (either a "pong" message-type frame or a native WS pong event).
+   * Initialised to join-time so newly-connected sockets get a grace period.
+   */
+  lastPongMs: number;
 }
 
 const SEND_WINDOW_MS = 10_000;
@@ -162,11 +174,41 @@ class ChatHub extends EventEmitter {
     });
   }
 
-  /** Send a server-initiated `ping` to every socket in every room. */
+  /**
+   * Send a server-initiated `ping` to every socket in every room, then
+   * sweep for zombie connections that haven't responded within ZOMBIE_TIMEOUT_MS.
+   *
+   * Without the sweep, half-open sockets (OS-level TCP connection alive but
+   * client process gone) accumulate indefinitely in the room Set — leaking
+   * event-loop references and inflating viewer counts.
+   */
   pingAll(): void {
-    const ts = Date.now();
-    for (const channelId of this.rooms.keys()) {
-      this.broadcast(channelId, { type: "ping", serverTimeMs: ts });
+    const now = Date.now();
+    const payload = JSON.stringify({ type: "ping", serverTimeMs: now });
+    for (const [channelId, room] of this.rooms) {
+      const zombies: RoomMember[] = [];
+      for (const m of room) {
+        // Zombie check before sending — terminate sockets that have been
+        // silent for more than ZOMBIE_TIMEOUT_MS (typically 2+ missed pings).
+        if (now - m.lastPongMs > ZOMBIE_TIMEOUT_MS) {
+          zombies.push(m);
+          continue;
+        }
+        try {
+          if (m.socket.readyState === 1 /* OPEN */) m.socket.send(payload);
+        } catch {
+          /* ignore — close handler cleans up */
+        }
+      }
+      for (const z of zombies) {
+        logger.warn(
+          { channelId, sessionId: z.sessionId, silentMs: now - z.lastPongMs },
+          "[chat-hub] terminating zombie chat socket — no pong for >60 s",
+        );
+        try { z.socket.terminate?.(); } catch { /* already gone */ }
+        // leave() removes from the room Set and broadcasts updated presence.
+        this.leave(channelId, z);
+      }
     }
   }
 }
@@ -185,5 +227,6 @@ export function createMember(args: {
     ...args,
     sendTokens: SEND_TOKENS_PER_WINDOW,
     bucketRefilledAtMs: Date.now(),
+    lastPongMs: Date.now(),  // grace period: new socket is considered alive until first ping cycle
   };
 }

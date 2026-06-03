@@ -486,6 +486,21 @@ async function main() {
         const { closeAllAdminSseSessions } = await import("./modules/admin-ops/admin-ops.routes.js");
         closeAllAdminSseSessions();
       } catch { /* non-fatal */ }
+      // Force-close all realtime WS connections (v1 playback surface).
+      // Without this, the event-listener registrations on broadcastEngine,
+      // overrideBus, and signalBus kept zombie sockets alive past app.close(),
+      // delaying GC and inflating wsCounter in the diagnostics panel.
+      try {
+        const { closeAllRealtimeWsSessions } = await import("./modules/realtime/ws.gateway.js");
+        closeAllRealtimeWsSessions();
+      } catch { /* non-fatal */ }
+      // Stop the chat ping/zombie-sweep interval. Without this the setInterval
+      // kept the event loop alive after all other subsystems had shut down,
+      // delaying process.exit(0) by up to 25 s in low-traffic scenarios.
+      try {
+        const { stopChatPingInterval } = await import("./modules/realtime/chat.routes.js");
+        stopChatPingInterval();
+      } catch { /* non-fatal */ }
       // Stop the prod-sync poll timer (setInterval) so it does not keep the
       // event loop alive or spawn ffprobe child processes after shutdown.
       try {

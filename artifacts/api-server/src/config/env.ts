@@ -312,14 +312,21 @@ const Env = z.object({
   // Maximum simultaneous in-flight requests to the /api/hls/* proxy.
   // Prevents a single burst of clients from overwhelming the S3 connection
   // pool. Requests beyond this limit receive 503 with Retry-After: 5.
-  // Default 200 is generous for a single replica; tune down for free-tier.
-  // Lowered from 200 → 50: each in-flight HLS segment holds an 8 MiB Buffer in
-  // Node.js memory.  200 concurrent requests = up to 1.6 GiB of Buffer memory,
-  // which reliably exceeds the RSS restart threshold on Replit's 2 GiB container.
-  // 50 still allows ample concurrency for normal viewer loads while keeping peak
-  // RSS well below the watchdog threshold.  Raise with MEMORY_RESTART_RSS_MB
-  // if you scale to a larger instance.
-  HLS_MAX_CONCURRENT: z.coerce.number().int().positive().default(50),
+  // Each concurrent HLS segment request holds an 8 MiB Buffer for the duration
+  // of the response.  Peak HLS RSS = HLS_MAX_CONCURRENT × 8 MiB.
+  //
+  // Budget calculation (conservative):
+  //   Node.js baseline RSS          ≈ 150 MB
+  //   HLS buffers (30 × 8 MiB)     ≈ 240 MB
+  //   Other in-flight requests      ≈  60 MB
+  //   Total                         ≈ 450 MB
+  //
+  // Default is 30 so the peak fits comfortably inside a 512 MB Render free-tier
+  // instance (MEMORY_RESTART_RSS_MB default: 600 MB).  Raise this only after
+  // raising MEMORY_RESTART_RSS_MB to match — the memory watchdog will emit a
+  // startup warning if HLS_MAX_CONCURRENT × 8 MB + 300 MB headroom exceeds
+  // MEMORY_RESTART_RSS_MB.
+  HLS_MAX_CONCURRENT: z.coerce.number().int().positive().default(30),
 
   // F20: how long (ms) the shutdown handler waits for open SSE connections
   // to drain naturally before forcing app.close(). Gives long-polling clients
