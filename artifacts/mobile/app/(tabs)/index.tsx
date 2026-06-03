@@ -48,8 +48,6 @@ import { getApiBase } from "@/lib/apiBase";
 import { useV2BroadcastNative } from "@workspace/player-core/react-native";
 import type { Sermon, SermonCategory } from "@/types";
 
-const PLACEHOLDER = require("@/assets/images/sermon-placeholder.png");
-
 const CATEGORY_ROWS: SermonCategory[] = [
   "Deliverance",
   "Sermons",

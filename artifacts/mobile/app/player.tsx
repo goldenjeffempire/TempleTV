@@ -834,11 +834,13 @@ export default function PlayerScreen() {
     };
   }, []);
 
-  // Live broadcast sync — used by BroadcastHlsPlayer internally.
-  // For the YouTube live path, read sync directly to keep title/id live.
-  const sync             = useBroadcastSync();
-  const livePositionSecs = isLive ? (sync.positionSecs ?? startPositionSecs) : startPositionSecs;
-  const livePositionMs   = Math.round(livePositionSecs * 1000);
+  // Live broadcast sync — viewerCount display only. Position is ignored for
+  // V2 broadcasts (BroadcastHlsPlayer does `void rest` on initialPositionMs —
+  // the V2 engine self-syncs position from the server clock offset). For VOD
+  // HLS the LocalVideoPlayer branch uses startPositionSecs (route param)
+  // directly, so livePositionMs correctly resolves to the route param in all paths.
+  const sync           = useBroadcastSync();
+  const livePositionMs = Math.round(startPositionSecs * 1000);
 
   const { isFavorite, toggleFavorite } = useFavorites();
   const { addToHistory }               = useWatchHistory();
