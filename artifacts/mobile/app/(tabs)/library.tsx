@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { ErrorBoundaryProps } from "expo-router";
 import { ErrorFallback } from "@/components/ErrorFallback";
 
@@ -339,24 +340,76 @@ function SeriesCard({
   );
 }
 
+const SERIES_CACHE_KEY = "@temple_tv/series_v1";
+const SERIES_CACHE_TTL_MS = 30 * 60 * 1000;
+
+interface SeriesCacheEnvelope {
+  data: SeriesItem[];
+  cachedAt: number;
+}
+
 function useSeriesList() {
   const [series, setSeries] = useState<SeriesItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const mountedRef = useRef(true);
+  // Ref-based guard: reading `series` state inside useCallback([]) always sees
+  // the initial empty array (stale closure). A ref avoids this — it is set true
+  // the moment any data (cache or network) is painted to the screen so the catch
+  // path correctly suppresses errors that would clobber already-visible content.
+  const hasDataRef = useRef(false);
 
-  const load = useCallback(async () => {
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  const load = useCallback(async (opts?: { skipCache?: boolean }) => {
     setLoading(true);
     setError(null);
+
+    // Step 1: serve stale-while-revalidate from AsyncStorage.
+    if (!opts?.skipCache) {
+      try {
+        const raw = await AsyncStorage.getItem(SERIES_CACHE_KEY);
+        if (raw) {
+          const envelope = JSON.parse(raw) as SeriesCacheEnvelope;
+          const age = Date.now() - envelope.cachedAt;
+          if (age < SERIES_CACHE_TTL_MS && Array.isArray(envelope.data)) {
+            if (mountedRef.current) {
+              setSeries(envelope.data);
+              hasDataRef.current = true;
+              setLoading(false);
+            }
+          }
+        }
+      } catch {
+        // Corrupted cache — continue to network fetch.
+      }
+    }
+
+    // Step 2: background network fetch — updates the UI only if data changed.
     try {
       const apiBase = getApiBase();
       const res = await fetchWithRetry(`${apiBase}/api/series?limit=50`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setSeries(data.series ?? []);
+      const data = await res.json() as { series?: SeriesItem[] };
+      const fetched = data.series ?? [];
+
+      if (!mountedRef.current) return;
+      setSeries(fetched);
+      hasDataRef.current = true;
+      setError(null);
+
+      const envelope: SeriesCacheEnvelope = { data: fetched, cachedAt: Date.now() };
+      AsyncStorage.setItem(SERIES_CACHE_KEY, JSON.stringify(envelope)).catch(() => {});
     } catch (e) {
-      setError(String(e));
+      if (!mountedRef.current) return;
+      if (!hasDataRef.current) {
+        setError(String(e));
+      }
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
   }, []);
 
@@ -364,7 +417,7 @@ function useSeriesList() {
     load();
   }, [load]);
 
-  return { series, loading, error, refetch: load };
+  return { series, loading, error, refetch: () => load({ skipCache: true }) };
 }
 
 export default function LibraryScreen() {

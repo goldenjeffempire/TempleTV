@@ -1099,7 +1099,23 @@ function useMidnightPrayersSwitch(mainBaseUrl: string): string {
     const singleton = _getOrCreateMpSingleton(mainBaseUrl);
     const notify = () => rerender((n) => n + 1);
     singleton.listeners.add(notify);
-    return () => { singleton.listeners.delete(notify); };
+    return () => {
+      singleton.listeners.delete(notify);
+      // When the last consumer detaches, tear down the singleton's timers
+      // and remove the entry from the map.  The next mount will re-create
+      // it fresh (another fetchConfig() call + fresh intervals), so there
+      // is no observable difference in behaviour — only the intervals are
+      // cleaned up instead of leaking forever across long app sessions where
+      // the user navigates away from every surface that uses this hook.
+      if (singleton.listeners.size === 0) {
+        clearInterval(singleton.fetchInterval);
+        if (singleton.windowInterval !== null) {
+          clearInterval(singleton.windowInterval);
+          singleton.windowInterval = null;
+        }
+        _mpSingletons.delete(mainBaseUrl);
+      }
+    };
   }, [mainBaseUrl]);
 
   const singleton = _mpSingletons.get(mainBaseUrl);

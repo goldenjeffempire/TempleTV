@@ -162,12 +162,19 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     AsyncStorage.getItem(STORAGE_KEYS.playbackSettings)
       .then((raw) => {
         if (!mounted || !raw) return;
-        const parsed = JSON.parse(raw) as PersistedPlaybackSettings;
-        if (typeof parsed.dataSaver === "boolean") setDataSaver(parsed.dataSaver);
-        if (typeof parsed.isRadioMode === "boolean") setIsRadioMode(parsed.isRadioMode);
-        if (typeof parsed.shuffleMode === "boolean") setShuffleMode(parsed.shuffleMode);
-        if (parsed.loopMode && LOOP_CYCLE.includes(parsed.loopMode)) setLoopMode(parsed.loopMode);
-        if (typeof parsed.volume === "number") setVolumeState(Math.max(0, Math.min(100, parsed.volume)));
+        try {
+          const parsed = JSON.parse(raw) as PersistedPlaybackSettings;
+          if (typeof parsed.dataSaver === "boolean") setDataSaver(parsed.dataSaver);
+          if (typeof parsed.isRadioMode === "boolean") setIsRadioMode(parsed.isRadioMode);
+          if (typeof parsed.shuffleMode === "boolean") setShuffleMode(parsed.shuffleMode);
+          if (parsed.loopMode && LOOP_CYCLE.includes(parsed.loopMode)) setLoopMode(parsed.loopMode);
+          if (typeof parsed.volume === "number") setVolumeState(Math.max(0, Math.min(100, parsed.volume)));
+        } catch {
+          // Corrupted persisted settings — clear the stale entry so the
+          // next write (after loadedSettingsRef.current = true below) starts
+          // from a clean state rather than attempting to re-parse on every boot.
+          AsyncStorage.removeItem(STORAGE_KEYS.playbackSettings).catch(() => {});
+        }
       })
       .catch(() => {})
       .finally(() => {

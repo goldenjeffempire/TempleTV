@@ -53,6 +53,10 @@ const USER_SCOPED_STORAGE_PREFIXES = [
   "@temple_tv/history",
   "@temple_tv/watch_history",
   "@temple_tv/playlists",
+  // Individual playlist detail cache (usePlaylists.ts). Key format is
+  // "@temple_tv/playlist_detail_v1:<id>" — the prefix "playlists" above
+  // catches "playlists_v1" but NOT "playlist_detail_v1" (no 's').
+  "@temple_tv/playlist_detail_v1",
   "@temple_tv/cloud_sync",
   // Video catalog cache (useVideos.ts CACHE_KEY) — must be cleared on sign-out
   // so a second user on the same device never sees the first user's cached library.
