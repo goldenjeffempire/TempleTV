@@ -127,10 +127,21 @@ export async function sseRoutes(app: FastifyInstance) {
       state: broadcastOrchestrator.snapshot(),
     });
 
+    // Buffer any real-time frames that arrive while the DB replay is awaiting
+    // so the client always receives events in strict order:
+    //   snapshot (authoritative) → replay (history) → buffered live → live stream.
+    // Without this gate, an orchestrator "frame" event emitted during the async
+    // replayFrom call can arrive at the client before the replayed history,
+    // causing out-of-order FSM transitions. This mirrors the same pattern used
+    // by the WS gateway's `frameQueue` buffer on client "resume" messages.
+    const frameQueue: V2ServerFrame[] = [];
+    const bufferFrame = (f: V2ServerFrame) => { frameQueue.push(f); };
+    broadcastOrchestrator.on("frame", bufferFrame);
+
     // Replay any events the client missed while disconnected.
     // The EventSource API automatically carries the last `id:` value as
     // `Last-Event-ID` on reconnect so clients don't lose events across
-    // brief network drops. We replay up to 200 events from the persistent
+    // brief network drops. We replay up to 500 events from the persistent
     // event log; anything older than what the log retains is covered by
     // the snapshot frame above (which always reflects current state).
     if (lastSeq > 0) {
@@ -155,7 +166,11 @@ export async function sseRoutes(app: FastifyInstance) {
       }
     }
 
+    // Switch from the buffer to the live listener, flushing any frames that
+    // arrived during the DB replay await so no events are silently dropped.
     const onFrame = (frame: V2ServerFrame) => send(frame);
+    broadcastOrchestrator.off("frame", bufferFrame);
+    for (const f of frameQueue) send(f);
     broadcastOrchestrator.on("frame", onFrame);
 
     const heartbeat = setInterval(() => {

@@ -404,10 +404,13 @@ export async function runFaststart(
       .where(
         options.skipStatusUpdate
           ? eq(videos.id, videoId)
-          // Extra safety: don't overwrite a completed HLS transcode even when
-          // skipStatusUpdate=false (e.g. if the transcoder finished while
-          // faststart was running on a very large file).
-          : and(eq(videos.id, videoId), ne(videos.transcodingStatus, "hls_ready")),
+          // Extra safety: don't overwrite a completed HLS transcode or an
+          // actively-running HLS encode when skipStatusUpdate=false (e.g. if
+          // the transcoder started while faststart was running on a large file).
+          // Without the "encoding" guard, a slow faststart completing after HLS
+          // has started would write "ready" over "encoding", confusing the
+          // dispatcher watchdog and causing stale status in the admin UI.
+          : and(eq(videos.id, videoId), ne(videos.transcodingStatus, "hls_ready"), ne(videos.transcodingStatus, "encoding")),
       );
 
     // Sync the real duration to any broadcast_queue rows that reference this
@@ -491,7 +494,9 @@ export async function runFaststart(
         await db
           .update(videos)
           .set({ transcodingStatus: safeRestoreStatus })
-          .where(and(eq(videos.id, videoId), ne(videos.transcodingStatus, "hls_ready")));
+          // Same dual guard as the success path: don't clobber "encoding"
+          // (HLS transcoder may have started while faststart was running).
+          .where(and(eq(videos.id, videoId), ne(videos.transcodingStatus, "hls_ready"), ne(videos.transcodingStatus, "encoding")));
       } catch (dbErr) {
         log.error({ dbErr }, "faststart: could not restore transcodingStatus");
       }

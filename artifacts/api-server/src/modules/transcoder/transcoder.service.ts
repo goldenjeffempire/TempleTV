@@ -306,8 +306,17 @@ function injectCodecsIntoMaster(
     "4.0": "28",
     "4.1": "29",
   };
-  function h264CodecStr(level: string): string {
-    // Main profile (4D), high-compatibility constraints (40), level.
+  function h264CodecStr(level: string, profile: "main" | "high"): string {
+    if (profile === "high") {
+      // High profile (0x64 = 100), no constraints (0x00), level.
+      // Used for 720p and 1080p renditions — enables 8×8 DCT, CABAC, and
+      // higher quality at the same bitrate. The CODECS attribute MUST reflect
+      // the actual encoder profile; mismatched values cause Samsung Tizen 2.x/3.x
+      // and strict ExoPlayer builds to refuse the stream or fall back to
+      // software decoding for 720p/1080p content.
+      return `avc1.6400${H264_LEVEL_HEX[level] ?? "1F"}`;
+    }
+    // Main profile (0x4D = 77), high-compatibility constraints (0x40), level.
     return `avc1.4D40${H264_LEVEL_HEX[level] ?? "1F"}`;
   }
 
@@ -323,7 +332,10 @@ function injectCodecsIntoMaster(
         const h = parseInt(resMatch[2]!, 10);
         const rendition = renditions.find((r) => r.width === w && r.height === h);
         if (rendition) {
-          const videoCodec = h264CodecStr(rendition.level);
+          // Mirror the FFmpeg encoder profile selection in buildFfmpegArgs:
+          // 720p and above use -profile:v high; below that use -profile:v main.
+          const h264Profile = rendition.height >= 720 ? "high" : "main";
+          const videoCodec = h264CodecStr(rendition.level, h264Profile);
           const codecs = hasAudio ? `${videoCodec},mp4a.40.2` : videoCodec;
           out.push(`${trimmed},CODECS="${codecs}"`);
           continue;
