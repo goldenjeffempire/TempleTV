@@ -182,7 +182,7 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
         <Image
           source={{ uri: thumbUrl }}
           style={StyleSheet.absoluteFill}
-          resizeMode="contain"
+          resizeMode="cover"
         />
       ) : (
         <View style={[StyleSheet.absoluteFill, { backgroundColor: "#1a0030" }]} />

@@ -1220,6 +1220,28 @@ export function V2PlayerContainer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [snapshot.state]);
 
+  // ── Active buffer identity ────────────────────────────────────────────────
+  // Derived early (before overlayContent useMemo) because both the overlay
+  // and the first-frame readiness gate need it.
+  const activeBufferId = buffers.A.active ? "A" : "B";
+
+  // ── YouTube-override detection ────────────────────────────────────────────
+  // When the admin activates a YouTube live override, the machine transitions
+  // to LIVE_OVERRIDE_ACTIVE and binds the V2Override (kind: "youtube") to the
+  // active buffer. expo-av cannot play YouTube URLs — attempting to load one
+  // causes onError to fire immediately, sending buffer-error into the FSM and
+  // triggering RECOVERING_PRIMARY → RECOVERING_FAILOVER → SKIP_PENDING → FATAL.
+  //
+  // We detect this condition and exclude YouTube from both BroadcastBuffer
+  // instances (same guard used by minimal/hero) to prevent the recovery spiral.
+  // A dedicated overlay is shown instead so the viewer understands what's live.
+  const activeItem = buffers[activeBufferId].item;
+  const isYouTubeOverride =
+    snapshot.state === "LIVE_OVERRIDE_ACTIVE" &&
+    activeItem !== null &&
+    !("source" in activeItem) &&   // V2Override has .kind directly, not .source.kind
+    activeItem.kind === "youtube";
+
   // ── Overlay content ───────────────────────────────────────────────────────
   // Returns { main, sub, showSpinner } or null (no overlay).
   // Phases give users progressively more honest context as time passes —
@@ -1230,6 +1252,17 @@ export function V2PlayerContainer({
 
     if (snapshot.state === "FATAL") {
       return { main: "Playback Error", sub: "Please try again in a moment.", showSpinner: false };
+    }
+    // YouTube live override — expo-av cannot play YouTube URLs so we surface a
+    // branded overlay rather than attempting to load it. The buffer is idle
+    // (excludeYouTube=true prevents any load), so no spinner is needed.
+    if (isYouTubeOverride) {
+      const overrideTitle = server?.override?.title;
+      return {
+        main: overrideTitle ?? "Live YouTube Broadcast",
+        sub: "This broadcast is streaming live on YouTube",
+        showSpinner: false,
+      };
     }
     if (server?.failover.active) {
       const reason = server.failover.reason ?? "Failover stream active";
@@ -1326,7 +1359,7 @@ export function V2PlayerContainer({
       };
     }
     return null;
-  }, [snapshot.state, server, loadingPhase, isOnline]);
+  }, [snapshot.state, server, loadingPhase, isOnline, isYouTubeOverride]);
 
   // ── First-frame readiness gate ────────────────────────────────────────
   // Tracks whether the native player (ExoPlayer / AVPlayer) has rendered
@@ -1354,16 +1387,24 @@ export function V2PlayerContainer({
   // (which happens every progressUpdateIntervalMillis = 500 ms from the buffer
   // state subscription), defeating the memo entirely for both buffer instances.
   const handleVideoReady = useCallback(() => setVideoReady(true), []);
-  const activeBufferId = buffers.A.active ? "A" : "B";
   useEffect(() => {
     // Entering a non-active-playback state means the current item
     // changed, the stream is recovering, or we went off-air.
     // In all cases the next item will need to pass the first-frame
     // gate again before the poster is hidden.
+    //
+    // LIVE_OVERRIDE_ACTIVE is included in the playing family so that an
+    // HLS/RTMP override can set videoReady=true when its first frame renders.
+    // Without this, the state effect continuously resets videoReady=false
+    // (because LIVE_OVERRIDE_ACTIVE is not PLAYING/HANDOFF/PREPARING_NEXT),
+    // keeping the poster visible forever even after the override video plays.
+    // The activeBindRevision effect still resets videoReady=false whenever a
+    // new override is bound, so the first-frame gate works correctly.
     const isPlayingFamily =
       snapshot.state === "PLAYING" ||
       snapshot.state === "HANDOFF" ||
-      snapshot.state === "PREPARING_NEXT";
+      snapshot.state === "PREPARING_NEXT" ||
+      snapshot.state === "LIVE_OVERRIDE_ACTIVE";
     if (!isPlayingFamily) setVideoReady(false);
   }, [snapshot.state]);
   // Also reset when the active buffer's bind revision changes
@@ -1440,7 +1481,7 @@ export function V2PlayerContainer({
         state={buffers.A}
         reportBufferEvent={reportBufferEvent}
         forceMuted={muted}
-        excludeYouTube={minimal}
+        excludeYouTube={minimal || isYouTubeOverride}
         suppressEvents={minimal || !!suppressEvents}
         fsmIsWaiting={fsmIsWaiting}
         onVideoReady={buffers.A.active ? handleVideoReady : undefined}
@@ -1450,7 +1491,7 @@ export function V2PlayerContainer({
         state={buffers.B}
         reportBufferEvent={reportBufferEvent}
         forceMuted={muted}
-        excludeYouTube={minimal}
+        excludeYouTube={minimal || isYouTubeOverride}
         suppressEvents={minimal || !!suppressEvents}
         fsmIsWaiting={fsmIsWaiting}
         onVideoReady={buffers.B.active ? handleVideoReady : undefined}
