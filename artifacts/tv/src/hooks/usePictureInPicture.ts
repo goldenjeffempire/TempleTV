@@ -12,6 +12,7 @@
  * PiP button simply does not render.
  */
 import { useState, useEffect, useCallback } from "react";
+import { cleanupPiPReservedStream } from "@workspace/player-core/react";
 
 export interface PictureInPictureHook {
   /** Whether a PiP window is currently open. */
@@ -39,7 +40,14 @@ export function usePictureInPicture(): PictureInPictureHook {
 
   useEffect(() => {
     const onEnter = () => setIsPipActive(true);
-    const onLeave = () => setIsPipActive(false);
+    const onLeave = () => {
+      setIsPipActive(false);
+      // Destroy the HLS stream that was preserved for the PiP window so it
+      // doesn't keep downloading segments after the window closes.  The
+      // cleanup is a no-op when no stream was preserved (e.g. the video's
+      // src was a plain MP4 managed entirely by the browser).
+      cleanupPiPReservedStream();
+    };
     document.addEventListener("enterpictureinpicture", onEnter);
     document.addEventListener("leavepictureinpicture", onLeave);
     return () => {
@@ -59,10 +67,10 @@ export function usePictureInPicture(): PictureInPictureHook {
     const videos = Array.from(
       document.querySelectorAll<HTMLVideoElement>("video"),
     );
-    const target =
-      videos.find((v) => !v.muted && !v.paused && v.readyState >= 2) ??
-      videos.find((v) => !v.paused && v.readyState >= 2);
-
+    // Only select an unmuted, actively-playing video. The hero / background
+    // preview buffers are always muted — capturing one would give the user a
+    // silent PiP window with no audio even though the live stream is audible.
+    const target = videos.find((v) => !v.muted && !v.paused && v.readyState >= 2);
     if (!target) return false;
 
     try {

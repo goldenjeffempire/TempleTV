@@ -215,6 +215,14 @@ export default function App() {
       isLive?: boolean,
       thumbnailUrl?: string,
     ) => {
+      // Exit PiP before switching content. When the user picks a new video
+      // (VOD or live) while the broadcast is in a PiP window, we cleanly
+      // close PiP first so the orphaned HLS stream is torn down by the
+      // `leavepictureinpicture` handler in usePictureInPicture.ts rather
+      // than running silently in the background.
+      if (typeof document !== "undefined" && document.pictureInPictureElement) {
+        document.exitPictureInPicture().catch(() => {});
+      }
       // Stop any active broadcast sessions (hero, background players) in the
       // same event-loop tick as the navigation — before React re-renders or
       // runs any effect cleanup. This eliminates the overlapping-audio window

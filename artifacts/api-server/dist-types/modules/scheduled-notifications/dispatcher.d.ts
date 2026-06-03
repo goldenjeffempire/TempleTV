@@ -25,6 +25,7 @@
  */
 declare class ScheduledNotificationDispatcher {
     private timer;
+    private stuckInterval;
     private running;
     private stopped;
     /**

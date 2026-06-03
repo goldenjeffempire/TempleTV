@@ -372,6 +372,13 @@ export function LiveBroadcastV2({
   const { snapshot, connected, attach } = useV2Broadcast({ baseUrl: effectiveBaseUrl, attachHls });
   const fatalFiredRef = useRef(false);
 
+  // Local video element refs — shadow attach.A / attach.B so we can find the
+  // correct DOM element for PiP buffer-swap re-entry without exposing
+  // internals from the player-core hook.
+  const videoRefA = useRef<HTMLVideoElement | null>(null);
+  const videoRefB = useRef<HTMLVideoElement | null>(null);
+  const prevActiveBufferId = useRef(snapshot.activeBufferId);
+
   useEffect(() => {
     if (snapshot.state === "FATAL" && !fatalFiredRef.current) {
       fatalFiredRef.current = true;
@@ -379,6 +386,28 @@ export function LiveBroadcastV2({
     }
     if (snapshot.state !== "FATAL") fatalFiredRef.current = false;
   }, [snapshot.state, onFatal]);
+
+  // PiP buffer-swap re-entry: when the broadcast advances to the next queue
+  // item the player-core performs an A/B buffer handoff — the previously
+  // inactive buffer becomes active.  If a PiP window is open it stays pinned
+  // to the old buffer's <video> element and would show stale content.  This
+  // effect detects the swap and immediately moves the PiP window to the new
+  // active element so the viewer sees the correct (current) stream.
+  useEffect(() => {
+    if (prevActiveBufferId.current === snapshot.activeBufferId) return;
+    prevActiveBufferId.current = snapshot.activeBufferId;
+
+    if (!document.pictureInPictureElement) return;
+
+    const newActiveEl =
+      snapshot.activeBufferId === "A" ? videoRefA.current : videoRefB.current;
+    if (!newActiveEl || newActiveEl === document.pictureInPictureElement) return;
+
+    document
+      .exitPictureInPicture()
+      .then(() => newActiveEl.requestPictureInPicture())
+      .catch(() => { /* PiP may not be available — best effort */ });
+  }, [snapshot.activeBufferId]);
 
   const server = snapshot.lastServerSnapshot;
 
@@ -518,7 +547,7 @@ export function LiveBroadcastV2({
 
       {/* Buffer A — initially active */}
       <video
-        ref={attach.A}
+        ref={(el) => { videoRefA.current = el; attach.A(el); }}
         style={{
           position: "absolute",
           inset: 0,
@@ -550,7 +579,7 @@ export function LiveBroadcastV2({
       />
       {/* Buffer B — preload + hand-off target */}
       <video
-        ref={attach.B}
+        ref={(el) => { videoRefB.current = el; attach.B(el); }}
         style={{
           position: "absolute",
           inset: 0,

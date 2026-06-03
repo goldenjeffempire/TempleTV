@@ -9,6 +9,7 @@ interface QuotaState {
         count: number;
     }>;
 }
+export declare function trackQuota(operation: string, cost: number): void;
 export declare function getQuotaStatus(): QuotaState;
 export declare function restoreQuota(): Promise<void>;
 export interface SyncStatus {

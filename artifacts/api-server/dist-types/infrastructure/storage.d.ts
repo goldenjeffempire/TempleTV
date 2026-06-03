@@ -1,4 +1,14 @@
 import { Readable } from "node:stream";
+/** How many storage read streams are currently open (DB queries in-flight). */
+export declare function getActiveStorageStreamCount(): number;
+/**
+ * Signal the storage layer that the process is shutting down.
+ * After this call, `streamChunked` generators exit at the next chunk boundary
+ * instead of issuing another SUBSTRING query, preventing the
+ * "Cannot use a pool after calling end" crash that occurs when the pool is
+ * closed while active streams are still reading.
+ */
+export declare function signalStorageShutdown(): void;
 export interface MultipartPart {
     partNumber: number;
     etag: string;

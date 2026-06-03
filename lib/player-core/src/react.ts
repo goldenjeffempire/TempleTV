@@ -114,28 +114,121 @@ const sessions = new Map<string, { session: BroadcastSession; lastIdleAtMs: numb
 export function pauseAllBroadcastSessions(): void {
   for (const [, entry] of sessions) {
     const { session } = entry;
-    const { adapter } = session;
-    if (!adapter) continue;
-    // Destroy the adapter first: removes all DOM event listeners via the
-    // AbortController so stale buffer-ready / buffer-error events cannot
-    // fire into the FSM after the elements are detached. Then unbind both
-    // buffers: each unbind() call pauses the video element, destroys any
-    // attached HLS/DASH instance, and removes the src attribute — fully
-    // stopping network activity and audio output.
-    try {
-      adapter.destroy();
-      adapter.apply({ type: "unbind", bufferId: "A" });
-      adapter.apply({ type: "unbind", bufferId: "B" });
-    } catch { /* ignore — element may already be detached */ }
-    session.adapter = null;
-    session.bufA   = null;
-    session.bufB   = null;
+    if (!session.adapter) continue;
+    // releaseAdapter pauses / unbinds all buffers via the adapter while
+    // preserving any buffer whose <video> element is currently in a PiP
+    // window — allowing the live stream to continue uninterrupted while
+    // the UI navigates away from the player surface (e.g. back to Home).
+    //
+    // When the user plays a new VOD the caller (App.tsx play()) exits PiP
+    // first via document.exitPictureInPicture() so releaseAdapter sees no
+    // PiP element and performs the full unbind as before.
+    releaseAdapter(session, /* preservePiP */ true);
   }
 }
 
 /** Sessions idle this long with zero subscribers are torn down. */
 const SESSION_IDLE_EVICT_MS = 5 * 60 * 1000;
 let janitorInterval: ReturnType<typeof setInterval> | null = null;
+
+// ── PiP stream preservation ─────────────────────────────────────────────────
+// When a video buffer is in a PiP window at detach time, we skip calling its
+// HLS cleanup (which would immediately freeze the PiP stream) and instead
+// store the cleanup reference here. cleanupPiPReservedStream() is called by
+// the `leavepictureinpicture` handler in usePictureInPicture.ts (normal PiP
+// close) and also by pauseAllBroadcastSessions() → releaseAdapter when the
+// same session is detached without a PiP element (stale-reservation guard).
+let _pipReservedEl: HTMLVideoElement | null = null;
+let _pipReservedDetach: (() => void) | null = null;
+
+/**
+ * Destroy the HLS stream that was preserved for a PiP window.
+ *
+ * Call this when the PiP window closes (`leavepictureinpicture` event) so the
+ * orphaned HLS instance is torn down promptly rather than downloading segments
+ * until the tab is unloaded.
+ *
+ * Also called by `releaseAdapter()` when it detects the previously reserved
+ * element is no longer `document.pictureInPictureElement` (stale reservation
+ * guard — covers the edge case where PiP closed without our listener firing).
+ */
+export function cleanupPiPReservedStream(): void {
+  const el     = _pipReservedEl;
+  const detach = _pipReservedDetach;
+  _pipReservedEl     = null;
+  _pipReservedDetach = null;
+  if (detach) { try { detach(); } catch { /* ignore */ } }
+  if (el) {
+    try { el.pause(); } catch { /* ignore */ }
+    try { el.removeAttribute("src"); el.load(); } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Shared helper — release a session's adapter buffers while optionally
+ * preserving the PiP video element so its HLS stream continues in the OS
+ * PiP window.
+ *
+ * preservePiP = true (default)
+ *   The buffer whose <video> element is currently
+ *   `document.pictureInPictureElement` is NOT unbound; instead its HLS detach
+ *   function is saved to `_pipReservedDetach` for cleanup on PiP close.
+ *   Used by detachElements() (Hero remount after PiP nav-back) and
+ *   pauseAllBroadcastSessions() (back-button navigation while PiP active).
+ *
+ * When no buffer is in PiP the function behaves identically to the old
+ * "unbind everything" path — no behaviour change for the common case.
+ */
+function releaseAdapter(session: BroadcastSession, preservePiP = true): void {
+  const { adapter, bufA, bufB } = session;
+  if (!adapter) return;
+
+  // Stale-reservation guard: if a stream was previously preserved for PiP
+  // but PiP is no longer active on that element, clean it up now.
+  if (_pipReservedEl) {
+    const currentPipEl =
+      typeof document !== "undefined"
+        ? (document.pictureInPictureElement as HTMLVideoElement | null)
+        : null;
+    if (_pipReservedEl !== currentPipEl) cleanupPiPReservedStream();
+  }
+
+  let pipBufferId: "A" | "B" | null = null;
+  if (preservePiP && typeof document !== "undefined") {
+    const pipEl = document.pictureInPictureElement as HTMLVideoElement | null;
+    if (pipEl) {
+      if      (bufA?.el === pipEl) pipBufferId = "A";
+      else if (bufB?.el === pipEl) pipBufferId = "B";
+    }
+  }
+
+  try {
+    // destroy() removes all DOM event listeners (via AbortController) so stale
+    // buffer-ready / buffer-error events cannot fire into the FSM after detach.
+    adapter.destroy();
+
+    if (pipBufferId === "A") {
+      // Preserve buffer A: skip its unbind so HLS keeps streaming in PiP.
+      // Save its detach fn so cleanupPiPReservedStream() can call it later.
+      _pipReservedEl     = bufA!.el;
+      _pipReservedDetach = bufA!.detach ?? null;
+      bufA!.detach       = undefined; // prevent double-call if adapter is referenced again
+      adapter.apply({ type: "unbind", bufferId: "B" });
+    } else if (pipBufferId === "B") {
+      _pipReservedEl     = bufB!.el;
+      _pipReservedDetach = bufB!.detach ?? null;
+      bufB!.detach       = undefined;
+      adapter.apply({ type: "unbind", bufferId: "A" });
+    } else {
+      adapter.apply({ type: "unbind", bufferId: "A" });
+      adapter.apply({ type: "unbind", bufferId: "B" });
+    }
+  } catch { /* ignore — element may already be detached */ }
+
+  session.adapter = null;
+  session.bufA    = null;
+  session.bufB    = null;
+}
 
 function startJanitor(): void {
   if (janitorInterval !== null) return;
@@ -312,21 +405,11 @@ function attachElements(
  * with the server even while no player component is mounted.
  */
 function detachElements(session: BroadcastSession): void {
-  const { adapter } = session;
-  if (!adapter) return;
-  try {
-    // Destroy the adapter first: removes all DOM event listeners via the
-    // AbortController so stale buffer-error / buffer-ready events cannot
-    // fire into the FSM after the elements are detached.
-    adapter.destroy();
-    adapter.apply({ type: "unbind", bufferId: "A" });
-    adapter.apply({ type: "unbind", bufferId: "B" });
-  } catch {
-    /* ignore errors during detach */
-  }
-  session.adapter = null;
-  session.bufA = null;
-  session.bufB = null;
+  // Delegates to releaseAdapter (preservePiP = true) so that any buffer whose
+  // <video> element is currently in the OS PiP window is NOT unbound — its HLS
+  // stream continues running and the PiP window keeps showing live video while
+  // the Hero surface remounts with fresh video elements.
+  releaseAdapter(session, /* preservePiP */ true);
 }
 
 /**
