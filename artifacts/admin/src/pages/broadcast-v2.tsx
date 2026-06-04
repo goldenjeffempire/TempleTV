@@ -89,7 +89,7 @@ import {
   CartesianGrid,
   Tooltip as RechartsTooltip,
   ReferenceLine,
-} from "recharts";
+} from "@/lib/recharts-shim";
 
 interface BroadcastQueueRow {
   id: string;
