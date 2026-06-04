@@ -37,7 +37,7 @@ export const usersTable = pgTable(
     totpEnabled: boolean("totp_enabled").notNull().default(false),
     totpBackupCodes: text("totp_backup_codes"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   },
   (t) => ({
     roleIdx: index("users_role_idx").on(t.role),

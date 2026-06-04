@@ -61,7 +61,7 @@ import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { apiBase } from "@/lib/api-base";
 import { api, HttpError } from "@/lib/api";
 import { useSSE, useSSEEvent } from "@/contexts/sse-context";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   closestCenter,
@@ -90,6 +90,22 @@ import {
   Tooltip as RechartsTooltip,
   ReferenceLine,
 } from "@/lib/recharts-shim";
+
+/**
+ * Safe UUID generator. Falls back to a crypto-quality Math.random hex string
+ * when `crypto.randomUUID()` is unavailable (non-secure HTTP context in dev).
+ * The generated value is used only as an idempotency key — it does not need to
+ * be cryptographically unguessable, just sufficiently unique.
+ */
+function safeRandomUUID(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
 
 interface BroadcastQueueRow {
   id: string;
@@ -453,7 +469,7 @@ interface SortableItemProps {
   isReprobing: boolean;
 }
 
-function SortableQueueItem({
+const SortableQueueItem = memo(function SortableQueueItem({
   item,
   index,
   isCurrent,
@@ -795,7 +811,7 @@ function SortableQueueItem({
       )}
     </li>
   );
-}
+});
 
 /**
  * Admin Live Broadcast (v2 control plane).
@@ -852,7 +868,7 @@ function BroadcastV2PageInner() {
   async function adminPost(path: string, body: Record<string, unknown> = {}) {
     setBusy(path);
     try {
-      await api.post(path, { ...body, idempotencyKey: crypto.randomUUID() });
+      await api.post(path, { ...body, idempotencyKey: safeRandomUUID() });
       toast.success(`OK: ${path.split("/").pop()}`);
       // Refresh broadcast state so the UI reflects the engine change without
       // waiting for the next poll cycle (10–15 s).
@@ -954,7 +970,7 @@ function BroadcastV2PageInner() {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
       toast.success("HLS transcoding re-queued — encoding will start shortly.");
-      void api.post("/broadcast-v2/reload", { idempotencyKey: crypto.randomUUID() }).catch(() => {});
+      void api.post("/broadcast-v2/reload", { idempotencyKey: safeRandomUUID() }).catch(() => {});
     },
     onError: (err) => {
       toast.error(err instanceof HttpError ? err.message : "Failed to retry HLS transcoding.");
@@ -1002,7 +1018,7 @@ function BroadcastV2PageInner() {
     mutationFn: (itemId: string) =>
       api.post<{ ok: boolean; sequence: number }>("/broadcast-v2/play-now", {
         queueItemId: itemId,
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: safeRandomUUID(),
       }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
@@ -1048,7 +1064,7 @@ function BroadcastV2PageInner() {
     mutationFn: () =>
       api.post<{ ok: boolean; scanned: number; enqueued: number; skipped: number }>(
         "/broadcast-v2/sync-library",
-        { idempotencyKey: crypto.randomUUID() },
+        { idempotencyKey: safeRandomUUID() },
       ),
     onSuccess: (result) => {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
@@ -1172,7 +1188,7 @@ function BroadcastV2PageInner() {
     clearTimeout(reloadTimer.current);
     reloadTimer.current = setTimeout(() => {
       api
-        .post("/broadcast-v2/reload", { idempotencyKey: crypto.randomUUID() })
+        .post("/broadcast-v2/reload", { idempotencyKey: safeRandomUUID() })
         .catch(() => {});
     }, 1_000);
   });
@@ -1610,7 +1626,7 @@ function BroadcastV2PageInner() {
   async function clearBlocks() {
     setBusy("clear-blocks");
     try {
-      await api.post("/broadcast-v2/clear-bad-urls", { idempotencyKey: crypto.randomUUID() });
+      await api.post("/broadcast-v2/clear-bad-urls", { idempotencyKey: safeRandomUUID() });
       // Refetch the specific query instance AND invalidate the query key so
       // any other mounted component that reads broadcast-v2-engine-health
       // (e.g. the dashboard stuck-engine banner) is also refreshed immediately
@@ -1638,7 +1654,7 @@ function BroadcastV2PageInner() {
     try {
       const result = await api.post<{ ok: boolean; triggered: number; reason?: string }>(
         "/broadcast-v2/prepare-hls",
-        { idempotencyKey: crypto.randomUUID() },
+        { idempotencyKey: safeRandomUUID() },
       );
       await qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       // Also invalidate admin-videos so the HLS-status badge in the video

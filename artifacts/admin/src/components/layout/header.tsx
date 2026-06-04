@@ -120,8 +120,13 @@ export function Header({ onMenuClick }: HeaderProps) {
     : (user?.email?.slice(0, 2).toUpperCase() ?? "??");
 
   const handleLogout = async () => {
-    qc.clear();
-    await logout();
+    try {
+      qc.clear();
+      await logout();
+    } catch {
+      // logout() redirects to /login on success; a network error here should
+      // not crash the page — the user is still signed out of the local cache.
+    }
   };
 
   return (

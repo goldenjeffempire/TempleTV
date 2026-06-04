@@ -14,5 +14,5 @@ export const midnightPrayersConfig = pgTable("midnight_prayers_config", {
   startHour: integer("start_hour").notNull().default(0),
   endHour: integer("end_hour").notNull().default(3),
   timezone: text("timezone").notNull().default("Africa/Lagos"),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

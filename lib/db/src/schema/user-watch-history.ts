@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, integer, index } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, integer, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { usersTable } from "./users";
 
 export const userWatchHistoryTable = pgTable(
@@ -19,11 +19,11 @@ export const userWatchHistoryTable = pgTable(
     // Supports JOIN queries from the video detail page (e.g. "has user watched
     // this video before?" lookup) and batch history queries grouped by video.
     videoIdx: index("user_watch_history_video_id_idx").on(t.videoId),
-    // Composite index for "has this user watched this specific video?" queries
-    // (used on video detail and continue-watching panels). The individual
-    // userId and videoId indexes do not satisfy this equally well — Postgres
-    // would need a bitmap AND between two index scans without it.
-    userVideoIdx: index("user_watch_history_user_video_idx").on(t.userId, t.videoId),
+    // Unique constraint on (userId, videoId) — each user has at most one history
+    // entry per video. This is the target for onConflictDoUpdate upserts in
+    // the POST /user/history route, replacing the racy SELECT + INSERT/UPDATE
+    // two-step that could create duplicate rows under concurrent requests.
+    userVideoIdx: uniqueIndex("user_watch_history_user_video_idx").on(t.userId, t.videoId),
   }),
 );
 

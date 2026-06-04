@@ -46,7 +46,7 @@ export const storageBlobsTable = pgTable(
     data: bytea("data").notNull(),
     sizeBytes: bigint("size_bytes", { mode: "number" }).notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   },
   (t) => [
     index("idx_storage_blobs_key_prefix").on(t.key),

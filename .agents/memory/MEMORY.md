@@ -1,3 +1,4 @@
+- [Platform audit sprint 33 — TOCTOU + schema + admin hardening](platform-audit-sprint-33.md) — watch history TOCTOU fixed via uniqueIndex+(userId,videoId)+onConflictDoUpdate; $onUpdate added to 8 tables; SortableQueueItem memo; safeRandomUUID; logout try/catch.
 - [Admin panel query invalidation matrix](admin-query-invalidation.md) — which mutations must invalidate which query keys; catalog cache key prefix is catalog2 (not catalog); selectedIds must clear on page change.
 - [Analytics viewCount double-increment](analytics-viewcount-guard.md) — onConflictDoNothing does NOT prevent the subsequent UPDATE; must use .returning() on the INSERT and gate the viewCount UPDATE on whether a row was actually inserted.
 - [Channel-registry getOrCreate race](channel-registry-race.md) — two concurrent requests create two ChannelEngines; fix with a loading promise map keyed by channelId so second caller awaits the first.

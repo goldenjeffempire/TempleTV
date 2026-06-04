@@ -40,7 +40,7 @@ export const liveIngestEndpointsTable = pgTable("live_ingest_endpoints", {
   lastError: text("last_error"),
   metadata: jsonb("metadata").$type<Record<string, unknown> | null>(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
 export const insertLiveIngestEndpointSchema = createInsertSchema(liveIngestEndpointsTable).omit({

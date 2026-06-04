@@ -315,43 +315,28 @@ export async function userRoutes(app: FastifyInstance) {
       const videoCategory  = sanitizeText(req.body.videoCategory);
       const now = new Date();
 
-      const existing = await db
-        .select({ id: historyTable.id })
-        .from(historyTable)
-        .where(and(eq(historyTable.userId, userId), eq(historyTable.videoId, videoId)))
-        .limit(1);
-
-      if (existing.length > 0) {
-        const updated = await db
-          .update(historyTable)
-          .set({ watchedAt: now, progressSecs, videoTitle, videoThumbnail, videoCategory })
-          .where(eq(historyTable.id, existing[0]!.id))
-          .returning();
-        const row = updated[0]!;
-        return {
-          id: row.id,
-          videoId: row.videoId,
-          videoTitle: row.videoTitle,
-          videoThumbnail: row.videoThumbnail,
-          videoCategory: row.videoCategory,
-          progressSecs: row.progressSecs,
-          watchedAt: row.watchedAt.toISOString(),
-        };
-      }
-
-      const inserted = await db
+      // Single-statement upsert — eliminates the SELECT + INSERT/UPDATE two-step
+      // TOCTOU race where two concurrent requests can both pass the "does it
+      // exist?" check and both attempt an INSERT, causing one to fail with a
+      // unique-constraint violation. The unique index on (userId, videoId) is
+      // the conflict target; existing rows are updated in-place so the returned
+      // id is always stable across repeated watch-progress syncs.
+      const [row] = await db
         .insert(historyTable)
         .values({ id: nanoid(), userId, videoId, videoTitle, videoThumbnail, videoCategory, progressSecs, watchedAt: now })
+        .onConflictDoUpdate({
+          target: [historyTable.userId, historyTable.videoId],
+          set: { watchedAt: now, progressSecs, videoTitle, videoThumbnail, videoCategory },
+        })
         .returning();
-      const row = inserted[0]!;
       return {
-        id: row.id,
-        videoId: row.videoId,
-        videoTitle: row.videoTitle,
-        videoThumbnail: row.videoThumbnail,
-        videoCategory: row.videoCategory,
-        progressSecs: row.progressSecs,
-        watchedAt: row.watchedAt.toISOString(),
+        id: row!.id,
+        videoId: row!.videoId,
+        videoTitle: row!.videoTitle,
+        videoThumbnail: row!.videoThumbnail,
+        videoCategory: row!.videoCategory,
+        progressSecs: row!.progressSecs,
+        watchedAt: row!.watchedAt.toISOString(),
       };
     },
   );

@@ -25,7 +25,7 @@ export const channelsTable = pgTable(
     /** Fallback HLS URL used if the channel's queue is empty. */
     failoverHlsUrl: text("failover_hls_url"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   },
   (t) => [
     index("idx_channels_active_sort").on(t.isActive, t.sortOrder),
