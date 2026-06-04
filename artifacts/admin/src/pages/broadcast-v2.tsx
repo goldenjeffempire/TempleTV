@@ -528,7 +528,7 @@ function SortableQueueItem({
       <div className="min-w-0 flex-1">
         <div className="truncate text-sm font-medium">{item.title}</div>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <span>{Math.round(item.durationSecs)}s</span>
+          <span>{fmtDuration(Math.round(item.durationSecs))}</span>
           <span className="opacity-50">·</span>
           <span className="uppercase">{item.videoSource}</span>
           {secondsUntilAir !== null && !isCurrent && item.isActive && (
@@ -875,8 +875,8 @@ function BroadcastV2PageInner() {
       api.get<{ healthByItemId: Record<string, SourceHealthEntry> }>(
         "/broadcast-v2/source-health",
       ),
-    refetchInterval: 30_000,
-    staleTime: 25_000,
+    refetchInterval: 10_000,
+    staleTime: 8_000,
   });
   const healthByItemId = healthData?.healthByItemId ?? {};
 
@@ -3377,7 +3377,7 @@ function SnapshotSlot({
           )}
           <div className="min-w-0 flex-1">
             <div className="truncate font-medium">{item.title}</div>
-            <div className="text-xs text-muted-foreground">{Math.round(item.durationSecs)}s</div>
+            <div className="text-xs text-muted-foreground">{fmtDuration(Math.round(item.durationSecs))}</div>
           </div>
         </div>
       )}
