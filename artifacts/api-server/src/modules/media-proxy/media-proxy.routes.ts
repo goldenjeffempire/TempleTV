@@ -1,4 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { Readable } from "node:stream";
+import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
 import type { FastifyInstance } from "fastify";
 import { env } from "../../config/env.js";
 import { logger } from "../../infrastructure/logger.js";
@@ -247,7 +249,38 @@ export async function mediaProxyRoutes(app: FastifyInstance) {
         return reply.send(Buffer.alloc(0));
       }
 
-      return reply.send(upstream.body);
+      // Convert the fetch web ReadableStream to a Node stream we own, so the
+      // upstream download is torn down deterministically when the client
+      // disconnects mid-stream. HLS players abort segment/MP4 fetches
+      // constantly (ABR variant switches, seeks, stops, reconnect loops).
+      // Previously the AbortController was cleared after the first byte and
+      // never re-armed, so an aborted client left the upstream fetch streaming
+      // into a body nobody reads — wasting origin bandwidth, holding the
+      // upstream socket open, and surfacing Node ERR_STREAM_PREMATURE_CLOSE
+      // "stream closed prematurely" errors on every aborted HLS segment.
+      const bodyStream = Readable.fromWeb(upstream.body as NodeWebReadableStream<Uint8Array>);
+
+      const teardown = () => {
+        // Only abort on an *early* client disconnect — once the response has
+        // fully flushed, writableFinished is true and this is a harmless no-op.
+        if (!reply.raw.writableFinished) {
+          ctrl.abort();
+          bodyStream.destroy();
+        }
+      };
+      reply.raw.once("close", teardown);
+
+      // A client aborting a segment mid-flight is normal HLS behaviour, not a
+      // server fault. Swallow the resulting abort / premature-close so it does
+      // not flood logs as an error; surface anything else as a warning.
+      bodyStream.on("error", (err: NodeJS.ErrnoException) => {
+        if (err?.name === "AbortError" || err?.code === "ERR_STREAM_PREMATURE_CLOSE") {
+          return;
+        }
+        logger.warn({ targetHost, err: String(err) }, "[media-proxy] body stream error");
+      });
+
+      return reply.send(bodyStream);
     },
   );
 
