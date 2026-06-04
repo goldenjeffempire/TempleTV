@@ -204,9 +204,9 @@ function buildFfmpegArgs(
   // CPU overhead: ~6–8 % vs the fast preset baseline. Acceptable for
   // background transcoding on a Replit instance.
   // me=umh:subme=7:direct=auto: see comment above.
-  // deblock=-1:-1: reduce deblocking aggressiveness by one step on both
+  // deblock=-1,-1: reduce deblocking aggressiveness by one step on both
   //   alpha (luma) and beta (chroma) axes. The 'fast' preset's default is
-  //   deblock=0:0 which applies moderate loop deblocking — visually blurring
+  //   deblock=0,0 which applies moderate loop deblocking — visually blurring
   //   high-contrast edges. At CRF=21 and our raised bitrates, the encode has
   //   enough bits to represent fine detail; reducing deblocking lets that
   //   detail survive to the output. Most noticeable on on-screen text, speaker
@@ -214,7 +214,14 @@ function buildFfmpegArgs(
   //   At 360p/480p the marginal effect is also positive — the higher bitrates
   //   ensure macroblocks are already well-coded, so softer deblocking sharpens
   //   rather than exposing artefacts.
-  args.push("-x264-params", "me=umh:subme=7:direct=auto:deblock=-1:-1");
+  //
+  //   NOTE: the deblock alpha/beta pair MUST be comma-separated (`-1,-1`), NOT
+  //   colon-separated. Inside `-x264-params` the colon (`:`) is the option
+  //   delimiter, so `deblock=-1:-1` is parsed as `deblock=-1` followed by a
+  //   stray `-1` token, which makes libx264 reject the entire param string
+  //   ("Error setting option x264-params ... Invalid argument") and ffmpeg
+  //   exits 234 on every job. This broke all HLS transcoding under ffmpeg 7.x.
+  args.push("-x264-params", "me=umh:subme=7:direct=auto:deblock=-1,-1");
 
   args.push("-force_key_frames", `expr:gte(t,n_forced*${KEYFRAME_INTERVAL_SECS})`);
   args.push("-sc_threshold", "0");
@@ -1223,6 +1230,20 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
         else reject(new Error(`ffmpeg exited ${code}: ${stderrTail.trim()}`));
       });
     });
+
+    // Rejection guard — CRITICAL for 24/7 fault tolerance.
+    // hlsPromise is created above but not awaited until further down (after the
+    // `await generateThumbnail(...)` call and the progressive-uploader setup).
+    // If FFmpeg fails *fast* — e.g. an invalid encoder option that makes it exit
+    // before any encoding starts — the rejection lands in that async gap with no
+    // handler attached yet. Node reports that as an unhandledRejection, which the
+    // process-level handler escalates to a FATAL exit, taking the entire API and
+    // broadcast engine down for a single bad transcode. Attaching a no-op catch
+    // here marks the rejection as handled so it can never crash the process; the
+    // real error handling (360p fallback / re-throw) still happens at the
+    // `await hlsPromise` site below, because `.catch()` returns a *new* promise
+    // and does not consume the rejection observed by that await.
+    hlsPromise.catch(() => { /* handled at the `await hlsPromise` site below */ });
 
     // Extract thumbnail first (non-critical; must precede any scratchDir rebuild
     // so the file is never silently dropped by a single-rendition fallback below).
