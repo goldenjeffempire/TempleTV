@@ -133,17 +133,27 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
   if (video.canPlayType("application/vnd.apple.mpegurl")) {
     let nativeRetried = false;
     const handleNativeError = () => {
-      if (!nativeRetried && video.error?.code === MediaError.MEDIA_ERR_NETWORK) {
-        // One silent reload for transient network blips. If it fails again
-        // the video element fires another `error` which propagates normally
-        // to the player-core web adapter.
+      const code = video.error?.code;
+      if (
+        !nativeRetried &&
+        (code === MediaError.MEDIA_ERR_NETWORK ||
+          code === MediaError.MEDIA_ERR_DECODE)
+      ) {
+        // One silent reload for transient network blips OR transient codec
+        // pipeline failures (MEDIA_ERR_DECODE, code 3).  MEDIA_ERR_DECODE is
+        // common on WebKit-based Smart TV chipsets when the HLS demuxer briefly
+        // hiccups on a segment boundary — a single video.load() + play() clears
+        // the codec state and resumes playback without a full RECOVERING_PRIMARY
+        // cycle.  If the reload fails the element fires another `error` event
+        // which propagates normally to the player-core web adapter.
         nativeRetried = true;
         video.load();
         void video.play().catch(() => { /* autoplay policy — stall watchdog handles */ });
         return;
       }
-      // Propagate all other errors (MEDIA_ERR_DECODE etc.) or the second
-      // network error immediately — let the FSM run its recovery cycle.
+      // Propagate the second network/decode error or any other error
+      // (MEDIA_ERR_SRC_NOT_SUPPORTED, MEDIA_ERR_ABORTED) immediately —
+      // let the FSM run its recovery cycle.
     };
     video.addEventListener("error", handleNativeError);
     video.src = url;

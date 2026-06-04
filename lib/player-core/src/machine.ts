@@ -991,6 +991,17 @@ export class PlayerMachine {
     // the cycle anchor immediately, keeping all clients in sync.
     if (endedItemId) this.onNaturalEndCb?.(endedItemId);
 
+    // Immediately request a fresh snapshot after HANDOFF so drift correction
+    // for the newly-active item fires in < 1 s rather than waiting up to 8 s
+    // for the next keepalive frame.  Every other "needs fresh state now" path
+    // in the machine (SYNCING, SKIP_PENDING, onBufferError) already calls this;
+    // the HANDOFF path was the only one missing it.  The server will respond
+    // with the updated startsAtMs for the new current item, which
+    // resolvePositionSecs() uses to place the playhead at the correct wall-clock
+    // position — eliminating the brief position-0 phase that was visible
+    // during item transitions on slow or reconnecting transports.
+    this.onNeedSnapshotCb?.();
+
     // ── Eager post-handoff preload ────────────────────────────────────────
     // The just-freed buffer (old `bufferId`, now the inactive slot) was
     // cleared to null above.  Start loading the next item into it immediately
