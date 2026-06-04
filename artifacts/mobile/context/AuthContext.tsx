@@ -64,6 +64,10 @@ const USER_SCOPED_STORAGE_PREFIXES = [
   // Per-video watch-position cache (useWatchProgress.ts). Keyed by video id,
   // so a second user on the same device must not inherit the first user's positions.
   "@temple_tv/watch_progress",
+  // Recent search history (search.tsx RECENT_KEY). On a shared device a second
+  // user must not see the first user's search queries (may reveal sensitive
+  // prayer/sermon topics).
+  "@temple_tv/recent_searches",
 ];
 
 async function clearUserScopedCaches(): Promise<void> {
