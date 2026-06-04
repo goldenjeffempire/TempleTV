@@ -1359,6 +1359,87 @@ function BroadcastV2PageInner() {
 
     return result;
   }, [server?.current?.id, server?.current?.endsAtMs, orderedQueueItems]);
+
+  // ── Projected schedule ────────────────────────────────────────────────────
+  // Ordered list of upcoming broadcast slots starting from the current item.
+  // Shows up to PROJECTED_SLOTS_MAX entries; items that wrap around to the
+  // next queue cycle are flagged isNextCycle so the component can draw a
+  // divider. Built from orderedQueueItems so drag-reorder is reflected
+  // immediately without waiting for a server round-trip.
+  const PROJECTED_SLOTS_MAX = 13;
+  const projectedSchedule = useMemo(() => {
+    const slots: ProjectedSlot[] = [];
+    const cur = server?.current;
+    if (!cur?.id || !cur.endsAtMs || !cur.startsAtMs) return slots;
+
+    const currentIdx = orderedQueueItems.findIndex((i) => i.id === cur.id);
+    const currentQueueRow = currentIdx !== -1 ? orderedQueueItems[currentIdx] : null;
+
+    // Slot 0: currently on-air item.
+    slots.push({
+      id: cur.id,
+      title: cur.title ?? "Untitled",
+      thumbnailUrl: cur.thumbnailUrl ?? null,
+      durationSecs: Math.round((cur.endsAtMs - cur.startsAtMs) / 1000),
+      startsAtMs: cur.startsAtMs,
+      endsAtMs: cur.endsAtMs,
+      isCurrent: true,
+      scheduleLabel: currentQueueRow?.scheduleLabel ?? null,
+      isNextCycle: false,
+    });
+
+    if (currentIdx === -1) return slots;
+
+    let cursor = cur.endsAtMs;
+    let isFirstWrap = true;
+
+    // Items AFTER current in this cycle.
+    for (let i = currentIdx + 1; i < orderedQueueItems.length; i++) {
+      if (slots.length >= PROJECTED_SLOTS_MAX) return slots;
+      const item = orderedQueueItems[i];
+      if (!item.isActive) continue;
+      const durMs = item.durationSecs * 1000;
+      slots.push({
+        id: item.id,
+        title: item.title,
+        thumbnailUrl: item.thumbnailUrl,
+        durationSecs: item.durationSecs,
+        startsAtMs: cursor,
+        endsAtMs: cursor + durMs,
+        isCurrent: false,
+        scheduleLabel: item.scheduleLabel ?? null,
+        isNextCycle: false,
+      });
+      cursor += durMs;
+    }
+
+    // Items BEFORE current (wrap to next cycle). First one gets the divider.
+    for (let i = 0; i < currentIdx; i++) {
+      if (slots.length >= PROJECTED_SLOTS_MAX) return slots;
+      const item = orderedQueueItems[i];
+      if (!item.isActive) continue;
+      const durMs = item.durationSecs * 1000;
+      slots.push({
+        id: item.id,
+        title: item.title,
+        thumbnailUrl: item.thumbnailUrl,
+        durationSecs: item.durationSecs,
+        startsAtMs: cursor,
+        endsAtMs: cursor + durMs,
+        isCurrent: false,
+        scheduleLabel: item.scheduleLabel ?? null,
+        isNextCycle: isFirstWrap,
+      });
+      isFirstWrap = false;
+      cursor += durMs;
+    }
+
+    return slots;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [server?.current?.id, server?.current?.endsAtMs, server?.current?.startsAtMs, orderedQueueItems]);
+
+  const totalActiveItems = orderedQueueItems.filter((i) => i.isActive).length;
+
   // HLS readiness summary across locally-hosted items in the queue.
   const localQueueItems = queueItems.filter((i) => i.videoId !== null);
   const pendingHlsCount = localQueueItems.filter((i) => !i.hasHls).length;
@@ -2472,6 +2553,8 @@ function BroadcastV2PageInner() {
         realtimeStallCount={realtimeStallCount}
       />
 
+      <ProjectedScheduleCard slots={projectedSchedule} totalActiveItems={totalActiveItems} />
+
       <AirHistoryCard history={engineHealth?.airingHistory} />
 
       <StreamHealthHistoryChart history={healthHistory} />
@@ -3548,6 +3631,186 @@ function formatAgo(ms: number): string {
   if (diff < 60_000) return `${Math.round(diff / 1000)}s ago`;
   if (diff < 3_600_000) return `${Math.round(diff / 60_000)}m ago`;
   return `${Math.round(diff / 3_600_000)}h ago`;
+}
+
+// ─── ProjectedScheduleCard ────────────────────────────────────────────────────
+// Shows the upcoming broadcast timeline as a scrollable slot list.
+// Collapsed by default to save vertical space; opens on click.
+// Requires a 1-second tick only for the current item's progress bar —
+// all other slots are static until the queue or server snapshot changes.
+
+interface ProjectedSlot {
+  id: string;
+  title: string;
+  thumbnailUrl: string | null;
+  durationSecs: number;
+  startsAtMs: number;
+  endsAtMs: number;
+  isCurrent: boolean;
+  scheduleLabel: string | null;
+  isNextCycle: boolean;
+}
+
+function ProjectedScheduleCard({
+  slots,
+  totalActiveItems,
+}: {
+  slots: ProjectedSlot[];
+  totalActiveItems: number;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(t);
+  }, []);
+
+  if (slots.length === 0) return null;
+
+  const fmtTime = (ms: number) =>
+    new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+  const fmtDur = (secs: number) => {
+    if (secs < 60) return `${secs}s`;
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    if (h === 0) return `${m}m`;
+    if (m === 0) return `${h}h`;
+    return `${h}h ${m}m`;
+  };
+
+  const current = slots[0];
+  const elapsedMs = Math.max(0, now - current.startsAtMs);
+  const totalMs = Math.max(1, current.endsAtMs - current.startsAtMs);
+  const progressPct = Math.min(100, Math.round((elapsedMs / totalMs) * 100));
+  const remainingSecs = Math.max(0, Math.ceil((current.endsAtMs - now) / 1000));
+
+  const hiddenCount = Math.max(0, totalActiveItems - slots.length);
+  const shownCount = slots.length + hiddenCount;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2 pt-4">
+        <CardTitle
+          className="flex items-center gap-2 text-sm cursor-pointer select-none"
+          onClick={() => setCollapsed((c) => !c)}
+          role="button"
+          aria-expanded={!collapsed}
+        >
+          <CalendarClock className="h-4 w-4 text-muted-foreground" />
+          Projected Schedule
+          <span className="ml-1 text-[10px] font-normal text-muted-foreground tabular-nums">
+            ({shownCount} item{shownCount !== 1 ? "s" : ""})
+          </span>
+          <span className="ml-auto text-muted-foreground">
+            {collapsed ? (
+              <ChevronDown className="h-4 w-4" />
+            ) : (
+              <ChevronUp className="h-4 w-4" />
+            )}
+          </span>
+        </CardTitle>
+      </CardHeader>
+
+      {!collapsed && (
+        <CardContent className="pb-4 px-3">
+          <div className="space-y-1">
+            {slots.map((slot) => (
+              <div key={slot.id}>
+                {/* Queue-cycle restart divider */}
+                {slot.isNextCycle && (
+                  <div className="flex items-center gap-2 py-2">
+                    <div className="flex-1 h-px bg-border" />
+                    <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider whitespace-nowrap">
+                      Queue repeats
+                    </span>
+                    <div className="flex-1 h-px bg-border" />
+                  </div>
+                )}
+
+                {/* Slot row */}
+                <div
+                  className={[
+                    "flex items-start gap-3 rounded-lg px-2 py-2 transition-colors",
+                    slot.isCurrent
+                      ? "bg-primary/5 border border-primary/20"
+                      : "hover:bg-muted/40",
+                  ].join(" ")}
+                >
+                  {/* Thumbnail */}
+                  {slot.thumbnailUrl ? (
+                    <img
+                      src={slot.thumbnailUrl}
+                      alt=""
+                      loading="lazy"
+                      className="h-10 w-16 rounded object-cover bg-black flex-shrink-0 mt-0.5"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).style.display = "none";
+                      }}
+                    />
+                  ) : (
+                    <div className="h-10 w-16 rounded bg-muted flex-shrink-0 mt-0.5 flex items-center justify-center">
+                      <Video className="h-4 w-4 text-muted-foreground opacity-50" />
+                    </div>
+                  )}
+
+                  {/* Title + label + progress */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {slot.isCurrent && (
+                        <Badge
+                          variant="default"
+                          className="h-4 px-1.5 text-[9px] font-bold shrink-0"
+                        >
+                          ON AIR
+                        </Badge>
+                      )}
+                      <p className="text-sm font-medium leading-snug truncate">
+                        {slot.title}
+                      </p>
+                    </div>
+                    {slot.scheduleLabel && (
+                      <p className="text-[10px] text-muted-foreground mt-0.5 truncate">
+                        {slot.scheduleLabel}
+                      </p>
+                    )}
+                    {slot.isCurrent && (
+                      <div className="mt-1.5 flex items-center gap-2">
+                        <Progress value={progressPct} className="h-1 flex-1" />
+                        <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">
+                          -{fmtDur(remainingSecs)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Time block */}
+                  <div className="flex-shrink-0 text-right space-y-0.5">
+                    <div className="text-xs font-semibold tabular-nums">
+                      {fmtTime(slot.startsAtMs)}
+                    </div>
+                    <div className="text-[10px] text-muted-foreground tabular-nums">
+                      –{fmtTime(slot.endsAtMs)}
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">
+                      {fmtDur(slot.durationSecs)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+
+            {hiddenCount > 0 && (
+              <p className="text-center text-xs text-muted-foreground py-2 border-t mt-2 pt-3">
+                …and {hiddenCount} more item{hiddenCount !== 1 ? "s" : ""} in the next cycle
+              </p>
+            )}
+          </div>
+        </CardContent>
+      )}
+    </Card>
+  );
 }
 
 // ─── StreamHealthHistoryChart ─────────────────────────────────────────────────
