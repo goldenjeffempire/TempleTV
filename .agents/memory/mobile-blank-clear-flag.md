@@ -1,9 +1,44 @@
 ---
-name: Mobile (and TV) web preview blank/white in Replit dev workspace
-description: Why the Expo mobile / TV web preview goes blank or white in the dev workspace and the two distinct causes
+name: Global NODE_ENV=production breaks dev workflows in this workspace
+description: This workspace has a global NODE_ENV=production env var. Any dev workflow that does not explicitly override it breaks. Covers mobile/TV blank preview AND admin/TV/mockup $RefreshSig$ Fast Refresh errors.
 ---
 
-# Mobile/TV web preview blank in the Replit dev workspace
+# Root cause shared by several "works in one workflow, broken in another" bugs
+
+This workspace has a **workspace-global `NODE_ENV=production`** env var. Every dev
+workflow that does NOT set its own `NODE_ENV` inherits `production`, which
+silently breaks dev-only behavior. Two confirmed symptoms below. The durable
+fix is to make the thing run in development mode — either inline in the workflow
+command (like "Start application" does) or, more robustly, by prefixing the
+package `dev` script with `NODE_ENV=development` so it is correct no matter which
+workflow launches it.
+
+## Symptom A — `$RefreshSig$ is not defined` in admin / TV / mockup canvas previews
+
+The canvas artifact dev workflows ("artifacts/admin: web", "artifacts/tv: web",
+"artifacts/mockup-sandbox: …") run `pnpm --filter @workspace/<app> run dev` with
+NO `NODE_ENV`, so they inherit `production`. `@vitejs/plugin-react`'s
+`transformIndexHtml` skips injecting the React Fast Refresh preamble when
+`config.isProduction` is true (`skipFastRefresh = config.isProduction`), BUT the
+module transform still emits top-level `$RefreshSig$()` / `$RefreshReg$()` calls
+→ every component module throws `ReferenceError: $RefreshSig$ is not defined`
+(first import-site reported, e.g. `auth-context.tsx`). The whole SPA fails to
+mount. The "Start application" workflow (port 5000) is immune only because it
+sets `NODE_ENV=development` inline.
+
+**Fix:** prefix each app's `dev` script with `NODE_ENV=development`
+(`"dev": "NODE_ENV=development vite …"`) in `artifacts/{admin,tv,mockup-sandbox}/package.json`,
+then restart those workflows.
+
+**Verify (mind the canvas base path):** the canvas serves each artifact under a
+base path — `/admin/`, `/tv/`, `/__mockup/` (via `BASE_PATH`), NOT `/`. So curl
+`http://localhost:<port>/admin/` and `…/admin/@react-refresh` (200 = fixed), not
+`/` (404, misleading). Ports: admin 23744, tv 23876, mockup varies — read the
+`➜ Local:` line in each workflow log. The HTML must contain
+`window.$RefreshSig$ = …` and the preamble import must be base-prefixed
+(`/admin/@react-refresh`).
+
+## Symptom B — Mobile/TV web preview blank/white through the main domain
 
 The mobile (`artifacts/mobile`) Expo web preview — and the TV preview — are
 served through the **main janeway domain**, which `.replit` maps to

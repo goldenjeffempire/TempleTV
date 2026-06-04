@@ -4,7 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "vite dev",
+    "dev": "NODE_ENV=development vite dev",
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "NODE_OPTIONS='--max-old-space-size=4096' tsc -p tsconfig.json --noEmit"

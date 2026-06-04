@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --config vite.config.ts --host 0.0.0.0",
+    "dev": "NODE_ENV=development vite --config vite.config.ts --host 0.0.0.0",
     "build": "vite build --config vite.config.ts",
     "build:tizen": "BASE_PATH=/ vite build --config vite.config.ts --outDir dist/tizen",
     "build:lg": "BASE_PATH=/ vite build --config vite.config.ts --outDir dist/lg",
