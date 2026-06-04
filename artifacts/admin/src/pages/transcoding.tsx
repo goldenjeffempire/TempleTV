@@ -8,6 +8,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Progress } from "@/components/ui/progress";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import {
   Clapperboard, RefreshCw, CheckCircle2, XCircle, Loader2,
@@ -96,17 +101,39 @@ export default function TranscodingPage() {
         description="Monitor HLS encoding jobs and processing status."
         actions={
           <div className="flex items-center gap-2">
-            <Button
-              variant="default"
-              size="sm"
-              onClick={() => bulkTranscodeMutation.mutate()}
-              disabled={bulkTranscodeMutation.isPending}
-              className="gap-1.5"
-            >
-              {bulkTranscodeMutation.isPending
-                ? <><Loader2 size={13} className="animate-spin" /> Queuing…</>
-                : <><Zap size={13} /> Transcode All Unprocessed</>}
-            </Button>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  variant="default"
+                  size="sm"
+                  disabled={bulkTranscodeMutation.isPending}
+                  className="gap-1.5"
+                >
+                  {bulkTranscodeMutation.isPending
+                    ? <><Loader2 size={13} className="animate-spin" /> Queuing…</>
+                    : <><Zap size={13} /> Transcode All Unprocessed</>}
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Transcode all unprocessed videos?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This queues an HLS encode job for every video that isn't already
+                    processed. On a large library this can place heavy, sustained load on
+                    the transcoding pipeline and slow other encodes. Continue?
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    disabled={bulkTranscodeMutation.isPending}
+                    onClick={() => bulkTranscodeMutation.mutate()}
+                  >
+                    Transcode All
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
             <Button variant="outline" size="sm" onClick={() => void refetch()} className="gap-1.5">
               <RefreshCw size={13} /> Refresh
             </Button>

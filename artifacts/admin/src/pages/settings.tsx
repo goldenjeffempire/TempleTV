@@ -6,6 +6,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import {
   Settings2, Plus, Trash2, Save, RefreshCw, Info, Search,
@@ -51,6 +55,7 @@ export default function SettingsPage() {
   const [newValue, setNewValue] = useState("");
   const [editMap, setEditMap] = useState<Record<string, string>>({});
   const [search, setSearch] = useState("");
+  const [deletingKey, setDeletingKey] = useState<string | null>(null);
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ["admin-system-settings"],
@@ -285,8 +290,9 @@ export default function SettingsPage() {
                         size="icon"
                         variant="ghost"
                         className="h-7 w-7 text-destructive/60 hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
-                        onClick={() => deleteMutation.mutate(entry.key)}
+                        onClick={() => setDeletingKey(entry.key)}
                         disabled={deleteMutation.isPending}
+                        aria-label={`Delete setting ${entry.key}`}
                       >
                         <Trash2 size={13} />
                       </Button>
@@ -323,6 +329,32 @@ export default function SettingsPage() {
           </div>
         </CardContent>
       </Card>
+
+      <AlertDialog open={!!deletingKey} onOpenChange={(open) => { if (!open) setDeletingKey(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this setting?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently removes the configuration key{" "}
+              <code className="font-mono text-foreground">{deletingKey}</code>. Deleting a
+              live key (e.g. broadcast or upload settings) can break production behaviour
+              immediately. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => {
+                if (deletingKey) deleteMutation.mutate(deletingKey);
+                setDeletingKey(null);
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

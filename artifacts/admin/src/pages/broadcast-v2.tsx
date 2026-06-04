@@ -1185,6 +1185,12 @@ function BroadcastV2PageInner() {
     // an accurate state right after any queue mutation (add/remove/reorder).
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+    // Diagnostics + queue-sync panels also reflect queue state. Without these,
+    // an operator who fixes a corrupt item (which fires broadcast-queue-updated)
+    // keeps seeing the stale red diagnostics badge until the 15 s poll, making a
+    // successful fix look like it failed.
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
     clearTimeout(reloadTimer.current);
     reloadTimer.current = setTimeout(() => {
       api
