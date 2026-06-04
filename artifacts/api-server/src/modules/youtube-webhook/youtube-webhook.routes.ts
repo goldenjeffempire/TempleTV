@@ -99,6 +99,20 @@ export async function subscribeToYouTubePubSubHubbub(baseUrl: string): Promise<v
 }
 
 export async function youtubeWebhookRoutes(app: FastifyInstance): Promise<void> {
+  // Operator warning: when YOUTUBE_WEBHOOK_SECRET is unset, the POST /webhook
+  // handler cannot verify the X-Hub-Signature, so any caller can trigger a
+  // (debounced + rate-limited) channel sync by posting valid-looking Atom XML.
+  // The blast radius is limited to spoofed sync triggers of the fixed channel
+  // — no data injection — but a configured secret eliminates the noise entirely.
+  if (!env.YOUTUBE_WEBHOOK_SECRET) {
+    logger.warn(
+      {},
+      "youtube-webhook: YOUTUBE_WEBHOOK_SECRET is unset — POST /webhook signature " +
+        "verification is disabled; spoofed callers can trigger channel syncs. " +
+        "Set YOUTUBE_WEBHOOK_SECRET (and pass it as hub.secret on subscribe) in production.",
+    );
+  }
+
   // YouTube sends `application/atom+xml` (and sometimes `text/xml`) for
   // both the PubSubHubbub notification POSTs and the verification GETs.
   // Register raw string parsers for all XML content types so Fastify
