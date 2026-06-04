@@ -91,6 +91,49 @@ async function markDbSessionCompleted(sessionId: string, videoId: string): Promi
 }
 
 /**
+ * Mark a session as failed in the DB (non-fatal).
+ */
+async function markDbSessionFailed(sessionId: string, reason: string): Promise<void> {
+  try {
+    await db
+      .update(dbSessions)
+      .set({ status: "failed", updatedAt: new Date() })
+      .where(eq(dbSessions.sessionId, sessionId));
+  } catch (err) {
+    logger.warn({ err, sessionId, reason }, "[upload-sessions] db fail update failed (non-fatal)");
+  }
+}
+
+/**
+ * Best-effort cleanup when a finalized upload is rejected (e.g. corrupt
+ * container). The object has already been materialized in storage by the
+ * time these gates run, so a bare `throw` would leave an orphan blob plus a
+ * lingering in-memory + DB session. This removes the stored object, drops the
+ * in-memory session, and marks the DB session failed. Every step is non-fatal
+ * — the storage lifecycle reaper is the backstop if any of them error.
+ */
+async function cleanupRejectedUpload(
+  sessionId: string,
+  objectKey: string,
+  reason: string,
+): Promise<void> {
+  try {
+    await storage().deleteObject(objectKey);
+  } catch (err) {
+    logger.warn(
+      { err, objectKey, reason },
+      "[upload-reject] orphan object delete failed (non-fatal; lifecycle reaper will sweep)",
+    );
+  }
+  try {
+    uploadSessions.remove(sessionId);
+  } catch {
+    /* in-memory remove is best-effort */
+  }
+  await markDbSessionFailed(sessionId, reason);
+}
+
+/**
  * Database-backed multipart upload gateway.
  *
  * All video data is stored in PostgreSQL via DatabaseObjectStorage — no S3,
@@ -402,6 +445,9 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
           { objectKey: body.objectKey, sizeBytes: body.sizeBytes },
           "[s3-multipart-complete] container validation failed (moov atom missing/unreadable) — rejecting before queue insertion",
         );
+        // The multipart object was already assembled by completeMultipartUpload
+        // above, so remove the orphan blob + session before bailing out.
+        await cleanupRejectedUpload(body.sessionId, body.objectKey, "corrupt-container");
         throw Object.assign(
           new Error(
             "Upload rejected: the video container is corrupt (missing or unreadable moov atom). " +
@@ -651,6 +697,9 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
           { objectKey: body.objectKey, sizeBytes: body.sizeBytes },
           "[s3-finalize] container validation failed (moov atom missing/unreadable) — rejecting before queue insertion",
         );
+        // The object is already in storage; remove the orphan blob + session
+        // before bailing out so a rejected upload leaves no residue.
+        await cleanupRejectedUpload(body.sessionId, body.objectKey, "corrupt-container");
         throw Object.assign(
           new Error(
             "Upload rejected: the video container is corrupt (missing or unreadable moov atom). " +

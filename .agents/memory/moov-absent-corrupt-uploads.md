@@ -25,6 +25,14 @@ There is MORE than one upload finalize path. Besides the chunked path, `media-up
 
 **How to apply:** when adding any new upload finalize path, add the gate right after the storage-existence/size checks and before the insert. Accept the inline full-download probe latency for parity with the chunked path (don't diverge validation strategies between paths).
 
+## Reject-after-materialize must compensate-cleanup
+
+A reject gate that runs **after** the object is already materialized in storage (i.e. after `completeMultipartUpload` in `s3-multipart-complete`, or on the already-PUT object in `s3-finalize`) must NOT just `throw` — a bare throw leaves an orphan storage blob plus a lingering in-memory + DB upload session. Run best-effort cleanup first (delete the object, `uploadSessions.remove`, mark the DB session `failed`), then throw the 422.
+
+**Why:** the size/container gates here sit downstream of object creation, unlike the chunked path's early gate. Throwing without compensation accumulates orphan blobs in `storage_blobs` and stuck `uploading` sessions in the admin Operations tab on every rejected corrupt upload.
+
+**How to apply:** use `cleanupRejectedUpload(sessionId, objectKey, reason)` in `media-uploads.routes.ts`. Every cleanup step must be individually best-effort (its own try/catch or a self-swallowing helper) so a cleanup failure can never mask the 422 or crash the handler. The storage lifecycle reaper is the backstop if a step errors.
+
 ## Operator action for unrecoverable uploads
 
 Re-upload from the original source file. If the source on the recording device is also corrupt (missing moov), use HandBrake or `ffmpeg -i input -c copy output` locally to verify the file is playable before re-uploading.
