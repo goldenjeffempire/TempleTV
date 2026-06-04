@@ -138,8 +138,9 @@ class QueueIntegrityValidatorImpl {
           row.vStatus === "failed"
         ) {
           const isCorrupt = row.vErrCode === "CORRUPT_SOURCE";
+          const isSourceMissing = row.vErrCode === "SOURCE_MISSING";
           const noFaststart = !row.vFaststart;
-          if (isCorrupt || noFaststart) {
+          if (isCorrupt || isSourceMissing || noFaststart) {
             issues.push({
               severity: "error",
               itemId: row.id,
@@ -149,6 +150,8 @@ class QueueIntegrityValidatorImpl {
                 `Video '${row.videoId}' has transcodingStatus='failed' with ` +
                 (isCorrupt
                   ? "CORRUPT_SOURCE error — moov atom absent; re-upload the source file"
+                  : isSourceMissing
+                  ? "SOURCE_MISSING error — source blob deleted from storage; re-upload the source file"
                   : "faststartApplied=false — moov at EOF, raw MP4 cannot be streamed") +
                 " and no HLS fallback. Item will skip every tick until deactivated.",
             });
@@ -457,7 +460,7 @@ class QueueIntegrityValidatorImpl {
           if (!r.videoId || r.videoId2 === null) return false;
           if (r.qHlsUrl || r.vHlsUrl) return false; // HLS available — safe
           if (r.vStatus !== "failed") return false;  // still transcoding — leave active
-          return r.vErrCode === "CORRUPT_SOURCE" || !r.vFaststart;
+          return r.vErrCode === "CORRUPT_SOURCE" || r.vErrCode === "SOURCE_MISSING" || !r.vFaststart;
         })
         .map((r) => r.id);
 

@@ -195,8 +195,9 @@ export async function clearJobsByStatus(status: "done" | "failed" | "cancelled" 
  */
 export async function retryAllFailed(): Promise<number> {
   return db.transaction(async (tx) => {
-    // Exclude CORRUPT_SOURCE jobs — re-uploading the source is the only fix;
-    // re-queuing would just fail identically on every retry and waste resources.
+    // Exclude CORRUPT_SOURCE and SOURCE_MISSING jobs — re-uploading the source
+    // is the only fix (the blob is corrupt or no longer in storage); re-queuing
+    // would just fail identically on every retry and waste resources.
     // DISK_FULL jobs ARE re-queued so they run after the operator frees storage.
     const out = await tx.update(jobs)
       .set({
@@ -213,7 +214,7 @@ export async function retryAllFailed(): Promise<number> {
         sql`NOT EXISTS (
           SELECT 1 FROM managed_videos mv
           WHERE mv.id = ${jobs.videoId}
-            AND mv.transcoding_error_code = 'CORRUPT_SOURCE'
+            AND mv.transcoding_error_code IN ('CORRUPT_SOURCE', 'SOURCE_MISSING')
         )`,
       ))
       .returning({ id: jobs.id, videoId: jobs.videoId });
@@ -234,19 +235,20 @@ export async function retryAllFailed(): Promise<number> {
 
 export async function retryJob(id: string): Promise<boolean> {
   return db.transaction(async (tx) => {
-    // Guard: CORRUPT_SOURCE jobs are structurally unrecoverable — the operator
-    // must re-upload the source file. Retrying the same corrupt blob produces
-    // the same failure every time and just burns compute + logging resources.
+    // Guard: CORRUPT_SOURCE and SOURCE_MISSING jobs are structurally
+    // unrecoverable — the operator must re-upload the source file (the blob is
+    // corrupt, or no longer exists in storage). Retrying produces the same
+    // failure every time and just burns compute + logging resources.
     const existing = await tx
       .select({ id: jobs.id, videoId: jobs.videoId })
       .from(jobs)
-      .innerJoin(videos, and(eq(videos.id, jobs.videoId), eq(videos.transcodingErrorCode, "CORRUPT_SOURCE")))
+      .innerJoin(videos, and(eq(videos.id, jobs.videoId), inArray(videos.transcodingErrorCode, ["CORRUPT_SOURCE", "SOURCE_MISSING"])))
       .where(eq(jobs.id, id))
       .limit(1);
     if (existing.length > 0) {
       logger.warn(
         { jobId: id, videoId: existing[0]!.videoId },
-        "transcoder: retryJob rejected — video has CORRUPT_SOURCE error; re-upload the source file to fix",
+        "transcoder: retryJob rejected — video has an unrecoverable source error (CORRUPT_SOURCE/SOURCE_MISSING); re-upload the source file to fix",
       );
       return false;
     }

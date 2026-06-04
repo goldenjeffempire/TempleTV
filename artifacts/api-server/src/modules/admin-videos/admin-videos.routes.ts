@@ -678,9 +678,9 @@ export async function adminVideosRoutes(app: FastifyInstance) {
       if (row.videoSource !== "local") {
         return reply.code(400).send({ error: "Re-upload only applies to locally-uploaded videos." });
       }
-      if (row.transcodingErrorCode !== "CORRUPT_SOURCE") {
+      if (row.transcodingErrorCode !== "CORRUPT_SOURCE" && row.transcodingErrorCode !== "SOURCE_MISSING") {
         return reply.code(400).send({
-          error: `Video is not in CORRUPT_SOURCE state (current: ${row.transcodingErrorCode ?? "none"}).`,
+          error: `Video is not in a re-uploadable failure state (CORRUPT_SOURCE/SOURCE_MISSING; current: ${row.transcodingErrorCode ?? "none"}).`,
         });
       }
 

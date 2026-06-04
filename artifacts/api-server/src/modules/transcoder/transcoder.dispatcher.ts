@@ -830,13 +830,26 @@ class TranscoderDispatcher {
         const isCorruptSource =
           errCode === "CORRUPT_SOURCE" || corruptSourcePattern.test(message);
 
+        // SOURCE_MISSING: the source blob no longer exists in storage (deleted,
+        // orphaned, or GC'd). storage().getObject() throws "Object not found in
+        // storage: <key>" tagged with code "SOURCE_MISSING". Re-running the
+        // transcode fails identically every time — there is nothing to download.
+        // Like CORRUPT_SOURCE, mark the job failed immediately without burning
+        // retry slots and record a terminal code so retry / auto-enqueue /
+        // validator all treat it as unrecoverable (operator must re-upload).
+        // Only LOCAL storage misses are terminal: remote prod-sync downloads
+        // fail with "remote source download failed — <status>" (a different
+        // message) and stay retryable, since upstream may be briefly down.
+        const isSourceMissing =
+          errCode === "SOURCE_MISSING" || /object not found in storage/i.test(message);
+
         // ── Storage circuit breaker: detect Postgres/storage outage ────────
         // Infrastructure errors (connection refused, broken pipe, DB pool timeout)
         // are transient and will resolve without operator action. Count consecutive
         // such failures; once the threshold is hit, pause dispatch for
         // STORAGE_REOPEN_DELAY_MS so the outage can recover before more jobs burn
         // their retry budgets. Any successful job resets the streak.
-        const isStorageError = !isDiskFull && (
+        const isStorageError = !isDiskFull && !isSourceMissing && (
           errCode === "ECONNREFUSED" ||
           errCode === "ECONNRESET" ||
           errCode === "ETIMEDOUT" ||
@@ -862,7 +875,7 @@ class TranscoderDispatcher {
 
         // Neither disk-full nor corrupt-source should burn through retry slots —
         // waiting and retrying the same broken input is pointless.
-        const isImmediateFail = isDiskFull || isCorruptSource;
+        const isImmediateFail = isDiskFull || isCorruptSource || isSourceMissing;
         const attempts = job.attempts + (isImmediateFail ? 0 : 1);
         const exceeded = isImmediateFail || attempts >= job.maxAttempts;
         const backoffMs = Math.min(60_000 * 2 ** attempts, 30 * 60_000);
@@ -893,7 +906,7 @@ class TranscoderDispatcher {
             // Only set on terminal failure — cleared on re-queue via enqueueTranscode.
             ...(exceeded ? {
               transcodingErrorMessage: truncatedMessage,
-              transcodingErrorCode: isCorruptSource ? "CORRUPT_SOURCE" : isDiskFull ? "DISK_FULL" : null,
+              transcodingErrorCode: isCorruptSource ? "CORRUPT_SOURCE" : isSourceMissing ? "SOURCE_MISSING" : isDiskFull ? "DISK_FULL" : null,
             } : {}),
           })
           .where(eq(videos.id, job.videoId));

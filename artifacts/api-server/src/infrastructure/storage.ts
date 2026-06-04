@@ -246,7 +246,7 @@ class DatabaseObjectStorage implements ObjectStorage {
     if (headResult.rows.length === 0) {
       throw Object.assign(
         new Error(`Object not found in storage: ${key}`),
-        { $metadata: { httpStatusCode: 404 } },
+        { code: "SOURCE_MISSING", $metadata: { httpStatusCode: 404 } },
       );
     }
 

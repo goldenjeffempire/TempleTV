@@ -226,10 +226,11 @@ export async function scanLibraryAndEnqueue(opts: {
             isNotNull(videosTable.hlsMasterUrl),
             isNotNull(videosTable.localVideoUrl),
           ),
-          // Pre-filter: exclude unrecoverable corrupt uploads at the SQL level
-          // to avoid wasting a roundtrip per row inside isPlayableForBroadcast.
-          // CORRUPT_SOURCE means the moov atom was absent — re-upload required.
-          sql`(${videosTable.transcodingErrorCode} IS NULL OR ${videosTable.transcodingErrorCode} != 'CORRUPT_SOURCE')`,
+          // Pre-filter: exclude unrecoverable uploads at the SQL level to avoid
+          // wasting a roundtrip per row inside isPlayableForBroadcast.
+          // CORRUPT_SOURCE = moov atom absent; SOURCE_MISSING = source blob gone
+          // from storage. Both require a fresh re-upload.
+          sql`(${videosTable.transcodingErrorCode} IS NULL OR ${videosTable.transcodingErrorCode} NOT IN ('CORRUPT_SOURCE', 'SOURCE_MISSING'))`,
           // Pre-filter: exclude raw MP4s that are known-unplayable (failed
           // transcoding + faststart never applied + no HLS manifest).
           sql`NOT (
@@ -330,11 +331,11 @@ function isPlayableForBroadcast(row: {
   // is baked into the playlist manifest). Always safe to broadcast.
   if (row.hlsMasterUrl && row.hlsMasterUrl.trim() !== "") return true;
 
-  // Unrecoverable corrupt upload: the source file has no moov atom (or the
-  // moov is so broken that FFmpeg cannot remux it). The raw MP4 cannot be
-  // streamed via HTTP range requests — browsers cannot seek or begin playback
-  // without the moov. Re-uploading the source file is the only fix.
-  if (row.transcodingErrorCode === "CORRUPT_SOURCE") return false;
+  // Unrecoverable upload: CORRUPT_SOURCE = the source file has no moov atom (or
+  // the moov is so broken that FFmpeg cannot remux it) — the raw MP4 cannot be
+  // streamed via HTTP range requests. SOURCE_MISSING = the source blob no longer
+  // exists in storage. Either way, re-uploading the source file is the only fix.
+  if (row.transcodingErrorCode === "CORRUPT_SOURCE" || row.transcodingErrorCode === "SOURCE_MISSING") return false;
 
   // Raw local MP4 (no HLS yet): safe to broadcast ONLY when the moov atom is
   // positioned at byte 0 (faststartApplied = true). If transcoding permanently
