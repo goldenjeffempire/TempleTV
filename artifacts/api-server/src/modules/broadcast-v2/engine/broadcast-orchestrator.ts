@@ -1,6 +1,5 @@
 import { EventEmitter } from "node:events";
 import { logger } from "../../../infrastructure/logger.js";
-import { env } from "../../../config/env.js";
 import { broadcastSequence, broadcastQueueDepth, broadcastQueueStuck, setBroadcastMode, SERVICE_LABELS } from "../../../infrastructure/metrics.js";
 import { eventLogRepo } from "../repository/event-log.repo.js";
 import { runtimeRepo } from "../repository/runtime.repo.js";
@@ -395,53 +394,6 @@ class BroadcastOrchestrator extends EventEmitter {
 
     // Hydrate always completes without throwing — worst case gives safe defaults.
     await this.hydrate();
-
-    // ── EMERGENCY_FILLER_URL startup diagnostic ────────────────────────────
-    // Without a filler URL, total queue exhaustion (every item unplayable or
-    // auto-suspended) produces dead air with no fallback content. This warning
-    // fires once at boot so the ops team can configure the env var before going
-    // live. It is a warn, not an error, because many dev/staging deployments
-    // legitimately have no filler URL and a missing var is not a crash condition.
-    if (!env.EMERGENCY_FILLER_URL) {
-      if (env.BROADCAST_FAILOVER_HLS_URL) {
-        // BROADCAST_FAILOVER_HLS_URL is also used as a filler source on queue
-        // exhaustion, so the channel is not completely unprotected. Log at info
-        // so the ops team is aware of the fallback arrangement.
-        logger.info(
-          { fillerUrl: env.BROADCAST_FAILOVER_HLS_URL },
-          "[broadcast-v2] EMERGENCY_FILLER_URL is not configured — " +
-          "BROADCAST_FAILOVER_HLS_URL will be used as emergency filler on queue exhaustion.",
-        );
-      } else {
-        logger.warn(
-          "[broadcast-v2] Neither EMERGENCY_FILLER_URL nor BROADCAST_FAILOVER_HLS_URL is configured. " +
-          "If all queue items become unplayable the broadcast will go to dead air " +
-          "with no fallback content. Configure EMERGENCY_FILLER_URL with a valid https:// " +
-          "HLS or MP4 stream URL for 24/7 broadcast resilience.",
-        );
-      }
-    } else {
-      // Validate the URL is parseable and uses http(s) so we surface config
-      // mistakes before the first real queue-exhaustion event — not during one.
-      try {
-        const fillerUrl = new URL(env.EMERGENCY_FILLER_URL);
-        if (!["http:", "https:"].includes(fillerUrl.protocol)) {
-          logger.warn(
-            { fillerUrl: env.EMERGENCY_FILLER_URL },
-            "[broadcast-v2] EMERGENCY_FILLER_URL uses a non-HTTP protocol. " +
-            "The universal source resolver will reject it. " +
-            "Set a valid https:// URL.",
-          );
-        }
-      } catch {
-        logger.warn(
-          { fillerUrl: env.EMERGENCY_FILLER_URL },
-          "[broadcast-v2] EMERGENCY_FILLER_URL is not a valid URL. " +
-          "The emergency filler will fail to resolve on queue exhaustion. " +
-          "Fix the URL format.",
-        );
-      }
-    }
 
     // reloadInner in start() context: retry up to 3 times with short back-off
     // before accepting OFF_AIR.  A single transient DB blip (pool not yet warm,
@@ -913,8 +865,8 @@ class BroadcastOrchestrator extends EventEmitter {
     // all-blocked (every URL in the bad-URL cache), a successful reload that
     // cleared those URLs (clearBadUrl loop above) means the broadcast has
     // recovered. Reset both counters so the NEXT all-blocked window starts
-    // fresh — otherwise a stale cycle count prematurely engages the emergency
-    // filler after just 1 TTL cycle instead of the normal 2.
+    // fresh — otherwise a stale cycle count prematurely escalates dead-air
+    // after just 1 TTL cycle instead of the normal 2.
     if (resolved.length > 0) {
       this.lastDeadAirEscalationMs = 0;
       if (this.allBlockedSinceMs !== null) {
@@ -1276,8 +1228,8 @@ class BroadcastOrchestrator extends EventEmitter {
    *
    * When consecutiveSkips reaches the number of queue items, the orchestrator
    * has cycled through every item without successfully playing any of them
-   * (total queue exhaustion). If BROADCAST_EMERGENCY_FILLER_URL is configured,
-   * an emergency override is engaged so viewers always see content.
+   * (total queue exhaustion) and the broadcast goes off-air until playable
+   * content is restored.
    */
   private consecutiveSkips = 0;
   /** Wall-clock ms when the orchestrator last detected total queue exhaustion
@@ -1291,10 +1243,8 @@ class BroadcastOrchestrator extends EventEmitter {
    * item successfully playing to completion (naturalItemEnd).
    *
    * Each bad-URL TTL expiry (90 s) that still finds all sources unreachable
-   * increments this counter. After 2 cycles (≥ 3 min of persistent failure),
-   * the emergency filler is engaged — critical for large queues (>5 items)
-   * where autoSkipAttempts < 5 cap prevents consecutiveSkips from ever
-   * reaching items.length and triggering the tick-loop filler path.
+   * increments this counter and re-attempts recovery (clear bad-URL cache +
+   * reload). The broadcast stays off-air while all sources remain unreachable.
    *
    * Reset to 0 whenever an item plays to its natural end or a new item
    * successfully becomes current after a dead-air gap.
@@ -1525,8 +1475,8 @@ class BroadcastOrchestrator extends EventEmitter {
           acc += span;
         }
         // Dead-air structured alert: emit once when the consecutive-skip
-        // threshold first crosses 2, regardless of whether a filler URL is
-        // configured. External monitors (and the admin banner) key off this.
+        // threshold first crosses 2. External monitors (and the admin banner)
+        // key off this.
         if (this.consecutiveSkips === 2) {
           this.lastDeadAirAt = Date.now();
           logger.warn(
@@ -1541,65 +1491,6 @@ class BroadcastOrchestrator extends EventEmitter {
             consecutiveSkips: 2,
             itemCount: this.items.length,
           });
-        }
-        // Total queue exhaustion: every item has been consecutively skipped.
-        // Insert a virtual emergency filler at the HEAD of the in-memory queue
-        // so viewers see something rather than a blank screen. This is an
-        // ephemeral in-memory change only — the filler is removed on the next
-        // reload() (which fires when the operator fixes the queue items).
-        // Use BROADCAST_FAILOVER_HLS_URL as a fallback filler source when
-        // EMERGENCY_FILLER_URL is not set — both URLs serve the same purpose
-        // (keep the channel on-air during queue exhaustion); the distinction is
-        // only semantic (one is always-on failover, one is emergency-specific).
-        const effectiveFillerUrl = env.EMERGENCY_FILLER_URL ?? env.BROADCAST_FAILOVER_HLS_URL;
-        if (
-          this.consecutiveSkips >= Math.max(1, this.items.length) &&
-          effectiveFillerUrl
-        ) {
-          const fillerUrl = effectiveFillerUrl;
-          // Use a proper regex so signed/CDN URLs with query params are
-          // correctly classified (e.g. "stream.m3u8?token=abc" or
-          // "playlist.m3u8#variant" are HLS; plain ".m3u8" suffix also works).
-          const isHls = /\.m3u8(?:$|\?|#)/i.test(fillerUrl);
-          const fillerItem: CachedQueueItem = {
-            id: `emergency-filler-${Date.now()}`,
-            videoId: null,
-            title: "Emergency Filler",
-            thumbnailUrl: null,
-            // 3600 s (1 hour): generous duration prevents premature slot
-            // exhaustion for live HLS filler streams that loop indefinitely.
-            // The filler is removed on the next queue reload (when operators
-            // fix the broken sources), so the exact value rarely matters.
-            durationSecs: 3_600,
-            primaryUrl: fillerUrl,
-            source: { kind: isHls ? "hls" : "mp4", url: fillerUrl, expiresAtMs: null },
-            failoverSource: null,
-          };
-          // Ensure the emergency filler URL is NOT in the bad-URL cache.
-          // If a stall vote previously blacklisted this same URL (e.g. a CDN
-          // outage hit both queue items AND the filler), the filler item would
-          // immediately project as null → another skip → filler inserted again
-          // → infinite dead-air spiral with no exit. Clearing the entry before
-          // insertion guarantees at least one playback attempt regardless of
-          // prior stall reports.
-          clearBadUrl(fillerUrl);
-          logger.error(
-            {
-              channel: this.channelId,
-              consecutiveSkips: this.consecutiveSkips,
-              itemCount: this.items.length,
-              fillerUrl,
-            },
-            "[broadcast-v2] TOTAL QUEUE EXHAUSTION — inserting emergency filler at queue head",
-          );
-          this.items.unshift(fillerItem);
-          this.cycleDurationMs = this.items.reduce((s, r) => s + r.durationSecs * 1000, 0);
-          this.cycleStartedAtMs = Date.now();
-          this.consecutiveSkips = 0;
-          this.autoSkipAttempts = 0;
-          // Notify admin SSE bus so the dashboard can surface an alert banner.
-          adminEventBus.push("emergency-filler-activated", {});
-          this.emitSnapshot();
         }
       }
       // All-sources-blocked auto-recovery: when items are loaded but every URL
@@ -1638,13 +1529,12 @@ class BroadcastOrchestrator extends EventEmitter {
           this.autoSkipAttempts = 0;
           this.allBlockedRecoveryCycles += 1;
           // Push a dead-air escalation event on EVERY blocked TTL cycle so
-          // the admin dashboard can surface a banner regardless of whether a
-          // filler URL is configured. External monitors also key off this.
+          // the admin dashboard can surface a banner. External monitors also
+          // key off this.
           adminEventBus.push("dead-air-escalation", {
             channel: this.channelId,
             allBlockedRecoveryCycles: this.allBlockedRecoveryCycles,
             itemCount: this.items.length,
-            hasFillerUrl: !!(env.EMERGENCY_FILLER_URL ?? env.BROADCAST_FAILOVER_HLS_URL),
           });
           logger.info(
             { items: this.items.length, recoveryCycles: this.allBlockedRecoveryCycles },
@@ -1652,51 +1542,6 @@ class BroadcastOrchestrator extends EventEmitter {
           );
           clearAllBadUrls();
           this.scheduleSelfHealReload("all-blocked-ttl-recovery");
-          // After 2 TTL-recovery cycles (≥ 3 min) with no item playing, engage
-          // the emergency filler. This is the ONLY activation path for large
-          // queues (>5 items) where autoSkipAttempts cap prevents the
-          // consecutiveSkips >= items.length condition from ever firing.
-          // Permanent CDN failures do not self-heal via TTL — the filler keeps
-          // the channel on-air while operators diagnose and fix the sources.
-          // Fall back to BROADCAST_FAILOVER_HLS_URL when EMERGENCY_FILLER_URL
-          // is not set — same purpose, just a different env var name.
-          const effectiveAllBlockedFillerUrl = env.EMERGENCY_FILLER_URL ?? env.BROADCAST_FAILOVER_HLS_URL;
-          if (
-            this.allBlockedRecoveryCycles >= 2 &&
-            effectiveAllBlockedFillerUrl &&
-            !this.items.some((it) => it.id.startsWith("emergency-filler-"))
-          ) {
-            const fillerUrl = effectiveAllBlockedFillerUrl;
-            const isHls = /\.m3u8(?:$|\?|#)/i.test(fillerUrl);
-            const fillerItem: CachedQueueItem = {
-              id: `emergency-filler-${Date.now()}`,
-              videoId: null,
-              title: "Emergency Filler",
-              thumbnailUrl: null,
-              durationSecs: 3_600,
-              primaryUrl: fillerUrl,
-              source: { kind: isHls ? "hls" : "mp4", url: fillerUrl, expiresAtMs: null },
-              failoverSource: null,
-            };
-            clearBadUrl(fillerUrl);
-            logger.error(
-              {
-                channel: this.channelId,
-                recoveryCycles: this.allBlockedRecoveryCycles,
-                itemCount: this.items.length,
-                fillerUrl,
-              },
-              "[broadcast-v2] EXTENDED ALL-BLOCKED (2+ TTL cycles, ≥3 min) — inserting emergency filler for persistent CDN failure",
-            );
-            this.items.unshift(fillerItem);
-            this.cycleDurationMs = this.items.reduce((s, r) => s + r.durationSecs * 1000, 0);
-            this.cycleStartedAtMs = Date.now();
-            this.consecutiveSkips = 0;
-            this.autoSkipAttempts = 0;
-            this.allBlockedRecoveryCycles = 0;
-            adminEventBus.push("emergency-filler-activated", {});
-            this.emitSnapshot();
-          }
           return;
         }
       }
@@ -1713,7 +1558,7 @@ class BroadcastOrchestrator extends EventEmitter {
     this.autoSkipAttempts  = 0;
     // A playable item became current — clear the extended-blocking counter so
     // the next genuine all-blocked streak gets the full 2-cycle grace period
-    // before the emergency filler is engaged.
+    // before dead-air is escalated.
     this.allBlockedRecoveryCycles = 0;
     // Start the continuous on-air uptime clock the first time an item becomes
     // current after boot or after a dead-air gap. onAirSinceMs stays pinned
@@ -1930,7 +1775,7 @@ class BroadcastOrchestrator extends EventEmitter {
     await this.bump("item.skipped", { itemId: snap.current.id });
     this.emitSnapshot();
     // Dead-air structured alert: emit once when the consecutive-skip
-    // threshold first crosses 2, regardless of filler configuration.
+    // threshold first crosses 2.
     if (this.consecutiveSkips === 2) {
       this.lastDeadAirAt = Date.now();
       logger.warn(
@@ -1945,55 +1790,6 @@ class BroadcastOrchestrator extends EventEmitter {
         consecutiveSkips: 2,
         itemCount: this.items.length,
       });
-    }
-    // Total queue exhaustion: insert a virtual emergency filler at the HEAD
-    // of the in-memory queue so the channel is never completely dark.
-    // Ephemeral: a subsequent reload() (triggered when the operator fixes
-    // the broken items) will replace the filler with the real queue.
-    // Use BROADCAST_FAILOVER_HLS_URL as a fallback when EMERGENCY_FILLER_URL
-    // is not set — same purpose, just a different env var name.  Mirrors the
-    // identical logic in tickInner() so both auto-skip and operator-skip paths
-    // behave consistently regardless of which filler env var is configured.
-    const effectiveSkipFillerUrl = env.EMERGENCY_FILLER_URL ?? env.BROADCAST_FAILOVER_HLS_URL;
-    if (
-      this.consecutiveSkips >= Math.max(1, this.items.length) &&
-      effectiveSkipFillerUrl
-    ) {
-      const fillerUrl = effectiveSkipFillerUrl;
-      // Use a proper regex so signed/CDN URLs with query params are correctly
-      // classified (same logic as the tickInner() filler path).
-      const isHls = /\.m3u8(?:$|\?|#)/i.test(fillerUrl);
-      const fillerItem: CachedQueueItem = {
-        id: `emergency-filler-${Date.now()}`,
-        videoId: null,
-        title: "Emergency Filler",
-        thumbnailUrl: null,
-        durationSecs: 3_600,
-        primaryUrl: fillerUrl,
-        source: { kind: isHls ? "hls" : "mp4", url: fillerUrl, expiresAtMs: null },
-        failoverSource: null,
-      };
-      // Clear the filler URL from the bad-URL cache before inserting.
-      // Without this, a prior stall vote (e.g. when a CDN outage hit both
-      // queue items AND the filler) would cause the filler to project as null
-      // immediately on the next tick — triggering another skip — creating an
-      // infinite dead-air spiral with no exit.
-      clearBadUrl(fillerUrl);
-      logger.error(
-        {
-          channel: this.channelId,
-          consecutiveSkips: this.consecutiveSkips,
-          itemCount: this.items.length,
-          fillerUrl,
-        },
-        "[broadcast-v2] TOTAL QUEUE EXHAUSTION (operator skip) — inserting emergency filler at queue head",
-      );
-      this.items.unshift(fillerItem);
-      this.cycleDurationMs = this.items.reduce((s, r) => s + r.durationSecs * 1000, 0);
-      this.cycleStartedAtMs = Date.now();
-      this.consecutiveSkips = 0;
-      adminEventBus.push("emergency-filler-activated", {});
-      this.emitSnapshot();
     }
   }
 
@@ -2751,7 +2547,7 @@ class BroadcastOrchestrator extends EventEmitter {
    * successfully playing — total queue exhaustion.
    *
    * lastDeadAirAt is the wall-clock ms when the most recent exhaustion event
-   * occurred (emergency filler engaged). Null if no exhaustion has occurred
+   * occurred (broadcast went off-air). Null if no exhaustion has occurred
    * since startup.
    */
   getSkipInfo(): {

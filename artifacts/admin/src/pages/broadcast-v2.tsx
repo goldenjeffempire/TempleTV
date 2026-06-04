@@ -220,8 +220,6 @@ interface EngineHealth {
     lastDeadAirAt: number | null;
   };
   airingHistory?: AiringEntry[];
-  /** True when EMERGENCY_FILLER_URL is configured on the server. */
-  emergencyFillerConfigured?: boolean;
   /**
    * Milliseconds since the broadcast was last continuously on air.
    * Null when the broadcast is currently off-air.
@@ -807,10 +805,6 @@ function BroadcastV2PageInner() {
   // Dismissible consecutive-skips banner. Auto-reset when consecutiveSkips
   // drops back to 0 (a successful item play).
   const [consecutiveSkipsDismissed, setConsecutiveSkipsDismissed] = useState(false);
-  // Emergency filler alert — appears when the orchestrator exhausts all queue
-  // items and falls back to EMERGENCY_FILLER_URL. Dismissed manually.
-  const [fillerActiveDismissed, setFillerActiveDismissed] = useState(false);
-  const [fillerActiveAt, setFillerActiveAt] = useState<number | null>(null);
   // Launch Checklist modal.
   const [showChecklist, setShowChecklist] = useState(false);
 
@@ -1187,14 +1181,6 @@ function BroadcastV2PageInner() {
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
   });
 
-  // Show emergency-filler banner whenever the orchestrator inserts a filler item
-  // (all regular queue items exhausted / unresolvable). Resets dismiss state so
-  // the operator always sees it even if they dismissed a previous occurrence.
-  useSSEEvent("emergency-filler-activated", () => {
-    setFillerActiveDismissed(false);
-    setFillerActiveAt(Date.now());
-  });
-
   // Real-time stall counter — incremented the instant a stall report fires a
   // skip, without waiting for the next diagnostics poll (up to 15 s lag).
   // Used to augment the StreamQualityPanel's analytics.eventCounts["stall"]
@@ -1496,9 +1482,6 @@ function BroadcastV2PageInner() {
   // Drift alert: cycle anchor is more than the threshold ahead/behind the
   // checkpoint-projected position. Means viewers are watching the wrong segment.
   const isDriftAlerted = engineHealth?.drift?.driftAlerted === true;
-
-  // (Emergency-filler "not configured" warning banner removed per operator
-  // preference — the operator has chosen not to configure EMERGENCY_FILLER_URL.)
 
   // Continuous on-air uptime — format ms into a human-readable string for display.
   const continuousOnAirMs = engineHealth?.continuousOnAirMs ?? null;
@@ -2070,33 +2053,6 @@ function BroadcastV2PageInner() {
         </div>
       )}
 
-      {/* Emergency filler alert — shown when the orchestrator exhausts all
-          queue items and inserts the fallback EMERGENCY_FILLER_URL stream.
-          Triggered via the "emergency-filler-activated" SSE event so it
-          appears in real-time without a page refresh. */}
-      {fillerActiveAt !== null && !fillerActiveDismissed && (
-        <div
-          role="alert"
-          className="flex items-start gap-3 rounded-md border border-red-300/60 bg-red-50 px-4 py-3 text-sm text-red-900 dark:border-red-700/60 dark:bg-red-950/30 dark:text-red-200"
-        >
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
-          <div className="flex-1">
-            <strong>Emergency filler activated</strong>{" "}at{" "}
-            {new Date(fillerActiveAt).toLocaleTimeString()}.{" "}
-            All queue items are unresolvable — the broadcast is running on the
-            emergency fallback stream. Add playable content to the queue or
-            configure <code className="font-mono text-xs">EMERGENCY_FILLER_URL</code> on the server.
-          </div>
-          <button
-            type="button"
-            aria-label="Dismiss emergency filler alert"
-            onClick={() => setFillerActiveDismissed(true)}
-            className="shrink-0 rounded p-0.5 hover:bg-red-200/60 dark:hover:bg-red-800/40"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-      )}
 
       {/* Consecutive-skips early warning — dismissible amber banner.
           Fires when ≥2 items have been skipped back-to-back without a

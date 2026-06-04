@@ -312,13 +312,6 @@ export async function restRoutes(app: FastifyInstance) {
       youtubeAutoOverride: getYouTubeAutoOverrideStats(),
       viewerSlope: getViewerSlopeStatus(),
       /**
-       * True when EMERGENCY_FILLER_URL is set to a non-empty value.
-       * Used by the admin dashboard to show a persistent warning banner when
-       * no filler URL is configured, so operators can act before total queue
-       * exhaustion causes dead air with no fallback content.
-       */
-      emergencyFillerConfigured: !!env.EMERGENCY_FILLER_URL,
-      /**
        * Milliseconds since the first item started airing in the current
        * uninterrupted broadcast run. Null when the broadcast is off-air
        * (dead air, all-blocked, empty queue, or override mode).

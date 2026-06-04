@@ -357,30 +357,6 @@ class BroadcastEngine extends EventEmitter {
       }
     }
 
-    // F47: When the queue is empty (current === null) and BROADCAST_FAILOVER_HLS_URL
-    // is configured, synthesise a sentinel BroadcastItem that points to the
-    // fallback HLS stream. Clients receive a playable item instead of null,
-    // preventing a blank screen during queue gaps. Duration is 1 hour so the
-    // item stays "current" until the engine is reloaded with real content.
-    // This item is never persisted — it exists only in the in-memory snapshot.
-    const failoverHlsUrl = env.BROADCAST_FAILOVER_HLS_URL ?? null;
-    if (!current && failoverHlsUrl) {
-      const FAILOVER_DURATION_MS = 60 * 60 * 1000; // 1 hour
-      current = {
-        id: "failover",
-        videoId: null,
-        youtubeId: "",
-        title: "Temple TV Live",
-        thumbnailUrl: "",
-        durationSecs: 3600,
-        localVideoUrl: null,
-        hlsMasterUrl: failoverHlsUrl,
-        videoSource: "hls",
-        startsAt: new Date(now).toISOString(),
-        endsAt: new Date(now + FAILOVER_DURATION_MS).toISOString(),
-      };
-    }
-
     return {
       channelId: this.channelId,
       generatedAt: new Date(now).toISOString(),
@@ -388,7 +364,7 @@ class BroadcastEngine extends EventEmitter {
       next,
       upcoming,
       preloadAt,
-      failoverHlsUrl,
+      failoverHlsUrl: null,
     };
   }
 

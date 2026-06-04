@@ -30,7 +30,6 @@ import { liveOverridesService } from "../live-overrides/live-overrides.service.j
 import { streamHealthAggregator } from "../broadcast/stream-health.js";
 import { broadcastScheduler } from "../broadcast/broadcast-scheduler.js";
 import { broadcastSignal } from "./signal-bus.js";
-import { env } from "../../config/env.js";
 
 // ── Broadcast lock ─────────────────────────────────────────────────────────
 // When locked, only UNLOCK and EMERGENCY commands are accepted.
@@ -93,7 +92,7 @@ function buildNocStatus() {
       endsAt: active?.endsAt ?? null,
     },
     viewers: broadcastEngine.getViewerCount(),
-    failoverHlsUrl: env.BROADCAST_FAILOVER_HLS_URL ?? null,
+    failoverHlsUrl: null,
     telemetry: {
       totalStalls: health.totalStalls,
       totalErrors: health.totalErrors,
@@ -335,7 +334,7 @@ export async function networkRoutes(app: FastifyInstance) {
           await broadcastEngine.reload();
           broadcastSignal("FAILOVER_ACTIVATED", channelId, {
             message: payload?.reason ?? "Manual failover triggered by admin",
-            payload: { command, failoverHlsUrl: env.BROADCAST_FAILOVER_HLS_URL ?? null },
+            payload: { command, failoverHlsUrl: null },
           });
           break;
         }
