@@ -1590,6 +1590,21 @@ export function V2PlayerContainer({
     ? "Reconnecting to broadcast…"
     : "You're offline — will reconnect automatically";
 
+  // During active playback the WebSocket can drop briefly (poor signal, cell
+  // handoff, edge reconnect) without the video stuttering — the ExoPlayer /
+  // expo-av buffer keeps delivering frames independently of the control
+  // channel.  Firing the amber banner in these states alarms the viewer even
+  // though nothing is wrong with what they see.  The V2Transport will
+  // auto-reconnect in the background (dead-socket watchdog + jittered force-
+  // reconnect); if the disconnect is sustained long enough for the FSM to
+  // leave the playing family (e.g. enters RECOVERING_PRIMARY) the overlay
+  // will surface the problem clearly without the banner.
+  const suppressBanner =
+    snapshot.state === "PLAYING" ||
+    snapshot.state === "HANDOFF" ||
+    snapshot.state === "PREPARING_NEXT" ||
+    snapshot.state === "LIVE_OVERRIDE_ACTIVE";
+
   return (
     <View style={styles.root}>
       {/* ── Cinematic ambient background ────────────────────────────────────
@@ -1638,7 +1653,7 @@ export function V2PlayerContainer({
         onVideoReady={buffers.B.active ? handleVideoReady : undefined}
       />
 
-      {!connected && !minimal && (
+      {!connected && !minimal && !suppressBanner && (
         <View style={[styles.banner, !isOnline && styles.bannerOffline]}>
           <Text style={styles.bannerText}>{bannerText}</Text>
         </View>
