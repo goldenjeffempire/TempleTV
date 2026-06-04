@@ -131,10 +131,13 @@ describe("GET /api/broadcast-v2/ws — WebSocket upgrade", () => {
       until: (f) => f.length >= 1,
       timeoutMs: 3_000,
     });
-    // If the WS path exists, we receive at least one frame (hello or snapshot)
-    // If it 404s the server closes immediately with a non-1000 code.
-    // We accept either outcome since the WS path may differ between deployments.
-    expect(frames.length >= 0).toBe(true); // structural: no crash
+    // The gateway sends `hello` + `snapshot` immediately on connect, so a live
+    // server MUST deliver at least one frame. Requiring ≥1 frame here (rather
+    // than the previous `frames.length >= 0` structural no-op) prevents a
+    // vacuous green if the WebSocket client ever fails to connect — e.g. on a
+    // runtime without a global `WebSocket` where the helper would silently
+    // resolve with empty frames.
+    expect(frames.length).toBeGreaterThanOrEqual(1);
   });
 
   it("receives a 'hello' frame as first message", async () => {

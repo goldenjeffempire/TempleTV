@@ -450,6 +450,9 @@ importers:
       vitest:
         specifier: ^3.2.4
         version: 3.2.4(@types/node@25.3.5)(esbuild@0.27.3)(jiti@2.6.1)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
+      ws:
+        specifier: ^8.18.0
+        version: 8.20.0
 
   artifacts/mobile:
     dependencies:
