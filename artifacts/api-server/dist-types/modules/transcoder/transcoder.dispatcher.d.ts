@@ -58,6 +58,8 @@ declare class TranscoderDispatcher {
     private openFfmpegCircuit;
     start(): void;
     private purgeOrphanedScratchDirs;
+    private partialRecoveryCounter;
+    private static readonly PARTIAL_RECOVERY_TICKS;
     private scratchGcCounter;
     private static readonly SCRATCH_GC_TICKS;
     private lastHeartbeatAt;
@@ -67,6 +69,19 @@ declare class TranscoderDispatcher {
     private lastCompletedJobId;
     private lastCompletedStatus;
     private resetOrphanedJobs;
+    /**
+     * Heals "partial-success" drift: a video stuck at "encoding" whose job is
+     * already "done". Covers the crash window between the two writes in runOnce():
+     *   1. UPDATE transcoding_jobs SET status='done'        ← succeeded
+     *   2. UPDATE managed_videos SET transcodingStatus='hls_ready' ← lost
+     *
+     * Without recovery the video never re-enters the dispatch loop (its job is
+     * "done") and serves the raw MP4 fallback forever. Recovery is idempotent and
+     * safe to run repeatedly: it only flips a video to hls_ready after verifying
+     * that master.m3u8 actually landed in object storage, and the early return on
+     * an empty "encoding" set keeps the steady-state cost to a single cheap SELECT.
+     */
+    private recoverPartialSuccessVideos;
     getHeartbeat(): {
         lastHeartbeatAt: number | null;
         currentJobId: string | null;

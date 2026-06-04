@@ -468,6 +468,13 @@ declare class BroadcastOrchestrator extends EventEmitter {
      */
     private probeUrlReachability;
     /**
+     * Issue a single HTTP probe with a 5 s timeout and return the numeric status
+     * code, or `null` on timeout / network error / abort (ambiguous). Used by
+     * {@link probeUrlReachability} for the HEAD→ranged-GET fallback chain. The
+     * `range` header keeps the GET cheap (1 KiB) on large media files.
+     */
+    private fetchProbeStatus;
+    /**
      * Fast HEAD probe for YouTube sources with a 2 s timeout.
      *
      * Returns:
