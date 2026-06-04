@@ -1,10 +1,10 @@
 {
   "name": "@workspace/mobile",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "private": true,
   "main": "./index.ts",
   "scripts": {
-    "dev": "CI=1 NODE_OPTIONS=--max-old-space-size=8192 EXPO_BASE_URL=/mobile EXPO_PACKAGER_PROXY_URL=https://$REPLIT_DEV_DOMAIN EXPO_PUBLIC_API_URL=https://$REPLIT_DEV_DOMAIN EXPO_PUBLIC_DOMAIN=$REPLIT_DEV_DOMAIN EXPO_PUBLIC_REPL_ID=$REPL_ID REACT_NATIVE_PACKAGER_HOSTNAME=$REPLIT_DEV_DOMAIN pnpm exec expo start --port 18115 --clear",
+    "dev": "CI=1 NODE_OPTIONS=--max-old-space-size=8192 EXPO_BASE_URL=/mobile EXPO_PACKAGER_PROXY_URL=https://$REPLIT_DEV_DOMAIN EXPO_PUBLIC_API_URL=https://$REPLIT_DEV_DOMAIN EXPO_PUBLIC_DOMAIN=$REPLIT_DEV_DOMAIN EXPO_PUBLIC_REPL_ID=$REPL_ID REACT_NATIVE_PACKAGER_HOSTNAME=$REPLIT_DEV_DOMAIN pnpm exec expo start --port 18115",
     "build": "node scripts/build.js",
     "build:web": "NODE_OPTIONS=--max-old-space-size=4096 expo export --platform web --output-dir web-dist",
     "export:embed:android": "NODE_OPTIONS=--max-old-space-size=4096 expo export:embed --eager --platform android --dev false",
