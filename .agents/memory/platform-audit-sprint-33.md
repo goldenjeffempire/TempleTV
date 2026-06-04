@@ -3,6 +3,21 @@ name: Platform audit sprint 33 — TOCTOU + schema + admin hardening
 description: Key patterns and decisions from the comprehensive audit that fixed the watch-history TOCTOU race, added $onUpdate to 8 schema tables, and hardened the admin frontend.
 ---
 
+## Per-user rate limiting + row-count caps on write endpoints
+
+`POST /user/history` and `POST /user/favorites` were rate-limited per-IP only. A compromised account could flood the table at 120/min (history) from its own IP without affecting other accounts' buckets — and could also pollute IP buckets shared by many users behind NAT.
+
+**Fix:**
+- Added `jwtUserKey(req)` helper that decodes the JWT payload (no signature verification — safe for bucketing only) to extract the `sub` claim and returns `user:<sub>`. Falls back to `req.ip` for unauthenticated requests.
+- Applied `keyGenerator: jwtUserKey` to both POST write endpoints so each user has their own rate-limit bucket.
+- Lowered `POST /history` from 120/min → 30/min per user (normal usage is ~2/min per device; 30/min covers 4 simultaneous devices).
+- Added per-user **row-count caps** enforced at the API layer:
+  - `MAX_FAVORITES_PER_USER = 2_000` — `COUNT(*)` before upsert; 429 if at ceiling
+  - `MAX_HISTORY_PER_USER = 10_000` — same pattern
+- Added `count` to the drizzle-orm import in user.routes.ts.
+
+**Why:** Rate limiting per-IP is correct for anonymous traffic but wrong for authenticated writes — it conflates all users behind a NAT into one bucket and lets a single account hammer the DB from one IP without disturbing other accounts' buckets. For write endpoints scoped to a user's own data, always key by user-ID.
+
 ## Watch-history TOCTOU fix
 
 The `POST /user/history` route had a classic SELECT-then-INSERT/UPDATE race. Two concurrent watch-progress syncs (mobile + TV watching the same user) could both pass the "does it exist?" check and both attempt an INSERT, causing a unique-constraint violation in one.

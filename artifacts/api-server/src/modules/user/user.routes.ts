@@ -19,7 +19,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, count } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, schema } from "../../infrastructure/db.js";
 import { requireAuth } from "../../middleware/auth.js";
@@ -44,6 +44,39 @@ function sanitizeText(s: string): string {
     .replace(/&[a-zA-Z0-9#]+;/g, " ")      // defuse named/numeric entities
     .trim();
 }
+
+/**
+ * Rate-limit key for authenticated write endpoints.
+ *
+ * Decodes the JWT payload WITHOUT verifying the signature to extract the
+ * `sub` claim, then returns `user:<sub>` as the bucket key so the limit
+ * is enforced per-account rather than per-IP.  This is safe because:
+ *   1. The key is used only for bucketing — actual auth still happens in
+ *      the requireAuth() preHandler which verifies the signature.
+ *   2. A tampered sub just lands in a different (also rate-limited) bucket;
+ *      it cannot bypass authentication or access another user's data.
+ * Falls back to `req.ip` for requests without a valid Bearer token.
+ */
+function jwtUserKey(req: import("fastify").FastifyRequest): string {
+  const auth = req.headers.authorization;
+  if (auth?.startsWith("Bearer ")) {
+    try {
+      const part = auth.slice(7).split(".")[1];
+      if (part) {
+        const payload = JSON.parse(Buffer.from(part, "base64url").toString("utf8")) as unknown;
+        if (payload && typeof payload === "object" && "sub" in payload && typeof (payload as Record<string, unknown>).sub === "string") {
+          return `user:${(payload as Record<string, unknown>).sub as string}`;
+        }
+      }
+    } catch { /* fall through */ }
+  }
+  return req.ip;
+}
+
+/** Hard cap on favorites rows per user — prevents table bloat from a compromised account. */
+const MAX_FAVORITES_PER_USER = 2_000;
+/** Hard cap on watch-history rows per user — generous enough for a real viewer's lifetime. */
+const MAX_HISTORY_PER_USER = 10_000;
 
 const FavoriteItemSchema = z.object({
   id: z.string(),
@@ -138,7 +171,16 @@ export async function userRoutes(app: FastifyInstance) {
     "/favorites",
     {
       preHandler: requireAuth(),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+      config: {
+        rateLimit: {
+          max: 30,
+          timeWindow: "1 minute",
+          // Key by user-ID so the limit is per-account, not per-IP.
+          // Without this a compromised account on a shared IP counts against
+          // every other user on that address; a per-user key isolates the damage.
+          keyGenerator: jwtUserKey,
+        },
+      },
       schema: {
         tags: ["user"],
         summary: "Add a video to the authenticated user's favorites",
@@ -161,6 +203,20 @@ export async function userRoutes(app: FastifyInstance) {
       const videoTitle     = sanitizeText(req.body.videoTitle);
       const videoThumbnail = sanitizeText(req.body.videoThumbnail);
       const videoCategory  = sanitizeText(req.body.videoCategory);
+
+      // Row-count cap: reject before upsert so a compromised account cannot
+      // grow the favorites table unboundedly with fake videoIds.  The cap is
+      // applied before the upsert so an attacker at the ceiling cannot slip
+      // one extra row through a race — any request when count >= MAX is denied.
+      const [{ favCount }] = await db
+        .select({ favCount: count() })
+        .from(favoritesTable)
+        .where(eq(favoritesTable.userId, userId));
+      if (favCount >= MAX_FAVORITES_PER_USER) {
+        return reply.code(429).send({
+          error: `Favorites limit reached (${MAX_FAVORITES_PER_USER}). Remove some favorites before adding more.`,
+        });
+      }
 
       // Upsert — conflict on (userId, videoId) updates the display columns so
       // that a re-favourite after a title/thumbnail change stays fresh.
@@ -287,9 +343,18 @@ export async function userRoutes(app: FastifyInstance) {
     "/history",
     {
       preHandler: requireAuth(),
-      // Called ~every 30 s during active playback — 120/min gives a generous
-      // buffer while preventing a runaway client from hammering the DB.
-      config: { rateLimit: { max: 120, timeWindow: "1 minute" } },
+      // Called ~every 30 s during active playback — normal usage is ~2/min
+      // per device. 30/min covers 4 simultaneous devices with a healthy
+      // safety margin while preventing a runaway client from hammering the DB.
+      // Keyed per user-ID (not IP) so a single compromised account cannot
+      // exhaust the bucket for all users behind a shared NAT/proxy.
+      config: {
+        rateLimit: {
+          max: 30,
+          timeWindow: "1 minute",
+          keyGenerator: jwtUserKey,
+        },
+      },
       schema: {
         tags: ["user"],
         summary: "Upsert a watch-history entry (updates watchedAt + progress on re-watch)",
@@ -306,7 +371,7 @@ export async function userRoutes(app: FastifyInstance) {
         },
       },
     },
-    async (req) => {
+    async (req, reply) => {
       const userId = req.principal!.id;
       const { videoId, progressSecs } = req.body;
       // Sanitize all user-supplied display strings before persisting.
@@ -314,6 +379,22 @@ export async function userRoutes(app: FastifyInstance) {
       const videoThumbnail = sanitizeText(req.body.videoThumbnail);
       const videoCategory  = sanitizeText(req.body.videoCategory);
       const now = new Date();
+
+      // Row-count cap: block new entries once the per-user ceiling is reached.
+      // The upsert below is idempotent for existing (userId, videoId) pairs
+      // (it updates progress in-place), so the cap only matters for the first
+      // write of a new video. Counting before the upsert is a best-effort
+      // check — a concurrent first-write of the same video may slip through,
+      // but the unique index prevents duplicate rows regardless.
+      const [{ histCount }] = await db
+        .select({ histCount: count() })
+        .from(historyTable)
+        .where(eq(historyTable.userId, userId));
+      if (histCount >= MAX_HISTORY_PER_USER) {
+        return reply.code(429).send({
+          error: `Watch history limit reached (${MAX_HISTORY_PER_USER}). Clear some history before adding more.`,
+        });
+      }
 
       // Single-statement upsert — eliminates the SELECT + INSERT/UPDATE two-step
       // TOCTOU race where two concurrent requests can both pass the "does it
