@@ -43,8 +43,14 @@ import {
   PinOff,
   ChevronDown,
   ChevronUp,
+  Keyboard,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { BroadcastUploadPanel } from "@/components/broadcast/BroadcastUploadPanel";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
@@ -868,6 +874,13 @@ function BroadcastV2PageInner() {
     }
   }
 
+  // Stable refs so the keydown handler can call adminPost and read busy
+  // without being re-registered on every render.
+  const adminPostRef = useRef(adminPost);
+  useEffect(() => { adminPostRef.current = adminPost; });
+  const busyRef = useRef<string | null>(null);
+  useEffect(() => { busyRef.current = busy; }, [busy]);
+
   // Live queue mirror — same source as the /broadcast editor.
   // staleTime lowered to 15 s (was 60 s) so queue changes from other admin
   // sessions are visible within one refetch cycle on the broadcast console.
@@ -1161,6 +1174,54 @@ function BroadcastV2PageInner() {
     }, 1_000);
   });
   useEffect(() => () => clearTimeout(reloadTimer.current), []);
+
+  // ── Keyboard shortcuts ────────────────────────────────────────────────────
+  // S = skip · R = reload · F = force-failover · ? = toggle help popover.
+  // Disabled when focus is inside any form field or a modifier key is held,
+  // and silently skipped when a request is already in-flight (busy).
+  const [showShortcuts, setShowShortcuts] = useState(false);
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const target = e.target as HTMLElement;
+      if (
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.tagName === "SELECT" ||
+        target.isContentEditable ||
+        e.metaKey ||
+        e.ctrlKey ||
+        e.altKey
+      )
+        return;
+      if (busyRef.current) return;
+
+      switch (e.key) {
+        case "s":
+        case "S":
+          e.preventDefault();
+          void adminPostRef.current("/broadcast-v2/skip", { reason: "operator" });
+          break;
+        case "r":
+        case "R":
+          e.preventDefault();
+          void adminPostRef.current("/broadcast-v2/reload");
+          break;
+        case "f":
+        case "F":
+          e.preventDefault();
+          void adminPostRef.current("/broadcast-v2/force-failover", { reason: "manual" });
+          break;
+        case "?":
+          e.preventDefault();
+          setShowShortcuts((s) => !s);
+          break;
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   // Refresh HLS readiness badges and engine health whenever any transcoding
   // job changes state (queued → encoding → hls_ready).
@@ -1668,6 +1729,44 @@ function BroadcastV2PageInner() {
         description="Server-authoritative continuous broadcast — live preview, queue, and operator controls."
         actions={
           <div className="flex items-center gap-2">
+            {/* Keyboard shortcut help */}
+            <Popover open={showShortcuts} onOpenChange={setShowShortcuts}>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="gap-1.5 text-muted-foreground"
+                  title="Keyboard shortcuts (?)"
+                  aria-label="Keyboard shortcuts"
+                >
+                  <Keyboard size={13} />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-52 p-3">
+                <p className="text-xs font-semibold mb-2">Keyboard shortcuts</p>
+                <div className="space-y-1.5">
+                  {(
+                    [
+                      { key: "S", label: "Skip current item" },
+                      { key: "R", label: "Reload from queue" },
+                      { key: "F", label: "Force failover" },
+                      { key: "?", label: "Toggle this panel" },
+                    ] as const
+                  ).map(({ key, label }) => (
+                    <div key={key} className="flex items-center justify-between">
+                      <span className="text-xs text-muted-foreground">{label}</span>
+                      <kbd className="text-[10px] font-mono bg-muted px-1.5 py-0.5 rounded border border-border leading-tight">
+                        {key}
+                      </kbd>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[10px] text-muted-foreground mt-3 leading-snug">
+                  Disabled when a form field is focused or a request is in flight.
+                </p>
+              </PopoverContent>
+            </Popover>
+
             <Button
               variant="outline"
               size="sm"
