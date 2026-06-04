@@ -171,6 +171,13 @@ class TranscoderDispatcher {
     }
   }
 
+  // Partial-success drift recovery counter — runs every PARTIAL_RECOVERY_TICKS
+  // ticks so a video stuck at "encoding" (job is "done" but the hls_ready write
+  // was lost to a crash) is healed within minutes in a long-running 24/7 process
+  // instead of only on the next restart.
+  private partialRecoveryCounter = 0;
+  private static readonly PARTIAL_RECOVERY_TICKS = 18; // ~3 min at 10 s/tick
+
   // Scratch dir GC sweep counter — runs every SCRATCH_GC_TICKS ticks
   // (roughly every 30 minutes at the default 10-second poll cadence).
   private scratchGcCounter = 0;
@@ -242,62 +249,123 @@ class TranscoderDispatcher {
       }
 
       // ── Partial-success recovery ──────────────────────────────────────────
-      // Covers the crash window between the two writes in runOnce():
-      //   1. UPDATE transcoding_jobs SET status='done'   ← succeeded
-      //   2. UPDATE managed_videos SET transcodingStatus='hls_ready' ← lost
-      //
-      // After a restart, the video is stuck at "encoding" forever (it never
-      // re-enters the dispatch loop because the job is "done"). Recover by
-      // verifying that master.m3u8 actually landed in storage and then
-      // completing the video-row update that was lost.
-      const encodingVideoIds = await db
-        .select({ id: videos.id })
-        .from(videos)
-        .where(eq(videos.transcodingStatus, "encoding"))
-        .then((rows) => rows.map((r) => r.id));
-
-      if (encodingVideoIds.length > 0) {
-        const doneJobs = await db
-          .select({ videoId: jobs.videoId, id: jobs.id })
-          .from(jobs)
-          .where(and(eq(jobs.status, "done"), inArray(jobs.videoId, encodingVideoIds)));
-
-        for (const job of doneJobs) {
-          try {
-            const masterKey = `transcoded/${job.videoId}/master.m3u8`;
-            const masterExists = await db
-              .execute(sql`SELECT 1 FROM storage_blobs WHERE key = ${masterKey} LIMIT 1`)
-              .then((r) => (r.rows as unknown[]).length > 0)
-              .catch(() => false);
-
-            if (masterExists) {
-              const masterUrl = `/api/hls/${job.videoId}/master.m3u8`;
-              await db.update(videos)
-                .set({ transcodingStatus: "hls_ready", hlsMasterUrl: masterUrl })
-                .where(eq(videos.id, job.videoId));
-              logger.warn(
-                { videoId: job.videoId, jobId: job.id, masterUrl },
-                "transcoder: recovered partial-success video — job was 'done' but video was stuck at 'encoding'. " +
-                "Applied missing hls_ready update.",
-              );
-              adminEventBus.push("transcoding-update", {
-                videoId: job.videoId,
-                jobId: job.id,
-                status: "hls_ready",
-                progress: 100,
-                hlsMasterUrl: masterUrl,
-              });
-            }
-          } catch (recErr) {
-            logger.warn(
-              { err: recErr, videoId: job.videoId, jobId: job.id },
-              "transcoder: partial-success recovery check failed (non-fatal)",
-            );
-          }
-        }
-      }
+      // Heal videos stuck at "encoding" because the hls_ready write was lost to
+      // a crash (see recoverPartialSuccessVideos for the full rationale). Runs
+      // at boot here, and periodically via the watchdog so the drift is fixed
+      // within minutes in a long-running 24/7 process — not only on restart.
+      await this.recoverPartialSuccessVideos();
     } catch (err) {
       logger.error({ err }, "transcoder: failed to reset orphaned jobs on startup (non-fatal)");
+    }
+  }
+
+  /**
+   * Heals "partial-success" drift: a video stuck at "encoding" whose job is
+   * already "done". Covers the crash window between the two writes in runOnce():
+   *   1. UPDATE transcoding_jobs SET status='done'        ← succeeded
+   *   2. UPDATE managed_videos SET transcodingStatus='hls_ready' ← lost
+   *
+   * Without recovery the video never re-enters the dispatch loop (its job is
+   * "done") and serves the raw MP4 fallback forever. Recovery is idempotent and
+   * safe to run repeatedly: it only flips a video to hls_ready after verifying
+   * that master.m3u8 actually landed in object storage, and the early return on
+   * an empty "encoding" set keeps the steady-state cost to a single cheap SELECT.
+   */
+  private async recoverPartialSuccessVideos(): Promise<void> {
+    const encodingVideoIds = await db
+      .select({ id: videos.id })
+      .from(videos)
+      .where(eq(videos.transcodingStatus, "encoding"))
+      .then((rows) => rows.map((r) => r.id));
+
+    if (encodingVideoIds.length === 0) return;
+
+    // Exclude any video that currently has an active (queued/processing) job:
+    // a manual re-transcode legitimately puts a previously-finished video back
+    // into "encoding" while an older "done" job (and its old master.m3u8) still
+    // exists. Healing on the stale "done" job would flip it to hls_ready
+    // mid-encode. Only genuine drift (a "done" job with NO active job) qualifies.
+    const activeVideoIds = new Set(
+      (
+        await db
+          .select({ videoId: jobs.videoId })
+          .from(jobs)
+          .where(
+            and(
+              inArray(jobs.status, ["queued", "processing"]),
+              inArray(jobs.videoId, encodingVideoIds),
+            ),
+          )
+      ).map((r) => r.videoId),
+    );
+
+    const recoverableVideoIds = encodingVideoIds.filter((id) => !activeVideoIds.has(id));
+    if (recoverableVideoIds.length === 0) return;
+
+    const doneJobs = await db
+      .select({ videoId: jobs.videoId, id: jobs.id })
+      .from(jobs)
+      .where(and(eq(jobs.status, "done"), inArray(jobs.videoId, recoverableVideoIds)));
+
+    for (const job of doneJobs) {
+      try {
+        const masterKey = `transcoded/${job.videoId}/master.m3u8`;
+        const masterExists = await db
+          .execute(sql`SELECT 1 FROM storage_blobs WHERE key = ${masterKey} LIMIT 1`)
+          .then((r) => (r.rows as unknown[]).length > 0)
+          .catch(() => false);
+
+        if (masterExists) {
+          const masterUrl = `/api/hls/${job.videoId}/master.m3u8`;
+          // Atomic heal — all guards live in one statement so there is no
+          // TOCTOU window between the active-job pre-filter above and this write:
+          //   • transcoding_status='encoding' → multi-replica idempotency (only
+          //     one replica heals; the normal completion path may also win).
+          //   • NOT EXISTS active job → never flip a video that a freshly-queued
+          //     re-transcode just put back into "encoding" (its old "done" job
+          //     and stale master.m3u8 would otherwise trigger a mid-encode heal).
+          const healedRows = await db.execute(sql`
+            UPDATE managed_videos
+            SET transcoding_status = 'hls_ready', hls_master_url = ${masterUrl}
+            WHERE id = ${job.videoId}
+              AND transcoding_status = 'encoding'
+              AND NOT EXISTS (
+                SELECT 1 FROM transcoding_jobs j
+                WHERE j.video_id = managed_videos.id
+                  AND j.status IN ('queued', 'processing')
+              )
+            RETURNING id
+          `);
+          const healed = healedRows.rows as Array<{ id: string }>;
+
+          if (healed.length > 0) {
+            logger.warn(
+              { videoId: job.videoId, jobId: job.id, masterUrl },
+              "transcoder: recovered partial-success video — job was 'done' but video was stuck at 'encoding'. " +
+              "Applied missing hls_ready update.",
+            );
+            adminEventBus.push("transcoding-update", {
+              videoId: job.videoId,
+              jobId: job.id,
+              status: "hls_ready",
+              progress: 100,
+              hlsMasterUrl: masterUrl,
+            });
+            // The video just became airable HLS — notify the broadcast
+            // orchestrator so it can pick up the upgraded source promptly
+            // instead of continuing on the raw MP4 fallback until its next scan.
+            adminEventBus.push("broadcast-queue-updated", {
+              reason: "partial-success-recovery",
+              videoId: job.videoId,
+            });
+          }
+        }
+      } catch (recErr) {
+        logger.warn(
+          { err: recErr, videoId: job.videoId, jobId: job.id },
+          "transcoder: partial-success recovery check failed (non-fatal)",
+        );
+      }
     }
   }
 
@@ -518,6 +586,17 @@ class TranscoderDispatcher {
       if (this.scratchGcCounter >= TranscoderDispatcher.SCRATCH_GC_TICKS) {
         this.scratchGcCounter = 0;
         void this.purgeOrphanedScratchDirs();
+      }
+
+      // Heal partial-success drift periodically (not just at boot) so a video
+      // whose hls_ready write was lost to a crash is recovered within minutes
+      // in a long-running 24/7 process instead of waiting for the next restart.
+      this.partialRecoveryCounter++;
+      if (this.partialRecoveryCounter >= TranscoderDispatcher.PARTIAL_RECOVERY_TICKS) {
+        this.partialRecoveryCounter = 0;
+        await this.recoverPartialSuccessVideos().catch((err) => {
+          logger.warn({ err }, "transcoder: periodic partial-success recovery error (non-fatal)");
+        });
       }
 
       const now = new Date();
