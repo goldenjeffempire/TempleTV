@@ -1,6 +1,6 @@
 import { Component, useMemo, useState, useEffect, useRef } from "react";
 import type { ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { api, isTransientError } from "@/lib/api";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
@@ -186,6 +186,7 @@ export default function AnalyticsPage() {
     queryKey: ["analytics-overview", range],
     queryFn: () => api.get<AnalyticsOverview>(`/admin/analytics/overview?range=${range}`),
     staleTime: 120_000,
+    placeholderData: keepPreviousData,
   });
 
   const concurrentRange: RangeKey = range === "90d" ? "90d" : range === "30d" ? "30d" : "7d";
@@ -193,12 +194,14 @@ export default function AnalyticsPage() {
     queryKey: ["analytics-concurrent", concurrentRange],
     queryFn: () => api.get<ConcurrentViewers>(`/admin/analytics/concurrent?range=${concurrentRange}`),
     staleTime: 60_000,
+    placeholderData: keepPreviousData,
   });
 
   const { data: platData, isLoading: platLoading } = useQuery({
     queryKey: ["analytics-platform-trends", range],
     queryFn: () => api.get<DailyPlatformTrends>(`/admin/analytics/platform-trends?range=${range}`),
     staleTime: 60_000,
+    placeholderData: keepPreviousData,
   });
 
   const chartData = useMemo(

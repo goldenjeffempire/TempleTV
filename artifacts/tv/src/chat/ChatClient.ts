@@ -78,6 +78,17 @@ export class ChatClient {
   }
 
   start(): void {
+    // Guard against double-start: close any existing socket before opening a
+    // new one. Without this, a second start() orphans the previous WebSocket
+    // (it stays open server-side but loses its local reference).
+    if (this.ws) {
+      try { this.ws.close(1000, "restart"); } catch { /* noop */ }
+      this.ws = null;
+    }
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.closedByUser = false;
     this.connect();
   }

@@ -93,11 +93,17 @@ export class ChannelEngine extends EventEmitter {
       ? Math.max(0, Date.now() - new Date(prevSnap.current.startsAt).getTime())
       : 0;
 
-    const rows = await db
-      .select()
-      .from(queueTable)
-      .where(eq(queueTable.channelId, this.channelId))
-      .orderBy(asc(queueTable.sortOrder), asc(queueTable.addedAt));
+    let rows: (typeof queueTable.$inferSelect)[];
+    try {
+      rows = await db
+        .select()
+        .from(queueTable)
+        .where(eq(queueTable.channelId, this.channelId))
+        .orderBy(asc(queueTable.sortOrder), asc(queueTable.addedAt));
+    } catch (err) {
+      logger.warn({ err, channelId: this.channelId }, "channel engine: reload DB query failed — keeping current items");
+      return;
+    }
 
     const now = Date.now();
     let cursor = now;

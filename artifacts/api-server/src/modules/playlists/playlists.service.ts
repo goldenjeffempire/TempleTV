@@ -137,49 +137,50 @@ export const playlistsService = {
     const [head] = await db.select().from(playlists).where(eq(playlists.id, playlistId)).limit(1);
     if (!head) throw new NotFoundError("Playlist not found");
 
-    const [{ maxOrder }] = await db
-      .select({ maxOrder: sql<number>`coalesce(max(${playlistVideos.sortOrder})::int, 0)` })
-      .from(playlistVideos)
-      .where(eq(playlistVideos.playlistId, playlistId));
-
-    // Use onConflictDoNothing() to handle the TOCTOU race between two
-    // concurrent addVideo calls for the same (playlist, video) pair.
-    // A manual pre-check + insert can have two requests pass the "already
-    // exists?" query simultaneously and both attempt the INSERT, producing a
-    // DB-level unique-constraint violation (500) instead of a 409.
-    // With onConflictDoNothing() the second INSERT silently no-ops; we then
-    // re-fetch the existing row so we can return a consistent DTO.
-    const id = nanoid();
-    const [inserted] = await db
-      .insert(playlistVideos)
-      .values({
-        id,
-        playlistId,
-        videoId: video.id,
-        youtubeId: video.youtubeId ?? "",
-        title: video.title,
-        // Coerce nullable DB fields — playlist_videos columns are typed the
-        // same way as managed_videos (nullable), so inserting null here would
-        // violate a NOT NULL DB constraint or produce a Zod 500 on read-back.
-        thumbnailUrl: video.thumbnailUrl ?? "",
-        duration: video.duration ?? "",
-        category: video.category ?? "",
-        sortOrder: Number(maxOrder ?? 0) + 1,
-      })
-      .onConflictDoNothing()
-      .returning();
-
-    if (!inserted) {
-      // Another concurrent request won the race — return the existing row.
-      const [existing] = await db
-        .select()
+    // Wrap maxOrder fetch + insert in a single transaction so two concurrent
+    // addVideo calls for DIFFERENT videos can't both observe the same maxOrder
+    // and insert with duplicate sortOrder values.  onConflictDoNothing still
+    // guards the (playlistId, videoId) unique pair; the transaction guards the
+    // sortOrder sequence.
+    const result = await db.transaction(async (tx) => {
+      const [{ maxOrder }] = await tx
+        .select({ maxOrder: sql<number>`coalesce(max(${playlistVideos.sortOrder})::int, 0)` })
         .from(playlistVideos)
-        .where(and(eq(playlistVideos.playlistId, playlistId), eq(playlistVideos.videoId, videoId)))
-        .limit(1);
-      if (!existing) throw new ConflictError("Video is already in this playlist");
-      return toVideoDto(existing);
-    }
-    return toVideoDto(inserted);
+        .where(eq(playlistVideos.playlistId, playlistId));
+
+      const id = nanoid();
+      const [inserted] = await tx
+        .insert(playlistVideos)
+        .values({
+          id,
+          playlistId,
+          videoId: video.id,
+          youtubeId: video.youtubeId ?? "",
+          title: video.title,
+          // Coerce nullable DB fields — playlist_videos columns are typed the
+          // same way as managed_videos (nullable), so inserting null here would
+          // violate a NOT NULL DB constraint or produce a Zod 500 on read-back.
+          thumbnailUrl: video.thumbnailUrl ?? "",
+          duration: video.duration ?? "",
+          category: video.category ?? "",
+          sortOrder: Number(maxOrder ?? 0) + 1,
+        })
+        .onConflictDoNothing()
+        .returning();
+
+      if (!inserted) {
+        // Another concurrent request won the same-video race — return existing.
+        const [existing] = await tx
+          .select()
+          .from(playlistVideos)
+          .where(and(eq(playlistVideos.playlistId, playlistId), eq(playlistVideos.videoId, videoId)))
+          .limit(1);
+        if (!existing) throw new ConflictError("Video is already in this playlist");
+        return toVideoDto(existing);
+      }
+      return toVideoDto(inserted);
+    });
+    return result;
   },
 
   async removeVideo(playlistId: string, playlistVideoId: string) {

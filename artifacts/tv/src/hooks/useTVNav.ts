@@ -31,6 +31,22 @@ export function useTVNav({
   const stateRef = useRef({ focusZone, focusRow, focusItems, headerItem });
   stateRef.current = { focusZone, focusRow, focusItems, headerItem };
 
+  // Clamp focusRow and headerItem whenever the counts change dynamically
+  // (e.g., loading completes and rows appear/disappear due to filters).
+  // Without this, the focus index can point to a non-existent row/item
+  // and the focus ring disappears or causes an out-of-bounds render.
+  useEffect(() => {
+    if (rowCount > 0) {
+      setFocusRow((r) => Math.min(r, rowCount - 1));
+    }
+  }, [rowCount]);
+
+  useEffect(() => {
+    if (headerItemCount > 0) {
+      setHeaderItem((i) => Math.min(i, headerItemCount - 1));
+    }
+  }, [headerItemCount]);
+
   const getFocusItem = useCallback(
     (row: number) => focusItems[row] ?? 0,
     [focusItems],
