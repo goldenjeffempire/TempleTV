@@ -823,7 +823,9 @@ class IngestionQueue {
         }
         // Persist quota after each successful chunk so a crash mid-sync doesn't
         // lose the quota consumed so far. persistQuota is idempotent (upsert).
-        void persistQuota();
+        void persistQuota().catch((err) =>
+          logger.warn({ err }, "youtube-sync: mid-sync quota persist failed (non-fatal)"),
+        );
       } catch (batchErr) {
         logger.warn(
           {
@@ -995,7 +997,9 @@ export async function syncYouTubeChannel(triggeredBy: "scheduler" | "manual" = "
           source,
         })
         .where(eq(schema.youtubeSyncLogTable.id, syncId));
-      void persistQuota();
+      void persistQuota().catch((err) =>
+        logger.warn({ err }, "youtube-sync: fingerprint-skip quota persist failed (non-fatal)"),
+      );
       return {
         syncId, inserted: 0, updated: 0, total: rawVideos.length,
         skipped: videos.length, deleted: 0, durationMs, source,
@@ -1114,9 +1118,13 @@ export async function syncYouTubeChannel(triggeredBy: "scheduler" | "manual" = "
       })
       .where(eq(schema.youtubeSyncLogTable.id, syncId));
 
-    void invalidateVideosCatalogCache();
+    void invalidateVideosCatalogCache().catch((err) =>
+      logger.warn({ err }, "youtube-sync: post-sync catalog cache invalidation failed (non-fatal)"),
+    );
     adminEventBus.push("videos-library-updated", null);
-    void persistQuota();
+    void persistQuota().catch((err) =>
+      logger.warn({ err }, "youtube-sync: post-sync quota persist failed (non-fatal)"),
+    );
 
     // Auto-reflect newly-imported YouTube rows into the broadcast queue so
     // the 24/7 stream picks them up without an operator clicking "Add to

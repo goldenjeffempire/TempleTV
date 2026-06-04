@@ -241,28 +241,44 @@ class MidnightPrayersService {
 
   async saveConfig(patch: Partial<Pick<MidnightPrayersConfigData, "enabled" | "startHour" | "endHour" | "timezone">>): Promise<MidnightPrayersConfigData> {
     const now = new Date();
-    this.config = { ...this.config, ...patch, updatedAt: now };
+    // Keep the previous config so we can revert if the DB write fails.
+    // Do NOT update this.config until the DB write has succeeded — a failed
+    // upsert would otherwise leave the in-memory state ahead of persisted
+    // state, causing clients to see changes that were never durably stored.
+    const previousConfig = { ...this.config };
+    const nextConfig = { ...this.config, ...patch, updatedAt: now };
 
-    await db
-      .insert(schema.midnightPrayersConfig)
-      .values({
-        id: 1,
-        enabled: this.config.enabled,
-        startHour: this.config.startHour,
-        endHour: this.config.endHour,
-        timezone: this.config.timezone,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: schema.midnightPrayersConfig.id,
-        set: {
-          enabled: this.config.enabled,
-          startHour: this.config.startHour,
-          endHour: this.config.endHour,
-          timezone: this.config.timezone,
+    try {
+      await db
+        .insert(schema.midnightPrayersConfig)
+        .values({
+          id: 1,
+          enabled: nextConfig.enabled,
+          startHour: nextConfig.startHour,
+          endHour: nextConfig.endHour,
+          timezone: nextConfig.timezone,
           updatedAt: now,
-        },
-      });
+        })
+        .onConflictDoUpdate({
+          target: schema.midnightPrayersConfig.id,
+          set: {
+            enabled: nextConfig.enabled,
+            startHour: nextConfig.startHour,
+            endHour: nextConfig.endHour,
+            timezone: nextConfig.timezone,
+            updatedAt: now,
+          },
+        });
+    } catch (err) {
+      // DB write failed — leave in-memory state unchanged so it stays
+      // consistent with what is actually persisted.
+      this.config = previousConfig;
+      logger.error({ err }, "[midnight-prayers] saveConfig: DB write failed — reverting in-memory state");
+      throw err;
+    }
+
+    // DB write succeeded — now safe to update in-memory state.
+    this.config = nextConfig;
 
     // Broadcast config change as a snapshot so connected players know
     // the window has changed without a page reload.

@@ -153,7 +153,12 @@ async function probeHlsManifest(url: string): Promise<{ ok: boolean; status: num
 }
 
 class MediaIntegrityScannerImpl {
-  private timer: NodeJS.Timeout | null = null;
+  // Split into two fields so stop() can unconditionally clear both without
+  // a fragile instanceof check. `bootTimer` holds the initial-delay setTimeout;
+  // `scanInterval` holds the recurring setInterval. Only one is non-null at
+  // a time, but clearing null timers via clearTimeout/clearInterval is a no-op.
+  private bootTimer: NodeJS.Timeout | null = null;
+  private scanInterval: NodeJS.Timeout | null = null;
   private scanning = false;
   private readonly failureCounts = new Map<string, { count: number; lastFailedAtMs: number | null }>();
   private report: MediaScanReport = {
@@ -167,34 +172,34 @@ class MediaIntegrityScannerImpl {
   };
 
   start(intervalMs = DEFAULT_INTERVAL_MS): void {
-    if (this.timer) return;
+    if (this.bootTimer || this.scanInterval) return;
     const scheduleRecurring = (): void => {
-      this.timer = setInterval(() => {
+      this.scanInterval = setInterval(() => {
         void this.scan().catch((err) =>
           logger.warn({ err }, "[media-scanner] scheduled scan error"),
         );
       }, intervalMs);
-      this.timer.unref?.();
+      this.scanInterval.unref?.();
     };
-    const boot = setTimeout(() => {
+    this.bootTimer = setTimeout(() => {
+      this.bootTimer = null;
       void this.scan()
         .catch((err) => logger.warn({ err }, "[media-scanner] initial scan error"))
         .finally(scheduleRecurring);
     }, INITIAL_DELAY_MS);
-    boot.unref?.();
-    this.timer = boot;
+    this.bootTimer.unref?.();
     logger.info({ intervalMs, initialDelayMs: INITIAL_DELAY_MS }, "[media-scanner] started");
   }
 
   stop(): void {
-    if (this.timer) {
-      if (this.timer instanceof (globalThis as any).Timeout || (typeof this.timer === 'object' && this.timer !== null && 'unref' in this.timer)) {
-        clearTimeout(this.timer as any);
-      } else {
-        clearInterval(this.timer as any);
-      }
-      this.timer = null;
-    }
+    // Clear both timers unconditionally — clearTimeout/clearInterval are
+    // safe no-ops on null or already-cleared handles, so no instanceof
+    // guard is needed. Previously a fragile instanceof check could silently
+    // fail, leaking the recurring scan interval across hot reloads.
+    clearTimeout(this.bootTimer as NodeJS.Timeout);
+    clearInterval(this.scanInterval as NodeJS.Timeout);
+    this.bootTimer = null;
+    this.scanInterval = null;
   }
 
   getReport(): MediaScanReport {

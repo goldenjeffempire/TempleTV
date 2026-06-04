@@ -224,6 +224,13 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const reconnectingGraceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const attempt = useRef(0);
+  // Consecutive token-fetch 401 failures. After AUTH_FAIL_LIMIT consecutive
+  // auth failures (meaning both access token and refresh token are invalid),
+  // we clear session storage and redirect to login. Without this guard the
+  // SSE provider retries forever on an exponential backoff loop, keeping an
+  // invisible unauthenticated session alive rather than prompting re-login.
+  const consecutiveAuthFailures = useRef(0);
+  const AUTH_FAIL_LIMIT = 3;
   const listenersRef = useRef<Map<string, Set<SSEEventHandler>>>(new Map());
   const lastFrameAt = useRef<number>(Date.now());
   // Guards against concurrent connect() calls.
@@ -326,6 +333,7 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
 
     fetchSseSubToken()
       .then((sseToken) => {
+        consecutiveAuthFailures.current = 0; // reset on success
         if (!mounted.current) return;
 
         const apiOrigin = apiBase();
@@ -435,8 +443,20 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
           scheduleReconnect();
         };
       })
-      .catch(() => {
-        // Token fetch failed (timeout, 401, network) — handled in finally.
+      .catch((err: unknown) => {
+        // Token fetch failed — could be 401 (expired session), network, or
+        // timeout. Only 401s count toward the auth-failure limit because
+        // network blips should never force a sign-out.
+        if (err instanceof Error && err.message.includes("401")) {
+          consecutiveAuthFailures.current++;
+          if (consecutiveAuthFailures.current >= AUTH_FAIL_LIMIT) {
+            // All token-refresh attempts failed — the session is truly dead.
+            // Clear stored tokens and redirect to login so the user is
+            // prompted to authenticate rather than looping indefinitely.
+            tokenStore.clear();
+            window.location.assign("/login");
+          }
+        }
       })
       .finally(() => {
         connecting.current = false;

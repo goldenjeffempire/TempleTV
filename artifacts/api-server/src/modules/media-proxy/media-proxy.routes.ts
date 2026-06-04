@@ -27,6 +27,12 @@ import { logger } from "../../infrastructure/logger.js";
  * Route: GET /api/v1/media-proxy?url=ENCODED_URL&sig=HEX_HMAC_SHA256
  */
 
+// In production, loopback addresses are excluded to prevent SSRF — even with
+// a valid HMAC signature, a proxied request to localhost could reach internal
+// services (DB, metrics, admin endpoints) that are not exposed externally.
+// In development they are allowed so local upload/HLS URLs can be previewed.
+const IS_PRODUCTION = env.NODE_ENV === "production";
+
 const ALLOWED_HOST_SUFFIXES: ReadonlyArray<string> = [
   ".cloudfront.net",
   ".amazonaws.com",
@@ -39,8 +45,9 @@ const ALLOWED_HOST_SUFFIXES: ReadonlyArray<string> = [
   ".ytimg.com",
   "templetv.org.ng",
   ".templetv.org.ng",
-  "localhost",
-  "127.0.0.1",
+  // Loopback only permitted in non-production — gated here to prevent SSRF
+  // via the proxy in production deployments.
+  ...(IS_PRODUCTION ? [] : ["localhost", "127.0.0.1"]),
 ];
 
 function isAllowedHost(url: string): boolean {
