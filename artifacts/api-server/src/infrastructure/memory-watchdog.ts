@@ -438,7 +438,17 @@ async function persistHourlySnapshot(row: {
   namedStores: Array<{ name: string; size: number; peak: number }>;
 }): Promise<void> {
   const { db, schema } = await import("./db.js");
+  const { lt } = await import("drizzle-orm");
   await db.insert(schema.memoryHourlySnapshotsTable).values(row);
+
+  // Prune rows older than 7 days so the table doesn't grow unboundedly on
+  // long-running servers.  Fire-and-forget — non-fatal if it fails.
+  const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60_000);
+  db.delete(schema.memoryHourlySnapshotsTable)
+    .where(lt(schema.memoryHourlySnapshotsTable.snapshotAt, cutoff))
+    .catch((err: unknown) => {
+      logger.warn({ err }, "[memory-watchdog] snapshot prune failed — non-fatal");
+    });
 }
 
 function logMemorySummary(): void {

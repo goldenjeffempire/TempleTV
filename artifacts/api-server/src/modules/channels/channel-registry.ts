@@ -17,6 +17,14 @@ import { ChannelEngine } from "./channel-engine.js";
 class ChannelRegistry {
   private engines = new Map<string, ChannelEngine>();
 
+  /**
+   * In-flight creation promises keyed by channelId.
+   * Prevents two concurrent getOrCreate() calls for the same channel
+   * from each constructing and starting their own ChannelEngine — which
+   * would leave an orphaned engine with running timers and a DB cursor.
+   */
+  private loading = new Map<string, Promise<ChannelEngine>>();
+
   async boot(): Promise<void> {
     const rows = await db
       .select()
@@ -38,10 +46,24 @@ class ChannelRegistry {
     const existing = this.engines.get(channelId);
     if (existing) return existing;
 
-    const engine = new ChannelEngine(channelId);
-    this.engines.set(channelId, engine);
-    await engine.start();
-    return engine;
+    // If another concurrent call is already creating this engine, wait for
+    // it instead of creating a second one.  Without this guard, two parallel
+    // HTTP requests to the same new channel would both pass the engines.get()
+    // check, both construct a ChannelEngine, and both call start() — resulting
+    // in two active tick loops and two sets of DB poll intervals.
+    const inflight = this.loading.get(channelId);
+    if (inflight) return inflight;
+
+    const promise = (async () => {
+      const engine = new ChannelEngine(channelId);
+      this.engines.set(channelId, engine);
+      await engine.start();
+      this.loading.delete(channelId);
+      return engine;
+    })();
+
+    this.loading.set(channelId, promise);
+    return promise;
   }
 
   get(channelId: string): ChannelEngine | undefined {
@@ -89,6 +111,7 @@ class ChannelRegistry {
       logger.info({ channelId }, "channel engine stopped (shutdown)");
     }
     this.engines.clear();
+    this.loading.clear();
   }
 }
 

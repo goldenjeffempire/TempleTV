@@ -68,7 +68,11 @@ export async function analyticsRoutes(app: FastifyInstance) {
           // analytics. onConflictDoNothing() on the insert means replayed
           // "started" events (client retry) do not inflate the count.
           await db.transaction(async (tx) => {
-            await tx
+            // Use .returning() to detect whether a new session row was
+            // actually inserted.  onConflictDoNothing() silently skips
+            // duplicate (deviceId, videoId) pairs — those are client
+            // retries and must NOT inflate the viewCount a second time.
+            const [inserted] = await tx
               .insert(sessions)
               .values({
                 id: nanoid(),
@@ -80,12 +84,16 @@ export async function analyticsRoutes(app: FastifyInstance) {
                 startedAt: new Date(),
                 lastHeartbeatAt: new Date(),
               })
-              .onConflictDoNothing();
+              .onConflictDoNothing()
+              .returning({ id: sessions.id });
 
-            await tx
-              .update(videos)
-              .set({ viewCount: sql`${videos.viewCount} + 1` })
-              .where(eq(videos.id, videoId));
+            // Only increment viewCount for genuinely new sessions.
+            if (inserted) {
+              await tx
+                .update(videos)
+                .set({ viewCount: sql`${videos.viewCount} + 1` })
+                .where(eq(videos.id, videoId));
+            }
           });
         } else if (eventType === "heartbeat") {
           await db

@@ -205,6 +205,13 @@ export const playlistsService = {
     }
 
     await db.transaction(async (tx) => {
+      // Lock the playlist row first so two concurrent reorder() calls for
+      // the same playlist don't both read the same state and silently
+      // overwrite each other's result (last commit wins without this).
+      await tx.execute(
+        sql`SELECT 1 FROM ${playlists} WHERE ${playlists.id} = ${playlistId} FOR UPDATE`,
+      );
+
       // Single CASE-based bulk update instead of N serial updates.
       // Eliminates the per-row round-trip overhead; PostgreSQL executes
       // this as one UPDATE scan regardless of how many IDs are reordered.

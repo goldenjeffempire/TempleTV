@@ -210,7 +210,7 @@ async function deliverToExpo(payload: PushPayload): Promise<number> {
  */
 async function deliverToWebPush(payload: PushPayload): Promise<number> {
   if (!ensureVapid()) {
-    logger.debug("[push-delivery] VAPID keys not configured — skipping web push");
+    logger.warn("[push-delivery] VAPID keys not configured — web push disabled; set VAPID_PUBLIC_KEY + VAPID_PRIVATE_KEY to enable");
     return 0;
   }
 

@@ -12,6 +12,13 @@ import { ChannelEngine } from "./channel-engine.js";
  */
 declare class ChannelRegistry {
     private engines;
+    /**
+     * In-flight creation promises keyed by channelId.
+     * Prevents two concurrent getOrCreate() calls for the same channel
+     * from each constructing and starting their own ChannelEngine — which
+     * would leave an orphaned engine with running timers and a DB cursor.
+     */
+    private loading;
     boot(): Promise<void>;
     getOrCreate(channelId: string): Promise<ChannelEngine>;
     get(channelId: string): ChannelEngine | undefined;
