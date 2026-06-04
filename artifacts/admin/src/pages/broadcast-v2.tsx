@@ -858,9 +858,6 @@ function BroadcastV2PageInner() {
   // items and falls back to EMERGENCY_FILLER_URL. Dismissed manually.
   const [fillerActiveDismissed, setFillerActiveDismissed] = useState(false);
   const [fillerActiveAt, setFillerActiveAt] = useState<number | null>(null);
-  // Emergency filler not-configured warning — shown when the health endpoint
-  // reports emergencyFillerConfigured === false. Dismissed manually.
-  const [fillerNotConfiguredDismissed, setFillerNotConfiguredDismissed] = useState(false);
   // Launch Checklist modal.
   const [showChecklist, setShowChecklist] = useState(false);
 
@@ -1574,11 +1571,8 @@ function BroadcastV2PageInner() {
     if (!isAllBlocked) setAllBlockedDismissed(false);
   }, [isAllBlocked]);
 
-  // Emergency filler not configured: health endpoint explicitly says the env
-  // var is absent. Only show after health data is loaded so we don't flash
-  // a false warning on cold boot before the first fetch completes.
-  const isFillerNotConfigured =
-    engineHealth !== undefined && engineHealth.emergencyFillerConfigured === false;
+  // (Emergency-filler "not configured" warning banner removed per operator
+  // preference — the operator has chosen not to configure EMERGENCY_FILLER_URL.)
 
   // Continuous on-air uptime — format ms into a human-readable string for display.
   const continuousOnAirMs = engineHealth?.continuousOnAirMs ?? null;
@@ -2260,35 +2254,6 @@ function BroadcastV2PageInner() {
               <X className="h-4 w-4" />
             </button>
           </div>
-        </div>
-      )}
-
-      {/* Emergency filler not-configured warning — shown when the health
-          endpoint reports EMERGENCY_FILLER_URL is absent on the server.
-          This is a persistent configuration gap, not a transient event, so
-          the banner resets only on page reload (manual dismiss persists for
-          the session).  Dismissed manually; auto-reset when configured. */}
-      {isFillerNotConfigured && !fillerNotConfiguredDismissed && (
-        <div
-          role="alert"
-          className="flex items-start gap-3 rounded-md border border-yellow-300/60 bg-yellow-50 px-4 py-3 text-sm text-yellow-900 dark:border-yellow-700/60 dark:bg-yellow-950/30 dark:text-yellow-200"
-        >
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-500" />
-          <div className="flex-1">
-            <strong>No emergency filler URL configured.</strong>{" "}
-            If all queue items become unplayable the broadcast will go to dead air with no
-            fallback content. Set{" "}
-            <code className="font-mono text-xs">EMERGENCY_FILLER_URL</code> in your server
-            environment to an https:// HLS (.m3u8) or MP4 stream for 24/7 broadcast resilience.
-          </div>
-          <button
-            type="button"
-            aria-label="Dismiss emergency filler not-configured warning"
-            onClick={() => setFillerNotConfiguredDismissed(true)}
-            className="shrink-0 rounded p-0.5 hover:bg-yellow-200/60 dark:hover:bg-yellow-800/40"
-          >
-            <X className="h-4 w-4" />
-          </button>
         </div>
       )}
 
