@@ -174,7 +174,7 @@ export default function LibraryPage() {
     staleTime: 10_000,
   });
 
-  const { data: history } = useQuery({
+  const { data: history, isLoading: historyLoading } = useQuery({
     queryKey: ["youtube-sync-history"],
     queryFn: () => api.get<{ items: SyncHistoryItem[] }>("/admin/youtube/sync/history"),
     enabled: showHistory,
@@ -209,6 +209,9 @@ export default function LibraryPage() {
       void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
       void qc.invalidateQueries({ queryKey: ["youtube-sync-history"] });
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      // Newly synced YouTube videos also appear in the Videos tab (admin-videos).
+      // Invalidate so an admin on the Videos page sees the new entries immediately.
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
     },
     onError: (err) => {
       const msg = (err as Error).message ?? "Sync failed";
@@ -221,6 +224,7 @@ export default function LibraryPage() {
     void qc.invalidateQueries({ queryKey: ["youtube-sync-status"] });
     void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
     void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+    void qc.invalidateQueries({ queryKey: ["admin-videos"] });
   });
 
   const isSyncing = syncMutation.isPending || (status?.syncInProgress ?? false);
@@ -402,6 +406,20 @@ export default function LibraryPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="p-0">
+            {historyLoading ? (
+              <div className="divide-y">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <div key={i} className="flex items-center gap-4 px-4 py-3">
+                    <Skeleton className="h-4 w-4 rounded-full flex-shrink-0" />
+                    <div className="flex-1 space-y-1.5">
+                      <Skeleton className="h-4 w-32" />
+                      <Skeleton className="h-3 w-48" />
+                    </div>
+                    <Skeleton className="h-3 w-20 flex-shrink-0" />
+                  </div>
+                ))}
+              </div>
+            ) : (
             <div className="divide-y">
               {(history?.items ?? []).map((item) => (
                 <div key={item.id} className="flex items-center gap-4 px-4 py-3 text-sm">
@@ -434,6 +452,7 @@ export default function LibraryPage() {
                 <p className="text-sm text-muted-foreground text-center py-6">No sync history yet</p>
               )}
             </div>
+            )}
           </CardContent>
         </Card>
       )}

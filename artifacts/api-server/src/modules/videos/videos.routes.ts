@@ -121,11 +121,16 @@ function catalogCacheKey(params: {
  * cached pages become stale on the next request without explicit key deletion.
  */
 export async function invalidateVideosCatalogCache(): Promise<void> {
+  // Save the old generation before incrementing so the proactive delete
+  // targets an existing key (old gen), not the brand-new empty one (new gen).
+  const oldGen = catalogGeneration;
   catalogGeneration++;
-  // Also try to proactively delete the most common key so the very next
-  // request after a write sees fresh data even before TTL expiry.
+  // Proactively evict the most-hit cache variant from the previous generation.
+  // New requests compute keys using the incremented generation and always miss,
+  // so correctness is guaranteed even if this del fails.
+  // NOTE: key prefix must be "catalog2" to match catalogCacheKey() output.
   const c = cache();
-  await c.del(`videos:catalog:g${catalogGeneration}:newest:1:50`).catch(() => {});
+  await c.del(`videos:catalog2:g${oldGen}:newest:1:50`).catch(() => {});
 }
 
 type VideoDtoRow = Pick<typeof videos.$inferSelect,

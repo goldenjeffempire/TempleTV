@@ -19,7 +19,8 @@ export interface MediaScanReport {
     items: ScanItemResult[];
 }
 declare class MediaIntegrityScannerImpl {
-    private timer;
+    private bootTimer;
+    private scanInterval;
     private scanning;
     private readonly failureCounts;
     private report;

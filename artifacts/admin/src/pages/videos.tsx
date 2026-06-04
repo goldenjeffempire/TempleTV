@@ -279,6 +279,16 @@ export default function VideosPage() {
     }
   }, [data, page]);
 
+  // Clear selection whenever the user navigates to a different page.
+  // Without this, items selected on page 1 persist invisibly while the
+  // user is on page 2, causing a cross-page bulk delete if they then
+  // click "Delete Selected" — they'd delete page-1 items they can't see.
+  // Filter/search handlers already pass setSelectedIds(new Set()) explicitly;
+  // this useEffect only fires for the pagination prev/next buttons.
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [page]);
+
   // ── Mutations ──────────────────────────────────────────────────────────────
 
   const updateMutation = useMutation({
@@ -312,6 +322,8 @@ export default function VideosPage() {
     onSuccess: () => {
       toast.success("Video deleted");
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      // Keep the Dashboard "Total Videos" count accurate after deletion.
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
       // Also refresh the broadcast queue so any orphan references to this
       // video are cleared from the queue panel immediately — without this,
       // the queue UI shows stale items with broken source URLs until the
@@ -323,6 +335,9 @@ export default function VideosPage() {
       void qc.invalidateQueries({ queryKey: ["series"] });
       void qc.invalidateQueries({ queryKey: ["series-episodes"] });
       void qc.invalidateQueries({ queryKey: ["playlists"] });
+      // If the deleted video was imported from YouTube, remove it from the
+      // Library tab immediately instead of waiting for stale time to expire.
+      void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
       setDeleteVideo(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Delete failed"),
@@ -492,6 +507,9 @@ export default function VideosPage() {
       void qc.invalidateQueries({ queryKey: ["series-episodes"] });
       void qc.invalidateQueries({ queryKey: ["playlists"] });
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      // Match single-delete: evict YouTube Library tab so deleted YouTube
+      // videos don't linger there until stale time expires.
+      void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
     },
     onError: () => toast.error("Bulk delete failed"),
   });

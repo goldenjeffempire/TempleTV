@@ -1025,6 +1025,9 @@ function BroadcastV2PageInner() {
       ),
     onSuccess: (result) => {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      // The transcoding panel shows per-item duration; refresh it so the
+      // updated duration appears without waiting for the next poll cycle.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
       const diff = result.newDurSecs - result.oldDurSecs;
       toast.success(
         `Duration updated: ${result.oldDurSecs}s → ${result.newDurSecs}s (${diff > 0 ? "+" : ""}${diff}s).`,

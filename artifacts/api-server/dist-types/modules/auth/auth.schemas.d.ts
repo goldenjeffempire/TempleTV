@@ -43,38 +43,38 @@ export declare const AuthTokensSchema: z.ZodObject<{
         role: z.ZodEnum<["admin", "editor", "user", "system"]>;
         displayName: z.ZodString;
     }, "strip", z.ZodTypeAny, {
-        email: string;
-        displayName: string;
         id: string;
-        role: "user" | "admin" | "editor" | "system";
+        email: string;
+        role: "admin" | "editor" | "user" | "system";
+        displayName: string;
     }, {
-        email: string;
-        displayName: string;
         id: string;
-        role: "user" | "admin" | "editor" | "system";
+        email: string;
+        role: "admin" | "editor" | "user" | "system";
+        displayName: string;
     }>;
 }, "strip", z.ZodTypeAny, {
-    accessToken: string;
+    user: {
+        id: string;
+        email: string;
+        role: "admin" | "editor" | "user" | "system";
+        displayName: string;
+    };
     refreshToken: string;
+    accessToken: string;
     accessTokenExpiresIn: number;
     refreshTokenExpiresIn: number;
-    user: {
-        email: string;
-        displayName: string;
-        id: string;
-        role: "user" | "admin" | "editor" | "system";
-    };
 }, {
-    accessToken: string;
+    user: {
+        id: string;
+        email: string;
+        role: "admin" | "editor" | "user" | "system";
+        displayName: string;
+    };
     refreshToken: string;
+    accessToken: string;
     accessTokenExpiresIn: number;
     refreshTokenExpiresIn: number;
-    user: {
-        email: string;
-        displayName: string;
-        id: string;
-        role: "user" | "admin" | "editor" | "system";
-    };
 }>;
 export type AuthTokens = z.infer<typeof AuthTokensSchema>;
 /**
@@ -105,38 +105,38 @@ export declare const LoginResponseSchema: z.ZodUnion<[z.ZodObject<{
         role: z.ZodEnum<["admin", "editor", "user", "system"]>;
         displayName: z.ZodString;
     }, "strip", z.ZodTypeAny, {
-        email: string;
-        displayName: string;
         id: string;
-        role: "user" | "admin" | "editor" | "system";
+        email: string;
+        role: "admin" | "editor" | "user" | "system";
+        displayName: string;
     }, {
-        email: string;
-        displayName: string;
         id: string;
-        role: "user" | "admin" | "editor" | "system";
+        email: string;
+        role: "admin" | "editor" | "user" | "system";
+        displayName: string;
     }>;
 }, "strip", z.ZodTypeAny, {
-    accessToken: string;
+    user: {
+        id: string;
+        email: string;
+        role: "admin" | "editor" | "user" | "system";
+        displayName: string;
+    };
     refreshToken: string;
+    accessToken: string;
     accessTokenExpiresIn: number;
     refreshTokenExpiresIn: number;
-    user: {
-        email: string;
-        displayName: string;
-        id: string;
-        role: "user" | "admin" | "editor" | "system";
-    };
 }, {
-    accessToken: string;
+    user: {
+        id: string;
+        email: string;
+        role: "admin" | "editor" | "user" | "system";
+        displayName: string;
+    };
     refreshToken: string;
+    accessToken: string;
     accessTokenExpiresIn: number;
     refreshTokenExpiresIn: number;
-    user: {
-        email: string;
-        displayName: string;
-        id: string;
-        role: "user" | "admin" | "editor" | "system";
-    };
 }>, z.ZodObject<{
     mfaRequired: z.ZodLiteral<true>;
     mfaToken: z.ZodString;
@@ -215,18 +215,18 @@ export declare const MeResponseSchema: z.ZodObject<{
     createdAt: z.ZodString;
     mfaEnabled: z.ZodBoolean;
 }, "strip", z.ZodTypeAny, {
-    email: string;
-    displayName: string;
     id: string;
-    role: "user" | "admin" | "editor" | "system";
+    email: string;
+    role: "admin" | "editor" | "user" | "system";
     createdAt: string;
+    displayName: string;
     mfaEnabled: boolean;
 }, {
-    email: string;
-    displayName: string;
     id: string;
-    role: "user" | "admin" | "editor" | "system";
+    email: string;
+    role: "admin" | "editor" | "user" | "system";
     createdAt: string;
+    displayName: string;
     mfaEnabled: boolean;
 }>;
 /**
@@ -272,10 +272,10 @@ export declare const ResetPasswordBodySchema: z.ZodObject<{
     token: z.ZodString;
     password: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    password: string;
     token: string;
+    password: string;
 }, {
-    password: string;
     token: string;
+    password: string;
 }>;
 export type ResetPasswordBody = z.infer<typeof ResetPasswordBodySchema>;
