@@ -218,6 +218,20 @@ export async function wsRoutes(app: FastifyInstance) {
         // dead socket, and do NOT flush buffered frames to a gone client.
         if (socketClosed) return;
 
+        // Concurrent-resume guard: a newer `resume` message may have arrived
+        // while this DB replay was awaiting. If so, the newer handler has
+        // already:
+        //   1. Removed this `bufferFrame` from the orchestrator.
+        //   2. Registered its own `bufferFrame2` as `activeFrameHandler`.
+        // If we proceed here we would:
+        //   a. Call `off("frame", bufferFrame)` — no-op (already removed).
+        //   b. Call `on("frame", onFrame)` — but `onFrame` is now registered by
+        //      the newer resume's post-await path, so it ends up DOUBLE-registered:
+        //      every subsequent broadcast frame is sent twice to this client.
+        // Solution: if we are no longer the current active handler, yield to
+        // the newer resume and return without touching the emitter.
+        if (activeFrameHandler !== bufferFrame) return;
+
         // After replay, send a fresh authoritative snapshot so the client
         // is aligned with server state even if the recover frame contained
         // no events (e.g. after a server restart that reset the event log).

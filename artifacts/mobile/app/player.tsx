@@ -49,6 +49,10 @@ import { Feather } from "@expo/vector-icons";
 import { useKeepAwake } from "expo-keep-awake";
 import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from "expo-av";
 import { usePictureInPicture } from "@/hooks/usePictureInPicture";
+import {
+  cancelPipRestoreNotification,
+  isInPictureInPictureMode,
+} from "@/modules/expo-pip-android/src";
 import * as ScreenOrientation from "expo-screen-orientation";
 import { useColors } from "@/hooks/useColors";
 import { YoutubePlayer } from "@/components/YoutubePlayer";
@@ -301,6 +305,15 @@ function BroadcastHlsPlayer({ muted, suppressEvents, ...rest }: BroadcastHlsPlay
   void rest;
   const apiBase = getApiBase() ?? "";
   const handleFatal = useCallback(() => {
+    // If the app is in a PiP window when FATAL fires, cancel the restore
+    // notification and exit PiP before navigating.  Without this, the
+    // Android OS may leave a frozen PiP overlay on the home screen because
+    // the underlying Activity navigated away while the PiP window was still
+    // attached to it. cancelPipRestoreNotification() is a safe no-op on all
+    // platforms and when PiP is not active.
+    if (isInPictureInPictureMode()) {
+      cancelPipRestoreNotification().catch(() => {});
+    }
     if (router.canGoBack()) {
       router.back();
     } else {

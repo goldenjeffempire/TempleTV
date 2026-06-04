@@ -255,6 +255,22 @@ export class PlayerMachine {
   private naturalEndRetries = 0;
 
   /**
+   * The `startsAtMs` value from the server snapshot at the moment the last
+   * natural-end event fired. Used to detect single-item queue loops where
+   * the orchestrator advances the cycle anchor for the same item ID.
+   *
+   * Problem this solves: on a single-item queue, `lastEndedItemId` never
+   * clears (because `server.current.id` never changes) — the post-HANDOFF
+   * guard blocks rebinding for 30 s (then retries for up to 90 s), producing
+   * a black-screen gap between every loop of the same video.
+   *
+   * Fix: when the server snapshot for the same item carries a NEW `startsAtMs`
+   * (the orchestrator created a fresh slot), the guard is cleared immediately
+   * so the loop restarts within < 1 s instead of waiting 30+ s.
+   */
+  private lastEndedItemStartsAtMs: number | null = null;
+
+  /**
    * The `startsAtMs` value from the server snapshot that caused the machine
    * to enter SKIP_PENDING due to exhausted retries on the active buffer.
    *
@@ -523,17 +539,28 @@ export class PlayerMachine {
         server.current.id === this.lastEndedItemId &&
         server.current.endsAtMs > Date.now() + this.clockOffsetMs
       ) {
-        // TTL safety valve: if the naturalItemEnd POST failed to reach the
-        // server (network error, timeout), the server keeps showing this
-        // item as current with endsAtMs far in the future. After 30 s we
-        // assume the signal was lost — clear the guard and allow rebinding
-        // so the player doesn't stay dark for the full slot duration.
-        if (this.lastEndedAtMs !== null && Date.now() - this.lastEndedAtMs > 30_000) {
-          // The guard TTL has elapsed.  Instead of clearing the guard and
-          // falling through to bindActive (which would re-bind the just-ended
-          // item and loop it for the rest of the server slot), extend the
-          // window and retry the naturalItemEnd POST so the server can advance.
-          // After 3 retries (~90 s total) the guard is released as a last resort.
+        // ── Single-item queue loop fast-path ─────────────────────────────
+        // When the orchestrator restarts the same item (single-item queue)
+        // it advances `startsAtMs` to create a fresh slot. A changed anchor
+        // for the same item ID means the server has already processed our
+        // naturalEnd signal and moved on — clear the guard immediately so
+        // the loop restarts within < 1 s instead of waiting 30+ s.
+        if (
+          this.lastEndedItemStartsAtMs !== null &&
+          server.current.startsAtMs !== this.lastEndedItemStartsAtMs
+        ) {
+          this.lastEndedItemId = null;
+          this.lastEndedAtMs = null;
+          this.lastEndedItemStartsAtMs = null;
+          this.naturalEndRetries = 0;
+          // Fall through to bindActive below.
+        } else if (this.lastEndedAtMs !== null && Date.now() - this.lastEndedAtMs > 30_000) {
+          // TTL safety valve: if the naturalItemEnd POST failed to reach the
+          // server (network error, timeout), the server keeps showing this
+          // item as current with endsAtMs far in the future. After 30 s we
+          // assume the signal was lost — extend the guard and retry the POST
+          // so the server can advance. After 3 retries (~90 s total) the
+          // guard is released as a last resort.
           this.naturalEndRetries += 1;
           if (this.naturalEndRetries <= 3) {
             this.lastEndedAtMs = Date.now(); // extend guard by another 30 s
@@ -544,6 +571,7 @@ export class PlayerMachine {
           this.naturalEndRetries = 0;
           this.lastEndedItemId = null;
           this.lastEndedAtMs = null;
+          this.lastEndedItemStartsAtMs = null;
           // Fall through to bindActive below (last resort after ~90 s).
         } else {
           return;
@@ -555,6 +583,7 @@ export class PlayerMachine {
       if (this.lastEndedItemId !== null && server.current.id !== this.lastEndedItemId) {
         this.lastEndedItemId = null;
         this.lastEndedAtMs = null;
+        this.lastEndedItemStartsAtMs = null;
         this.naturalEndRetries = 0; // reset retry counter for the next natural-end event
       }
 
@@ -928,6 +957,7 @@ export class PlayerMachine {
       if (endedItemId) {
         this.lastEndedItemId = endedItemId;
         this.lastEndedAtMs = Date.now();
+        this.lastEndedItemStartsAtMs = this.snapshot.lastServerSnapshot?.current?.startsAtMs ?? null;
       }
       // Immediately fetch fresh state rather than waiting for the server's
       // next keep-alive (8 s after the orchestrator change).  This cuts the
@@ -946,6 +976,7 @@ export class PlayerMachine {
     if (endedItemId) {
       this.lastEndedItemId = endedItemId;
       this.lastEndedAtMs = Date.now();
+      this.lastEndedItemStartsAtMs = this.snapshot.lastServerSnapshot?.current?.startsAtMs ?? null;
     }
 
     this.transition("HANDOFF");

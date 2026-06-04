@@ -193,6 +193,7 @@ export async function userRoutes(app: FastifyInstance) {
         }),
         response: {
           201: FavoriteItemSchema,
+          429: z.object({ error: z.string() }),
         },
       },
     },
@@ -368,6 +369,7 @@ export async function userRoutes(app: FastifyInstance) {
         }),
         response: {
           200: HistoryItemSchema,
+          429: z.object({ error: z.string() }),
         },
       },
     },

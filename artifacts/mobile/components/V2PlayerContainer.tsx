@@ -112,6 +112,10 @@ import { ResizeMode, Video, type AVPlaybackStatus } from "expo-av";
 import { useV2BroadcastNative } from "@workspace/player-core/react-native";
 import type { MobileBufferState } from "@workspace/player-core/adapters/mobile";
 import { useNetworkContext } from "@/context/NetworkContext";
+import {
+  isInPictureInPictureMode,
+  updatePipParams,
+} from "../modules/expo-pip-android/src";
 
 // Audio session (playsInSilentModeIOS, staysActiveInBackground, DoNotMix
 // interruption mode) is configured globally in app/_layout.tsx at app boot.
@@ -1262,6 +1266,58 @@ export function V2PlayerContainer({
     activeItem !== null &&
     !("source" in activeItem) &&   // V2Override has .kind directly, not .source.kind
     activeItem.kind === "youtube";
+
+  // ── PiP buffer-swap re-entry (Android) ───────────────────────────────
+  // When the broadcast performs an A/B handoff (item N ends → item N+1
+  // starts), the previously-inactive buffer becomes active.  On Android,
+  // PiP mode shows the entire Activity view hierarchy in a mini window —
+  // the active buffer (higher zIndex) should naturally appear on top.
+  // However, on some Android versions the system caches the surface ID
+  // that was on top when PiP was first entered and doesn't auto-refresh it
+  // during a handoff, leaving the PiP window frozen on the old buffer's
+  // last frame while the audio from the new item plays.
+  //
+  // Calling `updatePipParams` (→ setPictureInPictureParams) after an A/B
+  // swap signals Android to re-capture the current activity window content,
+  // refreshing the PiP surface to reflect the new active buffer.
+  // On API < 31 this is still a safe no-op — `setPictureInPictureParams`
+  // is ignored before the seamless-resize API landed.
+  const prevActiveBufferIdRef = useRef<"A" | "B">(activeBufferId);
+  useEffect(() => {
+    if (prevActiveBufferIdRef.current === activeBufferId) return;
+    prevActiveBufferIdRef.current = activeBufferId;
+    if (!isInPictureInPictureMode()) return;
+    // Refresh Android PiP window to the new active buffer.
+    updatePipParams(16, 9, true).catch(() => {});
+  }, [activeBufferId]);
+
+  // ── YouTube-override-in-PiP exit ──────────────────────────────────────
+  // When a YouTube live override starts while the app is in a PiP window,
+  // the native HLS buffers have no content to display (YouTube overrides
+  // are excluded from expo-av) and the PiP window goes black or shows a
+  // frozen frame.  expo-av's <Video> cannot render a YouTube WebView inside
+  // a PiP surface on any platform.
+  //
+  // Detect the transition and signal the parent to navigate back to the
+  // foreground so the YouTube iframe can render in the full player.
+  // `onFatal` reuses the same "exit to safety" navigation path already
+  // wired in player.tsx — a dedicated onYouTubeInPip prop would need the
+  // same router.back() logic, so reuse is appropriate here.
+  const prevIsYouTubeOverrideRef = useRef(false);
+  useEffect(() => {
+    if (isYouTubeOverride && !prevIsYouTubeOverrideRef.current) {
+      prevIsYouTubeOverrideRef.current = true;
+      if (isInPictureInPictureMode()) {
+        // Cancel the restore notification so it doesn't dangle after exit.
+        // `onFatal` triggers router.back() in player.tsx which brings the
+        // Activity to foreground and closes the PiP window naturally.
+        onFatal?.();
+      }
+    }
+    if (!isYouTubeOverride) {
+      prevIsYouTubeOverrideRef.current = false;
+    }
+  }, [isYouTubeOverride, onFatal]);
 
   // ── First-frame readiness gate ────────────────────────────────────────
   // Tracks whether the native player (ExoPlayer / AVPlayer) has rendered
