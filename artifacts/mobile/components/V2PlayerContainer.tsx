@@ -265,6 +265,14 @@ interface Props {
    * Setting minimal=true implies suppressEvents=true automatically.
    */
   suppressEvents?: boolean;
+  /**
+   * Reactive PiP-mode flag from the parent screen. When provided, the
+   * YouTube-override-in-PiP exit effect becomes reactive to PiP *entry*, so it
+   * fires onFatal both when an override starts during PiP AND when PiP is
+   * entered while an override is already active. Falls back to the imperative
+   * isInPictureInPictureMode() when omitted.
+   */
+  isInPip?: boolean;
 }
 
 function sourceUrl(state: MobileBufferState, excludeYouTube: boolean): string | null {
@@ -1136,6 +1144,7 @@ export function V2PlayerContainer({
   muted = false,
   minimal = false,
   suppressEvents = false,
+  isInPip,
 }: Props) {
   void _channelId;
   const effectiveBaseUrl = useMidnightPrayersSwitch(baseUrl);
@@ -1298,26 +1307,37 @@ export function V2PlayerContainer({
   // frozen frame.  expo-av's <Video> cannot render a YouTube WebView inside
   // a PiP surface on any platform.
   //
-  // Detect the transition and signal the parent to navigate back to the
-  // foreground so the YouTube iframe can render in the full player.
-  // `onFatal` reuses the same "exit to safety" navigation path already
-  // wired in player.tsx — a dedicated onYouTubeInPip prop would need the
-  // same router.back() logic, so reuse is appropriate here.
-  const prevIsYouTubeOverrideRef = useRef(false);
+  // Signal the parent to navigate back to the foreground so the YouTube
+  // iframe can render in the full player.  `onFatal` reuses the same "exit to
+  // safety" navigation path already wired in player.tsx.
+  //
+  // The exit must fire for BOTH orderings: (a) an override starts while the
+  // app is already in PiP, and (b) the app enters PiP while an override is
+  // already active (e.g. player.tsx auto-enters PiP from portrait when the
+  // app is backgrounded mid-override).  A rising-edge-on-override-only guard
+  // missed case (b) entirely, leaving a black PiP window.  Reacting to a
+  // reactive `isInPip` flag (passed by player.tsx) covers both; we fire once
+  // per combined-active session via a ref and reset when either condition
+  // clears so a later re-entry fires again.
+  //
+  // Only the primary FSM driver navigates — the hero (minimal) and the inline
+  // muted instance (suppressEvents) are view-only and must not pop the stack.
+  const youtubeInPipExitFiredRef = useRef(false);
   useEffect(() => {
-    if (isYouTubeOverride && !prevIsYouTubeOverrideRef.current) {
-      prevIsYouTubeOverrideRef.current = true;
-      if (isInPictureInPictureMode()) {
+    if (minimal || suppressEvents) return;
+    const inPip = isInPip ?? isInPictureInPictureMode();
+    if (isYouTubeOverride && inPip) {
+      if (!youtubeInPipExitFiredRef.current) {
+        youtubeInPipExitFiredRef.current = true;
         // Cancel the restore notification so it doesn't dangle after exit.
         // `onFatal` triggers router.back() in player.tsx which brings the
         // Activity to foreground and closes the PiP window naturally.
         onFatal?.();
       }
+    } else {
+      youtubeInPipExitFiredRef.current = false;
     }
-    if (!isYouTubeOverride) {
-      prevIsYouTubeOverrideRef.current = false;
-    }
-  }, [isYouTubeOverride, onFatal]);
+  }, [isYouTubeOverride, isInPip, minimal, suppressEvents, onFatal]);
 
   // ── First-frame readiness gate ────────────────────────────────────────
   // Tracks whether the native player (ExoPlayer / AVPlayer) has rendered

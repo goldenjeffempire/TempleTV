@@ -208,14 +208,23 @@ function getOrCreateSession(baseUrl: string): NativeSession {
     // presenting the ended item as `current`, causing every client's 30 s
     // post-natural-end guard to block the next item for up to half a minute.
     // The endpoint is item-level idempotent, so repeated POSTs are safe.
+    //
+    // Guard: check transport.isStopped before each retry and before calling
+    // requestSnapshot() (parity with react.ts).  Without this, sessions
+    // evicted by the janitor (machine.destroy() + transport.stop()) keep
+    // firing POST /natural-end and requestSnapshot() indefinitely — one stale
+    // setTimeout chain per natural video end that happened while the session
+    // was still alive — draining battery and generating server noise on mobile.
     const naturalEndRetryDelays = [2_000, 4_000, 8_000];
     const doPost = (attempt: number): void => {
+      if (transport.isStopped) return;
       void fetch(`${baseUrl}/natural-end`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ itemId }),
         signal: AbortSignal.timeout(8_000),
       }).catch(() => {
+        if (transport.isStopped) return;
         if (attempt < naturalEndRetryDelays.length) {
           setTimeout(() => doPost(attempt + 1), naturalEndRetryDelays[attempt]);
         } else {

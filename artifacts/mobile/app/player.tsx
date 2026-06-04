@@ -288,6 +288,12 @@ interface BroadcastHlsPlayerProps {
    * the fullscreen player's stream and triggers unnecessary recovery.
    */
   suppressEvents?:    boolean;
+  /**
+   * Reactive PiP-mode flag, forwarded to V2PlayerContainer so its
+   * YouTube-override-in-PiP exit becomes reactive to PiP entry (covers the
+   * "enter PiP while an override is already active" ordering).
+   */
+  isInPip?:           boolean;
 }
 
 /**
@@ -301,7 +307,7 @@ interface BroadcastHlsPlayerProps {
  * navigate the user back rather than leaving a frozen "Broadcast unavailable"
  * overlay with no escape route.
  */
-function BroadcastHlsPlayer({ muted, suppressEvents, ...rest }: BroadcastHlsPlayerProps) {
+function BroadcastHlsPlayer({ muted, suppressEvents, isInPip, ...rest }: BroadcastHlsPlayerProps) {
   void rest;
   const apiBase = getApiBase() ?? "";
   const handleFatal = useCallback(() => {
@@ -327,6 +333,7 @@ function BroadcastHlsPlayer({ muted, suppressEvents, ...rest }: BroadcastHlsPlay
         onFatal={handleFatal}
         muted={muted}
         suppressEvents={suppressEvents}
+        isInPip={isInPip}
       />
     </ErrorBoundary>
   );
@@ -1065,6 +1072,7 @@ export default function PlayerScreen() {
               onProgress={handleProgress}
               muted={isFullscreen}
               suppressEvents={isFullscreen}
+              isInPip={isInPip}
             />
           ) : isYoutube ? (
             <YoutubePlayer
@@ -1116,6 +1124,7 @@ export default function PlayerScreen() {
               onProgress={handleProgress}
               muted={isFullscreen}
               suppressEvents={isFullscreen}
+              isInPip={isInPip}
             />
           ) : (
             <Image
@@ -1397,6 +1406,7 @@ export default function PlayerScreen() {
                 title={title}
                 playerHeightOverride={height}
                 onProgress={handleProgress}
+                isInPip={isInPip}
               />
             ) : isYoutube ? (
               <YoutubePlayer
@@ -1435,6 +1445,7 @@ export default function PlayerScreen() {
                 title={title}
                 playerHeightOverride={height}
                 onProgress={handleProgress}
+                isInPip={isInPip}
               />
             ) : (
               <Image

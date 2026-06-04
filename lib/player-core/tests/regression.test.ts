@@ -26,6 +26,9 @@
  *           the LIVE_OVERRIDE_ACTIVE branch, before the YouTube early-return.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { PlayerMachine } from "../src/machine.js";
 import type { AdapterIntent } from "../src/machine.js";
 
@@ -751,5 +754,38 @@ describe("naturalEnd retry — cancelled on transport stop (Bug 8)", () => {
     // The retry should have bailed because mockTransport.isStopped was set to true
     expect(retryCount).toBe(1); // no second attempt
     expect(mockTransport.requestSnapshot).not.toHaveBeenCalled();
+  });
+
+  // ── Bug 8b — react-native.ts must mirror react.ts (parity) ──────────────────
+  // The web hook (react.ts) guards its naturalEnd retry chain with
+  // `if (transport.isStopped) return;` before the POST and before the retry/
+  // requestSnapshot. The native hook (react-native.ts) shipped WITHOUT those
+  // guards, so an evicted RN session (machine.destroy() + transport.stop())
+  // kept firing POST /natural-end + requestSnapshot() forever — a battery and
+  // network leak on mobile. This structural test fails if either hook loses
+  // the guards, preventing the parity gap from silently re-opening.
+  it("both react.ts and react-native.ts guard the naturalEnd chain with transport.isStopped", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const srcDir = join(here, "..", "src");
+
+    // Extract the body of the setNaturalEndCallback closure from each source
+    // so the assertion can't be satisfied by an isStopped guard elsewhere.
+    const extractNaturalEndBlock = (file: string): string => {
+      const text = readFileSync(join(srcDir, file), "utf8");
+      const start = text.indexOf("setNaturalEndCallback");
+      expect(start, `${file} must register a naturalEnd callback`).toBeGreaterThan(-1);
+      // The callback body comfortably fits within the next ~1500 chars.
+      return text.slice(start, start + 1500);
+    };
+
+    for (const file of ["react.ts", "react-native.ts"]) {
+      const block = extractNaturalEndBlock(file);
+      const guardCount = (block.match(/if\s*\(\s*transport\.isStopped\s*\)\s*return;/g) ?? []).length;
+      // One guard before the fetch, one inside the .catch() before retry.
+      expect(
+        guardCount,
+        `${file} naturalEnd chain must have ≥2 transport.isStopped guards (found ${guardCount})`,
+      ).toBeGreaterThanOrEqual(2);
+    }
   });
 });
