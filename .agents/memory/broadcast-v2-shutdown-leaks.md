@@ -50,6 +50,13 @@ All three v1 SSE handlers (`broadcast.routes.ts`, `realtime/sse.gateway.ts`, `ad
 
 ---
 
+### 9. broadcast-v2 WS gateway — no force-close on shutdown (HIGH)
+`broadcast-v2/io/ws.gateway.ts` had no active-socket registry and no `closeAll`. The v1 realtime WS gateway and all SSE gateways drain on shutdown, but established v2 **player** WS sockets kept their orchestrator `frame` listener registrations alive and blocked `app.close()` until `SHUTDOWN_DRAIN_MS`, escalating to SIGKILL — a restart-loop signature.
+**Fix:** module-level `_activeSockets: Set<{terminate?()}>` + exported `closeAllBroadcastV2WsSessions()` (mirrors `closeAllRealtimeWsSessions`); `add` on connect, `delete` in close handler; wired into `main.ts` shutdown next to the v1 WS drain. `terminate()` fires the existing close handler so all per-socket cleanup still runs; `Set.delete`/`clear` + idempotent `releaseCounter` make terminate/close ordering safe.
+
+## WS drain parity rule
+Every WS gateway needs the same drain treatment as SSE: a module-level active-socket registry + exported `closeAll*()` wired into `main.ts` shutdown. Fastify `app.close()` does NOT auto-close established WS connections — un-drained sockets hang shutdown until the drain timeout and force SIGKILL restarts.
+
 ## Key pattern
 Any SSE handler that calls `sseCounter.inc()` MUST also:
 1. Have a module-level force-close registry (`Set<() => void>`) + exported `closeAll*()`.

@@ -494,6 +494,16 @@ async function main() {
         const { closeAllRealtimeWsSessions } = await import("./modules/realtime/ws.gateway.js");
         closeAllRealtimeWsSessions();
       } catch { /* non-fatal */ }
+      // Force-close all broadcast-v2 WS connections (player surface). Without
+      // this, established v2 WS sockets keep their orchestrator "frame" listener
+      // registrations alive and prevent app.close() from completing, hanging the
+      // process until SHUTDOWN_DRAIN_MS elapses and the platform escalates to
+      // SIGKILL — the restart-loop signature seen in production. The v1 SSE/WS
+      // gateways already drain here; v2 WS was the missing surface.
+      try {
+        const { closeAllBroadcastV2WsSessions } = await import("./modules/broadcast-v2/io/ws.gateway.js");
+        closeAllBroadcastV2WsSessions();
+      } catch { /* non-fatal */ }
       // Stop the chat ping/zombie-sweep interval. Without this the setInterval
       // kept the event loop alive after all other subsystems had shut down,
       // delaying process.exit(0) by up to 25 s in low-traffic scenarios.

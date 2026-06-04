@@ -8,7 +8,7 @@ import { storage } from "../../infrastructure/storage.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { uploadSessions, type UploadSession } from "./upload-sessions.js";
 import { enqueueTranscode } from "../transcoder/transcoder.queue.js";
-import { generateQuickThumbnail, probeUploadedDuration } from "../transcoder/transcoder.service.js";
+import { generateQuickThumbnail, probeUploadedContainerValidity, probeUploadedDuration } from "../transcoder/transcoder.service.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { chunkedUploadRoutes } from "./chunked-upload.routes.js";
@@ -389,6 +389,29 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
         );
       }
 
+      // Container validity gate — rejects corrupt MP4s (missing/zeroed moov
+      // atom) BEFORE the videos row is inserted, so they never reach the
+      // broadcast queue and never burn skip budget. The size check above only
+      // catches truncation; a full-size file can still have an unreadable
+      // container. Mirrors the early gate in the chunked-upload path. The probe
+      // returns valid=true on any infrastructure error (download/ffprobe), so
+      // this only rejects on genuine, confirmed corruption.
+      const { valid: containerOk } = await probeUploadedContainerValidity(body.objectKey);
+      if (!containerOk) {
+        req.log.error(
+          { objectKey: body.objectKey, sizeBytes: body.sizeBytes },
+          "[s3-multipart-complete] container validation failed (moov atom missing/unreadable) — rejecting before queue insertion",
+        );
+        throw Object.assign(
+          new Error(
+            "Upload rejected: the video container is corrupt (missing or unreadable moov atom). " +
+              "This usually means the file was incompletely written or exported. " +
+              "Please re-export the video and upload again.",
+          ),
+          { statusCode: 422 },
+        );
+      }
+
       const localVideoUrl = completed.location || storage().publicUrl(body.objectKey);
       const videoId = randomUUID();
       const inserted = await db
@@ -614,6 +637,27 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
               "The upload may have failed silently — try uploading again.",
           ),
           { statusCode: 502 },
+        );
+      }
+
+      // Container validity gate — rejects corrupt MP4s (missing/zeroed moov
+      // atom) BEFORE the videos row is inserted, so they never reach the
+      // broadcast queue. Mirrors the chunked-upload early gate. The probe
+      // returns valid=true on any infrastructure error, so this only rejects
+      // on genuine, confirmed corruption.
+      const { valid: containerOk } = await probeUploadedContainerValidity(body.objectKey);
+      if (!containerOk) {
+        req.log.error(
+          { objectKey: body.objectKey, sizeBytes: body.sizeBytes },
+          "[s3-finalize] container validation failed (moov atom missing/unreadable) — rejecting before queue insertion",
+        );
+        throw Object.assign(
+          new Error(
+            "Upload rejected: the video container is corrupt (missing or unreadable moov atom). " +
+              "This usually means the file was incompletely written or exported. " +
+              "Please re-export the video and upload again.",
+          ),
+          { statusCode: 422 },
         );
       }
 

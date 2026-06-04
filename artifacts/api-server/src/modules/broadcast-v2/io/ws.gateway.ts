@@ -38,6 +38,24 @@ const _wsSweep = setInterval(() => {
 }, 10 * 60_000);
 (_wsSweep as unknown as { unref?: () => void }).unref?.();
 
+// ── Active-socket registry for graceful shutdown ──────────────────────────────
+// All open broadcast-v2 WebSocket sockets. The graceful-shutdown path in main.ts
+// must force-terminate these before app.close(); otherwise the established WS
+// connections (and their orchestrator "frame" listener registrations) keep the
+// HTTP server from closing, hanging the process until SHUTDOWN_DRAIN_MS elapses
+// and the orchestrator (Render/K8s) escalates to SIGKILL — producing the restart
+// loops observed in production. Mirrors closeAllRealtimeWsSessions() for the v1
+// playback gateway. terminate() fires each socket's "close" handler so the normal
+// cleanup (clearInterval, off("frame"), releaseCounter, counter dec) still runs.
+const _activeSockets = new Set<{ terminate?(): void }>();
+
+export function closeAllBroadcastV2WsSessions(): void {
+  for (const s of _activeSockets) {
+    try { s.terminate?.(); } catch { /* already closed */ }
+  }
+  _activeSockets.clear();
+}
+
 export async function wsRoutes(app: FastifyInstance) {
   app.get("/ws", { websocket: true }, (socket, req) => {
     const ip = (req.ip ?? req.socket?.remoteAddress ?? "unknown") as string;
@@ -68,6 +86,9 @@ export async function wsRoutes(app: FastifyInstance) {
     }
     activeWsConnections.inc({ surface: "broadcast-v2", ...SERVICE_LABELS });
     wsCounter.inc();
+    // Register for graceful-shutdown termination. Removed in the close handler.
+    const socketRef = socket as unknown as { terminate?(): void };
+    _activeSockets.add(socketRef);
 
     const send = (frame: V2ServerFrame) => {
       try {
@@ -253,6 +274,7 @@ export async function wsRoutes(app: FastifyInstance) {
       // Signal any in-flight `resume` handler so it does not re-register
       // onFrame on a dead socket after its DB await resolves.
       socketClosed = true;
+      _activeSockets.delete(socketRef);
       clearInterval(heartbeat);
       // Remove whichever handler is currently registered — either the live
       // `onFrame` listener or the `bufferFrame` buffering listener that was

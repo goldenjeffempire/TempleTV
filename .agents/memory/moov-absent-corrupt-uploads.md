@@ -15,6 +15,16 @@ MP4 files uploaded with container structure `ftyp → free → mdat (no moov)` a
 - **`remuxForFaststart`** upgraded from 1 strategy to 3 sequential strategies: (1) `-c copy -movflags +faststart`, (2) `-fflags +genpts+discardcorrupt -err_detect ignore_err -c copy -movflags +faststart`, (3) same without faststart. Helps mildly-corrupt containers (moov at EOF, DTS gaps) but cannot fix absent moov.
 - **Early container gate** added in `chunked-upload.routes.ts` finalize path: `probeUploadedContainerValidity` runs before `runFaststart`. If invalid → immediately sets `transcodingStatus = failed`, skips faststart+transcoder. Closes the `DOWNLOAD_TRUNCATED` bypass where faststart's download truncation (non-fatal) previously let corrupt uploads through to the HLS transcoder.
 
+## Upload-path parity rule (all finalize routes need the gate)
+
+There is MORE than one upload finalize path. Besides the chunked path, `media-uploads.routes.ts` exposes `s3-multipart-complete` and `s3-finalize` (both mounted under `/admin`, both `db.insert(videos)` + `enqueueTranscode`). These two had only a size-mismatch guard (catches truncation, not a full-size file with a missing/unreadable moov) — so corrupt MP4s entered the queue and burned skip budget before the validator auto-deactivated them.
+
+**Rule:** every upload finalize route that inserts a `videos` row MUST call `probeUploadedContainerValidity(objectKey)` and reject (422) BEFORE `db.insert(videos)`. The probe is fail-open on infra errors (download/ffprobe failure → `valid:true`), so it only rejects on confirmed corruption.
+
+**Why:** reject-before-insert keeps bad assets out of the broadcast queue entirely, instead of catching them downstream after they've aired/skipped.
+
+**How to apply:** when adding any new upload finalize path, add the gate right after the storage-existence/size checks and before the insert. Accept the inline full-download probe latency for parity with the chunked path (don't diverge validation strategies between paths).
+
 ## Operator action for unrecoverable uploads
 
 Re-upload from the original source file. If the source on the recording device is also corrupt (missing moov), use HandBrake or `ffmpeg -i input -c copy output` locally to verify the file is playable before re-uploading.
