@@ -861,6 +861,30 @@ export class V2Transport {
     }
   }
 
+  /**
+   * Calibrate the clock offset from a REST `/state` snapshot body.
+   *
+   * The WS/SSE `snapshot`/`hello`/`heartbeat` frames all feed
+   * updateClockOffset() in handleFrame(), but the REST `/state` response
+   * dispatched by doRequestSnapshot() previously did not. That left a hole:
+   * when the FSM is seeded/refreshed via REST *before* a clock-bearing frame
+   * arrives (first load, transport reconnect, or degraded WS phases where the
+   * heartbeat watchdog drives requestSnapshot()), resolvePositionSecs() ran on
+   * a stale/zero offset, producing temporary cross-surface/cross-device
+   * position skew until the next hello/heartbeat re-calibrated.
+   *
+   * Applying calibration here closes that gap. Only call this for *live* REST
+   * responses — never for the local snapshot cache fallback, whose
+   * serverTimeMs reflects when the cache was saved, not the present, and would
+   * inject a large bogus offset.
+   */
+  private calibrateFromSnapshot(state: unknown): void {
+    const serverTimeMs = (state as { serverTimeMs?: unknown }).serverTimeMs;
+    if (typeof serverTimeMs === "number") {
+      this.updateClockOffset(serverTimeMs - Date.now());
+    }
+  }
+
   private async doRequestSnapshot(): Promise<void> {
     this.snapshotInflight = true;
     try {
@@ -889,6 +913,9 @@ export class V2Transport {
           if (retryBody.state) {
             // Cache the state so subsequent outages can serve it immediately.
             saveSnapshotCache(retryBody.state as V2Snapshot);
+            // Calibrate the clock BEFORE dispatching so the FSM's first
+            // resolvePositionSecs() on this snapshot uses server time.
+            this.calibrateFromSnapshot(retryBody.state);
             this.cfg.onPlayerEvent({ type: "snapshot", snapshot: retryBody.state as never });
           }
         }
@@ -898,6 +925,9 @@ export class V2Transport {
       if (body.state) {
         // Cache the state so subsequent outages can serve it immediately.
         saveSnapshotCache(body.state as V2Snapshot);
+        // Calibrate the clock BEFORE dispatching so the FSM's first
+        // resolvePositionSecs() on this snapshot uses server time.
+        this.calibrateFromSnapshot(body.state);
         this.cfg.onPlayerEvent({ type: "snapshot", snapshot: body.state as never });
       }
     } catch {

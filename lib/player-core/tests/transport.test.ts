@@ -823,3 +823,93 @@ describe("V2Transport — SSE connect", () => {
     transport.stop();
   });
 });
+
+// ---------------------------------------------------------------------------
+// REST /state snapshot clock calibration
+//
+// The WS/SSE hello/heartbeat/snapshot frames all calibrate the clock offset
+// in handleFrame(). The REST /state response dispatched by requestSnapshot()
+// must do the same — otherwise a FSM seeded via REST *before* any clock-bearing
+// frame arrives (first load, reconnect, degraded-WS heartbeat-watchdog refresh)
+// computes positions on a stale/zero offset, skewing cross-surface/cross-device
+// playback position until the next frame re-calibrates.
+// ---------------------------------------------------------------------------
+
+describe("V2Transport — REST /state clock calibration", () => {
+  it("calibrates clock offset from a REST snapshot when no WS frame has arrived", async () => {
+    const clockOffsets: number[] = [];
+    const serverAheadBy = 2_000;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          state: { ...makeSnapshot(), serverTimeMs: Date.now() + serverAheadBy },
+        }),
+      })),
+    );
+
+    const { transport, events } = makeTransport({
+      onClockCalibration: (ms) => clockOffsets.push(ms),
+    });
+
+    // Drive the REST snapshot path directly — no WS open, no clock frame.
+    transport.requestSnapshot();
+    // Flush the doRequestSnapshot() async chain (fetch + json microtasks).
+    await vi.advanceTimersByTimeAsync(1);
+
+    // The snapshot must have been dispatched AND the clock calibrated from it.
+    expect(events.some((e) => e.type === "snapshot")).toBe(true);
+    expect(clockOffsets.length).toBeGreaterThanOrEqual(1);
+    expect(clockOffsets[0]).toBeGreaterThan(serverAheadBy - 200);
+    expect(clockOffsets[0]).toBeLessThan(serverAheadBy + 200);
+    transport.stop();
+  });
+
+  it("does NOT calibrate the clock from the stale snapshot-cache fallback", async () => {
+    // Seed the snapshot cache with a snapshot whose serverTimeMs is far in the
+    // past (as a cached entry's would be by the time it is replayed).
+    const storage = makeMemoryStorage();
+    configureMobileStorage(storage);
+    const staleServerTime = Date.now() - 3_600_000; // 1 h ago
+
+    // First, populate the cache via a successful REST snapshot, then make the
+    // network fail so the next request falls back to the cached snapshot.
+    let failNext = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        if (failNext) throw new Error("network down");
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            state: { ...makeSnapshot(), serverTimeMs: staleServerTime },
+          }),
+        };
+      }),
+    );
+
+    const clockOffsets: number[] = [];
+    const { transport, events } = makeTransport({
+      onClockCalibration: (ms) => clockOffsets.push(ms),
+    });
+
+    // Prime the cache (this live response DOES calibrate — expected).
+    transport.requestSnapshot();
+    await vi.advanceTimersByTimeAsync(1);
+    const calibrationsAfterPrime = clockOffsets.length;
+
+    // Now fail the network so the catch branch serves the cached snapshot.
+    failNext = true;
+    transport.requestSnapshot();
+    await vi.advanceTimersByTimeAsync(1);
+
+    // The cached snapshot must still be dispatched (playback continuity)…
+    expect(events.filter((e) => e.type === "snapshot").length).toBeGreaterThanOrEqual(2);
+    // …but it must NOT add a new clock calibration from the stale cache.
+    expect(clockOffsets.length).toBe(calibrationsAfterPrime);
+    transport.stop();
+  });
+});

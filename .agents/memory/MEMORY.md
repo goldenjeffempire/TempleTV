@@ -1,3 +1,4 @@
+- [Clock calibration on every snapshot ingress](clock-calibration-all-snapshot-paths.md) — REST /state snapshots must calibrate clockOffset (like WS/SSE frames) or REST-seeded FSM skews position; cache fallback must NOT calibrate (stale serverTimeMs).
 - [Single-item queue loop black-screen fix](single-item-loop-blackscreen.md) — lastEndedItemStartsAtMs field on PlayerMachine; guard clears immediately when server advances startsAtMs for same item ID (new cycle), not after 30 s TTL.
 - [WS concurrent-resume phantom-listener fix](ws-concurrent-resume-phantom.md) — two rapid `resume` messages cause double onFrame registration; guard: `if (activeFrameHandler !== bufferFrame) return` after DB await in ws.gateway.ts.
 - [PiP buffer-swap + YouTube-in-PiP (mobile)](pip-buffer-swap-youtube.md) — V2PlayerContainer: updatePipParams on activeBufferId change in PiP; onFatal when isYouTubeOverride becomes true in PiP; player.tsx handleFatal cancels pip notification.
