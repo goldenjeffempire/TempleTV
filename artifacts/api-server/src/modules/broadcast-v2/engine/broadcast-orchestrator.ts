@@ -2227,35 +2227,87 @@ class BroadcastOrchestrator extends EventEmitter {
     // stale-invalidated CDN manifests, causing dead streams to pass the filter
     // and reach the player — where they trigger a 15 s load-timeout stall.
     const isHls = /\.m3u8(?:$|\?|#)/i.test(url);
-    try {
-      const ctrl = new AbortController();
-      const timeout = setTimeout(() => ctrl.abort(), 5_000);
-      let res: Response;
+    if (isHls) {
       try {
-        res = await fetch(url, {
-          method: isHls ? "GET" : "HEAD",
-          redirect: "follow",
-          signal: ctrl.signal,
-        });
-      } finally {
-        clearTimeout(timeout);
-      }
-      // 5xx = transient server error — treat as ambiguous, same as a network timeout.
-      // Only 4xx = definitively broken (resource gone, auth denied, SSRF blocked).
-      if (res.status >= 500) return null;
-      if (res.status >= 400) return false;
-      // For HLS manifests, validate that the response body begins with the
-      // required #EXTM3U header. An empty body or an HTML error page served
-      // with HTTP 200 (common on CDN cache-misses) means the stream is broken.
-      if (isHls) {
+        const ctrl = new AbortController();
+        const timeout = setTimeout(() => ctrl.abort(), 5_000);
+        let res: Response;
+        try {
+          res = await fetch(url, { method: "GET", redirect: "follow", signal: ctrl.signal });
+        } finally {
+          clearTimeout(timeout);
+        }
+        if (res.status >= 500) return null; // transient — ambiguous
+        if (res.status >= 400) return false; // definitively broken
+        // Validate the body begins with the required #EXTM3U header. An empty
+        // body or an HTML error page served with HTTP 200 (common on CDN
+        // cache-misses) means the stream is broken.
         try {
           const text = await res.text();
           return text.trimStart().startsWith("#EXTM3U");
         } catch {
           return null; // body read failure — ambiguous
         }
+      } catch {
+        return null; // AbortError, NetworkError, or SSRF block — ambiguous
       }
-      return true;
+    }
+
+    // Non-HLS sources: HEAD first (cheap — no body transfer). But some origins,
+    // proxies, and CDNs reject HEAD (405 Method Not Allowed, or 404/403) while
+    // serving GET perfectly well. A HEAD-only probe would falsely condemn that
+    // healthy content and silently drop it from the broadcast rotation. So on a
+    // 4xx HEAD we confirm with a small ranged GET before concluding the URL is
+    // definitively broken — mirroring the media-integrity scanner's fallback.
+    const headStatus = await this.fetchProbeStatus(url, "HEAD", "bytes=0-0");
+    if (headStatus === null) return null; // timeout / network / abort — ambiguous
+    if (headStatus >= 500) return null; // transient server error — ambiguous
+    if (headStatus < 400) return true; // reachable
+    // HEAD returned 4xx — the origin may simply not support HEAD. Confirm with
+    // a ranged GET (1 KiB) so HEAD-hostile origins aren't falsely marked bad.
+    const getStatus = await this.fetchProbeStatus(url, "GET", "bytes=0-1023");
+    if (getStatus === null) return null; // ambiguous
+    if (getStatus >= 500) return null; // transient — ambiguous
+    if (getStatus < 400) return true; // GET works — HEAD 4xx was a false negative
+    return false; // GET also 4xx — genuinely broken (gone, auth denied, SSRF)
+  }
+
+  /**
+   * Issue a single HTTP probe with a 5 s timeout and return the numeric status
+   * code, or `null` on timeout / network error / abort (ambiguous). Used by
+   * {@link probeUrlReachability} for the HEAD→ranged-GET fallback chain. The
+   * `range` header keeps the GET cheap (1 KiB) on large media files.
+   */
+  private async fetchProbeStatus(
+    url: string,
+    method: "HEAD" | "GET",
+    range?: string,
+  ): Promise<number | null> {
+    try {
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 5_000);
+      try {
+        const res = await fetch(url, {
+          method,
+          redirect: "follow",
+          signal: ctrl.signal,
+          headers: range ? { Range: range } : undefined,
+        });
+        // A GET response carries a body. Some origins ignore the Range header
+        // and reply 200 with the full payload — for a large MP4 that would keep
+        // streaming megabytes into a probe that only needs the status line. Cancel
+        // the stream immediately so the probe stays cheap (mirrors the scanner).
+        if (method === "GET") {
+          try {
+            await res.body?.cancel();
+          } catch {
+            /* body already consumed/closed — nothing to cancel */
+          }
+        }
+        return res.status;
+      } finally {
+        clearTimeout(timeout);
+      }
     } catch {
       return null; // AbortError, NetworkError, or SSRF block — ambiguous
     }
