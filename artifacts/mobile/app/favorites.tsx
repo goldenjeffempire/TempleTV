@@ -69,6 +69,8 @@ export default function FavoritesScreen() {
           onPress={() => handleRemove(item)}
           hitSlop={8}
           style={[styles.removeBtn, { backgroundColor: "#ef444422" }]}
+          accessibilityRole="button"
+          accessibilityLabel={`Remove ${item.title} from favorites`}
         >
           <Feather name="heart" size={16} color="#ef4444" />
         </Pressable>
@@ -87,7 +89,7 @@ export default function FavoritesScreen() {
           { paddingTop: insets.top + 8, backgroundColor: c.background, borderBottomColor: c.border },
         ]}
       >
-        <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={8}>
+        <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={8} accessibilityRole="button" accessibilityLabel="Go back">
           <Feather name="arrow-left" size={22} color={c.foreground} />
         </Pressable>
         <Text style={[styles.headerTitle, { color: c.foreground }]}>Favorites</Text>

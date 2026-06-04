@@ -77,16 +77,18 @@ export function useFavorites() {
 
     apiGetFavorites()
       .then(async (cloudFavs) => {
-        const raw = await AsyncStorage.getItem(STORAGE_KEYS.favorites).catch(() => null);
-        let local: Sermon[] = [];
-        if (raw) {
-          try { local = JSON.parse(raw) as Sermon[]; } catch { /* corrupted — treat as empty */ }
-        }
-        // Use s.id for dedup — matches the same key used throughout this hook.
-        const localIds = new Set(local.map((s) => s.id));
+        // favoritesRef is the source of truth: it is seeded from AsyncStorage
+        // on mount (this effect only runs once `loaded` is true) and kept fresh
+        // by persist() on every add/remove. Merging against it — rather than a
+        // stale AsyncStorage snapshot read *before* the network await — prevents
+        // a lost-update race where a favorite the user adds while this cloud
+        // sync is in flight would be silently overwritten on commit.
+        const current = favoritesRef.current;
+        const currentIds = new Set(current.map((s) => s.id));
 
+        // Use s.id for dedup — matches the same key used throughout this hook.
         const cloudOnly = cloudFavs
-          .filter((cf) => !localIds.has(cf.videoId))
+          .filter((cf) => !currentIds.has(cf.videoId))
           .map<Sermon>((cf) => ({
             id: cf.videoId,
             title: cf.videoTitle,
@@ -101,11 +103,15 @@ export function useFavorites() {
 
         if (cloudOnly.length === 0) return;
 
-        const merged = [...local, ...cloudOnly];
+        // Re-read favoritesRef at commit time and dedup again so any add/remove
+        // that landed during the synchronous map above is preserved.
+        const latest = favoritesRef.current;
+        const latestIds = new Set(latest.map((s) => s.id));
+        const merged = [...latest, ...cloudOnly.filter((s) => !latestIds.has(s.id))];
         favoritesRef.current = merged;
         setFavorites(merged);
         setFavoriteIds(new Set(merged.map((s) => s.id)));
-        await AsyncStorage.setItem(STORAGE_KEYS.favorites, JSON.stringify(merged));
+        await AsyncStorage.setItem(STORAGE_KEYS.favorites, JSON.stringify(merged)).catch(() => {});
       })
       .catch(() => {});
   }, [token, loaded]);

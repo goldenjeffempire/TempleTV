@@ -92,7 +92,7 @@ export default function HistoryScreen() {
           { paddingTop: insets.top + 8, backgroundColor: c.background, borderBottomColor: c.border },
         ]}
       >
-        <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={8}>
+        <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={8} accessibilityRole="button" accessibilityLabel="Go back">
           <Feather name="arrow-left" size={22} color={c.foreground} />
         </Pressable>
         <Text style={[styles.headerTitle, { color: c.foreground }]}>Watch History</Text>

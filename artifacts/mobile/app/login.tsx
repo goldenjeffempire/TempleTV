@@ -199,6 +199,8 @@ export default function LoginScreen() {
           <Pressable
             onPress={() => router.canGoBack() ? router.back() : router.replace("/(tabs)")}
             style={[styles.backBtn, { top: insets.top + 8 }]}
+            accessibilityRole="button"
+            accessibilityLabel="Close"
           >
             <View style={styles.backBtnInner}>
               <Feather name="x" size={18} color="rgba(255,255,255,0.7)" />
@@ -245,7 +247,7 @@ export default function LoginScreen() {
                 returnKeyType="done"
                 onSubmitEditing={handleLogin}
                 rightElement={
-                  <Pressable onPress={() => setShowPassword((p) => !p)} style={styles.eyeBtn} hitSlop={8}>
+                  <Pressable onPress={() => setShowPassword((p) => !p)} style={styles.eyeBtn} hitSlop={8} accessibilityRole="button" accessibilityLabel={showPassword ? "Hide password" : "Show password"}>
                     <Feather
                       name={showPassword ? "eye-off" : "eye"}
                       size={17}

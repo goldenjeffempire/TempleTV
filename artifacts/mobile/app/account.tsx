@@ -167,7 +167,7 @@ export default function AccountScreen() {
       <View style={[styles.root, { backgroundColor: c.background }]}>
         <StatusBar barStyle={c.isMidnightTheme ? "light-content" : "dark-content"} />
         <View style={[styles.header, { paddingTop: insets.top + 8, borderBottomColor: c.border }]}>
-          <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={12}>
+          <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={12} accessibilityRole="button" accessibilityLabel="Go back">
             <Feather name="arrow-left" size={22} color={c.foreground} />
           </Pressable>
           <Text style={[styles.headerTitle, { color: c.foreground }]}>Account</Text>
