@@ -14,8 +14,6 @@ import {
   WifiOff,
   RotateCw,
   ShieldAlert,
-  ShieldCheck,
-  Trash2,
   Activity,
   CheckCircle2,
   XCircle,
@@ -129,11 +127,6 @@ interface BroadcastQueueRow {
   scheduledAt: string | null;
   /** Human-readable programming block label. */
   scheduleLabel: string | null;
-}
-
-interface SourceHealthEntry {
-  status: "ok" | "bad";
-  badUntilMs: number | null;
 }
 
 interface ScheduleUpdate {
@@ -450,7 +443,6 @@ interface SortableItemProps {
   index: number;
   isCurrent: boolean;
   isNext: boolean;
-  health: SourceHealthEntry | undefined;
   autoSuspendedIds: Set<string>;
   isDeactivating: boolean;
   isReactivating: boolean;
@@ -474,7 +466,6 @@ const SortableQueueItem = memo(function SortableQueueItem({
   index,
   isCurrent,
   isNext,
-  health,
   autoSuspendedIds,
   isDeactivating,
   isReactivating,
@@ -503,18 +494,6 @@ const SortableQueueItem = memo(function SortableQueueItem({
     transform: CSS.Transform.toString(transform),
     transition,
   };
-
-  const isBlocked = health?.status === "bad";
-  const secsLeft =
-    isBlocked && health?.badUntilMs
-      ? Math.max(0, Math.ceil((health.badUntilMs - Date.now()) / 1000))
-      : null;
-  const blockLabel =
-    secsLeft !== null
-      ? secsLeft >= 60
-        ? `Blocked ${Math.ceil(secsLeft / 60)}m`
-        : `Blocked ${secsLeft}s`
-      : "Blocked";
 
   return (
     <li
@@ -562,8 +541,6 @@ const SortableQueueItem = memo(function SortableQueueItem({
         <div className="truncate text-sm font-medium">{item.title}</div>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span>{fmtDuration(Math.round(item.durationSecs))}</span>
-          <span className="opacity-50">·</span>
-          <span className="uppercase">{item.videoSource}</span>
           {secondsUntilAir !== null && !isCurrent && item.isActive && (
             <span className="opacity-60 tabular-nums" title="Estimated time until this item airs">
               airs in{" "}
@@ -602,27 +579,6 @@ const SortableQueueItem = memo(function SortableQueueItem({
             ))}
         </div>
       </div>
-
-      {/* Source health badge */}
-      {isBlocked ? (
-        <Badge
-          variant="destructive"
-          className="gap-1 shrink-0 text-[10px]"
-          title="Source URL failed to load. Blocked until TTL expires. Use 'Clear source blocks' to retry immediately."
-        >
-          <ShieldAlert className="h-2.5 w-2.5" />
-          {blockLabel}
-        </Badge>
-      ) : item.isActive && health?.status === "ok" ? (
-        <Badge
-          variant="outline"
-          className="gap-1 shrink-0 text-[10px] border-emerald-300 text-emerald-700 dark:border-emerald-700 dark:text-emerald-400"
-          title="Source URL confirmed reachable."
-        >
-          <CheckCircle2 className="h-2.5 w-2.5" />
-          OK
-        </Badge>
-      ) : null}
 
       {/* HLS readiness badge */}
       {item.videoId &&
@@ -821,7 +777,6 @@ const SortableQueueItem = memo(function SortableQueueItem({
  *  - real-time queue snapshot from the v2 transport
  *  - real-time queue list with per-item drag-to-reorder and remove actions
  *  - operator controls (skip / reload / failover) with idempotency keys
- *  - source health badges showing which queue items have blocked URLs
  *  - engine health panel (boot status, reload stats, prod-sync diagnostics)
  *  - combined connection indicator (global SSE + v2 transport)
  *  - listens for `broadcast-queue-updated` to auto-reload the v2 orchestrator
@@ -841,8 +796,6 @@ function BroadcastV2PageInner() {
   // resolves (sequence > 0) so the banner reappears if the engine gets
   // stuck again in the same session.
   const [stuckAlertDismissed, setStuckAlertDismissed] = useState(false);
-  // Dismissible all-sources-blocked banner. Same auto-reset pattern.
-  const [allBlockedDismissed, setAllBlockedDismissed] = useState(false);
   // Dismissible faststart-in-progress banner. Auto-reset when no items remain
   // in 'processing' state so the banner reappears if a new faststart starts.
   const [processingAlertDismissed, setProcessingAlertDismissed] = useState(false);
@@ -881,7 +834,7 @@ function BroadcastV2PageInner() {
       toast.error(`Failed: ${path.split("/").pop()} (${detail})`);
     } finally {
       // Functional update: only clear busy if WE are still the active
-      // operation — a concurrent clearBlocks / prepareHls may have
+      // operation — a concurrent prepareHls may have
       // started and set a different key while adminPost was in-flight.
       setBusy((prev) => (prev === path ? null : prev));
     }
@@ -902,20 +855,6 @@ function BroadcastV2PageInner() {
     queryFn: () => api.get<{ items: BroadcastQueueRow[] }>("/admin/broadcast"),
     staleTime: 15_000,
   });
-
-  // Source health — polls every 10 s so blocked-URL TTL countdowns stay fresh.
-  // The in-process bad-URL cache on the server is the source of truth; this
-  // endpoint normalises queue item URLs and checks them against it.
-  const { data: healthData, refetch: refetchHealth } = useQuery({
-    queryKey: ["broadcast-v2-source-health"],
-    queryFn: () =>
-      api.get<{ healthByItemId: Record<string, SourceHealthEntry> }>(
-        "/broadcast-v2/source-health",
-      ),
-    refetchInterval: 10_000,
-    staleTime: 8_000,
-  });
-  const healthByItemId = healthData?.healthByItemId ?? {};
 
   // Engine health — polls every 30 s. SSE events (broadcast-queue-updated,
   // transcoding-update) trigger immediate invalidation for real-time accuracy;
@@ -998,9 +937,6 @@ function BroadcastV2PageInner() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
-      // Refetch source-health so the re-enabled item's bad-URL badge clears
-      // immediately rather than waiting for the next 10 s poll cycle.
-      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       toast.success("Item re-enabled and will resume playback on the next cycle.");
     },
     onError: (err) => {
@@ -1110,7 +1046,7 @@ function BroadcastV2PageInner() {
       api.put<{ ok: boolean; count: number }>("/admin/broadcast/reorder", { itemIds }),
     onSuccess: () => {
       // Invalidate so any component not subscribed to the optimistic localOrder
-      // state (e.g. the source-health panel) sees the new canonical order from
+      // state sees the new canonical order from
       // the server, particularly when the SSE connection is degraded.
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
     },
@@ -1178,10 +1114,9 @@ function BroadcastV2PageInner() {
   const reloadTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useSSEEvent("broadcast-queue-updated", () => {
     void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
-    // Refresh engine health and source-health immediately so the operator sees
+    // Refresh engine health immediately so the operator sees
     // an accurate state right after any queue mutation (add/remove/reorder).
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
-    void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
     // Diagnostics + queue-sync panels also reflect queue state. Without these,
     // an operator who fixes a corrupt item (which fires broadcast-queue-updated)
     // keeps seeing the stale red diagnostics badge until the 15 s poll, making a
@@ -1395,7 +1330,6 @@ function BroadcastV2PageInner() {
         i !== undefined && !seen.has(i.id) && (seen.add(i.id), true),
       );
   }, [localOrder, queueItems]);
-  const blockedCount = Object.values(healthByItemId).filter((h) => h.status === "bad").length;
   // Build a set of item IDs that were auto-suspended this session so queue
   // rows can show "auto-suspended" instead of the generic "inactive" badge.
   const autoSuspendedIds = new Set(
@@ -1563,14 +1497,6 @@ function BroadcastV2PageInner() {
   // checkpoint-projected position. Means viewers are watching the wrong segment.
   const isDriftAlerted = engineHealth?.drift?.driftAlerted === true;
 
-  // All-sources-blocked: every queue item's URL is in the bad-URL cache.
-  // Nothing can air until the TTL expires (auto-recovery) or an operator
-  // presses "Clear source blocks". The banner offers both paths.
-  const isAllBlocked = engineHealth?.allBlocked?.allSourcesBlocked === true;
-  useEffect(() => {
-    if (!isAllBlocked) setAllBlockedDismissed(false);
-  }, [isAllBlocked]);
-
   // (Emergency-filler "not configured" warning banner removed per operator
   // preference — the operator has chosen not to configure EMERGENCY_FILLER_URL.)
 
@@ -1591,7 +1517,7 @@ function BroadcastV2PageInner() {
   // all-blocked or total-exhaustion condition — surface it before dead air
   // actually occurs so operators can act proactively.
   const consecutiveSkips = engineHealth?.skipInfo?.consecutiveSkips ?? 0;
-  const isConsecutiveSkipsWarning = consecutiveSkips >= 2 && !isAllBlocked && !isStuck;
+  const isConsecutiveSkipsWarning = consecutiveSkips >= 2 && !isStuck;
   useEffect(() => {
     if (!isConsecutiveSkipsWarning) setConsecutiveSkipsDismissed(false);
   }, [isConsecutiveSkipsWarning]);
@@ -1622,32 +1548,6 @@ function BroadcastV2PageInner() {
     : sse.state === "degraded"
     ? "Degraded"
     : "Offline";
-
-  async function clearBlocks() {
-    setBusy("clear-blocks");
-    try {
-      await api.post("/broadcast-v2/clear-bad-urls", { idempotencyKey: safeRandomUUID() });
-      // Refetch the specific query instance AND invalidate the query key so
-      // any other mounted component that reads broadcast-v2-engine-health
-      // (e.g. the dashboard stuck-engine banner) is also refreshed immediately
-      // rather than waiting up to 30 s for its own staleTime to elapse.
-      await Promise.all([
-        refetchHealth(),
-        qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] }),
-      ]);
-      toast.success("Source blocks cleared — all URLs will retry on next cycle.");
-    } catch (e) {
-      const detail =
-        e instanceof HttpError
-          ? `${e.status}${e.message && e.message !== String(e.status) ? ` ${e.message}` : ""}`
-          : e instanceof Error
-          ? e.message
-          : "?";
-      toast.error(`Failed to clear blocks (${detail})`);
-    } finally {
-      setBusy((prev) => (prev === "clear-blocks" ? null : prev));
-    }
-  }
 
   async function prepareHls() {
     setBusy("prepare-hls");
@@ -1719,14 +1619,6 @@ function BroadcastV2PageInner() {
       detail: linkLabel === "Live" ? "WS + SSE both connected" : linkLabel,
     },
     {
-      label: "Source URLs healthy",
-      pass: blockedCount === 0,
-      warn: false,
-      detail: blockedCount === 0
-        ? "All source URLs reachable"
-        : `${blockedCount} source${blockedCount !== 1 ? "s" : ""} temporarily blocked — clear blocks to retry`,
-    },
-    {
       label: "HLS transcoding ready",
       pass: allHlsReady || localQueueItems.length === 0,
       warn: pendingHlsCount > 0,
@@ -1792,7 +1684,7 @@ function BroadcastV2PageInner() {
               className="gap-1.5"
               disabled={!!busy}
               onClick={() => adminPost("/broadcast-v2/reload")}
-              title="Re-enables all suspended items, clears blocked sources, and reloads the queue from the database."
+              title="Re-enables all suspended items and reloads the queue from the database."
             >
               {busy === "/broadcast-v2/reload" ? (
                 <Loader2 size={13} className="animate-spin" />
@@ -1888,18 +1780,6 @@ function BroadcastV2PageInner() {
           )}
 
           <DialogFooter className="flex-wrap gap-2 sm:flex-row">
-            {blockedCount > 0 && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => { void clearBlocks(); setShowChecklist(false); }}
-                disabled={busy === "clear-blocks"}
-                className="gap-1.5"
-              >
-                <ShieldAlert className="h-3.5 w-3.5" />
-                Clear Blocks
-              </Button>
-            )}
             {pendingHlsCount > 0 && localQueueItems.length > 0 && (
               <Button
                 variant="outline"
@@ -1942,22 +1822,6 @@ function BroadcastV2PageInner() {
             )}
           </>
         )}
-        {/* Source health summary — only visible when at least one URL is blocked */}
-        {blockedCount > 0 ? (
-          <Badge
-            variant="destructive"
-            className="gap-1"
-            title={`${blockedCount} queue item${blockedCount !== 1 ? "s" : ""} have source URLs that failed to load and are temporarily blocked from playback.`}
-          >
-            <ShieldAlert className="h-3 w-3" />
-            {blockedCount} source{blockedCount !== 1 ? "s" : ""} blocked
-          </Badge>
-        ) : Object.keys(healthByItemId).length > 0 ? (
-          <Badge variant="outline" className="gap-1 text-emerald-600">
-            <ShieldCheck className="h-3 w-3" />
-            Sources OK
-          </Badge>
-        ) : null}
         {/* HLS readiness summary — only shown for queues with local videos */}
         {localQueueItems.length > 0 && (
           allHlsReady ? (
@@ -2005,13 +1869,6 @@ function BroadcastV2PageInner() {
           <Badge variant="destructive" className="gap-1 animate-pulse">
             <ShieldAlert className="h-3 w-3" />
             {circuitOpenWorkers.length} worker{circuitOpenWorkers.length > 1 ? "s" : ""} tripped
-          </Badge>
-        )}
-        {/* All-sources-blocked badge */}
-        {isAllBlocked && (
-          <Badge variant="destructive" className="gap-1 animate-pulse">
-            <ShieldAlert className="h-3 w-3" />
-            All sources blocked — nothing on air
           </Badge>
         )}
         {/* Drift alert badge */}
@@ -2063,8 +1920,8 @@ function BroadcastV2PageInner() {
           <div className="flex-1">
             <strong>Orchestrator may be stuck.</strong> Sequence is 0 after{" "}
             {Math.round((engineHealth?.uptimeMs ?? 0) / 1000)}s uptime with the event bus bridge
-            installed. Auto-recovery is running — the engine will clear source blocks, re-enable
-            suspended items, and reload every 5 minutes until broadcast resumes. Check the{" "}
+            installed. Auto-recovery is running — the engine will re-enable
+            suspended items and reload every 5 minutes until broadcast resumes. Check the{" "}
             <a
               href={`${apiOrigin}/broadcast-v2/health`}
               target="_blank"
@@ -2083,50 +1940,6 @@ function BroadcastV2PageInner() {
           >
             <X className="h-4 w-4" />
           </button>
-        </div>
-      )}
-
-      {/* All-sources-blocked alert strip — dismissible red banner */}
-      {isAllBlocked && !allBlockedDismissed && (
-        <div
-          role="alert"
-          className="flex items-start gap-3 rounded-md border border-red-300/60 bg-red-50 px-4 py-3 text-sm text-red-900 dark:border-red-700/60 dark:bg-red-950/30 dark:text-red-200"
-        >
-          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
-          <div className="flex-1">
-            <strong>All source URLs are blocked.</strong>{" "}
-            Every item in the broadcast queue has a URL that failed to load and
-            is temporarily banned from playback
-            {engineHealth?.allBlocked?.allBlockedDurationMs != null && (
-              <> (blocked for {Math.round(engineHealth.allBlocked.allBlockedDurationMs / 1000)}s)</>
-            )}
-            . The server will auto-clear after the bad-URL TTL expires, or you can unblock
-            immediately:
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <Button
-              size="sm"
-              variant="destructive"
-              disabled={!!busy}
-              onClick={clearBlocks}
-              className="h-7 px-2 text-xs"
-            >
-              {busy === "clear-blocks" ? (
-                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-              ) : (
-                <Trash2 className="mr-1 h-3 w-3" />
-              )}
-              Clear blocks
-            </Button>
-            <button
-              type="button"
-              aria-label="Dismiss all-sources-blocked alert"
-              onClick={() => setAllBlockedDismissed(true)}
-              className="shrink-0 rounded p-0.5 hover:bg-red-200/60 dark:hover:bg-red-800/40"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
         </div>
       )}
 
@@ -2297,8 +2110,7 @@ function BroadcastV2PageInner() {
           <div className="flex-1">
             <strong>{consecutiveSkips} consecutive item{consecutiveSkips !== 1 ? "s" : ""} skipped.</strong>{" "}
             The broadcast engine is having trouble playing items back-to-back — this may
-            indicate broken source URLs or a stuck cycle. Check the Source Health panel
-            for blocked items, or reload the queue to resync the cycle position.
+            indicate a stuck cycle. Reload the queue to resync the cycle position.
             {engineHealth?.skipInfo?.lastDeadAirAt != null && (
               <span className="ml-1 opacity-75">
                 (Last exhaustion: {new Date(engineHealth.skipInfo.lastDeadAirAt).toLocaleTimeString()})
@@ -2398,19 +2210,6 @@ function BroadcastV2PageInner() {
               </div>
             )}
 
-            {/* Clear blocks — only shown when at least one URL is blocked */}
-            {blockedCount > 0 && (
-              <Button
-                className="w-full"
-                variant="outline"
-                disabled={!!busy}
-                onClick={clearBlocks}
-                title="Remove all blocked-URL entries so sources are retried immediately on the next playback cycle."
-              >
-                <Trash2 className="mr-2 h-4 w-4" />
-                Clear {blockedCount} source block{blockedCount !== 1 ? "s" : ""}
-              </Button>
-            )}
             {/* Prepare HLS — shown when local queue items lack HLS master playlists */}
             {pendingHlsCount > 0 && (
               <Button
@@ -2963,62 +2762,6 @@ function BroadcastV2PageInner() {
         </CardContent>
       </Card>
 
-      {/* Blocked-source diagnostic panel — shown when any queue item's URL
-          is in the bad-URL cache. Explains likely causes and gives operators
-          a clear CTA. Appears above the queue so it's hard to miss. */}
-      {blockedCount > 0 && (() => {
-        const blockedItems = queueItems.filter((i) => healthByItemId[i.id]?.status === "bad");
-        const hasUploadInProcessing = blockedItems.some(
-          (i) => i.videoId !== null && (i.transcodingStatus === "processing" || i.transcodingStatus === null),
-        );
-        return (
-          <div
-            role="alert"
-            className="flex items-start gap-3 rounded-md border border-amber-300/60 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-700/60 dark:bg-amber-950/30 dark:text-amber-200"
-          >
-            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
-            <div className="flex-1 space-y-2">
-              <div>
-                <strong>
-                  {blockedCount} source{blockedCount !== 1 ? "s" : ""} blocked from playback.
-                </strong>{" "}
-                {blockedCount !== 1 ? "These queue items" : "This queue item"} failed to load and{" "}
-                {blockedCount !== 1 ? "are" : "is"} temporarily skipped for up to 15 seconds.
-              </div>
-              {blockedItems.map((item) => {
-                const h = healthByItemId[item.id];
-                const secsLeft =
-                  h?.badUntilMs ? Math.max(0, Math.ceil((h.badUntilMs - Date.now()) / 1000)) : null;
-                return (
-                  <div key={item.id} className="rounded bg-amber-100/70 px-2 py-1.5 text-xs dark:bg-amber-900/30">
-                    <span className="font-medium">{item.title}</span>
-                    {secsLeft !== null && (
-                      <span className="ml-2 opacity-70">
-                        auto-unblocks in {secsLeft >= 60 ? `${Math.ceil(secsLeft / 60)}m` : `${secsLeft}s`}
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
-              {hasUploadInProcessing && (
-                <p className="text-xs leading-relaxed opacity-80">
-                  One or more MP4 uploads may still be undergoing moov-atom optimisation
-                  (faststart) — the file is being rewritten and temporarily unavailable.
-                  Wait 60–120 s for processing to complete; the queue reloads automatically
-                  when it finishes and clears the block immediately.
-                </p>
-              )}
-              <p className="text-xs opacity-70">
-                This preview has stall reports disabled — source blocks here do{" "}
-                <strong>not</strong> affect real viewers on TV, mobile, or web.
-                Use <strong>Clear {blockedCount} source block{blockedCount !== 1 ? "s" : ""}</strong> below
-                to force an immediate retry on all surfaces.
-              </p>
-            </div>
-          </div>
-        );
-      })()}
-
       <TranscodingProgressPanel />
 
       {/* ── SUSPENDED / UNPLAYABLE recovery card ────────────────────────────── */}
@@ -3047,7 +2790,7 @@ function BroadcastV2PageInner() {
                   were accepted by the orchestrator. Items may have been auto-suspended after repeated
                   playback failures, or their video files may not yet have a playable source (MP4
                   faststart / HLS). Click <strong>Recover broadcast</strong> to re-enable all suspended
-                  items, clear blocked sources, and reload the queue.
+                  items and reload the queue.
                 </p>
               </div>
               <Button
@@ -3225,7 +2968,6 @@ function BroadcastV2PageInner() {
                         index={idx}
                         isCurrent={isCurrent}
                         isNext={isNext}
-                        health={healthByItemId[item.id]}
                         autoSuspendedIds={autoSuspendedIds}
                         isDeactivating={deactivateMutation.isPending}
                         isReactivating={reactivateMutation.isPending}
