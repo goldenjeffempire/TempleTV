@@ -897,6 +897,25 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
           emit({ type: "buffer-ready", bufferId });
         }
 
+        // ── First-frame readiness fallback (poster-lift safety net) ──────────
+        // `onReadyForDisplay` is the PRIMARY signal that lifts the poster
+        // (sets videoReady=true in the parent). But it is unreliable across the
+        // expo-av matrix: some ExoPlayer builds never fire it, and others fire
+        // it *before* onLoad where the buffer-ready dedup guard above swallows
+        // the onVideoReady call. In both cases videoReady would stay false
+        // forever, freezing the poster over actually-playing video — or, when
+        // the item has no thumbnail, leaving a bare black screen.
+        //
+        // When the active buffer is genuinely producing frames
+        // (isLoaded + isPlaying + !isBuffering) the first frame is on screen by
+        // definition, so lift the poster regardless of which buffer-ready path
+        // fired. setVideoReady(true) in the parent is idempotent, so calling
+        // this on the 500 ms status cadence is cheap and React bails out once
+        // the state is already true.
+        if (status.isLoaded && status.isPlaying && !status.isBuffering) {
+          onVideoReady?.();
+        }
+
         if (status.didJustFinish) {
           clearBufferingWatchdog();
 
@@ -1698,6 +1717,20 @@ export function V2PlayerContainer({
           <ActivityIndicator color="rgba(255,255,255,0.75)" size="small" />
         </View>
       )}
+
+      {/* No-poster first-frame fallback ─────────────────────────────────────
+          When the current item has no thumbnail there is no poster to cover
+          the still-black <Video> surface during the first-frame window (FSM
+          PLAYING but onReadyForDisplay not yet fired). Without this the viewer
+          would see a bare black screen with no affordance. A centered spinner
+          guarantees there is always a visible loading state until the first
+          frame renders (videoReady). With the isPlaying poster-lift safety net
+          above this window is brief, but the fallback prevents any black gap. */}
+      {!videoReady && !overlayContent && !minimal && !posterUrl && (
+        <View style={styles.firstFrameLoadingCentered} pointerEvents="none">
+          <ActivityIndicator color="rgba(255,255,255,0.85)" size="large" />
+        </View>
+      )}
     </View>
   );
 }
@@ -1780,6 +1813,16 @@ const styles = StyleSheet.create({
     position: "absolute",
     bottom: 12,
     right: 12,
+    zIndex: 15,
+  },
+  firstFrameLoadingCentered: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: "center",
+    justifyContent: "center",
     zIndex: 15,
   },
   overlayText: {
