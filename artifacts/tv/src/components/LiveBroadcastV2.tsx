@@ -389,6 +389,31 @@ export function LiveBroadcastV2({
   const videoRefB = useRef<HTMLVideoElement | null>(null);
   const prevActiveBufferId = useRef(snapshot.activeBufferId);
 
+  // ── Stable combined ref callbacks ───────────────────────────────────────────
+  // The player-core hook already wraps attach.A / attach.B in useCallback so
+  // their identities are stable across renders. We must NOT wrap them in new
+  // inline lambdas in JSX — doing so creates a new function on every render,
+  // causing React to call the old wrapper with null (detachElements → HLS
+  // destroyed, video src cleared) and the new wrapper with the element
+  // (attachElements → HLS re-initialized) on every re-render. The result is
+  // a brief black-frame flash and stall each time connected/overridePlaying/
+  // snapshot state changes. Extracted useCallback refs below pin the identity
+  // to the lifetime of attach.A / attach.B (i.e. per session).
+  const refCallbackA = useCallback(
+    (el: HTMLVideoElement | null) => {
+      videoRefA.current = el;
+      attach.A(el);
+    },
+    [attach.A],
+  );
+  const refCallbackB = useCallback(
+    (el: HTMLVideoElement | null) => {
+      videoRefB.current = el;
+      attach.B(el);
+    },
+    [attach.B],
+  );
+
   useEffect(() => {
     if (snapshot.state === "FATAL" && !fatalFiredRef.current) {
       fatalFiredRef.current = true;
@@ -646,7 +671,7 @@ export function LiveBroadcastV2({
 
       {/* Buffer A — initially active */}
       <video
-        ref={(el) => { videoRefA.current = el; attach.A(el); }}
+        ref={refCallbackA}
         style={{
           position: "absolute",
           inset: 0,
@@ -678,7 +703,7 @@ export function LiveBroadcastV2({
       />
       {/* Buffer B — preload + hand-off target */}
       <video
-        ref={(el) => { videoRefB.current = el; attach.B(el); }}
+        ref={refCallbackB}
         style={{
           position: "absolute",
           inset: 0,

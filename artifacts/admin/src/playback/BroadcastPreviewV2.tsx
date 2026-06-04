@@ -16,7 +16,7 @@
  * Audio is muted by default — the operator unmutes explicitly to monitor.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import Hls from "hls.js";
 import { useV2Broadcast } from "@workspace/player-core/react";
@@ -382,6 +382,31 @@ export function BroadcastPreviewV2({ className }: Props) {
   const aRef = useRef<HTMLVideoElement>(null);
   const bRef = useRef<HTMLVideoElement>(null);
 
+  // ── Stable combined ref callbacks ──────────────────────────────────────────
+  // The hook wraps attach.A / attach.B in useCallback so their identities are
+  // stable. Wrapping them again in inline JSX lambdas defeats this: React calls
+  // the old lambda with null (detachElements → HLS destroyed) then the new
+  // lambda with the element (attachElements → HLS re-initialized) on every
+  // re-render of this component. The result is a brief preview black-frame on
+  // each snapshot update or mute toggle. See react.ts comment for background.
+  // aRef / bRef are stable ref-objects so they need not appear in dep-arrays.
+  const refCallbackA = useCallback(
+    (el: HTMLVideoElement | null) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (aRef as any).current = el;
+      attach.A(el);
+    },
+    [attach.A],
+  );
+  const refCallbackB = useCallback(
+    (el: HTMLVideoElement | null) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (bRef as any).current = el;
+      attach.B(el);
+    },
+    [attach.B],
+  );
+
   // Keep DOM `muted` in sync — the FSM owns play/pause but volume is admin-local.
   useEffect(() => {
     if (aRef.current) aRef.current.muted = muted;
@@ -614,10 +639,7 @@ export function BroadcastPreviewV2({ className }: Props) {
           its own compositor layer — hardware-accelerated decode path on Chromium
           and prevents UI overlay repaints from invalidating the video pipeline. */}
       <video
-        ref={(el) => {
-          aRef.current = el;
-          attach.A(el);
-        }}
+        ref={refCallbackA}
         className="absolute inset-0 w-full h-full object-contain"
         playsInline
         autoPlay
@@ -625,10 +647,7 @@ export function BroadcastPreviewV2({ className }: Props) {
         style={{ zIndex: 2, display: "block", willChange: "transform", transform: "translateZ(0)" }}
       />
       <video
-        ref={(el) => {
-          bRef.current = el;
-          attach.B(el);
-        }}
+        ref={refCallbackB}
         className="absolute inset-0 w-full h-full object-contain"
         playsInline
         autoPlay

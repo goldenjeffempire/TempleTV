@@ -26,7 +26,7 @@
  * after a navigation, matching the behaviour of the web hook.
  */
 
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { PlayerMachine } from "./machine.js";
 import { V2Transport } from "./transport.js";
 import { createMobileAdapter, type MobileAdapter, type MobileAdapterStore } from "./adapters/mobile.js";
@@ -359,37 +359,74 @@ export function useV2BroadcastNative(opts: UseV2BroadcastNativeOptions): UseV2Br
     };
   }, [session]);
 
-  // Subscribe to mobile adapter store via useSyncExternalStore for
-  // fine-grained buffer updates without triggering a full re-render.
-  const buffers = useSyncExternalStore(
-    (cb) => session?.adapter.subscribe(() => cb()) ?? (() => {}),
+  // ── Stable useSyncExternalStore callbacks ──────────────────────────────────
+  // Both lambdas must be stable references across renders.
+  // useSyncExternalStore re-subscribes whenever the subscribe function changes
+  // identity, which would remove and re-add the adapter listener on every
+  // render — causing a spurious notification burst that triggers downstream
+  // BroadcastBuffer effects. Wrapping with useCallback([session]) pins them
+  // to the lifetime of the singleton session (stable across navigations).
+  const storeSubscribe = useCallback(
+    (cb: () => void) => session?.adapter.subscribe(() => cb()) ?? (() => {}),
+    [session],
+  );
+  const storeGetSnapshot = useCallback(
     () => session?.adapter.getStore() ?? EMPTY_STORE,
-    () => EMPTY_STORE,
+    [session],
+  );
+
+  const buffers = useSyncExternalStore(storeSubscribe, storeGetSnapshot, () => EMPTY_STORE);
+
+  // ── Stable callback references ──────────────────────────────────────────────
+  // All three must be stable across renders so that:
+  //
+  //  • reportBufferEvent → BroadcastBuffer wraps it in useCallback([reportBufferEvent])
+  //    to produce `emit`. A new reportBufferEvent reference each render causes a
+  //    new `emit`, which re-triggers the play-effect and fires a spurious
+  //    playFromPositionAsync() on MP4/non-HLS buffers even when nothing in the
+  //    broadcast changed. The web hook (react.ts) documents the exact same hazard
+  //    for its ref-callbacks ("prevents spurious HLS teardown/black-frame flash").
+  //
+  //  • forceReconnect / notifyOnline → listed in V2PlayerContainer's AppState
+  //    useEffect dep-array. New references each render cause the effect to teardown
+  //    and re-register the AppState listener on every snapshot update, creating
+  //    churn and a brief window where app-foregrounding is not handled.
+  const reportBufferEvent = useCallback(
+    (...args: Parameters<MobileAdapter["reportEvent"]>) =>
+      session?.adapter.reportEvent(...args),
+    [session],
+  );
+
+  /**
+   * Debounced forceReconnect: collapses multiple calls within 50 ms into
+   * one transport.forceReconnect() invocation. This prevents the spurious
+   * double-disconnect that occurs when both a muted Hero V2PlayerContainer
+   * (home tab, cached by Expo Router) and the active Player V2PlayerContainer
+   * each fire their AppState "active" handler in the same JS tick on
+   * app foreground.
+   */
+  const forceReconnect = useCallback(() => {
+    if (!session) return;
+    if (session.forceReconnectDebounce !== null) {
+      clearTimeout(session.forceReconnectDebounce);
+    }
+    session.forceReconnectDebounce = setTimeout(() => {
+      session.forceReconnectDebounce = null;
+      session.transport.forceReconnect();
+    }, 50);
+  }, [session]);
+
+  const notifyOnline = useCallback(
+    () => session?.machine.send({ type: "online" }),
+    [session],
   );
 
   return {
     snapshot,
     connected,
     buffers,
-    reportBufferEvent: (event) => session?.adapter.reportEvent(event),
-    /**
-     * Debounced forceReconnect: collapses multiple calls within 50 ms into
-     * one transport.forceReconnect() invocation. This prevents the spurious
-     * double-disconnect that occurs when both a muted Hero V2PlayerContainer
-     * (home tab, cached by Expo Router) and the active Player V2PlayerContainer
-     * each fire their AppState "active" handler in the same JS tick on
-     * app foreground.
-     */
-    forceReconnect: () => {
-      if (!session) return;
-      if (session.forceReconnectDebounce !== null) {
-        clearTimeout(session.forceReconnectDebounce);
-      }
-      session.forceReconnectDebounce = setTimeout(() => {
-        session.forceReconnectDebounce = null;
-        session.transport.forceReconnect();
-      }, 50);
-    },
-    notifyOnline: () => session?.machine.send({ type: "online" }),
+    reportBufferEvent,
+    forceReconnect,
+    notifyOnline,
   };
 }
