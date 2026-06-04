@@ -73,6 +73,17 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import {
+  ResponsiveContainer,
+  ComposedChart,
+  Area,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip as RechartsTooltip,
+  ReferenceLine,
+} from "recharts";
 
 interface BroadcastQueueRow {
   id: string;
@@ -1171,6 +1182,85 @@ function BroadcastV2PageInner() {
   // Used to augment the StreamQualityPanel's analytics.eventCounts["stall"]
   // value so operators see the counter go up live rather than after a delay.
   const [realtimeStallCount, setRealtimeStallCount] = useState(0);
+
+  // ── Rolling health history (1 sample / 60 s, max 60 = 1 hour) ─────────────
+  // Accumulates point-in-time snapshots so operators can see trends over time
+  // rather than only the current-session aggregate. Captured via a stable
+  // setInterval that reads from a ref — avoids recreating the timer whenever
+  // engineHealth / diagnostics query data changes.
+  interface HealthSample {
+    t: number;
+    label: string;
+    onAirPct: number;
+    stallDelta: number;
+    consecutiveSkips: number;
+    grade: "A" | "B" | "C" | "D";
+  }
+  const HEALTH_HISTORY_MAX = 60;
+  const HEALTH_HISTORY_INTERVAL_MS = 60_000;
+
+  // Keep refs to the latest query values so the interval callback always
+  // reads current data without appearing in the interval's dep array.
+  const healthSnapshotRef = useRef({
+    uptimeMs: 0,
+    continuousOnAirMs: null as number | null,
+    consecutiveSkips: 0,
+    totalStalls: 0,
+  });
+  // Synchronously update the ref on every render so the interval captures
+  // the latest values on its next tick.
+  healthSnapshotRef.current = {
+    uptimeMs: engineHealth?.uptimeMs ?? 0,
+    continuousOnAirMs: engineHealth?.continuousOnAirMs ?? null,
+    consecutiveSkips: engineHealth?.skipInfo?.consecutiveSkips ?? 0,
+    totalStalls: (diagnostics?.analytics?.eventCounts["stall"] ?? 0) + realtimeStallCount,
+  };
+
+  const [healthHistory, setHealthHistory] = useState<HealthSample[]>([]);
+  const prevStallCountRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const captureNow = () => {
+      const { uptimeMs, continuousOnAirMs, consecutiveSkips, totalStalls } =
+        healthSnapshotRef.current;
+      const onAirPct =
+        continuousOnAirMs !== null && uptimeMs > 0
+          ? Math.min(100, Math.round((continuousOnAirMs / uptimeMs) * 100))
+          : 0;
+      const uptimeHrs = uptimeMs / 3_600_000;
+      const stallRatePerHr = uptimeHrs > 0 ? totalStalls / uptimeHrs : 0;
+
+      let grade: "A" | "B" | "C" | "D";
+      if (stallRatePerHr > 5 || consecutiveSkips >= 3 || (uptimeMs > 30_000 && onAirPct === 0)) {
+        grade = "D";
+      } else if (stallRatePerHr > 2 || consecutiveSkips >= 2 || onAirPct < 80) {
+        grade = "C";
+      } else if (stallRatePerHr > 0 || consecutiveSkips >= 1) {
+        grade = "B";
+      } else {
+        grade = "A";
+      }
+
+      const stallDelta =
+        prevStallCountRef.current !== null
+          ? Math.max(0, totalStalls - prevStallCountRef.current)
+          : 0;
+      prevStallCountRef.current = totalStalls;
+
+      const d = new Date();
+      const label = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+      const sample: HealthSample = { t: d.getTime(), label, onAirPct, stallDelta, consecutiveSkips, grade };
+      setHealthHistory((prev) => {
+        const next = [...prev, sample];
+        return next.length > HEALTH_HISTORY_MAX ? next.slice(next.length - HEALTH_HISTORY_MAX) : next;
+      });
+    };
+
+    captureNow();
+    const id = setInterval(captureNow, HEALTH_HISTORY_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   useSSEEvent("broadcast-v2-stall", (data: unknown) => {
     setRealtimeStallCount((n) => n + 1);
     // Also immediately refresh diagnostics so the StreamQualityPanel and
@@ -2384,6 +2474,8 @@ function BroadcastV2PageInner() {
 
       <AirHistoryCard history={engineHealth?.airingHistory} />
 
+      <StreamHealthHistoryChart history={healthHistory} />
+
       {/* ── Engine Diagnostics panel ────────────────────────────────────────── */}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between pb-3">
@@ -3456,6 +3548,212 @@ function formatAgo(ms: number): string {
   if (diff < 60_000) return `${Math.round(diff / 1000)}s ago`;
   if (diff < 3_600_000) return `${Math.round(diff / 60_000)}m ago`;
   return `${Math.round(diff / 3_600_000)}h ago`;
+}
+
+// ─── StreamHealthHistoryChart ─────────────────────────────────────────────────
+// Rolling 60-minute area + bar chart of on-air %, stalls per interval, and
+// consecutive skips. One sample captured per minute by the parent component.
+// Hidden until at least 2 samples exist (nothing meaningful to chart yet).
+
+interface HealthSampleRow {
+  t: number;
+  label: string;
+  onAirPct: number;
+  stallDelta: number;
+  consecutiveSkips: number;
+  grade: "A" | "B" | "C" | "D";
+}
+
+function StreamHealthHistoryChart({ history }: { history: HealthSampleRow[] }) {
+  const [collapsed, setCollapsed] = useState(true);
+
+  if (history.length < 2) return null;
+
+  const gradeColorMap: Record<"A" | "B" | "C" | "D", string> = {
+    A: "#10b981",
+    B: "#3b82f6",
+    C: "#f59e0b",
+    D: "#ef4444",
+  };
+
+  const maxStall = Math.max(...history.map((s) => s.stallDelta), 1);
+
+  // Custom tooltip
+  const CustomTooltip = ({
+    active,
+    payload,
+    label,
+  }: {
+    active?: boolean;
+    payload?: Array<{ name: string; value: number; color: string }>;
+    label?: string;
+  }) => {
+    if (!active || !payload || payload.length === 0) return null;
+    const sample = history.find((s) => s.label === label);
+    return (
+      <div className="rounded-md border bg-popover px-3 py-2 text-xs shadow-md">
+        <div className="font-semibold mb-1">{label}</div>
+        {payload.map((p) => (
+          <div key={p.name} className="flex items-center gap-2">
+            <span style={{ color: p.color }}>●</span>
+            <span className="text-muted-foreground">{p.name}:</span>
+            <span className="font-medium tabular-nums">
+              {p.name === "On-Air %" ? `${p.value}%` : p.value}
+            </span>
+          </div>
+        ))}
+        {sample && (
+          <div className="mt-1 pt-1 border-t flex items-center gap-2">
+            <span className="text-muted-foreground">Grade:</span>
+            <span
+              className="font-bold"
+              style={{ color: gradeColorMap[sample.grade] }}
+            >
+              {sample.grade}
+            </span>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <Card>
+      <CardHeader className="pb-2 pt-4">
+        <CardTitle
+          className="flex items-center gap-2 text-sm cursor-pointer select-none"
+          onClick={() => setCollapsed((c) => !c)}
+          role="button"
+          aria-expanded={!collapsed}
+        >
+          <Activity className="h-4 w-4 text-muted-foreground" />
+          Stream Health History
+          <span className="ml-1 text-[10px] font-normal text-muted-foreground tabular-nums">
+            ({history.length} min)
+          </span>
+          <span className="ml-auto text-muted-foreground">
+            {collapsed ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
+          </span>
+        </CardTitle>
+      </CardHeader>
+      {!collapsed && (
+        <CardContent className="pb-4">
+          {/* Legend row */}
+          <div className="flex flex-wrap gap-4 text-[11px] text-muted-foreground mb-3">
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-3 h-0.5 bg-emerald-500 rounded" />
+              On-Air %
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-3 h-2 rounded-sm bg-amber-400 opacity-80" />
+              Stalls / interval
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-0.5 h-3 bg-red-400 opacity-60" />
+              80 % on-air threshold
+            </span>
+          </div>
+
+          <ResponsiveContainer width="100%" height={180}>
+            <ComposedChart
+              data={history}
+              margin={{ top: 4, right: 32, bottom: 0, left: 0 }}
+            >
+              <CartesianGrid strokeDasharray="3 3" className="stroke-border" opacity={0.4} />
+              <XAxis
+                dataKey="label"
+                tick={{ fontSize: 10 }}
+                tickLine={false}
+                axisLine={false}
+                interval="preserveStartEnd"
+              />
+              {/* Left Y-axis: on-air % */}
+              <YAxis
+                yAxisId="pct"
+                domain={[0, 100]}
+                tick={{ fontSize: 10 }}
+                tickLine={false}
+                axisLine={false}
+                width={28}
+                tickFormatter={(v: number) => `${v}%`}
+              />
+              {/* Right Y-axis: stall count */}
+              <YAxis
+                yAxisId="stalls"
+                orientation="right"
+                domain={[0, Math.max(maxStall + 1, 3)]}
+                allowDecimals={false}
+                tick={{ fontSize: 10 }}
+                tickLine={false}
+                axisLine={false}
+                width={24}
+              />
+              <RechartsTooltip content={<CustomTooltip />} />
+              {/* 80% on-air threshold reference line */}
+              <ReferenceLine
+                yAxisId="pct"
+                y={80}
+                stroke="#f87171"
+                strokeDasharray="4 2"
+                strokeOpacity={0.5}
+              />
+              {/* On-air % area */}
+              <Area
+                yAxisId="pct"
+                type="monotone"
+                dataKey="onAirPct"
+                name="On-Air %"
+                stroke="#10b981"
+                strokeWidth={1.5}
+                fill="#10b981"
+                fillOpacity={0.12}
+                dot={false}
+                activeDot={{ r: 3 }}
+              />
+              {/* Stalls per interval bar */}
+              <Bar
+                yAxisId="stalls"
+                dataKey="stallDelta"
+                name="Stalls"
+                fill="#f59e0b"
+                fillOpacity={0.75}
+                radius={[2, 2, 0, 0]}
+                maxBarSize={18}
+              />
+            </ComposedChart>
+          </ResponsiveContainer>
+
+          {/* Consecutive skips mini-strip */}
+          {history.some((s) => s.consecutiveSkips > 0) && (
+            <div className="mt-3">
+              <div className="text-[10px] text-muted-foreground mb-1">
+                Consecutive skips per sample
+              </div>
+              <div className="flex items-end gap-px h-6">
+                {history.map((s) => {
+                  const pct = Math.min(1, s.consecutiveSkips / 5);
+                  const bg =
+                    s.consecutiveSkips === 0
+                      ? "bg-muted"
+                      : s.consecutiveSkips < 2
+                      ? "bg-amber-400"
+                      : "bg-red-500";
+                  return (
+                    <div
+                      key={s.t}
+                      title={`${s.label}: ${s.consecutiveSkips} consecutive skip${s.consecutiveSkips !== 1 ? "s" : ""}`}
+                      className={`flex-1 rounded-sm ${bg}`}
+                      style={{ height: `${Math.max(10, pct * 100)}%`, minWidth: 2, opacity: s.consecutiveSkips === 0 ? 0.2 : 0.8 }}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      )}
+    </Card>
+  );
 }
 
 // ─── StreamQualityPanel ───────────────────────────────────────────────────────
