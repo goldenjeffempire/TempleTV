@@ -127,9 +127,9 @@ export const authService = {
     if (!user) throw new Error("user insert returned no row");
 
     // Fire-and-forget welcome email — never blocks registration.
-    sendWelcomeEmail({ email: user.email, displayName: user.displayName }).catch((err: unknown) => {
-      logger.warn({ err, userId: user.id }, "[auth] welcome email failed (non-fatal)");
-    });
+    // sendWelcomeEmail uses sendMailSilent internally; errors are swallowed and
+    // logged inside the mailer — no .catch() needed here.
+    sendWelcomeEmail({ email: user.email, displayName: user.displayName });
 
     const { tokens } = await issueTokens({
       id: user.id,
@@ -520,9 +520,9 @@ export const authService = {
       });
     });
 
-    sendPasswordResetEmail({ email: user.email, displayName: user.displayName }, rawToken).catch((err: unknown) => {
-      logger.warn({ err, userId: user.id }, "[auth] password reset email failed (non-fatal)");
-    });
+    // sendPasswordResetEmail uses sendMailSilent internally; errors are swallowed
+    // and logged inside the mailer — no .catch() needed here.
+    sendPasswordResetEmail({ email: user.email, displayName: user.displayName }, rawToken);
   },
 
   /**

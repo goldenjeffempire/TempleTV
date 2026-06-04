@@ -32,6 +32,8 @@ import type { ChatMessage, ChatServerEvent } from "./chat.types.js";
 export interface ChatSocket {
     readonly readyState: number;
     send(data: string): void;
+    /** Available when the underlying socket is a `ws` WebSocket instance. */
+    terminate?(): void;
 }
 export interface RoomMember {
     socket: ChatSocket;
@@ -44,6 +46,12 @@ export interface RoomMember {
     sendTokens: number;
     /** Epoch ms when the bucket last refilled. */
     bucketRefilledAtMs: number;
+    /**
+     * Epoch ms when the server last received proof-of-liveness from this member
+     * (either a "pong" message-type frame or a native WS pong event).
+     * Initialised to join-time so newly-connected sockets get a grace period.
+     */
+    lastPongMs: number;
 }
 declare class ChatHub extends EventEmitter {
     private rooms;
@@ -76,7 +84,14 @@ declare class ChatHub extends EventEmitter {
     retryAtMs(member: RoomMember): number;
     /** Internal: emit a `presence` frame after join/leave. */
     private broadcastPresence;
-    /** Send a server-initiated `ping` to every socket in every room. */
+    /**
+     * Send a server-initiated `ping` to every socket in every room, then
+     * sweep for zombie connections that haven't responded within ZOMBIE_TIMEOUT_MS.
+     *
+     * Without the sweep, half-open sockets (OS-level TCP connection alive but
+     * client process gone) accumulate indefinitely in the room Set — leaking
+     * event-loop references and inflating viewer counts.
+     */
     pingAll(): void;
 }
 export declare const chatHub: ChatHub;

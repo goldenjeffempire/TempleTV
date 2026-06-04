@@ -189,6 +189,15 @@ declare class BroadcastOrchestrator extends EventEmitter {
      */
     private lastStuckAlertMs;
     /**
+     * Wall-clock ms when bump() last incremented the sequence counter.
+     * Used by /health to detect post-start hangs: if sequence has advanced
+     * at least once (sequence > 0) but not changed for an extended period
+     * while the queue is non-empty, the orchestrator is likely hung.
+     * Initialized to Date.now() so a freshly-booted process isn't immediately
+     * flagged as stale (sequence starts at 0, first bump may take several seconds).
+     */
+    private lastSequenceAdvanceMs;
+    /**
      * Wall-clock timestamp when the broadcast first had a live item on air
      * in the current uninterrupted run. Reset to null when the broadcast goes
      * dark (dead air, all-blocked, or queue empty). Used by /health to surface
@@ -509,6 +518,11 @@ declare class BroadcastOrchestrator extends EventEmitter {
     flushCheckpointForShutdown(): Promise<void>;
     private persistCheckpoint;
     getSequence(): number;
+    /**
+     * Wall-clock ms when the sequence counter last advanced via bump().
+     * Used by /health to detect post-start hangs (sequence > 0 but stalled).
+     */
+    getLastSequenceAdvanceMs(): number;
     /** Number of in-memory queue items currently driving the broadcast cycle. */
     getItemCount(): number;
     /**

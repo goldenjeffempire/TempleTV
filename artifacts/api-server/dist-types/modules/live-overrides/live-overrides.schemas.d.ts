@@ -13,8 +13,8 @@ export declare const LiveOverrideSchema: z.ZodObject<{
     autoStarted: z.ZodBoolean;
     createdAt: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    title: string;
     id: string;
+    title: string;
     isActive: boolean;
     createdAt: string;
     hlsStreamUrl: string | null;
@@ -26,8 +26,8 @@ export declare const LiveOverrideSchema: z.ZodObject<{
     scheduledFor: string | null;
     autoStarted: boolean;
 }, {
-    title: string;
     id: string;
+    title: string;
     isActive: boolean;
     createdAt: string;
     hlsStreamUrl: string | null;
@@ -55,8 +55,8 @@ export declare const LiveStatusSchema: z.ZodObject<{
         autoStarted: z.ZodBoolean;
         createdAt: z.ZodString;
     }, "strip", z.ZodTypeAny, {
-        title: string;
         id: string;
+        title: string;
         isActive: boolean;
         createdAt: string;
         hlsStreamUrl: string | null;
@@ -68,8 +68,8 @@ export declare const LiveStatusSchema: z.ZodObject<{
         scheduledFor: string | null;
         autoStarted: boolean;
     }, {
-        title: string;
         id: string;
+        title: string;
         isActive: boolean;
         createdAt: string;
         hlsStreamUrl: string | null;
@@ -84,8 +84,8 @@ export declare const LiveStatusSchema: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     isLive: boolean;
     active: {
-        title: string;
         id: string;
+        title: string;
         isActive: boolean;
         createdAt: string;
         hlsStreamUrl: string | null;
@@ -100,8 +100,8 @@ export declare const LiveStatusSchema: z.ZodObject<{
 }, {
     isLive: boolean;
     active: {
-        title: string;
         id: string;
+        title: string;
         isActive: boolean;
         createdAt: string;
         hlsStreamUrl: string | null;

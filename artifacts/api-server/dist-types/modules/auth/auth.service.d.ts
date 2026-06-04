@@ -38,6 +38,7 @@ export declare const authService: {
     changePassword(userId: string, body: {
         currentPassword: string;
         newPassword: string;
+        totpCode?: string;
     }): Promise<void>;
     /**
      * Update the authenticated user's profile fields.
