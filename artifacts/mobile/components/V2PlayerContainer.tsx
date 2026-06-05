@@ -602,7 +602,7 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
       // to load on the fresh elements, kicking the FSM into RECOVERING_PRIMARY
       // and disrupting a perfectly live stream.
       clearLoadTimeout();
-      if (!suppressEvents && state.playing && state.active && fsmIsWaitingRef.current) {
+      if (!suppressEventsRef.current && state.playing && state.active && fsmIsWaitingRef.current) {
         loadTimeoutRef.current = setTimeout(() => {
           loadTimeoutRef.current = null;
           emit({ type: "buffer-error", bufferId, error: "load-timeout" });
@@ -754,6 +754,23 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
   useEffect(() => {
     ref.current?.setIsMutedAsync(effectiveMuted).catch(() => {});
   }, [effectiveMuted]);
+
+  // Stable error handler — placed here (before the early return below) so it
+  // unconditionally follows the Rules of Hooks.  Captures only stable
+  // useCallback refs (clearBufferingWatchdog, emit) and the static bufferId
+  // prop, so the reference identity is preserved across the 500 ms
+  // progressUpdateIntervalMillis render ticks.
+  const handleError = useCallback(
+    (error: unknown) => {
+      clearBufferingWatchdog();
+      emit({
+        type: "buffer-error",
+        bufferId,
+        error: typeof error === "string" ? error : "media-error",
+      });
+    },
+    [clearBufferingWatchdog, emit, bufferId],
+  );
 
   if (!url) {
     return <View style={[styles.video, { zIndex: state.active ? 2 : 1 }]} />;
@@ -1024,14 +1041,7 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
           clearBufferingWatchdog();
         }
       }}
-      onError={(error) => {
-        clearBufferingWatchdog();
-        emit({
-          type: "buffer-error",
-          bufferId,
-          error: typeof error === "string" ? error : "media-error",
-        });
-      }}
+      onError={handleError}
     />
   );
 });
