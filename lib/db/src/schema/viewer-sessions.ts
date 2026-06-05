@@ -39,6 +39,9 @@ export const viewerSessionsTable = pgTable(
     // video", "viewers-by-video" dashboard panels) do a full table scan without
     // this index — the table grows at ~1 row/viewer/video and is never trimmed.
     index("idx_viewer_sessions_video_id").on(t.videoId),
+    // Heartbeat UPDATEs filter on (device_id, video_id) every 30 s per viewer.
+    // A composite index prevents an index-merge/full-scan as the table grows.
+    index("idx_viewer_sessions_lookup").on(t.deviceId, t.videoId),
   ],
 );
 

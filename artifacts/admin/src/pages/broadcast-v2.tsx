@@ -812,6 +812,8 @@ function BroadcastV2PageInner() {
   // Launch Checklist modal.
   const [showChecklist, setShowChecklist] = useState(false);
   // Confirmation dialog for the destructive "Force failover" operator action.
+  const [showSkipConfirm, setShowSkipConfirm] = useState(false);
+  const [showReloadConfirm, setShowReloadConfirm] = useState(false);
   const [showFailoverConfirm, setShowFailoverConfirm] = useState(false);
   const [showClearFailoverConfirm, setShowClearFailoverConfirm] = useState(false);
 
@@ -1060,6 +1062,9 @@ function BroadcastV2PageInner() {
       // the server, particularly when the SSE connection is degraded.
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      // Engine health header shows currentTitle/nextTitle/itemCount — a reorder
+      // changes the queue order so those derived fields need refreshing too.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
     },
     onError: (err) => {
       toast.error(
@@ -2149,7 +2154,7 @@ function BroadcastV2PageInner() {
               className="w-full"
               variant="outline"
               disabled={!!busy}
-              onClick={() => adminPost("/broadcast-v2/skip", { reason: "operator" })}
+              onClick={() => setShowSkipConfirm(true)}
             >
               <SkipForward className="mr-2 h-4 w-4" /> Skip current item
             </Button>
@@ -2157,7 +2162,7 @@ function BroadcastV2PageInner() {
               className="w-full"
               variant="outline"
               disabled={!!busy}
-              onClick={() => adminPost("/broadcast-v2/reload")}
+              onClick={() => setShowReloadConfirm(true)}
             >
               <RefreshCw className="mr-2 h-4 w-4" /> Reload from queue
             </Button>
@@ -3047,6 +3052,45 @@ function BroadcastV2PageInner() {
             onClick={() => { setShowClearFailoverConfirm(false); void adminPost("/broadcast-v2/clear-failover"); }}
           >
             Clear failover
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    <AlertDialog open={showSkipConfirm} onOpenChange={setShowSkipConfirm}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Skip current item?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This immediately ends the current broadcast item and advances to the next one in the
+            queue. Viewers will see a brief interruption. Only skip if the current item is
+            broken or no longer needed.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={() => { setShowSkipConfirm(false); void adminPost("/broadcast-v2/skip", { reason: "operator" }); }}
+          >
+            Skip item
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    <AlertDialog open={showReloadConfirm} onOpenChange={setShowReloadConfirm}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Reload from queue?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This restarts the broadcast engine and reloads the current queue state from the
+            database. Active viewers may see a brief interruption while the engine reinitialises.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={() => { setShowReloadConfirm(false); void adminPost("/broadcast-v2/reload"); }}
+          >
+            Reload
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

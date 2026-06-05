@@ -10,6 +10,13 @@ interface QuotaState {
     }>;
 }
 export declare function trackQuota(operation: string, cost: number): void;
+/**
+ * Returns true when the in-process quota counter has reached or exceeded the
+ * configured daily limit.  Callers should fall back to RSS instead of making
+ * further Data API calls — even though Google will ultimately enforce the limit
+ * with a 403, skipping the call avoids a wasted round-trip and log noise.
+ */
+export declare function isQuotaExhausted(): boolean;
 export declare function getQuotaStatus(): QuotaState;
 export declare function restoreQuota(): Promise<void>;
 export interface SyncStatus {

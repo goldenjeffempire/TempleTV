@@ -196,14 +196,14 @@ export default function AnalyticsPage() {
   });
 
   const concurrentRange: RangeKey = range === "90d" ? "90d" : range === "30d" ? "30d" : "7d";
-  const { data: concData, isLoading: concLoading } = useQuery({
+  const { data: concData, isLoading: concLoading, refetch: refetchConc } = useQuery({
     queryKey: ["analytics-concurrent", concurrentRange],
     queryFn: () => api.get<ConcurrentViewers>(`/admin/analytics/concurrent?range=${concurrentRange}`),
     staleTime: 60_000,
     placeholderData: keepPreviousData,
   });
 
-  const { data: platData, isLoading: platLoading } = useQuery({
+  const { data: platData, isLoading: platLoading, refetch: refetchPlat } = useQuery({
     queryKey: ["analytics-platform-trends", range],
     queryFn: () => api.get<DailyPlatformTrends>(`/admin/analytics/platform-trends?range=${range}`),
     staleTime: 60_000,
@@ -262,6 +262,8 @@ export default function AnalyticsPage() {
 
   function handleRefreshAll() {
     void refetch();
+    void refetchConc();
+    void refetchPlat();
   }
 
   return (

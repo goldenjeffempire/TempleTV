@@ -26,7 +26,7 @@ export const ListUsersResponseSchema = z.object({
 });
 
 export const UpdateUserRoleBodySchema = z.object({
-  role: z.enum(["user", "editor", "admin"]),
+  role: z.enum(["user", "editor", "moderator", "admin"]),
 });
 
 export const AdminStatsSchema = z.object({

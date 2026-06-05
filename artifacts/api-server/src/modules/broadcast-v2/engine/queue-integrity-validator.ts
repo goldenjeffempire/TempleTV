@@ -405,6 +405,7 @@ class QueueIntegrityValidatorImpl {
             WHERE bq.is_active = false
               AND bq.validator_deactivated_reason = 'missing_video_join'
               AND (mv.local_video_url IS NOT NULL OR mv.hls_master_url IS NOT NULL)
+              AND mv.transcoding_status NOT IN ('encoding', 'processing')
           `);
           restoredRows = (result.rows as RestoredRow[]) ?? [];
         } catch (qErr) {

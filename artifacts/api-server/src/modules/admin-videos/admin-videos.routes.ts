@@ -181,8 +181,12 @@ export async function adminVideosRoutes(app: FastifyInstance) {
 
       // Always exclude YouTube videos published more than 2 years ago.
       // Non-YouTube (local/HLS) content is always visible regardless of date.
+      // IMPORTANT: use the same SAFE_PUB_AT guard as the public videos route —
+      // a direct ::timestamptz cast on malformed published_at strings will throw
+      // "invalid input syntax for type timestamp" and 500 the entire listing.
+      const ADMIN_SAFE_PUB_AT = sql`CASE WHEN ${videos.publishedAt} ~ '^[0-9]{4}' THEN NULLIF(${videos.publishedAt}, '')::timestamptz ELSE NULL END`;
       const filters: SQL[] = [
-        sql`(${videos.videoSource} != 'youtube' OR ${videos.publishedAt} IS NULL OR ${videos.publishedAt}::timestamptz >= NOW() - INTERVAL '2 years')`,
+        sql`(${videos.videoSource} != 'youtube' OR ${videos.publishedAt} IS NULL OR ${ADMIN_SAFE_PUB_AT} >= NOW() - INTERVAL '2 years')`,
       ];
       if (q.search) {
         // Full-text search via GIN tsvector index (title + preacher + description).
@@ -222,7 +226,9 @@ export async function adminVideosRoutes(app: FastifyInstance) {
           orderBy = asc(videos.importedAt);
           break;
         case "published":
-          orderBy = sql`${videos.publishedAt}::timestamptz DESC NULLS LAST`;
+          // Must use the same SAFE_PUB_AT guard — direct ::timestamptz on a
+          // malformed published_at value throws and 500s the entire admin list.
+          orderBy = sql`${ADMIN_SAFE_PUB_AT} DESC NULLS LAST`;
           break;
         case "views":
           orderBy = desc(videos.viewCount);

@@ -17,6 +17,7 @@
 
 import EventEmitter from "node:events";
 import https from "node:https";
+import { trackQuota } from "../youtube-sync/youtube-sync.service.js";
 
 export interface YtLiveState {
   isLive: boolean;
@@ -205,6 +206,9 @@ class YtLivePoller extends EventEmitter {
     try {
       const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${encodeURIComponent(ytChannelId())}&eventType=live&type=video&key=${encodeURIComponent(ytApiKey())}`;
       const body = await httpsGet(url, 12_000);
+      // Each YouTube Data API v3 search call costs 100 quota units.
+      // Track it so the admin quota dashboard reflects live-poller usage.
+      trackQuota("search", 100);
       return parseApiResponse(body);
     } catch {
       return { isLive: false, videoId: null, title: null, viewerCount: null, detectionMethod: "api-error" };

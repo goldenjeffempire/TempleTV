@@ -99,7 +99,7 @@ export declare const adminService: {
         completionRate: number;
         avgWatchSecs: number;
         platformBreakdown: {
-            platform: "mobile" | "tv" | "web";
+            platform: "tv" | "mobile" | "web";
             sessions: number;
         }[];
         dailyViews: {

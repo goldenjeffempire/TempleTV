@@ -26,10 +26,10 @@ import { ListMusic, Plus, MoreVertical, Pencil, Trash2, Play } from "lucide-reac
 
 interface Playlist {
   id: string;
-  title: string;
+  name: string;
   description?: string;
   videoCount?: number;
-  isPublished?: boolean;
+  isActive?: boolean;
   createdAt: string;
 }
 
@@ -38,7 +38,7 @@ export default function PlaylistsPage() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Playlist | null>(null);
   const [deleting, setDeleting] = useState<Playlist | null>(null);
-  const [form, setForm] = useState({ title: "", description: "" });
+  const [form, setForm] = useState({ name: "", description: "" });
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["playlists"],
@@ -53,7 +53,7 @@ export default function PlaylistsPage() {
       void qc.invalidateQueries({ queryKey: ["playlists"] });
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
       setOpen(false);
-      setForm({ title: "", description: "" });
+      setForm({ name: "", description: "" });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to create"),
   });
@@ -88,7 +88,7 @@ export default function PlaylistsPage() {
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to delete"),
   });
 
-  const openEdit = (p: Playlist) => { setForm({ title: p.title, description: p.description ?? "" }); setEditing(p); };
+  const openEdit = (p: Playlist) => { setForm({ name: p.name, description: p.description ?? "" }); setEditing(p); };
 
   const playlists = data?.playlists ?? [];
 
@@ -98,7 +98,7 @@ export default function PlaylistsPage() {
         title="Playlists"
         description={`${playlists.length} playlists`}
         actions={
-          <Button size="sm" onClick={() => { setForm({ title: "", description: "" }); setOpen(true); }} className="gap-1.5">
+          <Button size="sm" onClick={() => { setForm({ name: "", description: "" }); setOpen(true); }} className="gap-1.5">
             <Plus size={14} /> New Playlist
           </Button>
         }
@@ -130,7 +130,7 @@ export default function PlaylistsPage() {
               <CardHeader className="pb-2 flex-row items-start justify-between">
                 <div className="flex items-center gap-2 min-w-0">
                   <ListMusic size={16} className="text-primary flex-shrink-0" />
-                  <CardTitle className="text-sm truncate">{p.title}</CardTitle>
+                  <CardTitle className="text-sm truncate">{p.name}</CardTitle>
                 </div>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -151,9 +151,9 @@ export default function PlaylistsPage() {
                   <Badge variant="outline" className="text-[11px]">
                     <Play size={9} className="mr-1" />{p.videoCount ?? 0} videos
                   </Badge>
-                  {p.isPublished !== undefined && (
-                    <Badge variant={p.isPublished ? "default" : "secondary"} className="text-[11px]">
-                      {p.isPublished ? "Published" : "Draft"}
+                  {p.isActive !== undefined && (
+                    <Badge variant={p.isActive ? "default" : "secondary"} className="text-[11px]">
+                      {p.isActive ? "Active" : "Inactive"}
                     </Badge>
                   )}
                 </div>
@@ -173,7 +173,7 @@ export default function PlaylistsPage() {
           <div className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="playlist-title">Title *</Label>
-              <Input id="playlist-title" placeholder="Playlist name" value={form.title ?? ""} onChange={(e) => setForm(f => ({ ...f, title: e.target.value }))} />
+              <Input id="playlist-title" placeholder="Playlist name" value={form.name ?? ""} onChange={(e) => setForm(f => ({ ...f, name: e.target.value }))} />
             </div>
             <div className="space-y-2">
               <Label htmlFor="playlist-description">Description</Label>
@@ -184,7 +184,7 @@ export default function PlaylistsPage() {
             <Button variant="ghost" onClick={() => { setOpen(false); setEditing(null); }}>Cancel</Button>
             <Button
               onClick={() => editing ? updateMutation.mutate({ id: editing.id, ...form }) : createMutation.mutate(form)}
-              disabled={(editing ? updateMutation.isPending : createMutation.isPending) || !form.title.trim()}
+              disabled={(editing ? updateMutation.isPending : createMutation.isPending) || !form.name.trim()}
             >
               {(editing ? updateMutation.isPending : createMutation.isPending) ? "Saving…" : editing ? "Save changes" : "Create"}
             </Button>
@@ -198,7 +198,7 @@ export default function PlaylistsPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete playlist?</AlertDialogTitle>
             <AlertDialogDescription>
-              &quot;{deleting?.title}&quot; will be permanently deleted. Videos inside will not be affected.
+              &quot;{deleting?.name}&quot; will be permanently deleted. Videos inside will not be affected.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

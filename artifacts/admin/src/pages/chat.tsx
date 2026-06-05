@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, HttpError, isTransientError} from "@/lib/api";
 import { useSSEEvent } from "@/contexts/sse-context";
@@ -8,6 +9,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { MessageSquare, Trash2, ShieldOff, RefreshCw } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
@@ -30,6 +35,7 @@ interface ChatStats {
 
 export default function ChatPage() {
   const qc = useQueryClient();
+  const [banTarget, setBanTarget] = useState<{ userId: string; userName: string } | null>(null);
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["chat-messages"],
@@ -48,8 +54,12 @@ export default function ChatPage() {
 
   const banMutation = useMutation({
     mutationFn: (userId: string) => api.post(`/admin/users/${userId}/ban`),
-    onSuccess: () => { toast.success("User banned from chat"); void qc.invalidateQueries({ queryKey: ["chat-messages"] }); },
-    onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to ban"),
+    onSuccess: () => {
+      toast.success("User banned from chat");
+      setBanTarget(null);
+      void qc.invalidateQueries({ queryKey: ["chat-messages"] });
+    },
+    onError: (e) => { setBanTarget(null); toast.error(e instanceof HttpError ? e.message : "Failed to ban"); },
   });
 
   const messages = data?.messages ?? [];
@@ -126,10 +136,10 @@ export default function ChatPage() {
                           className="h-6 w-6 text-amber-500"
                           title="Ban user"
                           aria-label="Ban user"
-                          disabled={banMutation.isPending && banMutation.variables === msg.userId}
-                          onClick={() => banMutation.mutate(msg.userId!)}
+                          disabled={banMutation.isPending}
+                          onClick={() => setBanTarget({ userId: msg.userId!, userName: msg.userName ?? msg.userEmail ?? msg.userId! })}
                         >
-                          <ShieldOff size={12} className={banMutation.isPending && banMutation.variables === msg.userId ? "animate-pulse" : ""} />
+                          <ShieldOff size={12} />
                         </Button>
                       )}
                       <Button
@@ -151,6 +161,28 @@ export default function ChatPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Ban confirmation */}
+      <AlertDialog open={!!banTarget} onOpenChange={(o) => { if (!o) setBanTarget(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Ban user from chat?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently ban <strong>{banTarget?.userName}</strong> from the live chat. This action cannot be undone from the chat panel.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={banMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={banMutation.isPending}
+              onClick={() => banTarget && banMutation.mutate(banTarget.userId)}
+            >
+              {banMutation.isPending ? "Banning…" : "Ban user"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -419,7 +419,7 @@ export async function runFaststart(
     // cycle timing matches the actual video length. Non-fatal — a failure here
     // does not block the faststart result; loadActive() reads the real duration
     // from the joined video row at runtime as a belt-and-suspenders fallback.
-    if (durationSecs != null && durationSecs > 10) {
+    if (durationSecs != null && durationSecs > 0) {
       const roundedDuration = Math.round(durationSecs);
       await db
         .update(schema.broadcastQueueTable)

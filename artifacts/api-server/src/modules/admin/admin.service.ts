@@ -3,6 +3,7 @@ import type { z } from "zod";
 import { db, schema } from "../../infrastructure/db.js";
 import { cache } from "../../infrastructure/cache.js";
 import { NotFoundError } from "../../shared/errors.js";
+import { invalidateSessionsValidAfterCache } from "../../middleware/auth.js";
 import type {
   ListUsersQuerySchema,
   UpdateUserRoleBodySchema,
@@ -77,6 +78,10 @@ export const adminService = {
       .where(eq(users.id, id))
       .returning();
     if (!row) throw new NotFoundError("User not found");
+    // Flush the in-process SVA cache so the role change takes effect
+    // immediately for any in-flight request on this instance, not after the
+    // 30-second cache TTL expires.
+    invalidateSessionsValidAfterCache(id);
     return toUserDto(row);
   },
 

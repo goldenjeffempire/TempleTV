@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { eq, asc, desc, sql } from "drizzle-orm";
+import { and, eq, asc, desc, sql, type SQL } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { ConflictError, NotFoundError } from "../../shared/errors.js";
@@ -47,10 +47,14 @@ export async function seriesRoutes(app: FastifyInstance) {
         "public, max-age=30, s-maxage=30, stale-while-revalidate=60",
       );
 
+      const conditions: SQL[] = [eq(schema.seriesTable.isPublished, true)];
+      if (req.query.category) {
+        conditions.push(eq(schema.seriesTable.category, req.query.category));
+      }
       const rows = await db
         .select()
         .from(schema.seriesTable)
-        .where(eq(schema.seriesTable.isPublished, true))
+        .where(and(...conditions))
         .orderBy(asc(schema.seriesTable.sortOrder), desc(schema.seriesTable.createdAt))
         .limit(req.query.limit)
         .offset(req.query.offset);

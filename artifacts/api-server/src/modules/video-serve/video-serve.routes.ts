@@ -681,8 +681,14 @@ export async function videoServeRoutes(app: FastifyInstance) {
       if (isManifest) {
         // Buffer the manifest so we can rewrite absolute S3 segment URLs.
         const chunks: Buffer[] = [];
-        for await (const chunk of obj.body) {
-          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+        try {
+          for await (const chunk of obj.body) {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+          }
+        } catch (streamErr) {
+          decrementConcurrent();
+          req.log.warn({ err: streamErr, videoId }, "HLS manifest stream failed mid-read");
+          return reply.code(503).send({ error: "HLS manifest stream interrupted" });
         }
         let text = Buffer.concat(chunks).toString("utf8");
 

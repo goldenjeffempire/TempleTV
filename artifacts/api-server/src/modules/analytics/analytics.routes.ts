@@ -106,11 +106,15 @@ export async function analyticsRoutes(app: FastifyInstance) {
             }
           });
         } else if (eventType === "heartbeat") {
+          const heartbeatSecs = Math.round(positionSecs ?? 0);
           await db
             .update(sessions)
             .set({
               lastHeartbeatAt: new Date(),
-              watchedSecs: Math.round(positionSecs ?? 0),
+              // GREATEST prevents a delayed heartbeat from overwriting a
+              // higher watchedSecs that was already written by a completed
+              // or later heartbeat event.
+              watchedSecs: sql`GREATEST(${sessions.watchedSecs}, ${heartbeatSecs})`,
             })
             .where(
               and(

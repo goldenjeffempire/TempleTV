@@ -11,7 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Video, Users, Bell, Clapperboard, Radio, ArrowRight,
-  Clock, Activity, CheckCircle2, XCircle, Loader2, Zap, AlertTriangle,
+  Clock, Activity, CheckCircle2, XCircle, Loader2, Zap, AlertTriangle, AlertCircle,
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatDistanceToNow } from "date-fns";
@@ -95,22 +95,22 @@ export default function Dashboard() {
     staleTime: 30_000,
   });
 
-  const { data: transcodingQueue, isLoading: transcodingLoading } = useQuery({
+  const { data: transcodingQueue, isLoading: transcodingLoading, isError: transcodingError } = useQuery({
     queryKey: ["transcoding-queue"],
-    queryFn: () => api.get<{ jobs: TranscodingJob[] }>("/admin/transcoding/queue").catch(() => ({ jobs: [] as TranscodingJob[] })),
+    queryFn: () => api.get<{ jobs: TranscodingJob[] }>("/admin/transcoding/queue"),
     refetchInterval: 60_000,
     staleTime: 30_000,
   });
 
   const { data: scheduled } = useQuery({
     queryKey: ["scheduled-notifications-summary"],
-    queryFn: () => api.get<{ items: ScheduledNotif[] }>("/admin/notifications/scheduled").catch(() => ({ items: [] })),
+    queryFn: () => api.get<{ items: ScheduledNotif[] }>("/admin/notifications/scheduled"),
     staleTime: 30_000,
   });
 
   const { data: engineHealth } = useQuery({
     queryKey: ["dashboard-engine-health"],
-    queryFn: () => api.get<EngineHealthSummary>("/broadcast-v2/health").catch(() => null),
+    queryFn: () => api.get<EngineHealthSummary>("/broadcast-v2/health"),
     refetchInterval: 30_000,
     staleTime: 25_000,
   });
@@ -371,6 +371,11 @@ export default function Dashboard() {
           <CardContent className="min-h-[160px] flex flex-col justify-center">
             {transcodingLoading ? (
               <div className="space-y-2">{[1,2,3].map(i => <Skeleton key={i} className="h-10 w-full" />)}</div>
+            ) : transcodingError ? (
+              <div className="flex flex-col items-center gap-2 py-4 text-center">
+                <AlertCircle size={20} className="text-destructive" />
+                <p className="text-sm text-muted-foreground">Transcoding queue unavailable</p>
+              </div>
             ) : pendingJobs.length === 0 ? (
               <div className="flex flex-col items-center gap-2 py-4 text-center">
                 <CheckCircle2 size={20} className="text-green-500" />

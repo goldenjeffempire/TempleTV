@@ -135,7 +135,31 @@ async function probeHlsManifest(url: string): Promise<{ ok: boolean; status: num
     clearTimeout(t);
     if (!res.ok) return { ok: false, status: res.status, reason: `HTTP ${res.status}` };
 
-    const text = await res.text();
+    // Guard against CDN returning a multi-MB garbage body for a "200 OK"
+    // manifest URL. Read at most 64 KB — enough for any real HLS playlist.
+    const HLS_MAX_BODY_BYTES = 64 * 1024;
+    const contentLength = Number(res.headers.get("content-length") ?? 0);
+    if (contentLength > HLS_MAX_BODY_BYTES) {
+      return { ok: false, status: res.status, reason: `HLS manifest too large (${contentLength} bytes) — not a valid playlist` };
+    }
+    const reader = res.body?.getReader();
+    let text = "";
+    if (reader) {
+      const decoder = new TextDecoder();
+      let received = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done || !value) break;
+        received += value.byteLength;
+        text += decoder.decode(value, { stream: !done });
+        if (received >= HLS_MAX_BODY_BYTES) {
+          reader.cancel().catch(() => undefined);
+          break;
+        }
+      }
+    } else {
+      text = await res.text();
+    }
     if (!text.trimStart().startsWith("#EXTM3U")) {
       return { ok: false, status: res.status, reason: "invalid HLS manifest (missing #EXTM3U header)" };
     }

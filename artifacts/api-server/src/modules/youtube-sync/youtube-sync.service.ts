@@ -145,6 +145,19 @@ export function trackQuota(operation: string, cost: number): void {
   }
 }
 
+/**
+ * Returns true when the in-process quota counter has reached or exceeded the
+ * configured daily limit.  Callers should fall back to RSS instead of making
+ * further Data API calls — even though Google will ultimately enforce the limit
+ * with a 403, skipping the call avoids a wasted round-trip and log noise.
+ */
+export function isQuotaExhausted(): boolean {
+  if (QUOTA_TOTAL <= 0) return false; // no limit configured — never block
+  const now = new Date();
+  if (now >= quotaResetAt) return false; // quota just reset
+  return quotaUsed >= QUOTA_TOTAL;
+}
+
 export function getQuotaStatus(): QuotaState {
   const now = new Date();
   if (now >= quotaResetAt) {
@@ -941,8 +954,17 @@ export async function syncYouTubeChannel(triggeredBy: "scheduler" | "manual" = "
   try {
     // ── Fetch from YouTube / RSS ─────────────────────────────────────────────
     const apiKey = env.YOUTUBE_API_KEY;
-    const { videos: rawVideos, source, skipped } = apiKey
-      ? await fetchAllChannelVideos(apiKey, cutoff)
+    // Skip the Data API entirely when the daily quota is locally exhausted to
+    // avoid a wasted HTTP round-trip + 403 log noise. RSS is always the fallback.
+    const useApi = apiKey && !isQuotaExhausted();
+    if (apiKey && !useApi) {
+      logger.warn(
+        { quotaUsed, QUOTA_TOTAL },
+        "youtube-sync: local quota exhausted — using RSS instead of Data API for this run",
+      );
+    }
+    const { videos: rawVideos, source, skipped } = useApi
+      ? await fetchAllChannelVideos(apiKey!, cutoff)
       : await fetchWithRssOnly(cutoff);
 
     // ── Deduplicate by videoId ───────────────────────────────────────────────

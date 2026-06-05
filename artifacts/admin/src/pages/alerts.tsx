@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, HttpError, isTransientError} from "@/lib/api";
 import { PageHeader } from "@/components/shared/page-header";
@@ -6,6 +7,10 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { Shield, CheckCircle2, AlertTriangle, Info, XCircle, RefreshCw } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
@@ -14,7 +19,7 @@ interface Alert {
   id: string;
   title: string;
   message: string;
-  severity: "info" | "warning" | "error" | "critical";
+  severity: "info" | "warning" | "error" | "critical" | "emergency";
   source: string;
   resolvedAt?: string;
   createdAt: string;
@@ -25,10 +30,14 @@ const SEVERITY_CONFIG = {
   warning: { icon: <AlertTriangle size={15} />, color: "text-amber-500", bg: "bg-amber-500/5", badge: "secondary" as const },
   error: { icon: <XCircle size={15} />, color: "text-red-500", bg: "bg-red-500/5", badge: "destructive" as const },
   critical: { icon: <XCircle size={15} />, color: "text-red-600", bg: "bg-red-600/10", badge: "destructive" as const },
+  // "emergency" is the highest-severity level — render with the same visual
+  // weight as "critical" so operators can't miss it.
+  emergency: { icon: <XCircle size={15} />, color: "text-red-700", bg: "bg-red-700/15", badge: "destructive" as const },
 };
 
 export default function AlertsPage() {
   const qc = useQueryClient();
+  const [resolveTargetId, setResolveTargetId] = useState<string | null>(null);
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["alerts"],
@@ -97,7 +106,7 @@ export default function AlertsPage() {
                             <p className="text-sm text-muted-foreground mt-0.5">{alert.message}</p>
                             <p className="text-xs text-muted-foreground mt-1">{formatDistanceToNow(new Date(alert.createdAt), { addSuffix: true })}</p>
                           </div>
-                          <Button size="sm" variant="outline" className="flex-shrink-0 h-7 text-xs gap-1" onClick={() => resolveMutation.mutate(alert.id)} disabled={resolveMutation.isPending}>
+                          <Button size="sm" variant="outline" className="flex-shrink-0 h-7 text-xs gap-1" onClick={() => setResolveTargetId(alert.id)} disabled={resolveMutation.isPending}>
                             <CheckCircle2 size={12} /> Resolve
                           </Button>
                         </div>
@@ -131,5 +140,25 @@ export default function AlertsPage() {
         </div>
       )}
     </div>
+
+    <AlertDialog open={resolveTargetId !== null} onOpenChange={(open) => { if (!open) setResolveTargetId(null); }}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Resolve alert?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This marks the alert as resolved and removes it from the Active list. Make sure the
+            underlying issue has actually been addressed before dismissing critical or emergency alerts.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={() => { const id = resolveTargetId; setResolveTargetId(null); if (id) resolveMutation.mutate(id); }}
+          >
+            Resolve
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }

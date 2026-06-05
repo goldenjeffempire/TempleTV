@@ -123,7 +123,7 @@ export async function enqueueIfMissing(opts: {
       thumbnailUrl: row.thumbnailUrl ?? "",
       durationSecs,
       localVideoUrl: row.localVideoUrl ?? null,
-      videoSource: row.videoSource,
+      videoSource: row.videoSource as "youtube" | "local" | "hls",
     });
     logger.info(
       { videoId: row.id, queueItemId: inserted.id, reason: opts.reason },

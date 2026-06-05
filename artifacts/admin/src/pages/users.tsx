@@ -108,8 +108,8 @@ export default function UsersPage() {
 
   const users = data?.items ?? [];
   const filtered = users.filter(u =>
-    !search || u.email.toLowerCase().includes(search.toLowerCase()) ||
-    (u.displayName ?? "").toLowerCase().includes(search.toLowerCase()),
+    !debouncedSearch || u.email.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+    (u.displayName ?? "").toLowerCase().includes(debouncedSearch.toLowerCase()),
   );
 
   // Capture before the render map shadows the `user` variable with each row.
@@ -226,7 +226,7 @@ export default function UsersPage() {
                       <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                         Set Role
                       </p>
-                      {["editor", "moderator", "user"].map(role => (
+                      {["editor", "user"].map(role => (
                         <DropdownMenuItem
                           key={role}
                           disabled={

@@ -23,6 +23,15 @@ declare class TranscoderDispatcher {
     private running;
     private stopped;
     /**
+     * Set to true only by start(). Guards nudge() so that an explicit
+     * TRANSCODER_DISABLE=1 configuration — which skips start() entirely —
+     * cannot be bypassed by callers invoking nudge() after a new job is
+     * enqueued. Without this flag, stopped=false (the default) would allow
+     * nudge() to call tick() and re-arm the poll timer even when the
+     * dispatcher was intentionally never started.
+     */
+    private started;
+    /**
      * FFmpeg circuit breaker.
      *
      * When ffmpeg is unavailable `ffmpegAvailable` is set to false and all job

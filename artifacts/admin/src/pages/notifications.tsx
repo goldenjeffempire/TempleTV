@@ -105,6 +105,7 @@ export default function NotificationsPage() {
       toast.success("Notification sent successfully");
       setForm(DEFAULT_FORM);
       void qc.invalidateQueries({ queryKey: ["notifications-history"] });
+      void qc.invalidateQueries({ queryKey: ["notifications-stats"] });
       // Refresh Dashboard "Sent Last 24h" notification count.
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
     },
@@ -132,6 +133,7 @@ export default function NotificationsPage() {
       toast.success("Notification scheduled");
       setForm(DEFAULT_FORM);
       void qc.invalidateQueries({ queryKey: ["scheduled-notifications"] });
+      void qc.invalidateQueries({ queryKey: ["notifications-stats"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to schedule notification"),
   });
@@ -142,6 +144,7 @@ export default function NotificationsPage() {
       toast.success("Scheduled notification cancelled");
       void qc.invalidateQueries({ queryKey: ["scheduled-notifications"] });
       void qc.invalidateQueries({ queryKey: ["notifications-history"] });
+      void qc.invalidateQueries({ queryKey: ["notifications-stats"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to cancel"),
   });

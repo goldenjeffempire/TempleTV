@@ -94,6 +94,7 @@ export default function SchedulePage() {
       void qc.invalidateQueries({ queryKey: ["schedule"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      void qc.invalidateQueries({ queryKey: ["playlists"] });
       setAddOpen(false);
       setForm(BLANK_FORM);
     },
@@ -112,6 +113,7 @@ export default function SchedulePage() {
       void qc.invalidateQueries({ queryKey: ["schedule"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      void qc.invalidateQueries({ queryKey: ["playlists"] });
       setEditEntry(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to update entry"),
@@ -262,6 +264,7 @@ export default function SchedulePage() {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleteMutation.isPending}
               onClick={() => { if (deleteId) deleteMutation.mutate(deleteId); }}
             >
               {deleteMutation.isPending ? "Removing…" : "Remove"}

@@ -62,6 +62,13 @@ export async function liveOverridesRoutes(app: FastifyInstance) {
     },
     async (req, reply) => {
       const created = await liveOverridesService.start(req.body);
+      // Tell the v1 broadcast engine to reload — the /stop route already does
+      // this; without it the engine keeps playing the queued item in the
+      // background while the live override is active, potentially emitting
+      // stale PROGRAM_CHANGED signals to connected clients.
+      await broadcastEngine.reload().catch((err) =>
+        req.log.warn({ err }, "live-overrides /start: broadcastEngine.reload() failed (non-fatal)"),
+      );
       // Notify all connected WS and SSE clients so they switch to the live
       // stream immediately without waiting for their next poll cycle.
       overrideBus.notifyStarted({

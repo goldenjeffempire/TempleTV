@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { desc, eq, isNull, count } from "drizzle-orm";
+import { desc, eq, isNull, isNotNull, count, countDistinct } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, schema } from "../../infrastructure/db.js";
 import { requireAuth } from "../../middleware/auth.js";
@@ -105,8 +105,16 @@ export async function adminChatRoutes(app: FastifyInstance) {
         .from(messages)
         .where(isNull(messages.deletedAt));
 
-      const activeUserSet = new Set(rows.filter(r => r.deletedAt == null).map(r => r.userId ?? r.displayName));
-      const flaggedCount = rows.filter(r => r.deletedAt != null).length;
+      // Compute activeUsers and flaggedCount over ALL messages (not just the
+      // current page) so the stats panel shows accurate global figures.
+      const [activeUsersRow] = await db
+        .select({ count: countDistinct(schema.chatMessagesTable.userId) })
+        .from(schema.chatMessagesTable)
+        .where(isNull(schema.chatMessagesTable.deletedAt));
+      const [flaggedRow] = await db
+        .select({ count: count() })
+        .from(schema.chatMessagesTable)
+        .where(isNotNull(schema.chatMessagesTable.deletedAt));
 
       return {
         messages: rows.map((m) => ({
@@ -119,8 +127,8 @@ export async function adminChatRoutes(app: FastifyInstance) {
         })),
         stats: {
           totalMessages: totalRow?.total ?? rows.length,
-          activeUsers: activeUserSet.size,
-          flaggedCount,
+          activeUsers: activeUsersRow?.count ?? 0,
+          flaggedCount: flaggedRow?.count ?? 0,
         },
       };
     },
