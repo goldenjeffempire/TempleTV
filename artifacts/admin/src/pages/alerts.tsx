@@ -56,7 +56,11 @@ export default function AlertsPage() {
   const active = alerts.filter(a => !a.resolvedAt);
   const resolved = alerts.filter(a => !!a.resolvedAt);
 
+  const handleDialogOpenChange = (open: boolean) => { if (!open) setResolveTargetId(null); };
+  const handleResolveConfirm = () => { const id = resolveTargetId; setResolveTargetId(null); if (id) resolveMutation.mutate(id); };
+
   return (
+    <>
     <div className="p-4 sm:p-6 max-w-4xl mx-auto space-y-6">
       <PageHeader
         title="Alerts"
@@ -141,7 +145,7 @@ export default function AlertsPage() {
       )}
     </div>
 
-    <AlertDialog open={resolveTargetId !== null} onOpenChange={(open) => { if (!open) setResolveTargetId(null); }}>
+    <AlertDialog open={resolveTargetId !== null} onOpenChange={handleDialogOpenChange}>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Resolve alert?</AlertDialogTitle>
@@ -152,13 +156,12 @@ export default function AlertsPage() {
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            onClick={() => { const id = resolveTargetId; setResolveTargetId(null); if (id) resolveMutation.mutate(id); }}
-          >
+          <AlertDialogAction onClick={handleResolveConfirm}>
             Resolve
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+    </>
   );
 }
