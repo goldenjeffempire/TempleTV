@@ -41,6 +41,15 @@ class TranscoderDispatcher {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   private stopped = false;
+  /**
+   * Set to true only by start(). Guards nudge() so that an explicit
+   * TRANSCODER_DISABLE=1 configuration — which skips start() entirely —
+   * cannot be bypassed by callers invoking nudge() after a new job is
+   * enqueued. Without this flag, stopped=false (the default) would allow
+   * nudge() to call tick() and re-arm the poll timer even when the
+   * dispatcher was intentionally never started.
+   */
+  private started = false;
 
   /**
    * FFmpeg circuit breaker.
@@ -108,6 +117,7 @@ class TranscoderDispatcher {
 
   start(): void {
     if (this.timer) return;
+    this.started = true;
     this.stopped = false;
 
     // Any job left in 'processing' was orphaned when the previous server
@@ -446,7 +456,12 @@ class TranscoderDispatcher {
    * up to TRANSCODER_POLL_MS (10 s) for the next scheduled tick.
    */
   nudge(): void {
-    if (this.stopped) return;
+    // Guard: only run if the dispatcher was explicitly started.
+    // When TRANSCODER_DISABLE=1 is set, start() is never called so
+    // this.started stays false. Without this check, stopped=false (the
+    // initial default) would let nudge() bypass the disable flag and
+    // silently start the full polling loop whenever a job is enqueued.
+    if (!this.started || this.stopped) return;
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;

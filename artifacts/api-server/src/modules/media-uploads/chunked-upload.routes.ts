@@ -1417,7 +1417,10 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 // milliseconds rather than waiting for the next poll tick
                 // (up to TRANSCODER_POLL_MS = 10 s). This eliminates the
                 // visible "HLS queued" window in the broadcast queue UI.
-                transcoderDispatcher.nudge();
+                // Guard: nudge() is a no-op when the dispatcher was never
+                // started (TRANSCODER_DISABLE=1), but we also check here as
+                // belt-and-suspenders so grep can confirm the call site is safe.
+                if (!env.TRANSCODER_DISABLE) transcoderDispatcher.nudge();
               } catch (err) {
                 capturedLog.warn(
                   { err, videoId },
@@ -1629,17 +1632,19 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
 
           // Post-upload probes: thumbnail + duration.
           // Must run BEFORE faststart because faststart replaces the blob.
+          // Run SEQUENTIALLY (not in parallel) so only one source download
+          // occupies /tmp at a time — parallel downloads double peak disk
+          // usage on constrained environments. This mirrors Path A's explicit
+          // sequential design documented at the same step above.
           const clientDurationB = Number(rowB.duration ?? "0");
           try {
-            const [thumbUrlB, probedSecsB] = await Promise.all([
-              generateQuickThumbnail(result.objectKey, videoIdB),
-              // Mirror Path A: probe even when clientDurationB > 0 if it equals
-              // the 1800-second placeholder so db_fallback uploads also get
-              // a real ffprobe duration instead of a permanent placeholder.
-              (clientDurationB > 0 && clientDurationB !== 1800)
-                ? Promise.resolve(null)
-                : probeUploadedDuration(result.objectKey),
-            ]);
+            const thumbUrlB = await generateQuickThumbnail(result.objectKey, videoIdB);
+            // Mirror Path A: probe even when clientDurationB > 0 if it equals
+            // the 1800-second placeholder so db_fallback uploads also get
+            // a real ffprobe duration instead of a permanent placeholder.
+            const probedSecsB = (clientDurationB > 0 && clientDurationB !== 1800)
+              ? null
+              : await probeUploadedDuration(result.objectKey);
             const patchB: Partial<typeof videos.$inferInsert> = {};
             if (thumbUrlB) patchB.thumbnailUrl = thumbUrlB;
             if (probedSecsB != null) patchB.duration = String(Math.round(probedSecsB));
@@ -1733,8 +1738,10 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           }
 
           // Faststart MUST complete before enqueueTranscode (see Path A rationale).
-          // CORRUPT_UPLOAD errors are handled the same way as Path A: mark failed
-          // and skip transcode enqueue to avoid pointless retry cycles.
+          // CORRUPT_UPLOAD errors are handled the same way as Path A: mark failed,
+          // deactivate the broadcast-queue entry, and skip transcode enqueue to
+          // avoid pointless retry cycles. Without the queue deactivation the item
+          // stays is_active=true and the orchestrator keeps trying to play it.
           try {
             await runFaststart(videoIdB, result.objectKey, { skipStatusUpdate: false });
             capturedLogB.info({ sessionId, videoId: videoIdB }, "[finalize:db_fallback:bg] faststart done");
@@ -1758,7 +1765,19 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 })
                 .where(eq(videos.id, videoIdB))
                 .catch(() => {});
+              // Immediately deactivate the broadcast queue entry created by
+              // enqueueIfMissing above so the orchestrator stops trying to play
+              // this corrupt item on the next reload cycle. Without this step
+              // the row stays is_active=true and the orchestrator keeps loading
+              // it — burning skip budget every cycle — until the queue-integrity-
+              // validator runs (up to 3 min). This mirrors Path A's identical fix.
+              await db
+                .update(schema.broadcastQueueTable)
+                .set({ isActive: false })
+                .where(eq(schema.broadcastQueueTable.videoId, videoIdB))
+                .catch(() => {});
               adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "corrupt-upload-failed" });
+              adminEventBus.push("broadcast-queue-updated", { reason: "corrupt-upload-faststart-cleanup", videoId: videoIdB });
             } else {
               capturedLogB.warn({ err, videoId: videoIdB }, "[finalize:db_fallback:bg] faststart failed (non-fatal)");
             }
@@ -1767,7 +1786,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           if (!skipTranscodeEnqueueB) {
             try {
               await enqueueTranscode({ videoId: videoIdB, videoPath: result.objectKey });
-              transcoderDispatcher.nudge();
+              if (!env.TRANSCODER_DISABLE) transcoderDispatcher.nudge();
               capturedLogB.info({ sessionId, videoId: videoIdB }, "[finalize:db_fallback:bg] HLS transcode job queued");
             } catch (err) {
               capturedLogB.warn(
