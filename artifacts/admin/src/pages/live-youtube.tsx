@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, HttpError, isTransientError} from "@/lib/api";
 import { PageHeader } from "@/components/shared/page-header";
@@ -6,8 +7,18 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Tv2, RefreshCw, Play, Square, Users } from "lucide-react";
+import { Tv2, RefreshCw, Play, Square, Users, Loader2 } from "lucide-react";
 
 interface YoutubeLiveStatus {
   isLive: boolean;
@@ -28,6 +39,8 @@ interface YoutubeScheduled {
 
 export default function LiveYoutubePage() {
   const qc = useQueryClient();
+  const [showStopConfirm, setShowStopConfirm] = useState(false);
+  const [pendingStopId, setPendingStopId] = useState<string | null>(null);
 
   const { data: status, isLoading, error, refetch } = useQuery({
     queryKey: ["youtube-live-status"],
@@ -45,15 +58,34 @@ export default function LiveYoutubePage() {
 
   const startMutation = useMutation({
     mutationFn: (broadcastId: string) => api.post(`/youtube/live/${broadcastId}/start`),
-    onSuccess: () => { toast.success("YouTube broadcast started"); void qc.invalidateQueries({ queryKey: ["youtube-live-status"] }); },
+    onSuccess: () => {
+      toast.success("YouTube broadcast started");
+      void qc.invalidateQueries({ queryKey: ["youtube-live-status"] });
+      void qc.invalidateQueries({ queryKey: ["youtube-broadcasts"] });
+    },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to start"),
   });
 
   const stopMutation = useMutation({
     mutationFn: (broadcastId: string) => api.post(`/youtube/live/${broadcastId}/stop`),
-    onSuccess: () => { toast.success("YouTube broadcast ended"); void qc.invalidateQueries({ queryKey: ["youtube-live-status"] }); },
+    onSuccess: () => {
+      toast.success("YouTube broadcast ended");
+      void qc.invalidateQueries({ queryKey: ["youtube-live-status"] });
+      void qc.invalidateQueries({ queryKey: ["youtube-broadcasts"] });
+    },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to stop"),
   });
+
+  const handleStopClick = (broadcastId: string) => {
+    setPendingStopId(broadcastId);
+    setShowStopConfirm(true);
+  };
+
+  const handleStopConfirm = () => {
+    if (pendingStopId) stopMutation.mutate(pendingStopId);
+    setShowStopConfirm(false);
+    setPendingStopId(null);
+  };
 
   return (
     <div className="p-4 sm:p-6 max-w-4xl mx-auto space-y-6">
@@ -86,8 +118,16 @@ export default function LiveYoutubePage() {
               YouTube Broadcast Status
             </span>
             {status?.isLive && status.broadcastId && (
-              <Button size="sm" variant="destructive" className="h-7 gap-1 text-xs" onClick={() => stopMutation.mutate(status.broadcastId!)} disabled={stopMutation.isPending}>
-                <Square size={11} /> End Broadcast
+              <Button
+                size="sm"
+                variant="destructive"
+                className="h-7 gap-1 text-xs"
+                onClick={() => handleStopClick(status.broadcastId!)}
+                disabled={stopMutation.isPending}
+              >
+                {stopMutation.isPending
+                  ? <><Loader2 size={11} className="animate-spin" /> Stopping…</>
+                  : <><Square size={11} /> End Broadcast</>}
               </Button>
             )}
           </CardTitle>
@@ -130,8 +170,16 @@ export default function LiveYoutubePage() {
                 </div>
                 <Badge variant="outline" className="capitalize text-[11px] flex-shrink-0">{b.status}</Badge>
                 {b.status === "ready" && (
-                  <Button size="sm" variant="outline" className="h-7 gap-1 text-xs flex-shrink-0" onClick={() => startMutation.mutate(b.id)} disabled={startMutation.isPending}>
-                    <Play size={11} /> Go Live
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 gap-1 text-xs flex-shrink-0"
+                    onClick={() => startMutation.mutate(b.id)}
+                    disabled={startMutation.isPending}
+                  >
+                    {startMutation.isPending && startMutation.variables === b.id
+                      ? <><Loader2 size={11} className="animate-spin" /> Starting…</>
+                      : <><Play size={11} /> Go Live</>}
                   </Button>
                 )}
               </div>
@@ -139,6 +187,29 @@ export default function LiveYoutubePage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Confirm End Broadcast */}
+      <AlertDialog open={showStopConfirm} onOpenChange={setShowStopConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>End YouTube Broadcast?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will immediately terminate the live YouTube broadcast
+              {status?.title ? ` "${status.title}"` : ""}. Viewers currently watching will be disconnected.
+              This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setPendingStopId(null)}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleStopConfirm}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              End Broadcast
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -137,11 +137,7 @@ export default function MidnightPrayersPage() {
 
   const { data: stateData } = useQuery<MPStateResponse>({
     queryKey: ["midnight-prayers/state"],
-    queryFn: async () => {
-      const res = await fetch(`${apiBase()}/midnight-prayers/state`);
-      if (!res.ok) throw new Error("Failed to load state");
-      return res.json() as Promise<MPStateResponse>;
-    },
+    queryFn: () => api.get<MPStateResponse>("/midnight-prayers/state"),
     refetchInterval: 10_000,
     staleTime: 5_000,
   });

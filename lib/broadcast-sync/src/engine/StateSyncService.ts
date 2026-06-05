@@ -36,6 +36,8 @@ const MAX_RETRY_MS   = 60_000;
 const FALLBACK_POLL_MS = 30_000;
 const OMEGA_RESYNC_MS  = 30_000;
 const FETCH_TIMEOUT_MS = 8_000;
+/** How long to wait for any SSE frame before treating the connection as zombie and reconnecting. */
+const SSE_WATCHDOG_MS  = 60_000;
 
 // ── Callbacks ─────────────────────────────────────────────────────────────────
 
@@ -59,6 +61,8 @@ export class StateSyncService {
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private resyncInterval: ReturnType<typeof setInterval> | null = null;
   private sseSource: EventSource | null = null;
+  private sseWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
+  private sseLastEventMs = 0;
   private destroyed = false;
   private lastServerTimeMs = 0;
 
@@ -95,6 +99,7 @@ export class StateSyncService {
     if (this.reconnectTimer)  { clearTimeout(this.reconnectTimer);  this.reconnectTimer = null; }
     if (this.pollTimer)       { clearTimeout(this.pollTimer);        this.pollTimer = null; }
     if (this.resyncInterval)  { clearInterval(this.resyncInterval);  this.resyncInterval = null; }
+    if (this.sseWatchdogTimer) { clearTimeout(this.sseWatchdogTimer); this.sseWatchdogTimer = null; }
     try { this.sseSource?.close(); } catch { /* noop */ }
     this.sseSource = null;
   }
@@ -253,14 +258,50 @@ export class StateSyncService {
       if (typeof EventSource === "undefined") return;
       const sse = new EventSource(url);
       this.sseSource = sse;
+
+      const bump = () => { this.sseLastEventMs = Date.now(); };
+
       sse.addEventListener("videos-library-updated", () => {
+        bump();
         if (!this.destroyed) this.cb.onLibraryRevision(0); // 0 = "bump"
       });
       sse.addEventListener("broadcast-schedule-updated", () => {
+        bump();
         if (!this.destroyed) this.cb.onScheduleRevision();
       });
+
+      // Also count the open event as proof-of-life so the first watchdog
+      // cycle doesn't fire immediately on slow connections.
+      sse.addEventListener("open", bump);
+
+      // Arm the watchdog.
+      this.armSseWatchdog();
     } catch {
       // EventSource constructor can throw on some TV browsers — skip.
     }
+  }
+
+  /**
+   * Arms a recurring watchdog that detects zombie SSE connections — connections
+   * that appear open but deliver no data (common on TV chipsets with aggressive
+   * NAT that silently drop persistent HTTP streams without firing an error event).
+   * When stale, we close + re-open the EventSource so events resume.
+   */
+  private armSseWatchdog(): void {
+    if (this.sseWatchdogTimer) clearTimeout(this.sseWatchdogTimer);
+    this.sseWatchdogTimer = setTimeout(() => {
+      if (this.destroyed) return;
+      const stallMs = Date.now() - this.sseLastEventMs;
+      if (stallMs >= SSE_WATCHDOG_MS && this.sseSource && this.sseSource.readyState !== EventSource.CLOSED) {
+        // Zombie detected — reconnect.
+        try { this.sseSource.close(); } catch { /* noop */ }
+        this.sseSource = null;
+        this.sseLastEventMs = 0;
+        this.startSseSidecar();
+        return;
+      }
+      // Still alive — re-arm.
+      this.armSseWatchdog();
+    }, SSE_WATCHDOG_MS);
   }
 }

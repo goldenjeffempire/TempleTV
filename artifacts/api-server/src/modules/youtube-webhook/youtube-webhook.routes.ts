@@ -52,7 +52,9 @@ export function startWebhookAutoRenewal(baseUrl: string): void {
   if (_renewalTimer) return;
   _renewalTimer = setInterval(() => {
     logger.info({ baseUrl, renewalIntervalDays: 5.5 }, "youtube-webhook: renewing PubSubHubbub lease");
-    void subscribeToYouTubePubSubHubbub(baseUrl);
+    subscribeToYouTubePubSubHubbub(baseUrl).catch((err) => {
+      logger.warn({ err }, "youtube-webhook: PubSubHubbub lease renewal failed — will retry at next interval");
+    });
   }, RENEWAL_INTERVAL_MS);
   // Allow the process to exit cleanly even if the timer is still pending.
   _renewalTimer.unref();

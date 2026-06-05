@@ -446,53 +446,72 @@ export async function authRoutes(app: FastifyInstance) {
       const usersTable = schema.usersTable;
       const refreshTokensTable = schema.refreshTokensTable;
 
-      // When force=true, delete all elevated accounts and their tokens first.
-      let wiped = 0;
-      if (req.body.force) {
-        const elevated = await db
-          .select({ id: usersTable.id })
-          .from(usersTable)
-          .where(ne(usersTable.role, "user"));
-
-        if (elevated.length > 0) {
-          const ids = elevated.map((u) => u.id);
-          // Revoke all refresh tokens for these accounts.
-          await db
-            .delete(refreshTokensTable)
-            .where(inArray(refreshTokensTable.userId, ids));
-          // Delete the accounts.
-          await db
-            .delete(usersTable)
-            .where(inArray(usersTable.id, ids));
-          wiped = elevated.length;
-        }
-      } else {
-        const existing = await db
-          .select({ id: usersTable.id })
-          .from(usersTable)
-          .where(ne(usersTable.role, "user"))
-          .limit(1);
-
-        if (existing.length > 0) {
-          return {
-            created: false,
-            message: "Admin account already exists — pass force=true to wipe and re-seed",
-            email: req.body.email,
-          };
-        }
-      }
-
+      // Hash password outside the transaction (CPU-bound, not DB-bound).
       const email = req.body.email.toLowerCase();
       const passwordHash = await hashPassword(req.body.password);
       const displayName = req.body.displayName ?? email.split("@")[0] ?? "Admin";
 
-      await db.insert(usersTable).values({
-        id: nanoid(),
-        email,
-        passwordHash,
-        displayName,
-        role: "admin",
+      // Wrap the entire read-check / wipe / insert sequence in a single
+      // transaction so a mid-flight crash cannot leave the DB in a partially
+      // wiped state (elevated accounts deleted but no new admin created).
+      const { created, wiped } = await db.transaction(async (tx) => {
+        if (req.body.force) {
+          const elevated = await tx
+            .select({ id: usersTable.id })
+            .from(usersTable)
+            .where(ne(usersTable.role, "user"));
+
+          if (elevated.length > 0) {
+            const ids = elevated.map((u) => u.id);
+            // Revoke all refresh tokens for these accounts.
+            await tx
+              .delete(refreshTokensTable)
+              .where(inArray(refreshTokensTable.userId, ids));
+            // Delete the accounts.
+            await tx
+              .delete(usersTable)
+              .where(inArray(usersTable.id, ids));
+          }
+
+          await tx.insert(usersTable).values({
+            id: nanoid(),
+            email,
+            passwordHash,
+            displayName,
+            role: "admin",
+          });
+
+          return { created: true, wiped: elevated.length };
+        } else {
+          const existing = await tx
+            .select({ id: usersTable.id })
+            .from(usersTable)
+            .where(ne(usersTable.role, "user"))
+            .limit(1);
+
+          if (existing.length > 0) {
+            return { created: false, wiped: 0 };
+          }
+
+          await tx.insert(usersTable).values({
+            id: nanoid(),
+            email,
+            passwordHash,
+            displayName,
+            role: "admin",
+          });
+
+          return { created: true, wiped: 0 };
+        }
       });
+
+      if (!created) {
+        return {
+          created: false,
+          message: "Admin account already exists — pass force=true to wipe and re-seed",
+          email,
+        };
+      }
 
       const msg = wiped > 0
         ? `Wiped ${wiped} existing account(s) and created admin`

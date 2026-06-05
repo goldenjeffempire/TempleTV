@@ -33,7 +33,9 @@ class YouTubeSyncDispatcher {
     const source = apiKey ? "YouTube Data API v3" : "RSS feed (no YOUTUBE_API_KEY set)";
     logger.info({ intervalMins: this.intervalMs / 60_000, source }, "youtube-sync dispatcher started");
 
-    void restoreQuota();
+    restoreQuota().catch((err) => {
+      logger.warn({ err }, "youtube-sync: quota restore on startup failed (non-fatal)");
+    });
 
     // Kick off first sync 30 s after boot so the server is fully ready.
     this.scheduleNext(30_000);

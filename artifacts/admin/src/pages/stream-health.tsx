@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, isTransientError } from "@/lib/api";
 import { useSSEEvent } from "@/contexts/sse-context";
@@ -8,6 +9,16 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   Activity, Wifi, Server, CheckCircle2, AlertCircle, RefreshCw,
   Radio, Zap, Users, BarChart2, Clock, ShieldAlert, ShieldCheck,
@@ -129,6 +140,7 @@ function formatUptime(ms: number): string {
 
 export default function StreamHealthPage() {
   const qc = useQueryClient();
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   const { data: readyz, isLoading: readyzLoading, error: readyzError, refetch } = useQuery({
     queryKey: ["readyz"],
@@ -528,7 +540,7 @@ export default function StreamHealthPage() {
                 size="sm"
                 className="h-7 text-xs gap-1.5"
                 disabled={clearBadUrlsMutation.isPending}
-                onClick={() => clearBadUrlsMutation.mutate()}
+                onClick={() => setShowClearConfirm(true)}
               >
                 {clearBadUrlsMutation.isPending
                   ? <RefreshCw size={11} className="animate-spin" />
@@ -646,6 +658,26 @@ export default function StreamHealthPage() {
           </Card>
         )}
       </div>
+
+      {/* Confirm Clear All Blocks */}
+      <AlertDialog open={showClearConfirm} onOpenChange={setShowClearConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Clear all source circuit-breaker blocks?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will reset every suspended URL so the broadcast orchestrator
+              immediately retries all sources, including previously unreachable
+              ones. Use this after fixing a CDN outage or bad stream key.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => clearBadUrlsMutation.mutate()}>
+              Clear All Blocks
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

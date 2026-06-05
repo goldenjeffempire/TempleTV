@@ -66,6 +66,9 @@ export default function PlaylistsPage() {
       // The schedule page may reference this playlist by name — refresh so
       // a rename is reflected immediately without a manual page reload.
       void qc.invalidateQueries({ queryKey: ["schedule"] });
+      // The broadcast queue may show this playlist's title — refresh so a
+      // rename is visible to the operator in Master Control without a reload.
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       setEditing(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to update"),

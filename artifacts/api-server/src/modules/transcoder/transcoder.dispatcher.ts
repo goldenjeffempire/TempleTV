@@ -797,7 +797,9 @@ class TranscoderDispatcher {
         // segments are intact, then deletes the raw source blob after the
         // configurable retention window (CLEANUP_RETENTION_HOURS). This
         // frees significant DB storage (raw 1080p sermons can be 4–8 GiB).
-        void scheduleSourceCleanup(job.videoId, job.videoPath ?? null);
+        scheduleSourceCleanup(job.videoId, job.videoPath ?? null).catch((err) => {
+          logger.warn({ err, videoId: job.videoId }, "transcoder: post-transcode source cleanup scheduling failed (non-fatal)");
+        });
 
         // ── Storage circuit breaker: reset streak on success ───────────────
         this.storageErrorStreak = 0;

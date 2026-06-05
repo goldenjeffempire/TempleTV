@@ -207,8 +207,22 @@ export async function mediaProxyRoutes(app: FastifyInstance) {
 
       // Forward content headers so the browser and hls.js handle the stream
       // correctly without extra HEAD round-trips.
-      const ct = upstream.headers.get("content-type");
-      if (ct) reply.header("Content-Type", ct);
+      //
+      // SECURITY: only forward audio/* or video/* content types. Forwarding
+      // text/html or application/javascript from a signed upstream URL would
+      // allow XSS on the API origin (Access-Control-Allow-Origin: * is set
+      // below). Unknown or non-media types are demoted to application/octet-stream
+      // so the browser treats the response as an opaque binary download and
+      // refuses to execute or render it as markup.
+      const ct = upstream.headers.get("content-type") ?? "";
+      const isSafeMediaType =
+        ct.startsWith("audio/") ||
+        ct.startsWith("video/") ||
+        ct.startsWith("application/vnd.apple.mpegurl") || // HLS playlist
+        ct.startsWith("application/x-mpegURL") ||         // HLS playlist alt
+        ct.startsWith("application/dash+xml") ||           // MPEG-DASH
+        ct.startsWith("image/");                           // thumbnails
+      reply.header("Content-Type", isSafeMediaType ? ct : "application/octet-stream");
 
       const cl = upstream.headers.get("content-length");
       if (cl) reply.header("Content-Length", cl);

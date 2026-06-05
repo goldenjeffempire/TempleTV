@@ -21,7 +21,7 @@ import {
   DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
-  AlertDialog, AlertDialogCancel, AlertDialogContent,
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
@@ -200,6 +200,7 @@ export default function VideosPage() {
   // linger when the visible video list changes.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [bulkTranscodeOpen, setBulkTranscodeOpen] = useState(false);
 
   // Batch upload dialog state
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -877,7 +878,7 @@ export default function VideosPage() {
               size="sm"
               variant="outline"
               disabled={bulkTranscodeMutation.isPending}
-              onClick={() => bulkTranscodeMutation.mutate([...selectedIds])}
+              onClick={() => setBulkTranscodeOpen(true)}
               className="h-7 px-2.5 text-xs gap-1"
               title="Queue all selected local videos for HLS transcoding. YouTube videos are skipped."
             >
@@ -1629,6 +1630,28 @@ export default function VideosPage() {
             >
               {bulkDeleteMutation.isPending ? "Deleting…" : `Delete ${selectedIds.size} video${selectedIds.size !== 1 ? "s" : ""}`}
             </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* ── Bulk Transcode Confirm Dialog ──────────────────────────────────── */}
+      <AlertDialog open={bulkTranscodeOpen} onOpenChange={setBulkTranscodeOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Transcode {selectedIds.size} video{selectedIds.size !== 1 ? "s" : ""}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will queue {selectedIds.size} local video{selectedIds.size !== 1 ? "s" : ""} for HLS transcoding.
+              Transcoding is CPU-intensive — large batches will take time and may delay individual completions.
+              YouTube videos in the selection are skipped automatically.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => { bulkTranscodeMutation.mutate([...selectedIds]); setBulkTranscodeOpen(false); }}
+            >
+              Queue {selectedIds.size} for transcoding
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

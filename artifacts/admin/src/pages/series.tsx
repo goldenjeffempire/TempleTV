@@ -548,10 +548,12 @@ export default function SeriesPage() {
   const togglePublishMutation = useMutation({
     mutationFn: ({ id, isPublished }: { id: string; isPublished: boolean }) =>
       api.patch(`/admin/series/${id}`, { isPublished }),
-    onSuccess: (_, { isPublished }) => {
+    onSuccess: (_, { id, isPublished }) => {
       toast.success(isPublished ? "Series published" : "Series unpublished");
       void qc.invalidateQueries({ queryKey: ["series"] });
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      // Keep the episode detail panel in sync — publish state is shown there too.
+      void qc.invalidateQueries({ queryKey: ["series-episodes", id] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to update"),
   });

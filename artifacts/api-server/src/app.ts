@@ -897,7 +897,9 @@ export async function buildApp(): Promise<FastifyInstance> {
         ? `https://${env.REPLIT_DEV_DOMAIN}`
         : null);
     if (baseUrl) {
-      void subscribeToYouTubePubSubHubbub(baseUrl);
+      subscribeToYouTubePubSubHubbub(baseUrl).catch((err) => {
+        app.log.warn({ err }, "youtube-webhook: initial PubSubHubbub subscription failed — will retry on next renewal cycle");
+      });
       // Kick off the 5.5-day auto-renewal timer so the webhook lease never
       // lapses on long-running deployments (lease expires after 7 days).
       startWebhookAutoRenewal(baseUrl);

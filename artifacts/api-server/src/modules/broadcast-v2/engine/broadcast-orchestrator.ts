@@ -316,6 +316,12 @@ class BroadcastOrchestrator extends EventEmitter {
   private lastCpPositionMs: number | null = null;
   private lastCpWallMs: number | null = null;
   /**
+   * Concurrency guard: prevents overlapping persistCheckpoint() calls when
+   * the DB write takes longer than CHECKPOINT_INTERVAL_MS.  Without this,
+   * slow writes stack up and can produce out-of-order checkpoints.
+   */
+  private checkpointWriting = false;
+  /**
    * Throttle for the "no playable local content" info log. The reload path
    * runs on a 10 s drift-poll cadence, so without throttling this single
    * branch produces 6 identical log lines per minute of OFF_AIR — pure noise
@@ -2363,6 +2369,10 @@ class BroadcastOrchestrator extends EventEmitter {
   }
 
   private async persistCheckpoint(): Promise<void> {
+    // Concurrency guard: if a prior write is still in-flight (DB latency
+    // exceeded CHECKPOINT_INTERVAL_MS), skip this tick entirely.  The dirty
+    // flag stays set so the next interval fires the write.
+    if (this.checkpointWriting) return;
     // Fast-path: nothing has changed since the last write — skip the DB round-trip.
     // This eliminates checkpoint writes during idle periods (empty queue, override
     // mode with no activity) which previously fired unconditionally every 5 s.
@@ -2384,14 +2394,19 @@ class BroadcastOrchestrator extends EventEmitter {
     this.lastCpItemId = snap.current.id;
     this.lastCpPositionMs = positionMs;
     this.lastCpWallMs = now;
-    await checkpointRepo
-      .save({
-        channelId: this.channelId,
-        itemId: snap.current.id,
-        positionMs,
-        sourceHealth: this.failover.active ? "failed" : "ok",
-      })
-      .catch((err) => logger.warn({ err }, "[broadcast-v2] checkpoint write failed"));
+    this.checkpointWriting = true;
+    try {
+      await checkpointRepo
+        .save({
+          channelId: this.channelId,
+          itemId: snap.current.id,
+          positionMs,
+          sourceHealth: this.failover.active ? "failed" : "ok",
+        })
+        .catch((err) => logger.warn({ err }, "[broadcast-v2] checkpoint write failed"));
+    } finally {
+      this.checkpointWriting = false;
+    }
   }
 
   // ── Read accessors ────────────────────────────────────────────────────
