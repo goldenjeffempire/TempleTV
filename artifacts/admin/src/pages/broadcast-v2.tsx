@@ -813,6 +813,7 @@ function BroadcastV2PageInner() {
   const [showChecklist, setShowChecklist] = useState(false);
   // Confirmation dialog for the destructive "Force failover" operator action.
   const [showFailoverConfirm, setShowFailoverConfirm] = useState(false);
+  const [showClearFailoverConfirm, setShowClearFailoverConfirm] = useState(false);
 
 
   async function adminPost(path: string, body: Record<string, unknown> = {}) {
@@ -905,6 +906,8 @@ function BroadcastV2PageInner() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
       toast.success("HLS transcoding re-queued — encoding will start shortly.");
       void api.post("/broadcast-v2/reload", { idempotencyKey: safeRandomUUID() }).catch(() => {});
     },
@@ -923,6 +926,8 @@ function BroadcastV2PageInner() {
     onSuccess: (data) => {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
       toast.success(`Download started — HLS transcoding queued (id: ${data.videoId.slice(0, 8)}…)`);
     },
     onError: (err) => {
@@ -937,6 +942,7 @@ function BroadcastV2PageInner() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
       toast.success("Item re-enabled and will resume playback on the next cycle.");
     },
     onError: (err) => {
@@ -956,6 +962,7 @@ function BroadcastV2PageInner() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       toast.success("Switched — item is now on air.");
     },
     onError: (err) => {
@@ -1049,6 +1056,7 @@ function BroadcastV2PageInner() {
       // state sees the new canonical order from
       // the server, particularly when the SSE connection is degraded.
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
     },
     onError: (err) => {
       toast.error(
@@ -2158,7 +2166,7 @@ function BroadcastV2PageInner() {
               className="w-full"
               variant="secondary"
               disabled={!!busy}
-              onClick={() => adminPost("/broadcast-v2/clear-failover")}
+              onClick={() => setShowClearFailoverConfirm(true)}
             >
               Clear failover
             </Button>
@@ -3012,6 +3020,26 @@ function BroadcastV2PageInner() {
             onClick={() => { setShowFailoverConfirm(false); void adminPost("/broadcast-v2/force-failover", { reason: "manual" }); }}
           >
             Force failover
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    <AlertDialog open={showClearFailoverConfirm} onOpenChange={setShowClearFailoverConfirm}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Clear failover?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This removes the active failover override and returns the broadcast engine to normal
+            queue playback. Only proceed once the primary source is confirmed healthy — clearing
+            failover while the primary is still broken will cause an immediate loss of signal.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={() => { setShowClearFailoverConfirm(false); void adminPost("/broadcast-v2/clear-failover"); }}
+          >
+            Clear failover
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

@@ -908,7 +908,7 @@ export default function PlayerScreen() {
       videoSource: isYoutube ? "youtube" : "local",
       localVideoUrl: hlsUrl || undefined,
     });
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [videoId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleToggleFavorite = useCallback(() => {
     toggleFavorite({

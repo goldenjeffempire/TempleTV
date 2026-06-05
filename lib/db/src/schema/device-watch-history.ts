@@ -41,7 +41,13 @@ export const deviceWatchHistoryTable = pgTable(
       t.deviceId,
       t.videoId,
     ),
-    deviceIdx: index("device_watch_history_device_idx").on(t.deviceId),
+    // Composite covering index for the primary query pattern:
+    // WHERE device_id = ? ORDER BY watched_at DESC LIMIT 100
+    // Avoids a separate sort step that the plain device_id index requires.
+    deviceWatchedIdx: index("device_watch_history_device_watched_idx").on(
+      t.deviceId,
+      t.watchedAt,
+    ),
   }),
 );
 

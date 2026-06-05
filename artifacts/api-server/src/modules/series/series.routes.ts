@@ -5,7 +5,7 @@ import { z } from "zod";
 import { eq, asc, desc, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { requireAuth } from "../../middleware/auth.js";
-import { NotFoundError } from "../../shared/errors.js";
+import { ConflictError, NotFoundError } from "../../shared/errors.js";
 import { logger } from "../../infrastructure/logger.js";
 
 export async function seriesRoutes(app: FastifyInstance) {
@@ -82,7 +82,10 @@ export async function seriesRoutes(app: FastifyInstance) {
       const [series] = await db
         .select()
         .from(schema.seriesTable)
-        .where(eq(schema.seriesTable.slug, req.params.slug))
+        .where(
+          sql`${schema.seriesTable.slug} = ${req.params.slug}
+            AND ${schema.seriesTable.isPublished} = true`,
+        )
         .limit(1);
 
       if (!series) return reply.code(404).send({ error: "Series not found" });
@@ -179,20 +182,29 @@ export async function seriesRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const [series] = await db.insert(schema.seriesTable).values({
-        id: crypto.randomUUID(),
-        ...req.body,
-        bannerUrl: req.body.bannerUrl ?? null,
-        preacher: req.body.preacher ?? null,
-      }).returning();
+      let series: typeof schema.seriesTable.$inferSelect;
+      try {
+        const [row] = await db.insert(schema.seriesTable).values({
+          id: crypto.randomUUID(),
+          ...req.body,
+          bannerUrl: req.body.bannerUrl ?? null,
+          preacher: req.body.preacher ?? null,
+        }).returning();
+        series = row!;
+      } catch (err) {
+        if ((err as { code?: string }).code === "23505") {
+          throw new ConflictError(`A series with slug "${req.body.slug}" already exists`);
+        }
+        throw err;
+      }
       logger.info(
-        { seriesId: series!.id, title: series!.title, createdBy: req.principal?.email ?? "admin" },
+        { seriesId: series.id, title: series.title, createdBy: req.principal?.email ?? "admin" },
         "[series] series created",
       );
       return reply.code(201).send({
         ...series,
-        createdAt: series!.createdAt.toISOString(),
-        updatedAt: series!.updatedAt.toISOString(),
+        createdAt: series.createdAt.toISOString(),
+        updatedAt: series.updatedAt.toISOString(),
         startedAt: null,
         completedAt: null,
       });

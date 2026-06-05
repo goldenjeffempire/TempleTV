@@ -239,37 +239,43 @@ async function deliverToWebPush(payload: PushPayload): Promise<number> {
   // exponential backoff: 1 s, 5 s, 30 s.
   const WEB_PUSH_MAX_RETRIES = 3;
   const WEB_PUSH_BACKOFF_MS = [1_000, 5_000, 30_000];
+  // Process in chunks to avoid exhausting OS sockets when the subscriber
+  // list is large (mirrors the Expo path which uses expo.chunkPushNotifications).
+  const WEB_PUSH_CHUNK_SIZE = 100;
 
-  await Promise.allSettled(
-    subs.map(async (sub) => {
-      let lastErr: unknown;
-      for (let attempt = 0; attempt <= WEB_PUSH_MAX_RETRIES; attempt++) {
-        try {
-          await webpush.sendNotification(
-            { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
-            webPayload,
-            { TTL: 86_400 },
-          );
-          dispatched++;
-          return;
-        } catch (err: unknown) {
-          lastErr = err;
-          const status = (err as { statusCode?: number }).statusCode;
-          if (status === 410 || status === 404) {
-            staleIds.push(sub.id);
+  for (let i = 0; i < subs.length; i += WEB_PUSH_CHUNK_SIZE) {
+    const chunk = subs.slice(i, i + WEB_PUSH_CHUNK_SIZE);
+    await Promise.allSettled(
+      chunk.map(async (sub) => {
+        let lastErr: unknown;
+        for (let attempt = 0; attempt <= WEB_PUSH_MAX_RETRIES; attempt++) {
+          try {
+            await webpush.sendNotification(
+              { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+              webPayload,
+              { TTL: 86_400 },
+            );
+            dispatched++;
             return;
-          }
-          if (attempt < WEB_PUSH_MAX_RETRIES) {
-            await new Promise((r) => setTimeout(r, WEB_PUSH_BACKOFF_MS[attempt]));
+          } catch (err: unknown) {
+            lastErr = err;
+            const status = (err as { statusCode?: number }).statusCode;
+            if (status === 410 || status === 404) {
+              staleIds.push(sub.id);
+              return;
+            }
+            if (attempt < WEB_PUSH_MAX_RETRIES) {
+              await new Promise((r) => setTimeout(r, WEB_PUSH_BACKOFF_MS[attempt]));
+            }
           }
         }
-      }
-      logger.warn(
-        { err: lastErr, endpoint: sub.endpoint },
-        "[push-delivery] web push send failed after retries",
-      );
-    }),
-  );
+        logger.warn(
+          { err: lastErr, endpoint: sub.endpoint },
+          "[push-delivery] web push send failed after retries",
+        );
+      }),
+    );
+  }
 
   if (staleIds.length > 0) {
     await db

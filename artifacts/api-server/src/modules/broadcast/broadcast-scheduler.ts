@@ -89,18 +89,20 @@ async function tick(): Promise<void> {
 
       const next = due[0];
       if (next && (next.hlsStreamUrl || next.youtubeVideoId)) {
-        // Deactivate any residual active rows (safety net).
-        await db
-          .update(overrides)
-          .set({ isActive: false, endsAt: now })
-          .where(eq(overrides.isActive, true));
+        // Deactivate + activate in one transaction to avoid a window where
+        // no override is active between the two writes.
+        const [started] = await db.transaction(async (tx) => {
+          await tx
+            .update(overrides)
+            .set({ isActive: false, endsAt: now })
+            .where(eq(overrides.isActive, true));
 
-        // Activate the scheduled override.
-        const [started] = await db
-          .update(overrides)
-          .set({ isActive: true, autoStarted: true })
-          .where(eq(overrides.id, next.id))
-          .returning();
+          return tx
+            .update(overrides)
+            .set({ isActive: true, autoStarted: true })
+            .where(eq(overrides.id, next.id))
+            .returning();
+        });
 
         if (started) {
           overrideBus.notifyStarted({

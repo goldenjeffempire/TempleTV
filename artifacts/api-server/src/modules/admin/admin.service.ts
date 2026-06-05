@@ -68,9 +68,12 @@ export const adminService = {
   },
 
   async updateUserRole(id: string, body: z.infer<typeof UpdateUserRoleBodySchema>) {
+    const now = new Date();
     const [row] = await db
       .update(users)
-      .set({ role: body.role, updatedAt: new Date() })
+      // Bump sessionsValidAfter so any JWT issued under the old role is
+      // rejected at the next requireAuth check, forcing re-login.
+      .set({ role: body.role, updatedAt: now, sessionsValidAfter: now })
       .where(eq(users.id, id))
       .returning();
     if (!row) throw new NotFoundError("User not found");

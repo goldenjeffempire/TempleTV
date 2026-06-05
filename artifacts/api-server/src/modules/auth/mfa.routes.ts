@@ -67,7 +67,7 @@ async function signMfaPendingToken(userId: string): Promise<string> {
     .sign(MFA_PENDING_SECRET);
 }
 
-async function verifyMfaPendingToken(token: string): Promise<string> {
+async function verifyMfaPendingToken(token: string): Promise<{ userId: string; issuedAtMs: number }> {
   try {
     const { payload } = await jwtVerify(token, MFA_PENDING_SECRET, {
       algorithms: ["HS256"],
@@ -75,7 +75,7 @@ async function verifyMfaPendingToken(token: string): Promise<string> {
     if (!payload.mfaPending || typeof payload.sub !== "string") {
       throw new UnauthorizedError("Invalid MFA token");
     }
-    return payload.sub;
+    return { userId: payload.sub, issuedAtMs: (payload.iat ?? 0) * 1000 };
   } catch {
     throw new UnauthorizedError("MFA token is invalid or expired");
   }
@@ -269,13 +269,17 @@ export async function mfaRoutes(app: FastifyInstance) {
         throw new BadRequestError("Provide either a TOTP code or backup code");
       }
 
+      const now = new Date();
       await db
         .update(usersTable)
         .set({
           totpEnabled: false,
           totpSecret: null,
           totpBackupCodes: null,
-          updatedAt: new Date(),
+          updatedAt: now,
+          // Invalidate all existing sessions so a stolen session that
+          // disabled MFA cannot continue to act on the account.
+          sessionsValidAfter: now,
         })
         .where(eq(usersTable.id, userId));
 
@@ -300,7 +304,7 @@ export async function mfaRoutes(app: FastifyInstance) {
       },
     },
     async (req) => {
-      const userId = await verifyMfaPendingToken(req.body.mfaToken);
+      const { userId, issuedAtMs: mfaIssuedAtMs } = await verifyMfaPendingToken(req.body.mfaToken);
 
       const rows = await db
         .select({
@@ -311,6 +315,7 @@ export async function mfaRoutes(app: FastifyInstance) {
           totpSecret: usersTable.totpSecret,
           totpEnabled: usersTable.totpEnabled,
           totpBackupCodes: usersTable.totpBackupCodes,
+          sessionsValidAfter: usersTable.sessionsValidAfter,
         })
         .from(usersTable)
         .where(eq(usersTable.id, userId))
@@ -318,6 +323,12 @@ export async function mfaRoutes(app: FastifyInstance) {
       const user = rows[0];
       if (!user || !user.totpEnabled || !user.totpSecret) {
         throw new UnauthorizedError("MFA token mismatch — account state changed");
+      }
+
+      // Guard: if sessions were globally invalidated (password change, logout-all,
+      // role change) after the mfaToken was issued, reject the completion.
+      if (user.sessionsValidAfter && mfaIssuedAtMs < user.sessionsValidAfter.getTime()) {
+        throw new UnauthorizedError("Session invalidated — please log in again");
       }
 
       // Brute-force guard keyed on both IP and user email.  The /verify

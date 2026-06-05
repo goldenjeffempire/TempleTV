@@ -73,28 +73,31 @@ export const liveOverridesService = {
       );
     }
 
-    // Deactivate any prior live row so getStatus() is unambiguous.
-    await db
-      .update(overrides)
-      .set({ isActive: false, endsAt: new Date() })
-      .where(eq(overrides.isActive, true));
-
     const id = nanoid();
-    const [row] = await db
-      .insert(overrides)
-      .values({
-        id,
-        title: body.title,
-        isActive: true,
-        hlsStreamUrl: body.hlsStreamUrl ?? null,
-        youtubeVideoId,
-        rtmpIngestKey: body.rtmpIngestKey ?? null,
-        streamNotes: body.streamNotes ?? null,
-        endsAt: body.endsAt ? new Date(body.endsAt) : null,
-        scheduledFor: body.scheduledFor ? new Date(body.scheduledFor) : null,
-        autoStarted: false,
-      })
-      .returning();
+    // Wrap deactivate + insert in a single transaction so there is never a
+    // window where no active override exists when one was just requested.
+    const [row] = await db.transaction(async (tx) => {
+      await tx
+        .update(overrides)
+        .set({ isActive: false, endsAt: new Date() })
+        .where(eq(overrides.isActive, true));
+
+      return tx
+        .insert(overrides)
+        .values({
+          id,
+          title: body.title,
+          isActive: true,
+          hlsStreamUrl: body.hlsStreamUrl ?? null,
+          youtubeVideoId,
+          rtmpIngestKey: body.rtmpIngestKey ?? null,
+          streamNotes: body.streamNotes ?? null,
+          endsAt: body.endsAt ? new Date(body.endsAt) : null,
+          scheduledFor: body.scheduledFor ? new Date(body.scheduledFor) : null,
+          autoStarted: false,
+        })
+        .returning();
+    });
     return toDto(row!);
   },
 
