@@ -872,12 +872,19 @@ export default function PlayerScreen() {
   // the Modal's onRequestClose, tab switch while fullscreen, etc.). Without
   // this, a landscape lock acquired inside the fullscreen Modal can persist
   // into the app's home screen and every screen opened afterward.
+  // Also clears the fullscreen controls-hide timer: if the user navigates
+  // away while isFullscreen=true, the 3-second hide timer would otherwise
+  // fire after unmount, starting an Animated.timing on an orphaned value.
   useEffect(() => {
     return () => {
       if (Platform.OS !== "web") {
         ScreenOrientation.lockAsync(
           ScreenOrientation.OrientationLock.PORTRAIT_UP,
         ).catch(() => {});
+      }
+      if (fsHideTimerRef.current) {
+        clearTimeout(fsHideTimerRef.current);
+        fsHideTimerRef.current = null;
       }
     };
   }, []);
