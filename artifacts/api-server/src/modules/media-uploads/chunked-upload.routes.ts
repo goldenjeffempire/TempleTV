@@ -1385,7 +1385,21 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                     })
                     .where(eq(videos.id, videoId))
                     .catch(() => {});
+                  // Immediately deactivate the broadcast queue entry created by
+                  // enqueueIfMissing above.  Without this the row stays is_active=true
+                  // (but excluded by loadActive's transcodingStatus filter) until the
+                  // queue-integrity-validator runs (up to 3 min), leaving a zombie
+                  // entry visible in the admin queue panel and keeping it in the
+                  // orchestrator's in-memory set until the next reload.
+                  await db
+                    .update(schema.broadcastQueueTable)
+                    .set({ isActive: false })
+                    .where(eq(schema.broadcastQueueTable.videoId, videoId))
+                    .catch(() => {});
                   adminEventBus.push("videos-library-updated", { videoId, reason: "corrupt-upload-failed" });
+                  // Reload the orchestrator immediately so the dead item is evicted
+                  // from the active set rather than waiting for an unrelated event.
+                  adminEventBus.push("broadcast-queue-updated", { reason: "corrupt-upload-faststart-cleanup", videoId });
                 } else {
                   capturedLog.warn({ err, videoId }, "[finalize:bg] faststart failed (non-fatal)");
                 }
