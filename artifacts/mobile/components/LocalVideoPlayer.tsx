@@ -308,6 +308,13 @@ export function LocalVideoPlayer({
   // every position update, which would tear down and recreate the 1s
   // interval before it ever fires.
   const statusRef = useRef<any>(null);
+  // onErrorRef lets the stall watchdog always call the latest onError without
+  // being listed as a dep.  If onError were in the dep array it would force
+  // the effect to tear down and re-run on every parent render (the caller
+  // often passes an inline lambda), resetting lastProgressAtRef.current to
+  // Date.now() and making the stall clock unable to ever reach STALL_NUDGE_MS.
+  const onErrorRef = useRef(onError);
+  useEffect(() => { onErrorRef.current = onError; }, [onError]);
   const STALL_NUDGE_MS = 8_000;
   // 15 s before declaring a stall fatal — on 3G / congested LTE a single HLS
   // segment can legitimately take 12–14 s to start delivering bytes. The old
@@ -479,11 +486,18 @@ export function LocalVideoPlayer({
           setLoading(true);
           setTimeout(() => {
             if (!isMountedRef.current || !videoRef.current) return;
-            videoRef.current.replayAsync?.({ positionMillis: startPositionMs }).catch(() => onError?.());
+            // Resume from the last known playhead position so a mid-playback
+            // network error doesn't jump the viewer back to the beginning of
+            // a long sermon.  Fall back to startPositionMs only when no
+            // progress has been recorded yet (e.g. error on the first load).
+            const retryMs =
+              lastProgressMsRef.current > 0 ? lastProgressMsRef.current : startPositionMs;
+            videoRef.current.replayAsync?.({ positionMillis: retryMs })
+              .catch(() => onErrorRef.current?.());
           }, 700);
         } else {
           setLoading(false);
-          onError?.();
+          onErrorRef.current?.();
         }
       }
     },
@@ -520,7 +534,7 @@ export function LocalVideoPlayer({
         if (__DEV__) console.warn("[LocalVideoPlayer] stall watchdog escalating to onError after", stalledFor, "ms");
         stallNudgesRef.current = 0;
         lastProgressAtRef.current = Date.now();
-        onError?.();
+        onErrorRef.current?.();
         return;
       }
       // Soft recovery: nudge currentTime forward by 100ms to force the
@@ -542,7 +556,12 @@ export function LocalVideoPlayer({
       }
     }, 1_000);
     return () => clearInterval(tick);
-  }, [effectiveUrl, loading, isPlaying, onError, getWebVideo]);
+  // onError is intentionally omitted from the dep array — we call it via
+  // onErrorRef instead.  Including the raw prop would force this effect to
+  // tear down and re-run on every parent render (callers often pass inline
+  // lambdas), resetting lastProgressAtRef.current to Date.now() each time and
+  // making the stall clock unable to ever reach STALL_NUDGE_MS.
+  }, [effectiveUrl, loading, isPlaying, getWebVideo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Web A/B watchdog & helpers ───────────────────────────────────────
   const clearWebWatchdog = useCallback(() => {

@@ -701,6 +701,18 @@ export default function PlayerScreen() {
     if (ratio > 0.1 && ratio < 10) setVideoAspectRatio(ratio);
   }, []);
 
+  // Stable error handler for VOD LocalVideoPlayer.  Without memoisation every
+  // 500 ms progress-update render creates a new function reference, which lands
+  // in LocalVideoPlayer's stall-watchdog dep array and resets the stall clock
+  // every half-second — making the watchdog unable to fire.
+  const handleVodError = useCallback(() => {
+    Alert.alert(
+      "Playback Error",
+      "This video could not be played. It may still be processing or the file is unavailable.",
+      [{ text: "OK" }],
+    );
+  }, []);
+
   // Declared before handleProgressWithPosition to avoid a block-scoped
   // hoisting error (useCallback is not hoisted like a function declaration).
   const { saveProgress } = useWatchProgress();
@@ -1099,13 +1111,7 @@ export default function PlayerScreen() {
               nextVideoUrl={nextHlsForPreload}
               nextHlsMasterUrl={nextHlsForPreload}
               onEnd={startCountdown}
-              onError={() => {
-                Alert.alert(
-                  "Playback Error",
-                  "This video could not be played. It may still be processing or the file is unavailable.",
-                  [{ text: "OK" }],
-                );
-              }}
+              onError={handleVodError}
               onProgress={handleProgressWithPosition}
               onAspectRatioChange={handleAspectRatioChange}
             />
