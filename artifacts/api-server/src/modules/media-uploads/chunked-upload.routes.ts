@@ -1456,6 +1456,10 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
                 .where(eq(sessions.sessionId, sessionId)),
             ]);
+            // Invalidate the server-side public catalog cache so TV/mobile
+            // clients don't continue to see this video as "queued" for the
+            // full cache TTL after it has been marked "failed".
+            void invalidateVideosCatalogCache();
             adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-failed" });
           }
         })();
@@ -1813,6 +1817,10 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
               .where(eq(sessions.sessionId, sessionId)),
           ]);
+          // Invalidate the server-side public catalog cache so TV/mobile
+          // clients don't continue to see this video as "queued" for the
+          // full cache TTL after it has been marked "failed".
+          void invalidateVideosCatalogCache();
           adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "assembly-failed" });
         }
       })();

@@ -1,4 +1,5 @@
 import { pgTable, text, timestamp, index } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 /**
  * Live chat messages.
@@ -47,6 +48,14 @@ export const chatMessagesTable = pgTable("chat_messages", {
   // whether a sender is blocked before their message is accepted.
   index("idx_chat_messages_user_id").on(table.userId),
   index("idx_chat_messages_ip_hash").on(table.ipHash),
+  // Partial index for the standard history fetch:
+  //   WHERE channel_id = ? AND deleted_at IS NULL ORDER BY created_at DESC
+  // Deleted messages are excluded from the index entirely, so the planner
+  // never needs a filter step on large channels with heavy moderation.
+  index("idx_chat_messages_channel_not_deleted").on(
+    table.channelId,
+    table.createdAt.desc(),
+  ).where(sql`deleted_at IS NULL`),
 ]);
 
 export type ChatMessageRow = typeof chatMessagesTable.$inferSelect;

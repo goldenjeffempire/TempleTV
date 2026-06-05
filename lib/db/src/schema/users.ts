@@ -1,4 +1,5 @@
-import { pgTable, text, timestamp, boolean, index } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, boolean, index, check } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 /**
  * Application principals (signed-in viewers, editors, admins).
@@ -41,6 +42,16 @@ export const usersTable = pgTable(
   },
   (t) => ({
     roleIdx: index("users_role_idx").on(t.role),
+    // Database-level guard: prevents invalid role strings from entering the
+    // table via direct SQL, migration bugs, or future code paths that forget
+    // to validate before writing.  Application code should coerce unknown
+    // values to "user" defensively, but the constraint is the last line of
+    // defense.  Using a plain text column (not pg enum) keeps ALTER TABLE
+    // free of lock contention; the check is the constraint that matters.
+    roleCheck: check(
+      "users_role_check",
+      sql`${t.role} IN ('system', 'admin', 'editor', 'moderator', 'user')`,
+    ),
   }),
 );
 

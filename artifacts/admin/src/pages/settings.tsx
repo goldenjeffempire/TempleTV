@@ -67,7 +67,7 @@ export default function SettingsPage() {
     mutationFn: (entry: { key: string; value: string }) =>
       api.put<ConfigEntry>("/admin/system-settings", entry),
     onSuccess: (saved) => {
-      qc.invalidateQueries({ queryKey: ["admin-system-settings"] });
+      void qc.invalidateQueries({ queryKey: ["admin-system-settings"] });
       setEditMap((m) => { const n = { ...m }; delete n[saved.key]; return n; });
       toast({ title: "Setting saved", description: saved.key });
     },
@@ -78,7 +78,7 @@ export default function SettingsPage() {
     mutationFn: (key: string) =>
       api.delete(`/admin/system-settings/${encodeURIComponent(key)}`),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["admin-system-settings"] });
+      void qc.invalidateQueries({ queryKey: ["admin-system-settings"] });
       toast({ title: "Setting deleted" });
     },
     onError: (e) => toast({ title: "Delete failed", description: e instanceof HttpError ? e.message : "An unexpected error occurred", variant: "destructive" }),

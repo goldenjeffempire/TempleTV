@@ -144,6 +144,7 @@ function fmtBucketTs(ts: string, gran: "hour" | "4h" | "day"): string {
 function useLiveViewerCount() {
   const [count, setCount] = useState<number | null>(null);
   const [prev, setPrev] = useState<number | null>(null);
+  const [error, setError] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Guards against overlapping async polls: if the previous request hasn't
   // resolved yet by the time the next interval fires, skip that tick rather
@@ -158,8 +159,13 @@ function useLiveViewerCount() {
       try {
         const res = await api.get<{ channelId: string; count: number }>("/broadcast/viewers");
         if (!mounted) return;
+        setError(false);
         setCount((c) => { setPrev(c); return res.count; });
-      } catch { /* silent — offline or no viewers endpoint */ } finally {
+      } catch {
+        // Non-fatal — viewer count is best-effort. Surface the error state
+        // so the card shows a visual indicator rather than a stale number.
+        if (mounted) setError(true);
+      } finally {
         inFlightRef.current = false;
       }
     }
@@ -175,12 +181,12 @@ function useLiveViewerCount() {
     prev === null || count === null || count === prev ? "flat"
     : count > prev ? "up" : "down";
 
-  return { count, trend };
+  return { count, trend, error };
 }
 
 export default function AnalyticsPage() {
   const [range, setRange] = useState<RangeKey>("30d");
-  const { count: liveCount, trend: liveTrend } = useLiveViewerCount();
+  const { count: liveCount, trend: liveTrend, error: liveError } = useLiveViewerCount();
 
   const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ["analytics-overview", range],
@@ -324,21 +330,27 @@ export default function AnalyticsPage() {
             <div className="flex items-center justify-between">
               <span className="text-xs text-muted-foreground font-medium">Live Now</span>
               <div className="flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-                <Radio size={11} className="text-green-500" />
+                {liveError ? (
+                  <span className="w-1.5 h-1.5 rounded-full bg-red-400" title="Viewer count unavailable" />
+                ) : (
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                )}
+                <Radio size={11} className={liveError ? "text-red-400" : "text-green-500"} />
               </div>
             </div>
             <div className="flex items-end gap-1.5">
               <span className="text-2xl font-bold tabular-nums leading-none">
                 {liveCount !== null ? liveCount.toLocaleString() : "—"}
               </span>
-              {liveTrend !== "flat" && (
+              {!liveError && liveTrend !== "flat" && (
                 <span className={`text-xs mb-0.5 font-medium ${liveTrend === "up" ? "text-green-500" : "text-red-500"}`}>
                   {liveTrend === "up" ? "↑" : "↓"}
                 </span>
               )}
             </div>
-            <p className="text-[10px] text-muted-foreground">concurrent viewers</p>
+            <p className="text-[10px] text-muted-foreground">
+              {liveError ? "Viewer count unavailable" : "concurrent viewers"}
+            </p>
           </CardContent>
         </Card>
 

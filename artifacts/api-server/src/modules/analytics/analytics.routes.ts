@@ -56,6 +56,16 @@ export async function analyticsRoutes(app: FastifyInstance) {
         channelId,
       } = req.body;
 
+      // If the client omits deviceId and this is NOT a "started" event there
+      // is no stable identifier to correlate with an existing session row.
+      // A freshly-generated nanoid() would match 0 rows in the UPDATE, waste
+      // a round-trip, and still leave the session open.  Return early so the
+      // caller still gets 204 (analytics writes are non-fatal) but we avoid
+      // the useless DB query and the misleading "0 rows updated" log line.
+      if (!deviceId && eventType !== "started") {
+        return reply.code(204).send(null);
+      }
+
       const effectiveDeviceId = deviceId ?? nanoid();
       const sessions = schema.viewerSessionsTable;
       const videos = schema.videosTable;

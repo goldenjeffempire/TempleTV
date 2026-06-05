@@ -943,6 +943,9 @@ function BroadcastV2PageInner() {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
+      // Reactivating changes what the next item will be — refresh engine health
+      // so the "Now / Next" header reflects the updated queue state immediately.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       toast.success("Item re-enabled and will resume playback on the next cycle.");
     },
     onError: (err) => {
@@ -1073,6 +1076,10 @@ function BroadcastV2PageInner() {
     onSuccess: (result) => {
       toast.success(`Schedule saved — ${result.applied} item${result.applied !== 1 ? "s" : ""} updated.`);
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      // Schedule changes alter startsAt / cycle assignments — the diagnostics
+      // panel and engine health header both show this info and need refreshing.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
     },
     onError: (err) => {
       toast.error(err instanceof HttpError ? err.message : "Schedule save failed.");
