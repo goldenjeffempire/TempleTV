@@ -156,8 +156,12 @@ function NotificationOptInGate() {
       if (token) {
         await syncWithPermissionStatus(true);
       }
-    } catch {
-      //
+    } catch (err) {
+      // Registration can fail due to network issues, missing Google Play
+      // Services on some Android flavours, or the user declining the OS
+      // permission dialog. Log for diagnostics but do not surface a modal —
+      // the opt-in is already marked seen so the user won't be prompted again.
+      console.warn("[PushOptIn] registerForPushTokenAsync failed:", err);
     }
   };
 

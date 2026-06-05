@@ -181,19 +181,27 @@ export async function emergencyRoutes(app: FastifyInstance) {
 
       // Auto-dismiss if expiry set
       if (expiresAt) {
+        const alertId = alert!.id;
         const delay = expiresAt.getTime() - Date.now();
-        setTimeout(async () => {
-          await db
-            .update(schema.emergencyAlertsTable)
-            .set({ isActive: false, dismissedAt: new Date() })
-            .where(eq(schema.emergencyAlertsTable.id, alert!.id));
+        const t = setTimeout(() => {
+          void (async () => {
+            try {
+              await db
+                .update(schema.emergencyAlertsTable)
+                .set({ isActive: false, dismissedAt: new Date() })
+                .where(eq(schema.emergencyAlertsTable.id, alertId));
 
-          // Signal clients that the alert is gone
-          broadcastSignal("NODE_HEALTH_CHANGED", channelId, {
-            message: "Emergency alert expired",
-            payload: { alertId: alert!.id, dismissed: true },
-          });
+              // Signal clients that the alert is gone
+              broadcastSignal("NODE_HEALTH_CHANGED", channelId, {
+                message: "Emergency alert expired",
+                payload: { alertId, dismissed: true },
+              });
+            } catch (err) {
+              logger.warn({ err, alertId }, "[emergency] auto-dismiss timer: DB update failed (non-fatal)");
+            }
+          })();
         }, delay);
+        t.unref?.();
       }
 
       return reply.code(201).send({

@@ -234,17 +234,25 @@ export async function graphicsRoutes(app: FastifyInstance) {
 
       // Auto-dismiss after durationSecs if specified
       if (durationSecs) {
-        setTimeout(async () => {
-          await db
-            .update(schema.channelGraphicsTable)
-            .set({ isActive: false, deactivatedAt: new Date() })
-            .where(eq(schema.channelGraphicsTable.id, graphic!.id));
-          graphicsBus.emit("event", {
-            type: "graphic-deactivated",
-            channelId,
-            graphic: { id: graphic!.id, type, content, subContent: subContent ?? null, durationSecs },
-          } satisfies GraphicsEvent);
+        const graphicId = graphic!.id;
+        const t = setTimeout(() => {
+          void (async () => {
+            try {
+              await db
+                .update(schema.channelGraphicsTable)
+                .set({ isActive: false, deactivatedAt: new Date() })
+                .where(eq(schema.channelGraphicsTable.id, graphicId));
+              graphicsBus.emit("event", {
+                type: "graphic-deactivated",
+                channelId,
+                graphic: { id: graphicId, type, content, subContent: subContent ?? null, durationSecs },
+              } satisfies GraphicsEvent);
+            } catch (err) {
+              logger.warn({ err, graphicId }, "[graphics] auto-dismiss timer: DB update failed (non-fatal)");
+            }
+          })();
         }, durationSecs * 1000);
+        t.unref?.();
       }
 
       return reply.code(201).send({

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, HttpError, isTransientError} from "@/lib/api";
 import { PageHeader } from "@/components/shared/page-header";
@@ -55,10 +55,23 @@ interface SendForm {
 
 const DEFAULT_FORM: SendForm = { title: "", body: "", type: "announcement", scheduledAt: "" };
 
+/** Computes the ISO datetime-local `min` string (now - 60 s) for the schedule input. */
+function nowMinusOneMin(): string {
+  return new Date(Date.now() - 60_000).toISOString().slice(0, 16);
+}
+
 export default function NotificationsPage() {
   const qc = useQueryClient();
   const [form, setForm] = useState<SendForm>(DEFAULT_FORM);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // Keep the datetime-local `min` fresh so operators who leave the page open
+  // for hours can't accidentally select a past time — updated every minute.
+  const [minDateTime, setMinDateTime] = useState<string>(nowMinusOneMin);
+  const minTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => {
+    minTimerRef.current = setInterval(() => setMinDateTime(nowMinusOneMin()), 60_000);
+    return () => { if (minTimerRef.current !== null) clearInterval(minTimerRef.current); };
+  }, []);
 
   const { data: history, isLoading: histLoading, error: histError, refetch: refetchHist } = useQuery({
     queryKey: ["notifications-history"],
@@ -101,7 +114,13 @@ export default function NotificationsPage() {
   const scheduleMutation = useMutation({
     mutationFn: (body: SendForm) => {
       if (!body.scheduledAt) throw new Error("No schedule time set");
-      const scheduledAtIso = new Date(body.scheduledAt).toISOString();
+      const scheduledAt = new Date(body.scheduledAt);
+      // Re-validate at submission time, not just at render time, in case the
+      // page has been open for a long time and the min attribute has gone stale.
+      if (scheduledAt.getTime() <= Date.now()) {
+        throw new Error("Scheduled time must be in the future");
+      }
+      const scheduledAtIso = scheduledAt.toISOString();
       return api.post("/admin/notifications/schedule", {
         title: body.title,
         body: body.body,
@@ -227,7 +246,7 @@ export default function NotificationsPage() {
                 type="datetime-local"
                 value={form.scheduledAt}
                 onChange={(e) => setForm(f => ({ ...f, scheduledAt: e.target.value }))}
-                min={new Date(Date.now() - 60_000).toISOString().slice(0, 16)}
+                min={minDateTime}
               />
               <p className="text-xs text-muted-foreground">
                 {isScheduled

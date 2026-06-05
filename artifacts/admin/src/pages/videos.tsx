@@ -309,6 +309,13 @@ export default function VideosPage() {
       setEditVideo(null);
       setEditOriginal(null);
       setEditError(null);
+      // If the title, category, or preacher changed, the broadcast queue
+      // panel still shows the old values until the next SSE push. Invalidate
+      // immediately so operators see accurate metadata in the queue view.
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      // Playlists display video titles in their item lists — refresh so the
+      // updated title is visible without a full page reload.
+      void qc.invalidateQueries({ queryKey: ["playlists"] });
     },
     onError: (e) => {
       const msg = e instanceof HttpError ? e.message : "Update failed";
@@ -359,6 +366,9 @@ export default function VideosPage() {
       toast.success(featured ? "Video featured" : "Video unfeatured");
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      // Featured status can affect how video appears in the broadcast queue
+      // diagnostics panel — refresh so the flag is current.
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
     },
     onError: (_e, _vars, ctx) => {
       if (ctx?.prev) ctx.prev.forEach(([key, data]) => qc.setQueryData(key, data));

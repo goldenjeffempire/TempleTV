@@ -283,7 +283,24 @@ function EntryDialog({
   onSubmit: () => void;
   onClose: () => void;
 }) {
-  const canSubmit = form.title.trim().length > 0 && form.startTime.length > 0 && !isPending;
+  // endTime must be strictly after startTime when both are provided.
+  const endTimeInvalid =
+    form.endTime.length > 0 &&
+    form.startTime.length > 0 &&
+    form.endTime <= form.startTime;
+
+  // External stream URLs must be http(s) — bare text is not a valid stream source.
+  const externalUrlInvalid =
+    form.contentType === "external" &&
+    form.contentId.trim().length > 0 &&
+    !/^https?:\/\/.+/i.test(form.contentId.trim());
+
+  const canSubmit =
+    form.title.trim().length > 0 &&
+    form.startTime.length > 0 &&
+    !endTimeInvalid &&
+    !externalUrlInvalid &&
+    !isPending;
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
@@ -338,9 +355,13 @@ function EntryDialog({
               <Label>End Time</Label>
               <Input
                 type="time"
+                aria-invalid={endTimeInvalid}
                 value={form.endTime}
                 onChange={(e) => setForm(f => ({ ...f, endTime: e.target.value }))}
               />
+              {endTimeInvalid && (
+                <p className="text-xs text-destructive">End time must be after start time.</p>
+              )}
             </div>
           </div>
 
@@ -359,9 +380,13 @@ function EntryDialog({
               <Label>Stream URL</Label>
               <Input
                 placeholder="https://..."
+                aria-invalid={externalUrlInvalid}
                 value={form.contentId}
                 onChange={(e) => setForm(f => ({ ...f, contentId: e.target.value }))}
               />
+              {externalUrlInvalid && (
+                <p className="text-xs text-destructive">Must be a valid https:// URL.</p>
+              )}
             </div>
           )}
 

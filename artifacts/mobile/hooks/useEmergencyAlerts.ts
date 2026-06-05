@@ -30,7 +30,9 @@ export function useEmergencyAlerts() {
           });
         }
       })
-      .catch(() => {});
+      .catch((err: unknown) => {
+        console.warn("[useEmergencyAlerts] initial fetch failed — real-time SSE will still deliver new alerts:", err);
+      });
   }, []);
 
   useEffect(() => {

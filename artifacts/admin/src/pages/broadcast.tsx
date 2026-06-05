@@ -202,7 +202,28 @@ interface LocalVideo {
 // These live OUTSIDE the React component so they survive navigation. The
 // uploadQueue singleton keeps uploading bytes after the user leaves /broadcast,
 // and we still want completed items to auto-append to the broadcast queue.
-const autoQueuePending = new Set<string>();
+//
+// autoQueuePending is also mirrored to sessionStorage so it survives a hard
+// page refresh while an upload is still in progress. Without this, a user who
+// starts an upload, marks it for auto-queue, and then hits F5 would see the
+// upload complete successfully but never land in the broadcast queue.
+const _AQPENDING_KEY = "broadcast:autoQueuePending";
+
+function _loadAutoQueuePending(): Set<string> {
+  try {
+    const raw = sessionStorage.getItem(_AQPENDING_KEY);
+    if (raw) return new Set(JSON.parse(raw) as string[]);
+  } catch { /* sessionStorage may be unavailable in some privacy modes */ }
+  return new Set<string>();
+}
+
+function _saveAutoQueuePending(set: Set<string>): void {
+  try {
+    sessionStorage.setItem(_AQPENDING_KEY, JSON.stringify([...set]));
+  } catch { /* non-fatal */ }
+}
+
+const autoQueuePending: Set<string> = _loadAutoQueuePending();
 const autoQueueHandled = new Set<string>();
 const autoQueueInFlight = new Set<string>();
 let autoQueueSubscribed = false;
@@ -210,6 +231,7 @@ let autoQueueSubscribed = false;
 /** Tag an upload item to be appended to the broadcast queue on completion. */
 function markForAutoQueue(uploadId: string): void {
   autoQueuePending.add(uploadId);
+  _saveAutoQueuePending(autoQueuePending);
 }
 
 /**
@@ -247,6 +269,7 @@ function ensureAutoQueueSubscriber(
             .catch(() => {});
           autoQueueHandled.add(uploadId);
           autoQueuePending.delete(uploadId);
+          _saveAutoQueuePending(autoQueuePending);
           toast.success(
             `"${title}" added to broadcast queue — will start airing as soon as transcoding finishes`,
           );

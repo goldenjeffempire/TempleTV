@@ -60,7 +60,14 @@ export default function PlaylistsPage() {
 
   const updateMutation = useMutation({
     mutationFn: ({ id, ...body }: { id: string } & typeof form) => api.patch(`/playlists/${id}`, body),
-    onSuccess: () => { toast.success("Playlist updated"); void qc.invalidateQueries({ queryKey: ["playlists"] }); setEditing(null); },
+    onSuccess: () => {
+      toast.success("Playlist updated");
+      void qc.invalidateQueries({ queryKey: ["playlists"] });
+      // The schedule page may reference this playlist by name — refresh so
+      // a rename is reflected immediately without a manual page reload.
+      void qc.invalidateQueries({ queryKey: ["schedule"] });
+      setEditing(null);
+    },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to update"),
   });
 
@@ -70,6 +77,9 @@ export default function PlaylistsPage() {
       toast.success("Playlist deleted");
       void qc.invalidateQueries({ queryKey: ["playlists"] });
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      // A deleted playlist may appear as a schedule entry contentId — refresh
+      // the schedule so operators see that the referenced content is gone.
+      void qc.invalidateQueries({ queryKey: ["schedule"] });
       setDeleting(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to delete"),
