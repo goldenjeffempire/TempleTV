@@ -130,9 +130,13 @@ function scheduleProactiveRefresh(): void {
   // Guard against corrupted storage: NaN here would make Math.max return NaN
   // and setTimeout fire immediately in a tight refresh loop.
   if (!Number.isFinite(expiryMs)) return;
-  // Floor at 5 s so that an already-expired token (expiryMs in the past)
-  // doesn't produce a delay of 0 and spin the refresh loop at maximum rate.
-  const delay = Math.max(5_000, expiryMs - Date.now() - PROACTIVE_REFRESH_BEFORE_MS);
+  // Floor at 60 s so that an already-expired token (or a TV whose system
+  // clock is skewed significantly behind the server) doesn't spin the
+  // refresh loop every 5 seconds.  A 60-second floor means at worst one
+  // wasted refresh per minute instead of a continuous tight loop that can
+  // trigger API 429 responses and account temporary lock-outs on TV devices
+  // that are routinely kept on for days without rebooting.
+  const delay = Math.max(60_000, expiryMs - Date.now() - PROACTIVE_REFRESH_BEFORE_MS);
   proactiveRefreshTimer = setTimeout(() => {
     proactiveRefreshTimer = null;
     performRefresh().catch(() => {});

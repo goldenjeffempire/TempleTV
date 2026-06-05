@@ -127,7 +127,7 @@ export function WatchHistory({ onBack, onPlay }: WatchHistoryProps) {
       {/* ── Header ──────────────────────────────────────────────────────────── */}
       <div
         style={{
-          padding: "24px 60px 20px",
+          padding: "24px var(--tv-safe-h, 60px) 20px",
           display: "flex",
           alignItems: "center",
           gap: 20,
@@ -322,7 +322,7 @@ export function WatchHistory({ onBack, onPlay }: WatchHistoryProps) {
             flex: 1,
             overflowY: "auto",
             overflowX: "hidden",
-            padding: "20px 60px 40px",
+            padding: "20px var(--tv-safe-h, 60px) 40px",
           }}
         >
           {entries.map((entry, idx) => {
@@ -608,7 +608,7 @@ export function WatchHistory({ onBack, onPlay }: WatchHistoryProps) {
       {/* ── Footer hint bar ─────────────────────────────────────────────────── */}
       <div
         style={{
-          padding: "10px 60px",
+          padding: "10px var(--tv-safe-h, 60px)",
           borderTop: "1px solid rgba(255,255,255,0.05)",
           display: "flex",
           gap: 24,

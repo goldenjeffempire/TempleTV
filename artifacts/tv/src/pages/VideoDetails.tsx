@@ -118,7 +118,7 @@ export function VideoDetails({ video, relatedVideos, onPlay, onBack, onPlayRelat
 
       <div style={{ position: "relative", zIndex: 1, display: "flex", flex: 1, overflow: "hidden" }}>
         {/* Left panel: video info */}
-        <div style={{ width: "55%", display: "flex", flexDirection: "column", padding: "40px 48px", overflow: "hidden" }}>
+        <div style={{ width: "55%", display: "flex", flexDirection: "column", padding: "var(--tv-safe-v, 40px) var(--tv-safe-h, 48px)", overflow: "hidden" }}>
           <button
             onClick={onBack}
             style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 10, padding: "8px 16px", color: "rgba(255,255,255,0.8)", fontSize: 14, cursor: "pointer", fontFamily: "inherit", marginBottom: 32, alignSelf: "flex-start" }}
@@ -317,7 +317,7 @@ export function VideoDetails({ video, relatedVideos, onPlay, onBack, onPlayRelat
 
         {/* Right panel: Up Next */}
         {relatedVideos.length > 0 && (
-          <div style={{ flex: 1, display: "flex", flexDirection: "column", borderLeft: "1px solid rgba(255,255,255,0.08)", padding: "40px 40px", overflow: "hidden" }}>
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", borderLeft: "1px solid rgba(255,255,255,0.08)", padding: "var(--tv-safe-v, 40px) var(--tv-safe-h, 40px)", overflow: "hidden" }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: "rgba(255,255,255,0.35)", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 20 }}>
               Up Next
             </div>
@@ -360,7 +360,7 @@ export function VideoDetails({ video, relatedVideos, onPlay, onBack, onPlayRelat
       </div>
 
       {/* Bottom hint */}
-      <div style={{ position: "relative", zIndex: 1, padding: "12px 48px", borderTop: "1px solid rgba(255,255,255,0.06)", display: "flex", gap: 24, flexShrink: 0 }}>
+      <div style={{ position: "relative", zIndex: 1, padding: "12px var(--tv-safe-h, 48px)", borderTop: "1px solid rgba(255,255,255,0.06)", display: "flex", gap: 24, flexShrink: 0 }}>
         {[
           { key: "ENTER", label: savedProgress ? (playFocus === "resume" ? "Resume" : "Play from beginning") : "Play" },
           { key: "→", label: "Favorite" },

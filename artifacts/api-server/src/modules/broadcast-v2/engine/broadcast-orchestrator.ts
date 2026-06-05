@@ -1864,7 +1864,12 @@ class BroadcastOrchestrator extends EventEmitter {
     // checkpointTimer (every 5 s) would eventually save it, but a 5-second
     // window during which the server could restart and replay the same item
     // is unacceptable for accurate 24/7 scheduling.
-    void this.persistCheckpoint();
+    //
+    // Awaited (not void) so that cycleStartedAtMs is durably written to the
+    // DB before we return to the caller. A server crash after this line has
+    // the new anchor safely committed; a crash before would restart from the
+    // previous checkpoint which correctly re-runs the natural-end path.
+    await this.persistCheckpoint();
     await this.bump("item.advanced", { itemId, title: snap.current.title, naturalEnd: true });
     this.emitSnapshot();
     logger.info(

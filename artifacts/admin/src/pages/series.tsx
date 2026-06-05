@@ -366,7 +366,10 @@ function SeriesFormDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
+        <form
+          onSubmit={(e) => { e.preventDefault(); handleSubmit(); }}
+          className="space-y-4"
+        >
           {/* Title */}
           <div className="space-y-1.5">
             <Label>Title <span className="text-destructive">*</span></Label>
@@ -476,17 +479,17 @@ function SeriesFormDialog({
               className="w-28"
             />
           </div>
-        </div>
 
-        <DialogFooter className="mt-2">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button
-            onClick={handleSubmit}
-            disabled={isPending || !form.title.trim() || !form.slug.trim()}
-          >
-            {isPending ? "Saving…" : editing ? "Save changes" : "Create series"}
-          </Button>
-        </DialogFooter>
+          <DialogFooter className="mt-2">
+            <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
+            <Button
+              type="submit"
+              disabled={isPending || !form.title.trim() || !form.slug.trim()}
+            >
+              {isPending ? "Saving…" : editing ? "Save changes" : "Create series"}
+            </Button>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   );

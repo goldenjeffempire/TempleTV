@@ -253,11 +253,28 @@ export const authService = {
     // Atomically revoke the consumed token and insert the replacement so a
     // DB failure between the two writes never permanently logs the user out
     // (old token gone, no new token issued).
+    //
+    // Concurrent-refresh guard: two requests carrying the same refresh token
+    // (e.g. a mobile client retrying on a slow network) can both decode the
+    // JWT before either has a chance to revoke it. Without the `revokedAt IS
+    // NULL` guard both transactions would succeed and two new sessions would
+    // be minted from one rotation. The `.returning()` check detects the race:
+    // the second writer sees 0 rows updated and fails with 401 so the client
+    // retries with the NEW token it should have received from the first call.
     await db.transaction(async (tx) => {
-      await tx
+      const revoked = await tx
         .update(refreshTokensTable)
         .set({ revokedAt: new Date() })
-        .where(eq(refreshTokensTable.id, decoded.jti));
+        .where(
+          and(
+            eq(refreshTokensTable.id, decoded.jti),
+            isNull(refreshTokensTable.revokedAt),
+          ),
+        )
+        .returning({ id: refreshTokensTable.id });
+      if (revoked.length === 0) {
+        throw new UnauthorizedError("Refresh token already consumed");
+      }
       await tx.insert(refreshTokensTable).values({
         id: newJti,
         userId: user.id,
@@ -574,10 +591,24 @@ export const authService = {
     // Both are security bugs. Wrapping all four writes in one transaction
     // eliminates both races and ensures "logout everywhere" is guaranteed.
     await db.transaction(async (tx) => {
-      await tx
+      // Atomic claim: if two concurrent requests carry the same reset token,
+      // only the first UPDATE (WHERE usedAt IS NULL) will touch a row.
+      // The second sees 0 rows returned and throws — the transaction rolls
+      // back before touching the password, preventing an attacker from
+      // overwriting a legitimate reset with a different password.
+      const claimed = await tx
         .update(passwordResetTokensTable)
         .set({ usedAt: now })
-        .where(eq(passwordResetTokensTable.id, tokenRow.id));
+        .where(
+          and(
+            eq(passwordResetTokensTable.id, tokenRow.id),
+            isNull(passwordResetTokensTable.usedAt),
+          ),
+        )
+        .returning({ id: passwordResetTokensTable.id });
+      if (claimed.length === 0) {
+        throw new BadRequestError("Password reset link is invalid, expired, or already used");
+      }
       await tx
         .update(usersTable)
         .set({ passwordHash: newHash, sessionsValidAfter: now, updatedAt: now })
