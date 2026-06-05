@@ -433,6 +433,7 @@ export default function VideosPage() {
     onSuccess: (res) => {
       toast.success(res.reused ? "HLS job re-queued" : "Queued for HLS transcoding — check the Transcoding tab");
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Transcoding request failed"),
   });

@@ -124,6 +124,7 @@ export default function SchedulePage() {
       void qc.invalidateQueries({ queryKey: ["schedule"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      void qc.invalidateQueries({ queryKey: ["playlists"] });
       setDeleteId(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to delete"),

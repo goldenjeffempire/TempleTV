@@ -119,6 +119,7 @@ function EpisodesDialog({
 }) {
   const qc = useQueryClient();
   const [videoSearch, setVideoSearch] = useState("");
+  const [removePendingEpId, setRemovePendingEpId] = useState<string | null>(null);
 
   const { data: episodesData, isLoading: epLoading } = useQuery({
     queryKey: ["series-episodes", series.id],
@@ -170,6 +171,7 @@ function EpisodesDialog({
   const episodeVideoIds = new Set(episodes.map((e) => e.videoId));
 
   return (
+    <>
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-3xl max-h-[88vh] flex flex-col gap-0 p-0">
         <DialogHeader className="px-6 pt-6 pb-4 border-b">
@@ -221,7 +223,7 @@ function EpisodesDialog({
                           size="icon"
                           className="h-7 w-7 flex-shrink-0 text-muted-foreground hover:text-destructive"
                           disabled={removeEpisodeMutation.isPending}
-                          onClick={() => removeEpisodeMutation.mutate(ep.id)}
+                          onClick={() => setRemovePendingEpId(ep.id)}
                         >
                           <X size={13} />
                         </Button>
@@ -299,6 +301,34 @@ function EpisodesDialog({
         </div>
       </DialogContent>
     </Dialog>
+
+    {/* Confirm removal — prevents accidental single-click episode removal */}
+    <AlertDialog
+      open={removePendingEpId !== null}
+      onOpenChange={(o) => { if (!o) setRemovePendingEpId(null); }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Remove episode?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This will remove the episode from this series. The video itself will not be deleted.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            onClick={() => {
+              if (removePendingEpId) removeEpisodeMutation.mutate(removePendingEpId);
+              setRemovePendingEpId(null);
+            }}
+          >
+            Remove
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 }
 

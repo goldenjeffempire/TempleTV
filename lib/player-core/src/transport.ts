@@ -309,6 +309,14 @@ export class V2Transport {
    */
   private heartbeatWatchdog: ReturnType<typeof setInterval> | null = null;
 
+  /**
+   * Stored teardown callback for the active SSE connection. Promoted to an
+   * instance field so stop() can remove all named event listeners (not just
+   * close the EventSource) — breaking the es→handler→transport closure cycle
+   * and allowing GC to reclaim the instance on TV environments with weak GC.
+   */
+  private sseCleanup: (() => void) | null = null;
+
   constructor(private readonly cfg: TransportConfig) {
     // Restore lastSequence from sessionStorage so page reloads resume
     // event-log replay rather than starting from sequence 0.
@@ -344,7 +352,17 @@ export class V2Transport {
       }
     }
     if (this.es) {
-      this.es.close();
+      // sseCleanup removes all named event listeners before closing so the
+      // EventSource → handler → transport closure chain is broken, allowing
+      // GC to reclaim the transport instance on Smart TV environments with
+      // poor garbage collection (Tizen / webOS). Calling es.close() alone
+      // does NOT remove addEventListener listeners in all browser runtimes.
+      if (this.sseCleanup) {
+        try { this.sseCleanup(); } catch { /* noop */ }
+        this.sseCleanup = null;
+      } else {
+        try { this.es.close(); } catch { /* noop */ }
+      }
       this.es = null;
     }
     this.cfg.onConnectionChange?.(false);
@@ -737,7 +755,9 @@ export class V2Transport {
       for (const [t, h] of sseHandlers) es.removeEventListener(t, h);
       sseHandlers.length = 0;
       es.close();
+      if (this.sseCleanup === teardownSse) this.sseCleanup = null;
     };
+    this.sseCleanup = teardownSse;
     es.onerror = () => {
       teardownSse();
       if (this.es === es) this.es = null;

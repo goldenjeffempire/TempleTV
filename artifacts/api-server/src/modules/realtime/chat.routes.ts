@@ -316,6 +316,16 @@ export async function chatRoutes(app: FastifyInstance) {
         req.log.error({ err }, "chat ws: failed to load history");
       }
 
+      // Register cleanup BEFORE joining the hub so that if the socket fires
+      // a close/error event during or after the async DB history query (above),
+      // the member is always removed from the room — preventing a permanent
+      // viewer-count leak when clients drop during the connection handshake.
+      const cleanup = () => {
+        chatHub.leave(channelId, member);
+      };
+      socket.on("close", cleanup);
+      socket.on("error", cleanup);
+
       const { viewers } = chatHub.join(channelId, member);
 
       safeSend(socket, {
@@ -425,11 +435,6 @@ export async function chatRoutes(app: FastifyInstance) {
         }
       });
 
-      const cleanup = () => {
-        chatHub.leave(channelId, member);
-      };
-      socket.on("close", cleanup);
-      socket.on("error", cleanup);
     },
   );
 }

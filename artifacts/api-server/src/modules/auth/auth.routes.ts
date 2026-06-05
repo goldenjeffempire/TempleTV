@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { ne, inArray, eq, and, isNull, gt } from "drizzle-orm";
-import { randomBytes, createHash } from "node:crypto";
+import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
 import {
   AuthTokensSchema,
   ExtendBodySchema,
@@ -437,9 +437,14 @@ export async function authRoutes(app: FastifyInstance) {
         );
       }
       // Only the static ADMIN_API_TOKEN may call this endpoint.
+      // Use timing-safe comparison to prevent timing-oracle attacks on the token.
       const authHeader = req.headers.authorization ?? "";
       const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-      if (!env.ADMIN_API_TOKEN || token !== env.ADMIN_API_TOKEN) {
+      const expected = env.ADMIN_API_TOKEN ?? "";
+      const isValid = expected.length > 0
+        && token.length === expected.length
+        && timingSafeEqual(Buffer.from(token), Buffer.from(expected));
+      if (!isValid) {
         throw new UnauthorizedError("Invalid or missing ADMIN_API_TOKEN");
       }
 

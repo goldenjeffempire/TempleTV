@@ -2,8 +2,9 @@ import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { nanoid } from "nanoid";
+import { eq } from "drizzle-orm";
 import { requireAuth } from "../../middleware/auth.js";
-import { ForbiddenError } from "../../shared/errors.js";
+import { ForbiddenError, NotFoundError } from "../../shared/errors.js";
 import {
   AdminStatsSchema,
   AdminUserSchema,
@@ -190,6 +191,21 @@ export async function adminRoutes(app: FastifyInstance) {
     async (req) => {
       const { id: userId } = req.params;
       const body = req.body ?? {};
+
+      // Privilege-escalation guard: editors may not ban admins or system accounts.
+      // Only admins can moderate other admins. Fetch the target's role first.
+      const [targetUser] = await db
+        .select({ role: schema.usersTable.role })
+        .from(schema.usersTable)
+        .where(eq(schema.usersTable.id, userId))
+        .limit(1);
+      if (!targetUser) throw new NotFoundError("User not found");
+      const callerRank = { system: 4, admin: 3, editor: 2, moderator: 1, user: 0 } as Record<string, number>;
+      const callerRole = req.principal?.role ?? "user";
+      if ((callerRank[targetUser.role] ?? 0) >= (callerRank[callerRole] ?? 0)) {
+        throw new ForbiddenError("You cannot ban a user with equal or higher privileges");
+      }
+
       const expiresAt =
         body.durationSecs && body.durationSecs > 0
           ? new Date(Date.now() + body.durationSecs * 1000)

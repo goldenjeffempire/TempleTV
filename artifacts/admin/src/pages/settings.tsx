@@ -57,7 +57,7 @@ export default function SettingsPage() {
   const [search, setSearch] = useState("");
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
 
-  const { data, isLoading, refetch } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["admin-system-settings"],
     queryFn: () => api.get<{ settings: ConfigEntry[] }>("/admin/system-settings"),
     staleTime: 30_000,
@@ -222,6 +222,16 @@ export default function SettingsPage() {
                   <Skeleton className="h-8 w-16" />
                 </div>
               ))}
+            </div>
+          ) : isError ? (
+            <div className="flex flex-col items-center py-16 gap-3">
+              <Settings2 size={32} className="text-destructive/30" />
+              <p className="text-destructive font-medium">Failed to load settings</p>
+              <p className="text-sm text-muted-foreground/60">Check your connection and try again.</p>
+              <Button variant="outline" size="sm" onClick={() => refetch()} className="mt-1">
+                <RefreshCw size={13} className="mr-1.5" />
+                Retry
+              </Button>
             </div>
           ) : settings.length === 0 ? (
             <div className="flex flex-col items-center py-16 gap-3">
