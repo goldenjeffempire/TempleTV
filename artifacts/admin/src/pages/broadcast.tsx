@@ -1,6 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { BroadcastPreviewV2 } from "@/playback/BroadcastPreviewV2";
+import { BroadcastUploadPanel } from "@/components/broadcast/BroadcastUploadPanel";
+import type { BroadcastQueueRow, BroadcastServerSnapshot } from "@/components/broadcast/BroadcastUploadPanel";
 import {
   DndContext,
   closestCenter,
@@ -22,10 +24,8 @@ import { api, HttpError } from "@/lib/api";
 import {
   uploadQueue,
   useUploadQueue,
-  titleFromFilename,
-  formatBytes,
-  type UploadItem,
 } from "@/lib/upload-queue";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useSSEEvent } from "@/contexts/sse-context";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
@@ -87,11 +87,11 @@ import {
   Square,
   UploadCloud,
   X,
-  FileVideo,
   Tv2,
   Link,
   TriangleAlert,
   Cast,
+  CalendarClock,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
@@ -109,6 +109,16 @@ interface BroadcastQueueItem {
   isActive: boolean;
   sortOrder: number;
   addedAt: string;
+  /** Transcoding pipeline status from managed_videos ('queued' | 'encoding' | 'hls_ready' | 'failed' | null). */
+  transcodingStatus: string | null;
+  /** True when the video has a complete HLS master playlist ready to stream. */
+  hasHls: boolean;
+  /** Last transcoding error message, or null if never failed. */
+  transcodingError: string | null;
+  /** Locked air time for this item (ISO string), or null for floating position. */
+  scheduledAt: string | null;
+  /** Human-readable programming block label e.g. "Sunday Morning Service". */
+  scheduleLabel: string | null;
 }
 
 interface V2StateResponse {
@@ -402,6 +412,59 @@ function HealthPill({ health, loading, blockedUntilMs }: HealthPillProps) {
   );
 }
 
+// ── TranscodingPill ────────────────────────────────────────────────────────────
+
+function TranscodingPill({
+  status,
+  error,
+}: {
+  status: string | null;
+  error?: string | null;
+}) {
+  if (!status || status === "hls_ready" || status === "ready" || status === "done") return null;
+
+  if (status === "failed") {
+    return (
+      <span
+        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-50 text-red-600 border border-red-200 dark:bg-red-950/30 dark:text-red-400 dark:border-red-800 flex-shrink-0 cursor-help"
+        title={error ?? "Transcoding failed"}
+      >
+        <XCircle size={9} />
+        Failed
+      </span>
+    );
+  }
+
+  if (status === "encoding") {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-200 dark:bg-blue-950/30 dark:text-blue-400 dark:border-blue-800 flex-shrink-0">
+        <Loader2 size={9} className="animate-spin" />
+        Encoding
+      </span>
+    );
+  }
+
+  if (status === "processing") {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-200 dark:bg-blue-950/30 dark:text-blue-400 dark:border-blue-800 flex-shrink-0">
+        <Loader2 size={9} className="animate-spin" />
+        Faststart
+      </span>
+    );
+  }
+
+  if (status === "queued") {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-800 flex-shrink-0">
+        <Clock size={9} />
+        Queued
+      </span>
+    );
+  }
+
+  return null;
+}
+
 // ── SortableRow ────────────────────────────────────────────────────────────────
 
 interface SortableRowProps {
@@ -410,12 +473,16 @@ interface SortableRowProps {
   health: HealthItem | undefined;
   healthLoading: boolean;
   blockedUntilMs?: number | null;
+  estimatedAirMs?: number | null;
   onRemove: () => void;
   onMoveToFront: () => void;
   onPlayNow: () => void;
   isRemoving: boolean;
   isPlayingNow: boolean;
   isDragDisabled?: boolean;
+  bulkMode?: boolean;
+  isSelected?: boolean;
+  onToggleSelect?: () => void;
 }
 
 // Wrapped in React.memo so only the row whose props actually changed
@@ -428,16 +495,20 @@ const SortableRow = React.memo(function SortableRow({
   health,
   healthLoading,
   blockedUntilMs,
+  estimatedAirMs,
   onRemove,
   onMoveToFront,
   onPlayNow,
   isRemoving,
   isPlayingNow,
   isDragDisabled,
+  bulkMode,
+  isSelected,
+  onToggleSelect,
 }: SortableRowProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: item.id,
-    disabled: isDragDisabled,
+    disabled: isDragDisabled || bulkMode,
   });
 
   const style: React.CSSProperties = {
@@ -450,6 +521,16 @@ const SortableRow = React.memo(function SortableRow({
 
   const isBroken = health?.status === "broken";
   const isBlocked = blockedUntilMs && blockedUntilMs > Date.now();
+  const isTranscoding =
+    item.transcodingStatus === "encoding" ||
+    item.transcodingStatus === "processing" ||
+    item.transcodingStatus === "queued";
+
+  const airLabel = isPlayingNow
+    ? null
+    : estimatedAirMs
+    ? formatDistanceToNow(new Date(estimatedAirMs), { addSuffix: true })
+    : null;
 
   return (
     <div
@@ -457,18 +538,27 @@ const SortableRow = React.memo(function SortableRow({
       style={style}
       className={`flex items-center gap-3 px-4 py-3 group border-b last:border-0 bg-background transition-shadow ${
         isDragging ? "shadow-xl ring-1 ring-primary/30 rounded-lg" : ""
-      } ${isPlayingNow ? "bg-primary/5" : isBroken || isBlocked ? "bg-red-50/40 dark:bg-red-950/10" : ""}`}
+      } ${isSelected ? "bg-primary/8" : isPlayingNow ? "bg-primary/5" : isBroken || isBlocked ? "bg-red-50/40 dark:bg-red-950/10" : ""}`}
     >
-      <button
-        {...attributes}
-        {...listeners}
-        className="text-muted-foreground/25 hover:text-muted-foreground/70 cursor-grab active:cursor-grabbing flex-shrink-0 touch-none transition-colors disabled:opacity-30 disabled:cursor-default"
-        disabled={isDragDisabled}
-        aria-label="Drag to reorder"
-        tabIndex={0}
-      >
-        <GripVertical size={16} />
-      </button>
+      {bulkMode ? (
+        <Checkbox
+          checked={isSelected}
+          onCheckedChange={onToggleSelect}
+          aria-label={`Select ${item.title}`}
+          className="flex-shrink-0"
+        />
+      ) : (
+        <button
+          {...attributes}
+          {...listeners}
+          className="text-muted-foreground/25 hover:text-muted-foreground/70 cursor-grab active:cursor-grabbing flex-shrink-0 touch-none transition-colors disabled:opacity-30 disabled:cursor-default"
+          disabled={isDragDisabled}
+          aria-label="Drag to reorder"
+          tabIndex={0}
+        >
+          <GripVertical size={16} />
+        </button>
+      )}
 
       <span className="text-xs text-muted-foreground w-5 text-center flex-shrink-0 tabular-nums">
         {idx + 1}
@@ -485,18 +575,45 @@ const SortableRow = React.memo(function SortableRow({
       </div>
 
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 flex-wrap">
           {isPlayingNow && (
             <Radio size={11} className="text-primary animate-pulse flex-shrink-0" />
           )}
           <p className="text-sm font-medium truncate">{item.title}</p>
+          {item.scheduleLabel && (
+            <span className="text-[10px] text-violet-600 dark:text-violet-400 bg-violet-50 dark:bg-violet-950/30 border border-violet-200 dark:border-violet-800 px-1.5 py-0.5 rounded-full flex-shrink-0 flex items-center gap-1">
+              <CalendarClock size={8} />
+              {item.scheduleLabel}
+            </span>
+          )}
         </div>
-        {item.durationSecs > 0 && (
-          <span className="text-xs text-muted-foreground">{formatDuration(item.durationSecs)}</span>
-        )}
+        <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+          {item.durationSecs > 0 && (
+            <span className="text-xs text-muted-foreground">{formatDuration(item.durationSecs)}</span>
+          )}
+          {item.scheduledAt ? (
+            <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+              <CalendarClock size={9} />
+              Scheduled {formatDistanceToNow(new Date(item.scheduledAt), { addSuffix: true })}
+            </span>
+          ) : airLabel && !isTranscoding ? (
+            <span className="text-[10px] text-muted-foreground/70 flex items-center gap-1">
+              <Clock size={9} />
+              {airLabel}
+            </span>
+          ) : null}
+          {isTranscoding && (
+            <span className="text-[10px] text-amber-600 dark:text-amber-400">
+              Airs when encoding completes
+            </span>
+          )}
+        </div>
       </div>
 
-      <HealthPill health={health} loading={healthLoading} blockedUntilMs={blockedUntilMs} />
+      <div className="flex items-center gap-1.5 flex-shrink-0">
+        <TranscodingPill status={item.transcodingStatus} error={item.transcodingError} />
+        <HealthPill health={health} loading={healthLoading} blockedUntilMs={blockedUntilMs} />
+      </div>
 
       {idx > 0 ? (
         <Button
@@ -1422,16 +1539,17 @@ export default function BroadcastPage() {
   // by handleDragEnd (the reorder mutation owns isSyncing from drop on).
   const [isDragging, setIsDragging] = useState(false);
 
+  // ── Bulk-remove state ─────────────────────────────────────────────────────
+  const [bulkMode, setBulkMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkRemoveConfirm, setBulkRemoveConfirm] = useState(false);
+
   // ── Upload-and-auto-queue state ───────────────────────────────────────────
   // `uploadQueue` is a shared module singleton; auto-queue tracking is held at
   // module-level (see `markForAutoQueue` / `ensureAutoQueueSubscriber` above)
   // so the intent survives navigation, retries on transient POST failure, and
   // doesn't accidentally re-queue uploads started from /videos.
-  const [uploadOpen, setUploadOpen] = useState(false);
-  const [uploadFiles, setUploadFiles] = useState<
-    { id: string; file: File; title: string }[]
-  >([]);
-  const [uploadDragOver, setUploadDragOver] = useState(false);
+  const [uploadPanelOpen, setUploadPanelOpen] = useState(false);
   const { summary: uploadSummary } = useUploadQueue();
 
   // ── Data queries ──────────────────────────────────────────────────────────
@@ -1651,6 +1769,21 @@ export default function BroadcastPage() {
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to remove"),
   });
 
+  const bulkRemoveMutation = useMutation({
+    mutationFn: async (ids: string[]) => {
+      await Promise.all(ids.map((id) => api.delete(`/admin/broadcast/${id}`)));
+    },
+    onSuccess: (_data, ids) => {
+      toast.success(`${ids.length} item${ids.length === 1 ? "" : "s"} removed from queue`);
+      setSelectedIds(new Set());
+      setBulkMode(false);
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-state"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+    },
+    onError: (e) => toast.error(e instanceof HttpError ? e.message : "Bulk remove failed"),
+  });
+
   const faststartMutation = useMutation({
     mutationFn: (videoId: string) =>
       api.post<{ ok: boolean; videoId: string }>(`/admin/videos/${videoId}/faststart`),
@@ -1696,6 +1829,60 @@ export default function BroadcastPage() {
       return next;
     });
   }
+
+  // ── Estimated air times ───────────────────────────────────────────────────
+  // Compute estimated on-air timestamp for each non-playing queue item.
+  // Uses the v2 snapshot's endsAtMs for the current item as the anchor,
+  // then accumulates durationSecs of each subsequent item in queue order.
+  const estimatedAirTimes = useMemo<Map<string, number>>(() => {
+    const map = new Map<string, number>();
+    let cursor = nowPlaying ? nowPlaying.endsAtMs : Date.now();
+    const activeItems = items.filter((i) => i.isActive);
+    let pastCurrent = nowPlaying === null;
+    for (const it of activeItems) {
+      if (!pastCurrent) {
+        if (it.id === nowPlaying?.id) {
+          pastCurrent = true;
+        }
+        continue;
+      }
+      map.set(it.id, cursor);
+      cursor += (it.durationSecs || 0) * 1000;
+    }
+    return map;
+  }, [items, nowPlaying]);
+
+  // ── BroadcastUploadPanel adapter types ────────────────────────────────────
+  const panelQueueItems = useMemo<BroadcastQueueRow[]>(
+    () =>
+      items.map((i) => ({
+        id: i.id,
+        videoId: i.videoId,
+        title: i.title,
+        thumbnailUrl: i.thumbnailUrl,
+        durationSecs: i.durationSecs,
+        videoSource: i.videoSource,
+        isActive: i.isActive,
+        sortOrder: i.sortOrder,
+        transcodingStatus: i.transcodingStatus,
+        hasHls: i.hasHls,
+      })),
+    [items],
+  );
+
+  const panelServer = useMemo<BroadcastServerSnapshot | null>(() => {
+    if (!nowPlaying) return null;
+    const next = v2Snapshot?.next ?? null;
+    return {
+      current: {
+        id: nowPlaying.id,
+        title: nowPlaying.title,
+        startsAtMs: nowPlaying.startsAtMs,
+        endsAtMs: nowPlaying.endsAtMs,
+      },
+      next: next ? { id: next.id, title: next.title } : null,
+    };
+  }, [nowPlaying, v2Snapshot]);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -1764,11 +1951,15 @@ export default function BroadcastPage() {
 
             <Button
               size="sm"
-              variant="outline"
-              onClick={() => setUploadOpen(true)}
+              variant={uploadPanelOpen ? "secondary" : "outline"}
+              onClick={() => setUploadPanelOpen((v) => !v)}
               className="gap-1.5"
             >
-              <UploadCloud size={14} /> Upload &amp; Queue
+              <UploadCloud size={14} />
+              {uploadPanelOpen ? "Hide Upload" : "Upload & Queue"}
+              {uploadSummary.hasActive && (
+                <span className="ml-1 h-2 w-2 rounded-full bg-primary animate-pulse" />
+              )}
             </Button>
 
             <Button size="sm" onClick={() => setAddOpen(true)} className="gap-1.5">
@@ -1962,7 +2153,7 @@ export default function BroadcastPage() {
           {/* Queue */}
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm flex items-center gap-2">
+              <CardTitle className="text-sm flex items-center gap-2 flex-wrap gap-y-1">
                 <List size={13} />
                 Up Next ({items.length})
                 {reorderMutation.isPending && (
@@ -1970,23 +2161,86 @@ export default function BroadcastPage() {
                     Saving order…
                   </span>
                 )}
-                {health && !healthV1Loading && items.length > 0 && (
-                  <span className="ml-auto flex items-center gap-2 text-xs font-normal text-muted-foreground">
-                    {health.summary.ok > 0 && (
-                      <span className="text-emerald-600 dark:text-emerald-400">
-                        {health.summary.ok} ready
-                      </span>
-                    )}
-                    {health.summary.broken > 0 && (
-                      <span className="text-red-600 dark:text-red-400 font-medium">
-                        {health.summary.broken} broken
-                      </span>
-                    )}
-                    {health.summary.skipped > 0 && (
-                      <span>{health.summary.skipped} inactive</span>
-                    )}
-                  </span>
-                )}
+
+                <div className="ml-auto flex items-center gap-1.5 flex-wrap">
+                  {health && !healthV1Loading && items.length > 0 && (
+                    <span className="flex items-center gap-2 text-xs font-normal text-muted-foreground">
+                      {health.summary.ok > 0 && (
+                        <span className="text-emerald-600 dark:text-emerald-400">
+                          {health.summary.ok} ready
+                        </span>
+                      )}
+                      {health.summary.broken > 0 && (
+                        <span className="text-red-600 dark:text-red-400 font-medium">
+                          {health.summary.broken} broken
+                        </span>
+                      )}
+                      {health.summary.skipped > 0 && (
+                        <span>{health.summary.skipped} inactive</span>
+                      )}
+                    </span>
+                  )}
+
+                  {items.length > 0 && (
+                    <>
+                      {bulkMode ? (
+                        <>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2 text-xs"
+                            onClick={() => {
+                              if (selectedIds.size === items.length) {
+                                setSelectedIds(new Set());
+                              } else {
+                                setSelectedIds(new Set(items.map((i) => i.id)));
+                              }
+                            }}
+                          >
+                            {selectedIds.size === items.length ? "Deselect all" : "Select all"}
+                          </Button>
+                          {selectedIds.size > 0 && (
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              className="h-7 px-2 text-xs gap-1"
+                              onClick={() => setBulkRemoveConfirm(true)}
+                              disabled={bulkRemoveMutation.isPending}
+                            >
+                              {bulkRemoveMutation.isPending ? (
+                                <Loader2 size={11} className="animate-spin" />
+                              ) : (
+                                <Trash2 size={11} />
+                              )}
+                              Remove {selectedIds.size}
+                            </Button>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2 text-xs"
+                            onClick={() => {
+                              setBulkMode(false);
+                              setSelectedIds(new Set());
+                            }}
+                          >
+                            Cancel
+                          </Button>
+                        </>
+                      ) : (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-xs gap-1 text-muted-foreground"
+                          onClick={() => setBulkMode(true)}
+                        >
+                          <Trash2 size={11} />
+                          Bulk remove
+                        </Button>
+                      )}
+                    </>
+                  )}
+                </div>
               </CardTitle>
             </CardHeader>
             <CardContent className="p-0">
@@ -2011,13 +2265,23 @@ export default function BroadcastPage() {
                   <p className="text-xs text-muted-foreground">
                     Add videos to schedule broadcast content.
                   </p>
-                  <Button
-                    size="sm"
-                    onClick={() => setAddOpen(true)}
-                    className="gap-1.5 mt-1"
-                  >
-                    <Plus size={13} /> Add content
-                  </Button>
+                  <div className="flex gap-2 mt-1">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setUploadPanelOpen(true)}
+                      className="gap-1.5"
+                    >
+                      <UploadCloud size={13} /> Upload video
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={() => setAddOpen(true)}
+                      className="gap-1.5"
+                    >
+                      <Plus size={13} /> Add content
+                    </Button>
+                  </div>
                 </div>
               ) : (
                 <DndContext
@@ -2045,6 +2309,7 @@ export default function BroadcastPage() {
                             health={healthMap.get(item.id)}
                             healthLoading={healthV1Loading}
                             blockedUntilMs={sh?.status === "bad" ? sh.badUntilMs : null}
+                            estimatedAirMs={estimatedAirTimes.get(item.id) ?? null}
                             onRemove={() => setRemoveConfirm(item)}
                             onMoveToFront={() => {
                               if (idx === 0) return;
@@ -2062,6 +2327,16 @@ export default function BroadcastPage() {
                             }
                             isPlayingNow={nowPlaying?.id === item.id}
                             isDragDisabled={isSyncing || playNowMutation.isPending || removeMutation.isPending}
+                            bulkMode={bulkMode}
+                            isSelected={selectedIds.has(item.id)}
+                            onToggleSelect={() =>
+                              setSelectedIds((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(item.id)) next.delete(item.id);
+                                else next.add(item.id);
+                                return next;
+                              })
+                            }
                           />
                         );
                       })}
@@ -2071,6 +2346,14 @@ export default function BroadcastPage() {
               )}
             </CardContent>
           </Card>
+
+          {/* ── Upload Panel (inline, collapsible) ── */}
+          {uploadPanelOpen && (
+            <BroadcastUploadPanel
+              server={panelServer}
+              queueItems={panelQueueItems}
+            />
+          )}
         </div>
 
         {/* ── Right column: status panels ── */}
@@ -2154,204 +2437,34 @@ export default function BroadcastPage() {
         </div>
       </div>
 
-      {/* ── Upload & Queue Dialog ── */}
-      <Dialog
-        open={uploadOpen}
-        onOpenChange={(o) => {
-          setUploadOpen(o);
-          if (!o) {
-            setUploadFiles([]);
-            setUploadDragOver(false);
-          }
-        }}
-      >
-        <DialogContent className="max-w-xl">
-          <DialogHeader>
-            <DialogTitle>Upload &amp; Add to Broadcast Queue</DialogTitle>
-            <DialogDescription>
-              Pick one or more video files. They'll upload in the background and
-              auto-append to the broadcast queue the moment each one finishes —
-              no manual step required.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div
-            className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
-              uploadDragOver
-                ? "border-primary bg-primary/5"
-                : "border-muted-foreground/25 hover:border-muted-foreground/40"
-            }`}
-            onDragOver={(e) => {
-              e.preventDefault();
-              setUploadDragOver(true);
-            }}
-            onDragLeave={(e) => {
-              if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-                setUploadDragOver(false);
-              }
-            }}
-            onDrop={(e) => {
-              e.preventDefault();
-              setUploadDragOver(false);
-              const files = Array.from(e.dataTransfer.files).filter((f) =>
-                f.type.startsWith("video/") || /\.(mp4|mov|mkv|avi|webm|m4v|flv|wmv|ts|mts|m2ts)$/i.test(f.name),
-              );
-              if (files.length === 0) {
-                toast.error("Drop video files only");
-                return;
-              }
-              setUploadFiles((prev) => [
-                ...prev,
-                ...files.map((f) => ({
-                  id: crypto.randomUUID(),
-                  file: f,
-                  title: titleFromFilename(f.name),
-                })),
-              ]);
-            }}
-          >
-            <UploadCloud
-              size={36}
-              className="mx-auto text-muted-foreground/60 mb-2"
-            />
-            <p className="text-sm font-medium">Drop video files here</p>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              or click below to browse — multiple files supported
-            </p>
-            <label className="inline-block mt-3">
-              <input
-                type="file"
-                accept="video/*,.mp4,.mov,.mkv,.avi,.webm,.m4v,.flv,.wmv,.ts,.mts,.m2ts"
-                multiple
-                className="hidden"
-                onChange={(e) => {
-                  const files = Array.from(e.target.files ?? []);
-                  if (files.length === 0) return;
-                  setUploadFiles((prev) => [
-                    ...prev,
-                    ...files.map((f) => ({
-                      id: crypto.randomUUID(),
-                      file: f,
-                      title: titleFromFilename(f.name),
-                    })),
-                  ]);
-                  e.target.value = "";
-                }}
-              />
-              <span className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border bg-background hover:bg-muted cursor-pointer">
-                <Plus size={12} /> Choose files
-              </span>
-            </label>
-          </div>
-
-          {uploadFiles.length > 0 && (
-            <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-              {uploadFiles.map((uf) => (
-                <div
-                  key={uf.id}
-                  className="flex items-start gap-2 p-2 border rounded-md bg-muted/30"
-                >
-                  <FileVideo
-                    size={16}
-                    className="text-muted-foreground flex-shrink-0 mt-2"
-                  />
-                  <div className="flex-1 min-w-0 space-y-1">
-                    <Input
-                      placeholder="Video title (required)"
-                      value={uf.title}
-                      onChange={(e) =>
-                        setUploadFiles((prev) =>
-                          prev.map((f) =>
-                            f.id === uf.id ? { ...f, title: e.target.value } : f,
-                          ),
-                        )
-                      }
-                      className="h-8 text-sm"
-                    />
-                    <p className="text-[11px] text-muted-foreground truncate">
-                      {uf.file.name} · {formatBytes(uf.file.size)}
-                    </p>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 w-7 p-0 flex-shrink-0"
-                    onClick={() =>
-                      setUploadFiles((prev) => prev.filter((f) => f.id !== uf.id))
-                    }
-                    aria-label="Remove file"
-                  >
-                    <X size={14} />
-                  </Button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {uploadSummary.hasActive && (
-            <p className="text-xs text-muted-foreground flex items-center gap-1.5">
-              <Loader2 size={11} className="animate-spin" />
-              {uploadSummary.active + uploadSummary.pending} upload
-              {uploadSummary.active + uploadSummary.pending === 1 ? "" : "s"} in
-              progress · finished items auto-append to the queue
-            </p>
-          )}
-
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setUploadOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              disabled={uploadFiles.length === 0}
-              onClick={() => {
-                const missing = uploadFiles.filter((f) => !f.title.trim());
-                if (missing.length > 0) {
-                  toast.error(
-                    `${missing.length} file${missing.length > 1 ? "s are" : " is"} missing a title`,
-                  );
-                  return;
-                }
-
-                // Make sure the global completion-watcher is installed before
-                // we enqueue, so the first notify is observed.
-                ensureAutoQueueSubscriber(qc);
-
-                // Snapshot existing IDs so we can identify the new ones the
-                // engine just generated. (uploadQueue.enqueue returns void.)
-                const beforeIds = new Set(
-                  uploadQueue.getItems().map((i: UploadItem) => i.id),
-                );
-
-                uploadQueue.enqueue(
-                  uploadFiles.map((uf) => ({
-                    file: uf.file,
-                    title: uf.title.trim(),
-                    description: "",
-                    category: "sermon",
-                    preacher: "",
-                    featured: false,
-                  })),
-                );
-
-                for (const it of uploadQueue.getItems()) {
-                  if (!beforeIds.has(it.id)) {
-                    markForAutoQueue(it.id);
-                  }
-                }
-
-                toast.success(
-                  `${uploadFiles.length} file${uploadFiles.length > 1 ? "s" : ""} uploading — will auto-queue when done`,
-                );
-                setUploadFiles([]);
-                setUploadOpen(false);
+      {/* ── Bulk Remove Confirmation ── */}
+      <AlertDialog open={bulkRemoveConfirm} onOpenChange={setBulkRemoveConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove {selectedIds.size} item{selectedIds.size === 1 ? "" : "s"} from queue?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {selectedIds.size} item{selectedIds.size === 1 ? "" : "s"} will be permanently removed from the broadcast queue.
+              If any are currently on air, the player will skip to the next item.
+              This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={bulkRemoveMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 hover:bg-red-700"
+              disabled={bulkRemoveMutation.isPending}
+              onClick={(e) => {
+                e.preventDefault();
+                bulkRemoveMutation.mutate([...selectedIds], {
+                  onSettled: () => setBulkRemoveConfirm(false),
+                });
               }}
             >
-              <UploadCloud size={14} className="mr-1.5" />
-              Start Upload
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+              {bulkRemoveMutation.isPending ? "Removing…" : `Remove ${selectedIds.size}`}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* ── Add to Queue Dialog ── */}
       <Dialog
