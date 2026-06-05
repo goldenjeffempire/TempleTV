@@ -232,6 +232,18 @@ function YouTubeQuotaMonitor() {
   return null;
 }
 
+// ── Admin-only route guard ────────────────────────────────────────────────────
+// Wraps admin-only pages so that editors / moderators who navigate directly
+// to a protected URL (e.g. by bookmarking /users) are redirected to the
+// dashboard instead of seeing a server-level 403 or a blank page.
+// The sidebar already hides these links for non-admins; this is the
+// defence-in-depth layer at the router level.
+function AdminRoute({ component: Comp }: { component: React.ComponentType<object> }) {
+  const { isAdmin } = useAuth();
+  if (!isAdmin) return <Redirect to="/dashboard" />;
+  return <Comp />;
+}
+
 function AuthenticatedApp() {
   const [location] = useLocation();
   useEffect(() => { sessionStorage.removeItem(CHUNK_KEY); }, [location]);
@@ -268,13 +280,13 @@ function AuthenticatedApp() {
             <Route path="/schedule"         component={Schedule} />
             <Route path="/series"           component={Series} />
             <Route path="/analytics"        component={Analytics} />
-            <Route path="/users"            component={Users} />
+            <Route path="/users">{() => <AdminRoute component={Users} />}</Route>
             <Route path="/prayers"          component={Prayers} />
             <Route path="/feedback"         component={Feedback} />
             <Route path="/chat"             component={Chat} />
-            <Route path="/operations"       component={Operations} />
+            <Route path="/operations">{() => <AdminRoute component={Operations} />}</Route>
             <Route path="/alerts"           component={Alerts} />
-            <Route path="/live-ingest"      component={LiveIngest} />
+            <Route path="/live-ingest">{() => <AdminRoute component={LiveIngest} />}</Route>
             <Route path="/live-youtube"     component={LiveYoutube} />
             <Route path="/live-monitor"     component={LiveMonitor} />
             <Route path="/master-control">{() => <Redirect to="/broadcast-v2" />}</Route>
@@ -282,17 +294,17 @@ function AuthenticatedApp() {
             <Route path="/broadcast-v2"     component={BroadcastV2} />
             <Route path="/graphics"         component={Graphics} />
             <Route path="/playback"         component={Playback} />
-            <Route path="/sse-bus"          component={SseBus} />
+            <Route path="/sse-bus">{() => <AdminRoute component={SseBus} />}</Route>
             <Route path="/youtube-quota"    component={YoutubeQuota} />
             <Route path="/youtube-sync"     component={YoutubeSync} />
             <Route path="/launch-readiness" component={LaunchReadiness} />
-            <Route path="/purge"            component={Purge} />
-            <Route path="/audit-log"        component={AuditLog} />
+            <Route path="/purge">{() => <AdminRoute component={Purge} />}</Route>
+            <Route path="/audit-log">{() => <AdminRoute component={AuditLog} />}</Route>
             <Route path="/radio"             component={RadioAdmin} />
-            <Route path="/settings"          component={SystemSettings} />
-            <Route path="/security"          component={SecurityPage} />
+            <Route path="/settings">{() => <AdminRoute component={SystemSettings} />}</Route>
+            <Route path="/security">{() => <AdminRoute component={SecurityPage} />}</Route>
             <Route path="/midnight-prayers"  component={MidnightPrayers} />
-            <Route path="/diagnostics"       component={Diagnostics} />
+            <Route path="/diagnostics">{() => <AdminRoute component={Diagnostics} />}</Route>
             <Route component={NotFound} />
           </Switch>
         </Suspense>

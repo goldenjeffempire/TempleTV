@@ -97,7 +97,18 @@ export async function authRoutes(app: FastifyInstance) {
         tags: ["auth"],
         summary: "Exchange credentials for a JWT pair (returns MFA challenge if TOTP is enabled)",
         body: LoginBodySchema,
-        response: { 200: LoginResponseSchema },
+        response: {
+          200: LoginResponseSchema,
+          // Brute-force lockout — the handler sends this explicitly via
+          // reply.code(429).send(…) when the IP or account is locked out.
+          // Declaring it here removes the TypeScript cast and makes the response
+          // visible in the generated OpenAPI spec.
+          429: z.object({
+            error: z.string(),
+            retryAfterSecs: z.number().optional(),
+            lockedBy: z.string().optional(),
+          }),
+        },
       },
     },
     async (req, reply) => {
@@ -107,15 +118,11 @@ export async function authRoutes(app: FastifyInstance) {
       const bfCheck = checkBruteForce(req.ip, req.body.email, bypass);
       if (bfCheck.blocked) {
         reply.header("Retry-After", String(bfCheck.retryAfterSecs));
-        // The route schema only declares `200` but we legitimately send 429.
-        // Cast through unknown so TypeScript does not widen the response union.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        void (reply as any).code(429).send({
+        return reply.code(429).send({
           error: "Too many failed login attempts. Please try again later.",
           retryAfterSecs: bfCheck.retryAfterSecs,
           lockedBy: bfCheck.reason,
         });
-        return;
       }
       try {
         const result = await authService.login(req.body);

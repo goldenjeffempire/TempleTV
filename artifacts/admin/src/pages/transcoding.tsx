@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, HttpError, isTransientError} from "@/lib/api";
 import { useSSEEvent } from "@/contexts/sse-context";
+import { useAuth } from "@/contexts/use-auth";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,7 +17,7 @@ import {
 import { toast } from "sonner";
 import {
   Clapperboard, RefreshCw, CheckCircle2, XCircle, Loader2,
-  Clock, AlertCircle, RotateCcw, Zap, Ban,
+  Clock, AlertCircle, RotateCcw, Zap, Ban, Trash2,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
@@ -43,6 +44,7 @@ const STATUS_CONFIG = {
 
 export default function TranscodingPage() {
   const qc = useQueryClient();
+  const { isAdmin } = useAuth();
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["transcoding-queue"],
@@ -90,9 +92,31 @@ export default function TranscodingPage() {
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Bulk transcode failed"),
   });
 
+  const retryAllMutation = useMutation({
+    mutationFn: () => api.post<{ ok: boolean; retried: number }>("/admin/transcoding/retry-failed"),
+    onSuccess: (res) => {
+      toast.success(res.retried > 0 ? `Re-queued ${res.retried} failed job${res.retried !== 1 ? "s" : ""}` : "No failed jobs to retry");
+      void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+    },
+    onError: (e) => toast.error(e instanceof HttpError ? e.message : "Retry all failed"),
+  });
+
+  // Admin-only: clear finished jobs (done/failed/cancelled).
+  // Active (queued/processing) jobs are NEVER deleted by the server.
+  const clearFinishedMutation = useMutation({
+    mutationFn: () => api.delete<{ cleared: number }>("/admin/transcoding/clear?status=all"),
+    onSuccess: (res) => {
+      toast.success(res.cleared > 0 ? `Cleared ${res.cleared} finished job${res.cleared !== 1 ? "s" : ""}` : "No finished jobs to clear");
+      void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+    },
+    onError: (e) => toast.error(e instanceof HttpError ? e.message : "Clear finished jobs failed"),
+  });
+
   const jobs = data?.jobs ?? [];
   const active = jobs.filter(j => ["queued", "encoding", "processing"].includes(j.status));
   const done = jobs.filter(j => ["ready", "hls_ready", "failed", "cancelled"].includes(j.status));
+  const failedJobs = jobs.filter(j => j.status === "failed");
 
   return (
     <div className="p-4 sm:p-6 max-w-5xl mx-auto space-y-6">
@@ -100,7 +124,76 @@ export default function TranscodingPage() {
         title="Transcoding Pipeline"
         description="Monitor HLS encoding jobs and processing status."
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Retry All Failed — editor+ */}
+            {failedJobs.length > 0 && (
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={retryAllMutation.isPending}
+                    className="gap-1.5"
+                  >
+                    {retryAllMutation.isPending
+                      ? <><Loader2 size={13} className="animate-spin" /> Retrying…</>
+                      : <><RotateCcw size={13} /> Retry All Failed</>}
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Retry all {failedJobs.length} failed job{failedJobs.length !== 1 ? "s" : ""}?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This re-queues every failed job and nudges the dispatcher to pick them up immediately.
+                      Jobs whose source file is corrupted or missing will fail again.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction onClick={() => retryAllMutation.mutate()}>
+                      Retry All
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            )}
+
+            {/* Clear Finished Jobs — admin only */}
+            {isAdmin && done.length > 0 && (
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={clearFinishedMutation.isPending}
+                    className="gap-1.5 text-destructive hover:text-destructive"
+                  >
+                    {clearFinishedMutation.isPending
+                      ? <><Loader2 size={13} className="animate-spin" /> Clearing…</>
+                      : <><Trash2 size={13} /> Clear Finished</>}
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Clear {done.length} finished job{done.length !== 1 ? "s" : ""}?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This permanently removes all completed, failed, and cancelled job records from the queue.
+                      Active jobs (queued or encoding) are never affected. This cannot be undone.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      onClick={() => clearFinishedMutation.mutate()}
+                    >
+                      Clear Finished Jobs
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            )}
+
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button

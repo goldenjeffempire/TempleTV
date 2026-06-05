@@ -278,8 +278,8 @@ declare class BroadcastOrchestrator extends EventEmitter {
      *
      * When consecutiveSkips reaches the number of queue items, the orchestrator
      * has cycled through every item without successfully playing any of them
-     * (total queue exhaustion). If BROADCAST_EMERGENCY_FILLER_URL is configured,
-     * an emergency override is engaged so viewers always see content.
+     * (total queue exhaustion) and the broadcast goes off-air until playable
+     * content is restored.
      */
     private consecutiveSkips;
     /** Wall-clock ms when the orchestrator last detected total queue exhaustion
@@ -293,10 +293,8 @@ declare class BroadcastOrchestrator extends EventEmitter {
      * item successfully playing to completion (naturalItemEnd).
      *
      * Each bad-URL TTL expiry (90 s) that still finds all sources unreachable
-     * increments this counter. After 2 cycles (≥ 3 min of persistent failure),
-     * the emergency filler is engaged — critical for large queues (>5 items)
-     * where autoSkipAttempts < 5 cap prevents consecutiveSkips from ever
-     * reaching items.length and triggering the tick-loop filler path.
+     * increments this counter and re-attempts recovery (clear bad-URL cache +
+     * reload). The broadcast stays off-air while all sources remain unreachable.
      *
      * Reset to 0 whenever an item plays to its natural end or a new item
      * successfully becomes current after a dead-air gap.
@@ -612,7 +610,7 @@ declare class BroadcastOrchestrator extends EventEmitter {
      * successfully playing — total queue exhaustion.
      *
      * lastDeadAirAt is the wall-clock ms when the most recent exhaustion event
-     * occurred (emergency filler engaged). Null if no exhaustion has occurred
+     * occurred (broadcast went off-air). Null if no exhaustion has occurred
      * since startup.
      */
     getSkipInfo(): {

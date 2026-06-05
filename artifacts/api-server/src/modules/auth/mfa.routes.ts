@@ -22,6 +22,8 @@ import { verifyPassword } from "./password.js";
 import { signAccessToken, signRefreshToken } from "./jwt.js";
 import { nanoid } from "nanoid";
 import { UnauthorizedError, BadRequestError } from "../../shared/errors.js";
+import type { Role } from "../../shared/types.js";
+import { ALL_ROLES } from "../../shared/types.js";
 import { checkBruteForce, recordFailedAttempt } from "./brute-force-guard.js";
 import {
   MfaSetupResponseSchema,
@@ -40,6 +42,10 @@ import {
   hashBackupCode,
   consumeBackupCode,
 } from "./totp.js";
+
+function coerceRole(raw: string): Role {
+  return (ALL_ROLES as readonly string[]).includes(raw) ? (raw as Role) : "user";
+}
 
 const usersTable = schema.usersTable;
 const refreshTokensTable = schema.refreshTokensTable;
@@ -353,7 +359,7 @@ export async function mfaRoutes(app: FastifyInstance) {
       const accessToken = await signAccessToken({
         sub: user.id,
         email: user.email,
-        role: user.role as any,
+        role: coerceRole(user.role),
       });
       const refreshToken = await signRefreshToken({ sub: user.id, jti });
       const expiresAt = new Date(Date.now() + env.JWT_REFRESH_TTL_SECONDS * 1000);
@@ -375,7 +381,7 @@ export async function mfaRoutes(app: FastifyInstance) {
         user: {
           id: user.id,
           email: user.email,
-          role: user.role as any,
+          role: coerceRole(user.role),
           displayName: user.displayName,
         },
       };

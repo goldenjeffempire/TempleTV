@@ -26,8 +26,6 @@ declare const Env: z.ZodObject<{
     CORS_ORIGINS_EXTRA: z.ZodOptional<z.ZodString>;
     REDIS_URL: z.ZodOptional<z.ZodString>;
     BROADCAST_PRELOAD_LEAD_MS: z.ZodDefault<z.ZodNumber>;
-    BROADCAST_FAILOVER_HLS_URL: z.ZodOptional<z.ZodString>;
-    EMERGENCY_FILLER_URL: z.ZodOptional<z.ZodString>;
     RATE_LIMIT_DEFAULT_PER_MINUTE: z.ZodDefault<z.ZodNumber>;
     RATE_LIMIT_AUTH_PER_MINUTE: z.ZodDefault<z.ZodNumber>;
     AUTH_BF_MAX_ATTEMPTS: z.ZodDefault<z.ZodNumber>;
@@ -98,12 +96,12 @@ declare const Env: z.ZodObject<{
     SEED_ADMIN_PASSWORD: z.ZodOptional<z.ZodString>;
     SEED_ADMIN_FORCE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
 }, "strip", z.ZodTypeAny, {
-    DATABASE_URL: string;
     NODE_ENV: "development" | "test" | "production";
     PORT: number;
     TV_DEV_PORT: number;
     MOBILE_DEV_PORT: number;
     LOG_LEVEL: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
+    DATABASE_URL: string;
     JWT_ACCESS_SECRET: string;
     JWT_REFRESH_SECRET: string;
     JWT_ACCESS_TTL_SECONDS: number;
@@ -164,8 +162,6 @@ declare const Env: z.ZodObject<{
     ADMIN_API_TOKEN_IP_ALLOWLIST?: string | undefined;
     CORS_ORIGINS_EXTRA?: string | undefined;
     REDIS_URL?: string | undefined;
-    BROADCAST_FAILOVER_HLS_URL?: string | undefined;
-    EMERGENCY_FILLER_URL?: string | undefined;
     AUTH_BF_BYPASS_TOKEN?: string | undefined;
     SENTRY_DSN?: string | undefined;
     TRANSCODER_SCRATCH_DIR?: string | undefined;
@@ -214,8 +210,6 @@ declare const Env: z.ZodObject<{
     CORS_ORIGINS_EXTRA?: string | undefined;
     REDIS_URL?: string | undefined;
     BROADCAST_PRELOAD_LEAD_MS?: number | undefined;
-    BROADCAST_FAILOVER_HLS_URL?: string | undefined;
-    EMERGENCY_FILLER_URL?: string | undefined;
     RATE_LIMIT_DEFAULT_PER_MINUTE?: number | undefined;
     RATE_LIMIT_AUTH_PER_MINUTE?: number | undefined;
     AUTH_BF_MAX_ATTEMPTS?: number | undefined;

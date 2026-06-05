@@ -1834,6 +1834,10 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       const retried = await retryAllFailed();
       if (retried > 0) {
         transcoderDispatcher.nudge();
+        // Notify admin UI immediately so the queue panel refreshes without waiting
+        // for the next SSE heartbeat or polling interval.
+        adminEventBus.push("transcoding-update", { type: "bulk-retry", retried });
+        adminEventBus.push("videos-library-updated", { reason: "bulk-retry-failed" });
       }
       return { ok: true as const, retried };
     },
@@ -1969,12 +1973,13 @@ export async function adminOpsRoutes(app: FastifyInstance) {
   r.delete(
     "/transcoding/clear",
     {
-      preHandler: requireAuth("editor"),
+      // Bulk delete is a destructive admin-only action — require admin, not just editor.
+      preHandler: requireAuth("admin"),
       // Bulk delete — 3/min keeps it operator-controlled only.
       config: { rateLimit: { max: 3, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin-ops"],
-        summary: "Bulk-delete transcoding jobs by status",
+        summary: "Bulk-delete transcoding jobs by status (admin only; active jobs are never deleted)",
         querystring: z.object({
           status: z.enum(["done", "failed", "cancelled", "all"]),
         }),
@@ -1985,6 +1990,10 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     async (req) => {
       const { status } = req.query;
       const cleared = await clearJobsByStatus(status);
+      // Notify the admin UI that the job list changed so it refreshes immediately.
+      if (cleared > 0) {
+        adminEventBus.push("transcoding-update", { type: "bulk-cleared", status, cleared });
+      }
       return { cleared };
     },
   );
@@ -3121,7 +3130,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       // Path 1: header bearer (most secure, used when proxying via fetch)
       if (headerToken) {
         try {
-          if (env.ADMIN_API_TOKEN && headerToken === env.ADMIN_API_TOKEN) {
+          if (env.ADMIN_API_TOKEN && safeStringEqual(headerToken, env.ADMIN_API_TOKEN)) {
             // system token — always permitted
           } else {
             const decoded = await verifyAccessToken(headerToken);
@@ -3157,7 +3166,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       // Path 3: legacy long-lived token in query string (deprecated)
       else if (rawQueryToken) {
         try {
-          if (env.ADMIN_API_TOKEN && rawQueryToken === env.ADMIN_API_TOKEN) {
+          if (env.ADMIN_API_TOKEN && safeStringEqual(rawQueryToken, env.ADMIN_API_TOKEN)) {
             // system token — always permitted
           } else {
             const decoded = await verifyAccessToken(rawQueryToken);

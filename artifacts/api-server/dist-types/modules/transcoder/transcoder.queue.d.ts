@@ -31,6 +31,19 @@ export declare function getJob(id: string): Promise<{
     createdAt: Date;
 }>;
 export declare function deleteJob(id: string): Promise<boolean>;
+/**
+ * Bulk-delete transcoding jobs by status.
+ *
+ * SAFETY INVARIANT: "queued" and "processing" jobs are NEVER deleted,
+ * regardless of the requested status.  Deleting an active job while the
+ * dispatcher holds it orphans the FFmpeg child process and leaves the
+ * associated managed_videos row stuck at "encoding" or "processing".
+ *
+ * For the "all" variant this means only done/failed/cancelled rows are
+ * removed.  The caller receives the count of deleted rows; active rows
+ * that were skipped are logged so operators know they must wait for the
+ * current job to finish before the table is fully clear.
+ */
 export declare function clearJobsByStatus(status: "done" | "failed" | "cancelled" | "all"): Promise<number>;
 /**
  * Re-arm ALL failed transcoding jobs whose source blob is still available.

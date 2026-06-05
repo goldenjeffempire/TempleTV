@@ -21,8 +21,8 @@ const PAGE_TITLES: Record<string, string> = {
   "/live-control": "Live Control", "/stream-health": "Stream Health",
   "/transcoding": "Transcoding", "/notifications": "Notifications",
   "/playlists": "Playlists", "/schedule": "Schedule", "/series": "Series",
-  "/analytics": "Analytics", "/users": "Users", "/prayers": "Prayers",
-  "/chat": "Live Chat", "/operations": "Operations", "/alerts": "Alerts",
+  "/analytics": "Analytics", "/users": "Users", "/prayers": "Prayer Requests",
+  "/chat": "Live Chat", "/operations": "Operations", "/alerts": "Emergency Alerts",
   "/live-ingest": "Live Ingest", "/live-youtube": "YouTube Live",
   "/live-monitor": "Live Monitor", "/master-control": "Master Control",
   "/graphics": "Graphics & Overlays", "/playback": "Playback Engine",
@@ -30,7 +30,9 @@ const PAGE_TITLES: Record<string, string> = {
   "/launch-readiness": "Launch Readiness", "/purge": "Data Purge",
   "/library": "YouTube Library", "/youtube-sync": "YouTube Sync",
   "/radio": "Radio Station", "/audit-log": "Audit Log",
-  "/settings": "System Settings",
+  "/settings": "System Settings", "/security": "Security",
+  "/feedback": "Feedback", "/midnight-prayers": "Midnight Prayers",
+  "/diagnostics": "System Diagnostics", "/broadcast": "Master Control",
 };
 
 function SSEIndicator() {

@@ -22,6 +22,7 @@
 
 import { env } from "../../config/env.js";
 import { logger } from "../../infrastructure/logger.js";
+import { safeStringEqual } from "../../middleware/auth.js";
 import { captureEvent } from "../../infrastructure/sentry.js";
 
 interface BucketEntry {
@@ -103,7 +104,7 @@ export function checkBruteForce(
   if (
     bypassToken &&
     env.AUTH_BF_BYPASS_TOKEN &&
-    bypassToken === env.AUTH_BF_BYPASS_TOKEN
+    safeStringEqual(bypassToken, env.AUTH_BF_BYPASS_TOKEN)
   ) {
     return { blocked: false, retryAfterSecs: 0, reason: "" };
   }

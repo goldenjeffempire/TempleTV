@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 
@@ -171,16 +171,42 @@ export async function deleteJob(id: string): Promise<boolean> {
   return out.length > 0;
 }
 
-// F39: "all" deletes done + failed + cancelled jobs (every row in the table).
-// The name is intentionally broad because that matches the UI "Clear all"
-// action — operators who want status-specific bulk deletes use the other arms.
+// Active job statuses that must NEVER be deleted — deleting a "queued" or
+// "processing" row while the dispatcher has claimed it orphans the live FFmpeg
+// child process (it keeps running but has no DB record to update, and its
+// video row is left stuck at "encoding" or "processing" forever).
+const ACTIVE_JOB_STATUSES = ["queued", "processing"] as const;
+
+/**
+ * Bulk-delete transcoding jobs by status.
+ *
+ * SAFETY INVARIANT: "queued" and "processing" jobs are NEVER deleted,
+ * regardless of the requested status.  Deleting an active job while the
+ * dispatcher holds it orphans the FFmpeg child process and leaves the
+ * associated managed_videos row stuck at "encoding" or "processing".
+ *
+ * For the "all" variant this means only done/failed/cancelled rows are
+ * removed.  The caller receives the count of deleted rows; active rows
+ * that were skipped are logged so operators know they must wait for the
+ * current job to finish before the table is fully clear.
+ */
 export async function clearJobsByStatus(status: "done" | "failed" | "cancelled" | "all"): Promise<number> {
   if (status === "all") {
-    // Deletes ALL rows regardless of status (done, failed, cancelled, queued, running).
-    // Only use this from the admin "Clear all finished jobs" flow where the
-    // caller has already confirmed they want to wipe the entire job table.
-    const out = await db.delete(jobs).returning({ id: jobs.id });
+    // Delete every non-active row (done, failed, cancelled).
+    // Active (queued + processing) rows are explicitly preserved.
+    const out = await db
+      .delete(jobs)
+      .where(notInArray(jobs.status, [...ACTIVE_JOB_STATUSES]))
+      .returning({ id: jobs.id });
+    if (out.length > 0) {
+      logger.info({ cleared: out.length }, "transcoder: cleared all finished jobs (active jobs preserved)");
+    }
     return out.length;
+  }
+  // Status-specific delete — still guard against accidentally targeting active statuses.
+  if ((ACTIVE_JOB_STATUSES as readonly string[]).includes(status)) {
+    logger.warn({ status }, "transcoder: clearJobsByStatus called with active status — skipped to protect running jobs");
+    return 0;
   }
   const out = await db.delete(jobs).where(eq(jobs.status, status)).returning({ id: jobs.id });
   return out.length;

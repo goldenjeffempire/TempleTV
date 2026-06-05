@@ -5,7 +5,7 @@ import { z } from "zod";
 import { and, desc, eq, isNull, lt, gt, or } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, schema } from "../../infrastructure/db.js";
-import { requireAuth } from "../../middleware/auth.js";
+import { requireAuth, safeStringEqual } from "../../middleware/auth.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { verifyAccessToken } from "../auth/jwt.js";
 import { env } from "../../config/env.js";
@@ -106,7 +106,7 @@ async function resolveWsIdentity(token: string | null): Promise<{
   isModerator: boolean;
 }> {
   if (!token) return { userId: null, email: null, isModerator: false };
-  if (env.ADMIN_API_TOKEN && token === env.ADMIN_API_TOKEN) {
+  if (env.ADMIN_API_TOKEN && safeStringEqual(token, env.ADMIN_API_TOKEN)) {
     return { userId: "system:admin-token", email: "system@temple.tv", isModerator: true };
   }
   try {

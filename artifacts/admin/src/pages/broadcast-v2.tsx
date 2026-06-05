@@ -53,6 +53,10 @@ import { BroadcastUploadPanel } from "@/components/broadcast/BroadcastUploadPane
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { Link } from "wouter";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
@@ -807,6 +811,8 @@ function BroadcastV2PageInner() {
   const [consecutiveSkipsDismissed, setConsecutiveSkipsDismissed] = useState(false);
   // Launch Checklist modal.
   const [showChecklist, setShowChecklist] = useState(false);
+  // Confirmation dialog for the destructive "Force failover" operator action.
+  const [showFailoverConfirm, setShowFailoverConfirm] = useState(false);
 
 
   async function adminPost(path: string, body: Record<string, unknown> = {}) {
@@ -1161,7 +1167,9 @@ function BroadcastV2PageInner() {
         case "f":
         case "F":
           e.preventDefault();
-          void adminPostRef.current("/broadcast-v2/force-failover", { reason: "manual" });
+          // The keyboard shortcut opens the confirmation dialog rather than
+          // directly firing force-failover, matching the button UX.
+          setShowFailoverConfirm(true);
           break;
         case "?":
           e.preventDefault();
@@ -1617,6 +1625,7 @@ function BroadcastV2PageInner() {
   const checklistAllClear = checklistBlockerCount === 0;
 
   return (
+    <>
     <div className="space-y-6 p-4 md:p-6">
       <PageHeader
         title="Master Control"
@@ -2141,7 +2150,7 @@ function BroadcastV2PageInner() {
               className="w-full"
               variant="destructive"
               disabled={!!busy}
-              onClick={() => adminPost("/broadcast-v2/force-failover", { reason: "manual" })}
+              onClick={() => setShowFailoverConfirm(true)}
             >
               <AlertTriangle className="mr-2 h-4 w-4" /> Force failover
             </Button>
@@ -2984,6 +2993,30 @@ function BroadcastV2PageInner() {
         )}
       </Card>
     </div>
+
+    {/* Force-failover confirmation — destructive action needs explicit approval */}
+    <AlertDialog open={showFailoverConfirm} onOpenChange={setShowFailoverConfirm}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Force failover?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This immediately switches the broadcast engine to the configured failover HLS stream,
+            interrupting whatever is currently airing. The audience will experience a brief gap.
+            Only proceed if the primary source is genuinely broken.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            onClick={() => { setShowFailoverConfirm(false); void adminPost("/broadcast-v2/force-failover", { reason: "manual" }); }}
+          >
+            Force failover
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 }
 
