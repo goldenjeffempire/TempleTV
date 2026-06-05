@@ -529,12 +529,39 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
   // NEW one and seeks it back to position 0, causing a desync loop.
   const quickFinishRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  function clearBufferingWatchdog() {
+  // Stable ref-only helper — useCallback with [] so it never recreates.
+  // clearBufferingWatchdog is captured by handleVideoError below; if it were a
+  // plain function it would be a new reference on every BroadcastBuffer render,
+  // causing handleVideoError to also recreate and defeating React.memo on the
+  // Video element's onError prop.
+  const clearBufferingWatchdog = useCallback(() => {
     if (bufferingWatchdogRef.current) {
       clearTimeout(bufferingWatchdogRef.current);
       bufferingWatchdogRef.current = null;
     }
-  }
+  }, []);
+
+  // Stable onError handler for the expo-av <Video> element.
+  //
+  // BroadcastBuffer is wrapped in React.memo to prevent re-renders on every
+  // 500 ms progress-update tick from the parent. But React.memo only works
+  // when ALL props are stable references. Passing an inline lambda for
+  // onError — `(error) => { clearBufferingWatchdog(); emit(...) }` — would
+  // create a new function reference on every BroadcastBuffer render, defeating
+  // memo on the inner <Video> and causing unnecessary re-renders.
+  //
+  // Both `emit` (useCallback in BroadcastBuffer) and `clearBufferingWatchdog`
+  // (useCallback above) are stable; `bufferId` never changes within a mounted
+  // BroadcastBuffer instance. So this callback is effectively permanent for
+  // the lifetime of the component instance — one per A/B buffer.
+  const handleVideoError = useCallback((error: unknown) => {
+    clearBufferingWatchdog();
+    emit({
+      type: "buffer-error",
+      bufferId,
+      error: typeof error === "string" ? error : "media-error",
+    });
+  }, [clearBufferingWatchdog, emit, bufferId]);
 
   function clearQuickFinishRetry() {
     if (quickFinishRetryTimerRef.current) {
@@ -611,6 +638,15 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
       // to load on the fresh elements, kicking the FSM into RECOVERING_PRIMARY
       // and disrupting a perfectly live stream.
       clearLoadTimeout();
+      // Use suppressEventsRef.current (not the raw prop closure) so this
+      // bindRevision effect — which only re-runs on bindRevision changes —
+      // observes the CURRENT suppressEvents value at the moment the timeout
+      // would be armed, not the stale value captured when the effect closure
+      // was created.  Without this fix, toggling suppressEvents (e.g. when
+      // fullscreen opens/closes between two bind revisions) leaves the guard
+      // with a stale false value and arms the watchdog on a suppressed instance,
+      // causing spurious buffer-error → RECOVERING_PRIMARY on the fullscreen
+      // stream.
       if (!suppressEventsRef.current && state.playing && state.active && fsmIsWaitingRef.current) {
         loadTimeoutRef.current = setTimeout(() => {
           loadTimeoutRef.current = null;
@@ -1073,7 +1109,7 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
           clearBufferingWatchdog();
         }
       }}
-      onError={handleError}
+      onError={handleVideoError}
     />
   );
 });
