@@ -1562,8 +1562,20 @@ export default function BroadcastPage() {
   } = useQuery({
     queryKey: ["broadcast-queue"],
     queryFn: () => api.get<{ items: BroadcastQueueItem[] }>("/admin/broadcast"),
-    refetchInterval: 15_000,
-    staleTime: 10_000,
+    // Boost to 5s when any item is actively transcoding so status badges
+    // stay current during the faststart/encoding pipeline.
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (!data) return 15_000;
+      const hasLiveTranscoding = data.items.some(
+        (i) =>
+          i.transcodingStatus === "encoding" ||
+          i.transcodingStatus === "processing" ||
+          i.transcodingStatus === "queued",
+      );
+      return hasLiveTranscoding ? 5_000 : 15_000;
+    },
+    staleTime: 4_000,
   });
 
   // V2 snapshot — authoritative "now playing" and mode source
@@ -1870,16 +1882,17 @@ export default function BroadcastPage() {
     [items],
   );
 
-  const panelServer = useMemo<BroadcastServerSnapshot | null>(() => {
-    if (!nowPlaying) return null;
+  const panelServer = useMemo<BroadcastServerSnapshot>(() => {
     const next = v2Snapshot?.next ?? null;
     return {
-      current: {
-        id: nowPlaying.id,
-        title: nowPlaying.title,
-        startsAtMs: nowPlaying.startsAtMs,
-        endsAtMs: nowPlaying.endsAtMs,
-      },
+      current: nowPlaying
+        ? {
+            id: nowPlaying.id,
+            title: nowPlaying.title,
+            startsAtMs: nowPlaying.startsAtMs,
+            endsAtMs: nowPlaying.endsAtMs,
+          }
+        : null,
       next: next ? { id: next.id, title: next.title } : null,
     };
   }, [nowPlaying, v2Snapshot]);
