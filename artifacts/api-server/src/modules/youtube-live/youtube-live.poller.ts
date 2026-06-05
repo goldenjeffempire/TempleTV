@@ -164,6 +164,11 @@ class YtLivePoller extends EventEmitter {
     this.poll();
     const interval = ytApiKey() ? API_POLL_INTERVAL_MS : RSS_POLL_INTERVAL_MS;
     this.timer = setInterval(() => { this.poll(); }, interval);
+    // unref so this background poll interval never keeps the Node event loop
+    // alive past app.close() during graceful shutdown (stop() is not wired into
+    // the shutdown sequence, so without this the process waits for the force-
+    // exit grace timer to fire).
+    this.timer.unref?.();
   }
 
   stop(): void {

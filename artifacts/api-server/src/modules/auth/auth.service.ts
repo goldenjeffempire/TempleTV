@@ -119,10 +119,23 @@ export const authService = {
     const passwordHash = await hashPassword(body.password);
     const displayName = body.displayName ?? defaultDisplayName(email);
 
-    const inserted = await db
-      .insert(usersTable)
-      .values({ id, email, passwordHash, displayName, role: "user" })
-      .returning();
+    // The SELECT existence check above is not atomic with the INSERT below.
+    // Two concurrent registrations for the same email can both pass the SELECT
+    // and then race to INSERT; the users.email UNIQUE constraint rejects the
+    // loser with SQLSTATE 23505. Map that to a clean 409 ConflictError instead
+    // of letting a raw unique-violation surface to the caller as a 500.
+    let inserted;
+    try {
+      inserted = await db
+        .insert(usersTable)
+        .values({ id, email, passwordHash, displayName, role: "user" })
+        .returning();
+    } catch (err) {
+      if ((err as { code?: string }).code === "23505") {
+        throw new ConflictError("Email already registered");
+      }
+      throw err;
+    }
     const user = inserted[0];
     if (!user) throw new Error("user insert returned no row");
 

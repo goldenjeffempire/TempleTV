@@ -337,10 +337,16 @@ async function main() {
     }
     // Auto-create broadcast v2 DB tables so the orchestrator never crashes
     // on a missing-table error even when drizzle-kit push was not run.
-    // Idempotent (CREATE TABLE IF NOT EXISTS). Non-blocking via .catch so a
-    // DB connectivity blip here doesn't delay the HTTP listener — the
-    // orchestrator's own hydrate() guards handle any residual table issues.
-    ensureBroadcastV2Tables().catch((err) =>
+    // Idempotent (CREATE TABLE IF NOT EXISTS). AWAITED — the orchestrator
+    // started below (ensureBroadcastV2Started) strictly depends on these tables
+    // existing, so this must complete first to avoid a fresh-DB race. The
+    // CREATE statements are cheap; under a DB outage the await is bounded by the
+    // pool connectionTimeout and the .catch keeps it non-fatal (the
+    // orchestrator's own hydrate() 42P01 guards still cover residual issues).
+    // app.listen() runs later (below), so this adds only a brief, bounded delay
+    // to startup. Matches the established "await the ensureXxxTable() before its
+    // dependent service starts" pattern used for the midnight-prayers table.
+    await ensureBroadcastV2Tables().catch((err) =>
       logger.error({ err }, "db: ensureBroadcastV2Tables failed (non-fatal)"),
     );
     // Deactivate queue rows whose video has no playable source so the
