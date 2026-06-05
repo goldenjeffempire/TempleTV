@@ -345,6 +345,9 @@ export default function VideosPage() {
       // If the deleted video was imported from YouTube, remove it from the
       // Library tab immediately instead of waiting for stale time to expire.
       void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
+      // A video may be a scheduled entry (contentType="video", contentId=id).
+      // Invalidate schedule so the operator sees the orphaned slot immediately.
+      void qc.invalidateQueries({ queryKey: ["schedule"] });
       setDeleteVideo(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Delete failed"),
