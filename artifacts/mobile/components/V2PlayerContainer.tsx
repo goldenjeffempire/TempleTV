@@ -429,6 +429,15 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
   // Using React state (not a ref) so the play effect re-runs automatically
   // when onLoad fires and sets the loaded revision.
   const [loadedRevision, setLoadedRevision] = useState(-1);
+  // Ref mirror so stable callbacks (handleError, onPlaybackStatusUpdate) read
+  // the *current* loadedRevision without it appearing in their dep arrays.
+  const loadedRevisionRef = useRef(-1);
+  loadedRevisionRef.current = loadedRevision;
+  // Ref mirror for state.bindRevision — same reason.  Together with
+  // loadedRevisionRef these let handleError and onPlaybackStatusUpdate apply
+  // the "pre-load guard" without going stale across bind-revision changes.
+  const bindRevisionRef = useRef(state.bindRevision);
+  bindRevisionRef.current = state.bindRevision;
 
   // ── HLS playback tracking ───────────────────────────────────────────────
 
@@ -756,13 +765,26 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
   }, [effectiveMuted]);
 
   // Stable error handler — placed here (before the early return below) so it
-  // unconditionally follows the Rules of Hooks.  Captures only stable
-  // useCallback refs (clearBufferingWatchdog, emit) and the static bufferId
-  // prop, so the reference identity is preserved across the 500 ms
-  // progressUpdateIntervalMillis render ticks.
+  // unconditionally follows the Rules of Hooks.  Captures only stable refs.
   const handleError = useCallback(
     (error: unknown) => {
       clearBufferingWatchdog();
+      // ── Pre-load guard ────────────────────────────────────────────────
+      // When the FSM is already PLAYING (fsmIsWaiting=false) and this Video
+      // element has not yet fired onLoad for the current bind revision
+      // (loadedRevisionRef !== bindRevisionRef), the error is a transient
+      // setup artefact from a freshly-mounted consumer — e.g. the Player
+      // screen opening while the Hero singleton session is streaming.
+      // ExoPlayer can emit a brief onError during codec negotiation or the
+      // initial manifest probe, even for a URL that loads successfully a
+      // moment later.  Propagating this error drives the shared FSM into
+      // RECOVERING_PRIMARY, interrupting the Hero's live video.
+      //
+      // Safe to suppress: the load-timeout watchdog (armed only when
+      // fsmIsWaiting=true) will catch genuinely broken sources.  Once
+      // onLoad fires (loadedRevisionRef catches up), all subsequent errors
+      // are from a running pipeline and must be propagated.
+      if (!fsmIsWaitingRef.current && loadedRevisionRef.current !== bindRevisionRef.current) return;
       emit({
         type: "buffer-error",
         bufferId,
@@ -869,7 +891,17 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
       onPlaybackStatusUpdate={(status: AVPlaybackStatus) => {
         if (!status.isLoaded) {
           if (status.error) {
-            emit({ type: "buffer-error", bufferId, error: status.error });
+            // Pre-load guard: mirror of the handleError guard above.  If the
+            // FSM is already PLAYING and this Video hasn't completed onLoad
+            // for the current bind revision, suppress the error so a freshly-
+            // mounted consumer (Player screen opening while Hero is streaming)
+            // doesn't trigger a spurious RECOVERING_PRIMARY cycle.
+            const isPreLoadError =
+              !fsmIsWaitingRef.current &&
+              loadedRevisionRef.current !== bindRevisionRef.current;
+            if (!isPreLoadError) {
+              emit({ type: "buffer-error", bufferId, error: status.error });
+            }
           }
           clearBufferingWatchdog();
           return;
@@ -1188,10 +1220,17 @@ export function V2PlayerContainer({
   useEffect(() => {
     if (snapshot.state === "FATAL" && !fatalFiredRef.current) {
       fatalFiredRef.current = true;
-      onFatal?.();
+      // Only the PRIMARY driver fires onFatal.  Suppressed instances (inline
+      // player muted while fullscreen Modal is open) and minimal instances
+      // (Hero preview) share the same singleton session and therefore see the
+      // same FATAL state, but must NOT fire onFatal independently — doing so
+      // causes two router.back() calls: one from the fullscreen player (correct)
+      // and a second from the suppressed inline player (navigates one screen
+      // too far, landing on the wrong tab or dismissing the app entirely).
+      if (!suppressEvents && !minimal) onFatal?.();
     }
     if (snapshot.state !== "FATAL") fatalFiredRef.current = false;
-  }, [snapshot.state, onFatal]);
+  }, [snapshot.state, onFatal, suppressEvents, minimal]);
 
   // RN AppState bridge: when the app returns to foreground, force a fresh
   // WS handshake. iOS/Android suspend the JS runtime when backgrounded,
