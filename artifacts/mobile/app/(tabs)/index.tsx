@@ -81,6 +81,7 @@ function navigateToLive(
   title: string,
   positionSecs: number,
   youtubeId?: string,
+  thumbnailUrl?: string,
 ) {
   router.push({
     pathname: "/player",
@@ -89,6 +90,7 @@ function navigateToLive(
       title,
       hlsUrl,
       youtubeId: youtubeId ?? "",
+      thumbnailUrl: thumbnailUrl ?? "",
       isLive: "true",
       startPositionSecs: String(Math.max(0, Math.round(positionSecs))),
     },
@@ -155,13 +157,14 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
       // source — both isLive+isHls and isLive+!isHls player.tsx branches
       // route to BroadcastHlsPlayer which ignores initialUrl entirely.
       // positionSecs is also ignored (V2 self-syncs from server clock).
-      navigateToLive("", "Temple TV", 0);
+      // Pass thumbUrl so watch history and the share sheet have an image.
+      navigateToLive("", "Temple TV", 0, undefined, thumbUrl ?? undefined);
     } else if (fallbackSermon) {
       navigateToSermon(fallbackSermon);
     }
     // watchNowDisabled guards against this being called with neither — both
     // Pressables are disabled when that condition is true.
-  }, [hasActiveBroadcast, fallbackSermon]);
+  }, [hasActiveBroadcast, fallbackSermon, thumbUrl]);
 
   return (
     <Pressable

@@ -170,6 +170,12 @@ declare class BroadcastOrchestrator extends EventEmitter {
     private lastCpPositionMs;
     private lastCpWallMs;
     /**
+     * Concurrency guard: prevents overlapping persistCheckpoint() calls when
+     * the DB write takes longer than CHECKPOINT_INTERVAL_MS.  Without this,
+     * slow writes stack up and can produce out-of-order checkpoints.
+     */
+    private checkpointWriting;
+    /**
      * Throttle for the "no playable local content" info log. The reload path
      * runs on a 10 s drift-poll cadence, so without throttling this single
      * branch produces 6 identical log lines per minute of OFF_AIR — pure noise

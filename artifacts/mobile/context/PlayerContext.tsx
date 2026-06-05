@@ -92,7 +92,9 @@ function fisherYatesShuffle<T>(arr: T[]): T[] {
 function buildShuffledQueue(sermons: Sermon[], startId?: string): Sermon[] {
   const shuffled = fisherYatesShuffle(sermons);
   if (startId) {
-    const idx = shuffled.findIndex((s) => s.youtubeId === startId);
+    // Key by sermon.id (UUID), not youtubeId — local/uploaded videos all have
+    // youtubeId="" which would cause every local video to match the first entry.
+    const idx = shuffled.findIndex((s) => s.id === startId);
     if (idx > 0) {
       const [item] = shuffled.splice(idx, 1);
       if (item) shuffled.unshift(item);
@@ -199,9 +201,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (shuffleMode) {
-      const rebuilt = buildShuffledQueue(queue, currentSermon?.youtubeId);
+      const rebuilt = buildShuffledQueue(queue, currentSermon?.id);
       setShuffledQueue(rebuilt);
-      const pos = rebuilt.findIndex((s) => s.youtubeId === currentSermon?.youtubeId);
+      const pos = rebuilt.findIndex((s) => s.id === currentSermon?.id);
       setShufflePosition(pos >= 0 ? pos : 0);
     }
   }, [queue]);
@@ -261,7 +263,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     if (idx >= 0) setCurrentIndex(idx);
 
     if (shuffleRef.current) {
-      const sq = buildShuffledQueue(q, sermon.youtubeId);
+      const sq = buildShuffledQueue(q, sermon.id);
       setShuffledQueue(sq);
       setShufflePosition(0);
     }

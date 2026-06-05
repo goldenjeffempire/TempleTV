@@ -5,12 +5,12 @@ export declare const RegisterBodySchema: z.ZodObject<{
     password: z.ZodString;
     displayName: z.ZodOptional<z.ZodString>;
 }, "strip", z.ZodTypeAny, {
-    password: string;
     email: string;
+    password: string;
     displayName?: string | undefined;
 }, {
-    password: string;
     email: string;
+    password: string;
     displayName?: string | undefined;
 }>;
 export type RegisterBody = z.infer<typeof RegisterBodySchema>;
@@ -18,11 +18,11 @@ export declare const LoginBodySchema: z.ZodObject<{
     email: z.ZodString;
     password: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    password: string;
     email: string;
+    password: string;
 }, {
-    password: string;
     email: string;
+    password: string;
 }>;
 export type LoginBody = z.infer<typeof LoginBodySchema>;
 export declare const RefreshBodySchema: z.ZodObject<{
@@ -272,10 +272,10 @@ export declare const ResetPasswordBodySchema: z.ZodObject<{
     token: z.ZodString;
     password: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    password: string;
     token: string;
+    password: string;
 }, {
-    password: string;
     token: string;
+    password: string;
 }>;
 export type ResetPasswordBody = z.infer<typeof ResetPasswordBodySchema>;

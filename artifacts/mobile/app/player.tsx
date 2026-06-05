@@ -1428,7 +1428,7 @@ export default function PlayerScreen() {
                 title={title}
                 autoPlay
                 startPositionMs={fsStartPositionMs}
-                isBroadcastLive
+                isBroadcastLive={isLive}
                 fillContainer
                 nextVideoUrl={nextHlsForPreload}
                 nextHlsMasterUrl={nextHlsForPreload}

@@ -181,20 +181,8 @@ export declare const AdminStatsSchema: z.ZodObject<{
     }>;
     generatedAt: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    broadcast: {
-        queueDepth: number;
-        activeQueueDepth: number;
-    };
     playlists: {
         total: number;
-    };
-    schedule: {
-        total: number;
-        active: number;
-    };
-    notifications: {
-        sentLast24h: number;
-        sentTotal: number;
     };
     users: {
         total: number;
@@ -206,24 +194,24 @@ export declare const AdminStatsSchema: z.ZodObject<{
         bySource: Record<string, number>;
     };
     generatedAt: string;
+    broadcast: {
+        queueDepth: number;
+        activeQueueDepth: number;
+    };
+    schedule: {
+        total: number;
+        active: number;
+    };
+    notifications: {
+        sentLast24h: number;
+        sentTotal: number;
+    };
     devices: {
         total: number;
     };
 }, {
-    broadcast: {
-        queueDepth: number;
-        activeQueueDepth: number;
-    };
     playlists: {
         total: number;
-    };
-    schedule: {
-        total: number;
-        active: number;
-    };
-    notifications: {
-        sentLast24h: number;
-        sentTotal: number;
     };
     users: {
         total: number;
@@ -235,6 +223,18 @@ export declare const AdminStatsSchema: z.ZodObject<{
         bySource: Record<string, number>;
     };
     generatedAt: string;
+    broadcast: {
+        queueDepth: number;
+        activeQueueDepth: number;
+    };
+    schedule: {
+        total: number;
+        active: number;
+    };
+    notifications: {
+        sentLast24h: number;
+        sentTotal: number;
+    };
     devices: {
         total: number;
     };

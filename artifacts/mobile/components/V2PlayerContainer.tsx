@@ -13,7 +13,7 @@
  *
  * Offline resilience (added May 2026):
  *   • isBuffering watchdog: if expo-av's `isBuffering` flag stays true for
- *     >20 s while the buffer should be active and playing, the watchdog fires
+ *     >15 s while the buffer should be active and playing, the watchdog fires
  *     `buffer-error` so the FSM can attempt recovery instead of silently
  *     stalling on a weak-network segment fetch.
  *   • Network recovery: `useNetworkContext()` drives an immediate
