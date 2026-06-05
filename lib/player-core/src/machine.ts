@@ -1037,6 +1037,15 @@ export class PlayerMachine {
     if (this.snapshot.state === "OFFLINE_HOLD") {
       this.transition("SYNCING");
       this.emit({ type: "hide-overlay" });
+      // Proactively fetch a fresh snapshot so the FSM exits SYNCING in < 1 s
+      // rather than waiting up to 8 s for the transport's next keep-alive.
+      // The transport is reconnecting concurrently (forceReconnect is called by
+      // the consumer alongside notifyOnline), but a parallel REST fetch via
+      // onNeedSnapshotCb fills the window between the machine entering SYNCING
+      // and the WS/SSE coming back up.  If the transport delivers a frame first
+      // the extra REST response is deduplicated by the sequence guard in
+      // onSnapshot (server.sequence <= this.snapshot.lastSequence → ignored).
+      this.onNeedSnapshotCb?.();
     }
   }
 

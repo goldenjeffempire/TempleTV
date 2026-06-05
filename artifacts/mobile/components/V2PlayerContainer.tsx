@@ -91,7 +91,7 @@
  *     onError (manifest parse failure, codec negotiation deadlock, manifest
  *     fetch timing out before the first byte arrives). Without a timeout the
  *     FSM stays in PREPARING_ACTIVE or RECOVERING indefinitely.
- *   • Fix: `loadTimeoutRef` starts LOAD_TIMEOUT_MS (25 s) after a new URL is
+ *   • Fix: `loadTimeoutRef` starts LOAD_TIMEOUT_MS (12 s) after a new URL is
  *     bound to an active+playing buffer. If onLoad has not fired by then,
  *     buffer-error is emitted, triggering normal FSM recovery. The timeout is
  *     cancelled on onLoad (success) or when bindRevision changes (new source).
@@ -1618,7 +1618,21 @@ export function V2PlayerContainer({
   // reconnect); if the disconnect is sustained long enough for the FSM to
   // leave the playing family (e.g. enters RECOVERING_PRIMARY) the overlay
   // will surface the problem clearly without the banner.
+  // Suppress the amber "Reconnecting…" banner whenever a full-screen overlay
+  // is already visible (overlayContent !== null).  The overlay carries the same
+  // — or richer — status information (spinner, sub-text, Up Next chip) so the
+  // banner is redundant in those states and the two messages together create
+  // confusing visual noise.  States affected: BOOTSTRAP, SYNCING (with content),
+  // PREPARING_ACTIVE, RECOVERING_PRIMARY, RECOVERING_FAILOVER, SKIP_PENDING,
+  // and OFFLINE_HOLD (which previously showed BOTH "No Internet Connection"
+  // overlay AND the amber banner simultaneously).
+  //
+  // For the playing family (PLAYING / HANDOFF / PREPARING_NEXT /
+  // LIVE_OVERRIDE_ACTIVE): overlayContent is null, so the original logic
+  // still applies — the banner is suppressed to avoid alarming the viewer
+  // when the WS drops briefly without disrupting the video.
   const suppressBanner =
+    !!overlayContent ||
     snapshot.state === "PLAYING" ||
     snapshot.state === "HANDOFF" ||
     snapshot.state === "PREPARING_NEXT" ||
