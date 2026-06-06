@@ -566,10 +566,11 @@ export default function SeriesPage() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/admin/series/${id}`),
-    onSuccess: () => {
+    onSuccess: (_data, id) => {
       toast.success("Series deleted");
       void qc.invalidateQueries({ queryKey: ["series"] });
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      void qc.invalidateQueries({ queryKey: ["series-episodes", id] });
       setDeleting(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to delete"),

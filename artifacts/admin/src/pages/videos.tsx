@@ -317,6 +317,10 @@ export default function VideosPage() {
       // Playlists display video titles in their item lists — refresh so the
       // updated title is visible without a full page reload.
       void qc.invalidateQueries({ queryKey: ["playlists"] });
+      // Series episode panels also display video titles — invalidate so the
+      // updated title appears immediately without waiting for the next reload.
+      void qc.invalidateQueries({ queryKey: ["series"] });
+      void qc.invalidateQueries({ queryKey: ["series-episodes"] });
     },
     onError: (e) => {
       const msg = e instanceof HttpError ? e.message : "Update failed";
