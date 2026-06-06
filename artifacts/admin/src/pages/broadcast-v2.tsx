@@ -793,6 +793,21 @@ function BroadcastV2PageInner() {
   const { snapshot, connected: transportConnected } = useV2Broadcast({ baseUrl, enableStallReport: false });
   const sse = useSSE();
   const qc = useQueryClient();
+
+  // ── WS-connected → SSE instant reconnect ────────────────────────────────
+  // When the V2 broadcast WebSocket reconnects it proves the API server is
+  // up. If the admin SSE bus is still in reconnecting/degraded/offline state
+  // at that moment, skip the health-check polling cycle and try immediately.
+  // This collapses the "Admin live bus reconnecting" banner window from
+  // "up to 8s (health-check interval)" to "one token-fetch round-trip".
+  const prevTransportConnected = useRef(false);
+  useEffect(() => {
+    const rising = transportConnected && !prevTransportConnected.current;
+    prevTransportConnected.current = transportConnected;
+    if (rising && sse.state !== "connected") {
+      sse.forceReconnect();
+    }
+  }, [transportConnected, sse]);
   const [busy, setBusy] = useState<string | null>(null);
   // Dismissible stuck-engine banner. Reset whenever the stuck condition
   // resolves (sequence > 0) so the banner reappears if the engine gets

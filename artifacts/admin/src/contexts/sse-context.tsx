@@ -50,6 +50,17 @@ interface SSEContextValue {
   subscribe: (event: string, handler: SSEEventHandler) => () => void;
   lastStatusPayload: AdminLiveStatus | null;
   recentActivity: SSEActivityEntry[];
+  /**
+   * Immediately cancel any pending backoff timer, reset the attempt counter,
+   * and attempt to (re)connect the admin SSE channel.
+   *
+   * Call this when external evidence (e.g. a WebSocket reconnect) confirms
+   * the API server is reachable — no need to wait for the health-check poll
+   * cycle to discover the server is back up.
+   *
+   * No-ops when already connected or while a connect() is in flight.
+   */
+  forceReconnect: () => void;
 }
 
 const SSEContext = createContext<SSEContextValue | null>(null);
@@ -99,7 +110,10 @@ const WATCHDOG_INTERVAL_MS = 10_000;
 
 // Independent HTTP health-check cadence.
 // Runs at all times; triggers an SSE reconnect when the API recovers.
-const HEALTH_CHECK_INTERVAL_MS = 20_000;
+// 8 s is a safe ceiling: well below Render's 30-s idle-proxy timeout,
+// and at most ~7 req/min per admin tab — comfortably within the
+// /broadcast-v2/health rate limit of 30 req/min.
+const HEALTH_CHECK_INTERVAL_MS = 8_000;
 
 // SSE-token fetch timeout. 15 s gives cold-start APIs enough time to
 // respond before we give up and schedule the next backoff attempt.
@@ -586,9 +600,23 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
     return () => listenersRef.current.get(event)?.delete(handler);
   }, []);
 
+  // forceReconnect: immediately cancel any pending backoff and try to
+  // (re)connect. Called from pages that have an independent signal that
+  // the server is back up (e.g. the V2 broadcast WS reconnected).
+  // No-ops when already connected or while a connect() is in flight so
+  // the guard inside connect() keeps concurrent calls idempotent.
+  const forceReconnect = useCallback(() => {
+    if (!mounted.current) return;
+    if (stateRef.current === "connected") return; // already live — no-op
+    if (connecting.current) return;               // handshake in progress
+    clearTimeout(reconnectTimer.current);
+    attempt.current = 0;
+    connect();
+  }, [connect]);
+
   const value = useMemo(
-    () => ({ state, subscribe, lastStatusPayload, recentActivity }),
-    [state, subscribe, lastStatusPayload, recentActivity],
+    () => ({ state, subscribe, lastStatusPayload, recentActivity, forceReconnect }),
+    [state, subscribe, lastStatusPayload, recentActivity, forceReconnect],
   );
 
   return <SSEContext.Provider value={value}>{children}</SSEContext.Provider>;
