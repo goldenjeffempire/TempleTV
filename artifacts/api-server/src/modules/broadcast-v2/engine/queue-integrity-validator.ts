@@ -26,10 +26,51 @@
  *
  * Results are cached and exposed via the /diagnostics endpoint. Non-fatal.
  */
+import { spawn } from "node:child_process";
 import { asc, eq, inArray, sql } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
+import { normalizeQueueUrl } from "../repository/queue.repo.js";
+
+// ── Duration probe helper ─────────────────────────────────────────────────────
+//
+// Lightweight ffprobe call that reads only the container header from a URL.
+// Used by the SUSPICIOUS_DURATION auto-reprobe path to correct stale < 10 s
+// duration values written during the moov-atom upload race.  Probes the URL
+// directly (ffprobe handles HTTP/HTTPS with range-request reads, so only the
+// moov atom is transferred — no full file download needed).
+//
+// Returns null on any failure (ffprobe unavailable, timeout, corrupt header).
+
+async function probeDurationFromUrl(url: string): Promise<number | null> {
+  return new Promise<number | null>((resolve) => {
+    let proc: ReturnType<typeof spawn> | null = null;
+    try {
+      proc = spawn("ffprobe", [
+        "-v", "quiet",
+        "-print_format", "json",
+        "-show_entries", "format=duration",
+        url,
+      ]);
+    } catch {
+      resolve(null);
+      return;
+    }
+    let stdout = "";
+    proc.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+    const t = setTimeout(() => { try { proc?.kill(); } catch { /**/ } resolve(null); }, 45_000);
+    proc.on("close", () => {
+      clearTimeout(t);
+      try {
+        const parsed = JSON.parse(stdout) as { format?: { duration?: string } };
+        const dur = parseFloat(parsed.format?.duration ?? "");
+        resolve(!isNaN(dur) && dur > 0 ? dur : null);
+      } catch { resolve(null); }
+    });
+    proc.on("error", () => { clearTimeout(t); resolve(null); });
+  });
+}
 
 export type IssueSeverity = "error" | "warn" | "info";
 
@@ -88,6 +129,10 @@ class QueueIntegrityValidatorImpl {
         .leftJoin(v, eq(q.videoId, v.id))
         .where(eq(q.isActive, true))
         .orderBy(asc(q.sortOrder));
+
+      // Items with SUSPICIOUS_DURATION collected here for background reprobe
+      // after the main issue-detection loop (max 3 per cycle).
+      const suspiciousDurationItems: Array<{ id: string; videoId: string; localUrl: string }> = [];
 
       for (const row of rows) {
         const hasAnyUrl =
@@ -193,6 +238,15 @@ class QueueIntegrityValidatorImpl {
               code: "SUSPICIOUS_DURATION",
               message: `video.duration='${row.vDuration}' is < 10 s — likely a probe failure from an upload race; re-process video to fix`,
             });
+            // Collect for background reprobe: only local uploads with a video
+            // row (not YouTube — they have no local file to re-probe).
+            if (
+              row.videoId2 !== null &&
+              row.vLocalUrl &&
+              row.vSource !== "youtube"
+            ) {
+              suspiciousDurationItems.push({ id: row.id, videoId: row.videoId2, localUrl: row.vLocalUrl });
+            }
           }
         }
 
@@ -541,22 +595,35 @@ class QueueIntegrityValidatorImpl {
         }
       }
 
-      // ── Auto-fix: deactivate ORPHANED_VIDEO_REF items with permanently failed transcoding ──
+      // ── Auto-fix: deactivate ORPHANED_VIDEO_REF items that will never become playable ──
       // Items whose referenced video exists but has no playable URLs AND whose
-      // transcodingStatus='failed' will never become playable. They cause repeated
-      // auto-skip cycles (one per orchestrator tick), burning skip budget and
-      // flooding logs with WARN-level "resolveSource returned null" messages.
+      // transcoding has either permanently failed (vStatus='failed') or never
+      // started (vStatus=null — video row created but no transcoding job queued)
+      // will never become playable. They cause repeated auto-skip cycles (one per
+      // orchestrator tick), burning skip budget and flooding logs.
       //
-      // Safety guard: only deactivate when vStatus='failed'. Items with vStatus in
-      // {queued, encoding, processing} are actively being transcoded — deactivating
-      // them would remove content that will be playable within minutes. Items with
-      // vStatus='hls_ready' and no URL are handled by the startup partial-success
-      // recovery in transcoder.dispatcher.ts and will self-heal on next restart.
+      // Safety guards applied before deactivation:
+      //   • vStatus in {queued, encoding, processing} → skip: actively transcoding,
+      //     will be playable within minutes.
+      //   • vStatus='hls_ready' with no URL → skip: startup recovery in
+      //     transcoder.dispatcher.ts heals these on next restart.
+      //   • vSource='youtube' → skip: YouTube items resolve via youtubeId, not a
+      //     local URL; they may legitimately have no localVideoUrl/hlsMasterUrl.
+      //   • qLocalUrl or qHlsUrl set on queue row → skip: item is playable via
+      //     the queue row's own URL regardless of the video row's state.
       const orphanedFailedIds = rows
         .filter((r) => {
-          const isOrphaned = r.videoId !== null && r.videoId2 !== null && !r.vLocalUrl && !r.vHlsUrl;
-          const isTerminallyFailed = r.vStatus === "failed";
-          return isOrphaned && isTerminallyFailed;
+          const isOrphaned =
+            r.videoId !== null &&
+            r.videoId2 !== null &&
+            !r.vLocalUrl &&
+            !r.vHlsUrl &&
+            !r.qLocalUrl &&
+            !r.qHlsUrl;
+          const isYoutube = r.vSource === "youtube";
+          const isTerminallyFailed = r.vStatus === "failed" || r.vStatus === null;
+          const isActivelyTranscoding = r.vStatus === "queued" || r.vStatus === "encoding" || r.vStatus === "processing";
+          return isOrphaned && !isYoutube && isTerminallyFailed && !isActivelyTranscoding;
         })
         .map((r) => r.id);
 
@@ -575,8 +642,8 @@ class QueueIntegrityValidatorImpl {
             .where(inArray(schema.broadcastQueueTable.id, orphanedFailedIds));
           logger.error(
             { count: orphanedFailedIds.length, itemIds: orphanedFailedIds },
-            "[queue-validator] AUTO-FIX: deactivated ORPHANED_VIDEO_REF items whose transcoding permanently failed " +
-            "(video row exists but has no playable URLs and transcodingStatus='failed') — " +
+            "[queue-validator] AUTO-FIX: deactivated ORPHANED_VIDEO_REF items " +
+            "(video row exists but has no playable URLs; transcodingStatus is 'failed' or null) — " +
             "removed from broadcast rotation; re-transcode or re-upload the source file to restore",
           );
           adminEventBus.push("broadcast-queue-updated", {
@@ -637,6 +704,53 @@ class QueueIntegrityValidatorImpl {
               "[queue-validator] AUTO-FIX (reverse): failed to re-activate ORPHANED_VIDEO_REF items (non-fatal)",
             );
           }
+        }
+      }
+
+      // ── Background: reprobe SUSPICIOUS_DURATION items ─────────────────────
+      // Fire at most 3 concurrent reprobe tasks per cycle (fire-and-forget).
+      // Each task normalises the video's localVideoUrl to an absolute URL and
+      // runs ffprobe directly on it (HTTP range-request reads only — no full
+      // file download). On success, both managed_videos.duration and
+      // broadcast_queue.duration_secs are corrected and a queue-updated event
+      // is emitted so the orchestrator reloads with the new duration.
+      if (suspiciousDurationItems.length > 0) {
+        const toReprobe = suspiciousDurationItems.slice(0, 3);
+        for (const item of toReprobe) {
+          void (async () => {
+            try {
+              const absUrl = normalizeQueueUrl(item.localUrl);
+              if (!absUrl) return;
+              const dur = await probeDurationFromUrl(absUrl);
+              if (!dur || dur < 1) {
+                logger.debug(
+                  { itemId: item.id, url: absUrl },
+                  "[queue-validator] SUSPICIOUS_DURATION reprobe returned no valid duration (non-fatal)",
+                );
+                return;
+              }
+              await db.execute(sql`
+                UPDATE managed_videos SET duration = ${String(dur)} WHERE id = ${item.videoId}
+              `);
+              await db.execute(sql`
+                UPDATE broadcast_queue SET duration_secs = ${Math.ceil(dur)} WHERE id = ${item.id}
+              `);
+              logger.info(
+                { itemId: item.id, videoId: item.videoId, newDurSecs: Math.ceil(dur) },
+                "[queue-validator] AUTO-FIX: SUSPICIOUS_DURATION reprobe corrected duration — managed_videos and broadcast_queue updated",
+              );
+              adminEventBus.push("broadcast-queue-updated", {
+                reason: "integrity-fix-suspicious-duration-reprobe",
+                itemId: item.id,
+                videoId: item.videoId,
+              });
+            } catch (err) {
+              logger.warn(
+                { err, itemId: item.id },
+                "[queue-validator] SUSPICIOUS_DURATION reprobe failed (non-fatal)",
+              );
+            }
+          })();
         }
       }
 

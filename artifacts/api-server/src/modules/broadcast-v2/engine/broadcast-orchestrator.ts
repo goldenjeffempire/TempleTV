@@ -4,7 +4,7 @@ import { broadcastSequence, broadcastQueueDepth, broadcastQueueStuck, setBroadca
 import { eventLogRepo } from "../repository/event-log.repo.js";
 import { runtimeRepo } from "../repository/runtime.repo.js";
 import { checkpointRepo } from "../repository/checkpoint.repo.js";
-import { queueRepo, countActiveRaw, isKnownBadUrl, markBadUrl, clearAllBadUrls, clearBadUrl, BAD_URL_TTL_MS, incrementBadUrlSkipCount, resetBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, reEnableAllSuspended, type RawQueueRow } from "../repository/queue.repo.js";
+import { queueRepo, countActiveRaw, isKnownBadUrl, markBadUrl, clearAllBadUrls, clearBadUrl, BAD_URL_TTL_MS, incrementBadUrlSkipCount, resetBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, reEnableAllSuspended, persistBadUrlCache, hydrateBadUrlCache, type RawQueueRow } from "../repository/queue.repo.js";
 import { faststartRecoveryWorker } from "./faststart-recovery.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { playbackAnalytics } from "./playback-analytics.js";
@@ -364,6 +364,7 @@ class BroadcastOrchestrator extends EventEmitter {
    * reports (which take 9–15 s each and require a viewer to be connected).
    */
   private currentItemProbeTimer: NodeJS.Timeout | null = null;
+  private badUrlCacheTimer: NodeJS.Timeout | null = null;
   /** Consecutive definitive 4xx failure count for the currently-playing item. */
   private currentItemProbeFailures = 0;
   /**
@@ -400,6 +401,16 @@ class BroadcastOrchestrator extends EventEmitter {
 
     // Hydrate always completes without throwing — worst case gives safe defaults.
     await this.hydrate();
+
+    // Restore persisted bad-URL blacklist and failure counts from the DB so
+    // items that were suspended before the restart stay out of rotation for
+    // the remainder of their suspension window. Non-fatal: missing column
+    // (schema push not yet run) silently resolves to an empty cache.
+    try {
+      await hydrateBadUrlCache(this.channelId);
+    } catch {
+      // hydrateBadUrlCache is already non-throwing; this is a belt-and-suspenders guard.
+    }
 
     // reloadInner in start() context: retry up to 3 times with short back-off
     // before accepting OFF_AIR.  A single transient DB blip (pool not yet warm,
@@ -585,6 +596,15 @@ class BroadcastOrchestrator extends EventEmitter {
     }, 30_000);
     this.currentItemProbeTimer.unref?.();
 
+    // ── Bad-URL cache periodic persistence ───────────────────────────────
+    // Save the bad-URL blacklist and skip counts to the DB every 60 s so
+    // that in-flight suspensions survive a crash or graceful restart.
+    // A final save also fires in stop() for graceful shutdown paths.
+    this.badUrlCacheTimer = setInterval(() => {
+      void persistBadUrlCache(this.channelId);
+    }, 60_000);
+    this.badUrlCacheTimer.unref?.();
+
     logger.info(
       { items: this.items.length, sequence: this.sequence,
         tickMs: TICK_MS, selfHealEmptyMs: SELF_HEAL_EMPTY_MS,
@@ -602,6 +622,7 @@ class BroadcastOrchestrator extends EventEmitter {
     if (this.selfHealEmptyTimer)      clearInterval(this.selfHealEmptyTimer);
     if (this.selfHealStaleTimer)      clearInterval(this.selfHealStaleTimer);
     if (this.currentItemProbeTimer)   clearInterval(this.currentItemProbeTimer);
+    if (this.badUrlCacheTimer)        clearInterval(this.badUrlCacheTimer);
     this.tickTimer               = null;
     this.checkpointTimer         = null;
     this.trimTimer               = null;
@@ -609,7 +630,10 @@ class BroadcastOrchestrator extends EventEmitter {
     this.selfHealEmptyTimer      = null;
     this.selfHealStaleTimer      = null;
     this.currentItemProbeTimer   = null;
+    this.badUrlCacheTimer        = null;
     this.started = false;
+    // Best-effort final save of bad-URL state on graceful shutdown.
+    void persistBadUrlCache(this.channelId);
   }
 
   /**

@@ -6,6 +6,7 @@ import { logger } from "../../../infrastructure/logger.js";
 import { env } from "../../../config/env.js";
 import type { V2Item, V2Source } from "../domain/types.js";
 import { isUndefinedColumnError } from "../../../infrastructure/db-schema-guard.js";
+import { runtimeRepo } from "./runtime.repo.js";
 
 /**
  * Normalise a possibly-relative URL into an absolute one the resolver
@@ -884,3 +885,79 @@ export const queueRepo = {
     };
   },
 };
+
+// ── Bad-URL cache persistence ─────────────────────────────────────────────────
+//
+// Persists the in-memory badUrlCache (url → expiresAtMs) and badUrlSkipCounts
+// (itemId → count) to the broadcast_runtime_state row so that suspension
+// windows and accumulated failure counts survive a server restart.
+//
+// On boot, hydrateBadUrlCache() is called by the orchestrator to restore
+// non-expired entries before the first queue reload runs. Expired URL entries
+// are dropped silently; skip counts are restored as-is (they auto-expire when
+// an item completes a natural play after restart).
+//
+// Persist is called:
+//   • From autoSuspendQueueItem (immediate, critical moment)
+//   • From a 60 s periodic timer in the orchestrator (drift correction)
+//   • At graceful shutdown (best-effort)
+
+/**
+ * Serialize the current bad-URL blacklist and skip-count maps to the
+ * broadcast_runtime_state row. Non-throwing — errors are debug-logged.
+ */
+export async function persistBadUrlCache(channelId: string): Promise<void> {
+  try {
+    const state = {
+      urlCache: Object.fromEntries(badUrlCache) as Record<string, number>,
+      skipCounts: Object.fromEntries(badUrlSkipCounts) as Record<string, number>,
+    };
+    await runtimeRepo.saveBadUrlCache(channelId, state);
+  } catch (err) {
+    logger.debug({ err }, "[broadcast-v2] bad-URL cache persist failed (non-fatal)");
+  }
+}
+
+/**
+ * Restore the bad-URL blacklist and skip-count maps from the DB on boot.
+ * Expired urlCache entries are dropped. Non-throwing — an
+ * isUndefinedColumnError means the schema migration hasn't run yet, which
+ * is safe (the cache just starts empty).
+ */
+export async function hydrateBadUrlCache(channelId: string): Promise<void> {
+  try {
+    const state = await runtimeRepo.loadBadUrlCache(channelId);
+    if (!state) return;
+    const now = Date.now();
+    let urlCount = 0;
+    let skipCount = 0;
+    if (state.urlCache && typeof state.urlCache === "object") {
+      for (const [url, expiresAtMs] of Object.entries(state.urlCache)) {
+        if (typeof expiresAtMs === "number" && expiresAtMs > now) {
+          badUrlCache.set(url, expiresAtMs);
+          urlCount++;
+        }
+      }
+    }
+    if (state.skipCounts && typeof state.skipCounts === "object") {
+      for (const [itemId, count] of Object.entries(state.skipCounts)) {
+        if (typeof count === "number" && count > 0) {
+          badUrlSkipCounts.set(itemId, count);
+          skipCount++;
+        }
+      }
+    }
+    if (urlCount > 0 || skipCount > 0) {
+      logger.info(
+        { channelId, urlCount, skipCount },
+        "[broadcast-v2] hydrated bad-URL cache from persistent storage — suspension windows and failure counts restored",
+      );
+    }
+  } catch (err) {
+    if (isUndefinedColumnError(err)) {
+      logger.debug("[broadcast-v2] bad_url_cache column not yet present — run 'pnpm --filter @workspace/db run push' to enable persistence (non-fatal)");
+      return;
+    }
+    logger.debug({ err }, "[broadcast-v2] bad-URL cache hydrate failed (non-fatal)");
+  }
+}

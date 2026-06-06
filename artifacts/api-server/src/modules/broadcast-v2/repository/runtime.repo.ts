@@ -14,6 +14,13 @@ export interface RuntimeStateRecord {
   sequence: number;
 }
 
+export interface PersistedBadUrlState {
+  /** url → expiresAtMs */
+  urlCache: Record<string, number>;
+  /** itemId → consecutive failure count */
+  skipCounts: Record<string, number>;
+}
+
 export const runtimeRepo = {
   async load(channelId: string): Promise<RuntimeStateRecord | null> {
     const [row] = await db.select().from(t).where(eq(t.channelId, channelId)).limit(1);
@@ -61,5 +68,32 @@ export const runtimeRepo = {
       .update(t)
       .set({ sequence: next, updatedAt: new Date() })
       .where(eq(t.channelId, channelId));
+  },
+
+  /**
+   * Persist the bad-URL blacklist and skip-count maps so they survive a
+   * server restart. Writes only the `bad_url_cache` column — does not
+   * clobber any other runtime state. Non-throwing; callers fire-and-forget.
+   */
+  async saveBadUrlCache(channelId: string, state: PersistedBadUrlState): Promise<void> {
+    await db
+      .update(t)
+      .set({ badUrlCache: state as unknown as Record<string, unknown>, updatedAt: new Date() })
+      .where(eq(t.channelId, channelId));
+  },
+
+  /**
+   * Load the persisted bad-URL state. Returns null when no row exists or
+   * the column is NULL. The caller is responsible for filtering expired
+   * urlCache entries by checking `expiresAtMs > Date.now()`.
+   */
+  async loadBadUrlCache(channelId: string): Promise<PersistedBadUrlState | null> {
+    const [row] = await db
+      .select({ badUrlCache: t.badUrlCache })
+      .from(t)
+      .where(eq(t.channelId, channelId))
+      .limit(1);
+    if (!row?.badUrlCache) return null;
+    return row.badUrlCache as unknown as PersistedBadUrlState;
   },
 };
