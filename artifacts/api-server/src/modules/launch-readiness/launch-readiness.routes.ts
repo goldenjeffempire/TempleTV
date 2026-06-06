@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { and, count, eq, inArray, ne } from "drizzle-orm";
+import { and, count, eq, inArray, ne, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { env } from "../../config/env.js";
@@ -65,6 +65,7 @@ const ReadinessSchema = z.object({
     encodingLocalVideos: z.number().int().nonnegative(),
     activeScheduleEntries: z.number().int().nonnegative(),
     activeBroadcastItems: z.number().int().nonnegative(),
+    broadcastCycleSecs: z.number().int().nonnegative(),
     registeredDevices: z.number().int().nonnegative(),
     failedTranscodes: z.number().int().nonnegative(),
     queuedTranscodes: z.number().int().nonnegative(),
@@ -107,6 +108,7 @@ export async function launchReadinessRoutes(app: FastifyInstance) {
         encodingLocalRow,
         activeScheduleRow,
         activeBroadcastRow,
+        broadcastCycleDurationRow,
         pushTokensRow,
         webPushRow,
         failedTranscodesRow,
@@ -126,6 +128,10 @@ export async function launchReadinessRoutes(app: FastifyInstance) {
           .where(and(eq(videos.videoSource, "local"), eq(videos.transcodingStatus, "encoding"))),
         db.select({ c: count() }).from(scheduleTable).where(eq(scheduleTable.isActive, true)),
         db.select({ c: count() }).from(broadcast).where(eq(broadcast.isActive, true)),
+        db
+          .select({ total: sql<number>`coalesce(sum(${broadcast.durationSecs}), 0)` })
+          .from(broadcast)
+          .where(eq(broadcast.isActive, true)),
         db.select({ c: count() }).from(pushTokens),
         db.select({ c: count() }).from(webPush),
         db.select({ c: count() }).from(videos).where(eq(videos.transcodingStatus, "failed")),
@@ -140,6 +146,7 @@ export async function launchReadinessRoutes(app: FastifyInstance) {
       const encodingLocalVideos = Number(encodingLocalRow[0]?.c ?? 0);
       const activeScheduleEntries = Number(activeScheduleRow[0]?.c ?? 0);
       const activeBroadcastItems = Number(activeBroadcastRow[0]?.c ?? 0);
+      const broadcastCycleSecs = Number(broadcastCycleDurationRow[0]?.total ?? 0);
       const registeredDevices =
         Number(pushTokensRow[0]?.c ?? 0) + Number(webPushRow[0]?.c ?? 0);
       const failedTranscodes = Number(failedTranscodesRow[0]?.c ?? 0);
@@ -165,13 +172,20 @@ export async function launchReadinessRoutes(app: FastifyInstance) {
               detail: `${totalVideos} videos in the library`,
             },
         localVideos === 0
-          ? {
-              key: "local-uploads",
-              label: "Local uploads available",
-              status: "warning",
-              detail: "No local uploads — relying entirely on YouTube embeds",
-              action: "Upload at least one MP4 so the player has a CDN-served fallback",
-            }
+          ? activeBroadcastItems >= 3
+            ? {
+                key: "local-uploads",
+                label: "Local uploads available",
+                status: "ready" as const,
+                detail: `Library has ${totalVideos} catalog videos; broadcast queue has ${activeBroadcastItems} items ready to air`,
+              }
+            : {
+                key: "local-uploads",
+                label: "Local uploads available",
+                status: "warning" as const,
+                detail: "No local uploads — relying entirely on YouTube embeds for catalog; upload an MP4 to populate the broadcast queue",
+                action: "Upload at least one MP4 from the Library page — it will be auto-queued for broadcast once transcoding completes",
+              }
           : hlsReadyLocalVideos >= localVideos
             ? {
                 key: "local-uploads",
@@ -253,6 +267,25 @@ export async function launchReadinessRoutes(app: FastifyInstance) {
                 status: "ready",
                 detail: `${activeBroadcastItems} active items in rotation`,
               },
+        // Cycle depth — how long before content repeats
+        activeBroadcastItems > 0 && broadcastCycleSecs < 7200
+          ? {
+              key: "broadcast-cycle-depth",
+              label: "Broadcast content depth",
+              status: "warning" as const,
+              detail: `Queue cycles every ~${Math.round(broadcastCycleSecs / 60)}m — content will repeat frequently`,
+              action:
+                "Upload and transcode more sermon videos; once HLS is ready they are auto-queued for broadcast",
+            }
+          : {
+              key: "broadcast-cycle-depth",
+              label: "Broadcast content depth",
+              status: "ready" as const,
+              detail:
+                activeBroadcastItems === 0
+                  ? "Skipped (queue is empty)"
+                  : `~${(broadcastCycleSecs / 3600).toFixed(1)}h of unique content before content repeats`,
+            },
         activeScheduleEntries === 0
           ? {
               key: "schedule-empty",
@@ -292,23 +325,47 @@ export async function launchReadinessRoutes(app: FastifyInstance) {
                 status: "ready",
                 detail: `Primary: ${primaryIngest.name} (${primaryIngest.protocol.toUpperCase()})`,
               },
-        ingestRows.length > 0 && healthyIngestCount === 0
-          ? {
+        (() => {
+          if (ingestRows.length === 0) {
+            return {
               key: "ingest-healthy",
               label: "Ingest endpoints healthy",
-              status: "warning",
-              detail: "No ingest endpoints have a recent healthy probe",
-              action: "Run a probe from /admin/live-ingest to verify connectivity",
-            }
-          : {
+              status: "ready" as const,
+              detail: "Skipped (no ingest configured)",
+            };
+          }
+          // "unknown" = never probed (fresh endpoint). Only flag as a problem
+          // when a probe has run and returned degraded/unhealthy.
+          const explicitlyUnhealthy = ingestRows.filter(
+            (r) => r.healthStatus === "unhealthy" || r.healthStatus === "degraded",
+          );
+          const neverProbed = ingestRows.filter((r) => r.healthStatus === "unknown");
+          if (explicitlyUnhealthy.length > 0) {
+            return {
               key: "ingest-healthy",
               label: "Ingest endpoints healthy",
-              status: "ready",
-              detail:
-                ingestRows.length === 0
-                  ? "Skipped (no ingest configured)"
-                  : `${healthyIngestCount} of ${ingestRows.length} endpoints healthy`,
-            },
+              status: "warning" as const,
+              detail: `${explicitlyUnhealthy.length} of ${ingestRows.length} endpoint${ingestRows.length === 1 ? "" : "s"} degraded or unreachable`,
+              action: "Check encoder connectivity and re-run a probe from /admin/live-ingest",
+            };
+          }
+          if (healthyIngestCount > 0) {
+            return {
+              key: "ingest-healthy",
+              label: "Ingest endpoints healthy",
+              status: "ready" as const,
+              detail: `${healthyIngestCount} of ${ingestRows.length} endpoint${ingestRows.length === 1 ? "" : "s"} verified healthy`,
+            };
+          }
+          // All endpoints are "unknown" — never probed yet. Treat as pending, not broken.
+          return {
+            key: "ingest-healthy",
+            label: "Ingest endpoints healthy",
+            status: "ready" as const,
+            detail: `${neverProbed.length} endpoint${neverProbed.length === 1 ? "" : "s"} configured — run a probe to verify connectivity`,
+            action: "Open /admin/live-ingest and run a probe once your encoder URL is configured",
+          };
+        })(),
       ];
 
       const distributionChecks: Check[] = [
@@ -316,15 +373,15 @@ export async function launchReadinessRoutes(app: FastifyInstance) {
           ? {
               key: "push-devices",
               label: "Push notification audience",
-              status: "warning",
-              detail: "No registered devices — push notifications will reach nobody",
-              action: "Wait for users to install the app + grant push permission",
+              status: "ready" as const,
+              detail: "No push subscribers yet — expected before public launch",
+              action: "Audience grows automatically as users install the app and grant notification permission; no setup required",
             }
           : {
               key: "push-devices",
               label: "Push notification audience",
-              status: "ready",
-              detail: `${registeredDevices} registered push subscribers`,
+              status: "ready" as const,
+              detail: `${registeredDevices} registered push subscriber${registeredDevices === 1 ? "" : "s"}`,
             },
       ];
 
@@ -385,6 +442,7 @@ export async function launchReadinessRoutes(app: FastifyInstance) {
           encodingLocalVideos,
           activeScheduleEntries,
           activeBroadcastItems,
+          broadcastCycleSecs,
           registeredDevices,
           failedTranscodes,
           queuedTranscodes,
