@@ -265,11 +265,18 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
   // status="uploading" so the client's retry logic can re-attempt finalize.
   app.addHook("onReady", async () => {
     try {
-      // Select completedVideoId too — the async-finalize path pre-commits a video
-      // row and stores its id in completedVideoId BEFORE starting background assembly.
-      // If the server restarted mid-assembly those rows are orphaned (blob partial).
+      // Select completedVideoId and objectKey — the async-finalize path pre-commits
+      // a video row (completedVideoId) and starts writing the assembled blob to
+      // storage_blobs at objectKey BEFORE marking the session "completed". If the
+      // server restarts mid-assembly, both the video row AND the partially-written
+      // dest blob are orphaned and must be cleaned up so the client can re-upload
+      // cleanly to a new objectKey.
       const stuckRows = await db
-        .select({ sessionId: sessions.sessionId, completedVideoId: sessions.completedVideoId })
+        .select({
+          sessionId: sessions.sessionId,
+          completedVideoId: sessions.completedVideoId,
+          objectKey: sessions.objectKey,
+        })
         .from(sessions)
         .where(inArray(sessions.status, ["assembling"]));
       if (stuckRows.length > 0) {
@@ -290,6 +297,23 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             .catch(() => {});
         }
 
+        // Delete partially-written destination blobs from storage_blobs.
+        // Each assembling session's objectKey is the key of the blob that was
+        // being assembled when the server crashed. Without deletion, these become
+        // permanent storage orphans after the video row is deleted — the next
+        // finalize creates a fresh video row with a new objectKey, leaving the
+        // old partial blob unreachable.
+        const destObjectKeys = stuckRows
+          .filter((r) => r.objectKey)
+          .map((r) => r.objectKey as string);
+        for (const key of destObjectKeys) {
+          await db
+            .execute(sql`DELETE FROM storage_blobs WHERE key = ${key}`)
+            .catch((err: unknown) =>
+              app.log.warn({ err, key }, "[upload] partial dest blob cleanup failed (non-fatal)"),
+            );
+        }
+
         // Reset session state: clear completedVideoId so the idempotency check
         // doesn't incorrectly fast-path on the next /finalize call.
         await db
@@ -298,8 +322,13 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           .where(inArray(sessions.status, ["assembling"]));
 
         app.log.warn(
-          { count: stuckRows.length, orphanedVideoIds, ids: stuckRows.map((r) => r.sessionId) },
-          "[upload] reset stuck assembling sessions — orphaned pre-commit rows cleaned up",
+          {
+            count: stuckRows.length,
+            orphanedVideoIds,
+            destBlobsDeleted: destObjectKeys.length,
+            ids: stuckRows.map((r) => r.sessionId),
+          },
+          "[upload] reset stuck assembling sessions — orphaned video rows, dest blobs, and broadcast_queue slots cleaned up",
         );
       }
     } catch (err) {

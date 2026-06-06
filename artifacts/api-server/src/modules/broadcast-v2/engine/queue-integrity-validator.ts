@@ -596,21 +596,23 @@ class QueueIntegrityValidatorImpl {
       }
 
       // ── Auto-fix: deactivate ORPHANED_VIDEO_REF items that will never become playable ──
-      // Items whose referenced video exists but has no playable URLs AND whose
-      // transcoding has either permanently failed (vStatus='failed') or never
-      // started (vStatus=null — video row created but no transcoding job queued)
-      // will never become playable. They cause repeated auto-skip cycles (one per
-      // orchestrator tick), burning skip budget and flooding logs.
+      // Items whose referenced video exists but has no playable URLs anywhere
+      // (neither on the video row nor on the queue row itself) will never air.
+      // They cause repeated auto-skip cycles (one per orchestrator tick), burning
+      // skip budget and flooding logs with "resolveSource returned null" warnings.
       //
       // Safety guards applied before deactivation:
-      //   • vStatus in {queued, encoding, processing} → skip: actively transcoding,
-      //     will be playable within minutes.
-      //   • vStatus='hls_ready' with no URL → skip: startup recovery in
-      //     transcoder.dispatcher.ts heals these on next restart.
+      //   • vStatus in {queued, encoding, processing} → skip: actively transcoding
+      //     and will gain URLs within minutes.
       //   • vSource='youtube' → skip: YouTube items resolve via youtubeId, not a
-      //     local URL; they may legitimately have no localVideoUrl/hlsMasterUrl.
-      //   • qLocalUrl or qHlsUrl set on queue row → skip: item is playable via
-      //     the queue row's own URL regardless of the video row's state.
+      //     local URL; they legitimately have no localVideoUrl/hlsMasterUrl.
+      //   • qLocalUrl or qHlsUrl set on the queue row → skip: item IS playable
+      //     via the queue row's own URL regardless of the video-row state.
+      //
+      // All other vStatus values (null, 'failed', 'done', 'hls_ready', or any
+      // unknown status) combined with zero playable URLs = permanently unplayable.
+      // The reverse-pass below re-activates these rows if the video later gains
+      // playable URLs (e.g. after a successful re-transcode or re-upload).
       const orphanedFailedIds = rows
         .filter((r) => {
           const isOrphaned =
@@ -621,9 +623,11 @@ class QueueIntegrityValidatorImpl {
             !r.qLocalUrl &&
             !r.qHlsUrl;
           const isYoutube = r.vSource === "youtube";
-          const isTerminallyFailed = r.vStatus === "failed" || r.vStatus === null;
-          const isActivelyTranscoding = r.vStatus === "queued" || r.vStatus === "encoding" || r.vStatus === "processing";
-          return isOrphaned && !isYoutube && isTerminallyFailed && !isActivelyTranscoding;
+          const isActivelyTranscoding =
+            r.vStatus === "queued" ||
+            r.vStatus === "encoding" ||
+            r.vStatus === "processing";
+          return isOrphaned && !isYoutube && !isActivelyTranscoding;
         })
         .map((r) => r.id);
 
