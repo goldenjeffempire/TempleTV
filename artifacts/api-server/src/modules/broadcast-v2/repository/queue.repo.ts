@@ -45,7 +45,50 @@ const IS_PROD_NODE_ENV = process.env.NODE_ENV === "production";
 
 export function normalizeQueueUrl(raw: string | null | undefined): string | null {
   if (!raw) return null;
-  if (/^https?:\/\//i.test(raw)) return raw;
+  if (/^https?:\/\//i.test(raw)) {
+    // Rewrite stale *.onrender.com URLs to the current canonical API origin.
+    //
+    // Background: before a custom domain was configured, locally-uploaded
+    // video URLs and HLS master URLs were stored as absolute
+    // `https://<service>.onrender.com/api/v1/uploads/…` or
+    // `https://<service>.onrender.com/api/v1/hls/…` paths. Once the
+    // service moved to api.templetv.org.ng the old Render URL became a
+    // dead/sleeping host — the orchestrator probe fails, FSM enters
+    // RECOVERING_PRIMARY, and real viewers on TV/mobile/web receive the
+    // same dead URL and cannot play.
+    //
+    // Fix: swap only the origin (protocol + hostname + port) to the
+    // current canonical own-base, preserving the full path/query/hash.
+    // Uses the same resolution order as the relative-URL path below.
+    // This is intentionally idempotent: if the URL is already on the
+    // canonical host the `endsWith(".onrender.com")` guard is false and
+    // the URL is returned unchanged.
+    try {
+      const parsed = new URL(raw);
+      if (parsed.hostname.endsWith(".onrender.com")) {
+        const ownPublicBase = (
+          (IS_PROD_NODE_ENV ? env.API_ORIGIN : undefined) ??
+          process.env["RENDER_EXTERNAL_URL"] ??
+          process.env["REPLIT_DEV_DOMAIN"]
+        )?.replace(/\/+$/, "");
+        if (ownPublicBase) {
+          const absBase = /^https?:\/\//i.test(ownPublicBase)
+            ? ownPublicBase
+            : `https://${ownPublicBase}`;
+          const baseParsed = new URL(absBase);
+          parsed.protocol = baseParsed.protocol;
+          parsed.hostname = baseParsed.hostname;
+          parsed.port = baseParsed.port;
+          logger.info(
+            { from: new URL(raw).hostname, to: baseParsed.hostname, path: parsed.pathname },
+            "[broadcast-v2] rewrote stale onrender.com URL to canonical API origin",
+          );
+          return parsed.toString();
+        }
+      }
+    } catch { /* malformed URL — fall through and return as-is */ }
+    return raw;
+  }
   // Resolution order (first truthy wins):
   //   1. API_ORIGIN            — explicit own-origin; ONLY used in production.
   //                              Must equal THIS server's canonical URL
