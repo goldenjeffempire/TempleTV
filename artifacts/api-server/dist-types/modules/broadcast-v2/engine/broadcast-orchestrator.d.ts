@@ -218,6 +218,7 @@ declare class BroadcastOrchestrator extends EventEmitter {
      * reports (which take 9–15 s each and require a viewer to be connected).
      */
     private currentItemProbeTimer;
+    private badUrlCacheTimer;
     /** Consecutive definitive 4xx failure count for the currently-playing item. */
     private currentItemProbeFailures;
     /**
@@ -470,6 +471,33 @@ declare class BroadcastOrchestrator extends EventEmitter {
      *   • Conservative design: false positives on transient server errors must never
      *     silently drop healthy content from the broadcast rotation.
      */
+    /**
+     * Strip the `/api/v1/media-proxy?url=…` wrapper from a URL so server-side
+     * probes reach the origin directly instead of going through the proxy shim.
+     *
+     * **Why the wrapper exists (client-side):**
+     * External source URLs (e.g. `https://api.templetv.org.ng/api/v1/uploads/…`)
+     * are rewritten to `https://<own-domain>/api/v1/media-proxy?url=…&sig=…`
+     * by `proxyExternalSource()` so browser / native clients receive a
+     * same-origin URL that bypasses CORS/CORP restrictions.
+     *
+     * **Why server-side probes must NOT go through the proxy:**
+     *  1. No CORS: the orchestrator is Node.js — it has no browser CORS policy
+     *     and can fetch any URL directly.
+     *  2. Redirect rejection: the media-proxy uses `redirect:"manual"` and
+     *     explicitly rejects all 3xx responses (SSRF guard).  Many legitimate
+     *     origins — including Replit object-storage, AWS S3, and production API
+     *     upload routes — serve their files via a 302 redirect to a signed CDN
+     *     or storage URL.  Probing through the media-proxy returns 403 for every
+     *     such source, falsely marking healthy content as unreachable.
+     *  3. Extra latency: self-request through an external reverse-proxy (Replit,
+     *     Render) adds 50–200 ms and introduces an extra failure mode compared to
+     *     a direct outbound fetch.
+     *
+     * **Safety:** the bad-URL cache and snapshot URLs still use the media-proxy
+     * form (the key clients see), so eviction correctly gates what players receive.
+     */
+    private extractRawProbeUrl;
     private probeUrlReachability;
     /**
      * Issue a single HTTP probe with a 5 s timeout and return the numeric status

@@ -166,3 +166,15 @@ export declare const queueRepo: {
      */
     toItem(row: RawQueueRow, startsAtMs: number): V2Item | null;
 };
+/**
+ * Serialize the current bad-URL blacklist and skip-count maps to the
+ * broadcast_runtime_state row. Non-throwing — errors are debug-logged.
+ */
+export declare function persistBadUrlCache(channelId: string): Promise<void>;
+/**
+ * Restore the bad-URL blacklist and skip-count maps from the DB on boot.
+ * Expired urlCache entries are dropped. Non-throwing — an
+ * isUndefinedColumnError means the schema migration hasn't run yet, which
+ * is safe (the cache just starts empty).
+ */
+export declare function hydrateBadUrlCache(channelId: string): Promise<void>;

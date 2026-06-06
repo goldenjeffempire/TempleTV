@@ -69,6 +69,8 @@ declare class TranscoderDispatcher {
     private purgeOrphanedScratchDirs;
     private partialRecoveryCounter;
     private static readonly PARTIAL_RECOVERY_TICKS;
+    private stuckJobsCounter;
+    private static readonly STUCK_JOBS_TICKS;
     private scratchGcCounter;
     private static readonly SCRATCH_GC_TICKS;
     private lastHeartbeatAt;

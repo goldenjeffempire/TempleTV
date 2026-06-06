@@ -52,11 +52,12 @@ async function probeDurationFromUrl(url: string): Promise<number | null> {
         "-print_format", "json",
         "-show_entries", "format=duration",
         url,
-      ]);
+      ], { stdio: ["ignore", "pipe", "ignore"] });
     } catch {
       resolve(null);
       return;
     }
+    if (!proc.stdout) { resolve(null); return; }
     let stdout = "";
     proc.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
     const t = setTimeout(() => { try { proc?.kill(); } catch { /**/ } resolve(null); }, 45_000);

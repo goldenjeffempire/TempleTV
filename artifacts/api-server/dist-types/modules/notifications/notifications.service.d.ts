@@ -1,5 +1,13 @@
 import type { z } from "zod";
 import type { ListNotificationsQuerySchema, SendPushBodySchema } from "./notifications.schemas.js";
+/**
+ * Startup/periodic recovery for immediate push notifications stuck in "pending"
+ * due to a process crash between DB insert and delivery completion.
+ *
+ * Rows older than 30 minutes with status="pending" are presumed lost and
+ * marked "failed" so the history list doesn't show them as in-flight forever.
+ */
+export declare function recoverStuckPendingNotifications(): Promise<void>;
 export declare const notificationsService: {
     getStats(): Promise<{
         expoTokens: number;

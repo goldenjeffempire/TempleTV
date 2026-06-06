@@ -385,6 +385,48 @@ class UploadQueueEngine {
     this.notify();
   }
 
+  /**
+   * Called when the auth session genuinely expires (both access + refresh
+   * tokens rejected). Pauses all active uploads so they can be auto-resumed
+   * the next time authentication is confirmed via autoResumeInterrupted().
+   * Unlike a user-initiated pause, wasUserPaused stays false so the
+   * auto-resume pass will pick the items back up after re-login.
+   */
+  private _onAuthExpired(): void {
+    for (const id of Array.from(this.activeWorkers)) {
+      const item = this.items.get(id);
+      if (item && (item.status === "uploading" || item.status === "finalizing")) {
+        this.pause(id);
+      }
+    }
+    this.notify();
+  }
+
+  /**
+   * Resume all uploads that were interrupted (wasUserPaused=false) by a
+   * page reload, browser close, network drop, or auth expiry. Call this once
+   * per authentication confirmation (e.g. from AuthenticatedApp) so that
+   * restored items auto-continue without requiring manual user action.
+   *
+   * Defers the resume pass until IDB loading is complete so it never runs
+   * against an empty items Map when auth is confirmed before the IDB promise
+   * settles.
+   */
+  autoResumeInterrupted(): void {
+    const resume = () => {
+      for (const item of this.items.values()) {
+        if (item.status === "paused" && item.wasRestored && !item.wasUserPaused) {
+          this.resume(item.id);
+        }
+      }
+    };
+    if (this._storageReady) {
+      resume();
+    } else {
+      this._storageReadyCallbacks.push(resume);
+    }
+  }
+
   // ── Subscription ───────────────────────────────────────────────────────────
 
   subscribe(cb: () => void): () => void {
@@ -516,6 +558,8 @@ class UploadQueueEngine {
         speedLabel: "",
         finalizeOnly: false,
         assemblyPercent: null,
+        wasUserPaused: false,
+        wasRestored: false,
       };
       this.items.set(id, item);
       // Persist to IndexedDB so the upload survives a page reload.
@@ -533,6 +577,7 @@ class UploadQueueEngine {
         addedAt: item.addedAt,
         priority: item.priority,
         finalizeOnly: false,
+        wasUserPaused: false,
       }).catch(() => {});
     }
     this.notify();

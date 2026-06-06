@@ -86,7 +86,6 @@ import {
   Siren,
   Square,
   UploadCloud,
-  X,
   Tv2,
   Link,
   TriangleAlert,
@@ -237,12 +236,6 @@ const autoQueuePending: Set<string> = _loadAutoQueuePending();
 const autoQueueHandled = new Set<string>();
 const autoQueueInFlight = new Set<string>();
 let autoQueueSubscribed = false;
-
-/** Tag an upload item to be appended to the broadcast queue on completion. */
-function markForAutoQueue(uploadId: string): void {
-  autoQueuePending.add(uploadId);
-  _saveAutoQueuePending(autoQueuePending);
-}
 
 /**
  * Install a single uploadQueue subscriber that watches for tagged uploads to

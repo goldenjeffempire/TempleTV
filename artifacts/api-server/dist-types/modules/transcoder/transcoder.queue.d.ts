@@ -2,6 +2,7 @@ import { schema } from "../../infrastructure/db.js";
 export type TranscodingJobWithVideo = (typeof schema.transcodingJobsTable.$inferSelect) & {
     videoTitle: string | null;
     videoThumbnail: string | null;
+    transcodingErrorCode: string | null;
 };
 export declare function enqueueTranscode(args: {
     videoId: string;
@@ -15,21 +16,7 @@ export declare function listJobs(opts?: {
     limit?: number;
     status?: string;
 }): Promise<TranscodingJobWithVideo[]>;
-export declare function getJob(id: string): Promise<{
-    id: string;
-    videoId: string;
-    videoPath: string;
-    status: string;
-    priority: number;
-    progress: number;
-    errorMessage: string | null;
-    attempts: number;
-    maxAttempts: number;
-    nextRetryAt: Date | null;
-    startedAt: Date | null;
-    completedAt: Date | null;
-    createdAt: Date;
-}>;
+export declare function getJob(id: string): Promise<TranscodingJobWithVideo | null>;
 export declare function deleteJob(id: string): Promise<boolean>;
 /**
  * Bulk-delete transcoding jobs by status.

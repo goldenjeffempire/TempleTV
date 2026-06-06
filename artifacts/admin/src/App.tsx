@@ -6,6 +6,7 @@ import { SSEProvider, useSSEEvent } from "@/contexts/sse-context";
 import { AppLayout } from "@/components/layout/app-layout";
 import { Skeleton } from "@/components/ui/skeleton";
 import { UploadQueuePanel } from "@/components/upload/UploadQueuePanel";
+import { uploadQueue } from "@/lib/upload-queue";
 import { toast } from "sonner";
 
 const CHUNK_KEY = "ttv_chunk_reload";
@@ -247,6 +248,12 @@ function AdminRoute({ component: Comp }: { component: React.ComponentType<object
 function AuthenticatedApp() {
   const [location] = useLocation();
   useEffect(() => { sessionStorage.removeItem(CHUNK_KEY); }, [location]);
+
+  // Resume any uploads that were interrupted by a page reload, browser close,
+  // network drop, or auth expiry. Items explicitly paused by the user
+  // (wasUserPaused=true) are left alone; only interrupted ones auto-resume.
+  // Defers until IDB loading is complete via the internal _storageReady gate.
+  useEffect(() => { uploadQueue.autoResumeInterrupted(); }, []);
 
   // Background-prefetch page chunks immediately after the authenticated
   // shell mounts so navigating to any admin section is near-instant.

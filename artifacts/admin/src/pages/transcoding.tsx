@@ -281,7 +281,7 @@ export default function TranscodingPage() {
                       <div className="flex items-center gap-2">
                         {cfg.icon}
                         <div className="flex-1 min-w-0">
-                          <p className="font-medium text-sm truncate">{job.title || job.videoId}</p>
+                          <p className="font-medium text-sm truncate">{job.videoTitle || job.videoId}</p>
                           <p className="text-xs text-muted-foreground font-mono">{job.id.slice(0, 20)}…</p>
                         </div>
                         <Badge variant={cfg.color as "outline" | "secondary" | "default" | "destructive"}>
@@ -349,7 +349,7 @@ export default function TranscodingPage() {
                   <div key={job.id} className="flex items-start gap-2.5 py-2.5 border-b last:border-0 group">
                     <div className="mt-0.5 flex-shrink-0">{cfg.icon}</div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm truncate">{job.title || job.videoId}</p>
+                      <p className="text-sm truncate">{job.videoTitle || job.videoId}</p>
                       {job.errorMessage && (
                         <p className="text-xs text-red-500 truncate mt-0.5">{job.errorMessage}</p>
                       )}

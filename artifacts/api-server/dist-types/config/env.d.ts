@@ -69,6 +69,7 @@ declare const Env: z.ZodObject<{
     YOUTUBE_WEBHOOK_SECRET: z.ZodOptional<z.ZodString>;
     HLS_TOKEN_TTL_SECONDS: z.ZodDefault<z.ZodNumber>;
     HLS_MAX_CONCURRENT: z.ZodDefault<z.ZodNumber>;
+    SHUTDOWN_PRECLOSE_DELAY_MS: z.ZodDefault<z.ZodNumber>;
     SHUTDOWN_DRAIN_MS: z.ZodDefault<z.ZodNumber>;
     APP_VERSION: z.ZodOptional<z.ZodString>;
     YOUTUBE_API_KEY: z.ZodOptional<z.ZodString>;
@@ -96,12 +97,12 @@ declare const Env: z.ZodObject<{
     SEED_ADMIN_PASSWORD: z.ZodOptional<z.ZodString>;
     SEED_ADMIN_FORCE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
 }, "strip", z.ZodTypeAny, {
-    DATABASE_URL: string;
     NODE_ENV: "development" | "test" | "production";
     PORT: number;
     TV_DEV_PORT: number;
     MOBILE_DEV_PORT: number;
-    LOG_LEVEL: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
+    LOG_LEVEL: "error" | "warn" | "info" | "fatal" | "debug" | "trace" | "silent";
+    DATABASE_URL: string;
     JWT_ACCESS_SECRET: string;
     JWT_REFRESH_SECRET: string;
     JWT_ACCESS_TTL_SECONDS: number;
@@ -142,6 +143,7 @@ declare const Env: z.ZodObject<{
     REQUIRE_HLS_TOKEN: boolean;
     HLS_TOKEN_TTL_SECONDS: number;
     HLS_MAX_CONCURRENT: number;
+    SHUTDOWN_PRECLOSE_DELAY_MS: number;
     SHUTDOWN_DRAIN_MS: number;
     YOUTUBE_QUOTA_DAILY_LIMIT: number;
     YOUTUBE_CONTENT_WINDOW_DAYS: number;
@@ -198,7 +200,7 @@ declare const Env: z.ZodObject<{
     TV_DEV_PORT?: number | undefined;
     MOBILE_DEV_PORT?: number | undefined;
     WEBHOOK_BASE_URL?: string | undefined;
-    LOG_LEVEL?: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent" | undefined;
+    LOG_LEVEL?: "error" | "warn" | "info" | "fatal" | "debug" | "trace" | "silent" | undefined;
     JWT_ACCESS_TTL_SECONDS?: number | undefined;
     JWT_REFRESH_TTL_SECONDS?: number | undefined;
     JWT_ALGORITHM?: "HS256" | undefined;
@@ -253,6 +255,7 @@ declare const Env: z.ZodObject<{
     YOUTUBE_WEBHOOK_SECRET?: string | undefined;
     HLS_TOKEN_TTL_SECONDS?: number | undefined;
     HLS_MAX_CONCURRENT?: number | undefined;
+    SHUTDOWN_PRECLOSE_DELAY_MS?: number | undefined;
     SHUTDOWN_DRAIN_MS?: number | undefined;
     APP_VERSION?: string | undefined;
     YOUTUBE_API_KEY?: string | undefined;
