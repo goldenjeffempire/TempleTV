@@ -454,7 +454,7 @@ export default function VideosPage() {
 
   const batchRetryMutation = useMutation({
     mutationFn: () =>
-      api.post<{ ok: boolean; retried: number }>("/admin/ops/transcoding/retry-failed"),
+      api.post<{ ok: boolean; retried: number }>("/admin/transcoding/retry-failed"),
     onSuccess: (res) => {
       if (res.retried === 0) {
         toast.info("No failed transcoding jobs found to retry.");
