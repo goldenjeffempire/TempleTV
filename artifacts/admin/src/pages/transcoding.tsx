@@ -24,12 +24,13 @@ import { formatDistanceToNow } from "date-fns";
 interface TranscodingJob {
   id: string;
   videoId: string;
-  title?: string;
+  videoTitle?: string | null;
   status: "queued" | "encoding" | "processing" | "ready" | "hls_ready" | "failed" | "cancelled";
   progress?: number;
   createdAt: string;
   updatedAt?: string;
-  errorMessage?: string;
+  errorMessage?: string | null;
+  transcodingErrorCode?: string | null;
 }
 
 const STATUS_CONFIG = {

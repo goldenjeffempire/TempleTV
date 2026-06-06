@@ -10,6 +10,7 @@ const videos = schema.videosTable;
 export type TranscodingJobWithVideo = (typeof schema.transcodingJobsTable.$inferSelect) & {
   videoTitle: string | null;
   videoThumbnail: string | null;
+  transcodingErrorCode: string | null;
 };
 
 /**
@@ -127,6 +128,7 @@ export async function listJobs(opts: { limit?: number; status?: string } = {}): 
   type RawRow = typeof schema.transcodingJobsTable.$inferSelect & {
     videoTitle: string | null;
     videoThumbnail: string | null;
+    transcodingErrorCode: string | null;
   };
 
   const base = db
@@ -146,6 +148,7 @@ export async function listJobs(opts: { limit?: number; status?: string } = {}): 
       createdAt: jobs.createdAt,
       videoTitle: videos.title,
       videoThumbnail: videos.thumbnailUrl,
+      transcodingErrorCode: videos.transcodingErrorCode,
     })
     .from(jobs)
     .leftJoin(videos, eq(videos.id, jobs.videoId));
@@ -158,12 +161,42 @@ export async function listJobs(opts: { limit?: number; status?: string } = {}): 
     ...r,
     videoTitle: r.videoTitle ?? null,
     videoThumbnail: r.videoThumbnail ?? null,
+    transcodingErrorCode: r.transcodingErrorCode ?? null,
   }));
 }
 
-export async function getJob(id: string) {
-  const rows = await db.select().from(jobs).where(eq(jobs.id, id)).limit(1);
-  return rows[0] ?? null;
+export async function getJob(id: string): Promise<TranscodingJobWithVideo | null> {
+  const rows = await db
+    .select({
+      id: jobs.id,
+      videoId: jobs.videoId,
+      videoPath: jobs.videoPath,
+      status: jobs.status,
+      priority: jobs.priority,
+      progress: jobs.progress,
+      errorMessage: jobs.errorMessage,
+      attempts: jobs.attempts,
+      maxAttempts: jobs.maxAttempts,
+      nextRetryAt: jobs.nextRetryAt,
+      startedAt: jobs.startedAt,
+      completedAt: jobs.completedAt,
+      createdAt: jobs.createdAt,
+      videoTitle: videos.title,
+      videoThumbnail: videos.thumbnailUrl,
+      transcodingErrorCode: videos.transcodingErrorCode,
+    })
+    .from(jobs)
+    .leftJoin(videos, eq(videos.id, jobs.videoId))
+    .where(eq(jobs.id, id))
+    .limit(1);
+  if (!rows[0]) return null;
+  const r = rows[0];
+  return {
+    ...r,
+    videoTitle: r.videoTitle ?? null,
+    videoThumbnail: r.videoThumbnail ?? null,
+    transcodingErrorCode: r.transcodingErrorCode ?? null,
+  };
 }
 
 export async function deleteJob(id: string): Promise<boolean> {

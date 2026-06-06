@@ -524,6 +524,10 @@ const TranscodingJobSchema = z.object({
   // F24: denormalized from managed_videos via JOIN at list time
   videoTitle: z.string().nullable(),
   videoThumbnail: z.string().nullable(),
+  // Machine-readable failure code — null for retryable failures.
+  // CORRUPT_SOURCE / SOURCE_MISSING: unrecoverable; re-upload the source file.
+  // DISK_FULL: free storage then retry.
+  transcodingErrorCode: z.string().nullable(),
 });
 
 const TranscodingQueueStatsSchema = z.object({
@@ -560,6 +564,7 @@ function projectTranscodingJob(j: {
   // F24: optional — populated when listJobs() does the LEFT JOIN
   videoTitle?: string | null;
   videoThumbnail?: string | null;
+  transcodingErrorCode?: string | null;
 }): z.infer<typeof TranscodingJobSchema> {
   return {
     id: j.id,
@@ -577,6 +582,7 @@ function projectTranscodingJob(j: {
     createdAt: j.createdAt.toISOString(),
     videoTitle: j.videoTitle ?? null,
     videoThumbnail: j.videoThumbnail ?? null,
+    transcodingErrorCode: j.transcodingErrorCode ?? null,
   };
 }
 

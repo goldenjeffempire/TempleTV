@@ -1311,6 +1311,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                   .update(videos)
                   .set({
                     transcodingStatus: "failed",
+                    transcodingErrorCode: "CORRUPT_SOURCE",
                     transcodingErrorMessage:
                       "Upload rejected: the video file is corrupt or incomplete " +
                       "(container validation failed before processing). " +
@@ -1378,6 +1379,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                     .update(videos)
                     .set({
                       transcodingStatus: "failed",
+                      transcodingErrorCode: "CORRUPT_SOURCE",
                       transcodingErrorMessage:
                         "Upload failed: the video container is structurally damaged and cannot be repaired " +
                         "(faststart failed — moov atom missing or all remux strategies exhausted). " +

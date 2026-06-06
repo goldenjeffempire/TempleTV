@@ -661,6 +661,17 @@ class TranscoderDispatcher {
       const job = claimed[0];
       if (!job) return { ran: false };
 
+      // Look up the video title for SSE event payloads — allows the admin
+      // operations log and broadcast UI to show the real video name instead
+      // of a "video" placeholder. Non-critical: null on lookup failure.
+      const videoTitle = await db
+        .select({ title: videos.title })
+        .from(videos)
+        .where(eq(videos.id, job.videoId))
+        .limit(1)
+        .then((r) => r[0]?.title ?? null)
+        .catch(() => null);
+
       await db.update(videos)
         .set({ transcodingStatus: "encoding" })
         .where(eq(videos.id, job.videoId));
@@ -670,6 +681,7 @@ class TranscoderDispatcher {
         jobId: job.id,
         status: "encoding",
         progress: 0,
+        videoTitle,
       });
 
       logger.info({ jobId: job.id, videoId: job.videoId, attempt: job.attempts + 1 }, "transcoder: starting job");
@@ -758,6 +770,7 @@ class TranscoderDispatcher {
           status: "hls_ready",
           progress: 100,
           hlsMasterUrl: result.masterPlaylistUrl,
+          videoTitle,
         });
 
         // Notify all connected clients that the video library has been updated
@@ -949,6 +962,7 @@ class TranscoderDispatcher {
           errorMessage: message,
           willRetry: !exceeded,
           nextRetryAt: exceeded ? null : nextRetry.toISOString(),
+          videoTitle,
         });
 
         // When a job permanently fails, push broadcast-queue-updated so the
