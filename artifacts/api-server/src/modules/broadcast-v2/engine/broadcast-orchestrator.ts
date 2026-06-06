@@ -2028,6 +2028,46 @@ class BroadcastOrchestrator extends EventEmitter {
    *   • Conservative design: false positives on transient server errors must never
    *     silently drop healthy content from the broadcast rotation.
    */
+
+  /**
+   * Strip the `/api/v1/media-proxy?url=…` wrapper from a URL so server-side
+   * probes reach the origin directly instead of going through the proxy shim.
+   *
+   * **Why the wrapper exists (client-side):**
+   * External source URLs (e.g. `https://api.templetv.org.ng/api/v1/uploads/…`)
+   * are rewritten to `https://<own-domain>/api/v1/media-proxy?url=…&sig=…`
+   * by `proxyExternalSource()` so browser / native clients receive a
+   * same-origin URL that bypasses CORS/CORP restrictions.
+   *
+   * **Why server-side probes must NOT go through the proxy:**
+   *  1. No CORS: the orchestrator is Node.js — it has no browser CORS policy
+   *     and can fetch any URL directly.
+   *  2. Redirect rejection: the media-proxy uses `redirect:"manual"` and
+   *     explicitly rejects all 3xx responses (SSRF guard).  Many legitimate
+   *     origins — including Replit object-storage, AWS S3, and production API
+   *     upload routes — serve their files via a 302 redirect to a signed CDN
+   *     or storage URL.  Probing through the media-proxy returns 403 for every
+   *     such source, falsely marking healthy content as unreachable.
+   *  3. Extra latency: self-request through an external reverse-proxy (Replit,
+   *     Render) adds 50–200 ms and introduces an extra failure mode compared to
+   *     a direct outbound fetch.
+   *
+   * **Safety:** the bad-URL cache and snapshot URLs still use the media-proxy
+   * form (the key clients see), so eviction correctly gates what players receive.
+   */
+  private extractRawProbeUrl(url: string): string {
+    try {
+      const u = new URL(url);
+      if (u.pathname === "/api/v1/media-proxy" || u.pathname.endsWith("/media-proxy")) {
+        const inner = u.searchParams.get("url");
+        if (inner) return inner;
+      }
+    } catch {
+      /* malformed URL — return as-is */
+    }
+    return url;
+  }
+
   private async probeUrlReachability(url: string): Promise<boolean | null> {
     // HLS manifests: use GET so we can validate the response body starts with
     // the required #EXTM3U tag. A HEAD request returns 200 even for empty or
@@ -2207,7 +2247,9 @@ class BroadcastOrchestrator extends EventEmitter {
     }
 
     void (async () => {
-      const reachable = await this.probeUrlReachability(url);
+      // Probe the raw origin URL rather than the media-proxy wrapper.
+      // See extractRawProbeUrl() for the full rationale.
+      const reachable = await this.probeUrlReachability(this.extractRawProbeUrl(url));
       if (reachable !== false) return; // ok or ambiguous — leave rotation unchanged
       markBadUrl(url);
       if (item.failoverSource?.url) markBadUrl(item.failoverSource.url);
@@ -2274,7 +2316,9 @@ class BroadcastOrchestrator extends EventEmitter {
     const item = snap.current;
 
     void (async () => {
-      const reachable = await this.probeUrlReachability(url);
+      // Probe the raw origin URL rather than the media-proxy wrapper.
+      // See extractRawProbeUrl() for the full rationale.
+      const reachable = await this.probeUrlReachability(this.extractRawProbeUrl(url));
       if (reachable === false) {
         this.currentItemProbeFailures += 1;
         logger.warn(
