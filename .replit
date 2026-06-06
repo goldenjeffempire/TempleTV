@@ -137,3 +137,6 @@ API_ORIGIN = "https://api.templetv.org.ng"
 
 [userenv.development]
 PROD_SYNC_API_URL = "https://api.templetv.org.ng"
+
+[userenv.production]
+SHUTDOWN_PRECLOSE_DELAY_MS = "5000"

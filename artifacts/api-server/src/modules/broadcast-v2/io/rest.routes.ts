@@ -274,18 +274,36 @@ export async function restRoutes(app: FastifyInstance) {
 
     // Post-start sequence-stale detection: catches hangs where the orchestrator
     // booted and advanced at least once (sequence > 0) but its tick loop has
-    // since died or gotten stuck. A 5-minute threshold gives enough headroom
-    // for legitimate long-duration items and all-blocked states where no bump()
-    // fires, while still catching a genuinely hung orchestrator within one
-    // monitoring poll cycle. Only flagged when the queue is non-empty — an
+    // since died or gotten stuck. Only flagged when the queue is non-empty — an
     // empty queue that has never advanced since restart is not stale, just idle.
-    const SEQUENCE_STALE_THRESHOLD_MS = 5 * 60_000; // 5 minutes
+    //
+    // IMPORTANT: when an item is actively playing, the sequence legitimately
+    // won't advance until item.advanced fires at end-of-item. A fixed 5-minute
+    // threshold would false-positive on any sermon/video longer than 5 minutes.
+    // We only mark stale when elapsed has exceeded the item's own duration plus
+    // a 2-minute grace period — meaning the orchestrator should have fired
+    // item.advanced but didn't (genuine loop/stuck). When there is no current
+    // item, the plain 5-minute threshold still applies.
+    const SEQUENCE_STALE_THRESHOLD_MS = 5 * 60_000; // 5 minutes (no-current fallback)
+    const SEQUENCE_STALE_GRACE_MS = 2 * 60_000;     // 2-minute post-item grace
     const lastSequenceAdvanceMs = broadcastOrchestrator.getLastSequenceAdvanceMs();
     const sequenceStaleSec = Math.floor((Date.now() - lastSequenceAdvanceMs) / 1000);
+    // If a current item is playing and elapsed < duration + grace, the sequence
+    // is NOT stale — item.advanced simply hasn't fired yet.
+    const currentItemElapsedMs = snap.current != null
+      ? Math.max(0, Date.now() - snap.current.startsAtMs)
+      : 0;
+    const currentItemDurationMs = snap.current != null
+      ? snap.current.durationSecs * 1000
+      : 0;
+    const withinPlaybackWindow =
+      snap.current != null &&
+      currentItemElapsedMs < currentItemDurationMs + SEQUENCE_STALE_GRACE_MS;
     const sequenceStale =
       sequence > 0 &&
       itemCount > 0 &&
-      Date.now() - lastSequenceAdvanceMs > SEQUENCE_STALE_THRESHOLD_MS;
+      Date.now() - lastSequenceAdvanceMs > SEQUENCE_STALE_THRESHOLD_MS &&
+      !withinPlaybackWindow;
 
     const allBlocked = broadcastOrchestrator.getAllBlockedInfo();
     return {
