@@ -99,6 +99,19 @@ export interface UploadItem {
    * returned a value yet. When non-null the fake-tick timer defers to this value.
    */
   assemblyPercent: number | null;
+  /**
+   * True when the user explicitly paused this upload via the UI.
+   * False (default) means it was interrupted by a page refresh, browser
+   * close, network drop, or auth expiry — and will be auto-resumed the
+   * next time authentication is confirmed.
+   */
+  wasUserPaused: boolean;
+  /**
+   * True when this item was loaded from IndexedDB rather than enqueued fresh
+   * in this browser session. Used by the panel to show a "Restored" badge so
+   * operators know why they see uploads they didn't start themselves.
+   */
+  wasRestored: boolean;
 }
 
 export interface UploadQueueSummary {
@@ -256,6 +269,14 @@ class UploadQueueEngine {
   private _beforeUnloadInstalled = false;
 
   /**
+   * Set to true once the IDB restore Promise settles (success or empty).
+   * Used by autoResumeInterrupted() to defer the resume pass until after
+   * sessions are loaded so it never runs against an empty items Map.
+   */
+  private _storageReady = false;
+  private _storageReadyCallbacks: Array<() => void> = [];
+
+  /**
    * Stored as an arrow property so the same function reference is used for
    * both addEventListener and removeEventListener (required for removal to work).
    * Setting returnValue is the legacy cross-browser pattern; modern browsers
@@ -271,55 +292,76 @@ class UploadQueueEngine {
       window.addEventListener("offline", () => this._onNetworkOffline());
       window.addEventListener("online", () => this._onNetworkOnline());
 
+      // When the session genuinely expires mid-upload (both access + refresh
+      // tokens rejected), pause active uploads instead of failing them so
+      // they can auto-resume the next time authentication is confirmed.
+      window.addEventListener("ttv:auth-expired", () => this._onAuthExpired());
+
       // Restore in-progress uploads from IndexedDB after a page reload.
-      // Items are restored as "paused" so they don't auto-start — the user
-      // sees them in the queue panel and can resume with one click.  When
-      // resumed, the worker queries GET /status to skip already-confirmed
-      // chunks and continue from where the upload left off.
+      // Items that the user explicitly paused (wasUserPaused=true) stay paused.
+      // Items that were interrupted (wasUserPaused=false or absent on old
+      // records) are also restored as paused — but autoResumeInterrupted()
+      // will resume them once auth is confirmed (called by AuthenticatedApp).
       loadPersistedSessions()
         .then((sessions) => {
-          if (sessions.length === 0) return;
-          for (const s of sessions) {
-            if (this.items.has(s.id)) continue;
-            // IDB preserves File objects including name/type via structured
-            // clone; reconstruct a proper File if an older browser returns
-            // a plain Blob.
-            const file: File =
-              s.file instanceof File
-                ? s.file
-                : new File([s.file], s.fileName, { type: s.fileMime });
-            const item: UploadItem = {
-              id: s.id,
-              sessionId: s.sessionId,
-              file,
-              title: s.title,
-              description: s.description,
-              category: s.category,
-              preacher: s.preacher,
-              featured: s.featured,
-              status: "paused",
-              // finalizeOnly items had all chunks confirmed before reload —
-              // show them at 92 % (finalize phase) so the progress bar is
-              // accurate when the user resumes.
-              progress: s.finalizeOnly ? 92 : 0,
-              speed: 0,
-              eta: 0,
-              uploadedBytes: 0,
-              error: null,
-              addedAt: s.addedAt,
-              startedAt: null,
-              completedAt: null,
-              priority: s.priority,
-              videoId: null,
-              speedLabel: "",
-              finalizeOnly: s.finalizeOnly,
-              assemblyPercent: null,
-            };
-            this.items.set(s.id, item);
+          if (sessions.length > 0) {
+            for (const s of sessions) {
+              if (this.items.has(s.id)) continue;
+              // IDB preserves File objects including name/type via structured
+              // clone; reconstruct a proper File if an older browser returns
+              // a plain Blob.
+              const file: File =
+                s.file instanceof File
+                  ? s.file
+                  : new File([s.file], s.fileName, { type: s.fileMime });
+              const item: UploadItem = {
+                id: s.id,
+                sessionId: s.sessionId,
+                file,
+                title: s.title,
+                description: s.description,
+                category: s.category,
+                preacher: s.preacher,
+                featured: s.featured,
+                status: "paused",
+                // Restore last-known progress so the bar shows the correct
+                // position rather than jumping back to 0.  finalizeOnly items
+                // default to 92 % (finalize phase) when no saved progress exists.
+                progress: s.progressPercent ?? (s.finalizeOnly ? 92 : 0),
+                speed: 0,
+                eta: 0,
+                uploadedBytes: 0,
+                error: null,
+                addedAt: s.addedAt,
+                startedAt: null,
+                completedAt: null,
+                priority: s.priority,
+                videoId: null,
+                speedLabel: "",
+                finalizeOnly: s.finalizeOnly,
+                assemblyPercent: null,
+                // wasUserPaused defaults false for records written before this
+                // field was added — treat them as interrupted (auto-resumable).
+                wasUserPaused: s.wasUserPaused ?? false,
+                wasRestored: true,
+              };
+              this.items.set(s.id, item);
+            }
+            this.notify();
           }
-          this.notify();
         })
-        .catch(() => { /* IDB unavailable — proceed without restore */ });
+        .catch(() => { /* IDB unavailable — proceed without restore */ })
+        .finally(() => {
+          // Signal that storage loading is complete (success or empty/error).
+          // Callbacks registered via autoResumeInterrupted() before this point
+          // are fired now; calls after this point execute immediately.
+          this._storageReady = true;
+          for (const cb of this._storageReadyCallbacks) cb();
+          this._storageReadyCallbacks = [];
+        });
+    } else {
+      // SSR / non-browser: mark storage ready immediately.
+      this._storageReady = true;
     }
   }
 

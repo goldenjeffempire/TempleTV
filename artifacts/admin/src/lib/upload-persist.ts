@@ -48,6 +48,19 @@ export interface PersistedUploadSession {
    * upload and calls /finalize directly on the same sessionId.
    */
   finalizeOnly: boolean;
+  /**
+   * When true the user explicitly paused this upload; auto-resume should
+   * leave it alone.  When false (or absent — old IDB records), the upload
+   * was interrupted by a page refresh, browser close, network drop, or auth
+   * expiry and will be auto-resumed the next time auth is confirmed.
+   */
+  wasUserPaused: boolean;
+  /**
+   * Progress percentage (0–100) at the time the item was paused or the page
+   * was refreshed.  Restored on load so the progress bar shows the last
+   * known position rather than jumping back to 0 %.
+   */
+  progressPercent?: number;
 }
 
 // ── DB singleton ──────────────────────────────────────────────────────────────
@@ -92,7 +105,7 @@ export async function persistUploadSession(session: PersistedUploadSession): Pro
 
 export async function updatePersistedSession(
   id: string,
-  patch: Partial<Pick<PersistedUploadSession, "sessionId" | "finalizeOnly">>,
+  patch: Partial<Pick<PersistedUploadSession, "sessionId" | "finalizeOnly" | "wasUserPaused" | "progressPercent">>,
 ): Promise<void> {
   const db = await openDb();
   return new Promise((resolve, reject) => {
