@@ -872,6 +872,7 @@ function BroadcastV2PageInner() {
     queryKey: ["broadcast-queue"],
     queryFn: () => api.get<{ items: BroadcastQueueRow[] }>("/admin/broadcast"),
     staleTime: 15_000,
+    refetchInterval: 30_000,
   });
 
   // Engine health — polls every 30 s. SSE events (broadcast-queue-updated,

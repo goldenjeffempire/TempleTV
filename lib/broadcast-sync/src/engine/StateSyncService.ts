@@ -65,6 +65,10 @@ export class StateSyncService {
   private sseLastEventMs = 0;
   private destroyed = false;
   private lastServerTimeMs = 0;
+  /** True while the WebSocket is open and healthy. Used to suppress the
+   *  OMEGA 30-s resync loop — when WS is delivering push updates there is
+   *  no need to also poll /api/playback/state every 30 s. */
+  private wsConnected = false;
 
   constructor(opts: BroadcastEngineOptions, callbacks: StateSyncCallbacks) {
     this.opts = opts;
@@ -86,7 +90,10 @@ export class StateSyncService {
     this.startSseSidecar();
 
     this.resyncInterval = setInterval(() => {
-      void this.fetchSnapshot();
+      // Skip the HTTP resync when WS is connected and actively delivering
+      // push updates — polling /api/playback/state every 30 s while a
+      // healthy WS is running is redundant and adds unnecessary server load.
+      if (!this.wsConnected) void this.fetchSnapshot();
     }, OMEGA_RESYNC_MS);
 
     // Immediate snapshot to paint before WS handshake completes.
@@ -120,6 +127,7 @@ export class StateSyncService {
     ws.addEventListener("open", () => {
       if (this.destroyed) return;
       this.reconnectDelay = MIN_RETRY_MS;
+      this.wsConnected = true;
       this.stopFallbackPoll();
       this.cb.onConnectionChanged("connected");
       // Fetch snapshot on (re)connect so the UI paints before the subscribe
@@ -140,6 +148,7 @@ export class StateSyncService {
 
     ws.addEventListener("close", () => {
       this.ws = null;
+      this.wsConnected = false;
       if (this.destroyed) return;
       this.cb.onConnectionChanged("disconnected");
       this.startFallbackPoll();

@@ -62,7 +62,12 @@ export interface LiveControllerCallbacks {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const CLIENT_POLL_MS = 45_000; // client checks every 45 s
+// Client polls every 2 min as a cold-start fallback and cross-check.
+// The server's own poller fires every 30-60 s and pushes results via SSE
+// ("yt-status") and via V2 WS frames, so the client poll is intentionally
+// much slower — it catches the brief pre-handshake window and acts as a
+// safety net when the server push channel is unavailable.
+const CLIENT_POLL_MS = 120_000; // client checks every 2 min
 const FETCH_TIMEOUT_MS = 6_000;
 
 // ── LiveStreamController ──────────────────────────────────────────────────────

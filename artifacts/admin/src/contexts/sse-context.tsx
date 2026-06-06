@@ -109,11 +109,13 @@ const OFFLINE_THRESHOLD_ATTEMPTS = 8;
 const WATCHDOG_INTERVAL_MS = 10_000;
 
 // Independent HTTP health-check cadence.
-// Runs at all times; triggers an SSE reconnect when the API recovers.
-// 8 s is a safe ceiling: well below Render's 30-s idle-proxy timeout,
-// and at most ~7 req/min per admin tab — comfortably within the
-// /broadcast-v2/health rate limit of 30 req/min.
-const HEALTH_CHECK_INTERVAL_MS = 8_000;
+// Runs only when SSE is NOT connected (degraded/offline/reconnecting).
+// 30 s is the right balance: fast enough to recover within one cycle after
+// an outage, without hammering /broadcast-v2/health while the SSE channel
+// is healthy. The server sends a "heartbeat" SSE frame every 10 s and the
+// zombie watchdog (WATCHDOG_INTERVAL_MS=10 s) detects stale sockets, so
+// there is no need for a sub-30 s health probe while SSE is up.
+const HEALTH_CHECK_INTERVAL_MS = 30_000;
 
 // SSE-token fetch timeout. 15 s gives cold-start APIs enough time to
 // respond before we give up and schedule the next backoff attempt.
@@ -130,6 +132,8 @@ const KNOWN_EVENTS = [
   "youtube-quota-throttled", "youtube-quota-exhausted", "prayer-received",
   "prayer-updated", "prayer-deleted", "chat-message", "emergency-broadcast",
   "live-ingest-stream-started", "live-ingest-stream-stopped",
+  "broadcast-v2-stall", "broadcast-v2-queue-issues",
+  "feedback-received", "youtube-quota-warning",
 ];
 
 function summarize(event: string, data: unknown): string | null {
@@ -153,9 +157,19 @@ function summarize(event: string, data: unknown): string | null {
       return `Transcoding ${s}`;
     }
     case "videos-library-updated": return "Video library updated";
+    case "broadcast-v2-stall": return d.autoSuspended ? `Auto-suspended: ${String(d.itemTitle ?? "item")}` : "Broadcast stall reported";
+    case "broadcast-v2-queue-issues": {
+      const errors = Number(d.errors ?? 0);
+      const warnings = Number(d.warnings ?? 0);
+      if (errors > 0) return `Queue: ${errors} critical issue${errors > 1 ? "s" : ""}`;
+      if (warnings > 0) return `Queue: ${warnings} warning${warnings > 1 ? "s" : ""}`;
+      return "Queue issues resolved";
+    }
     case "prayer-received": return d.hasName ? "New prayer request" : "Anonymous prayer";
     case "youtube-quota-throttled": return "YouTube quota throttled";
+    case "youtube-quota-warning": return `YouTube quota warning: ${String(d.percent ?? "")}% used`;
     case "youtube-quota-exhausted": return "YouTube quota exhausted";
+    case "feedback-received": return "New user feedback received";
     default: return event;
   }
 }
