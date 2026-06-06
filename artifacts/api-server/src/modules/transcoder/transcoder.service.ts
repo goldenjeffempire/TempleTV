@@ -1353,34 +1353,50 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
         })();
 
         const fallbackArgs = buildFfmpegArgs(activeSourcePath, scratchDir, renditionsToUse, hasAudio);
-        await new Promise<void>((resolve, reject) => {
-          const proc = spawn("ffmpeg", fallbackArgs, { stdio: ["ignore", "pipe", "pipe"] });
-          let tail = "";
-          proc.stdout?.on("data", (c: Buffer) => {
-            const lines = c.toString().split("\n");
-            for (const line of lines) {
-              const m = /^out_time_ms=(\d+)/.exec(line.trim());
-              if (m && durationSecs && req.onProgress) {
-                const sec = Number(m[1]) / 1_000_000;
-                const pct = Math.min(90, Math.max(0, Math.round((sec / durationSecs) * 90)));
-                void req.onProgress(pct);
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const proc = spawn("ffmpeg", fallbackArgs, { stdio: ["ignore", "pipe", "pipe"] });
+            let tail = "";
+            // Buffer stdout across chunks so out_time_ms= lines split over
+            // two data events are assembled correctly (mirrors the main path).
+            let fallbackStdoutBuf = "";
+            proc.stdout?.on("data", (c: Buffer) => {
+              fallbackStdoutBuf += c.toString();
+              const lines = fallbackStdoutBuf.split("\n");
+              fallbackStdoutBuf = lines.pop() ?? "";
+              for (const line of lines) {
+                const m = /^out_time_ms=(\d+)/.exec(line.trim());
+                if (m && durationSecs && req.onProgress) {
+                  const sec = Number(m[1]) / 1_000_000;
+                  const pct = Math.min(90, Math.max(0, Math.round((sec / durationSecs) * 90)));
+                  void req.onProgress(pct);
+                }
               }
-            }
+            });
+            proc.stderr?.on("data", (c: Buffer) => { tail = (tail + c.toString()).slice(-3000); });
+            const t = setTimeout(() => {
+              try { proc.kill("SIGKILL"); } catch { /* noop */ }
+              reject(new Error(
+                `ffmpeg 360p fallback timed out after ${Math.round(env.TRANSCODER_JOB_TIMEOUT_MS / 60_000)} min`,
+              ));
+            }, env.TRANSCODER_JOB_TIMEOUT_MS);
+            proc.on("error", (err) => { clearTimeout(t); reject(err); });
+            proc.on("close", (code) => {
+              clearTimeout(t);
+              if (code === 0) resolve();
+              else reject(new Error(`ffmpeg 360p fallback exited ${code}: ${tail.trim()}`));
+            });
           });
-          proc.stderr?.on("data", (c: Buffer) => { tail = (tail + c.toString()).slice(-3000); });
-          const t = setTimeout(() => {
-            try { proc.kill("SIGKILL"); } catch { /* noop */ }
-            reject(new Error(
-              `ffmpeg 360p fallback timed out after ${Math.round(env.TRANSCODER_JOB_TIMEOUT_MS / 60_000)} min`,
-            ));
-          }, env.TRANSCODER_JOB_TIMEOUT_MS);
-          proc.on("error", (err) => { clearTimeout(t); reject(err); });
-          proc.on("close", (code) => {
-            clearTimeout(t);
-            if (code === 0) resolve();
-            else reject(new Error(`ffmpeg 360p fallback exited ${code}: ${tail.trim()}`));
-          });
-        });
+        } catch (fallbackErr) {
+          // The 360p fallback itself failed. Stop and drain the progressive
+          // uploader NOW — before re-throwing — or fallbackProgressiveLoop
+          // continues running indefinitely after runTranscode() returns.
+          // progressiveActive is still true at this point; the exception
+          // escapes the if-block without reaching the cleanup lines below.
+          progressiveActive = false;
+          await fallbackProgressiveLoop.catch(() => {});
+          throw fallbackErr;
+        }
 
         // Stop the fallback progressive uploader before final upload pass.
         progressiveActive = false;

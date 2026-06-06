@@ -22,7 +22,7 @@ import { pipeline } from "node:stream/promises";
 import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, isNull, ne, or } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { storage } from "../../infrastructure/storage.js";
 import { logger as rootLogger } from "../../infrastructure/logger.js";
@@ -143,10 +143,17 @@ function scheduleEarlyThumbnail(opts: {
       // Only write thumbnailUrl when it is still empty — guard against a
       // concurrent HLS transcode that finished while we were running ffmpeg.
       const thumbUrl = `/api/v1/uploads/thumbs/${videoId}.jpg`;
+      // Guard: only write when thumbnailUrl is still empty/null — prevents
+      // overwriting a thumbnail set by a concurrent HLS transcode or manual edit.
+      // Must match BOTH "" (the coerced-from-null Zod value) and SQL NULL —
+      // `eq(videos.thumbnailUrl, "")` generates `WHERE thumbnail_url = ''` which
+      // does NOT match NULL, so newly-uploaded videos (thumbnailUrl IS NULL in DB)
+      // would have the extracted thumbnail uploaded to storage but the DB row never
+      // updated — silently discarding the thumbnail work.
       await db
         .update(videos)
         .set({ thumbnailUrl: thumbUrl })
-        .where(and(eq(videos.id, videoId), eq(videos.thumbnailUrl, "")));
+        .where(and(eq(videos.id, videoId), or(eq(videos.thumbnailUrl, ""), isNull(videos.thumbnailUrl))));
 
       log.info({ targetSecs, thumbKey }, "faststart: early poster-frame thumbnail saved");
       adminEventBus.push("videos-library-updated", { videoId, reason: "thumbnail-extracted" });

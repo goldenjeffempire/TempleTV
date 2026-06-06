@@ -188,6 +188,13 @@ class TranscoderDispatcher {
   private partialRecoveryCounter = 0;
   private static readonly PARTIAL_RECOVERY_TICKS = 18; // ~3 min at 10 s/tick
 
+  // Stuck-job watchdog counter — runs every STUCK_JOBS_TICKS ticks (~5 min).
+  // The shortest possible stuck window is TRANSCODER_JOB_TIMEOUT_MS (default 2 h)
+  // + 5 min grace period, so firing every 10 s wastes ~1 800 DB round-trips per
+  // timeout window without catching anything sooner.
+  private stuckJobsCounter = 0;
+  private static readonly STUCK_JOBS_TICKS = 30; // ~5 min at 10 s/tick
+
   // Scratch dir GC sweep counter — runs every SCRATCH_GC_TICKS ticks
   // (roughly every 30 minutes at the default 10-second poll cadence).
   private scratchGcCounter = 0;
@@ -590,9 +597,15 @@ class TranscoderDispatcher {
     if (this.storageCircuitOpenUntil > Date.now()) return { ran: false };
     this.running = true;
     try {
-      // Run the stuck-job watchdog on every tick to recover jobs that somehow
-      // outlived their timeout in a long-running production process.
-      await this.resetStuckJobs();
+      // Run the stuck-job watchdog periodically, not on every tick.
+      // The shortest detectable stuck window is TRANSCODER_JOB_TIMEOUT_MS
+      // (default 2 h) + 5 min grace, so firing every 10 s runs ~1 800
+      // unnecessary DB round-trips per timeout window.  Every ~5 min is plenty.
+      this.stuckJobsCounter++;
+      if (this.stuckJobsCounter >= TranscoderDispatcher.STUCK_JOBS_TICKS) {
+        this.stuckJobsCounter = 0;
+        await this.resetStuckJobs();
+      }
 
       // Periodic scratch directory GC (~every 30 min at 10 s/tick) so stale
       // dirs from SIGKILL-orphaned processes don't accumulate between restarts
