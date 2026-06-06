@@ -89,7 +89,25 @@ const PROCESS_BOOTED_AT_MS = Date.now();
 //   • Existing failed job    → re-arm (reset attempts, status = queued)
 //   • Queued/processing job  → leave it, return existing id (idempotent)
 //   • Done job with HLS set  → skipped by the hlsMasterUrl IS NULL filter
+//
+// In-flight guard: if a scan is already running (e.g. boot timer and an
+// event both fire within the same 200 ms window on Render multi-instance,
+// or a route call races the timer), the second invocation is a no-op.
+// This prevents duplicate FFmpeg jobs and redundant DB round-trips.
+let _hlsScanInFlight = false;
 async function autoEnqueueMissingHls(): Promise<{ triggered: number }> {
+  if (_hlsScanInFlight) {
+    logger.info("[broadcast-v2] auto-enqueue-missing-hls: scan already in flight, skipping");
+    return { triggered: 0 };
+  }
+  _hlsScanInFlight = true;
+  try {
+    return await _doAutoEnqueueMissingHls();
+  } finally {
+    _hlsScanInFlight = false;
+  }
+}
+async function _doAutoEnqueueMissingHls(): Promise<{ triggered: number }> {
   const q = schema.broadcastQueueTable;
   const v = schema.videosTable;
   let rows: Array<{
