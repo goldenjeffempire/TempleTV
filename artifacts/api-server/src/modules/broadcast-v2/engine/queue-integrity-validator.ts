@@ -184,6 +184,7 @@ class QueueIntegrityValidatorImpl {
         ) {
           const isCorrupt = row.vErrCode === "CORRUPT_SOURCE";
           const isSourceMissing = row.vErrCode === "SOURCE_MISSING";
+          const isDiskFull = row.vErrCode === "DISK_FULL";
           const noFaststart = !row.vFaststart;
           if (isCorrupt || isSourceMissing || noFaststart) {
             issues.push({
@@ -197,7 +198,9 @@ class QueueIntegrityValidatorImpl {
                   ? "CORRUPT_SOURCE error — moov atom absent; re-upload the source file"
                   : isSourceMissing
                   ? "SOURCE_MISSING error — source blob deleted from storage; re-upload the source file"
-                  : "faststartApplied=false — moov at EOF, raw MP4 cannot be streamed") +
+                  : isDiskFull
+                  ? "DISK_FULL error — transcoding failed due to insufficient disk space; free disk space and use Retry to re-transcode"
+                  : "faststartApplied=false — moov at EOF, raw MP4 cannot be streamed; re-transcode or re-upload the source file") +
                 " and no HLS fallback. Item will skip every tick until deactivated.",
             });
           }

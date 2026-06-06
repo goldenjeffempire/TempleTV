@@ -587,7 +587,27 @@ class TranscoderDispatcher {
       const requeuedVideoIds = resetResults.filter((r) => !r.failed).map((r) => r.videoId);
 
       if (failedVideoIds.length > 0) {
-        await db.update(videos).set({ transcodingStatus: "failed" }).where(inArray(videos.id, failedVideoIds));
+        const timeoutMinutes = Math.round(env.TRANSCODER_JOB_TIMEOUT_MS / 60_000);
+        // Guard: never downgrade a video that has already reached hls_ready (same
+        // guard as the re-queue path above). A narrow race exists where HLS
+        // completes and writes hls_ready to managed_videos just before this update
+        // runs — without the guard the watchdog would overwrite it with "failed".
+        await db.update(videos)
+          .set({
+            transcodingStatus: "failed",
+            // Surface the timeout reason in managed_videos so the admin panel
+            // shows an actionable error message (not just a bare "failed" badge).
+            // The normal dispatcher failure path writes this field; the watchdog
+            // previously left it null, making timed-out failures invisible in the UI.
+            transcodingErrorMessage:
+              `Job permanently timed out after ${timeoutMinutes} min on every attempt. ` +
+              `Retry the job once disk space / memory conditions have been confirmed — ` +
+              `the source file is still available for re-transcoding.`,
+          })
+          .where(and(
+            inArray(videos.id, failedVideoIds),
+            ne(videos.transcodingStatus, "hls_ready"),
+          ));
       }
       if (requeuedVideoIds.length > 0) {
         // Guard: never revert a video that has already reached hls_ready
