@@ -560,7 +560,10 @@ class QueueIntegrityValidatorImpl {
             INNER JOIN managed_videos mv ON mv.id = bq.video_id
             WHERE bq.is_active = false
               AND bq.validator_deactivated_reason = 'corrupt_upload'
-              AND mv.hls_master_url IS NOT NULL
+              AND (
+                mv.hls_master_url IS NOT NULL
+                OR mv.faststart_applied = true
+              )
           `);
           revivedCorruptRows = (result.rows as RevivedRow[]) ?? [];
         } catch (qErr) {

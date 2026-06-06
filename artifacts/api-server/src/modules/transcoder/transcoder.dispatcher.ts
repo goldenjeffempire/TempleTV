@@ -368,6 +368,43 @@ class TranscoderDispatcher {
               progress: 100,
               hlsMasterUrl: masterUrl,
             });
+
+            // Sync broadcast_queue.duration_secs from the video row's real
+            // duration. The finalize path writes a 1800-second placeholder;
+            // the normal dispatcher success path corrects it, but that write
+            // was lost in the same crash that left the video at 'encoding'.
+            // Without this correction the orchestrator uses 1800 s for cycle
+            // timing, causing dead-air gaps when the video ends early.
+            try {
+              const videoRow = await db
+                .select({ duration: videos.duration })
+                .from(videos)
+                .where(eq(videos.id, job.videoId))
+                .limit(1)
+                .then((r) => r[0]);
+              const parsedSecs = videoRow?.duration ? Math.round(parseFloat(videoRow.duration)) : null;
+              if (parsedSecs && parsedSecs > 10 && parsedSecs !== 1800) {
+                await db
+                  .update(schema.broadcastQueueTable)
+                  .set({ durationSecs: parsedSecs })
+                  .where(eq(schema.broadcastQueueTable.videoId, job.videoId))
+                  .catch((err) => {
+                    logger.warn({ err, videoId: job.videoId }, "transcoder: partial-success recovery duration sync failed (non-fatal)");
+                  });
+              }
+            } catch (durErr) {
+              logger.warn({ err: durErr, videoId: job.videoId }, "transcoder: partial-success recovery duration lookup failed (non-fatal)");
+            }
+
+            // Bust the public video catalogue cache so TV/mobile clients
+            // immediately reflect the healed hls_ready status instead of
+            // serving the stale 'encoding' state until the TTL expires.
+            void invalidateVideosCatalogCache();
+            // Notify the admin library and connected clients that this
+            // video's status changed — essential for the admin panel to
+            // update the transcoding badge without a manual refresh.
+            adminEventBus.push("videos-library-updated", { videoId: job.videoId, reason: "partial-success-recovery" });
+
             // The video just became airable HLS — notify the broadcast
             // orchestrator so it can pick up the upgraded source promptly
             // instead of continuing on the raw MP4 fallback until its next scan.
