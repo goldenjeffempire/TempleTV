@@ -324,6 +324,14 @@ const Env = z.object({
   // MEMORY_RESTART_RSS_MB.
   HLS_MAX_CONCURRENT: z.coerce.number().int().positive().default(30),
 
+  // How long (ms) to wait after SIGTERM before starting to close services.
+  // During this window /healthz returns HTTP 503 so the upstream load balancer
+  // observes the failure and stops routing new requests — the core mechanism
+  // for zero-downtime rolling restarts. Set to ≥ 2× the LB health-check
+  // interval. 0 = begin closing immediately (original behaviour; fine for dev).
+  // Recommended production value: 5000–10000 ms.
+  SHUTDOWN_PRECLOSE_DELAY_MS: z.coerce.number().int().nonnegative().default(0),
+
   // F20: how long (ms) the shutdown handler waits for open SSE connections
   // to drain naturally before forcing app.close(). Gives long-polling clients
   // a chance to receive their in-flight frame and reconnect cleanly.

@@ -18,6 +18,7 @@ import { verifyMailer } from "./infrastructure/mailer.js";
 import { broadcastScheduler } from "./modules/broadcast/broadcast-scheduler.js";
 import { startKeepAlive, stopKeepAlive } from "./modules/network/keep-alive.js";
 import { startMemoryWatchdog, stopMemoryWatchdog } from "./infrastructure/memory-watchdog.js";
+import { markShuttingDown } from "./infrastructure/shutdown-flag.js";
 import { schema } from "./infrastructure/db.js";
 import { hashPassword } from "./modules/auth/password.js";
 import { nanoid } from "nanoid";
@@ -231,7 +232,7 @@ async function main() {
   // Does NOT block startup — all items are advisory except the hard guards
   // already enforced by their respective route modules (e.g. video-serve
   // throws if REQUIRE_HLS_TOKEN=true without HLS_TOKEN_SECRET).
-  if (isProdNodeEnv) {
+  if (env.NODE_ENV === "production") {
     const configErrors: string[] = [];
     const configWarnings: string[] = [];
 
@@ -274,6 +275,14 @@ async function main() {
       configWarnings.push(
         "REDIS_URL unset — running single-instance mode; rate-limit counters and " +
         "pub/sub are in-process only (fine for single-node deploys)",
+      );
+    }
+    if (env.SHUTDOWN_PRECLOSE_DELAY_MS === 0) {
+      configWarnings.push(
+        "SHUTDOWN_PRECLOSE_DELAY_MS=0 — /healthz returns 503 on SIGTERM immediately " +
+        "but there is no pre-drain delay; set to 5000–10000 ms so your load balancer " +
+        "has time to observe the 503 and stop routing before connections are closed " +
+        "(required for zero-downtime rolling restarts on Render / AWS ALB / k8s)",
       );
     }
 
@@ -526,7 +535,25 @@ async function main() {
   const shutdown = async (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    // Signal the health liveness probe to return 503 immediately so upstream
+    // load balancers (Render, AWS ALB, k8s ingress, Replit proxy) observe the
+    // failure and stop routing new requests before we close any connections.
+    // This is the key mechanism for zero-downtime rolling restarts.
+    markShuttingDown();
     logger.info({ signal }, "graceful shutdown starting");
+
+    // Give the load balancer time to act on the 503 from /healthz before
+    // we start closing services. SHUTDOWN_PRECLOSE_DELAY_MS should be set
+    // to ≥ 2× the LB health-check interval in production (recommended: 5000).
+    // Defaults to 0 (instant) so dev restarts are unaffected.
+    if (env.SHUTDOWN_PRECLOSE_DELAY_MS > 0) {
+      logger.info(
+        { delayMs: env.SHUTDOWN_PRECLOSE_DELAY_MS },
+        "pre-shutdown LB drain delay — /healthz returning 503, waiting for LB to drain traffic",
+      );
+      await new Promise<void>((r) => setTimeout(r, env.SHUTDOWN_PRECLOSE_DELAY_MS));
+    }
+
     if (mode === "worker" && workerKeepalive) clearInterval(workerKeepalive);
     if (mode === "api" || mode === "all") {
       broadcastEngine.stop();

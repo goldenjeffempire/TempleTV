@@ -10,6 +10,7 @@ import { broadcastOrchestrator } from "../broadcast-v2/engine/broadcast-orchestr
 import { streamHealthAggregator } from "../broadcast/stream-health.js";
 import { liveOverridesService } from "../live-overrides/live-overrides.service.js";
 import { env } from "../../config/env.js";
+import { isShuttingDown } from "../../infrastructure/shutdown-flag.js";
 
 const HealthSchema = z.object({
   status: z.enum(["ok", "degraded", "down"]),
@@ -37,14 +38,28 @@ export async function healthRoutes(app: FastifyInstance) {
   // both `/healthz` (k8s convention) and `/health` (the more common
   // load-balancer / uptime-monitor convention) so we don't have to
   // pick one and break a downstream consumer.
+  //
+  // During graceful shutdown (SIGTERM received) the probe returns 503 so
+  // upstream load balancers (Render, AWS ALB, k8s ingress, Replit proxy)
+  // observe the failure, stop routing new requests, and drain in-flight
+  // traffic — the core mechanism for zero-downtime rolling restarts.
+  // The SHUTDOWN_PRECLOSE_DELAY_MS window in main.ts gives the LB time to
+  // act on the 503 before any connections are actively closed.
   const liveness = async (_req: unknown, reply: FastifyReply) => {
     reply.header("Cache-Control", "no-store, max-age=0");
+    if (isShuttingDown()) {
+      reply.code(503);
+      return { status: "shutting_down" as const };
+    }
     return { status: "ok" as const };
   };
   const livenessSchema = {
     tags: ["health"],
-    summary: "Liveness probe (cheap)",
-    response: { 200: z.object({ status: z.literal("ok") }) },
+    summary: "Liveness probe — returns 503 during graceful shutdown so LBs drain traffic",
+    response: {
+      200: z.object({ status: z.literal("ok") }),
+      503: z.object({ status: z.literal("shutting_down") }),
+    },
   };
   r.get("/healthz", { schema: livenessSchema }, liveness);
   r.get("/health", { schema: livenessSchema }, liveness);
