@@ -306,23 +306,39 @@ const Env = z.object({
 
   // ── A5: Scalability — HLS proxy concurrency ───────────────────────────────
   // Maximum simultaneous in-flight requests to the /api/hls/* proxy.
-  // Prevents a single burst of clients from overwhelming the S3 connection
-  // pool. Requests beyond this limit receive 503 with Retry-After: 5.
-  // Each concurrent HLS segment request holds an 8 MiB Buffer for the duration
-  // of the response.  Peak HLS RSS = HLS_MAX_CONCURRENT × 8 MiB.
+  // Requests beyond this limit receive 503 with Retry-After: 5.
   //
-  // Budget calculation (conservative):
-  //   Node.js baseline RSS          ≈ 150 MB
-  //   HLS buffers (30 × 8 MiB)     ≈ 240 MB
-  //   Other in-flight requests      ≈  60 MB
-  //   Total                         ≈ 450 MB
+  // CRITICAL MEMORY MATH — read before raising this value:
   //
-  // Default is 30 so the peak fits comfortably inside a 512 MB Render free-tier
-  // instance (MEMORY_RESTART_RSS_MB default: 600 MB).  Raise this only after
-  // raising MEMORY_RESTART_RSS_MB to match — the memory watchdog will emit a
-  // startup warning if HLS_MAX_CONCURRENT × 8 MB + 300 MB headroom exceeds
-  // MEMORY_RESTART_RSS_MB.
-  HLS_MAX_CONCURRENT: z.coerce.number().int().positive().default(30),
+  // The pg driver decodes PostgreSQL BYTEA columns via hex encoding at the
+  // text-protocol level.  For an 8 MiB HLS segment the wire data is a 16 MiB
+  // hex string that is allocated in the V8 heap before being decoded into an
+  // 8 MiB external Buffer.  Peak per-request V8 heap impact = 16 MiB (hex
+  // string, transient) + 8 MiB external Buffer (held until client ACKs).
+  //
+  // Budget calculation:
+  //   Per concurrent request (V8 hex, transient) : 16 MiB
+  //   Per concurrent request (external Buffer)   :  8 MiB
+  //   Node.js + API baseline RSS                 : ~300 MiB
+  //
+  //   At HLS_MAX_CONCURRENT=10 (default):
+  //     V8 hex strings  : 10 × 16 MiB = 160 MiB  (within 460 MiB cap ✓)
+  //     External buffers: 10 ×  8 MiB =  80 MiB
+  //     Total peak RSS  : ~540 MiB    (fits MEMORY_RESTART_RSS_MB=768 ✓)
+  //
+  //   At HLS_MAX_CONCURRENT=30 (former default — DO NOT USE on 460 MiB heap):
+  //     V8 hex strings  : 30 × 16 MiB = 480 MiB  > 460 MiB V8 cap → OOM! ✗
+  //     External buffers: 30 ×  8 MiB = 240 MiB
+  //     Total peak RSS  : ~1020 MiB   → triggers MEMORY_RESTART_RSS_MB
+  //
+  // Recommended values by deployment size:
+  //   Development (--max-old-space-size=460, 512 MB container): 10  (default)
+  //   Production  (--max-old-space-size=900, 2 GiB container) : 20  (set via env)
+  //   Production  (--max-old-space-size=460, 1 GiB container) : 10
+  //
+  // Raise MEMORY_RESTART_RSS_MB proportionally when raising this value.
+  // video-serve.routes.ts emits a startup WARN when the budget would overflow.
+  HLS_MAX_CONCURRENT: z.coerce.number().int().positive().default(10),
 
   // How long (ms) to wait after SIGTERM before starting to close services.
   // During this window /healthz returns HTTP 503 so the upstream load balancer

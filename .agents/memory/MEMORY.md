@@ -1,3 +1,4 @@
+- [HLS OOM memory math](hls-oom-memory-math.md) — pg BYTEA hex strings add 16 MiB V8 heap per concurrent HLS request (not 8 MiB); HLS_MAX_CONCURRENT=30 on 460 MiB heap → OOM; production MEMORY thresholds were inverted causing 2 GB restart-overlap crash.
 - [SSE KNOWN_EVENTS completeness](sse-known-events-completeness.md) — useSSEEvent() silently never fires if the event name is missing from KNOWN_EVENTS in sse-context.tsx; always add both there AND in summarize().
 - [Orchestrator probe must bypass media-proxy](orchestrator-probe-bypass-media-proxy.md) — probes must call extractRawProbeUrl() to strip media-proxy wrapper; redirect:"manual" SSRF guard + prod upload redirect → false 403 → RECOVERING_PRIMARY.
 - [Zero-downtime shutdown via shutdown-flag singleton](zero-downtime-shutdown.md) — /healthz returns 503 on SIGTERM via shutdown-flag.ts; markShuttingDown() called before any service closes; SHUTDOWN_PRECLOSE_DELAY_MS env var (default 0) delays close for LB drain.
