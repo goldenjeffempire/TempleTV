@@ -13,8 +13,8 @@
  * Offline: shows a banner when navigator.onLine is false (items are auto-paused).
  */
 
-import { useState, useEffect } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useState, useEffect, useCallback } from "react";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
   uploadQueue,
   useUploadQueue,
@@ -23,6 +23,8 @@ import {
   formatEta,
   type UploadStatus,
 } from "@/lib/upload-queue";
+import { api, HttpError } from "@/lib/api";
+import { toast } from "sonner";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -41,6 +43,7 @@ import {
   Loader2,
   Ban,
   WifiOff,
+  ListPlus,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -87,13 +90,43 @@ function StatusBadge({ status }: { status: UploadStatus }) {
 
 // ── Per-file row ──────────────────────────────────────────────────────────────
 
-function UploadRow({ item }: { item: ReturnType<typeof useUploadQueue>["items"][number] }) {
+type QueueActionState = "idle" | "loading" | "queued" | "conflict";
+
+function UploadRow({
+  item,
+  qc,
+}: {
+  item: ReturnType<typeof useUploadQueue>["items"][number];
+  qc: QueryClient;
+}) {
   const isActive    = item.status === "uploading" || item.status === "finalizing";
   const isPaused    = item.status === "paused";
   const isFailed    = item.status === "failed";
   const isCancelled = item.status === "cancelled";
   const isCompleted = item.status === "completed";
   const isPending   = item.status === "pending";
+
+  const [queueAction, setQueueAction] = useState<QueueActionState>("idle");
+
+  const handleAddToQueue = useCallback(async () => {
+    if (!item.videoId || queueAction !== "idle") return;
+    setQueueAction("loading");
+    try {
+      await api.post("/admin/broadcast", { videoId: item.videoId, allowPending: true });
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
+      setQueueAction("queued");
+      toast.success(`"${item.title || item.file.name}" added to broadcast queue.`);
+    } catch (err) {
+      if (err instanceof HttpError && err.status === 409) {
+        setQueueAction("conflict");
+      } else {
+        setQueueAction("idle");
+        const msg = err instanceof HttpError ? err.message : "Failed to add to broadcast queue.";
+        toast.error(msg);
+      }
+    }
+  }, [item.videoId, item.title, item.file.name, queueAction, qc]);
 
   return (
     <div className="px-3 py-2.5 border-b border-border/50 last:border-0">
@@ -140,7 +173,7 @@ function UploadRow({ item }: { item: ReturnType<typeof useUploadQueue>["items"][
 
           {/* Status line for terminal states */}
           {!isActive && !isPaused && (
-            <div className="flex items-center gap-1.5 mt-0.5">
+            <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
               <StatusBadge status={item.status} />
               {isFailed && item.error && (
                 <p
@@ -158,6 +191,17 @@ function UploadRow({ item }: { item: ReturnType<typeof useUploadQueue>["items"][
               {isCompleted && (
                 <span className="text-[10px] text-muted-foreground">
                   · {formatBytes(item.file.size)}
+                </span>
+              )}
+              {/* Inline confirmation states */}
+              {isCompleted && queueAction === "queued" && (
+                <span className="text-[10px] text-green-600 dark:text-green-400 font-medium flex-shrink-0">
+                  · Added to queue
+                </span>
+              )}
+              {isCompleted && queueAction === "conflict" && (
+                <span className="text-[10px] text-muted-foreground flex-shrink-0">
+                  · Already in queue
                 </span>
               )}
             </div>
@@ -210,6 +254,30 @@ function UploadRow({ item }: { item: ReturnType<typeof useUploadQueue>["items"][
               <RefreshCw size={11} />
             </Button>
           )}
+
+          {/* Add to broadcast queue — only for completed items with a server-side videoId */}
+          {isCompleted && item.videoId && queueAction === "idle" && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 text-muted-foreground hover:text-primary"
+              onClick={() => { void handleAddToQueue(); }}
+              title="Add to broadcast queue"
+            >
+              <ListPlus size={11} />
+            </Button>
+          )}
+          {isCompleted && item.videoId && queueAction === "loading" && (
+            <Button variant="ghost" size="icon" className="h-6 w-6" disabled>
+              <Loader2 size={11} className="animate-spin" />
+            </Button>
+          )}
+          {isCompleted && item.videoId && queueAction === "queued" && (
+            <Button variant="ghost" size="icon" className="h-6 w-6 text-green-500 cursor-default" disabled>
+              <CheckCircle2 size={11} />
+            </Button>
+          )}
+
           {(isCompleted || isFailed || isCancelled || isPending || isPaused) && (
             <Button
               variant="ghost"
@@ -399,7 +467,7 @@ export function UploadQueuePanel() {
       {!collapsed && (
         <div className="max-h-80 overflow-y-auto border-t border-border/50">
           {items.map((item) => (
-            <UploadRow key={item.id} item={item} />
+            <UploadRow key={item.id} item={item} qc={qc} />
           ))}
         </div>
       )}
