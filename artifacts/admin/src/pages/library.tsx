@@ -7,15 +7,30 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem,
+  DropdownMenuSeparator, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import {
   Youtube, RefreshCw, Search, Clock, CheckCircle2, XCircle,
   AlertCircle, ChevronLeft, ChevronRight, Eye, Film, Calendar,
   TrendingUp, Database, Loader2, WifiOff, History, UploadCloud,
+  MoreVertical, Pencil, Star, StarOff, Lock, LockOpen, Trash2,
 } from "lucide-react";
 import { formatDistanceToNow, format } from "date-fns";
 import { useSSEEvent } from "@/contexts/sse-context";
@@ -77,6 +92,7 @@ interface VideoRow {
   importedAt: string;
   viewCount: number;
   featured: boolean;
+  metadataLocked: boolean;
   videoSource: string;
   transcodingStatus?: string | null;
   transcodingErrorCode?: string | null;
@@ -209,9 +225,6 @@ export default function LibraryPage() {
       void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
       void qc.invalidateQueries({ queryKey: ["youtube-sync-history"] });
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
-      // Newly synced YouTube videos also appear in the Videos tab (admin-videos).
-      // Invalidate so an admin on the Videos page sees the new entries immediately.
-      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
     },
     onError: (err) => {
       const msg = (err as Error).message ?? "Sync failed";
@@ -224,7 +237,6 @@ export default function LibraryPage() {
     void qc.invalidateQueries({ queryKey: ["youtube-sync-status"] });
     void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
     void qc.invalidateQueries({ queryKey: ["admin-stats"] });
-    void qc.invalidateQueries({ queryKey: ["admin-videos"] });
   });
 
   const isSyncing = syncMutation.isPending || (status?.syncInProgress ?? false);
@@ -613,173 +625,453 @@ export default function LibraryPage() {
   );
 }
 
-function VideoCard({ video }: { video: VideoRow }) {
+interface YtEditForm {
+  title: string;
+  description: string;
+  category: string;
+  preacher: string;
+  metadataLocked: boolean;
+  featured: boolean;
+}
+
+function snapshotYt(f: YtEditForm) {
+  return JSON.stringify({ ...f, title: f.title.trim(), preacher: f.preacher.trim() });
+}
+
+const TITLE_MAX = 200;
+const DESC_MAX = 5000;
+const PREACHER_MAX = 100;
+
+function VideoCard({ video: initialVideo }: { video: VideoRow }) {
+  // Use local copy so optimistic updates feel instant even before refetch.
+  const [video, setVideo] = useState(initialVideo);
   const ytUrl = video.youtubeId
     ? `https://www.youtube.com/watch?v=${video.youtubeId}`
     : null;
 
+  const [editOpen, setEditOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [editForm, setEditForm] = useState<YtEditForm>({
+    title: "", description: "", category: "", preacher: "", metadataLocked: false, featured: false,
+  });
+  const [editOriginalSnap, setEditOriginalSnap] = useState("");
+  const [editError, setEditError] = useState<string | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const queryClient = useQueryClient();
+
+  const invalidateLibrary = () => {
+    void queryClient.invalidateQueries({ queryKey: ["youtube-library-videos"] });
+    void queryClient.invalidateQueries({ queryKey: ["admin-stats"] });
+  };
 
   const resetMutation = useMutation({
     mutationFn: () =>
       api.post(`/api/v1/admin/videos/${video.id}/reset-for-reupload`) as Promise<{
-        ok: boolean;
-        videoId: string;
-        title: string;
-        category: string | null;
-        preacher: string | null;
-        description: string;
+        ok: boolean; videoId: string; title: string;
+        category: string | null; preacher: string | null; description: string;
       }>,
-    onSuccess: (_data, _vars) => {
-      void queryClient.invalidateQueries({ queryKey: ["admin-videos"] });
-    },
     onError: (err: unknown) => {
-      toast.error(
-        err instanceof Error ? err.message : "Failed to reset video — try again.",
-      );
+      toast.error(err instanceof Error ? err.message : "Failed to reset video — try again.");
     },
   });
 
-  function handleReuploadClick() {
-    fileInputRef.current?.click();
+  const updateMutation = useMutation({
+    mutationFn: (body: Partial<YtEditForm>) =>
+      api.patch<VideoRow>(`/admin/videos/${video.id}`, body),
+    onSuccess: (updated) => {
+      setVideo(updated);
+      toast.success("Saved");
+      setEditOpen(false);
+      invalidateLibrary();
+    },
+    onError: (err: unknown) => {
+      setEditError(err instanceof Error ? err.message : "Save failed — please try again.");
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: () => api.delete(`/admin/videos/${video.id}`),
+    onSuccess: () => {
+      toast.success(`"${video.title}" deleted`);
+      setDeleteOpen(false);
+      invalidateLibrary();
+    },
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : "Delete failed — please try again.");
+    },
+  });
+
+  const featureMutation = useMutation({
+    mutationFn: (featured: boolean) => api.patch<VideoRow>(`/admin/videos/${video.id}`, { featured }),
+    onSuccess: (updated) => {
+      setVideo(updated);
+      toast.success(updated.featured ? "Marked as featured" : "Removed from featured");
+      invalidateLibrary();
+    },
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : "Action failed");
+    },
+  });
+
+  const lockMutation = useMutation({
+    mutationFn: (metadataLocked: boolean) =>
+      api.patch<VideoRow>(`/admin/videos/${video.id}`, { metadataLocked }),
+    onSuccess: (updated) => {
+      setVideo(updated);
+      toast.success(updated.metadataLocked ? "Metadata locked" : "Metadata unlocked");
+      invalidateLibrary();
+    },
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : "Action failed");
+    },
+  });
+
+  function openEdit() {
+    const form: YtEditForm = {
+      title: video.title,
+      description: video.description ?? "",
+      category: video.category ?? "",
+      preacher: video.preacher ?? "",
+      metadataLocked: video.metadataLocked ?? false,
+      featured: video.featured,
+    };
+    setEditForm(form);
+    setEditOriginalSnap(snapshotYt(form));
+    setEditError(null);
+    setEditOpen(true);
   }
+
+  function handleReuploadClick() { fileInputRef.current?.click(); }
 
   async function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!e.target) return;
-    // Reset so the same file can be re-selected if needed
     (e.target as HTMLInputElement).value = "";
     if (!file) return;
-
     try {
       const meta = await resetMutation.mutateAsync();
       uploadQueue.enqueue([{
-        file,
-        title: meta.title,
-        category: meta.category ?? "",
-        preacher: meta.preacher ?? "",
-        description: meta.description,
-        featured: false,
-        priority: 0,
+        file, title: meta.title, category: meta.category ?? "",
+        preacher: meta.preacher ?? "", description: meta.description,
+        featured: false, priority: 0,
       }]);
-      toast.success(
-        `"${meta.title}" queued for upload. You can delete this entry once the new upload completes.`,
-        { duration: 6000 },
-      );
+      toast.success(`"${meta.title}" queued for upload. You can delete this entry once the new upload completes.`, { duration: 6000 });
     } catch {
       // resetMutation.onError already surfaced the toast
     }
   }
 
-  return (
-    <Card className="overflow-hidden group hover:border-primary/40 transition-colors flex flex-col">
-      {/* Hidden file input for re-upload */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="video/*"
-        className="sr-only"
-        tabIndex={-1}
-        aria-hidden="true"
-        onChange={handleFileSelected}
-      />
-      {/* Thumbnail */}
-      <div className="relative aspect-video bg-black overflow-hidden">
-        {video.thumbnailUrl ? (
-          <img
-            src={video.thumbnailUrl}
-            alt={video.title}
-            className="w-full h-full object-contain transition-transform duration-300"
-            loading="lazy"
-            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-          />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center">
-            <Film size={24} className="text-muted-foreground/20" />
-          </div>
-        )}
-        {/* Duration badge */}
-        {video.duration && parseInt(video.duration, 10) > 0 && (
-          <span className="absolute bottom-1.5 right-1.5 bg-black/80 text-white text-[10px] px-1.5 py-0.5 rounded font-mono">
-            {formatDurationSecs(video.duration)}
-          </span>
-        )}
-        {/* Corrupt-source badge — clickable to pick a replacement file */}
-        {video.transcodingErrorCode === "CORRUPT_SOURCE" && (
-          <button
-            type="button"
-            onClick={handleReuploadClick}
-            disabled={resetMutation.isPending}
-            title={
-              resetMutation.isPending
-                ? "Resetting…"
-                : (video.transcodingErrorMessage ?? "Moov atom absent — click to upload a replacement file")
-            }
-            className="absolute top-1.5 left-1.5 flex items-center gap-1 bg-red-600/90 hover:bg-red-500/95 active:bg-red-700 text-white text-[10px] font-medium px-1.5 py-0.5 rounded transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
-          >
-            {resetMutation.isPending ? (
-              <Loader2 size={10} className="animate-spin" />
-            ) : (
-              <UploadCloud size={10} />
-            )}
-            {resetMutation.isPending ? "Resetting…" : "Re-upload required"}
-          </button>
-        )}
-        {/* Generic transcoding-failed badge (non-CORRUPT_SOURCE) */}
-        {video.transcodingStatus === "failed" && video.transcodingErrorCode !== "CORRUPT_SOURCE" && (
-          <div
-            className="absolute top-1.5 left-1.5 flex items-center gap-1 bg-amber-600/90 text-white text-[10px] font-medium px-1.5 py-0.5 rounded"
-            title={video.transcodingErrorMessage ?? "Transcoding failed — check the transcoding panel for details"}
-          >
-            <XCircle size={10} />
-            Transcode failed
-          </div>
-        )}
-        {/* YouTube link overlay */}
-        {ytUrl && (
-          <a
-            href={ytUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 bg-black/30 transition-opacity"
-            aria-label="Watch on YouTube"
-          >
-            <div className="bg-red-600 rounded-full p-2.5">
-              <Youtube size={18} className="text-white" />
-            </div>
-          </a>
-        )}
-      </div>
+  const titleTrimmed = editForm.title.trim();
+  const dirty = snapshotYt(editForm) !== editOriginalSnap;
+  const titleInvalid = titleTrimmed.length === 0 || titleTrimmed.length > TITLE_MAX;
+  const descOver = editForm.description.length > DESC_MAX;
+  const preacherOver = editForm.preacher.trim().length > PREACHER_MAX;
+  const canSave = dirty && !titleInvalid && !descOver && !preacherOver && !updateMutation.isPending;
 
-      {/* Metadata */}
-      <CardContent className="pt-2.5 pb-3 flex flex-col gap-1 flex-1">
-        <p className="text-sm font-medium leading-snug line-clamp-2">{video.title}</p>
-        <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
-          {video.category && (
-            <Badge variant="secondary" className="text-[10px] capitalize px-1.5 py-0">
-              {video.category}
-            </Badge>
+  function submitEdit() {
+    if (!canSave) return;
+    setEditError(null);
+    const delta: Partial<YtEditForm> = {};
+    const cur = editForm;
+    if (cur.title.trim() !== (video.title ?? "")) delta.title = cur.title.trim();
+    if (cur.description !== (video.description ?? "")) delta.description = cur.description;
+    if (cur.category !== (video.category ?? "")) delta.category = cur.category;
+    if (cur.preacher.trim() !== (video.preacher ?? "")) delta.preacher = cur.preacher.trim();
+    if (cur.metadataLocked !== (video.metadataLocked ?? false)) delta.metadataLocked = cur.metadataLocked;
+    if (cur.featured !== video.featured) delta.featured = cur.featured;
+    if (Object.keys(delta).length === 0) { setEditOpen(false); return; }
+    updateMutation.mutate(delta);
+  }
+
+  return (
+    <>
+      <Card className="overflow-hidden group hover:border-primary/40 transition-colors flex flex-col">
+        {/* Hidden file input for re-upload */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="video/*"
+          className="sr-only"
+          tabIndex={-1}
+          aria-hidden="true"
+          onChange={handleFileSelected}
+        />
+        {/* Thumbnail */}
+        <div className="relative aspect-video bg-black overflow-hidden">
+          {video.thumbnailUrl ? (
+            <img
+              src={video.thumbnailUrl}
+              alt={video.title}
+              className="w-full h-full object-contain transition-transform duration-300"
+              loading="lazy"
+              onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center">
+              <Film size={24} className="text-muted-foreground/20" />
+            </div>
           )}
-          {video.preacher && (
-            <span className="text-[11px] text-muted-foreground truncate">{video.preacher}</span>
-          )}
-        </div>
-        <div className="flex items-center gap-3 text-[11px] text-muted-foreground mt-auto pt-1.5">
-          {video.publishedAt && (
-            <span className="flex items-center gap-1">
-              <Calendar size={10} />
-              {format(new Date(video.publishedAt), "MMM d, yyyy")}
+          {/* Duration badge */}
+          {video.duration && parseInt(video.duration, 10) > 0 && (
+            <span className="absolute bottom-1.5 right-1.5 bg-black/80 text-white text-[10px] px-1.5 py-0.5 rounded font-mono">
+              {formatDurationSecs(video.duration)}
             </span>
           )}
-          {video.viewCount > 0 && (
-            <span className="flex items-center gap-1">
-              <Eye size={10} />
-              {video.viewCount.toLocaleString()}
+          {/* Featured star */}
+          {video.featured && (
+            <span className="absolute top-1.5 left-1.5 bg-amber-500/90 text-white p-0.5 rounded">
+              <Star size={10} className="fill-white" />
             </span>
           )}
+          {/* Metadata-locked indicator */}
+          {video.metadataLocked && (
+            <span className="absolute top-1.5 right-1.5 bg-blue-600/80 text-white p-0.5 rounded" title="Metadata locked — YouTube sync won't overwrite">
+              <Lock size={10} />
+            </span>
+          )}
+          {/* Corrupt-source badge */}
+          {video.transcodingErrorCode === "CORRUPT_SOURCE" && (
+            <button
+              type="button"
+              onClick={handleReuploadClick}
+              disabled={resetMutation.isPending}
+              title={resetMutation.isPending ? "Resetting…" : (video.transcodingErrorMessage ?? "Moov atom absent — click to upload a replacement file")}
+              className="absolute top-1.5 left-1.5 flex items-center gap-1 bg-red-600/90 hover:bg-red-500/95 active:bg-red-700 text-white text-[10px] font-medium px-1.5 py-0.5 rounded transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {resetMutation.isPending ? <Loader2 size={10} className="animate-spin" /> : <UploadCloud size={10} />}
+              {resetMutation.isPending ? "Resetting…" : "Re-upload required"}
+            </button>
+          )}
+          {/* YouTube link overlay */}
+          {ytUrl && (
+            <a
+              href={ytUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 bg-black/30 transition-opacity"
+              aria-label="Watch on YouTube"
+            >
+              <div className="bg-red-600 rounded-full p-2.5">
+                <Youtube size={18} className="text-white" />
+              </div>
+            </a>
+          )}
+          {/* Actions menu — top-right, only visible on hover */}
+          <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.preventDefault()}>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 bg-black/60 hover:bg-black/80 text-white rounded"
+                  aria-label={`Actions for ${video.title}`}
+                >
+                  <MoreVertical size={14} />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={openEdit}>
+                  <Pencil size={13} className="mr-2" /> Edit metadata
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => featureMutation.mutate(!video.featured)} disabled={featureMutation.isPending}>
+                  {video.featured
+                    ? <><StarOff size={13} className="mr-2" /> Unfeature</>
+                    : <><Star size={13} className="mr-2" /> Feature</>}
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => lockMutation.mutate(!video.metadataLocked)} disabled={lockMutation.isPending}>
+                  {video.metadataLocked
+                    ? <><LockOpen size={13} className="mr-2" /> Unlock metadata</>
+                    : <><Lock size={13} className="mr-2" /> Lock metadata</>}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="text-red-600 focus:text-red-600"
+                  onClick={() => setDeleteOpen(true)}
+                >
+                  <Trash2 size={13} className="mr-2" /> Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
-      </CardContent>
-    </Card>
+
+        {/* Metadata */}
+        <CardContent className="pt-2.5 pb-3 flex flex-col gap-1 flex-1">
+          <p className="text-sm font-medium leading-snug line-clamp-2">{video.title}</p>
+          <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+            {video.category && (
+              <Badge variant="secondary" className="text-[10px] capitalize px-1.5 py-0">
+                {video.category}
+              </Badge>
+            )}
+            {video.preacher && (
+              <span className="text-[11px] text-muted-foreground truncate">{video.preacher}</span>
+            )}
+          </div>
+          <div className="flex items-center gap-3 text-[11px] text-muted-foreground mt-auto pt-1.5">
+            {video.publishedAt && (
+              <span className="flex items-center gap-1">
+                <Calendar size={10} />
+                {format(new Date(video.publishedAt), "MMM d, yyyy")}
+              </span>
+            )}
+            {video.viewCount > 0 && (
+              <span className="flex items-center gap-1">
+                <Eye size={10} />
+                {video.viewCount.toLocaleString()}
+              </span>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── Edit Dialog ─────────────────────────────────────────────────────── */}
+      <Dialog open={editOpen} onOpenChange={(o) => { if (!o && updateMutation.isPending) return; setEditOpen(o); if (!o) setEditError(null); }}>
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
+          <DialogHeader className="flex-shrink-0">
+            <DialogTitle className="flex items-center gap-2"><Pencil size={15} /> Edit YouTube video</DialogTitle>
+            <DialogDescription>
+              Changes are applied to the local library record. Lock metadata to prevent the next YouTube sync from overwriting category &amp; preacher.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex-1 overflow-y-auto space-y-4 min-h-0 pr-1" onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); submitEdit(); } }}>
+            {/* Title */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="yt-edit-title">Title <span className="text-red-500">*</span></Label>
+                <span className={`text-[11px] tabular-nums ${titleTrimmed.length > TITLE_MAX ? "text-red-600" : "text-muted-foreground/60"}`}>
+                  {titleTrimmed.length}/{TITLE_MAX}
+                </span>
+              </div>
+              <input
+                id="yt-edit-title"
+                autoFocus
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                value={editForm.title}
+                maxLength={TITLE_MAX + 50}
+                onChange={(e) => setEditForm(f => ({ ...f, title: e.target.value }))}
+              />
+              {titleInvalid && (
+                <p className="text-[11px] text-red-600">
+                  {titleTrimmed.length === 0 ? "Title is required." : `Title must be ${TITLE_MAX} characters or fewer.`}
+                </p>
+              )}
+            </div>
+            {/* Description */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="yt-edit-desc">Description</Label>
+                <span className={`text-[11px] tabular-nums ${descOver ? "text-red-600" : "text-muted-foreground/60"}`}>
+                  {editForm.description.length}/{DESC_MAX}
+                </span>
+              </div>
+              <Textarea
+                id="yt-edit-desc"
+                rows={4}
+                className="resize-y"
+                value={editForm.description}
+                placeholder="Optional description"
+                onChange={(e) => setEditForm(f => ({ ...f, description: e.target.value }))}
+              />
+            </div>
+            {/* Category + Preacher */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Category</Label>
+                <Select value={editForm.category === "" ? "__none__" : editForm.category} onValueChange={(v) => setEditForm(f => ({ ...f, category: v === "__none__" ? "" : v }))}>
+                  <SelectTrigger className="h-9"><SelectValue placeholder="Select…" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__"><span className="text-muted-foreground">None</span></SelectItem>
+                    {CATEGORIES.map(c => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <Label>Preacher</Label>
+                  <span className={`text-[11px] tabular-nums ${preacherOver ? "text-red-600" : "text-muted-foreground/60"}`}>
+                    {editForm.preacher.length}/{PREACHER_MAX}
+                  </span>
+                </div>
+                <input
+                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  value={editForm.preacher}
+                  maxLength={PREACHER_MAX + 25}
+                  placeholder="Speaker name"
+                  onChange={(e) => setEditForm(f => ({ ...f, preacher: e.target.value }))}
+                />
+              </div>
+            </div>
+            {/* Featured */}
+            <div className="flex items-center justify-between rounded-lg border p-3 bg-muted/20">
+              <div>
+                <Label className="text-sm font-medium">Featured</Label>
+                <p className="text-xs text-muted-foreground">Show in home-screen hero rotation</p>
+              </div>
+              <Switch checked={editForm.featured} onCheckedChange={(v) => setEditForm(f => ({ ...f, featured: v }))} />
+            </div>
+            {/* Metadata lock */}
+            <div className="flex items-center justify-between rounded-lg border p-3 bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800">
+              <div className="flex items-start gap-2">
+                {editForm.metadataLocked
+                  ? <Lock size={15} className="text-blue-600 mt-0.5 flex-shrink-0" />
+                  : <LockOpen size={15} className="text-muted-foreground mt-0.5 flex-shrink-0" />}
+                <div>
+                  <Label className="text-sm font-medium">Lock metadata</Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Prevent the next YouTube sync from overwriting category &amp; preacher.
+                  </p>
+                </div>
+              </div>
+              <Switch checked={editForm.metadataLocked} onCheckedChange={(v) => setEditForm(f => ({ ...f, metadataLocked: v }))} />
+            </div>
+            {editError && (
+              <div className="rounded-md border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/20 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+                {editError}
+              </div>
+            )}
+          </div>
+          <DialogFooter className="flex-shrink-0 border-t border-border pt-4 mt-2 gap-2 sm:gap-0">
+            <span className="text-[11px] text-muted-foreground mr-auto self-center hidden sm:block">
+              {dirty ? "Unsaved changes — ⌘/Ctrl+Enter to save" : "No changes"}
+            </span>
+            <Button variant="ghost" onClick={() => setEditOpen(false)} disabled={updateMutation.isPending}>Cancel</Button>
+            <Button onClick={submitEdit} disabled={!canSave}>
+              {updateMutation.isPending ? "Saving…" : "Save changes"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Delete Confirm Dialog ──────────────────────────────────────────── */}
+      <AlertDialog open={deleteOpen} onOpenChange={(o) => { if (!o && deleteMutation.isPending) return; setDeleteOpen(o); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete YouTube video?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently remove <strong>{video.title}</strong> from the library record.
+              The video remains on YouTube but won't appear in the admin library unless re-synced.
+              {" "}This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {deleteMutation.isError && (
+            <div className="rounded-md border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/20 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+              {deleteMutation.error instanceof Error ? deleteMutation.error.message : "Delete failed — please try again."}
+            </div>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteMutation.isPending}>Cancel</AlertDialogCancel>
+            <Button
+              className="bg-red-600 hover:bg-red-700 text-white"
+              disabled={deleteMutation.isPending}
+              onClick={() => { if (!deleteMutation.isPending) deleteMutation.mutate(); }}
+            >
+              {deleteMutation.isPending ? "Deleting…" : "Delete"}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }

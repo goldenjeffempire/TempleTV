@@ -178,7 +178,7 @@ export default function VideosPage() {
   const [search, setSearch] = useState("");
   const [searchInput, setSearchInput] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [sourceFilter, setSourceFilter] = useState("all");
+  // Source is always "local" — YouTube content lives in the YouTube Library page.
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [sortOrder, setSortOrder] = useState("newest");
   const [editVideo, setEditVideo] = useState<AdminVideo | null>(null);
@@ -217,12 +217,11 @@ export default function VideosPage() {
   // ── Data fetching ──────────────────────────────────────────────────────────
 
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ["admin-videos", page, search, statusFilter, sourceFilter, categoryFilter, sortOrder],
+    queryKey: ["admin-videos", page, search, statusFilter, categoryFilter, sortOrder],
     queryFn: () => {
-      const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE), sort: sortOrder });
+      const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE), sort: sortOrder, source: "local" });
       if (search) params.set("search", search);
       if (statusFilter !== "all") params.set("transcodingStatus", statusFilter);
-      if (sourceFilter !== "all") params.set("source", sourceFilter);
       if (categoryFilter !== "all") params.set("category", categoryFilter);
       return api.get<VideoListResponse>(`/admin/videos?${params}`);
     },
@@ -580,10 +579,10 @@ export default function VideosPage() {
 
   const resetFilters = () => {
     setSearch(""); setSearchInput(""); setStatusFilter("all");
-    setSourceFilter("all"); setCategoryFilter("all"); setSortOrder("newest"); setPage(1);
+    setCategoryFilter("all"); setSortOrder("newest"); setPage(1);
     setSelectedIds(new Set());
   };
-  const hasActiveFilters = search || statusFilter !== "all" || sourceFilter !== "all" || categoryFilter !== "all" || sortOrder !== "newest";
+  const hasActiveFilters = search || statusFilter !== "all" || categoryFilter !== "all" || sortOrder !== "newest";
 
   // ── Multi-file upload helpers ──────────────────────────────────────────────
 
@@ -702,7 +701,7 @@ export default function VideosPage() {
 
       <PageHeader
         title="Videos"
-        description={`${data?.total ?? 0} videos in library`}
+        description={`${data?.total ?? 0} locally uploaded video${(data?.total ?? 0) !== 1 ? "s" : ""}`}
         actions={
           <div className="flex gap-2">
             <Button variant="outline" size="sm" onClick={() => void refetch()} className="gap-1.5">
@@ -748,18 +747,6 @@ export default function VideosPage() {
           </div>
           <Button size="sm" variant="secondary" className="h-8" onClick={handleSearch}>Search</Button>
         </div>
-
-        {/* Source */}
-        <Select value={sourceFilter} onValueChange={(v) => { setSourceFilter(v); setPage(1); setSelectedIds(new Set()); }}>
-          <SelectTrigger className="h-8 text-sm w-36">
-            <SelectValue placeholder="Source" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All sources</SelectItem>
-            <SelectItem value="youtube"><span className="flex items-center gap-1.5"><Youtube size={11} />YouTube</span></SelectItem>
-            <SelectItem value="local"><span className="flex items-center gap-1.5"><HardDrive size={11} />Uploaded</span></SelectItem>
-          </SelectContent>
-        </Select>
 
         {/* Category */}
         <Select value={categoryFilter} onValueChange={(v) => { setCategoryFilter(v); setPage(1); setSelectedIds(new Set()); }}>
@@ -857,7 +844,7 @@ export default function VideosPage() {
                 size="sm"
                 variant="outline"
                 className="h-7 text-xs border-amber-300 text-amber-700 hover:bg-amber-100 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-amber-950/40"
-                onClick={() => { setStatusFilter("failed"); setSourceFilter("local"); setPage(1); }}
+                onClick={() => { setStatusFilter("failed"); setPage(1); }}
               >
                 Show failed
               </Button>
@@ -999,10 +986,7 @@ export default function VideosPage() {
                       )}
                     </div>
                     <div className="flex items-center gap-3 mt-0.5 flex-wrap">
-                      {v.videoSource === "youtube"
-                        ? <span className="text-[10px] text-muted-foreground/60 flex items-center gap-0.5"><Youtube size={9} />YouTube</span>
-                        : <span className="text-[10px] text-muted-foreground/60 flex items-center gap-0.5"><HardDrive size={9} />Uploaded</span>
-                      }
+                      <span className="text-[10px] text-muted-foreground/60 flex items-center gap-0.5"><HardDrive size={9} />Uploaded</span>
                       {v.preacher && <span className="text-xs text-muted-foreground">{v.preacher}</span>}
                       {v.category && <span className="text-xs text-muted-foreground capitalize">{v.category}</span>}
                       {v.duration && <span className="text-xs text-muted-foreground">{formatDuration(v.duration)}</span>}
@@ -1645,9 +1629,9 @@ export default function VideosPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Transcode {selectedIds.size} video{selectedIds.size !== 1 ? "s" : ""}?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will queue {selectedIds.size} local video{selectedIds.size !== 1 ? "s" : ""} for HLS transcoding.
+              This will queue {selectedIds.size} video{selectedIds.size !== 1 ? "s" : ""} for HLS transcoding.
               Transcoding is CPU-intensive — large batches will take time and may delay individual completions.
-              YouTube videos in the selection are skipped automatically.
+              Videos already at HLS-ready status are skipped automatically.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1679,8 +1663,7 @@ export default function VideosPage() {
             <AlertDialogTitle>Delete video?</AlertDialogTitle>
             <AlertDialogDescription>
               This will permanently remove <strong>{deleteVideo?.title}</strong> from the library.
-              {deleteVideo?.videoSource !== "youtube" && " The stored video file will also be deleted."}
-              {" "}This action cannot be undone.
+              {" "}The stored video file will also be deleted. This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           {deleteMutation.isError && (
