@@ -44,6 +44,7 @@ export default function UsersPage() {
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("all");
   const [deletingUser, setDeletingUser] = useState<AdminUser | null>(null);
+  const [banningUser, setBanningUser] = useState<AdminUser | null>(null);
 
   // Debounce search input so we only fire a server query after 350 ms of
   // inactivity rather than on every keystroke.
@@ -242,11 +243,11 @@ export default function UsersPage() {
                       ))}
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
-                        onClick={() => banChatMutation.mutate(user.id)}
+                        onClick={() => setBanningUser(user)}
                         disabled={banChatMutation.isPending}
                         className="text-amber-600 focus:text-amber-600"
                       >
-                        <Ban size={13} className="mr-2" /> Ban from chat
+                        <Ban size={13} className="mr-2" /> Ban from chat…
                       </DropdownMenuItem>
                       <DropdownMenuItem
                         onClick={() => setDeletingUser(user)}
@@ -263,6 +264,29 @@ export default function UsersPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Ban from chat confirmation dialog */}
+      <AlertDialog open={!!banningUser} onOpenChange={(open) => { if (!open) setBanningUser(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Ban user from chat?</AlertDialogTitle>
+            <AlertDialogDescription>
+              <strong>{banningUser?.displayName ?? banningUser?.email}</strong> will be prevented
+              from sending chat messages. This action can be reversed by a moderator.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-amber-600 text-white hover:bg-amber-700"
+              onClick={() => { if (banningUser) { banChatMutation.mutate(banningUser.id); setBanningUser(null); } }}
+              disabled={banChatMutation.isPending}
+            >
+              Ban from chat
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Delete confirmation dialog */}
       <AlertDialog open={!!deletingUser} onOpenChange={(open) => { if (!open) setDeletingUser(null); }}>

@@ -196,14 +196,14 @@ export default function AnalyticsPage() {
   });
 
   const concurrentRange: RangeKey = range === "90d" ? "90d" : range === "30d" ? "30d" : "7d";
-  const { data: concData, isLoading: concLoading, refetch: refetchConc } = useQuery({
+  const { data: concData, isLoading: concLoading, isError: concError, refetch: refetchConc } = useQuery({
     queryKey: ["analytics-concurrent", concurrentRange],
     queryFn: () => api.get<ConcurrentViewers>(`/admin/analytics/concurrent?range=${concurrentRange}`),
     staleTime: 60_000,
     placeholderData: keepPreviousData,
   });
 
-  const { data: platData, isLoading: platLoading, refetch: refetchPlat } = useQuery({
+  const { data: platData, isLoading: platLoading, isError: platError, refetch: refetchPlat } = useQuery({
     queryKey: ["analytics-platform-trends", range],
     queryFn: () => api.get<DailyPlatformTrends>(`/admin/analytics/platform-trends?range=${range}`),
     staleTime: 60_000,
@@ -395,6 +395,13 @@ export default function AnalyticsPage() {
           <ChartErrorBoundary label="Concurrent viewers chart">
             {concLoading ? (
               <Skeleton className="h-56 w-full" />
+            ) : concError ? (
+              <div className="flex flex-col items-center justify-center h-56 gap-2 text-sm text-muted-foreground">
+                <span>Could not load concurrent viewer data.</span>
+                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => void refetchConc()}>
+                  <RefreshCw size={12} className="mr-1" /> Retry
+                </Button>
+              </div>
             ) : concChartData.length > 0 ? (
               <ResponsiveContainer width="100%" height={240}>
                 <AreaChart data={concChartData} margin={{ left: 0, right: 8, top: 8, bottom: 4 }}>
@@ -586,6 +593,13 @@ export default function AnalyticsPage() {
           <ChartErrorBoundary label="Device breakdown chart">
             {platLoading ? (
               <Skeleton className="h-56 w-full" />
+            ) : platError ? (
+              <div className="flex flex-col items-center justify-center h-56 gap-2 text-sm text-muted-foreground">
+                <span>Could not load device session data.</span>
+                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => void refetchPlat()}>
+                  <RefreshCw size={12} className="mr-1" /> Retry
+                </Button>
+              </div>
             ) : platChartData.length > 0 ? (
               <ResponsiveContainer width="100%" height={220}>
                 <BarChart data={platChartData} margin={{ left: 0, right: 8, top: 4, bottom: 4 }}>

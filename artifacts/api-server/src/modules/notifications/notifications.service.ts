@@ -1,4 +1,4 @@
-import { count, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, lt, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { z } from "zod";
 import { db, schema } from "../../infrastructure/db.js";
@@ -12,6 +12,32 @@ import type {
 const sent = schema.notificationsTable;
 const pushTokens = schema.pushTokensTable;
 const webPush = schema.webPushSubscriptionsTable;
+
+/**
+ * Startup/periodic recovery for immediate push notifications stuck in "pending"
+ * due to a process crash between DB insert and delivery completion.
+ *
+ * Rows older than 30 minutes with status="pending" are presumed lost and
+ * marked "failed" so the history list doesn't show them as in-flight forever.
+ */
+export async function recoverStuckPendingNotifications(): Promise<void> {
+  try {
+    const staleThreshold = sql`NOW() - INTERVAL '30 minutes'`;
+    const result = await db
+      .update(sent)
+      .set({ status: "failed" })
+      .where(and(eq(sent.status, "pending"), lt(sent.sentAt, staleThreshold)))
+      .returning({ id: sent.id });
+    if (result.length > 0) {
+      logger.warn(
+        { count: result.length, ids: result.map((r) => r.id) },
+        "notifications: marked stuck pending rows as failed (process crash recovery)",
+      );
+    }
+  } catch (err) {
+    logger.warn({ err }, "notifications: recoverStuckPendingNotifications failed (non-fatal)");
+  }
+}
 
 function toDto(row: typeof sent.$inferSelect) {
   const sentAtIso = row.sentAt.toISOString();

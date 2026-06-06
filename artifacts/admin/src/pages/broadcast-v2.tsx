@@ -2227,7 +2227,9 @@ function BroadcastV2PageInner() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {!engineHealth ? (
+          {engineHealthError ? (
+            <p className="text-sm text-muted-foreground">Could not load engine health — retrying…</p>
+          ) : !engineHealth ? (
             <p className="text-sm text-muted-foreground">Loading…</p>
           ) : (
             <div className="grid gap-4 text-sm grid-cols-1 sm:grid-cols-2 xl:grid-cols-4">

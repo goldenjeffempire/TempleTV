@@ -301,7 +301,7 @@ function SystemEventsLog() {
 export default function OperationsPage() {
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["system-metrics"],
-    queryFn: () => api.get<SystemMetrics>("/admin/system/metrics").catch(() => null),
+    queryFn: () => api.get<SystemMetrics>("/admin/system/metrics"),
     refetchInterval: 10_000,
     staleTime: 8_000,
   });

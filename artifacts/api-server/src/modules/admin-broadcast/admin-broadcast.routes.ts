@@ -141,7 +141,7 @@ const PatchBodySchema = z.object({
 });
 
 const ReorderBodySchema = z.object({
-  itemIds: z.array(z.string().min(1)).min(1),
+  itemIds: z.array(z.string().min(1)).min(1).max(500),
 });
 
 const HealthItemSchema = z.object({

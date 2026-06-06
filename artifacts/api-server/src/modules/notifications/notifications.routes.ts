@@ -9,9 +9,12 @@ import {
   SendPushBodySchema,
   SendPushResponseSchema,
 } from "./notifications.schemas.js";
-import { notificationsService } from "./notifications.service.js";
+import { notificationsService, recoverStuckPendingNotifications } from "./notifications.service.js";
 
 export async function notificationsRoutes(app: FastifyInstance) {
+  app.addHook("onReady", () => {
+    void recoverStuckPendingNotifications();
+  });
   const r = app.withTypeProvider<ZodTypeProvider>();
 
   r.get(

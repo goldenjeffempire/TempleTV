@@ -47,5 +47,5 @@ export const AddVideoBodySchema = z.object({
 });
 
 export const ReorderBodySchema = z.object({
-  videoIds: z.array(z.string().min(1)).min(1),
+  videoIds: z.array(z.string().min(1)).min(1).max(500),
 });

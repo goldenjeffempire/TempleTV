@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { index, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 import { usersTable } from "./users";
 
 export const passwordResetTokensTable = pgTable("password_reset_tokens", {
@@ -10,4 +10,6 @@ export const passwordResetTokensTable = pgTable("password_reset_tokens", {
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   usedAt: timestamp("used_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => ({
+  userIdIdx: index("idx_password_reset_tokens_user_id").on(table.userId),
+}));
