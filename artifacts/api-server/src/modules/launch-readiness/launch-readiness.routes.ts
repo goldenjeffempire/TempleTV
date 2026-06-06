@@ -214,9 +214,20 @@ export async function launchReadinessRoutes(app: FastifyInstance) {
               key: "transcodes-failed",
               label: "Failed transcodes",
               status: "warning",
-              detail: `${failedTranscodes} videos failed to transcode`,
-              action: "Re-run the transcoding pipeline for failed videos",
+              detail: `${failedTranscodes} video${failedTranscodes === 1 ? "" : "s"} failed to transcode`,
+              action: 'Open the Transcoding page and click "Retry All Failed" to re-queue every failed job in one click',
             },
+        ...(env.TRANSCODER_DISABLE && localVideos > 0
+          ? [
+              {
+                key: "transcoder-disabled",
+                label: "Transcoder operational",
+                status: "warning" as const,
+                detail: "TRANSCODER_DISABLE is set — ffmpeg processing is off; local uploads cannot be converted to HLS",
+                action: "Remove the TRANSCODER_DISABLE environment variable from your server config to re-enable automatic HLS transcoding",
+              },
+            ]
+          : []),
       ];
 
       const broadcastChecks: Check[] = [
