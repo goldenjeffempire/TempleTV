@@ -275,10 +275,15 @@ services:
       - key: NODE_OPTIONS
         value: "--max-old-space-size=256 --max-http-header-size=16384"
 
-      # Layer 3: observability. WARN at 380 MiB RSS — actionable lead time
+      # Layer 3: observability. WARN at 430 MiB RSS — actionable lead time
       # before the 512 MiB cgroup ceiling is hit. Logged via pino + Sentry.
+      # Raised from 380 → 430 (June 2026): with a 256 MiB V8 heap cap,
+      # steady-state RSS sits at ~380-420 MiB (heap + glibc arenas + pg pool
+      # + pino buffers), so 380 triggered constant false-positive ops-alerts
+      # during normal operation. 430 only fires when RSS is genuinely
+      # approaching the 480 MiB restart threshold.
       - key: MEMORY_WARN_RSS_MB
-        value: "380"
+        value: "430"
 
       # Layer 4: in-process self-restart at 480 MiB RSS. Graceful drain +
       # restart well below the 512 MiB OOM-killer threshold (~32 MiB margin).
@@ -361,6 +366,16 @@ services:
         sync: false
       - key: CLIENT_ERROR_SINK_TOKEN
         sync: false
+
+      # ── YouTube sync quota management ──────────────────────────────────────
+      # YouTube Data API v3 free-tier quota: 10,000 units/day.
+      # At 15-min intervals (96 syncs/day) a full channel sync exhausts quota
+      # by midday, forcing fallback to RSS (last ~15 videos only).
+      # 30-min intervals (48 syncs/day) consume ~half the quota, keeping the
+      # full API sync available all day. Raise back to 15 if quota is increased
+      # in the Google Cloud Console.
+      - key: YOUTUBE_SYNC_INTERVAL_MINS
+        value: "30"
 
       # ── Object storage paths ───────────────────────────────────────────────
       - key: DEFAULT_OBJECT_STORAGE_BUCKET_ID
