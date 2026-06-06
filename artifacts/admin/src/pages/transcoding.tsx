@@ -28,6 +28,8 @@ interface TranscodingJob {
   status: "queued" | "encoding" | "processing" | "ready" | "hls_ready" | "failed" | "cancelled";
   progress?: number;
   createdAt: string;
+  startedAt?: string | null;
+  lastProgressAt?: string | null;
   updatedAt?: string;
   errorMessage?: string | null;
   transcodingErrorCode?: string | null;
@@ -276,14 +278,32 @@ export default function TranscodingPage() {
               <div className="space-y-3">
                 {active.map(job => {
                   const cfg = STATUS_CONFIG[job.status] ?? STATUS_CONFIG.queued;
+                  const STALL_MS = 10 * 60_000; // 10 min without a progress update
+                  const progressStalledMs = job.lastProgressAt
+                    ? Date.now() - new Date(job.lastProgressAt).getTime()
+                    : job.startedAt
+                    ? Date.now() - new Date(job.startedAt).getTime()
+                    : null;
+                  const isProgressStalled =
+                    job.status === "encoding" &&
+                    progressStalledMs !== null &&
+                    progressStalledMs > STALL_MS;
                   return (
-                    <div key={job.id} className="border rounded-lg p-3 space-y-2">
+                    <div
+                      key={job.id}
+                      className={`border rounded-lg p-3 space-y-2 ${isProgressStalled ? "border-amber-400/60 bg-amber-50/30 dark:bg-amber-900/10" : ""}`}
+                    >
                       <div className="flex items-center gap-2">
                         {cfg.icon}
                         <div className="flex-1 min-w-0">
                           <p className="font-medium text-sm truncate">{job.videoTitle || job.videoId}</p>
                           <p className="text-xs text-muted-foreground font-mono">{job.id.slice(0, 20)}…</p>
                         </div>
+                        {isProgressStalled && (
+                          <Badge variant="outline" className="border-amber-400 text-amber-600 dark:text-amber-400 gap-1 text-[11px] shrink-0">
+                            <AlertCircle size={10} /> Stalled
+                          </Badge>
+                        )}
                         <Badge variant={cfg.color as "outline" | "secondary" | "default" | "destructive"}>
                           {cfg.label}
                         </Badge>
@@ -291,14 +311,23 @@ export default function TranscodingPage() {
                       {job.status === "encoding" && (
                         <div className="space-y-1">
                           <Progress value={job.progress ?? 0} className="h-1.5" />
-                          {job.progress != null && (
-                            <p className="text-xs text-muted-foreground">{job.progress}% complete</p>
-                          )}
+                          <div className="flex items-center justify-between">
+                            {job.progress != null && (
+                              <p className="text-xs text-muted-foreground">{job.progress}% complete</p>
+                            )}
+                            {isProgressStalled && progressStalledMs !== null && (
+                              <p className="text-xs text-amber-600 dark:text-amber-400">
+                                No progress update for {Math.round(progressStalledMs / 60_000)} min — watchdog will reset shortly
+                              </p>
+                            )}
+                          </div>
                         </div>
                       )}
                       <div className="flex items-center justify-between">
                         <p className="text-xs text-muted-foreground">
-                          Started {formatDistanceToNow(new Date(job.createdAt), { addSuffix: true })}
+                          {job.startedAt
+                            ? `Started ${formatDistanceToNow(new Date(job.startedAt), { addSuffix: true })}`
+                            : `Queued ${formatDistanceToNow(new Date(job.createdAt), { addSuffix: true })}`}
                         </p>
                         {job.status === "queued" && (
                           <Button

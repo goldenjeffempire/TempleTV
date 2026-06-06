@@ -14,6 +14,7 @@ export const transcodingJobsTable = pgTable("transcoding_jobs", {
   startedAt: timestamp("started_at", { withTimezone: true }),
   completedAt: timestamp("completed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  lastProgressAt: timestamp("last_progress_at", { withTimezone: true }),
 }, (t) => [
   index("idx_transcoding_jobs_status").on(t.status),
   index("idx_transcoding_jobs_video_id").on(t.videoId),

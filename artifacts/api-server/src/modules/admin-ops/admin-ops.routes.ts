@@ -521,6 +521,12 @@ const TranscodingJobSchema = z.object({
   startedAt: z.string().nullable(),
   completedAt: z.string().nullable(),
   createdAt: z.string(),
+  // Timestamp of the most recent progress update from the FFmpeg encoder.
+  // Null until the first onProgress callback fires (i.e. while status='queued'
+  // or in the first few seconds after the job starts encoding).  The admin UI
+  // uses this to surface a "progress stalled" warning when a processing job
+  // has not updated its progress in > 10 minutes.
+  lastProgressAt: z.string().nullable(),
   // F24: denormalized from managed_videos via JOIN at list time
   videoTitle: z.string().nullable(),
   videoThumbnail: z.string().nullable(),
@@ -561,6 +567,7 @@ function projectTranscodingJob(j: {
   startedAt: Date | null;
   completedAt: Date | null;
   createdAt: Date;
+  lastProgressAt?: Date | null;
   // F24: optional — populated when listJobs() does the LEFT JOIN
   videoTitle?: string | null;
   videoThumbnail?: string | null;
@@ -580,6 +587,7 @@ function projectTranscodingJob(j: {
     startedAt: j.startedAt ? j.startedAt.toISOString() : null,
     completedAt: j.completedAt ? j.completedAt.toISOString() : null,
     createdAt: j.createdAt.toISOString(),
+    lastProgressAt: j.lastProgressAt ? j.lastProgressAt.toISOString() : null,
     videoTitle: j.videoTitle ?? null,
     videoThumbnail: j.videoThumbnail ?? null,
     transcodingErrorCode: j.transcodingErrorCode ?? null,

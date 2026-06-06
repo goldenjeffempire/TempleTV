@@ -187,7 +187,7 @@ class QueueIntegrityValidatorImpl {
           const isSourceMissing = row.vErrCode === "SOURCE_MISSING";
           const isDiskFull = row.vErrCode === "DISK_FULL";
           const noFaststart = !row.vFaststart;
-          if (isCorrupt || isSourceMissing || noFaststart) {
+          if (isCorrupt || isSourceMissing || isDiskFull || noFaststart) {
             issues.push({
               severity: "error",
               itemId: row.id,
@@ -519,7 +519,12 @@ class QueueIntegrityValidatorImpl {
           if (!r.videoId || r.videoId2 === null) return false;
           if (r.qHlsUrl || r.vHlsUrl) return false; // HLS available — safe
           if (r.vStatus !== "failed") return false;  // still transcoding — leave active
-          return r.vErrCode === "CORRUPT_SOURCE" || r.vErrCode === "SOURCE_MISSING" || !r.vFaststart;
+          return (
+            r.vErrCode === "CORRUPT_SOURCE" ||
+            r.vErrCode === "SOURCE_MISSING" ||
+            r.vErrCode === "DISK_FULL" ||
+            !r.vFaststart
+          );
         })
         .map((r) => r.id);
 

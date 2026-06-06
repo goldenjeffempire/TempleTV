@@ -188,12 +188,26 @@ class TranscoderDispatcher {
   private partialRecoveryCounter = 0;
   private static readonly PARTIAL_RECOVERY_TICKS = 18; // ~3 min at 10 s/tick
 
-  // Stuck-job watchdog counter — runs every STUCK_JOBS_TICKS ticks (~5 min).
-  // The shortest possible stuck window is TRANSCODER_JOB_TIMEOUT_MS (default 2 h)
-  // + 5 min grace period, so firing every 10 s wastes ~1 800 DB round-trips per
-  // timeout window without catching anything sooner.
+  // Stuck-job watchdog counter — runs every STUCK_JOBS_TICKS ticks (~2 min).
+  // With the early-stuck (30 min no-progress) and stale-progress (15 min stall)
+  // detectors active, a 2-minute poll cadence keeps the detection window tight
+  // while still batching dozens of ticks into a single DB query.
   private stuckJobsCounter = 0;
-  private static readonly STUCK_JOBS_TICKS = 30; // ~5 min at 10 s/tick
+  private static readonly STUCK_JOBS_TICKS = 12; // ~2 min at 10 s/tick
+
+  // Early-stuck detector thresholds (not configurable via env — hardcoded for
+  // simplicity; operators who need different values can fork the dispatcher).
+  // - EARLY_STUCK_MS: if a job starts but never reports any progress within
+  //   this window, assume it crashed silently and reset it.
+  // - PROGRESS_STALE_MS: if a running job's lastProgressAt falls this far
+  //   behind wall-clock, it has stopped making progress (FFmpeg hung, disk
+  //   stall, OOM kill without SIGTERM).  Reset and requeue.
+  // - JOB_START_GRACE_MS: brand-new jobs are exempt from the stale-progress
+  //   check for this window so a legitimately slow first rendition pass isn't
+  //   misclassified as stalled.
+  private static readonly EARLY_STUCK_MS = 30 * 60_000;   // 30 min
+  private static readonly PROGRESS_STALE_MS = 15 * 60_000; // 15 min
+  private static readonly JOB_START_GRACE_MS = 5 * 60_000; // 5 min
 
   // Scratch dir GC sweep counter — runs every SCRATCH_GC_TICKS ticks
   // (roughly every 30 minutes at the default 10-second poll cadence).
@@ -532,6 +546,21 @@ class TranscoderDispatcher {
       const stuckCutoff = new Date(
         Date.now() - (env.TRANSCODER_JOB_TIMEOUT_MS + 5 * 60_000),
       );
+      // Early-stuck: job started N minutes ago but never reported any progress.
+      // Catches silent FFmpeg crashes that don't kill the Node process.
+      const earlyStuckCutoff = new Date(
+        Date.now() - TranscoderDispatcher.EARLY_STUCK_MS,
+      );
+      // Stale-progress: job reported progress at some point but has not updated
+      // lastProgressAt in N minutes.  Catches FFmpeg hung mid-encode (disk stall,
+      // OOM kill via SIGKILL before SIGTERM reached the process, etc.).
+      const progressStaleCutoff = new Date(
+        Date.now() - TranscoderDispatcher.PROGRESS_STALE_MS,
+      );
+      // Grace period: skip the stale-progress check for jobs that just started.
+      const graceCutoff = new Date(
+        Date.now() - TranscoderDispatcher.JOB_START_GRACE_MS,
+      );
 
       // Find stuck jobs first (read-only).
       const stuckJobs = await db
@@ -540,12 +569,29 @@ class TranscoderDispatcher {
           videoId: jobs.videoId,
           attempts: jobs.attempts,
           maxAttempts: jobs.maxAttempts,
+          startedAt: jobs.startedAt,
+          lastProgressAt: jobs.lastProgressAt,
         })
         .from(jobs)
         .where(
           and(
             eq(jobs.status, "processing"),
-            lt(jobs.startedAt, stuckCutoff),
+            or(
+              // Primary: exceeded full job timeout (unchanged).
+              lt(jobs.startedAt, stuckCutoff),
+              // Early-stuck: started 30+ min ago and never reported progress.
+              and(
+                lt(jobs.startedAt, earlyStuckCutoff),
+                isNull(jobs.lastProgressAt),
+              ),
+              // Stale-progress: progress was last updated 15+ min ago while job
+              // is past the initial grace window (i.e. it was making progress
+              // but has now stopped responding).
+              and(
+                lt(jobs.startedAt, graceCutoff),
+                lt(jobs.lastProgressAt, progressStaleCutoff),
+              ),
+            ),
           ),
         );
 
@@ -557,6 +603,20 @@ class TranscoderDispatcher {
         const newAttempts = stuck.attempts + 1;
         const exceeded = newAttempts >= stuck.maxAttempts;
         const timeoutMinutes = Math.round(env.TRANSCODER_JOB_TIMEOUT_MS / 60_000);
+        const earlyStuckMinutes = Math.round(TranscoderDispatcher.EARLY_STUCK_MS / 60_000);
+        const progressStaleMinutes = Math.round(TranscoderDispatcher.PROGRESS_STALE_MS / 60_000);
+
+        // Determine which watchdog condition triggered so the reset message is
+        // as specific as possible (helps operators diagnose the root cause).
+        const isFullTimeout = stuck.startedAt !== null && stuck.startedAt < stuckCutoff;
+        const isNoProgress = !isFullTimeout && stuck.lastProgressAt === null;
+        // isProgressStale: had progress before, but none recently.
+
+        const watchdogReason = isFullTimeout
+          ? `job exceeded ${timeoutMinutes}-minute processing limit`
+          : isNoProgress
+          ? `job reported no progress after ${earlyStuckMinutes} minutes (silent crash or FFmpeg spawn failure)`
+          : `job has not updated progress in ${progressStaleMinutes} minutes (FFmpeg hung mid-encode)`;
 
         // Atomic claim: only update if still "processing" (multi-replica safe).
         const claimed = await db
@@ -566,12 +626,11 @@ class TranscoderDispatcher {
             progress: 0,
             attempts: newAttempts,
             startedAt: null,
+            lastProgressAt: null,
             completedAt: exceeded ? new Date() : null,
             errorMessage: exceeded
-              ? `Job permanently failed after ${newAttempts} timeout(s). ` +
-                `Exceeded ${timeoutMinutes}-minute processing limit on every attempt — operator review required.`
-              : `Watchdog reset (attempt ${newAttempts}/${stuck.maxAttempts}): ` +
-                `job exceeded ${timeoutMinutes}-minute processing limit — re-queuing for retry.`,
+              ? `Job permanently failed after ${newAttempts} attempt(s): ${watchdogReason}. Operator review required.`
+              : `Watchdog reset (attempt ${newAttempts}/${stuck.maxAttempts}): ${watchdogReason} — re-queuing for retry.`,
           })
           .where(and(eq(jobs.id, stuck.id), eq(jobs.status, "processing")))
           .returning({ id: jobs.id });
@@ -758,7 +817,8 @@ class TranscoderDispatcher {
             const now = Date.now();
             if (now - lastProgressUpdate < 5000 && pct < 100) return;
             lastProgressUpdate = now;
-            await db.update(jobs).set({ progress: pct }).where(eq(jobs.id, job.id)).catch((err) => {
+            const progressTs = new Date();
+            await db.update(jobs).set({ progress: pct, lastProgressAt: progressTs }).where(eq(jobs.id, job.id)).catch((err) => {
               logger.warn({ err, jobId: job.id, pct }, "transcoder: progress update failed (non-fatal)");
             });
           },

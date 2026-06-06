@@ -1206,13 +1206,20 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
         stdoutBuf = lines.pop() ?? "";
         for (const line of lines) {
           const m = /^out_time_ms=(\d+)/.exec(line.trim());
-          if (m && durationSecs && req.onProgress) {
+          if (m && req.onProgress) {
             const sec = Number(m[1]) / 1_000_000;
             // Map FFmpeg encode time to 0–90 % of the overall job progress.
             // The remaining 10 % is reserved for the upload phase below so the
             // Admin progress bar never sits stuck at 99 % while segments are
             // being written to storage (which can take minutes for long content).
-            const pct = Math.min(90, Math.max(0, Math.round((sec / durationSecs) * 90)));
+            //
+            // When durationSecs is null (ffprobe failed to determine duration),
+            // fall back to a 1-hour estimate so the progress bar still advances
+            // and operators can distinguish a running job from a stuck one.
+            // Capped at 85 % to preserve the visual gap until the upload phase.
+            const pct = durationSecs && durationSecs > 0
+              ? Math.min(90, Math.max(0, Math.round((sec / durationSecs) * 90)))
+              : Math.min(85, Math.max(1, Math.round((sec / 3_600) * 85)));
             void req.onProgress(pct);
           }
         }
@@ -1366,9 +1373,11 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
               fallbackStdoutBuf = lines.pop() ?? "";
               for (const line of lines) {
                 const m = /^out_time_ms=(\d+)/.exec(line.trim());
-                if (m && durationSecs && req.onProgress) {
+                if (m && req.onProgress) {
                   const sec = Number(m[1]) / 1_000_000;
-                  const pct = Math.min(90, Math.max(0, Math.round((sec / durationSecs) * 90)));
+                  const pct = durationSecs && durationSecs > 0
+                    ? Math.min(90, Math.max(0, Math.round((sec / durationSecs) * 90)))
+                    : Math.min(85, Math.max(1, Math.round((sec / 3_600) * 85)));
                   void req.onProgress(pct);
                 }
               }
