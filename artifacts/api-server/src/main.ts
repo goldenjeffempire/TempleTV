@@ -63,20 +63,28 @@ async function seedAdminIfConfigured(): Promise<void> {
     const passwordHash = await hashPassword(password);
     const displayName = email.split("@")[0] ?? "Admin";
 
-    if (env.SEED_ADMIN_FORCE) {
-      // Safety: wiping all elevated accounts on every boot is almost always
-      // unintentional in production. Emit an error-level alert so it is
-      // impossible to miss in production monitoring / log aggregation.
-      // The wipe still proceeds — set SEED_ADMIN_FORCE=false (or unset it)
-      // in your production environment to disable this destructive behaviour.
-      if (env.NODE_ENV === "production") {
-        logger.error(
-          { email: normalizedEmail },
-          "[seed] DANGER: SEED_ADMIN_FORCE=true in production — ALL elevated " +
-          "accounts will be DELETED on every boot. This is irreversible. " +
-          "Set SEED_ADMIN_FORCE=false in production secrets to disable.",
-        );
-      }
+    // PRODUCTION HARD-BLOCK ─────────────────────────────────────────────────
+    // SEED_ADMIN_FORCE is UNCONDITIONALLY treated as false in production,
+    // regardless of the secret value. Force-seeding wipes ALL elevated accounts
+    // (admin, editor, moderator, system) on every restart — catastrophic if a
+    // secret is accidentally left as "true" after a one-time credential reset.
+    //
+    // In production, only the safe create-if-absent path ever runs.
+    // To reset production credentials: use the admin panel → Users → edit the
+    // account, or run `pnpm --filter @workspace/db run studio` with direct DB
+    // access. Set SEED_ADMIN_FORCE=false to silence this error log.
+    const force = env.SEED_ADMIN_FORCE && env.NODE_ENV !== "production";
+    if (env.SEED_ADMIN_FORCE && !force) {
+      logger.error(
+        { email: normalizedEmail },
+        "[seed] PRODUCTION GUARD ACTIVE: SEED_ADMIN_FORCE=true is BLOCKED in " +
+        "production — force-seeding wipes all elevated accounts on every restart. " +
+        "Running safe idempotent seed (create-if-absent) instead. " +
+        "Set SEED_ADMIN_FORCE=false in your secrets to silence this error.",
+      );
+    }
+
+    if (force) {
       // 1. Wipe all elevated accounts and their refresh tokens.
       const elevated = await db
         .select({ id: usersTable.id })
@@ -216,6 +224,73 @@ async function main() {
     "v8 heap limit — confirm --max-old-space-size is active",
   );
   logger.info("Prometheus metrics exporter active — scrape GET /metrics with admin token");
+
+  // ── Production readiness pre-flight ────────────────────────────────────
+  // Run before any service starts. Logs a structured summary of every
+  // production config gap so operators have a single log line to scan.
+  // Does NOT block startup — all items are advisory except the hard guards
+  // already enforced by their respective route modules (e.g. video-serve
+  // throws if REQUIRE_HLS_TOKEN=true without HLS_TOKEN_SECRET).
+  if (isProdNodeEnv) {
+    const configErrors: string[] = [];
+    const configWarnings: string[] = [];
+
+    if (env.SEED_ADMIN_FORCE) {
+      configErrors.push(
+        "SEED_ADMIN_FORCE=true is set but BLOCKED by production guard — " +
+        "set SEED_ADMIN_FORCE=false to silence this error",
+      );
+    }
+    if (!env.YOUTUBE_WEBHOOK_SECRET) {
+      configErrors.push(
+        "YOUTUBE_WEBHOOK_SECRET unset — YouTube webhook POST /youtube/webhook " +
+        "signature verification is disabled; spoofed syncs possible",
+      );
+    }
+    if (!env.CDN_BASE_URL) {
+      configErrors.push(
+        "CDN_BASE_URL unset — all HLS segment requests hit origin directly; " +
+        "origin will saturate under concurrent viewership",
+      );
+    }
+    if (!env.HLS_TOKEN_SECRET) {
+      configErrors.push(
+        "HLS_TOKEN_SECRET unset — HLS streams use public fallback signing key; " +
+        "enable REQUIRE_HLS_TOKEN=true after setting a real secret",
+      );
+    }
+    if (env.MEMORY_RESTART_RSS_MB < 600) {
+      configErrors.push(
+        `MEMORY_RESTART_RSS_MB=${env.MEMORY_RESTART_RSS_MB} is below safe minimum 600 MB — ` +
+        "server will restart on normal RSS peaks; raise to ≥700 MB",
+      );
+    }
+    if (!env.REQUIRE_HLS_TOKEN) {
+      configWarnings.push(
+        "REQUIRE_HLS_TOKEN=false — HLS video URLs are publicly accessible without auth tokens",
+      );
+    }
+    if (!env.REDIS_URL) {
+      configWarnings.push(
+        "REDIS_URL unset — running single-instance mode; rate-limit counters and " +
+        "pub/sub are in-process only (fine for single-node deploys)",
+      );
+    }
+
+    if (configErrors.length > 0) {
+      logger.error(
+        { configErrors, configWarnings },
+        "[pre-flight] PRODUCTION READINESS FAILURES — resolve before going live",
+      );
+    } else if (configWarnings.length > 0) {
+      logger.warn(
+        { configWarnings },
+        "[pre-flight] production config warnings — review before going live",
+      );
+    } else {
+      logger.info("[pre-flight] production readiness: all checks passed ✓");
+    }
+  }
 
   // Validate API_ORIGIN at startup — a mis-pointed value is the most common
   // cause of broadcast failures (media proxy URLs at wrong host → 404 stalls

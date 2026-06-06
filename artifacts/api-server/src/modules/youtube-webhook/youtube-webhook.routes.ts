@@ -107,11 +107,14 @@ export async function youtubeWebhookRoutes(app: FastifyInstance): Promise<void> 
   // The blast radius is limited to spoofed sync triggers of the fixed channel
   // — no data injection — but a configured secret eliminates the noise entirely.
   if (!env.YOUTUBE_WEBHOOK_SECRET) {
-    logger.warn(
+    const logFn = env.NODE_ENV === "production" ? logger.error.bind(logger) : logger.warn.bind(logger);
+    logFn(
       {},
       "youtube-webhook: YOUTUBE_WEBHOOK_SECRET is unset — POST /webhook signature " +
         "verification is disabled; spoofed callers can trigger channel syncs. " +
-        "Set YOUTUBE_WEBHOOK_SECRET (and pass it as hub.secret on subscribe) in production.",
+        "Set YOUTUBE_WEBHOOK_SECRET to a ≥32-char random hex string (and pass it as " +
+        "hub.secret on subscribe) to enable HMAC-SHA1 verification. " +
+        "Generate one with: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"",
     );
   }
 

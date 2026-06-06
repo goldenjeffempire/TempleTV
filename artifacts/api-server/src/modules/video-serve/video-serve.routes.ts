@@ -82,11 +82,12 @@ export async function videoServeRoutes(app: FastifyInstance) {
   // edge layer and set CDN_BASE_URL=https://cdn.yourdomain.com to offload
   // that traffic and reduce latency for geographically distributed viewers.
   if (env.NODE_ENV === "production" && !env.CDN_BASE_URL) {
-    logger.warn(
+    logger.error(
       "video-serve: CDN_BASE_URL is not set in production. All HLS segment " +
-      "requests will hit this origin server directly. Set CDN_BASE_URL to a " +
-      "CDN edge URL (e.g. https://cdn.templetv.org.ng) to reduce origin load " +
-      "and improve playback performance for remote viewers.",
+      "requests will hit this origin server directly — under concurrent viewership " +
+      "this exhausts origin bandwidth and memory (HLS_MAX_CONCURRENT buffers in RAM). " +
+      "Set CDN_BASE_URL to a CDN edge URL (e.g. https://cdn.templetv.org.ng) to offload " +
+      "segment traffic and protect origin from saturation.",
     );
   }
 
@@ -104,11 +105,13 @@ export async function videoServeRoutes(app: FastifyInstance) {
       );
     }
     // Soft-warn: token enforcement is off, but operators should still set the
-    // secret so they can enable it safely later.
-    logger.warn(
-      "video-serve: HLS_TOKEN_SECRET is not set — HLS token signing falls back " +
-      "to the built-in default secret. Set HLS_TOKEN_SECRET before enabling " +
-      "REQUIRE_HLS_TOKEN in production.",
+    // secret so they can enable REQUIRE_HLS_TOKEN safely without switching to
+    // the known-public default. Use error level in production so it surfaces.
+    logger.error(
+      "video-serve: HLS_TOKEN_SECRET is not set in production — HLS token signing " +
+      "falls back to the built-in default secret, which is publicly known. " +
+      "Any client can forge a valid HLS token. " +
+      "Set HLS_TOKEN_SECRET to a ≥32-char random hex string, then enable REQUIRE_HLS_TOKEN=true.",
     );
   }
 

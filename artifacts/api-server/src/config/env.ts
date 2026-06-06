@@ -125,22 +125,25 @@ const Env = z.object({
   //
   // MEMORY_WARN_RSS_MB  — ops-alert SSE is emitted after SUSTAIN_SAMPLES (3)
   //   consecutive samples above this value so the admin console can surface a
-  //   warning banner. Set this low enough to get early notice (e.g. 380 MB on
-  //   a 512 MB host) without causing restarts.
-  //   Default: 1 500 MB (keeps dev environments quiet).
+  //   warning banner. Set this low enough to get early notice without causing
+  //   restarts. Default 512 MB suits the --max-old-space-size=460 heap limit
+  //   with headroom for V8 overhead, Buffer pools, and shared libs.
   //
   // MEMORY_RESTART_RSS_MB — SIGTERM is sent after CRITICAL_SAMPLES_FOR_EXIT
   //   (10) consecutive samples above THIS value so the supervisor can restart
-  //   cleanly. Must be ≥ MEMORY_WARN_RSS_MB. Setting it to the same value as
-  //   MEMORY_WARN_RSS_MB (the old behaviour) kills a healthy server whose RSS
-  //   merely sits above the warn threshold — e.g. with --max-old-space-size=460
-  //   a warm Node process regularly uses 380–460 MB RSS via JIT + DB buffers.
-  //   Default: 600 MB (safe headroom above a 460 MB heap limit).
+  //   cleanly. Must be ≥ MEMORY_WARN_RSS_MB. Setting it equal to MEMORY_WARN_RSS_MB
+  //   kills healthy servers that merely sit above the low warn watermark.
+  //   Under --max-old-space-size=460 a warm Node process uses 380–480 MB RSS
+  //   via JIT + DB buffers + HLS segment Buffers (8 MiB each × HLS_MAX_CONCURRENT).
+  //   Default 768 MB: safe headroom for 30 concurrent HLS streams (240 MB peak
+  //   HLS buffer) + 460 MB heap + 68 MB shared-lib baseline = ~768 MB ceiling.
   //
-  // Typical production config on a 512 MB host:
-  //   MEMORY_WARN_RSS_MB=380   MEMORY_RESTART_RSS_MB=490
-  MEMORY_WARN_RSS_MB: z.coerce.number().int().positive().default(380),
-  MEMORY_RESTART_RSS_MB: z.coerce.number().int().positive().default(600),
+  // Recommended production config on a 1 GiB host (Replit deployment):
+  //   MEMORY_WARN_RSS_MB=512   MEMORY_RESTART_RSS_MB=768
+  // For a 512 MB constrained host (lower HLS_MAX_CONCURRENT to 10):
+  //   MEMORY_WARN_RSS_MB=380   MEMORY_RESTART_RSS_MB=600
+  MEMORY_WARN_RSS_MB: z.coerce.number().int().positive().default(512),
+  MEMORY_RESTART_RSS_MB: z.coerce.number().int().positive().default(768),
 
   // pg connection pool maximum. Each replica holds at most this many live
   // connections to Postgres/Neon. 20 is safe for a 2 GiB / 1-vCPU container.
@@ -428,9 +431,14 @@ const Env = z.object({
   // ── Startup admin seed ───────────────────────────────────────────────────
   // When both SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD are set, the API will
   // automatically create an admin account at startup if one does not already
-  // exist. Set SEED_ADMIN_FORCE=true to wipe all existing elevated accounts
-  // first — use this when resetting production credentials after deployment.
-  // The seed is a no-op when the target account already exists (unless FORCE).
+  // exist.
+  //
+  // SEED_ADMIN_FORCE=true — wipes all existing elevated accounts before
+  // inserting the seed account. BLOCKED IN PRODUCTION: the main() startup
+  // guard unconditionally ignores this flag when NODE_ENV=production, falling
+  // back to the safe create-if-absent path instead. This prevents a mis-set
+  // secret from wiping all admin accounts on every production restart.
+  // Use the admin panel's account management page to reset production creds.
   SEED_ADMIN_EMAIL: z.string().email().optional(),
   SEED_ADMIN_PASSWORD: z.string().min(8).optional(),
   SEED_ADMIN_FORCE: z
