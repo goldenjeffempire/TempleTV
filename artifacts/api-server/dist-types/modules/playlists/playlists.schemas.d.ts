@@ -9,8 +9,8 @@ export declare const PlaylistSchema: z.ZodObject<{
     updatedAt: z.ZodString;
     videoCount: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
-    id: string;
     description: string;
+    id: string;
     name: string;
     updatedAt: string;
     loopMode: string;
@@ -18,8 +18,8 @@ export declare const PlaylistSchema: z.ZodObject<{
     createdAt: string;
     videoCount: number;
 }, {
-    id: string;
     description: string;
+    id: string;
     name: string;
     updatedAt: string;
     loopMode: string;
@@ -40,10 +40,10 @@ export declare const PlaylistVideoSchema: z.ZodObject<{
     addedAt: z.ZodString;
     youtubeLiveStatus: z.ZodOptional<z.ZodNullable<z.ZodEnum<["live", "rebroadcast"]>>>;
 }, "strip", z.ZodTypeAny, {
-    duration: string;
-    id: string;
-    youtubeId: string;
     title: string;
+    id: string;
+    duration: string;
+    youtubeId: string;
     thumbnailUrl: string;
     category: string;
     playlistId: string;
@@ -52,10 +52,10 @@ export declare const PlaylistVideoSchema: z.ZodObject<{
     addedAt: string;
     youtubeLiveStatus?: "live" | "rebroadcast" | null | undefined;
 }, {
-    duration: string;
-    id: string;
-    youtubeId: string;
     title: string;
+    id: string;
+    duration: string;
+    youtubeId: string;
     thumbnailUrl: string;
     category: string;
     playlistId: string;
@@ -87,10 +87,10 @@ export declare const PlaylistDetailSchema: z.ZodObject<{
         addedAt: z.ZodString;
         youtubeLiveStatus: z.ZodOptional<z.ZodNullable<z.ZodEnum<["live", "rebroadcast"]>>>;
     }, "strip", z.ZodTypeAny, {
-        duration: string;
-        id: string;
-        youtubeId: string;
         title: string;
+        id: string;
+        duration: string;
+        youtubeId: string;
         thumbnailUrl: string;
         category: string;
         playlistId: string;
@@ -99,10 +99,10 @@ export declare const PlaylistDetailSchema: z.ZodObject<{
         addedAt: string;
         youtubeLiveStatus?: "live" | "rebroadcast" | null | undefined;
     }, {
-        duration: string;
-        id: string;
-        youtubeId: string;
         title: string;
+        id: string;
+        duration: string;
+        youtubeId: string;
         thumbnailUrl: string;
         category: string;
         playlistId: string;
@@ -112,15 +112,18 @@ export declare const PlaylistDetailSchema: z.ZodObject<{
         youtubeLiveStatus?: "live" | "rebroadcast" | null | undefined;
     }>, "many">;
 }, "strip", z.ZodTypeAny, {
-    id: string;
     description: string;
+    id: string;
     name: string;
     updatedAt: string;
+    loopMode: string;
+    isActive: boolean;
+    createdAt: string;
     videos: {
-        duration: string;
-        id: string;
-        youtubeId: string;
         title: string;
+        id: string;
+        duration: string;
+        youtubeId: string;
         thumbnailUrl: string;
         category: string;
         playlistId: string;
@@ -129,20 +132,20 @@ export declare const PlaylistDetailSchema: z.ZodObject<{
         addedAt: string;
         youtubeLiveStatus?: "live" | "rebroadcast" | null | undefined;
     }[];
-    loopMode: string;
-    isActive: boolean;
-    createdAt: string;
     videoCount: number;
 }, {
-    id: string;
     description: string;
+    id: string;
     name: string;
     updatedAt: string;
+    loopMode: string;
+    isActive: boolean;
+    createdAt: string;
     videos: {
-        duration: string;
-        id: string;
-        youtubeId: string;
         title: string;
+        id: string;
+        duration: string;
+        youtubeId: string;
         thumbnailUrl: string;
         category: string;
         playlistId: string;
@@ -151,9 +154,6 @@ export declare const PlaylistDetailSchema: z.ZodObject<{
         addedAt: string;
         youtubeLiveStatus?: "live" | "rebroadcast" | null | undefined;
     }[];
-    loopMode: string;
-    isActive: boolean;
-    createdAt: string;
     videoCount: number;
 }>;
 export declare const ListPlaylistsResponseSchema: z.ZodObject<{
@@ -167,8 +167,8 @@ export declare const ListPlaylistsResponseSchema: z.ZodObject<{
         updatedAt: z.ZodString;
         videoCount: z.ZodNumber;
     }, "strip", z.ZodTypeAny, {
-        id: string;
         description: string;
+        id: string;
         name: string;
         updatedAt: string;
         loopMode: string;
@@ -176,8 +176,8 @@ export declare const ListPlaylistsResponseSchema: z.ZodObject<{
         createdAt: string;
         videoCount: number;
     }, {
-        id: string;
         description: string;
+        id: string;
         name: string;
         updatedAt: string;
         loopMode: string;
@@ -187,10 +187,9 @@ export declare const ListPlaylistsResponseSchema: z.ZodObject<{
     }>, "many">;
     total: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
-    total: number;
     items: {
-        id: string;
         description: string;
+        id: string;
         name: string;
         updatedAt: string;
         loopMode: string;
@@ -198,11 +197,11 @@ export declare const ListPlaylistsResponseSchema: z.ZodObject<{
         createdAt: string;
         videoCount: number;
     }[];
+    total: number;
 }, {
-    total: number;
     items: {
-        id: string;
         description: string;
+        id: string;
         name: string;
         updatedAt: string;
         loopMode: string;
@@ -210,6 +209,7 @@ export declare const ListPlaylistsResponseSchema: z.ZodObject<{
         createdAt: string;
         videoCount: number;
     }[];
+    total: number;
 }>;
 export declare const CreatePlaylistBodySchema: z.ZodObject<{
     name: z.ZodString;

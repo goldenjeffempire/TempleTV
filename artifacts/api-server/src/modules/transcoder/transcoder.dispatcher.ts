@@ -345,6 +345,11 @@ class TranscoderDispatcher {
       .from(jobs)
       .where(and(eq(jobs.status, "done"), inArray(jobs.videoId, recoverableVideoIds)));
 
+    // Collect video IDs that are successfully healed so we can batch-sync
+    // broadcast_queue.duration_secs in a single UPDATE after the loop instead
+    // of one SELECT + UPDATE per video (N+1 → 1 batch query).
+    const healedVideoIds: string[] = [];
+
     for (const job of doneJobs) {
       try {
         const masterKey = `transcoded/${job.videoId}/master.m3u8`;
@@ -390,32 +395,8 @@ class TranscoderDispatcher {
               hlsMasterUrl: masterUrl,
             });
 
-            // Sync broadcast_queue.duration_secs from the video row's real
-            // duration. The finalize path writes a 1800-second placeholder;
-            // the normal dispatcher success path corrects it, but that write
-            // was lost in the same crash that left the video at 'encoding'.
-            // Without this correction the orchestrator uses 1800 s for cycle
-            // timing, causing dead-air gaps when the video ends early.
-            try {
-              const videoRow = await db
-                .select({ duration: videos.duration })
-                .from(videos)
-                .where(eq(videos.id, job.videoId))
-                .limit(1)
-                .then((r) => r[0]);
-              const parsedSecs = videoRow?.duration ? Math.round(parseFloat(videoRow.duration)) : null;
-              if (parsedSecs && parsedSecs > 10 && parsedSecs !== 1800) {
-                await db
-                  .update(schema.broadcastQueueTable)
-                  .set({ durationSecs: parsedSecs })
-                  .where(eq(schema.broadcastQueueTable.videoId, job.videoId))
-                  .catch((err) => {
-                    logger.warn({ err, videoId: job.videoId }, "transcoder: partial-success recovery duration sync failed (non-fatal)");
-                  });
-              }
-            } catch (durErr) {
-              logger.warn({ err: durErr, videoId: job.videoId }, "transcoder: partial-success recovery duration lookup failed (non-fatal)");
-            }
+            // Mark for batch duration sync (done below, after the loop).
+            healedVideoIds.push(job.videoId);
 
             // Bust the public video catalogue cache so TV/mobile clients
             // immediately reflect the healed hls_ready status instead of
@@ -441,6 +422,31 @@ class TranscoderDispatcher {
           "transcoder: partial-success recovery check failed (non-fatal)",
         );
       }
+    }
+
+    // Batch-sync broadcast_queue.duration_secs for all healed videos in one
+    // UPDATE FROM SELECT instead of N individual SELECT+UPDATE pairs. Corrects
+    // the 1800-second upload-time placeholder so the orchestrator uses accurate
+    // cycle timing — preventing dead-air gaps when videos end before the
+    // placeholder expires. The NOT EXISTS guard on active jobs above ensures
+    // this only runs for genuinely healed (not mid-encode) videos.
+    if (healedVideoIds.length > 0) {
+      await db.execute(sql`
+        UPDATE broadcast_queue bq
+        SET    duration_secs = ROUND(mv.duration::numeric)
+        FROM   managed_videos mv
+        WHERE  bq.video_id = mv.id
+          AND  bq.video_id = ANY(${healedVideoIds}::text[])
+          AND  mv.duration IS NOT NULL
+          AND  mv.duration ~ '^[0-9]+(\\.[0-9]+)?$'
+          AND  mv.duration::numeric > 10
+          AND  ROUND(mv.duration::numeric) != 1800
+      `).catch((err: unknown) => {
+        logger.warn(
+          { err, count: healedVideoIds.length, videoIds: healedVideoIds },
+          "transcoder: partial-success recovery batch duration sync failed (non-fatal)",
+        );
+      });
     }
   }
 
@@ -472,7 +478,7 @@ class TranscoderDispatcher {
         AND (tj.completed_at IS NULL OR tj.completed_at < now() - (${env.TRANSCODER_AUTO_RETRY_INTERVAL_MS} || ' milliseconds')::interval)
         AND (
           mv.transcoding_error_code IS NULL
-          OR mv.transcoding_error_code NOT IN ('CORRUPT_SOURCE', 'SOURCE_MISSING')
+          OR mv.transcoding_error_code NOT IN ('CORRUPT_SOURCE', 'SOURCE_MISSING', 'DISK_FULL')
         )
       ORDER BY tj.created_at ASC
       LIMIT 20
@@ -495,7 +501,7 @@ class TranscoderDispatcher {
     const videoIds = [...new Set(rows.map((r) => r.videoId))];
     await db
       .update(videos)
-      .set({ transcodingStatus: "queued", transcodingErrorCode: null })
+      .set({ transcodingStatus: "queued", transcodingErrorCode: null, transcodingErrorMessage: null })
       .where(and(inArray(videos.id, videoIds), eq(videos.transcodingStatus, "failed")));
 
     logger.warn(

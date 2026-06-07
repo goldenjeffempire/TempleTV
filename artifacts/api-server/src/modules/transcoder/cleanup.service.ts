@@ -125,65 +125,81 @@ async function validateHlsOutput(videoId: string): Promise<HlsValidationResult> 
     errors.push("master.m3u8 contains no rendition entries");
   }
 
-  let totalSegmentCount = 0;
   const renditionKeys = renditionRelUris.map((u) => resolveHlsKey(masterKey, u));
+  if (renditionKeys.length === 0) {
+    return { valid: errors.length === 0, masterExists: true, renditionCount: 0, segmentCount: 0, errors };
+  }
 
-  // 2. Check each rendition playlist exists and contains segments
+  // 2. Batch-fetch ALL rendition playlists in one round-trip (replaces N serial
+  //    queries). ANY(array) leverages the B-Tree index on storage_blobs.key and
+  //    avoids N round-trips for N renditions (typical: 4 renditions = 360/540/
+  //    720/1080p). The result is stored in a Map keyed by storage key.
+  const rendBatch = await db.execute(sql`
+    SELECT key, data FROM storage_blobs
+    WHERE key = ANY(${renditionKeys}::text[])
+  `);
+  const rendMap = new Map<string, string>();
+  for (const row of rendBatch.rows as Array<{ key: string; data: Buffer }>) {
+    rendMap.set(row.key, row.data.toString("utf8"));
+  }
+
+  // Parse each rendition playlist, accumulate expected segment counts per
+  // rendition directory (e.g. "transcoded/{videoId}/v0/").
+  const segmentExpected = new Map<string, { count: number; rendKey: string }>();
+  let totalSegmentCount = 0;
+
   for (const rendKey of renditionKeys) {
-    const rendResult = await db.execute(sql`
-      SELECT data FROM storage_blobs WHERE key = ${rendKey} LIMIT 1
-    `);
-
-    if (rendResult.rows.length === 0) {
+    if (!rendMap.has(rendKey)) {
       errors.push(`rendition playlist missing: ${rendKey}`);
       continue;
     }
-
-    const rendRow = rendResult.rows[0] as { data: Buffer };
-    const rendText = rendRow.data.toString("utf8");
-    const segmentUris = parseM3u8Uris(rendText).filter(
-      (u) => !u.endsWith(".m3u8"),
-    );
-
+    const rendText = rendMap.get(rendKey)!;
+    const segmentUris = parseM3u8Uris(rendText).filter((u) => !u.endsWith(".m3u8"));
     if (segmentUris.length === 0) {
       errors.push(`rendition playlist has no segments: ${rendKey}`);
       continue;
     }
-
-    // Count-based segment validation: verify that the number of segment files
-    // in storage matches the number listed in the playlist exactly.
-    //
-    // Why count-based instead of sampling N segments:
-    //   Sample-based approaches (e.g. first/last/10 evenly-spaced) can miss
-    //   corrupt or missing segments in the middle of the rendition. A 60-min
-    //   sermon at 2 s segments = ~1800 segments; sampling 10 checks only 0.6%.
-    //   A single COUNT query is O(1) in storage_blobs for a prefix scan and
-    //   catches any gap regardless of where it falls in the timeline.
-    //
-    // The rendition directory prefix is the playlist key up to the last '/'.
-    // Segments live at e.g. transcoded/{videoId}/v0/seg00001.ts.
-    // We filter out .m3u8 playlist files so only raw segment files are counted.
     const rendDir = rendKey.substring(0, rendKey.lastIndexOf("/") + 1);
+    segmentExpected.set(rendDir, { count: segmentUris.length, rendKey });
+    totalSegmentCount += segmentUris.length;
+  }
+
+  // 3. Batch-count ALL rendition segments in ONE aggregated query (replaces N
+  //    individual COUNT queries — one per rendition dir). Uses regexp_replace to
+  //    extract the "transcoded/{id}/{vN}/" directory prefix from each key, then
+  //    GROUP BY to count segments per rendition in a single pass over the index.
+  //
+  //    Why COUNT-based instead of sampling: a 60-min sermon at 2 s segments =
+  //    ~1800 segments; sampling 10 checks only 0.6%. A single COUNT with a
+  //    prefix LIKE catches any gap regardless of position in the timeline.
+  if (segmentExpected.size > 0) {
+    const videoPrefix = `transcoded/${videoId}/`;
     const countResult = await db.execute(sql`
-      SELECT COUNT(*) AS cnt FROM storage_blobs
-      WHERE key LIKE ${rendDir + "%"}
+      SELECT
+        regexp_replace(key, '^(transcoded/[^/]+/[^/]+/).*$', '\\1') AS dir_prefix,
+        COUNT(*) AS cnt
+      FROM storage_blobs
+      WHERE key LIKE ${videoPrefix + "%"}
         AND key NOT LIKE ${"%.m3u8"}
         AND key NOT LIKE ${"%.json"}
+      GROUP BY dir_prefix
     `);
-    const storedCount = parseInt(
-      String((countResult.rows[0] as { cnt: string | number }).cnt ?? 0),
-      10,
-    );
 
-    if (storedCount < segmentUris.length) {
-      errors.push(
-        `rendition ${rendKey}: manifest references ${segmentUris.length} segment(s) but ` +
-        `only ${storedCount} segment file(s) found in storage — ` +
-        `${segmentUris.length - storedCount} missing (would cause mid-video playback stall after source deletion)`,
-      );
+    const storedCounts = new Map<string, number>();
+    for (const row of countResult.rows as Array<{ dir_prefix: string; cnt: string | number }>) {
+      storedCounts.set(row.dir_prefix, parseInt(String(row.cnt ?? 0), 10));
     }
 
-    totalSegmentCount += segmentUris.length;
+    for (const [rendDir, { count: expected, rendKey }] of segmentExpected) {
+      const stored = storedCounts.get(rendDir) ?? 0;
+      if (stored < expected) {
+        errors.push(
+          `rendition ${rendKey}: manifest references ${expected} segment(s) but ` +
+          `only ${stored} segment file(s) found in storage — ` +
+          `${expected - stored} missing (would cause mid-video playback stall after source deletion)`,
+        );
+      }
+    }
   }
 
   return {

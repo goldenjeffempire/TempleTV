@@ -579,6 +579,62 @@ export async function ensureRuntimeIndexes(): Promise<void> {
         ON scheduled_notifications (video_id)
     `);
 
+    // ── New indexes added after initial production deploy ──────────────────
+    // youtube_live_status: queried every 2 minutes by the live-status service
+    // (WHERE youtube_live_status = 'live'). Without an index this is a full
+    // table scan over all managed_videos on every poll cycle.
+    await run("idx_managed_videos_youtube_live_status", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_youtube_live_status
+        ON managed_videos (youtube_live_status)
+        WHERE youtube_live_status IS NOT NULL
+    `);
+    // metadata_locked: used by YouTube sync to skip overwriting curated rows
+    // (WHERE metadata_locked = true). Without an index this scans all local
+    // videos on every sync run (up to every 15 minutes).
+    await run("idx_managed_videos_metadata_locked", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_metadata_locked
+        ON managed_videos (metadata_locked)
+        WHERE metadata_locked = true
+    `);
+    // Transcoding dispatcher hot-path: claims next queued job by picking from
+    // status='queued' ordered by priority DESC, created_at ASC, next_retry_at.
+    // Without a covering index the dispatcher's SELECT runs a full table scan
+    // on every 10-second poll tick.
+    await run("idx_transcoding_jobs_dispatch", `
+      CREATE INDEX IF NOT EXISTS idx_transcoding_jobs_dispatch
+        ON transcoding_jobs (priority DESC, created_at ASC, next_retry_at)
+        WHERE status = 'queued'
+    `);
+    // Stuck-job watchdog: scans status='processing' rows to detect timed-out
+    // jobs. Runs every ~2 minutes. Without this index it scans all jobs.
+    await run("idx_transcoding_jobs_watchdog", `
+      CREATE INDEX IF NOT EXISTS idx_transcoding_jobs_watchdog
+        ON transcoding_jobs (started_at, last_progress_at)
+        WHERE status = 'processing'
+    `);
+    // Auto-retry sweep: finds status='failed' jobs with remaining attempts and
+    // non-terminal error codes. Runs every 30 minutes.
+    await run("idx_transcoding_jobs_auto_retry", `
+      CREATE INDEX IF NOT EXISTS idx_transcoding_jobs_auto_retry
+        ON transcoding_jobs (video_id, completed_at, attempts)
+        WHERE status = 'failed'
+    `);
+    // Broadcast event log: cleanup sweep (DELETE WHERE created_at < 14 days)
+    // already has channel_created_idx but the stale-data cleanup queries only
+    // on created_at without channel_id — add a plain index for the sweep path.
+    await run("idx_broadcast_event_log_created_at", `
+      CREATE INDEX IF NOT EXISTS idx_broadcast_event_log_created_at
+        ON broadcast_event_log (created_at)
+    `);
+    // Viewer sessions stale-data sweep: DELETE WHERE ended_at IS NULL AND
+    // last_heartbeat_at < (now - 1h). The started_at index already exists but
+    // the sweep predicates use last_heartbeat_at which has no index.
+    await run("idx_viewer_sessions_heartbeat", `
+      CREATE INDEX IF NOT EXISTS idx_viewer_sessions_heartbeat
+        ON viewer_sessions (last_heartbeat_at)
+        WHERE ended_at IS NULL
+    `);
+
     // ── Check constraints (DO-block pattern for idempotency) ───────────────
     // ALTER TABLE ADD CONSTRAINT has no IF NOT EXISTS; use a DO block.
     await client.query(`
