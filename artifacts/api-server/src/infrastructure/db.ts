@@ -430,12 +430,27 @@ export async function deactivateUnresolvableQueueRows(): Promise<void> {
 }
 
 export async function ensureRuntimeIndexes(): Promise<void> {
+  // Each index is attempted independently so one failure never silently skips
+  // the rest.  A single shared pool client is used for efficiency (connection
+  // reuse); each statement is autocommit (no enclosing BEGIN/COMMIT).
   const client = await pool.connect();
+
+  // Helper: run one DDL statement, log success/failure per-index, never throw.
+  const run = async (name: string, sql: string): Promise<void> => {
+    try {
+      await client.query(sql);
+      logger.debug({ index: name }, "db: index ensured");
+    } catch (err) {
+      logger.warn({ err, index: name }, `db: failed to ensure index ${name} (non-fatal)`);
+    }
+  };
+
   try {
-    // GIN FTS index — build CONCURRENTLY so it never locks writes.
-    // CONCURRENTLY cannot run inside a transaction block, so we execute
-    // it as a standalone statement on the raw client.
-    await client.query(`
+    // ── GIN full-text search index ─────────────────────────────────────────
+    // Powers plainto_tsquery on title + preacher + description.
+    // NOTE: CREATE INDEX (not CONCURRENTLY) — safe here because the client
+    // connection is in autocommit mode and is dedicated to DDL work.
+    await run("idx_managed_videos_fts", `
       CREATE INDEX IF NOT EXISTS idx_managed_videos_fts
         ON managed_videos
         USING gin (
@@ -446,7 +461,6 @@ export async function ensureRuntimeIndexes(): Promise<void> {
           )
         )
     `);
-    logger.info("db: idx_managed_videos_fts ensured (GIN tsvector FTS)");
 
     // ── Functional indexes for lower() filter expressions ─────────────────
     // Standard B-Tree indexes on `category`, `preacher`, and `email` are
@@ -454,144 +468,119 @@ export async function ensureRuntimeIndexes(): Promise<void> {
     // `WHERE lower(category) = 'sermon'`) or by leading-wildcard ILIKE.
     // Functional indexes on the lower()-expression allow PostgreSQL to use
     // an index scan for these common filter patterns.
-    //
-    // These are created non-CONCURRENTLY inside the existing client session
-    // (no active transaction) so they are safe alongside the GIN index above.
-    // IF NOT EXISTS makes every call idempotent — safe to run on every boot.
-    await client.query(`
+    await run("idx_managed_videos_category_lower", `
       CREATE INDEX IF NOT EXISTS idx_managed_videos_category_lower
         ON managed_videos (lower(category))
     `);
-    await client.query(`
+    await run("idx_managed_videos_preacher_lower", `
       CREATE INDEX IF NOT EXISTS idx_managed_videos_preacher_lower
         ON managed_videos (lower(preacher))
     `);
-    await client.query(`
+    await run("idx_users_email_lower", `
       CREATE INDEX IF NOT EXISTS idx_users_email_lower
         ON users (lower(email))
     `);
-    // Composite partial index for the source-cleanup sweep worker:
-    // WHERE source_cleanup_status IN ('scheduled','failed') AND source_cleanup_after <= NOW()
-    // The partial expression keeps the index tiny (only rows awaiting cleanup).
-    await client.query(`
+
+    // ── Partial indexes ────────────────────────────────────────────────────
+    // Source-cleanup sweep: WHERE source_cleanup_status IN ('scheduled','failed')
+    await run("idx_managed_videos_cleanup_due", `
       CREATE INDEX IF NOT EXISTS idx_managed_videos_cleanup_due
         ON managed_videos (source_cleanup_after)
         WHERE source_cleanup_status IN ('scheduled', 'failed')
     `);
-    // Partial index for the transcoder worker: only local videos without HLS.
-    await client.query(`
+    // Transcoder worker: local videos without HLS awaiting encoding.
+    await run("idx_managed_videos_transcode_pending", `
       CREATE INDEX IF NOT EXISTS idx_managed_videos_transcode_pending
         ON managed_videos (imported_at)
         WHERE video_source = 'local'
           AND transcoding_status = 'queued'
           AND hls_master_url IS NULL
     `);
-    // Partial composite index for the default YouTube catalogue view.
-    // Supports: WHERE video_source = 'youtube' AND COALESCE(broadcast_only,false) = false
-    //           ORDER BY published_at DESC
-    // This is the hot path for /api/videos and the TV catalogue page.
-    await client.query(`
+    // YouTube catalogue hot path: /api/videos and TV catalogue page.
+    await run("idx_managed_videos_youtube_catalog", `
       CREATE INDEX IF NOT EXISTS idx_managed_videos_youtube_catalog
         ON managed_videos (published_at DESC)
         WHERE video_source = 'youtube'
           AND COALESCE(broadcast_only, false) = false
     `);
-    // Partial composite index for broadcast_queue — the hot path queried by
-    // the V2 orchestrator every 10-30 s.  Covering (sort_order, added_at) with
-    // a WHERE is_active = true predicate keeps the index small (active rows
-    // only) while eliminating the full table scan that occurs at scale.
-    await client.query(`
+    // Broadcast-queue V2 orchestrator reload hot path.
+    await run("idx_broadcast_queue_active_sort", `
       CREATE INDEX IF NOT EXISTS idx_broadcast_queue_active_sort
         ON broadcast_queue (sort_order, added_at)
         WHERE is_active = true
     `);
-    // Partial index for the scheduled_notification dispatcher.
-    // The dispatcher polls: WHERE status = 'pending' AND scheduled_at <= now()
-    // Without this index the query degrades to a full table scan as the
-    // scheduled_notifications table grows (sent rows accumulate quickly).
-    await client.query(`
+    // Scheduled notification dispatcher poll.
+    await run("idx_scheduled_notifications_dispatch", `
       CREATE INDEX IF NOT EXISTS idx_scheduled_notifications_dispatch
         ON scheduled_notifications (scheduled_at)
         WHERE status = 'pending'
     `);
-    // B-Tree index supporting the admin analytics concurrent-viewers query.
-    // The CTE LEFT JOINs viewer_sessions on started_at — without an index
-    // this is a sequential scan over the entire sessions table for each
-    // analytics request (admin dashboard, 30d/90d range in particular).
-    await client.query(`
+    // Admin analytics concurrent-viewers CTE.
+    await run("idx_viewer_sessions_started_at", `
       CREATE INDEX IF NOT EXISTS idx_viewer_sessions_started_at
         ON viewer_sessions (started_at)
     `);
-    // Partial unique index — prevents duplicate managed_videos rows when the
-    // same file is uploaded twice (same object_path). YouTube-synced rows
-    // (object_path IS NULL) are exempt from the constraint.
-    // We use CREATE UNIQUE INDEX rather than just CREATE INDEX here so the DB
-    // enforces uniqueness at the constraint level independently of Drizzle Kit.
-    // IF NOT EXISTS makes this idempotent on every boot.
-    await client.query(`
+
+    // ── Unique partial indexes ─────────────────────────────────────────────
+    // Prevents duplicate managed_videos for the same uploaded file.
+    await run("uq_managed_videos_object_path", `
       CREATE UNIQUE INDEX IF NOT EXISTS uq_managed_videos_object_path
         ON managed_videos (object_path)
         WHERE object_path IS NOT NULL
     `);
-    // ── managed_videos: additional B-Tree indexes ─────────────────────────
-    // These indexes are defined in the Drizzle schema (lib/db/src/schema/videos.ts)
-    // but drizzle-kit push silently skipped them on existing prod DBs.
-    // All use IF NOT EXISTS — safe and idempotent on every boot.
-    //
-    // hls_master_url: IS NULL filter used in bulk-transcode + broadcast queue join.
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_managed_videos_hls_master_url
-        ON managed_videos (hls_master_url)
-    `);
-    // local_video_url: broadcast v2 fallback source resolver reads this column.
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_managed_videos_local_video_url
-        ON managed_videos (local_video_url)
-    `);
-    // published_at: admin listing ORDER BY published_at DESC sort path.
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_managed_videos_published_at
-        ON managed_videos (published_at)
-    `);
-    // (video_source, transcoding_status): composite for the
-    // WHERE video_source='local' AND hls_master_url IS NULL bulk-transcode query.
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_managed_videos_source_transcoding
-        ON managed_videos (video_source, transcoding_status)
-    `);
-    // faststart_applied: broadcast-v2 loadActive() filters on this boolean.
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_managed_videos_faststart_applied
-        ON managed_videos (faststart_applied)
-    `);
-    // Composite covering index for broadcast admission: (video_source,
-    // transcoding_status, faststart_applied) — loadActive() WHERE clause.
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_managed_videos_broadcast_admission
-        ON managed_videos (video_source, transcoding_status, faststart_applied)
-    `);
-    // uploaded_by: admin "filter by uploader" queries and audit trail lookups.
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_managed_videos_uploaded_by
-        ON managed_videos (uploaded_by)
-    `);
-
-    // ── broadcast_queue: partial unique index ─────────────────────────────
-    // Prevents the same video from appearing more than once in the active queue.
-    // Without this constraint the broadcast validator must do a full table scan
-    // for duplicates and the DB has no hard enforcement — duplicate active rows
-    // cause the orchestrator to see the same video twice per reload cycle.
-    // WHERE clause exempts inactive rows and NULL video_ids (YouTube-sourced
-    // override items that have no managed_video foreign key).
-    await client.query(`
+    // Prevents same video appearing more than once in the active broadcast queue.
+    await run("uq_broadcast_queue_video_id_active", `
       CREATE UNIQUE INDEX IF NOT EXISTS uq_broadcast_queue_video_id_active
         ON broadcast_queue (video_id)
         WHERE is_active = true AND video_id IS NOT NULL
     `);
 
-    // ── broadcast_queue: check constraints ────────────────────────────────
-    // Added via DO block because ALTER TABLE ADD CONSTRAINT has no IF NOT EXISTS
-    // syntax — the DO block performs the existence check in pg_constraint first.
+    // ── B-Tree indexes (Drizzle schema additions) ──────────────────────────
+    // These are defined in the Drizzle schema but drizzle-kit push silently
+    // skipped them on existing prod DBs.  All use IF NOT EXISTS — idempotent.
+    await run("idx_managed_videos_hls_master_url", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_hls_master_url
+        ON managed_videos (hls_master_url)
+    `);
+    await run("idx_managed_videos_local_video_url", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_local_video_url
+        ON managed_videos (local_video_url)
+    `);
+    await run("idx_managed_videos_published_at", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_published_at
+        ON managed_videos (published_at)
+    `);
+    await run("idx_managed_videos_source_transcoding", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_source_transcoding
+        ON managed_videos (video_source, transcoding_status)
+    `);
+    await run("idx_managed_videos_faststart_applied", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_faststart_applied
+        ON managed_videos (faststart_applied)
+    `);
+    await run("idx_managed_videos_broadcast_admission", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_broadcast_admission
+        ON managed_videos (video_source, transcoding_status, faststart_applied)
+    `);
+    await run("idx_managed_videos_uploaded_by", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_uploaded_by
+        ON managed_videos (uploaded_by)
+    `);
+    await run("refresh_tokens_user_id_revoked_at_idx", `
+      CREATE INDEX IF NOT EXISTS refresh_tokens_user_id_revoked_at_idx
+        ON refresh_tokens (user_id, revoked_at)
+    `);
+    await run("idx_password_reset_tokens_user_id", `
+      CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user_id
+        ON password_reset_tokens (user_id)
+    `);
+    await run("idx_scheduled_notifications_video_id", `
+      CREATE INDEX IF NOT EXISTS idx_scheduled_notifications_video_id
+        ON scheduled_notifications (video_id)
+    `);
+
+    // ── Check constraints (DO-block pattern for idempotency) ───────────────
+    // ALTER TABLE ADD CONSTRAINT has no IF NOT EXISTS; use a DO block.
     await client.query(`
       DO $$ BEGIN
         IF NOT EXISTS (
@@ -607,7 +596,7 @@ export async function ensureRuntimeIndexes(): Promise<void> {
         END IF;
       END $$
     `).catch((err: unknown) => {
-      logger.warn({ err }, "db: no_youtube_urls_in_queue constraint skipped (non-fatal — may already exist under a different name)");
+      logger.warn({ err }, "db: no_youtube_urls_in_queue constraint skipped (non-fatal)");
     });
     await client.query(`
       DO $$ BEGIN
@@ -624,11 +613,6 @@ export async function ensureRuntimeIndexes(): Promise<void> {
     `).catch((err: unknown) => {
       logger.warn({ err }, "db: chk_broadcast_queue_sort_order_nonneg constraint skipped (non-fatal)");
     });
-
-    // ── managed_videos: transcoding status enum check ─────────────────────
-    // Enforces the closed set of valid transcoding_status values at the DB level
-    // so any code path that writes an unrecognised status gets a CHECK violation
-    // instead of silently corrupting the orchestrator state machine.
     await client.query(`
       DO $$ BEGIN
         IF NOT EXISTS (
@@ -644,42 +628,10 @@ export async function ensureRuntimeIndexes(): Promise<void> {
         END IF;
       END $$
     `).catch((err: unknown) => {
-      logger.warn({ err }, "db: managed_videos_transcoding_status_check constraint skipped (non-fatal — existing rows may violate the enum)");
+      logger.warn({ err }, "db: managed_videos_transcoding_status_check constraint skipped (non-fatal)");
     });
 
-    // ── refresh_tokens: composite index for changePassword / logout-all ──────
-    // changePassword() and logout-all both run:
-    //   WHERE user_id = $1 AND revoked_at IS NULL
-    // Without this composite index Postgres falls back to the single-column
-    // refresh_tokens_user_id_idx and post-filters on revoked_at — O(sessions)
-    // per call.  On accounts with many active sessions this causes measurable
-    // slowdowns on every password-change or full logout.
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS refresh_tokens_user_id_revoked_at_idx
-        ON refresh_tokens (user_id, revoked_at)
-    `);
-
-    // ── password_reset_tokens: index on user_id ────────────────────────────
-    // forgotPassword() queries: WHERE user_id = $1 AND expires_at > NOW()
-    // Without this index every forgot-password request scans the full table.
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user_id
-        ON password_reset_tokens (user_id)
-    `);
-
-    // ── scheduled_notifications: index on video_id ────────────────────────
-    // Admin "notifications for this video" queries and cascade-delete lookups
-    // both filter on video_id.  Without the index they degrade to full scans.
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_scheduled_notifications_video_id
-        ON scheduled_notifications (video_id)
-    `);
-
     logger.info("db: functional and partial indexes ensured");
-  } catch (err) {
-    // Non-fatal — the search falls back to plainto_tsquery without the index
-    // (just slower). Log a warning so operators can investigate.
-    logger.warn({ err }, "db: failed to ensure runtime indexes (non-fatal)");
   } finally {
     client.release();
   }
@@ -1059,10 +1011,10 @@ export function scheduleStaleDataCleanup(): void {
       // sweep catches any crash that happened AFTER the last boot (e.g. an
       // OOM kill between cleanup runs).
       //
-      // Note: managed_videos has no updated_at column.  The periodic cleanup
-      // runs every 6 hours which is comfortably longer than the 15-minute
-      // faststart timeout, so resetting *all* stuck 'processing' rows is safe
-      // — any item still processing at the 6h mark is genuinely stuck.
+      // managed_videos.updated_at was added in June 2026.  We use it to
+      // only reset rows stuck for longer than 20 minutes — safely above the
+      // 15-minute faststart timeout — so a concurrent faststart in another
+      // process is never accidentally reset.
       const stuckResult = await client.query(`
         UPDATE managed_videos
         SET    transcoding_status = CASE
@@ -1070,6 +1022,7 @@ export function scheduleStaleDataCleanup(): void {
                  ELSE 'none'
                END
         WHERE  transcoding_status = 'processing'
+          AND  updated_at < NOW() - INTERVAL '20 minutes'
       `);
       const stuckReset = (stuckResult as unknown as { rowCount: number | null }).rowCount ?? 0;
       if (stuckReset > 0) {

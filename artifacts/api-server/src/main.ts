@@ -463,11 +463,11 @@ async function main() {
   }
 
   // Ensure expression indexes that Drizzle Kit cannot manage in the schema DSL
-  // (GIN tsvector FTS index on managed_videos). Non-blocking — runs in
-  // background after pool warmup; server starts accepting requests regardless.
-  ensureRuntimeIndexes().catch((err) =>
-    logger.warn({ err }, "ensureRuntimeIndexes failed (non-fatal)"),
-  );
+  // (GIN FTS, functional lower() indexes, partial indexes, check constraints).
+  // Each index is attempted independently — one failure never skips the rest.
+  // Awaited so we know all indexes are present before the server starts
+  // accepting requests (FTS search and broadcast queue queries depend on them).
+  await ensureRuntimeIndexes();
 
   // Idempotent schema-heal: adds any columns that were introduced after the
   // initial production deploy (TOTP/MFA fields on users, ip/user_agent on
