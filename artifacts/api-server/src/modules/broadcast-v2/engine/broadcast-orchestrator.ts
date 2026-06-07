@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { env } from "../../../config/env.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { broadcastSequence, broadcastQueueDepth, broadcastQueueStuck, setBroadcastMode, SERVICE_LABELS } from "../../../infrastructure/metrics.js";
 import { eventLogRepo } from "../repository/event-log.repo.js";

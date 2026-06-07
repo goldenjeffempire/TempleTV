@@ -1191,8 +1191,8 @@ export async function restRoutes(app: FastifyInstance) {
       data: Awaited<ReturnType<typeof buildRemediationReport>>;
     } | null = null;
 
-    api.get(
-      "/api/broadcast-v2/remediation-report",
+    app.get(
+      "/remediation-report",
       adminGuard,
       async (_req, reply) => {
         const now = Date.now();

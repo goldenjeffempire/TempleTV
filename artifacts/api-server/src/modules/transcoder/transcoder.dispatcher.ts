@@ -221,7 +221,6 @@ class TranscoderDispatcher {
   // Cadence: AUTO_RETRY_TICKS × TRANSCODER_POLL_MS (default 180 × 10 s = 30 min).
   // Overridden by TRANSCODER_AUTO_RETRY_INTERVAL_MS env var at start().
   private autoRetryCounter = 0;
-  private autoRetryTicks = 180; // recomputed from env at start()
 
   // ── In-process heartbeat ────────────────────────────────────────────────────
   // Written on every dispatch tick so the diagnostics panel can surface

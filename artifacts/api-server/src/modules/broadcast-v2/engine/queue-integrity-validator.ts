@@ -27,7 +27,7 @@
  * Results are cached and exposed via the /diagnostics endpoint. Non-fatal.
  */
 import { spawn } from "node:child_process";
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
@@ -282,6 +282,53 @@ class QueueIntegrityValidatorImpl {
             code: "EXCESSIVE_DURATION",
             message: `Duration is ${Math.round(row.durationSecs / 3_600)} h — possible data corruption`,
           });
+        }
+
+        // ZERO_DURATION: item carries a zero or negative duration. The
+        // orchestrator applies a 60 s safety floor for these silently, but
+        // operators should see an explicit warning so the root cause can be
+        // corrected (re-probe the source file or fix the managed_videos row).
+        if (row.durationSecs <= 0) {
+          issues.push({
+            severity: "warn",
+            itemId: row.id,
+            itemTitle: row.title,
+            code: "ZERO_DURATION",
+            message: `Item has durationSecs=${row.durationSecs} — orchestrator applies a 60 s floor; re-probe the source file or correct the duration`,
+          });
+        }
+
+        // UNSTARTED_FASTSTART: raw MP4 whose moov atom has not yet been
+        // relocated to byte 0 (faststartApplied=false). HTTP range-based
+        // streaming requires the moov at the start of the file; with it at
+        // EOF, browsers must download the entire file before playback begins,
+        // causing multi-second stalls or player timeouts. The faststart-
+        // recovery worker runs in the background and will fix this within
+        // the next worker cycle — this warning is informational. Items that
+        // have an HLS manifest, are YouTube-sourced, or are actively being
+        // transcoded are excluded (they have an alternative playback path).
+        {
+          const hasHlsNow = !!(row.qHlsUrl || row.vHlsUrl);
+          const isYtNow = row.vSource === "youtube";
+          const isActivelyTranscoding =
+            row.vStatus === "queued" || row.vStatus === "encoding" || row.vStatus === "processing";
+          if (
+            !hasHlsNow &&
+            !isYtNow &&
+            !isActivelyTranscoding &&
+            row.vFaststart === false &&
+            (row.qLocalUrl || row.vLocalUrl)
+          ) {
+            issues.push({
+              severity: "warn",
+              itemId: row.id,
+              itemTitle: row.title,
+              code: "UNSTARTED_FASTSTART",
+              message:
+                "Raw MP4 — moov atom not yet relocated to byte 0 (faststartApplied=false). " +
+                "Viewers may experience long startup buffering. Faststart recovery runs in the background and will fix this automatically.",
+            });
+          }
         }
       }
 

@@ -896,6 +896,36 @@ function BroadcastV2PageInner() {
     staleTime: 25_000,
   });
 
+  // Queue health remediation report — surfaced from the last validator cycle.
+  // Server caches the result for 60 s; we poll every 5 min so we always have
+  // a fresh snapshot without hammering the endpoint.
+  type RemediationIssue = {
+    videoId: string | null;
+    title: string | null;
+    code: string;
+    severity: "error" | "warn";
+    message: string;
+  };
+  type RemediationReportData = {
+    generatedAtMs: number;
+    healthScore: number;
+    totalQueueItems: number;
+    issueCount: number;
+    issues: RemediationIssue[];
+    summary: {
+      hlsStorageMissing: number;
+      stuckEncoding: number;
+      failedInQueue: number;
+      placeholderDuration: number;
+    };
+  };
+  const { data: remediationReport, refetch: refetchRemediation } = useQuery({
+    queryKey: ["broadcast-v2-remediation-report"],
+    queryFn: () => api.get<RemediationReportData>("/broadcast-v2/remediation-report"),
+    refetchInterval: 5 * 60_000,
+    staleTime: 60_000,
+  });
+
   // Deactivate (remove) a queue item without navigating away.
   const deactivateMutation = useMutation({
     mutationFn: (itemId: string) =>
@@ -926,6 +956,10 @@ function BroadcastV2PageInner() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
+      // Retry changes transcodingStatus which affects the engine's admission
+      // policy — refresh engine health so the Now/Next header and health badge
+      // reflect the updated state immediately (don't wait for the 15 s poll).
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       toast.success("HLS transcoding re-queued — encoding will start shortly.");
       void api.post("/broadcast-v2/reload", { idempotencyKey: safeRandomUUID() }).catch(() => {});
     },
@@ -2764,6 +2798,105 @@ function BroadcastV2PageInner() {
           )}
         </CardContent>
       </Card>
+
+      {/* ── Queue Health Report ──────────────────────────────────────────────── */}
+      {/* Shows ZERO_DURATION, UNSTARTED_FASTSTART, HLS_STORAGE_MISSING, and   */}
+      {/* STUCK_ENCODING issues from the last validator cycle so operators can  */}
+      {/* spot queue health problems without reading server logs.               */}
+      {remediationReport && (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Activity className="h-4 w-4 text-muted-foreground" />
+              Queue Health Report
+              <Badge
+                variant={
+                  remediationReport.healthScore >= 90
+                    ? "outline"
+                    : remediationReport.healthScore >= 70
+                    ? "secondary"
+                    : "destructive"
+                }
+                className="ml-1 text-[10px]"
+              >
+                {remediationReport.healthScore}/100
+              </Badge>
+            </CardTitle>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 gap-1 px-2 text-xs"
+              onClick={() => {
+                void refetchRemediation();
+              }}
+            >
+              <RefreshCw className="h-3 w-3" />
+              Refresh
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid grid-cols-4 gap-2">
+              {(
+                [
+                  { label: "HLS Missing", count: remediationReport.summary.hlsStorageMissing, danger: true },
+                  { label: "Stuck Encoding", count: remediationReport.summary.stuckEncoding, danger: true },
+                  { label: "Failed in Queue", count: remediationReport.summary.failedInQueue, danger: false },
+                  { label: "Bad Duration", count: remediationReport.summary.placeholderDuration, danger: false },
+                ] as const
+              ).map(({ label, count, danger }) => (
+                <div key={label} className="rounded-md border bg-muted/30 p-2 text-center">
+                  <div
+                    className={`text-xl font-bold ${
+                      count > 0 && danger
+                        ? "text-red-500"
+                        : count > 0
+                        ? "text-amber-500"
+                        : "text-emerald-500"
+                    }`}
+                  >
+                    {count}
+                  </div>
+                  <div className="mt-0.5 text-[10px] text-muted-foreground">{label}</div>
+                </div>
+              ))}
+            </div>
+            {remediationReport.issueCount === 0 ? (
+              <div className="flex items-center gap-2 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
+                <CheckCircle2 className="h-4 w-4 shrink-0" />
+                All {remediationReport.totalQueueItems} queue items are healthy.
+              </div>
+            ) : (
+              <div className="max-h-56 divide-y overflow-y-auto rounded-md border">
+                {remediationReport.issues.map((issue, i) => (
+                  <div key={i} className="flex items-start gap-2 px-3 py-2">
+                    {issue.severity === "error" ? (
+                      <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-500" />
+                    ) : (
+                      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate text-xs font-medium">
+                          {issue.title ?? "Unknown item"}
+                        </span>
+                        <Badge variant="outline" className="h-3.5 shrink-0 px-1 text-[9px]">
+                          {issue.code}
+                        </Badge>
+                      </div>
+                      <p className="mt-0.5 line-clamp-2 text-[10px] text-muted-foreground">
+                        {issue.message}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="text-right text-[10px] text-muted-foreground">
+              Last run {formatAgo(remediationReport.generatedAtMs)} · {remediationReport.totalQueueItems} total queue items
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       <TranscodingProgressPanel />
 
