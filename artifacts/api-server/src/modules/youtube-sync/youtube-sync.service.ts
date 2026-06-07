@@ -1,4 +1,4 @@
-import { count, eq, sql } from "drizzle-orm";
+import { and, count, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { env } from "../../config/env.js";
 import { db, schema } from "../../infrastructure/db.js";
@@ -1199,5 +1199,162 @@ export async function syncYouTubeChannel(triggeredBy: "scheduler" | "manual" = "
     throw err;
   } finally {
     _syncInProgress = false;
+  }
+}
+
+// ── Category statistics ───────────────────────────────────────────────────────
+
+export interface CategoryStat {
+  category: string;
+  count: number;
+  pct: number;
+}
+
+export interface CategoryStatsResult {
+  total: number;
+  byCategory: CategoryStat[];
+  liveServiceCount: number;
+  uncategorizedCount: number;
+}
+
+export async function getCategoryStats(): Promise<CategoryStatsResult> {
+  const rows = await db
+    .select({ category: schema.videosTable.category, cnt: count() })
+    .from(schema.videosTable)
+    .where(eq(schema.videosTable.videoSource, "youtube"))
+    .groupBy(schema.videosTable.category)
+    .orderBy(sql`count(*) DESC`);
+
+  const total = rows.reduce((s, r) => s + Number(r.cnt), 0);
+  const byCategory: CategoryStat[] = rows.map((r) => ({
+    category: r.category ?? "unknown",
+    count: Number(r.cnt),
+    pct: total > 0 ? Math.round((Number(r.cnt) / total) * 100) : 0,
+  }));
+
+  const liveServiceCount = byCategory.find((c) => c.category === "live_service")?.count ?? 0;
+  const uncategorizedCount = byCategory.find((c) => c.category === "teaching" || c.category === "")?.count ?? 0;
+
+  return { total, byCategory, liveServiceCount, uncategorizedCount };
+}
+
+// ── Category reconciliation ───────────────────────────────────────────────────
+// Re-runs detectCategory() on every unlocked YouTube video and updates rows
+// whose category has drifted from the current rule set. Respects metadata_locked
+// so operator-curated assignments are never overwritten.
+
+export interface RecategorizeResult {
+  processed: number;
+  changed: number;
+  unchanged: number;
+  durationMs: number;
+  changesByCategory: Record<string, number>; // new category → count of videos moved into it
+  errors: number;
+}
+
+let _recategorizeInProgress = false;
+export function isRecategorizeInProgress(): boolean { return _recategorizeInProgress; }
+
+const RECATEGORIZE_BATCH_SIZE = 100;
+
+export async function recategorizeAllVideos(): Promise<RecategorizeResult> {
+  if (_recategorizeInProgress) throw new Error("Recategorization already in progress");
+  _recategorizeInProgress = true;
+  const t0 = Date.now();
+
+  let processed = 0;
+  let changed = 0;
+  let errors = 0;
+  const changesByCategory: Record<string, number> = {};
+
+  try {
+    // Load all unlocked YouTube videos in batches (cursor-based via offset)
+    let offset = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+      const rows = await db
+        .select({
+          id: schema.videosTable.id,
+          title: schema.videosTable.title,
+          description: schema.videosTable.description,
+          category: schema.videosTable.category,
+        })
+        .from(schema.videosTable)
+        .where(
+          and(
+            eq(schema.videosTable.videoSource, "youtube"),
+            or(
+              isNull(schema.videosTable.metadataLocked),
+              eq(schema.videosTable.metadataLocked, false),
+            ),
+          ),
+        )
+        .orderBy(schema.videosTable.id)
+        .limit(RECATEGORIZE_BATCH_SIZE)
+        .offset(offset);
+
+      if (rows.length === 0) { hasMore = false; break; }
+
+      // Compute new category for each row and collect changed ones
+      const toUpdate: Array<{ id: string; newCategory: string }> = [];
+      for (const row of rows) {
+        const newCat = detectCategory(row.title ?? "", row.description ?? "");
+        if (newCat !== (row.category ?? "teaching")) {
+          toUpdate.push({ id: row.id, newCategory: newCat });
+        }
+      }
+
+      // Batch-update changed rows individually (category values differ per row)
+      for (const { id, newCategory } of toUpdate) {
+        try {
+          await db
+            .update(schema.videosTable)
+            .set({ category: newCategory })
+            .where(
+              and(
+                eq(schema.videosTable.id, id),
+                or(
+                  isNull(schema.videosTable.metadataLocked),
+                  eq(schema.videosTable.metadataLocked, false),
+                ),
+              ),
+            );
+          changed++;
+          changesByCategory[newCategory] = (changesByCategory[newCategory] ?? 0) + 1;
+        } catch (err) {
+          errors++;
+          logger.warn({ err, id }, "youtube-sync: recategorize update failed for row (non-fatal)");
+        }
+      }
+
+      processed += rows.length;
+      offset += rows.length;
+      if (rows.length < RECATEGORIZE_BATCH_SIZE) hasMore = false;
+    }
+
+    const durationMs = Date.now() - t0;
+    logger.info(
+      { processed, changed, unchanged: processed - changed - errors, errors, durationMs },
+      "youtube-sync: recategorization complete",
+    );
+
+    if (changed > 0) {
+      void invalidateVideosCatalogCache().catch((err) =>
+        logger.warn({ err }, "youtube-sync: recategorize catalog invalidation failed (non-fatal)"),
+      );
+      adminEventBus.push("videos-library-updated", null);
+    }
+
+    return {
+      processed,
+      changed,
+      unchanged: Math.max(0, processed - changed - errors),
+      durationMs,
+      changesByCategory,
+      errors,
+    };
+  } finally {
+    _recategorizeInProgress = false;
   }
 }

@@ -3,7 +3,12 @@ import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { requireAuth } from "../../middleware/auth.js";
 import { youtubeSyncDispatcher } from "./youtube-sync.dispatcher.js";
-import { getSyncStatus } from "./youtube-sync.service.js";
+import {
+  getSyncStatus,
+  getCategoryStats,
+  recategorizeAllVideos,
+  isRecategorizeInProgress,
+} from "./youtube-sync.service.js";
 
 let manualSyncInProgress = false;
 
@@ -56,8 +61,6 @@ export async function youtubeSyncRoutes(app: FastifyInstance) {
     "/youtube/sync",
     {
       preHandler: requireAuth("editor"),
-      // Each manual sync consumes YouTube Data API v3 quota (up to ~100 units).
-      // 5/min caps burn rate even if the module-level in-progress guard is bypassed.
       config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
@@ -146,6 +149,72 @@ export async function youtubeSyncRoutes(app: FastifyInstance) {
           source: r.source,
         })),
       };
+    },
+  );
+
+  /**
+   * GET /admin/youtube/sync/category-stats
+   * Returns per-category video counts for all YouTube-sourced videos.
+   */
+  r.get(
+    "/youtube/sync/category-stats",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin"],
+        summary: "YouTube video category breakdown",
+        security: [{ bearerAuth: [] }],
+        response: {
+          200: z.object({
+            total: z.number(),
+            liveServiceCount: z.number(),
+            uncategorizedCount: z.number(),
+            byCategory: z.array(z.object({
+              category: z.string(),
+              count: z.number(),
+              pct: z.number(),
+            })),
+          }),
+        },
+      },
+    },
+    async () => getCategoryStats(),
+  );
+
+  /**
+   * POST /admin/youtube/recategorize
+   * Re-runs detectCategory() on every unlocked YouTube video and persists changes.
+   * Skips rows where metadata_locked = true (operator-curated assignments).
+   */
+  r.post(
+    "/youtube/recategorize",
+    {
+      preHandler: requireAuth("admin"),
+      config: { rateLimit: { max: 3, timeWindow: "5 minutes" } },
+      schema: {
+        tags: ["admin"],
+        summary: "Re-categorize all unlocked YouTube videos using current keyword rules",
+        security: [{ bearerAuth: [] }],
+        response: {
+          200: z.object({
+            processed: z.number(),
+            changed: z.number(),
+            unchanged: z.number(),
+            errors: z.number(),
+            durationMs: z.number(),
+            changesByCategory: z.record(z.string(), z.number()),
+          }),
+          409: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (_req, reply) => {
+      if (isRecategorizeInProgress()) {
+        return reply.code(409).send({ error: "A recategorization is already in progress" });
+      }
+      const result = await recategorizeAllVideos();
+      return result;
     },
   );
 }
