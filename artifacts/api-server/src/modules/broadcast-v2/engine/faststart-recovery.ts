@@ -52,6 +52,14 @@ const logger = rootLogger.child({ service: "faststart-recovery" });
 
 const MAX_ATTEMPTS = 3;
 const attemptCounts = new Map<string, number>();
+/**
+ * Permanently given-up video IDs for this process lifetime.
+ * Using a separate Set (instead of keeping MAX_ATTEMPTS+1 in attemptCounts)
+ * allows the attemptCounts Map to be fully cleared for given-up entries,
+ * preventing unbounded Map growth when many corrupt-upload videos accumulate
+ * over a long-running deployment.
+ */
+const givenUpIds = new Set<string>();
 const inFlight = new Set<string>();
 // Tracks when each videoId was added to inFlight so stale entries (hung ffmpeg
 // jobs that never resolve) can be evicted.  Without this TTL, a zombie ffmpeg
@@ -197,23 +205,30 @@ async function dispatchOne(c: Candidate): Promise<boolean> {
   }
 
   if (inFlight.has(c.videoId)) return false;
+  // Check the permanently-given-up set first.  Entries here had their
+  // attemptCounts entry deleted to keep the Map bounded; re-checking
+  // `attemptCounts.get` would return 0 and incorrectly allow a retry.
+  if (givenUpIds.has(c.videoId)) return false;
   const prev = attemptCounts.get(c.videoId) ?? 0;
   if (prev >= MAX_ATTEMPTS) {
-    if (prev === MAX_ATTEMPTS) {
-      stats.totalGivenUp += 1;
-      attemptCounts.set(c.videoId, prev + 1); // bump so we only count once
-      logger.error(
-        { videoId: c.videoId, title: c.title, attempts: prev },
-        "faststart-recovery: max attempts reached — giving up until process restart; video excluded from broadcast",
-      );
-      void import("../../../infrastructure/sentry.js").then(({ captureEvent }) =>
-        captureEvent(
-          `Faststart recovery gave up on "${c.title ?? c.videoId}" after ${prev} attempts — video excluded from broadcast until process restart`,
-          "error",
-          { videoId: c.videoId, title: c.title, attempts: prev, maxAttempts: MAX_ATTEMPTS },
-        ),
-      ).catch(() => {});
-    }
+    // Move from the attempt-counter Map to the dedicated given-up Set.
+    // Deleting from attemptCounts keeps that Map bounded: entries are
+    // only present for videos actively being retried (0–MAX_ATTEMPTS-1),
+    // never for the potentially large population of permanently-failed ones.
+    stats.totalGivenUp += 1;
+    attemptCounts.delete(c.videoId);
+    givenUpIds.add(c.videoId);
+    logger.error(
+      { videoId: c.videoId, title: c.title, attempts: prev },
+      "faststart-recovery: max attempts reached — giving up until process restart; video excluded from broadcast",
+    );
+    void import("../../../infrastructure/sentry.js").then(({ captureEvent }) =>
+      captureEvent(
+        `Faststart recovery gave up on "${c.title ?? c.videoId}" after ${prev} attempts — video excluded from broadcast until process restart`,
+        "error",
+        { videoId: c.videoId, title: c.title, attempts: prev, maxAttempts: MAX_ATTEMPTS },
+      ),
+    ).catch(() => {});
     return false;
   }
   inFlight.add(c.videoId);
@@ -379,8 +394,15 @@ export const faststartRecoveryWorker = {
   resetAttempts(videoId?: string): void {
     if (videoId) {
       attemptCounts.delete(videoId);
+      givenUpIds.delete(videoId);
     } else {
       attemptCounts.clear();
+      givenUpIds.clear();
     }
+  },
+
+  /** Diagnostic: number of permanently-given-up videos this process lifetime. */
+  getGivenUpCount(): number {
+    return givenUpIds.size;
   },
 };

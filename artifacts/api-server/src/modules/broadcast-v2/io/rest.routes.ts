@@ -1251,6 +1251,12 @@ interface RemediationReportData {
     failedInQueue: number;
     placeholderDuration: number;
   };
+  /**
+   * True when the storage_blobs connectivity check failed during this report
+   * generation.  The hlsStorageMissing count may be under-reported; the health
+   * score is penalised by 5 points to reflect the uncertainty.
+   */
+  storageCheckUnknown: boolean;
 }
 
 async function buildRemediationReport(): Promise<RemediationReportData> {
@@ -1259,6 +1265,7 @@ async function buildRemediationReport(): Promise<RemediationReportData> {
   let stuckEncoding = 0;
   let failedInQueue = 0;
   let placeholderDuration = 0;
+  let storageCheckUnknown = false;
 
   // 1. Active queue items with video join.
   const queueResult = await db.execute<{
@@ -1351,10 +1358,24 @@ async function buildRemediationReport(): Promise<RemediationReportData> {
         }
       }
     } catch (err) {
+      // Fail-closed: surface the uncertainty rather than silently omitting it.
+      // The old behaviour ("omitted from report") inflated healthScore by hiding
+      // potential HLS_STORAGE_MISSING issues entirely during storage outages.
+      storageCheckUnknown = true;
       logger.warn(
         { err },
-        "[broadcast-v2] remediation-report: storage_blobs check failed (non-fatal — omitted from report)",
+        "[broadcast-v2] remediation-report: storage_blobs check failed — " +
+        "hlsStorageMissing count may be under-reported; healthScore penalised",
       );
+      issues.push({
+        videoId: null,
+        title: null,
+        code: "STORAGE_BLOBS_UNREACHABLE",
+        severity: "warn",
+        message:
+          "storage_blobs connectivity check failed — HLS storage validation result is UNKNOWN; " +
+          "hlsStorageMissing count may be under-reported until connectivity is restored",
+      });
     }
   }
 
@@ -1398,9 +1419,13 @@ async function buildRemediationReport(): Promise<RemediationReportData> {
 
   const errorCount = issues.filter((i) => i.severity === "error").length;
   const warnCount = issues.filter((i) => i.severity === "warn").length;
+  // Penalise health score by 5 when the storage check is in an UNKNOWN state:
+  // the real hlsStorageMissing count may be higher than what was detected, so
+  // the score should not appear falsely healthy during a storage outage.
+  const storageUnknownPenalty = storageCheckUnknown ? 5 : 0;
   const healthScore = Math.max(
     0,
-    Math.min(100, 100 - errorCount * 10 - warnCount * 3),
+    Math.min(100, 100 - errorCount * 10 - warnCount * 3 - storageUnknownPenalty),
   );
 
   return {
@@ -1410,6 +1435,7 @@ async function buildRemediationReport(): Promise<RemediationReportData> {
     issueCount: issues.length,
     issues,
     summary: { hlsStorageMissing, stuckEncoding, failedInQueue, placeholderDuration },
+    storageCheckUnknown,
   };
 }
 

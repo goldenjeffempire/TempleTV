@@ -54,6 +54,10 @@ async function probeDurationFromUrl(url: string): Promise<number | null> {
         "-show_entries", "format=duration",
         url,
       ], { stdio: ["ignore", "pipe", "ignore"] });
+      // Unref the child process so it does not prevent the Node event loop
+      // from exiting if the parent process receives SIGTERM while a reprobe
+      // is in flight.  The 45 s timeout above still kills it deterministically.
+      proc.unref();
     } catch {
       resolve(null);
       return;
@@ -105,6 +109,19 @@ class QueueIntegrityValidatorImpl {
    */
   private validatorCycleCount = 0;
 
+  // ── storage_blobs circuit breaker ────────────────────────────────────────
+  // Tracks consecutive failures of the storage_blobs connectivity check so
+  // a temporarily-unreachable storage layer doesn't flood logs and doesn't
+  // falsely auto-deactivate items whose HLS state is simply unknown.
+  //
+  // After STORAGE_CB_THRESHOLD consecutive failures the circuit opens for
+  // STORAGE_CB_OPEN_MS — further checks are skipped and a single WARN is
+  // emitted.  The circuit auto-closes after the TTL so recovery is automatic.
+  private storageCbFailures = 0;
+  private storageCbOpenUntilMs = 0;
+  private static readonly STORAGE_CB_THRESHOLD = 3;
+  private static readonly STORAGE_CB_OPEN_MS = 60_000;
+
   async validate(): Promise<ValidationReport> {
     if (this.validating) return this.lastReport ?? this.empty();
     this.validating = true;
@@ -138,8 +155,6 @@ class QueueIntegrityValidatorImpl {
         .leftJoin(v, eq(q.videoId, v.id))
         .where(eq(q.isActive, true))
         .orderBy(asc(q.sortOrder));
-
-      this.cycleCount++;
 
       // Items with SUSPICIOUS_DURATION collected here for background reprobe
       // after the main issue-detection loop (max 3 per cycle).
@@ -1060,19 +1075,76 @@ class QueueIntegrityValidatorImpl {
           const checkKeys = hlsReadyCandidates.map(
             (r) => `transcoded/${r.videoId2}/master.m3u8`,
           );
-          let presentKeys: Set<string>;
-          try {
-            const presentRows = await db.execute<{ key: string }>(sql`
-              SELECT key FROM storage_blobs WHERE key = ANY(${checkKeys}::text[])
-            `);
-            presentKeys = new Set((presentRows.rows as Array<{ key: string }>).map((r) => r.key));
-          } catch (storageErr) {
-            // storage_blobs unreachable — fail-safe: assume all present.
-            logger.warn({ err: storageErr }, "[queue-validator] HLS_STORAGE_MISSING: storage_blobs query failed (non-fatal, assuming present)");
-            presentKeys = new Set(checkKeys);
+          // null = UNKNOWN (storage check skipped or failed — neither deactivate
+          // nor mark healthy; surface the uncertainty as a diagnostic issue).
+          // Set<string> = VALID result — keys present in storage.
+          let presentKeys: Set<string> | null = null;
+
+          if (Date.now() < this.storageCbOpenUntilMs) {
+            // Circuit is open — skip the query; surface as UNKNOWN to the operator.
+            issues.push({
+              severity: "warn",
+              itemId: null,
+              itemTitle: null,
+              code: "STORAGE_BLOBS_UNREACHABLE",
+              message:
+                "storage_blobs connectivity check is paused (circuit breaker open after repeated failures) — " +
+                "HLS storage validation skipped; items will NOT be auto-deactivated until connectivity is restored",
+            });
+          } else {
+            try {
+              const presentRows = await db.execute<{ key: string }>(sql`
+                SELECT key FROM storage_blobs WHERE key = ANY(${checkKeys}::text[])
+              `);
+              presentKeys = new Set(
+                (presentRows.rows as Array<{ key: string }>).map((r) => r.key),
+              );
+              // Reset consecutive-failure counter on a successful query.
+              this.storageCbFailures = 0;
+            } catch (storageErr) {
+              // Fail-closed: treat the result as UNKNOWN rather than assuming all
+              // keys are present.  Assuming present (the old behaviour) silently
+              // hid real HLS storage outages and allowed broken queue items to
+              // remain active, causing repeated dead-air auto-skip cycles for
+              // every connected viewer.
+              this.storageCbFailures += 1;
+              if (this.storageCbFailures >= QueueIntegrityValidatorImpl.STORAGE_CB_THRESHOLD) {
+                this.storageCbOpenUntilMs =
+                  Date.now() + QueueIntegrityValidatorImpl.STORAGE_CB_OPEN_MS;
+                this.storageCbFailures = 0;
+                logger.warn(
+                  { err: storageErr, openForMs: QueueIntegrityValidatorImpl.STORAGE_CB_OPEN_MS },
+                  "[queue-validator] HLS_STORAGE_MISSING: storage_blobs check failed " +
+                  `${QueueIntegrityValidatorImpl.STORAGE_CB_THRESHOLD}× — circuit breaker opened; ` +
+                  "storage validation paused for 60 s",
+                );
+              } else {
+                logger.warn(
+                  { err: storageErr, consecutiveFailures: this.storageCbFailures },
+                  "[queue-validator] HLS_STORAGE_MISSING: storage_blobs query failed — " +
+                  "HLS storage validation skipped this cycle (UNKNOWN state; items NOT auto-deactivated)",
+                );
+              }
+              // Emit a diagnostic issue so the admin dashboard shows the connectivity
+              // problem immediately rather than silently hiding it.
+              issues.push({
+                severity: "warn",
+                itemId: null,
+                itemTitle: null,
+                code: "STORAGE_BLOBS_UNREACHABLE",
+                message:
+                  `storage_blobs connectivity check failed (${this.storageCbFailures > 0 ? `${this.storageCbFailures} consecutive failures` : "circuit breaker open"}) — ` +
+                  "HLS storage validation result is UNKNOWN this cycle; items will NOT be auto-deactivated",
+              });
+              // presentKeys stays null — the loop below is skipped entirely.
+            }
           }
 
           for (const row of hlsReadyCandidates) {
+            // Skip when storage check result is UNKNOWN — we cannot distinguish
+            // a genuinely-absent blob from a storage connectivity failure, so we
+            // must not deactivate items.  The issue is surfaced above.
+            if (presentKeys === null) break;
             const hlsKey = `transcoded/${row.videoId2}/master.m3u8`;
             if (presentKeys.has(hlsKey)) continue;
 

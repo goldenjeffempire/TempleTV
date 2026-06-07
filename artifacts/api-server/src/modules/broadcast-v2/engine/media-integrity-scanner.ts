@@ -354,6 +354,19 @@ class MediaIntegrityScannerImpl {
       results.push(...batchResults);
     }
 
+    // ── Prune stale failureCounts entries ─────────────────────────────────
+    // Items that were deactivated or removed from the queue between scans
+    // leave orphan entries in failureCounts.  In long-running deployments
+    // where items are frequently cycled in/out, these accumulate without
+    // bound and slowly inflate RSS.  Pruning is O(N) on the current scan
+    // size (typically < a few hundred items) so the cost is negligible.
+    const currentScanIds = new Set(results.map((r) => r.id));
+    for (const id of this.failureCounts.keys()) {
+      if (!currentScanIds.has(id)) {
+        this.failureCounts.delete(id);
+      }
+    }
+
     const reachable = results.filter((r) => r.reachable).length;
     this.report = {
       lastScanAtMs: startMs,
