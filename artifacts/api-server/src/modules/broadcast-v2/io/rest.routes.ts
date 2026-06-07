@@ -1179,6 +1179,33 @@ export async function restRoutes(app: FastifyInstance) {
     },
   );
 
+  // ── GET /api/broadcast-v2/remediation-report ─────────────────────────────
+  // Returns a structured health report of HLS / transcoding issues in the
+  // active broadcast queue. Designed for operator dashboards and uptime
+  // monitors. Auth: editor+. In-process 60 s cache keeps monitor pollers
+  // from hammering the DB.
+  {
+    const REMEDIATION_TTL_MS = 60_000;
+    let remediationCache: {
+      ts: number;
+      data: Awaited<ReturnType<typeof buildRemediationReport>>;
+    } | null = null;
+
+    api.get(
+      "/api/broadcast-v2/remediation-report",
+      adminGuard,
+      async (_req, reply) => {
+        const now = Date.now();
+        if (remediationCache && now - remediationCache.ts < REMEDIATION_TTL_MS) {
+          return reply.send(remediationCache.data);
+        }
+        const data = await buildRemediationReport();
+        remediationCache = { ts: now, data };
+        return reply.send(data);
+      },
+    );
+  }
+
   // ── Boot-time auto-enqueue scan ──────────────────────────────────────────
   // Automatically fixes "missing HLS" on startup — handles the case where
   // queue items existed before the transcoder ran, after a crash recovery,
@@ -1197,4 +1224,227 @@ export async function restRoutes(app: FastifyInstance) {
   }, 15_000);
   _bootHlsScanTimer.unref?.();
 
+}
+
+// ── Module-level remediation helpers ────────────────────────────────────────
+// These are hoisted function declarations so they can be referenced both
+// inside the export default plugin (route handler) and by runBootRemediationReport.
+
+interface RemediationIssue {
+  videoId: string | null;
+  title: string | null;
+  code: string;
+  severity: "error" | "warn";
+  message: string;
+}
+
+interface RemediationReportData {
+  generatedAtMs: number;
+  /** 0–100. Decrements by 10 per error issue and 3 per warning. */
+  healthScore: number;
+  totalQueueItems: number;
+  issueCount: number;
+  issues: RemediationIssue[];
+  summary: {
+    hlsStorageMissing: number;
+    stuckEncoding: number;
+    failedInQueue: number;
+    placeholderDuration: number;
+  };
+}
+
+async function buildRemediationReport(): Promise<RemediationReportData> {
+  const issues: RemediationIssue[] = [];
+  let hlsStorageMissing = 0;
+  let stuckEncoding = 0;
+  let failedInQueue = 0;
+  let placeholderDuration = 0;
+
+  // 1. Active queue items with video join.
+  const queueResult = await db.execute<{
+    id: string;
+    title: string | null;
+    video_id: string | null;
+    duration_secs: number;
+    transcoding_status: string | null;
+    error_code: string | null;
+  }>(sql`
+    SELECT
+      q.id,
+      q.title,
+      q.video_id,
+      q.duration_secs,
+      v.transcoding_status,
+      v.transcoding_error_code AS error_code
+    FROM broadcast_queue q
+    LEFT JOIN managed_videos v ON q.video_id = v.id
+    WHERE q.is_active = true
+    ORDER BY q.sort_order ASC
+    LIMIT 500
+  `);
+
+  const queueRows = queueResult.rows as Array<{
+    id: string;
+    title: string | null;
+    video_id: string | null;
+    duration_secs: number;
+    transcoding_status: string | null;
+    error_code: string | null;
+  }>;
+
+  // 2. Detect failed transcoding and HLS-placeholder duration in active queue.
+  for (const row of queueRows) {
+    if (row.transcoding_status === "failed") {
+      failedInQueue++;
+      issues.push({
+        videoId: row.video_id,
+        title: row.title,
+        code: "FAILED_IN_QUEUE",
+        severity: "error",
+        message:
+          `Active queue item '${row.title ?? row.id}' has transcodingStatus='failed'` +
+          (row.error_code ? ` (errorCode: ${row.error_code})` : ""),
+      });
+    }
+    if (row.duration_secs === 1800 && row.transcoding_status === "hls_ready") {
+      placeholderDuration++;
+      issues.push({
+        videoId: row.video_id,
+        title: row.title,
+        code: "HLS_PLACEHOLDER_DURATION",
+        severity: "warn",
+        message:
+          `Active queue item '${row.title ?? row.id}' is hls_ready but still has the 1800-s ` +
+          `upload-time placeholder duration — re-probe via reprobe-duration endpoint to fix`,
+      });
+    }
+  }
+
+  // 3. HLS storage missing: check whether master.m3u8 actually exists in
+  // object storage for up to 50 hls_ready active queue items.
+  const hlsReadyItems = queueRows.filter(
+    (r) => r.transcoding_status === "hls_ready" && r.video_id,
+  );
+  if (hlsReadyItems.length > 0) {
+    const sample = hlsReadyItems.slice(0, 50);
+    const checkKeys = sample.map((r) => `transcoded/${r.video_id}/master.m3u8`);
+    try {
+      const pr = await db.execute<{ key: string }>(sql`
+        SELECT key FROM storage_blobs WHERE key = ANY(${checkKeys}::text[])
+      `);
+      const presentKeys = new Set(
+        (pr.rows as Array<{ key: string }>).map((r) => r.key),
+      );
+      for (const row of sample) {
+        const key = `transcoded/${row.video_id}/master.m3u8`;
+        if (!presentKeys.has(key)) {
+          hlsStorageMissing++;
+          issues.push({
+            videoId: row.video_id,
+            title: row.title,
+            code: "HLS_STORAGE_MISSING",
+            severity: "error",
+            message:
+              `Video '${row.video_id}' is marked hls_ready but storage key ` +
+              `'${key}' is absent — HLS URL will 404 for every player client`,
+          });
+        }
+      }
+    } catch (err) {
+      logger.warn(
+        { err },
+        "[broadcast-v2] remediation-report: storage_blobs check failed (non-fatal — omitted from report)",
+      );
+    }
+  }
+
+  // 4. Videos stuck at 'encoding' >2 h with no active / done transcoding job.
+  try {
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60_000);
+    const stuckResult = await db.execute<{
+      id: string;
+      title: string | null;
+    }>(sql`
+      SELECT v.id, v.title
+      FROM managed_videos v
+      WHERE v.transcoding_status = 'encoding'
+        AND v.updated_at < ${twoHoursAgo}
+        AND NOT EXISTS (
+          SELECT 1 FROM transcoding_jobs j
+          WHERE j.video_id = v.id
+            AND j.status IN ('queued', 'processing', 'done')
+        )
+      LIMIT 20
+    `);
+    const stuckRows = stuckResult.rows as Array<{ id: string; title: string | null }>;
+    stuckEncoding = stuckRows.length;
+    for (const row of stuckRows) {
+      issues.push({
+        videoId: row.id,
+        title: row.title,
+        code: "STUCK_ENCODING_NO_JOB",
+        severity: "error",
+        message:
+          `Video '${row.title ?? row.id}' has been stuck at transcodingStatus='encoding' ` +
+          `for >2 h with no active / done transcoding job — job was likely lost to a crash`,
+      });
+    }
+  } catch (err) {
+    logger.warn(
+      { err },
+      "[broadcast-v2] remediation-report: stuck-encoding check failed (non-fatal — omitted from report)",
+    );
+  }
+
+  const errorCount = issues.filter((i) => i.severity === "error").length;
+  const warnCount = issues.filter((i) => i.severity === "warn").length;
+  const healthScore = Math.max(
+    0,
+    Math.min(100, 100 - errorCount * 10 - warnCount * 3),
+  );
+
+  return {
+    generatedAtMs: Date.now(),
+    healthScore,
+    totalQueueItems: queueRows.length,
+    issueCount: issues.length,
+    issues,
+    summary: { hlsStorageMissing, stuckEncoding, failedInQueue, placeholderDuration },
+  };
+}
+
+/**
+ * Called from main.ts ~10 s after the orchestrator starts so broadcast queue
+ * health issues appear in the server startup log immediately — without waiting
+ * for the first validator cycle (≈2-min cadence). Non-fatal.
+ *
+ * Exported so main.ts can dynamic-import this module after the orchestrator is
+ * confirmed running, minimising startup-time module loading.
+ */
+export async function runBootRemediationReport(): Promise<void> {
+  try {
+    const report = await buildRemediationReport();
+    if (report.issues.length === 0) {
+      logger.info(
+        { healthScore: 100, totalQueueItems: report.totalQueueItems },
+        "[broadcast-v2] boot remediation report: broadcast queue is healthy — no issues found",
+      );
+      return;
+    }
+    logger.warn(
+      {
+        healthScore: report.healthScore,
+        totalQueueItems: report.totalQueueItems,
+        issueCount: report.issues.length,
+        summary: report.summary,
+        topIssues: report.issues
+          .slice(0, 10)
+          .map((i) => ({ code: i.code, severity: i.severity, videoId: i.videoId })),
+      },
+      "[broadcast-v2] boot remediation report: broadcast queue health issues detected — " +
+      "review GET /api/broadcast-v2/remediation-report for the full list",
+    );
+  } catch (err) {
+    logger.warn({ err }, "[broadcast-v2] boot remediation report failed (non-fatal)");
+  }
 }

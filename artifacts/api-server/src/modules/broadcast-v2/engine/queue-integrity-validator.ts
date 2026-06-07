@@ -27,11 +27,12 @@
  * Results are cached and exposed via the /diagnostics endpoint. Non-fatal.
  */
 import { spawn } from "node:child_process";
-import { asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { normalizeQueueUrl } from "../repository/queue.repo.js";
+import { enqueueTranscode } from "../../transcoder/transcoder.queue.js";
 
 // ── Duration probe helper ─────────────────────────────────────────────────────
 //
@@ -97,10 +98,17 @@ class QueueIntegrityValidatorImpl {
   private validating = false;
   /** Fingerprint of the last logged issue set — used to suppress duplicate WARN spam. */
   private lastIssueSig = "";
+  /**
+   * Monotonically-incrementing cycle counter. Incremented at the start of each
+   * validate() call. Used to rate-limit checks that don't need to run every
+   * cycle (e.g. STUCK_ENCODING_NO_JOB every 3rd cycle).
+   */
+  private validatorCycleCount = 0;
 
   async validate(): Promise<ValidationReport> {
     if (this.validating) return this.lastReport ?? this.empty();
     this.validating = true;
+    this.validatorCycleCount += 1;
     const start = Date.now();
     const issues: ValidationIssue[] = [];
 
@@ -134,6 +142,9 @@ class QueueIntegrityValidatorImpl {
       // Items with SUSPICIOUS_DURATION collected here for background reprobe
       // after the main issue-detection loop (max 3 per cycle).
       const suspiciousDurationItems: Array<{ id: string; videoId: string; localUrl: string }> = [];
+      // Gap 4: HLS-ready items still carrying 1800-s upload-time placeholder
+      // duration. ffprobe can recover the real duration from the VOD manifest.
+      const hlsPlaceholderDurationItems: Array<{ id: string; videoId: string; hlsUrl: string }> = [];
 
       for (const row of rows) {
         const hasAnyUrl =
@@ -224,6 +235,15 @@ class QueueIntegrityValidatorImpl {
               code: "PLACEHOLDER_DURATION",
               message: "Item uses 1800 s placeholder — ffprobe has not produced a real duration yet",
             });
+          }
+          // Gap 4: HLS-ready items with placeholder duration — the real duration
+          // can be recovered by re-probing the HLS VOD manifest via ffprobe.
+          // Collect for background reprobe after the main detection loop.
+          if (hasHls && !isYoutube && row.videoId2 !== null) {
+            const hlsUrl = row.qHlsUrl ?? row.vHlsUrl;
+            if (hlsUrl) {
+              hlsPlaceholderDurationItems.push({ id: row.id, videoId: row.videoId2, hlsUrl });
+            }
           }
         }
 
@@ -768,6 +788,242 @@ class QueueIntegrityValidatorImpl {
             }
           })();
         }
+      }
+
+      // ── Gap 4: Background reprobe of HLS-placeholder duration items ────────
+      // HLS-ready items still carrying the 1800-s upload-time placeholder
+      // duration are re-probed via ffprobe on the HLS manifest URL. VOD HLS
+      // manifests contain EXTINF tags that sum to the exact content duration.
+      // Runs ≤3 per cycle to avoid blocking the validate() loop.
+      if (hlsPlaceholderDurationItems.length > 0) {
+        const toReprobe = hlsPlaceholderDurationItems.slice(0, 3);
+        for (const item of toReprobe) {
+          void (async () => {
+            try {
+              const absUrl = normalizeQueueUrl(item.hlsUrl);
+              if (!absUrl) return;
+              const dur = await probeDurationFromUrl(absUrl);
+              // Ignore if ffprobe failed or returned the same 1800-s value.
+              if (!dur || dur < 1 || Math.round(dur) === 1800) {
+                logger.debug(
+                  { itemId: item.id, url: absUrl, dur },
+                  "[queue-validator] HLS-placeholder duration reprobe returned no valid duration (non-fatal)",
+                );
+                return;
+              }
+              await db.execute(sql`
+                UPDATE managed_videos SET duration = ${String(Math.ceil(dur))} WHERE id = ${item.videoId}
+              `);
+              await db.execute(sql`
+                UPDATE broadcast_queue SET duration_secs = ${Math.ceil(dur)} WHERE id = ${item.id}
+              `);
+              logger.info(
+                { itemId: item.id, videoId: item.videoId, newDurSecs: Math.ceil(dur) },
+                "[queue-validator] AUTO-FIX: HLS-placeholder duration reprobe corrected duration — " +
+                "managed_videos.duration and broadcast_queue.duration_secs updated",
+              );
+              adminEventBus.push("broadcast-queue-updated", {
+                reason: "integrity-fix-hls-placeholder-duration-reprobe",
+                itemId: item.id,
+                videoId: item.videoId,
+              });
+            } catch (err) {
+              logger.warn(
+                { err, itemId: item.id },
+                "[queue-validator] HLS-placeholder duration reprobe failed (non-fatal)",
+              );
+            }
+          })();
+        }
+      }
+
+      // ── Gap 1: HLS_STORAGE_MISSING — detect, auto-fix, and reverse pass ───
+      // Active queue items whose video is marked hls_ready but whose HLS master
+      // blob is absent from object storage. The file was lost (storage migration,
+      // manual deletion, S3 lifecycle, or partial-success crash) and the
+      // orchestrator will serve a 404 to every player client.
+      //
+      // Checks ≤5 hls_ready items per cycle to keep storage_blobs query volume
+      // low. On miss: deactivates the queue item and re-enqueues transcoding
+      // from the source blob so the HLS is rebuilt automatically.
+      //
+      // Reverse pass: re-activates items that were deactivated by this check
+      // once their HLS master.m3u8 is present again (transcoding has finished).
+      {
+        const hlsReadyCandidates = rows
+          .filter((r) => r.videoId2 !== null && r.vStatus === "hls_ready")
+          .slice(0, 5);
+
+        if (hlsReadyCandidates.length > 0) {
+          const checkKeys = hlsReadyCandidates.map(
+            (r) => `transcoded/${r.videoId2}/master.m3u8`,
+          );
+          let presentKeys: Set<string>;
+          try {
+            const presentRows = await db.execute<{ key: string }>(sql`
+              SELECT key FROM storage_blobs WHERE key = ANY(${checkKeys}::text[])
+            `);
+            presentKeys = new Set((presentRows.rows as Array<{ key: string }>).map((r) => r.key));
+          } catch (storageErr) {
+            // storage_blobs unreachable — fail-safe: assume all present.
+            logger.warn({ err: storageErr }, "[queue-validator] HLS_STORAGE_MISSING: storage_blobs query failed (non-fatal, assuming present)");
+            presentKeys = new Set(checkKeys);
+          }
+
+          for (const row of hlsReadyCandidates) {
+            const hlsKey = `transcoded/${row.videoId2}/master.m3u8`;
+            if (presentKeys.has(hlsKey)) continue;
+
+            issues.push({
+              severity: "error",
+              itemId: row.id,
+              itemTitle: row.title,
+              code: "HLS_STORAGE_MISSING",
+              message:
+                `Video '${row.videoId2}' is marked hls_ready but storage key '${hlsKey}' is absent ` +
+                `— HLS URL will 404. Item deactivated and re-enqueued for transcoding.`,
+            });
+
+            void (async () => {
+              try {
+                await db
+                  .update(schema.broadcastQueueTable)
+                  .set({ isActive: false, validatorDeactivatedReason: "hls_storage_missing" })
+                  .where(eq(schema.broadcastQueueTable.id, row.id));
+                logger.error(
+                  { itemId: row.id, videoId: row.videoId2, hlsKey },
+                  "[queue-validator] AUTO-FIX: HLS_STORAGE_MISSING — deactivated queue item",
+                );
+                if (row.vLocalUrl && row.videoId2) {
+                  await enqueueTranscode({
+                    videoId: row.videoId2,
+                    videoPath: row.vLocalUrl,
+                    priority: 5,
+                  });
+                  logger.info(
+                    { videoId: row.videoId2 },
+                    "[queue-validator] AUTO-FIX: HLS_STORAGE_MISSING — re-enqueued video for transcoding",
+                  );
+                }
+                adminEventBus.push("broadcast-queue-updated", {
+                  reason: "integrity-fix-hls-storage-missing",
+                  itemId: row.id,
+                  videoId: row.videoId2,
+                });
+              } catch (fixErr) {
+                logger.warn(
+                  { err: fixErr, itemId: row.id },
+                  "[queue-validator] HLS_STORAGE_MISSING auto-fix failed (non-fatal)",
+                );
+              }
+            })();
+          }
+        }
+
+        // Reverse pass: items deactivated for hls_storage_missing whose master
+        // blob has since appeared (re-transcoding completed). Re-activate them.
+        try {
+          const deactivatedItems = await db
+            .select({
+              id: schema.broadcastQueueTable.id,
+              videoId: schema.broadcastQueueTable.videoId,
+            })
+            .from(schema.broadcastQueueTable)
+            .where(
+              and(
+                eq(schema.broadcastQueueTable.isActive, false),
+                eq(schema.broadcastQueueTable.validatorDeactivatedReason, "hls_storage_missing"),
+              ),
+            )
+            .limit(20);
+
+          if (deactivatedItems.length > 0) {
+            const reviveKeys = deactivatedItems
+              .filter((r) => r.videoId)
+              .map((r) => ({ id: r.id, videoId: r.videoId!, key: `transcoded/${r.videoId}/master.m3u8` }));
+
+            if (reviveKeys.length > 0) {
+              const keyStrings = reviveKeys.map((r) => r.key);
+              let presentReviveKeys: Set<string>;
+              try {
+                const pr = await db.execute<{ key: string }>(sql`
+                  SELECT key FROM storage_blobs WHERE key = ANY(${keyStrings}::text[])
+                `);
+                presentReviveKeys = new Set((pr.rows as Array<{ key: string }>).map((r) => r.key));
+              } catch {
+                presentReviveKeys = new Set();
+              }
+
+              const toRevive = reviveKeys.filter((r) => presentReviveKeys.has(r.key));
+              if (toRevive.length > 0) {
+                const reviveIds = toRevive.map((r) => r.id);
+                await db
+                  .update(schema.broadcastQueueTable)
+                  .set({ isActive: true, validatorDeactivatedReason: null })
+                  .where(inArray(schema.broadcastQueueTable.id, reviveIds));
+                logger.warn(
+                  { count: reviveIds.length, itemIds: reviveIds },
+                  "[queue-validator] AUTO-FIX (reverse): HLS_STORAGE_MISSING — re-activated items " +
+                  "whose HLS master.m3u8 is now present in storage",
+                );
+                adminEventBus.push("broadcast-queue-updated", {
+                  reason: "integrity-fix-hls-storage-missing-revived",
+                  count: reviveIds.length,
+                });
+              }
+            }
+          }
+        } catch (revErr) {
+          logger.warn({ err: revErr }, "[queue-validator] HLS_STORAGE_MISSING reverse pass failed (non-fatal)");
+        }
+      }
+
+      // ── Gap 2: STUCK_ENCODING_NO_JOB — every 3rd validator cycle ──────────
+      // Videos stuck at transcodingStatus='encoding' with no active or recently-
+      // completed transcoding job AND updated_at older than 2 h. This happens
+      // when the DB write for the job status was lost to a crash but the job
+      // row itself was deleted (different from the partial-success path where
+      // the job is marked 'done'). Re-enqueue transcoding from the source blob
+      // so the video can progress to hls_ready automatically.
+      // Rate-limited to every 3rd cycle (~6 min at the 2-min validator cadence).
+      if (this.validatorCycleCount % 3 === 0) {
+        void (async () => {
+          try {
+            const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60_000);
+            const result = await db.execute<{ id: string; local_video_url: string | null }>(sql`
+              SELECT v.id, v.local_video_url
+              FROM managed_videos v
+              WHERE v.transcoding_status = 'encoding'
+                AND v.updated_at < ${twoHoursAgo}
+                AND NOT EXISTS (
+                  SELECT 1 FROM transcoding_jobs j
+                  WHERE j.video_id = v.id
+                    AND j.status IN ('queued', 'processing', 'done')
+                )
+              LIMIT 10
+            `);
+
+            const stuckRows = result.rows as Array<{ id: string; local_video_url: string | null }>;
+            if (stuckRows.length === 0) return;
+
+            logger.warn(
+              { count: stuckRows.length },
+              "[queue-validator] STUCK_ENCODING_NO_JOB: found videos stuck at 'encoding' >2 h with no active/done job — re-enqueuing",
+            );
+
+            for (const row of stuckRows) {
+              if (!row.local_video_url) continue;
+              try {
+                await enqueueTranscode({ videoId: row.id, videoPath: row.local_video_url, priority: 3 });
+                logger.info({ videoId: row.id }, "[queue-validator] STUCK_ENCODING_NO_JOB: re-enqueued video for transcoding");
+              } catch (enqErr) {
+                logger.warn({ err: enqErr, videoId: row.id }, "[queue-validator] STUCK_ENCODING_NO_JOB: enqueueTranscode failed (non-fatal)");
+              }
+            }
+          } catch (err) {
+            logger.warn({ err }, "[queue-validator] STUCK_ENCODING_NO_JOB sweep failed (non-fatal)");
+          }
+        })();
       }
 
       const errorIds = new Set(issues.filter((i) => i.severity === "error" && i.itemId).map((i) => i.itemId!));

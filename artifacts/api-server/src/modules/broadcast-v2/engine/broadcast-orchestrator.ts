@@ -1281,6 +1281,20 @@ class BroadcastOrchestrator extends EventEmitter {
    */
   private allBlockedRecoveryCycles = 0;
 
+  /**
+   * Whether the orchestrator has applied the BROADCAST_DEADAIR_FALLBACK_URL
+   * override automatically (distinct from any operator-initiated override).
+   * Guards the queue-recovery clear so we only stop overrides WE started.
+   */
+  private fallbackOverrideActive = false;
+  /**
+   * Wall-clock ms when the orchestrator first entered continuous dead-air
+   * (empty queue that escalation cannot recover). Null when not in dead-air.
+   * Used to gate BROADCAST_DEADAIR_FALLBACK_URL — the fallback is only applied
+   * once this elapsed time exceeds BROADCAST_DEADAIR_FALLBACK_AFTER_MS.
+   */
+  private deadAirDetectedAtMs: number | null = null;
+
   /** Circuit breaker: consecutive tick() failures before the circuit opens. */
   private readonly TICK_CIRCUIT_THRESHOLD = 5;
   /**
@@ -1332,6 +1346,21 @@ class BroadcastOrchestrator extends EventEmitter {
         this.selfHealConsecutiveFails = 0;
         this.selfHealBlockedUntilMs = 0;
         if (this.items.length > 0) {
+          // Queue recovered — clear dead-air tracking and auto-fallback if active.
+          this.deadAirDetectedAtMs = null;
+          if (this.fallbackOverrideActive) {
+            this.fallbackOverrideActive = false;
+            logger.info(
+              { channel: this.channelId, items: this.items.length },
+              "[broadcast-v2] dead-air fallback: queue recovered — stopping BROADCAST_DEADAIR_FALLBACK_URL override",
+            );
+            void this.stopOverride().catch((err: unknown) => {
+              logger.warn(
+                { err, channel: this.channelId },
+                "[broadcast-v2] dead-air fallback: stopOverride failed on queue recovery (non-fatal)",
+              );
+            });
+          }
           // Routine drift-poll — log at DEBUG to avoid flooding production
           // logs every 20 s with an INFO message that signals no operator
           // action. The reload itself is silent (no sequence bump) when the
@@ -1430,6 +1459,53 @@ class BroadcastOrchestrator extends EventEmitter {
         this.scheduleSelfHealReload("dead-air-escalation");
       } catch (err: unknown) {
         logger.warn({ err }, "[broadcast-v2] dead-air escalation: unexpected error (non-fatal)");
+      }
+
+      // Gap 5: BROADCAST_DEADAIR_FALLBACK_URL — apply an HLS override when the
+      // orchestrator has been in dead-air for longer than the configured threshold.
+      // Only applies when an operator has not manually set an override (this.mode
+      // will be "override") and when the fallback is not already active. The
+      // fallback is automatically cleared by scheduleSelfHealReload() when items
+      // are loaded again (see that method's items.length > 0 branch below).
+      const fallbackUrl = env.BROADCAST_DEADAIR_FALLBACK_URL;
+      if (fallbackUrl && !this.fallbackOverrideActive && this.mode !== "override") {
+        if (this.deadAirDetectedAtMs === null) {
+          // First call — record when dead-air started; threshold check on next cycle.
+          this.deadAirDetectedAtMs = Date.now();
+        } else {
+          const deadAirElapsedMs = Date.now() - this.deadAirDetectedAtMs;
+          if (deadAirElapsedMs >= env.BROADCAST_DEADAIR_FALLBACK_AFTER_MS) {
+            logger.warn(
+              {
+                channel: this.channelId,
+                deadAirElapsedMs,
+                fallbackThresholdMs: env.BROADCAST_DEADAIR_FALLBACK_AFTER_MS,
+                fallbackUrl,
+              },
+              "[broadcast-v2] dead-air: threshold exceeded — applying BROADCAST_DEADAIR_FALLBACK_URL emergency override",
+            );
+            void this.startOverride({
+              kind: "hls",
+              url: fallbackUrl,
+              title: "Emergency Broadcast Fallback",
+              endsAtMs: null,
+              resumeQueueOnEnd: true,
+            })
+              .then(() => {
+                this.fallbackOverrideActive = true;
+                logger.info(
+                  { channel: this.channelId, fallbackUrl },
+                  "[broadcast-v2] dead-air fallback override is now ACTIVE",
+                );
+              })
+              .catch((err: unknown) => {
+                logger.warn(
+                  { err, channel: this.channelId },
+                  "[broadcast-v2] dead-air fallback: startOverride failed (non-fatal)",
+                );
+              });
+          }
+        }
       }
     })();
   }

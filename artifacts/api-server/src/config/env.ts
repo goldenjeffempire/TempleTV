@@ -209,6 +209,41 @@ const Env = z.object({
   // Default 2 000 items × ~1 800 s average ≈ 41 days of unique content —
   // sufficient for any foreseeable 24/7 broadcast schedule.
   BROADCAST_QUEUE_MAX_ITEMS: z.coerce.number().int().min(10).max(50_000).default(2000),
+
+  // Dead-air external stream fallback.
+  //
+  // When the broadcast has been continuously off-air (empty queue OR all queue
+  // sources blocked) for BROADCAST_DEADAIR_FALLBACK_AFTER_MS milliseconds the
+  // orchestrator automatically applies this HLS URL as an emergency override so
+  // viewers see content rather than a blank screen.
+  //
+  // The override is cleared automatically when local queue items recover.
+  // Set to a reliable CDN-hosted HLS stream (e.g. a recorded service loop).
+  // Leave unset (default) to keep the existing off-air behaviour unchanged.
+  BROADCAST_DEADAIR_FALLBACK_URL: z.string().url().optional(),
+  // How long (ms) to wait in dead-air before applying the fallback override.
+  // Default 5 minutes. Set lower for tighter SLA; set higher to give the
+  // self-heal mechanisms more time to recover without triggering the fallback.
+  BROADCAST_DEADAIR_FALLBACK_AFTER_MS: z.coerce.number().int().positive().default(300_000),
+
+  // Auto-retry for recoverable failed transcoding jobs.
+  //
+  // When enabled (default true), the dispatcher periodically re-arms failed
+  // transcoding jobs whose errorCode is NOT CORRUPT_SOURCE or SOURCE_MISSING
+  // (i.e. transient failures such as DISK_FULL or job timeout). This ensures
+  // temporary infrastructure issues do not leave content permanently failed
+  // without operator action.
+  //
+  // Set TRANSCODER_AUTO_RETRY_FAILED=0 to disable (full manual control).
+  TRANSCODER_AUTO_RETRY_FAILED: z
+    .union([z.boolean(), z.string()])
+    .transform((v) => v === true || v === "true" || v === "1")
+    .default(true),
+  // Interval between auto-retry sweeps in ms. Default 30 min (1 800 000).
+  // Each sweep re-arms at most one wave of failed-but-recoverable jobs and
+  // nudges the dispatcher to pick them up within the next poll tick.
+  TRANSCODER_AUTO_RETRY_INTERVAL_MS: z.coerce.number().int().positive().default(1_800_000),
+
   // F31: Where ffmpeg writes its HLS segments and thumbnails during
   // transcoding. Each job creates a sub-directory named after the jobId;
   // the directory is deleted when the job finishes (success or failure).

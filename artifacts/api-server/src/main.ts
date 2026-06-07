@@ -462,6 +462,20 @@ async function main() {
     } catch (err) {
       logger.error({ err }, "[broadcast-v2] orchestrator failed to start (non-fatal)");
     }
+    // Gap 6: Boot remediation report — surface HLS / transcoding issues in the
+    // server startup log immediately after the orchestrator starts so operators
+    // notice problems without waiting for the first validator cycle (~2 min).
+    // Fire-and-forget with a 10 s delay to let the pool warm and the
+    // orchestrator complete its first reload. Non-fatal.
+    void (async () => {
+      await new Promise<void>((resolve) => { const t = setTimeout(resolve, 10_000); t.unref?.(); });
+      try {
+        const { runBootRemediationReport } = await import("./modules/broadcast-v2/io/rest.routes.js");
+        await runBootRemediationReport();
+      } catch (err) {
+        logger.warn({ err }, "[broadcast-v2] boot remediation report failed (non-fatal)");
+      }
+    })();
     // Cross-environment broadcast queue mirror — only activates when
     // PROD_SYNC_API_URL is set (typically dev pointing at prod). No-op in
     // production. See modules/prod-sync/prod-queue-sync.ts for design notes.
