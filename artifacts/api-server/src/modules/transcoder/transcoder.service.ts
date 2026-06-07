@@ -605,17 +605,23 @@ export async function probeContainerIsValid(inputPath: string): Promise<boolean>
  * be written — the codec configuration (SPS/PPS) in the moov's avcC box is
  * permanently lost and no remux strategy can reconstruct it.
  *
- * Scans both the FRONT (first 64 KiB) and the TAIL (last 64 KiB) of the
- * file. Normal camera recordings write mdat first and moov last (moov-at-EOF
- * layout). Scanning only the front misidentifies those files as unrecoverable
- * because mdat is found but moov is out of the scan window. The tail scan
- * catches the moov-at-EOF case and correctly returns false, allowing the
- * remux recovery path to run (strategy 1 — stream-copy with +faststart fixes
- * these in seconds with no re-encoding).
+ * Phase 1 — Front scan (64 KiB, box-boundary parser):
+ *   Quickly detects moov-at-front (common after faststart) and confirms mdat
+ *   presence. Returns false immediately if moov is found or mdat is absent.
  *
- * Returns true ONLY when mdat is present AND moov is absent from both the
- * front and tail scan windows. Returns false on any I/O error so the caller
- * falls through to the normal remux path.
+ * Phase 2 — Full-file ffprobe (only when mdat found but moov not at front):
+ *   The previous implementation used a 64 KiB tail byte-scan to check for
+ *   moov-at-EOF. This was insufficient: for 30-minute+ sermon recordings
+ *   (H.264 with B-frames) the moov atom is 1–5 MiB, placing its box header
+ *   well outside the 64 KiB window and causing false-positive CORRUPT_SOURCE
+ *   classifications. The ffprobe approach has no window size limitation — it
+ *   seeks through the entire container and finds moov regardless of its size
+ *   or position. Only returns true (unrecoverable) when ffprobe explicitly
+ *   reports zero streams due to a missing moov atom.
+ *
+ * Returns true ONLY when mdat is present AND ffprobe confirms moov is absent.
+ * Returns false on any I/O or subprocess error so the caller falls through to
+ * the normal remux path.
  */
 export async function detectMdatWithoutMoov(inputPath: string): Promise<boolean> {
   const SCAN_BYTES = 65536;
@@ -624,7 +630,7 @@ export async function detectMdatWithoutMoov(inputPath: string): Promise<boolean>
     const { open: fsOpen } = await import("node:fs/promises");
     fd = await fsOpen(inputPath, "r");
 
-    // ── Front scan ───────────────────────────────────────────────────────────
+    // ── Phase 1: Front scan ──────────────────────────────────────────────────
     // Parse ISO base-media top-level boxes from the beginning of the file.
     // Each box starts with: 4-byte big-endian size + 4-byte ASCII type.
     // A size of 0 means "extends to EOF"; a size of 1 means 64-bit extended
@@ -645,34 +651,43 @@ export async function detectMdatWithoutMoov(inputPath: string): Promise<boolean>
 
     if (!hasMdat) return false; // no mdat in front → this pathology doesn't apply
 
-    // ── Tail scan ────────────────────────────────────────────────────────────
-    // mdat was found in the front but moov wasn't. Before declaring the file
-    // unrecoverable, check the TAIL of the file — normal recordings (camera,
-    // phone, OBS without faststart) write moov as the very last box. If moov
-    // is there, the remux recovery path (remuxForFaststart) can fix it in
-    // seconds using ffmpeg's stream-copy + movflags=+faststart.
-    //
-    // We scan byte-by-byte in the tail window rather than parsing box
-    // boundaries (which may be misaligned relative to the tail offset).
-    const fileSize = (await stat(inputPath)).size;
-    if (fileSize > SCAN_BYTES) {
-      const tailOffset = fileSize - SCAN_BYTES;
-      const tailBuf = Buffer.allocUnsafe(SCAN_BYTES);
-      const { bytesRead: tailRead } = await fd.read(tailBuf, 0, SCAN_BYTES, tailOffset);
-      for (let i = 0; i + 8 <= tailRead; i++) {
-        // Look for the 4-byte ASCII sequence "moov" anywhere in the tail window.
-        if (
-          tailBuf[i]     === 0x6d && // m
-          tailBuf[i + 1] === 0x6f && // o
-          tailBuf[i + 2] === 0x6f && // o
-          tailBuf[i + 3] === 0x76    // v
-        ) {
-          return false; // moov at EOF → recoverable via remux, not truly absent
-        }
-      }
-    }
+    // ── Phase 2: Full-file ffprobe ───────────────────────────────────────────
+    // mdat found in front but moov not yet seen. Use ffprobe (no -read_intervals)
+    // for a full-container seek that finds moov regardless of its position or
+    // size. This replaces the old 64 KiB tail byte-scan which missed moov atoms
+    // larger than 64 KiB (common for recordings longer than ~15 minutes).
+    await fd.close().catch(() => undefined);
+    fd = null;
 
-    return true; // mdat present but moov absent from both front and tail — unrecoverable
+    return await new Promise<boolean>((resolve) => {
+      const proc = spawn("ffprobe", [
+        "-v", "error",
+        "-show_entries", "stream=codec_type",
+        "-of", "csv=p=0",
+        inputPath,
+      ], { stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "";
+      let stderr = "";
+      proc.stdout.on("data", (d: Buffer) => { stdout += d.toString("utf8"); });
+      proc.stderr.on("data", (d: Buffer) => { stderr += d.toString("utf8"); });
+      // Safety valve: a legitimately absent moov means ffprobe exits quickly;
+      // cap at 60 s to handle large files on slow storage without hanging.
+      const timer = setTimeout(() => { proc.kill(); resolve(false); }, 60_000);
+      proc.on("close", (code) => {
+        clearTimeout(timer);
+        // Any stream found → moov exists → NOT unrecoverable (remux can fix it).
+        if (stdout.trim().length > 0) { resolve(false); return; }
+        // No streams + non-zero exit with a moov-related error → truly unrecoverable.
+        if (code !== 0) {
+          const moovMissing = /moov atom not found|Invalid data found when processing input|no streams were found/i.test(stderr);
+          resolve(moovMissing);
+          return;
+        }
+        // Exit 0 but no streams: unusual edge case — conservatively allow remux.
+        resolve(false);
+      });
+      proc.on("error", () => { clearTimeout(timer); resolve(false); });
+    });
   } catch {
     return false; // treat I/O failures as "unknown" — let remux attempt run
   } finally {

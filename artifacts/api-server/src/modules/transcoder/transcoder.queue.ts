@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 
@@ -256,9 +256,17 @@ export async function clearJobsByStatus(status: "done" | "failed" | "cancelled" 
  */
 export async function retryAllFailed(): Promise<number> {
   return db.transaction(async (tx) => {
-    // Exclude CORRUPT_SOURCE and SOURCE_MISSING jobs — re-uploading the source
-    // is the only fix (the blob is corrupt or no longer in storage); re-queuing
-    // would just fail identically on every retry and waste resources.
+    // Exclusion rules:
+    //   SOURCE_MISSING — source blob is gone from storage; re-queuing always fails.
+    //   CORRUPT_SOURCE + objectPath IS NULL — no source to transcode.
+    //
+    // CORRUPT_SOURCE jobs WHERE objectPath IS NOT NULL are intentionally included.
+    // The CORRUPT_SOURCE classification can be a false positive when the moov atom
+    // is large (>64 KiB, common for 30-min+ H.264 recordings) and was previously
+    // missed by the tail-scan heuristic. Allowing retry gives those jobs a chance
+    // to succeed with the fixed full-file ffprobe detection. Truly corrupt files
+    // (no moov at all) will simply fail again and keep their CORRUPT_SOURCE code.
+    //
     // DISK_FULL jobs ARE re-queued so they run after the operator frees storage.
     const out = await tx.update(jobs)
       .set({
@@ -275,7 +283,10 @@ export async function retryAllFailed(): Promise<number> {
         sql`NOT EXISTS (
           SELECT 1 FROM managed_videos mv
           WHERE mv.id = ${jobs.videoId}
-            AND mv.transcoding_error_code IN ('CORRUPT_SOURCE', 'SOURCE_MISSING')
+            AND (
+              mv.transcoding_error_code = 'SOURCE_MISSING'
+              OR (mv.transcoding_error_code = 'CORRUPT_SOURCE' AND mv.object_path IS NULL)
+            )
         )`,
       ))
       .returning({ id: jobs.id, videoId: jobs.videoId });
@@ -296,20 +307,32 @@ export async function retryAllFailed(): Promise<number> {
 
 export async function retryJob(id: string): Promise<boolean> {
   return db.transaction(async (tx) => {
-    // Guard: CORRUPT_SOURCE and SOURCE_MISSING jobs are structurally
-    // unrecoverable — the operator must re-upload the source file (the blob is
-    // corrupt, or no longer exists in storage). Retrying produces the same
-    // failure every time and just burns compute + logging resources.
+    // Guard: SOURCE_MISSING jobs are permanently unrecoverable — the blob is
+    // gone from storage and re-queuing will always fail. Also block CORRUPT_SOURCE
+    // when objectPath IS NULL (no source to transcode). CORRUPT_SOURCE jobs that
+    // still have their source blob (objectPath IS NOT NULL) are allowed through:
+    // the classification can be a false positive for recordings with large moov
+    // atoms (>64 KiB) that the old tail-scan heuristic missed. The retry will
+    // either succeed with the fixed ffprobe detection or fail again cleanly.
     const existing = await tx
       .select({ id: jobs.id, videoId: jobs.videoId })
       .from(jobs)
-      .innerJoin(videos, and(eq(videos.id, jobs.videoId), inArray(videos.transcodingErrorCode, ["CORRUPT_SOURCE", "SOURCE_MISSING"])))
+      .innerJoin(videos, and(
+        eq(videos.id, jobs.videoId),
+        or(
+          eq(videos.transcodingErrorCode, "SOURCE_MISSING"),
+          and(
+            eq(videos.transcodingErrorCode, "CORRUPT_SOURCE"),
+            isNull(videos.objectPath),
+          ),
+        ),
+      ))
       .where(eq(jobs.id, id))
       .limit(1);
     if (existing.length > 0) {
       logger.warn(
         { jobId: id, videoId: existing[0]!.videoId },
-        "transcoder: retryJob rejected — video has an unrecoverable source error (CORRUPT_SOURCE/SOURCE_MISSING); re-upload the source file to fix",
+        "transcoder: retryJob rejected — video source is missing or corrupt with no stored blob; re-upload the source file to fix",
       );
       return false;
     }
