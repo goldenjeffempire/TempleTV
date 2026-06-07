@@ -626,7 +626,17 @@ export async function restRoutes(app: FastifyInstance) {
       const failCount = incrementBadUrlSkipCount(parsed.data.itemId);
       if (failCount >= BAD_URL_SKIP_THRESHOLD) {
         const itemTitle = snapForBlacklist.current?.title ?? null;
-        await autoSuspendQueueItem(parsed.data.itemId, itemTitle, failCount);
+        // Pass primaryUrl so autoSuspendQueueItem extends the bad-URL cache TTL
+        // from 90 s (BAD_URL_TTL_MS, set above by markBadUrl) to the full 5-min
+        // SUSPENSION_TTL_MS.  Without it the item re-enters rotation after 90 s,
+        // immediately fails again, and the stall-report → auto-suspend cycle
+        // repeats continuously instead of giving the operator 5 min to intervene.
+        autoSuspendQueueItem(
+          parsed.data.itemId,
+          itemTitle,
+          failCount,
+          snapForBlacklist.current?.source?.url ?? undefined,
+        );
         void broadcastOrchestrator.reload().catch((err) => {
           logger.warn({ err, itemId: parsed.data.itemId }, "[broadcast-v2] stall-report: background reload after auto-suspend failed (non-fatal)");
         });
