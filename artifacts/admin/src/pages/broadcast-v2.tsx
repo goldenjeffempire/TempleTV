@@ -126,6 +126,11 @@ interface BroadcastQueueRow {
   hasHls: boolean;
   /** Error message from the last failed transcoding job, or null when not failed. */
   transcodingError: string | null;
+  /**
+   * Machine-readable error code — 'CORRUPT_SOURCE' | 'SOURCE_MISSING' | 'DISK_FULL' | null.
+   * Terminal codes (CORRUPT_SOURCE / SOURCE_MISSING) require re-upload; retry won't help.
+   */
+  transcodingErrorCode: string | null;
   /** Absolute URL of the locally-uploaded video (prod-sync items only). */
   localVideoUrl: string | null;
   /** ISO string of the locked air time for this item, or null for floating. */
@@ -651,22 +656,36 @@ const SortableQueueItem = memo(function SortableQueueItem({
                 HLS queued
               </Badge>
             );
-          if (item.transcodingStatus === "failed")
+          if (item.transcodingStatus === "failed") {
+            const isTerminal =
+              item.transcodingErrorCode === "CORRUPT_SOURCE" ||
+              item.transcodingErrorCode === "SOURCE_MISSING";
+            const terminalLabel =
+              item.transcodingErrorCode === "CORRUPT_SOURCE"
+                ? "Re-upload required"
+                : item.transcodingErrorCode === "SOURCE_MISSING"
+                  ? "Source missing"
+                  : "HLS failed";
+            const terminalTitle =
+              item.transcodingErrorCode === "CORRUPT_SOURCE"
+                ? "Recording was interrupted before the codec configuration (moov atom) could be written — the file is unrecoverable. Please re-upload from the original source file."
+                : item.transcodingErrorCode === "SOURCE_MISSING"
+                  ? "The source video file is no longer in storage (deleted or never uploaded). Please re-upload the original file."
+                  : item.transcodingError
+                    ? `HLS transcoding failed.\n\nError: ${item.transcodingError}`
+                    : "HLS transcoding failed.";
             return (
               <div className="flex items-center gap-1 shrink-0">
                 <Badge
                   variant="destructive"
                   className="gap-1 text-[10px]"
-                  title={
-                    item.transcodingError
-                      ? `HLS transcoding failed — broadcasting as raw MP4.\n\nError: ${item.transcodingError}`
-                      : "HLS transcoding failed — broadcasting as raw MP4."
-                  }
+                  title={terminalTitle}
                 >
                   <XCircle className="h-2.5 w-2.5" />
-                  HLS failed
+                  {isTerminal ? terminalLabel : "HLS failed"}
                 </Badge>
-                {item.videoId && (
+                {/* Retry is only useful for transient failures — hide for terminal error codes */}
+                {item.videoId && !isTerminal && (
                   <button
                     onClick={() => onRetryHls(item.videoId!)}
                     disabled={isRetryingHls}
@@ -679,6 +698,7 @@ const SortableQueueItem = memo(function SortableQueueItem({
                 )}
               </div>
             );
+          }
           if (item.transcodingStatus === "ready")
             return (
               <Badge
