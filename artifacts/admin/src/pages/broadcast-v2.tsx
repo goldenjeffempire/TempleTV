@@ -1723,6 +1723,36 @@ function BroadcastV2PageInner() {
     }
   }
 
+  async function repairHlsStorageMissing() {
+    setBusy("repair-hls");
+    try {
+      const result = await api.post<{
+        repaired: number;
+        noSource: number;
+        alreadyHealthy: number;
+        message: string;
+      }>("/broadcast-v2/repair-hls-storage-missing", {});
+      await qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      await qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      await qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      if (result.repaired > 0 || result.noSource > 0) {
+        toast.success(result.message);
+      } else {
+        toast.success(result.message);
+      }
+    } catch (e) {
+      const detail =
+        e instanceof HttpError
+          ? `${e.status}${e.message && e.message !== String(e.status) ? ` ${e.message}` : ""}`
+          : e instanceof Error
+          ? e.message
+          : "?";
+      toast.error(`Failed to repair missing HLS (${detail})`);
+    } finally {
+      setBusy((prev) => (prev === "repair-hls" ? null : prev));
+    }
+  }
+
   // ── Launch Checklist computation (derived from already-fetched state) ───────
   const checklistItems = engineHealth != null ? [
     {
@@ -2955,17 +2985,32 @@ function BroadcastV2PageInner() {
                 {remediationReport.healthScore}/100
               </Badge>
             </CardTitle>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7 gap-1 px-2 text-xs"
-              onClick={() => {
-                void refetchRemediation();
-              }}
-            >
-              <RefreshCw className="h-3 w-3" />
-              Refresh
-            </Button>
+            <div className="flex items-center gap-1">
+              {remediationReport.summary.hlsStorageMissing > 0 && (
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  className="h-7 gap-1 px-2 text-xs"
+                  disabled={busy === "repair-hls"}
+                  onClick={() => void repairHlsStorageMissing()}
+                  title="Clear dead HLS URLs and re-queue transcoding for all items with missing HLS blobs"
+                >
+                  <RotateCw className={`h-3 w-3 ${busy === "repair-hls" ? "animate-spin" : ""}`} />
+                  Repair {remediationReport.summary.hlsStorageMissing} Missing HLS
+                </Button>
+              )}
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 gap-1 px-2 text-xs"
+                onClick={() => {
+                  void refetchRemediation();
+                }}
+              >
+                <RefreshCw className="h-3 w-3" />
+                Refresh
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="grid grid-cols-4 gap-2">

@@ -965,16 +965,20 @@ class QueueIntegrityValidatorImpl {
       // manual deletion, S3 lifecycle, or partial-success crash) and the
       // orchestrator will serve a 404 to every player client.
       //
-      // Checks ≤5 hls_ready items per cycle to keep storage_blobs query volume
-      // low. On miss: deactivates the queue item and re-enqueues transcoding
-      // from the source blob so the HLS is rebuilt automatically.
+      // Checks ≤20 hls_ready items per cycle to keep storage_blobs query volume
+      // low. On miss: deactivates the queue item, clears hls_master_url on the
+      // managed_videos row (so autoEnqueueMissingHls can detect it), and
+      // re-enqueues transcoding from the source blob so the HLS is rebuilt
+      // automatically. When no source URL is available the video's
+      // transcodingStatus is reset to 'none' so it is not stuck in a limbo
+      // hls_ready state with no blob and no recovery path.
       //
       // Reverse pass: re-activates items that were deactivated by this check
       // once their HLS master.m3u8 is present again (transcoding has finished).
       {
         const hlsReadyCandidates = rows
           .filter((r) => r.videoId2 !== null && r.vStatus === "hls_ready")
-          .slice(0, 5);
+          .slice(0, 20);
 
         if (hlsReadyCandidates.length > 0) {
           const checkKeys = hlsReadyCandidates.map(
@@ -1065,6 +1069,8 @@ class QueueIntegrityValidatorImpl {
 
             void (async () => {
               try {
+                // Step 1: deactivate the queue item immediately so the
+                // orchestrator stops trying to serve a 404 HLS URL.
                 await db
                   .update(schema.broadcastQueueTable)
                   .set({ isActive: false, validatorDeactivatedReason: "hls_storage_missing" })
@@ -1073,17 +1079,46 @@ class QueueIntegrityValidatorImpl {
                   { itemId: row.id, videoId: row.videoId2, hlsKey },
                   "[queue-validator] AUTO-FIX: HLS_STORAGE_MISSING — deactivated queue item",
                 );
-                if (row.vLocalUrl && row.videoId2) {
-                  await enqueueTranscode({
-                    videoId: row.videoId2,
-                    videoPath: row.vLocalUrl,
-                    priority: 5,
-                  });
-                  logger.info(
-                    { videoId: row.videoId2 },
-                    "[queue-validator] AUTO-FIX: HLS_STORAGE_MISSING — re-enqueued video for transcoding",
-                  );
+
+                if (row.videoId2) {
+                  if (row.vLocalUrl) {
+                    // Step 2a: Clear hls_master_url on managed_videos so the
+                    // dead URL is never served and autoEnqueueMissingHls (which
+                    // filters isNull(hlsMasterUrl)) can detect this video for
+                    // re-transcoding. enqueueTranscode also resets
+                    // transcodingStatus → 'queued' in an atomic transaction.
+                    await db
+                      .update(schema.videosTable)
+                      .set({ hlsMasterUrl: null })
+                      .where(eq(schema.videosTable.id, row.videoId2));
+                    await enqueueTranscode({
+                      videoId: row.videoId2,
+                      videoPath: row.vLocalUrl,
+                      priority: 5,
+                    });
+                    logger.info(
+                      { videoId: row.videoId2 },
+                      "[queue-validator] AUTO-FIX: HLS_STORAGE_MISSING — cleared hls_master_url and re-enqueued video for transcoding",
+                    );
+                  } else {
+                    // Step 2b: No source URL — the HLS blob is gone and there
+                    // is nothing to transcode from. Reset transcodingStatus to
+                    // 'none' and clear hls_master_url so the video is not stuck
+                    // in a limbo hls_ready state with no blob and no recovery
+                    // path. The operator must re-upload the source file.
+                    await db
+                      .update(schema.videosTable)
+                      .set({ hlsMasterUrl: null, transcodingStatus: "none" })
+                      .where(eq(schema.videosTable.id, row.videoId2));
+                    logger.warn(
+                      { videoId: row.videoId2, itemId: row.id },
+                      "[queue-validator] AUTO-FIX: HLS_STORAGE_MISSING — no source URL; " +
+                      "cleared hls_master_url and reset transcodingStatus to 'none'. " +
+                      "Operator must re-upload the source file to restore this item.",
+                    );
+                  }
                 }
+
                 adminEventBus.push("broadcast-queue-updated", {
                   reason: "integrity-fix-hls-storage-missing",
                   itemId: row.id,

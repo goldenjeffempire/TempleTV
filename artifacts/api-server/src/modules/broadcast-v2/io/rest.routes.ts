@@ -836,6 +836,162 @@ export async function restRoutes(app: FastifyInstance) {
     return { ok: true as const, triggered };
   });
 
+  // ── Admin: repair HLS_STORAGE_MISSING items ───────────────────────────
+  //
+  // POST /broadcast-v2/repair-hls-storage-missing
+  //
+  // One-click operator repair for videos whose HLS master blob is absent from
+  // storage but whose managed_videos row still shows transcodingStatus='hls_ready'.
+  // This happens when storage blobs are deleted externally (migration, S3 lifecycle,
+  // manual cleanup) while the DB metadata is not updated.
+  //
+  // For each confirmed-missing item this endpoint:
+  //   1. Clears hls_master_url on managed_videos (stops the dead URL being served)
+  //   2. Re-enqueues transcoding from localVideoUrl (resets status to 'queued')
+  //   3. When no source URL is available, resets transcodingStatus to 'none'
+  //      so the video appears as "needs re-upload" rather than falsely hls_ready
+  //   4. Deactivates the broadcast_queue item with validator_deactivated_reason=
+  //      'hls_storage_missing' so the orchestrator won't serve the dead HLS URL
+  //      while transcoding runs. The reverse pass re-activates it on completion.
+  //
+  // Checks up to 100 active hls_ready queue items per call.
+  app.post(
+    "/repair-hls-storage-missing",
+    {
+      preHandler: requireAuth("admin"),
+      config: { rateLimit: { max: 3, timeWindow: "1 minute" } },
+    },
+    async (_req, reply) => {
+      reply.header("Cache-Control", "no-store, max-age=0");
+
+      // 1. Find all active queue items with hls_ready videos
+      type HlsRow = {
+        queue_id: string;
+        video_id: string;
+        title: string | null;
+        local_video_url: string | null;
+      };
+      let hlsReadyItems: HlsRow[];
+      try {
+        const result = await db.execute<HlsRow>(sql`
+          SELECT
+            q.id        AS queue_id,
+            v.id        AS video_id,
+            q.title,
+            v.local_video_url
+          FROM broadcast_queue q
+          JOIN managed_videos v ON v.id = q.video_id
+          WHERE q.is_active = true
+            AND v.transcoding_status = 'hls_ready'
+          ORDER BY q.sort_order
+          LIMIT 100
+        `);
+        hlsReadyItems = (result.rows as HlsRow[]) ?? [];
+      } catch (err) {
+        logger.warn({ err }, "[broadcast-v2] repair-hls-storage-missing: DB query failed");
+        return reply.code(500).send({ error: "DB query failed" });
+      }
+
+      if (hlsReadyItems.length === 0) {
+        return { repaired: 0, noSource: 0, alreadyHealthy: 0, message: "No hls_ready active queue items found." };
+      }
+
+      // 2. Check storage_blobs for which HLS keys are actually present
+      const checkKeys = hlsReadyItems.map((r) => `transcoded/${r.video_id}/master.m3u8`);
+      let presentKeys: Set<string>;
+      try {
+        const pr = await db.execute<{ key: string }>(sql`
+          SELECT key FROM storage_blobs WHERE key = ANY(${checkKeys}::text[])
+        `);
+        presentKeys = new Set((pr.rows as Array<{ key: string }>).map((r) => r.key));
+      } catch (err) {
+        logger.warn({ err }, "[broadcast-v2] repair-hls-storage-missing: storage_blobs check failed");
+        return reply.code(503).send({ error: "storage_blobs check failed — cannot confirm which blobs are missing" });
+      }
+
+      // 3. For each missing blob: clear hls_master_url, re-enqueue transcoding, deactivate queue item
+      let repaired = 0;
+      let noSource = 0;
+      let alreadyHealthy = 0;
+
+      for (const row of hlsReadyItems) {
+        const hlsKey = `transcoded/${row.video_id}/master.m3u8`;
+        if (presentKeys.has(hlsKey)) {
+          alreadyHealthy++;
+          continue;
+        }
+
+        try {
+          // Deactivate queue item
+          await db
+            .update(schema.broadcastQueueTable)
+            .set({ isActive: false, validatorDeactivatedReason: "hls_storage_missing" })
+            .where(eq(schema.broadcastQueueTable.id, row.queue_id));
+
+          if (row.local_video_url) {
+            // Clear dead HLS URL + re-enqueue transcoding (enqueueTranscode resets status → 'queued')
+            await db
+              .update(schema.videosTable)
+              .set({ hlsMasterUrl: null })
+              .where(eq(schema.videosTable.id, row.video_id));
+            await enqueueTranscode({
+              videoId: row.video_id,
+              videoPath: row.local_video_url,
+              priority: 8,
+            });
+            repaired++;
+            logger.info(
+              { videoId: row.video_id, queueId: row.queue_id },
+              "[broadcast-v2] repair-hls-storage-missing: cleared hls_master_url + re-enqueued transcoding",
+            );
+          } else {
+            // No source — reset to 'none' so the video shows as "needs re-upload"
+            await db
+              .update(schema.videosTable)
+              .set({ hlsMasterUrl: null, transcodingStatus: "none" })
+              .where(eq(schema.videosTable.id, row.video_id));
+            noSource++;
+            logger.warn(
+              { videoId: row.video_id, queueId: row.queue_id },
+              "[broadcast-v2] repair-hls-storage-missing: no source URL — reset to 'none'; operator must re-upload",
+            );
+          }
+        } catch (err) {
+          logger.warn({ err, videoId: row.video_id }, "[broadcast-v2] repair-hls-storage-missing: repair failed for item (non-fatal)");
+        }
+      }
+
+      if (repaired + noSource > 0) {
+        transcoderDispatcher.nudge();
+        adminEventBus.push("broadcast-queue-updated", {
+          reason: "repair-hls-storage-missing",
+          repaired,
+          noSource,
+        });
+        void broadcastOrchestrator.reload().catch((err) => {
+          logger.warn({ err }, "[broadcast-v2] repair-hls-storage-missing: reload failed (non-fatal)");
+        });
+      }
+
+      logger.warn(
+        { repaired, noSource, alreadyHealthy, checked: hlsReadyItems.length },
+        "[broadcast-v2] repair-hls-storage-missing: complete",
+      );
+
+      return {
+        repaired,
+        noSource,
+        alreadyHealthy,
+        message:
+          repaired > 0
+            ? `Repair triggered for ${repaired} item${repaired !== 1 ? "s" : ""}. Transcoding will rebuild HLS; items return to air automatically on completion.`
+            : noSource > 0
+            ? `${noSource} item${noSource !== 1 ? "s" : ""} had no source file — reset to 'needs re-upload'. Re-upload the source videos to restore them.`
+            : "All checked items already have healthy HLS blobs in storage.",
+      };
+    },
+  );
+
   // ── Admin: comprehensive diagnostics ─────────────────────────────────
   // Aggregates all subsystem health into a single authenticated JSON
   // response for operators and monitoring tools. Covers boot state,
