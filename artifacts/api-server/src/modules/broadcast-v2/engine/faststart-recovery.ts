@@ -42,6 +42,7 @@
 import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger as rootLogger } from "../../../infrastructure/logger.js";
+import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { runFaststart } from "../../transcoder/faststart.service.js";
 import { probeUploadedDuration } from "../../transcoder/transcoder.service.js";
 
@@ -340,6 +341,17 @@ async function backfillPlaceholderDurations(): Promise<void> {
         { videoId: row.videoId, queueItemId: row.queueItemId, title: row.title, secs: rounded },
         "faststart-recovery: duration backfill corrected placeholder",
       );
+      // Signal the orchestrator to reload so the corrected duration takes
+      // effect immediately in its in-memory item schedule. Without this push
+      // the orchestrator keeps using the stale 1800 s value for scheduling
+      // until some other event (e.g. an unrelated queue mutation) triggers
+      // a reload — which could be minutes or hours later.
+      adminEventBus.push("broadcast-queue-updated", {
+        reason: "duration-backfill-corrected",
+        videoId: row.videoId,
+        queueItemId: row.queueItemId,
+        newDurSecs: rounded,
+      });
     } catch (err) {
       logger.warn(
         { err, videoId: row.videoId, title: row.title },

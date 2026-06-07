@@ -221,8 +221,6 @@ class TranscoderDispatcher {
   private scratchGcCounter = 0;
   private static readonly SCRATCH_GC_TICKS = 180; // ~30 min at 10 s/tick
 
-  private autoRetryTicks = 180; // recomputed from env at start()
-
   // ── In-process heartbeat ────────────────────────────────────────────────────
   // Written on every dispatch tick so the diagnostics panel can surface
   // real-time transcoder state without a DB round-trip.
