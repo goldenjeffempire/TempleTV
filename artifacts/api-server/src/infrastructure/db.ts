@@ -652,58 +652,41 @@ export async function ensureRuntimeIndexes(): Promise<void> {
  * IF NOT EXISTS …` here so production auto-heals without a manual migration.
  */
 export async function ensureUserSchemaColumns(): Promise<void> {
+  // Each ALTER TABLE / UPDATE is attempted independently so one failure never
+  // silently skips the rest.  A failed column addition is logged as WARN (the
+  // route that uses it will 500 until fixed — visible, not silent).
   const client = await pool.connect();
+
+  // Helper: run one DDL/DML statement, log per-statement, never throw.
+  const col = async (label: string, sql: string): Promise<void> => {
+    try {
+      await client.query(sql);
+    } catch (err) {
+      logger.warn({ err, col: label }, `db: failed to ensure column/default ${label} (non-fatal — route may 500 until present)`);
+    }
+  };
+
   try {
     // ── users ─────────────────────────────────────────────────────────────
-    // sessions_valid_after: added for global-session-invalidation on
-    // password change. TIMESTAMPTZ NOT NULL with DEFAULT NOW() so existing
-    // rows get a valid timestamp rather than a null that would break
-    // NOT NULL checks on subsequent queries.
-    await client.query(`
+    // sessions_valid_after: global-session-invalidation on password change.
+    // TIMESTAMPTZ NOT NULL DEFAULT NOW() so existing rows get a valid timestamp.
+    await col("users.sessions_valid_after", `
       ALTER TABLE users
         ADD COLUMN IF NOT EXISTS sessions_valid_after TIMESTAMPTZ NOT NULL DEFAULT NOW()
     `);
 
     // TOTP / MFA columns — added May 2026.
-    await client.query(`
-      ALTER TABLE users
-        ADD COLUMN IF NOT EXISTS totp_secret TEXT
-    `);
-    await client.query(`
-      ALTER TABLE users
-        ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN NOT NULL DEFAULT false
-    `);
-    await client.query(`
-      ALTER TABLE users
-        ADD COLUMN IF NOT EXISTS totp_backup_codes TEXT
-    `);
+    await col("users.totp_secret",       "ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret TEXT");
+    await col("users.totp_enabled",      "ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN NOT NULL DEFAULT false");
+    await col("users.totp_backup_codes", "ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_backup_codes TEXT");
 
     // ── refresh_tokens ────────────────────────────────────────────────────
-    // Columns that extend the original minimal schema.
-    await client.query(`
-      ALTER TABLE refresh_tokens
-        ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ
-    `);
-    await client.query(`
-      ALTER TABLE refresh_tokens
-        ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ
-    `);
-    await client.query(`
-      ALTER TABLE refresh_tokens
-        ADD COLUMN IF NOT EXISTS replaced_by_id TEXT
-    `);
-    await client.query(`
-      ALTER TABLE refresh_tokens
-        ADD COLUMN IF NOT EXISTS user_agent TEXT
-    `);
-    await client.query(`
-      ALTER TABLE refresh_tokens
-        ADD COLUMN IF NOT EXISTS ip TEXT
-    `);
-    await client.query(`
-      ALTER TABLE refresh_tokens
-        ADD COLUMN IF NOT EXISTS device_name TEXT
-    `);
+    await col("refresh_tokens.last_used_at",   "ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ");
+    await col("refresh_tokens.revoked_at",     "ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ");
+    await col("refresh_tokens.replaced_by_id", "ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS replaced_by_id TEXT");
+    await col("refresh_tokens.user_agent",     "ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS user_agent TEXT");
+    await col("refresh_tokens.ip",             "ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS ip TEXT");
+    await col("refresh_tokens.device_name",    "ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS device_name TEXT");
 
     // ── managed_videos ────────────────────────────────────────────────────
     // All columns added to managed_videos after the initial production deploy.
@@ -714,161 +697,93 @@ export async function ensureUserSchemaColumns(): Promise<void> {
     // YouTube sync, etc.).
 
     // Upload metadata — added with the chunked-upload feature.
-    await client.query(`
-      ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS original_filename TEXT
-    `);
-    await client.query(`
-      ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS mime_type TEXT
-    `);
-    await client.query(`
-      ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS size_bytes BIGINT
-    `);
-    await client.query(`
-      ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS checksum_sha256 TEXT
-    `);
-    await client.query(`
-      ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS object_path TEXT
-    `);
-    await client.query(`
-      ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS uploaded_by TEXT
-    `);
-    await client.query(`
-      ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS s3_mirrored_at TIMESTAMPTZ
-    `);
+    await col("managed_videos.original_filename", "ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS original_filename TEXT");
+    await col("managed_videos.mime_type",         "ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS mime_type TEXT");
+    await col("managed_videos.size_bytes",        "ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS size_bytes BIGINT");
+    await col("managed_videos.checksum_sha256",   "ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS checksum_sha256 TEXT");
+    await col("managed_videos.object_path",       "ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS object_path TEXT");
+    await col("managed_videos.uploaded_by",       "ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS uploaded_by TEXT");
+    await col("managed_videos.s3_mirrored_at",    "ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS s3_mirrored_at TIMESTAMPTZ");
+
     // Source-blob cleanup tracking — added with the storage cleanup worker.
-    await client.query(`
+    await col("managed_videos.source_cleanup_status", `
       ALTER TABLE managed_videos
         ADD COLUMN IF NOT EXISTS source_cleanup_status TEXT NOT NULL DEFAULT 'none'
     `);
-    await client.query(`
-      ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS source_cleanup_after TIMESTAMPTZ
-    `);
-    await client.query(`
-      ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS source_deleted_at TIMESTAMPTZ
-    `);
-    await client.query(`
+    await col("managed_videos.source_cleanup_after",    "ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS source_cleanup_after TIMESTAMPTZ");
+    await col("managed_videos.source_deleted_at",       "ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS source_deleted_at TIMESTAMPTZ");
+    await col("managed_videos.source_cleanup_attempts", `
       ALTER TABLE managed_videos
         ADD COLUMN IF NOT EXISTS source_cleanup_attempts INTEGER NOT NULL DEFAULT 0
     `);
+
     // Admin metadata-lock — added May 2026.
     // Prevents YouTube sync from overwriting admin-curated category/preacher.
-    await client.query(`
+    await col("managed_videos.metadata_locked", `
       ALTER TABLE managed_videos
         ADD COLUMN IF NOT EXISTS metadata_locked BOOLEAN NOT NULL DEFAULT false
     `);
     // Faststart tracking — added May 2026.
-    // Distinguishes seekable uploads (faststart succeeded) from raw uploads
-    // (moov atom at EOF) so the broadcast queue rejects non-seekable files.
-    await client.query(`
+    await col("managed_videos.faststart_applied", `
       ALTER TABLE managed_videos
         ADD COLUMN IF NOT EXISTS faststart_applied BOOLEAN NOT NULL DEFAULT false
     `);
     // Broadcast-only flag — added May 2026.
-    // True for videos uploaded for internal broadcast that the admin has not
-    // published to the public library. The `/api/videos` WHERE clause filters
-    // these out via `COALESCE(broadcast_only, false) = false`. Without this
-    // column the public catalogue endpoint returns 500 with SQLSTATE 42703
-    // ("column does not exist") on any pre-existing prod DB.
-    await client.query(`
+    // Public catalogue filters WHERE COALESCE(broadcast_only, false) = false.
+    await col("managed_videos.broadcast_only", `
       ALTER TABLE managed_videos
         ADD COLUMN IF NOT EXISTS broadcast_only BOOLEAN NOT NULL DEFAULT false
     `);
     // Transcoding failure reason — added May 2026.
-    // Human-readable error message written whenever transcodingStatus is set
-    // to 'failed'. Cleared (set to NULL) when a re-transcode is enqueued.
-    // Surfaced in the admin video library so operators can distinguish
-    // recoverable failures (retry) from unrecoverable ones (re-upload).
-    await client.query(`
+    await col("managed_videos.transcoding_error_message", `
       ALTER TABLE managed_videos
         ADD COLUMN IF NOT EXISTS transcoding_error_message TEXT
     `);
     // Machine-readable error classification code — added June 2026.
-    // Set by the transcoder alongside transcoding_error_message so that
-    // retry logic can distinguish unrecoverable failures (CORRUPT_SOURCE,
-    // DISK_FULL) from retryable ones without parsing free-text messages.
-    // Cleared to NULL when a re-transcode is enqueued.
-    // NOTE: drizzle-kit push silently skips this column on some prod DBs
-    // (schema drift). This explicit ADD COLUMN IF NOT EXISTS is the
-    // belt-and-suspenders guarantee it is always present.
-    await client.query(`
+    // NOTE: drizzle-kit push silently skips this column on some prod DBs.
+    await col("managed_videos.transcoding_error_code", `
       ALTER TABLE managed_videos
         ADD COLUMN IF NOT EXISTS transcoding_error_code TEXT
     `);
     // updated_at — added June 2026.
-    // Drizzle's $onUpdate callback fires JS-side on every ORM UPDATE, writing
-    // the current timestamp into this column. Without the column present in the
-    // DB those writes fail with SQLSTATE 42703 ("column does not exist"), making
-    // every admin-videos PATCH silently fail with a DB error. Backfills to
-    // imported_at for existing rows so ORDER BY updated_at DESC works immediately.
-    await client.query(`
+    // Drizzle's $onUpdate fires JS-side on every ORM UPDATE; without the column
+    // every PATCH fails with SQLSTATE 42703.
+    await col("managed_videos.updated_at", `
       ALTER TABLE managed_videos
         ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     `);
 
     // ── transcoding_jobs ──────────────────────────────────────────────────
-    // Columns added to transcoding_jobs after the initial production deploy.
-
-    // last_progress_at — added June 2026 (sprint 48 stall-detection feature).
-    // Set by the FFmpeg progress callback on every % update. The stall watchdog
-    // in transcoder.dispatcher.ts queries this column to detect jobs where
-    // progress froze mid-encode (disk-full, I/O stall, hanging muxer). Without
-    // this column the dispatcher's isNull() / lt() calls fail with SQLSTATE 42703
-    // and the entire stall-watchdog branch crashes, leaving stuck encoding jobs
-    // running forever.
-    await client.query(`
+    // last_progress_at — added June 2026 (stall-detection sprint 48).
+    // Stall watchdog queries this column to detect frozen encodes.
+    await col("transcoding_jobs.last_progress_at", `
       ALTER TABLE transcoding_jobs
         ADD COLUMN IF NOT EXISTS last_progress_at TIMESTAMPTZ
     `);
     // max_attempts default correction — DB was created with DEFAULT 3 but the
-    // Drizzle schema (and all dispatcher logic) expects DEFAULT 5. Update the
-    // column default so new jobs inserted via SQL get the correct retry budget.
-    // Existing in-flight rows are NOT updated — their attempt budget was already
-    // set at INSERT time and changing it mid-job would corrupt the retry logic.
-    await client.query(`
+    // Drizzle schema expects DEFAULT 5. Update column default for new jobs only
+    // (in-flight rows keep their existing attempt budget).
+    await col("transcoding_jobs.max_attempts_default", `
       ALTER TABLE transcoding_jobs
         ALTER COLUMN max_attempts SET DEFAULT 5
     `);
 
     // ── broadcast_queue ───────────────────────────────────────────────────
-    // Columns added to broadcast_queue after the initial production deploy.
-    // All are nullable so IF NOT EXISTS is safe with no DEFAULT clause.
-
-    // HLS master playlist URL — written by the transcoder on job completion.
-    // Takes precedence over local_video_url in the v2 source resolver.
-    await client.query(`
-      ALTER TABLE broadcast_queue
-        ADD COLUMN IF NOT EXISTS hls_master_url TEXT
-    `);
-    // Scheduled programming — pinned wall-clock air time for anchored items.
-    await client.query(`
-      ALTER TABLE broadcast_queue
-        ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ
-    `);
-    // Human-readable block label shown in the schedule editor.
-    await client.query(`
-      ALTER TABLE broadcast_queue
-        ADD COLUMN IF NOT EXISTS schedule_label TEXT
-    `);
+    await col("broadcast_queue.hls_master_url",            "ALTER TABLE broadcast_queue ADD COLUMN IF NOT EXISTS hls_master_url TEXT");
+    await col("broadcast_queue.scheduled_at",              "ALTER TABLE broadcast_queue ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ");
+    await col("broadcast_queue.schedule_label",            "ALTER TABLE broadcast_queue ADD COLUMN IF NOT EXISTS schedule_label TEXT");
     // Written by the queue-integrity-validator when it auto-deactivates a row.
-    // Values: "missing_video_join", "corrupt_upload", "orphaned_video_ref".
-    // Cleared to NULL when the reverse pass re-activates the row.
-    // NOTE: drizzle-kit push silently skipped this column on existing prod DBs —
-    // this ADD COLUMN IF NOT EXISTS is the authoritative self-heal.
-    await client.query(`
+    // NOTE: drizzle-kit push silently skipped this column on existing prod DBs.
+    await col("broadcast_queue.validator_deactivated_reason", `
       ALTER TABLE broadcast_queue
         ADD COLUMN IF NOT EXISTS validator_deactivated_reason TEXT
     `);
 
     // ── Data self-heal: broadcast_queue placeholder duration ──────────────
-    // Queue rows are inserted at upload-finalize time with a 1800-second
-    // placeholder when ffprobe hasn't run yet. Once faststart/ffprobe
-    // completes it writes the real duration to managed_videos.duration and
-    // (from this release onwards) also to broadcast_queue.duration_secs.
-    // Any rows that were created before that fix is deployed remain stuck
-    // at 1800 s in the DB (loadActive() uses the joined video row at runtime,
-    // so timing is already correct — this is purely a DB hygiene fix that
-    // also eliminates the queue-validator PLACEHOLDER_DURATION warnings).
-    await client.query(`
+    // Rows inserted before faststart/ffprobe ran carry duration_secs=1800.
+    // Sync the real duration from managed_videos so the queue-validator stops
+    // flagging PLACEHOLDER_DURATION warnings for those historical rows.
+    await col("broadcast_queue.duration_secs_selfheal", `
       UPDATE broadcast_queue bq
       SET    duration_secs = ROUND(mv.duration::numeric)
       FROM   managed_videos mv
@@ -878,17 +793,9 @@ export async function ensureUserSchemaColumns(): Promise<void> {
         AND  mv.duration <> ''
         AND  mv.duration ~ '^[0-9]+(\\.[0-9]+)?$'
         AND  mv.duration::numeric > 10
-    `).catch((err) => {
-      logger.warn({ err }, "db: placeholder-duration self-heal failed (non-fatal)");
-    });
+    `);
 
     logger.info("db: user/auth schema columns ensured (all IF NOT EXISTS — idempotent)");
-  } catch (err) {
-    // Non-fatal so a partial-failure (e.g. permission denied on one column)
-    // doesn't prevent the server from starting. The specific 500 errors on
-    // affected routes will persist until the missing column is added, making
-    // it easy to spot in logs.
-    logger.warn({ err }, "db: ensureUserSchemaColumns failed — some routes may return 500 until columns are present");
   } finally {
     client.release();
   }
@@ -972,9 +879,16 @@ export function scheduleStaleDataCleanup(): void {
     try {
       const results: Record<string, number> = {};
 
+      // Each sweep statement is attempted independently — one failure never
+      // stops subsequent cleanup operations (e.g. a missing column in one
+      // table should not prevent expiring tokens in another).
       const run = async (label: string, sql: string): Promise<void> => {
-        const r = await client.query(sql);
-        if (r.rowCount && r.rowCount > 0) results[label] = r.rowCount;
+        try {
+          const r = await client.query(sql);
+          if (r.rowCount && r.rowCount > 0) results[label] = r.rowCount;
+        } catch (err) {
+          logger.warn({ err, sweep: label }, `db: stale-data cleanup step '${label}' failed (non-fatal)`);
+        }
       };
 
       await run("refresh_tokens",
