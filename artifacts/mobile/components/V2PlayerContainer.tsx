@@ -107,7 +107,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, AppState, Image, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, AppState, Image, Pressable, StyleSheet, Text, View } from "react-native";
 import { ResizeMode, Video, type AVPlaybackStatus } from "expo-av";
 import { useV2BroadcastNative } from "@workspace/player-core/react-native";
 import type { MobileBufferState } from "@workspace/player-core/adapters/mobile";
@@ -1521,12 +1521,28 @@ export function V2PlayerContainer({
   // Returns { main, sub, showSpinner } or null (no overlay).
   // Phases give users progressively more honest context as time passes —
   // "Preparing Video" (phase 0) → "Buffering…" (phase 1) → "Please wait…" (phase 2+).
-  interface OverlayContent { main: string; sub: string; showSpinner: boolean; upNext?: string }
+  interface OverlayContent {
+    main: string;
+    sub: string;
+    showSpinner: boolean;
+    upNext?: string;
+    /**
+     * When present, a "Tap to reconnect" button is shown below the sub-text.
+     * Only set after the user has been stuck for several phase steps so we
+     * don't offer a manual escape too eagerly (auto-recovery should win first).
+     */
+    onRetry?: () => void;
+  }
   const overlayContent = useMemo<OverlayContent | null>(() => {
     const p = loadingPhase;
 
     if (snapshot.state === "FATAL") {
-      return { main: "Playback Error", sub: "Please try again in a moment.", showSpinner: false };
+      return {
+        main: "Playback Error",
+        sub: "Please try again in a moment.",
+        showSpinner: false,
+        onRetry: forceReconnect,
+      };
     }
     // YouTube live override — expo-av cannot play YouTube URLs so we surface a
     // branded overlay rather than attempting to load it. The buffer is idle
@@ -1551,11 +1567,8 @@ export function V2PlayerContainer({
         main: p === 0 ? "Switching to Live Override" : "Loading Override…",
         sub: p === 0 ? "Broadcasting live from override source" : "Please wait…",
         showSpinner: true,
+        onRetry: p >= 3 ? forceReconnect : undefined,
       };
-    }
-    if (server?.failover.active) {
-      const reason = server.failover.reason ?? "Failover stream active";
-      return { main: reason, sub: "On standby", showSpinner: false };
     }
     if (snapshot.state === "OFFLINE_HOLD") {
       return {
@@ -1574,6 +1587,7 @@ export function V2PlayerContainer({
           ? "Reaching broadcast server"
           : "Taking a bit longer than usual — please wait",
         showSpinner: true,
+        onRetry: p >= 3 ? forceReconnect : undefined,
       };
     }
     // SYNCING — transport connected, waiting for first server snapshot.
@@ -1593,6 +1607,7 @@ export function V2PlayerContainer({
           ? "Almost ready to play"
           : "Still loading — almost there",
         showSpinner: true,
+        onRetry: p >= 3 ? forceReconnect : undefined,
       };
     }
     // PREPARING_ACTIVE — item bound to active buffer, waiting for buffer-ready.
@@ -1607,6 +1622,7 @@ export function V2PlayerContainer({
           ? "This is taking a moment — please wait"
           : "Still buffering — hang tight",
         showSpinner: true,
+        onRetry: p >= 3 ? forceReconnect : undefined,
       };
     }
     // Active playback — no overlay.
@@ -1621,20 +1637,53 @@ export function V2PlayerContainer({
         main: p === 0 ? "Reconnecting…" : "Retrying Stream…",
         sub: p === 0 ? "Retrying stream source" : "Attempting stream recovery",
         showSpinner: true,
+        onRetry: p >= 2 ? forceReconnect : undefined,
       };
     }
+    // RECOVERING_FAILOVER — loading the backup/failover stream.
+    // This check MUST come before server?.failover.active so that when both
+    // conditions are true, the user sees the active spinner ("Switching to
+    // Backup") rather than a static "Failover stream active / On standby"
+    // message that looks like a freeze. The failover.active banner is a
+    // steady-state indicator for when the failover is already playing; during
+    // the load phase the FSM state takes priority.
     if (snapshot.state === "RECOVERING_FAILOVER") {
       return {
-        main: "Switching to Backup",
-        sub: "Loading failover stream",
+        main: p === 0
+          ? "Switching to Backup"
+          : p === 1
+          ? "Loading Backup Stream…"
+          : p === 2
+          ? "Backup stream taking longer…"
+          : "Still connecting to backup",
+        sub: p === 0
+          ? "Loading failover stream"
+          : p === 1
+          ? "Connecting to backup source"
+          : p === 2
+          ? "Poor signal or backup source busy — please wait"
+          : "Auto-recovery in progress",
         showSpinner: true,
+        // Offer manual reconnect after 15 s (phase 3) — auto-recovery may
+        // have already cycled several times by then and user feedback helps.
+        onRetry: p >= 3 ? forceReconnect : undefined,
       };
+    }
+    // Failover is active and the stream is playing — steady-state indicator.
+    if (server?.failover.active) {
+      const reason = server.failover.reason ?? "Failover stream active";
+      return { main: reason, sub: "On standby", showSpinner: false };
     }
     if (snapshot.state === "SKIP_PENDING") {
       return {
-        main: "Loading Next Broadcast",
-        sub: "Preparing next item in queue",
+        main: p === 0 ? "Loading Next Broadcast" : p === 1 ? "Preparing Next Item…" : "Loading…",
+        sub: p === 0
+          ? "Preparing next item in queue"
+          : p === 1
+          ? "Almost ready"
+          : "This is taking a moment — please wait",
         showSpinner: true,
+        onRetry: p >= 3 ? forceReconnect : undefined,
       };
     }
     // Remaining states: genuinely off-air when no content.
@@ -1648,7 +1697,7 @@ export function V2PlayerContainer({
       };
     }
     return null;
-  }, [snapshot.state, server, loadingPhase, isOnline, isYouTubeOverride, videoReady]);
+  }, [snapshot.state, server, loadingPhase, isOnline, isYouTubeOverride, videoReady, forceReconnect]);
 
   // Poster: show the upcoming/current sermon thumbnail behind the buffers
   // while the player is still tuning in, off-air, reconnecting, or in any
@@ -1797,6 +1846,16 @@ export function V2PlayerContainer({
                 {overlayContent.upNext}
               </Text>
             </View>
+          ) : null}
+          {overlayContent.onRetry ? (
+            <Pressable
+              onPress={overlayContent.onRetry}
+              style={({ pressed }) => [styles.overlayRetryBtn, pressed && styles.overlayRetryBtnPressed]}
+              accessibilityRole="button"
+              accessibilityLabel="Reconnect to broadcast"
+            >
+              <Text style={styles.overlayRetryText}>Tap to reconnect</Text>
+            </Pressable>
           ) : null}
         </View>
       )}
@@ -1967,5 +2026,23 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "500",
     flexShrink: 1,
+  },
+  overlayRetryBtn: {
+    marginTop: 24,
+    paddingVertical: 10,
+    paddingHorizontal: 22,
+    backgroundColor: "rgba(255,255,255,0.15)",
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.30)",
+  },
+  overlayRetryBtnPressed: {
+    backgroundColor: "rgba(255,255,255,0.25)",
+  },
+  overlayRetryText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "600",
+    letterSpacing: 0.3,
   },
 });

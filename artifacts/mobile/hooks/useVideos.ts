@@ -368,6 +368,8 @@ export interface PaginatedVideosState {
   refreshError: string | null;
   /** Set when an infinite-scroll page load fails; clears on the next successful loadMore. */
   loadMoreError: string | null;
+  /** How many auto-retries have fired (0–3). Shown in the error bar for debug. */
+  retryCount: number;
   loadMore: () => void;
   refetch: () => void;
 }
@@ -431,6 +433,7 @@ export function usePaginatedVideos(opts: {
   const [error, setError] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
 
   const hasMore = page < totalPages;
 
@@ -440,6 +443,17 @@ export function usePaginatedVideos(opts: {
 
   // Snapshot of sermons before a background refresh so we can restore on failure
   const preRefreshSermonsRef = useRef<Sermon[]>([]);
+
+  // Always-current ref so the SSE-driven refresh effect avoids stale closures
+  const latestSermonsRef = useRef<Sermon[]>([]);
+  latestSermonsRef.current = sermons;
+
+  // Ref guard for loadMore to prevent double-fires before state settles
+  const loadingMoreRef = useRef(false);
+
+  // Auto-retry budget for initial load failures. Reset whenever filters change.
+  const autoRetryRef = useRef(0);
+  const autoRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fetchPage = useCallback(async (pageNum: number, replace: boolean) => {
     const { debouncedSearch: search, category, sort, source } = optsRef.current;
@@ -471,28 +485,92 @@ export function usePaginatedVideos(opts: {
     setRefreshError(null);
   }, []);
 
-  // Reset and load page 1 when filters change
+  // Reset and load page 1 when filters change.
+  // NOTE: libraryRevision is intentionally NOT here — SSE-driven refreshes are
+  // handled by the separate effect below which does a background refresh that
+  // keeps the existing list visible instead of clearing it.
   useEffect(() => {
+    // Cancel any pending auto-retry from the previous filter state
+    if (autoRetryTimerRef.current) {
+      clearTimeout(autoRetryTimerRef.current);
+      autoRetryTimerRef.current = null;
+    }
+    autoRetryRef.current = 0;
+    setRetryCount(0);
+
     setLoading(true);
     setSermons([]);
     setPage(1);
     setTotal(0);
     setTotalPages(1);
     setRefreshError(null);
+    setError(null);
     void fetchPage(1, true)
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load videos"))
       .finally(() => setLoading(false));
-  }, [debouncedSearch, opts.category, opts.sort, opts.source, fetchPage, libraryRevision]);
+  }, [debouncedSearch, opts.category, opts.sort, opts.source, fetchPage]);
+
+  // Auto-retry on initial load failure (no data yet).
+  // Budget: 3 retries at 4 s → 12 s → 30 s, identical to useVideos. Covers
+  // transient 5xx responses during API warm-up, brief CDN blips, and LTE
+  // handoffs that coincide with the initial screen open.
+  useEffect(() => {
+    if (!error) return;
+    if (autoRetryRef.current >= 3) return;
+    const DELAYS = [4_000, 12_000, 30_000];
+    const delay = DELAYS[autoRetryRef.current];
+    autoRetryRef.current += 1;
+    const nextRetry = autoRetryRef.current;
+    autoRetryTimerRef.current = setTimeout(() => {
+      autoRetryTimerRef.current = null;
+      setRetryCount(nextRetry);
+      setLoading(true);
+      setError(null);
+      void fetchPage(1, true)
+        .catch((err2) => setError(err2 instanceof Error ? err2.message : "Failed to load videos"))
+        .finally(() => setLoading(false));
+    }, delay);
+    return () => {
+      if (autoRetryTimerRef.current) {
+        clearTimeout(autoRetryTimerRef.current);
+        autoRetryTimerRef.current = null;
+      }
+    };
+  }, [error, fetchPage]);
+
+  // SSE-driven background refresh — fired when the admin uploads/edits/deletes
+  // a video. Keeps the existing list visible (isRefreshing=true banner) instead
+  // of clearing it, so the screen doesn't flash empty and reload from scratch.
+  const lastLibraryRevisionRef = useRef(0);
+  useEffect(() => {
+    if (libraryRevision === 0) return;
+    if (libraryRevision === lastLibraryRevisionRef.current) return;
+    lastLibraryRevisionRef.current = libraryRevision;
+    if (latestSermonsRef.current.length === 0) return; // initial load pending — filter effect handles it
+    preRefreshSermonsRef.current = latestSermonsRef.current;
+    setIsRefreshing(true);
+    setRefreshError(null);
+    void fetchPage(1, true)
+      .catch(() => {
+        setSermons(preRefreshSermonsRef.current);
+        setRefreshError("Couldn't refresh");
+      })
+      .finally(() => setIsRefreshing(false));
+  }, [libraryRevision, fetchPage]);
 
   const loadMore = useCallback(() => {
-    if (loadingMore || !hasMore) return;
+    if (loadingMoreRef.current || loadingMore || !hasMore) return;
+    loadingMoreRef.current = true;
     setLoadingMore(true);
     setLoadMoreError(null);
     void fetchPage(page + 1, false)
       .catch((err: unknown) => {
         setLoadMoreError(err instanceof Error ? err.message : "Failed to load more videos");
       })
-      .finally(() => setLoadingMore(false));
+      .finally(() => {
+        loadingMoreRef.current = false;
+        setLoadingMore(false);
+      });
   }, [loadingMore, hasMore, page, fetchPage]);
 
   /**
@@ -501,10 +579,13 @@ export function usePaginatedVideos(opts: {
    * and surface refreshError. On success, replace with fresh data.
    */
   const refetch = useCallback(() => {
-    if (sermons.length === 0) {
+    if (latestSermonsRef.current.length === 0) {
       // No data yet — fall back to a full loading state.
       setLoading(true);
       setPage(1);
+      setError(null);
+      autoRetryRef.current = 0;
+      setRetryCount(0);
       void fetchPage(1, true)
         .catch((err) => setError(err instanceof Error ? err.message : "Failed to load videos"))
         .finally(() => setLoading(false));
@@ -512,7 +593,7 @@ export function usePaginatedVideos(opts: {
     }
 
     // Background refresh — keep existing data visible.
-    preRefreshSermonsRef.current = sermons;
+    preRefreshSermonsRef.current = latestSermonsRef.current;
     setIsRefreshing(true);
     setRefreshError(null);
     setPage(1);
@@ -524,7 +605,7 @@ export function usePaginatedVideos(opts: {
         setRefreshError(err instanceof Error ? err.message : "Couldn't refresh");
       })
       .finally(() => setIsRefreshing(false));
-  }, [sermons, fetchPage]);
+  }, [fetchPage]);
 
   return {
     sermons,
@@ -538,6 +619,7 @@ export function usePaginatedVideos(opts: {
     error,
     refreshError,
     loadMoreError,
+    retryCount,
     loadMore,
     refetch,
   };

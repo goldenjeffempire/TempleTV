@@ -464,6 +464,7 @@ export default function LibraryScreen() {
     refreshError,
     loadMore,
     loadMoreError,
+    retryCount,
     refetch,
   } = usePaginatedVideos({ search, category, sort, source: "youtube" });
 
@@ -652,12 +653,29 @@ export default function LibraryScreen() {
             </View>
           )}
 
+          {!isOnline && !error && (
+            <View style={[styles.errorBar, { backgroundColor: "#6b7280" + "22" }]}>
+              <Feather name="wifi-off" size={13} color="#6b7280" />
+              <Text style={{ color: "#6b7280", fontSize: 13, flex: 1, marginLeft: 6 }}>
+                You're offline — videos will load when you reconnect
+              </Text>
+            </View>
+          )}
           {error && (
             <View style={[styles.errorBar, { backgroundColor: "#ef4444" + "22" }]}>
-              <Text style={{ color: "#ef4444", fontSize: 13 }}>{error} — </Text>
-              <Pressable onPress={refetch}>
-                <Text style={{ color: "#ef4444", fontSize: 13, fontWeight: "600" }}>Retry</Text>
-              </Pressable>
+              <Feather name={isOnline ? "alert-circle" : "wifi-off"} size={13} color="#ef4444" />
+              <Text style={{ color: "#ef4444", fontSize: 13, flex: 1, marginLeft: 6 }}>
+                {isOnline
+                  ? retryCount > 0
+                    ? `${error} (retrying…)`
+                    : error
+                  : "You're offline — connect to load videos"}
+              </Text>
+              {isOnline && (
+                <Pressable onPress={refetch} accessibilityRole="button" accessibilityLabel="Retry loading videos">
+                  <Text style={{ color: "#ef4444", fontSize: 13, fontWeight: "600" }}>Retry</Text>
+                </Pressable>
+              )}
             </View>
           )}
         </>
