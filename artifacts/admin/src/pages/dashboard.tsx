@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { api, isTransientError} from "@/lib/api";
-import { useSSE, useSSEEvent, useRecentActivity } from "@/contexts/sse-context";
+import { useSSE, useSSEEvent } from "@/contexts/sse-context";
 import { MetricCard } from "@/components/shared/metric-card";
 import { PageHeader } from "@/components/shared/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -78,8 +78,7 @@ const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Frid
 
 export default function Dashboard() {
   const qc = useQueryClient();
-  const { lastStatusPayload, state: sseState } = useSSE();
-  const activity = useRecentActivity();
+  const { lastStatusPayload, state: sseState, recentActivity: activity } = useSSE();
 
   const { data: stats, isLoading: statsLoading, error: statsError, refetch: refetchStats } = useQuery({
     queryKey: ["admin-stats"],

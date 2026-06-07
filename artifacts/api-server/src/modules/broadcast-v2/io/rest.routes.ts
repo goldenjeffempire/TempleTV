@@ -1087,6 +1087,11 @@ export async function restRoutes(app: FastifyInstance) {
 
       // Reload orchestrator so the updated row is visible immediately
       void broadcastOrchestrator.reload().catch(() => {});
+      // Notify all connected admin clients so library and queue panels refresh
+      // immediately — without this, other admin sessions miss the new video
+      // and the broadcast queue update until their next poll cycle (up to 60 s).
+      adminEventBus.push("videos-library-updated", { videoId, reason: "transcode-remote" });
+      adminEventBus.push("broadcast-queue-updated", { reason: "transcode-remote", itemId: id });
 
       req.log.info({ itemId: id, videoId, sourceUrl }, "[broadcast-v2] remote transcode queued");
       return reply.code(202).send({
@@ -1185,6 +1190,9 @@ export async function restRoutes(app: FastifyInstance) {
 
       // Reload orchestrator so the updated duration is used immediately
       void broadcastOrchestrator.reload().catch(() => {});
+      // Notify all connected admin clients so their queue panels refresh
+      // without waiting for the next poll cycle (up to 60 s without this).
+      adminEventBus.push("broadcast-queue-updated", { reason: "reprobe", itemId: id });
 
       req.log.info(
         { itemId: id, oldDurSecs, newDurSecs, probeUrl },

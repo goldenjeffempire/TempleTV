@@ -66,6 +66,11 @@ async function probeDurationFromUrl(url: string): Promise<number | null> {
     let stdout = "";
     proc.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
     const t = setTimeout(() => { try { proc?.kill(); } catch { /**/ } resolve(null); }, 45_000);
+    // Unref the timer so it does not prevent the Node event loop from exiting
+    // cleanly when SIGTERM arrives while a reprobe is in flight.  The proc is
+    // already unreffed above — unref here ensures NEITHER the child process nor
+    // the kill-timer holds the event loop open during graceful shutdown.
+    t.unref?.();
     proc.on("close", () => {
       clearTimeout(t);
       try {

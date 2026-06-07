@@ -661,4 +661,3 @@ export function useSSEEvent(event: string, handler: SSEEventHandler) {
   useEffect(() => subscribe(event, (d) => ref.current(d)), [subscribe, event]);
 }
 
-export function useRecentActivity() { return useSSE().recentActivity; }

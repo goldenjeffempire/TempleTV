@@ -985,6 +985,10 @@ function BroadcastV2PageInner() {
       // policy — refresh engine health so the Now/Next header and health badge
       // reflect the updated state immediately (don't wait for the 15 s poll).
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      // Remediation report reflects per-item transcoding health — must refresh
+      // after a retry so the panel doesn't show a stale "failed" badge while
+      // encoding is already in progress.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       toast.success("HLS transcoding re-queued — encoding will start shortly.");
       void api.post("/broadcast-v2/reload", { idempotencyKey: safeRandomUUID() }).catch(() => {});
     },
@@ -1005,6 +1009,7 @@ function BroadcastV2PageInner() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       toast.success(`Download started — HLS transcoding queued (id: ${data.videoId.slice(0, 8)}…)`);
     },
     onError: (err) => {
@@ -1043,6 +1048,9 @@ function BroadcastV2PageInner() {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      // Queue sync status tracks which library videos are missing from the queue;
+      // playing now reorders items so missing-count may change.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
       toast.success("Switched — item is now on air.");
     },
     onError: (err) => {
@@ -1218,6 +1226,10 @@ function BroadcastV2PageInner() {
     // successful fix look like it failed.
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
+    // Remediation report reflects per-item HLS/transcoding health. Queue
+    // mutations (add, remove, reprobe, transcode-remote) change which issues
+    // are present — bust the 60 s server-side cache so the panel stays current.
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     clearTimeout(reloadTimer.current);
     reloadTimer.current = setTimeout(() => {
       api
@@ -1282,6 +1294,10 @@ function BroadcastV2PageInner() {
   useSSEEvent("transcoding-update", () => {
     void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+    // The transcoding panel shows per-item job status, progress, and HLS
+    // readiness — it must refresh whenever any job transitions state, not
+    // only when the operator explicitly retries or queues a new job.
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
   });
 
   // Real-time stall counter — incremented the instant a stall report fires a
@@ -1378,6 +1394,9 @@ function BroadcastV2PageInner() {
     if (d?.autoSuspended) {
       toast.warning(`Auto-suspended: "${d.itemTitle ?? "item"}" — repeated stream failures.`);
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      // Auto-suspend changes item health state — remediation report must refresh
+      // so the panel reflects the suspension instead of showing a stale status.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     }
   });
 
@@ -1389,6 +1408,9 @@ function BroadcastV2PageInner() {
     const cycles = d?.allBlockedRecoveryCycles ?? 1;
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+    // Dead-air escalation may trigger auto-suspend of problematic items —
+    // the remediation report reflects suspended/blocked item health.
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     if (cycles >= 3) {
       toast.error(
         `All broadcast sources blocked for ${cycles} recovery cycles — operator action needed.`,
@@ -1406,6 +1428,10 @@ function BroadcastV2PageInner() {
   // Immediately refreshes the diagnostics panel and toasts for critical errors.
   useSSEEvent("broadcast-v2-queue-issues", (data: unknown) => {
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+    // Queue issues (UNPLAYABLE_CORRUPT_UPLOAD, HLS_STORAGE_MISSING, etc.) are
+    // the same categories tracked in the remediation report — refresh it so
+    // operators see an up-to-date health summary alongside the diagnostics panel.
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     const d = data as { errors: number; warnings: number; total: number } | null;
     if (!d) return;
     if (d.errors > 0) {
