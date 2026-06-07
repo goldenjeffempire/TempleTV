@@ -7,7 +7,7 @@ import { logger } from "./infrastructure/logger.js";
 import { broadcastEngine } from "./modules/broadcast/queue.engine.js";
 import { channelRegistry } from "./modules/channels/channel-registry.js";
 import { overrideBus } from "./modules/live-overrides/override-bus.js";
-import { closeDb, db, ensureRuntimeIndexes, ensureBroadcastV2Tables, ensureMidnightPrayersTable, deactivateUnresolvableQueueRows, resetStuckProcessingVideos, ensureUserSchemaColumns, scheduleStaleDataCleanup, recoverStaleSyncLogs } from "./infrastructure/db.js";
+import { closeDb, db, ensureRuntimeIndexes, ensureBroadcastV2Tables, ensureMidnightPrayersTable, ensureMemoryHourlySnapshotsTable, deactivateUnresolvableQueueRows, resetStuckProcessingVideos, ensureUserSchemaColumns, scheduleStaleDataCleanup, recoverStaleSyncLogs } from "./infrastructure/db.js";
 import { closeRedis } from "./infrastructure/redis.js";
 import { sseCounter } from "./infrastructure/sse-counter.js";
 import { scheduledNotificationDispatcher } from "./modules/scheduled-notifications/dispatcher.js";
@@ -474,6 +474,13 @@ async function main() {
   // refresh_tokens, etc.). Must run BEFORE seedAdminIfConfigured() so the
   // INSERT has all required columns available.
   await ensureUserSchemaColumns();
+
+  // Ensure the memory_hourly_snapshots table exists so the memory watchdog
+  // can persist hourly RSS/heap snapshots for the admin diagnostics panel.
+  // Non-fatal: server continues without memory history if this fails.
+  ensureMemoryHourlySnapshotsTable().catch((err) =>
+    logger.warn({ err }, "ensureMemoryHourlySnapshotsTable failed (non-fatal)"),
+  );
 
   // Ensure the midnight_prayers_config table and singleton row exist.
   // Must run BEFORE buildApp() because midnightPrayersService.init() fires

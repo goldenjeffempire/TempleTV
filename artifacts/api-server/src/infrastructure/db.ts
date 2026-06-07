@@ -150,6 +150,18 @@ export async function ensureBroadcastV2Tables(): Promise<void> {
       CREATE INDEX IF NOT EXISTS broadcast_runtime_state_mode_idx
         ON broadcast_runtime_state (mode)
     `);
+    // bad_url_cache — added June 2026.
+    // Persists the in-memory bad-URL hit-count map across restarts so the
+    // orchestrator remembers which source URLs repeatedly failed probes after a
+    // reboot. runtime.repo.ts calls UPDATE … SET bad_url_cache = $1 and SELECT
+    // bad_url_cache on every state save/load cycle. Without this column both
+    // calls throw SQLSTATE 42703, preventing any broadcast state from being
+    // persisted and reloaded, effectively resetting the bad-URL skip budget on
+    // every process restart.
+    await client.query(`
+      ALTER TABLE broadcast_runtime_state
+        ADD COLUMN IF NOT EXISTS bad_url_cache JSONB
+    `);
 
     // broadcast_event_log — append-only event journal for SSE/WS replay
     await client.query(`
@@ -189,6 +201,52 @@ export async function ensureBroadcastV2Tables(): Promise<void> {
     logger.info("db: broadcast_v2 tables ensured (all three present)");
   } catch (err) {
     logger.error({ err }, "db: failed to ensure broadcast_v2 tables — orchestrator will boot in OFF_AIR fallback mode");
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Ensures the memory_hourly_snapshots table exists, creating it if missing.
+ *
+ * The memory watchdog persists an hourly RSS/heap snapshot to this table so
+ * operators can review memory trends over the last 7 days from the admin
+ * diagnostics panel.  The table is defined in the Drizzle schema
+ * (lib/db/src/schema/memory-hourly-snapshots.ts) but drizzle-kit push
+ * silently skipped creating it on existing production DBs.
+ *
+ * Without the table every hourly snapshot write throws SQLSTATE 42P01
+ * ("relation does not exist"), which is caught and logged as a WARN but means
+ * memory history is never persisted.
+ *
+ * CREATE TABLE IF NOT EXISTS is fully idempotent — safe on every boot.
+ * Called at startup before startMemoryWatchdog() so the first snapshot fires
+ * into an existing table.
+ */
+export async function ensureMemoryHourlySnapshotsTable(): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS memory_hourly_snapshots (
+        id                          SERIAL PRIMARY KEY,
+        snapshot_at                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        rss_mb                      REAL NOT NULL,
+        heap_used_mb                REAL NOT NULL,
+        heap_total_mb               REAL NOT NULL,
+        external_mb                 REAL NOT NULL,
+        heap_used_growth_mb_per_min REAL,
+        external_growth_mb_per_min  REAL,
+        named_stores                JSONB NOT NULL
+      )
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS memory_hourly_snapshots_snapshot_at_idx
+        ON memory_hourly_snapshots (snapshot_at)
+    `);
+    logger.info("db: memory_hourly_snapshots table ensured");
+  } catch (err) {
+    // Non-fatal — memory history will not be persisted but the server runs.
+    logger.warn({ err }, "db: ensureMemoryHourlySnapshotsTable failed (non-fatal)");
   } finally {
     client.release();
   }
@@ -475,6 +533,120 @@ export async function ensureRuntimeIndexes(): Promise<void> {
         ON managed_videos (object_path)
         WHERE object_path IS NOT NULL
     `);
+    // ── managed_videos: additional B-Tree indexes ─────────────────────────
+    // These indexes are defined in the Drizzle schema (lib/db/src/schema/videos.ts)
+    // but drizzle-kit push silently skipped them on existing prod DBs.
+    // All use IF NOT EXISTS — safe and idempotent on every boot.
+    //
+    // hls_master_url: IS NULL filter used in bulk-transcode + broadcast queue join.
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_hls_master_url
+        ON managed_videos (hls_master_url)
+    `);
+    // local_video_url: broadcast v2 fallback source resolver reads this column.
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_local_video_url
+        ON managed_videos (local_video_url)
+    `);
+    // published_at: admin listing ORDER BY published_at DESC sort path.
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_published_at
+        ON managed_videos (published_at)
+    `);
+    // (video_source, transcoding_status): composite for the
+    // WHERE video_source='local' AND hls_master_url IS NULL bulk-transcode query.
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_source_transcoding
+        ON managed_videos (video_source, transcoding_status)
+    `);
+    // faststart_applied: broadcast-v2 loadActive() filters on this boolean.
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_faststart_applied
+        ON managed_videos (faststart_applied)
+    `);
+    // Composite covering index for broadcast admission: (video_source,
+    // transcoding_status, faststart_applied) — loadActive() WHERE clause.
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_broadcast_admission
+        ON managed_videos (video_source, transcoding_status, faststart_applied)
+    `);
+    // uploaded_by: admin "filter by uploader" queries and audit trail lookups.
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_uploaded_by
+        ON managed_videos (uploaded_by)
+    `);
+
+    // ── broadcast_queue: partial unique index ─────────────────────────────
+    // Prevents the same video from appearing more than once in the active queue.
+    // Without this constraint the broadcast validator must do a full table scan
+    // for duplicates and the DB has no hard enforcement — duplicate active rows
+    // cause the orchestrator to see the same video twice per reload cycle.
+    // WHERE clause exempts inactive rows and NULL video_ids (YouTube-sourced
+    // override items that have no managed_video foreign key).
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_broadcast_queue_video_id_active
+        ON broadcast_queue (video_id)
+        WHERE is_active = true AND video_id IS NOT NULL
+    `);
+
+    // ── broadcast_queue: check constraints ────────────────────────────────
+    // Added via DO block because ALTER TABLE ADD CONSTRAINT has no IF NOT EXISTS
+    // syntax — the DO block performs the existence check in pg_constraint first.
+    await client.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'no_youtube_urls_in_queue'
+            AND conrelid = 'broadcast_queue'::regclass
+        ) THEN
+          ALTER TABLE broadcast_queue
+            ADD CONSTRAINT no_youtube_urls_in_queue CHECK (
+              local_video_url NOT LIKE '%youtube.com/watch%'
+              AND local_video_url NOT LIKE '%youtu.be/%'
+            );
+        END IF;
+      END $$
+    `).catch((err: unknown) => {
+      logger.warn({ err }, "db: no_youtube_urls_in_queue constraint skipped (non-fatal — may already exist under a different name)");
+    });
+    await client.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'chk_broadcast_queue_sort_order_nonneg'
+            AND conrelid = 'broadcast_queue'::regclass
+        ) THEN
+          ALTER TABLE broadcast_queue
+            ADD CONSTRAINT chk_broadcast_queue_sort_order_nonneg
+            CHECK (sort_order >= 0);
+        END IF;
+      END $$
+    `).catch((err: unknown) => {
+      logger.warn({ err }, "db: chk_broadcast_queue_sort_order_nonneg constraint skipped (non-fatal)");
+    });
+
+    // ── managed_videos: transcoding status enum check ─────────────────────
+    // Enforces the closed set of valid transcoding_status values at the DB level
+    // so any code path that writes an unrecognised status gets a CHECK violation
+    // instead of silently corrupting the orchestrator state machine.
+    await client.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'managed_videos_transcoding_status_check'
+            AND conrelid = 'managed_videos'::regclass
+        ) THEN
+          ALTER TABLE managed_videos
+            ADD CONSTRAINT managed_videos_transcoding_status_check
+            CHECK (transcoding_status IN (
+              'none','queued','encoding','processing','ready','hls_ready','failed'
+            ));
+        END IF;
+      END $$
+    `).catch((err: unknown) => {
+      logger.warn({ err }, "db: managed_videos_transcoding_status_check constraint skipped (non-fatal — existing rows may violate the enum)");
+    });
+
     logger.info("db: functional and partial indexes ensured");
   } catch (err) {
     // Non-fatal — the search falls back to plainto_tsquery without the index
@@ -641,6 +813,40 @@ export async function ensureUserSchemaColumns(): Promise<void> {
     await client.query(`
       ALTER TABLE managed_videos
         ADD COLUMN IF NOT EXISTS transcoding_error_code TEXT
+    `);
+    // updated_at — added June 2026.
+    // Drizzle's $onUpdate callback fires JS-side on every ORM UPDATE, writing
+    // the current timestamp into this column. Without the column present in the
+    // DB those writes fail with SQLSTATE 42703 ("column does not exist"), making
+    // every admin-videos PATCH silently fail with a DB error. Backfills to
+    // imported_at for existing rows so ORDER BY updated_at DESC works immediately.
+    await client.query(`
+      ALTER TABLE managed_videos
+        ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    `);
+
+    // ── transcoding_jobs ──────────────────────────────────────────────────
+    // Columns added to transcoding_jobs after the initial production deploy.
+
+    // last_progress_at — added June 2026 (sprint 48 stall-detection feature).
+    // Set by the FFmpeg progress callback on every % update. The stall watchdog
+    // in transcoder.dispatcher.ts queries this column to detect jobs where
+    // progress froze mid-encode (disk-full, I/O stall, hanging muxer). Without
+    // this column the dispatcher's isNull() / lt() calls fail with SQLSTATE 42703
+    // and the entire stall-watchdog branch crashes, leaving stuck encoding jobs
+    // running forever.
+    await client.query(`
+      ALTER TABLE transcoding_jobs
+        ADD COLUMN IF NOT EXISTS last_progress_at TIMESTAMPTZ
+    `);
+    // max_attempts default correction — DB was created with DEFAULT 3 but the
+    // Drizzle schema (and all dispatcher logic) expects DEFAULT 5. Update the
+    // column default so new jobs inserted via SQL get the correct retry budget.
+    // Existing in-flight rows are NOT updated — their attempt budget was already
+    // set at INSERT time and changing it mid-job would corrupt the retry logic.
+    await client.query(`
+      ALTER TABLE transcoding_jobs
+        ALTER COLUMN max_attempts SET DEFAULT 5
     `);
 
     // ── broadcast_queue ───────────────────────────────────────────────────
