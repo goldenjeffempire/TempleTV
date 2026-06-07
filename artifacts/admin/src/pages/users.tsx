@@ -94,7 +94,14 @@ export default function UsersPage() {
   });
 
   const deleteUserMutation = useMutation({
-    mutationFn: (id: string) => api.delete(`/admin/users/${id}`),
+    mutationFn: (id: string) => {
+      if (id === currentUserId) {
+        return Promise.reject(
+          new Error("You cannot delete your own account — ask another admin to remove it."),
+        );
+      }
+      return api.delete(`/admin/users/${id}`);
+    },
     onSuccess: () => {
       toast.success("User deleted permanently");
       void qc.invalidateQueries({ queryKey: ["users"] });

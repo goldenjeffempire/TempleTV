@@ -49,6 +49,14 @@ export declare class WorkerSupervisor {
     spawn(cfg: WorkerConfig): SupervisedWorker;
     get(name: string): SupervisedWorker | undefined;
     getHealth(): WorkerHealth[];
+    /**
+     * Stop and remove a single named worker.  Safe to call if the worker does
+     * not exist — returns false in that case, true if it was found and removed.
+     *
+     * Use this when workers are spawned dynamically (e.g. per-channel) and the
+     * channel is torn down — without remove() the workers Map grows indefinitely.
+     */
+    remove(name: string): boolean;
     stopAll(): void;
 }
 export declare const workerSupervisor: WorkerSupervisor;

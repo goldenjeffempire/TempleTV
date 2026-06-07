@@ -66,17 +66,23 @@ export declare function probeContainerIsValid(inputPath: string): Promise<boolea
  * be written — the codec configuration (SPS/PPS) in the moov's avcC box is
  * permanently lost and no remux strategy can reconstruct it.
  *
- * Scans both the FRONT (first 64 KiB) and the TAIL (last 64 KiB) of the
- * file. Normal camera recordings write mdat first and moov last (moov-at-EOF
- * layout). Scanning only the front misidentifies those files as unrecoverable
- * because mdat is found but moov is out of the scan window. The tail scan
- * catches the moov-at-EOF case and correctly returns false, allowing the
- * remux recovery path to run (strategy 1 — stream-copy with +faststart fixes
- * these in seconds with no re-encoding).
+ * Phase 1 — Front scan (64 KiB, box-boundary parser):
+ *   Quickly detects moov-at-front (common after faststart) and confirms mdat
+ *   presence. Returns false immediately if moov is found or mdat is absent.
  *
- * Returns true ONLY when mdat is present AND moov is absent from both the
- * front and tail scan windows. Returns false on any I/O error so the caller
- * falls through to the normal remux path.
+ * Phase 2 — Full-file ffprobe (only when mdat found but moov not at front):
+ *   The previous implementation used a 64 KiB tail byte-scan to check for
+ *   moov-at-EOF. This was insufficient: for 30-minute+ sermon recordings
+ *   (H.264 with B-frames) the moov atom is 1–5 MiB, placing its box header
+ *   well outside the 64 KiB window and causing false-positive CORRUPT_SOURCE
+ *   classifications. The ffprobe approach has no window size limitation — it
+ *   seeks through the entire container and finds moov regardless of its size
+ *   or position. Only returns true (unrecoverable) when ffprobe explicitly
+ *   reports zero streams due to a missing moov atom.
+ *
+ * Returns true ONLY when mdat is present AND ffprobe confirms moov is absent.
+ * Returns false on any I/O or subprocess error so the caller falls through to
+ * the normal remux path.
  */
 export declare function detectMdatWithoutMoov(inputPath: string): Promise<boolean>;
 /**

@@ -1,4 +1,4 @@
-import { and, count, eq, isNull, ne, or, sql } from "drizzle-orm";
+import { and, count, eq, isNull, or, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { env } from "../../config/env.js";
 import { db, schema } from "../../infrastructure/db.js";

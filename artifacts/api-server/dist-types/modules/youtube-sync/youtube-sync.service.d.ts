@@ -58,4 +58,26 @@ export interface SyncResult {
     rowErrors: number;
 }
 export declare function syncYouTubeChannel(triggeredBy?: "scheduler" | "manual"): Promise<SyncResult>;
+export interface CategoryStat {
+    category: string;
+    count: number;
+    pct: number;
+}
+export interface CategoryStatsResult {
+    total: number;
+    byCategory: CategoryStat[];
+    liveServiceCount: number;
+    uncategorizedCount: number;
+}
+export declare function getCategoryStats(): Promise<CategoryStatsResult>;
+export interface RecategorizeResult {
+    processed: number;
+    changed: number;
+    unchanged: number;
+    durationMs: number;
+    changesByCategory: Record<string, number>;
+    errors: number;
+}
+export declare function isRecategorizeInProgress(): boolean;
+export declare function recategorizeAllVideos(): Promise<RecategorizeResult>;
 export {};

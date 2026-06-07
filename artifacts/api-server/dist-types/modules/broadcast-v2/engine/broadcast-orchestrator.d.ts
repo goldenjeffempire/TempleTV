@@ -296,6 +296,19 @@ declare class BroadcastOrchestrator extends EventEmitter {
      *  Null when not in that state. Used for auto-recovery after the TTL window. */
     private allBlockedSinceMs;
     /**
+     * Dead-air external stream fallback state.
+     *
+     * When all queue sources remain blocked for >BROADCAST_DEADAIR_FALLBACK_AFTER_MS
+     * AND BROADCAST_DEADAIR_FALLBACK_URL is set, applyDeadAirFallback() is called
+     * once to apply the fallback URL as a broadcast override. The override id is
+     * tracked in deadAirFallbackOverrideId so the fallback can be identified and
+     * auto-cleared when the queue recovers playable content.
+     *
+     * Guard: deadAirFallbackActive prevents duplicate concurrent calls.
+     */
+    private deadAirFallbackActive;
+    private deadAirFallbackOverrideId;
+    /**
      * How many times the all-blocked TTL recovery cycle has fired without any
      * item successfully playing to completion (naturalItemEnd).
      *
@@ -307,6 +320,19 @@ declare class BroadcastOrchestrator extends EventEmitter {
      * successfully becomes current after a dead-air gap.
      */
     private allBlockedRecoveryCycles;
+    /**
+     * Whether the orchestrator has applied the BROADCAST_DEADAIR_FALLBACK_URL
+     * override automatically (distinct from any operator-initiated override).
+     * Guards the queue-recovery clear so we only stop overrides WE started.
+     */
+    private fallbackOverrideActive;
+    /**
+     * Wall-clock ms when the orchestrator first entered continuous dead-air
+     * (empty queue that escalation cannot recover). Null when not in dead-air.
+     * Used to gate BROADCAST_DEADAIR_FALLBACK_URL — the fallback is only applied
+     * once this elapsed time exceeds BROADCAST_DEADAIR_FALLBACK_AFTER_MS.
+     */
+    private deadAirDetectedAtMs;
     /** Circuit breaker: consecutive tick() failures before the circuit opens. */
     private readonly TICK_CIRCUIT_THRESHOLD;
     /**
@@ -373,6 +399,21 @@ declare class BroadcastOrchestrator extends EventEmitter {
      * The cooldown is reset to 0 whenever the orchestrator successfully loads
      * items, so the next outage always gets an immediate first escalation.
      */
+    /**
+     * Apply the configured BROADCAST_DEADAIR_FALLBACK_URL as a broadcast override.
+     *
+     * Fires when all queue sources remain blocked for >BROADCAST_DEADAIR_FALLBACK_AFTER_MS.
+     * The URL kind is inferred from the URL pattern (.m3u8 → hls, otherwise rtmp).
+     * The override runs indefinitely (endsAtMs=null) with resumeQueueOnEnd=true so
+     * that when the override is manually stopped the queue resumes from where it left off.
+     *
+     * Auto-cleared in reloadInner() when the queue recovers playable content
+     * (deadAirFallbackActive=true AND override.id matches deadAirFallbackOverrideId
+     * AND items.length>0 with at least one resolved source).
+     *
+     * Fire-and-forget via void to avoid blocking the setInterval callback.
+     */
+    private applyDeadAirFallback;
     private escalateDeadAir;
     /**
      * Outer tick() — crash-safe wrapper with circuit breaker.

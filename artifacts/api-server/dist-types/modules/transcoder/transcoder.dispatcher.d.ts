@@ -69,8 +69,12 @@ declare class TranscoderDispatcher {
     private purgeOrphanedScratchDirs;
     private partialRecoveryCounter;
     private static readonly PARTIAL_RECOVERY_TICKS;
+    private autoRetryCounter;
     private stuckJobsCounter;
     private static readonly STUCK_JOBS_TICKS;
+    private static readonly EARLY_STUCK_MS;
+    private static readonly PROGRESS_STALE_MS;
+    private static readonly JOB_START_GRACE_MS;
     private scratchGcCounter;
     private static readonly SCRATCH_GC_TICKS;
     private lastHeartbeatAt;
@@ -93,6 +97,23 @@ declare class TranscoderDispatcher {
      * an empty "encoding" set keeps the steady-state cost to a single cheap SELECT.
      */
     private recoverPartialSuccessVideos;
+    /**
+     * Auto-retry recoverable failed transcoding jobs.
+     *
+     * Scans for transcoding_jobs with status='failed' where:
+     *   • attempts < maxAttempts (retry budget not exhausted)
+     *   • The managed_videos error code is NOT terminal:
+     *       – CORRUPT_SOURCE: moov atom absent — re-upload required
+     *       – SOURCE_MISSING: source blob deleted — re-upload required
+     *     DISK_FULL and transient FFmpeg exits are retryable once disk is freed.
+     *   • completedAt is older than TRANSCODER_AUTO_RETRY_INTERVAL_MS so we
+     *     don't immediately re-attempt a job that just failed.
+     *
+     * Re-queued jobs reset nextRetryAt to now() so the dispatcher picks them
+     * up on the next tick. At most 20 jobs per sweep to bound DB work.
+     * Controlled by TRANSCODER_AUTO_RETRY_FAILED env var (default: true).
+     */
+    private sweepRecoverableFailed;
     getHeartbeat(): {
         lastHeartbeatAt: number | null;
         currentJobId: string | null;

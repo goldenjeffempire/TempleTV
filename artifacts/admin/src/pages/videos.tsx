@@ -443,6 +443,9 @@ export default function VideosPage() {
       toast.success(res.reused ? "HLS job re-queued" : "Queued for HLS transcoding — check the Transcoding tab");
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
       void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+      // Broadcast queue shows "Missing HLS" warnings — invalidate so the
+      // orchestrator panel reflects the new queued status immediately.
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Transcoding request failed"),
   });
@@ -453,6 +456,9 @@ export default function VideosPage() {
     onSuccess: () => {
       toast.success("Faststart started — status will update to 'ready' in ~30–90 seconds");
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      // Broadcast queue shows source URL status — invalidate so the Broadcast
+      // panel reflects the faststart-in-progress state without waiting for SSE.
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Faststart request failed"),
   });
@@ -850,7 +856,7 @@ export default function VideosPage() {
                 size="sm"
                 variant="outline"
                 className="h-7 text-xs border-amber-300 text-amber-700 hover:bg-amber-100 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-amber-950/40"
-                onClick={() => { setStatusFilter("failed"); setPage(1); }}
+                onClick={() => { setStatusFilter("failed"); setPage(1); setSelectedIds(new Set()); }}
               >
                 Show failed
               </Button>

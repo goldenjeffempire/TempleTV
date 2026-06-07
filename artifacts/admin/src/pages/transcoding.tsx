@@ -112,6 +112,9 @@ export default function TranscodingPage() {
     onSuccess: (res) => {
       toast.success(res.cleared > 0 ? `Cleared ${res.cleared} finished job${res.cleared !== 1 ? "s" : ""}` : "No finished jobs to clear");
       void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+      // Video Library shows per-row transcoding badges — clearing finished jobs
+      // can affect the displayed status; sync it so stale "Encoding…" badges disappear.
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Clear finished jobs failed"),
   });

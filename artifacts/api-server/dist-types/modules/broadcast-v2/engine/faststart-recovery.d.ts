@@ -58,5 +58,7 @@ export declare const faststartRecoveryWorker: {
     getStats(): Readonly<RecoveryStats>;
     /** Test/admin-only: reset attempt counters so retried items get a fresh chance. */
     resetAttempts(videoId?: string): void;
+    /** Diagnostic: number of permanently-given-up videos this process lifetime. */
+    getGivenUpCount(): number;
 };
 export {};

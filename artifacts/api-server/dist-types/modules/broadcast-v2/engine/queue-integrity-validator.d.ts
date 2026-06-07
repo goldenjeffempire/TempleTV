@@ -23,6 +23,16 @@ declare class QueueIntegrityValidatorImpl {
     private validating;
     /** Fingerprint of the last logged issue set — used to suppress duplicate WARN spam. */
     private lastIssueSig;
+    /**
+     * Monotonically-incrementing cycle counter. Incremented at the start of each
+     * validate() call. Used to rate-limit checks that don't need to run every
+     * cycle (e.g. STUCK_ENCODING_NO_JOB every 3rd cycle).
+     */
+    private validatorCycleCount;
+    private storageCbFailures;
+    private storageCbOpenUntilMs;
+    private static readonly STORAGE_CB_THRESHOLD;
+    private static readonly STORAGE_CB_OPEN_MS;
     validate(): Promise<ValidationReport>;
     getLastReport(): ValidationReport | null;
     private empty;

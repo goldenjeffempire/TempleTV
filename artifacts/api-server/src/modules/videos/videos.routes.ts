@@ -367,7 +367,7 @@ export async function videosRoutes(app: FastifyInstance) {
       const totalPages = Math.max(1, Math.ceil(total / limit));
 
       const result: CatalogResponse = {
-        videos: rows.map(toDto),
+        videos: rows.map(v => toDto(v as unknown as VideoDtoRow)),
         total,
         totalPages,
         page,
@@ -444,7 +444,7 @@ export async function videosRoutes(app: FastifyInstance) {
       }
       return reply
         .header("Cache-Control", "public, s-maxage=60, max-age=60, stale-while-revalidate=120")
-        .send({ videos: rows.map(toDto) });
+        .send({ videos: rows.map(v => toDto(v as unknown as VideoDtoRow)) });
     },
   );
 

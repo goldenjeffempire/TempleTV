@@ -36,6 +36,24 @@ export declare function closeDb(): Promise<void>;
  */
 export declare function ensureBroadcastV2Tables(): Promise<void>;
 /**
+ * Ensures the memory_hourly_snapshots table exists, creating it if missing.
+ *
+ * The memory watchdog persists an hourly RSS/heap snapshot to this table so
+ * operators can review memory trends over the last 7 days from the admin
+ * diagnostics panel.  The table is defined in the Drizzle schema
+ * (lib/db/src/schema/memory-hourly-snapshots.ts) but drizzle-kit push
+ * silently skipped creating it on existing production DBs.
+ *
+ * Without the table every hourly snapshot write throws SQLSTATE 42P01
+ * ("relation does not exist"), which is caught and logged as a WARN but means
+ * memory history is never persisted.
+ *
+ * CREATE TABLE IF NOT EXISTS is fully idempotent — safe on every boot.
+ * Called at startup before startMemoryWatchdog() so the first snapshot fires
+ * into an existing table.
+ */
+export declare function ensureMemoryHourlySnapshotsTable(): Promise<void>;
+/**
  * Ensure the midnight_prayers_config table exists and contains the singleton
  * default row (id = 1).
  *

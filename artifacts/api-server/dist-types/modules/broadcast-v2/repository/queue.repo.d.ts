@@ -18,6 +18,20 @@ export declare const BAD_URL_TTL_MS = 90000;
 export declare const SUSPENSION_TTL_MS: number;
 /** Mark a source URL as recently confirmed unreachable. */
 export declare function markBadUrl(url: string): void;
+/**
+ * Mark a source URL as temporarily unavailable with a custom TTL.
+ *
+ * Used by autoEnqueueMissingHls to suppress items whose HLS is absent and
+ * are being re-transcoded — those items should not air as raw MP4 (which
+ * often fails too) while the transcoding job is in progress. A 10-minute
+ * TTL covers worst-case transcoding time on a lightly-loaded server and
+ * prevents the RECOVERING → SKIP_PENDING → FATAL cycle for every player.
+ *
+ * The item auto-recovers once the TTL expires regardless of transcoding
+ * completion — the orchestrator will then serve it again. If HLS is still
+ * absent at that point, the next autoEnqueueMissingHls call re-suppresses it.
+ */
+export declare function markBadUrlWithTtl(url: string, ttlMs: number): void;
 /** Clear a URL from the bad cache (e.g. after a queue reload with new sources). */
 export declare function clearBadUrl(url: string): void;
 /** Flush the entire bad-URL cache (e.g. operator-triggered "clear blocks"). */

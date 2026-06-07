@@ -1161,6 +1161,9 @@ function BroadcastV2PageInner() {
       // The transcoding panel shows per-item duration; refresh it so the
       // updated duration appears without waiting for the next poll cycle.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
+      // Remediation report shows duration-mismatch alerts — clear it so
+      // a successful re-probe doesn't leave a stale "Duration Mismatch" warning.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       const diff = result.newDurSecs - result.oldDurSecs;
       toast.success(
         `Duration updated: ${result.oldDurSecs}s → ${result.newDurSecs}s (${diff > 0 ? "+" : ""}${diff}s).`,

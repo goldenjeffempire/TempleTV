@@ -46,6 +46,10 @@ declare const Env: z.ZodObject<{
     TRANSCODER_DISABLE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
     BROADCAST_AUTO_ENQUEUE_DISABLE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
     BROADCAST_QUEUE_MAX_ITEMS: z.ZodDefault<z.ZodNumber>;
+    BROADCAST_DEADAIR_FALLBACK_URL: z.ZodOptional<z.ZodString>;
+    BROADCAST_DEADAIR_FALLBACK_AFTER_MS: z.ZodDefault<z.ZodNumber>;
+    TRANSCODER_AUTO_RETRY_FAILED: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
+    TRANSCODER_AUTO_RETRY_INTERVAL_MS: z.ZodDefault<z.ZodNumber>;
     TRANSCODER_SCRATCH_DIR: z.ZodOptional<z.ZodString>;
     TRANSCODER_PRESET: z.ZodDefault<z.ZodString>;
     TRANSCODER_CRF: z.ZodDefault<z.ZodNumber>;
@@ -101,7 +105,7 @@ declare const Env: z.ZodObject<{
     PORT: number;
     TV_DEV_PORT: number;
     MOBILE_DEV_PORT: number;
-    LOG_LEVEL: "error" | "warn" | "info" | "fatal" | "debug" | "trace" | "silent";
+    LOG_LEVEL: "info" | "error" | "debug" | "fatal" | "warn" | "trace" | "silent";
     DATABASE_URL: string;
     JWT_ACCESS_SECRET: string;
     JWT_REFRESH_SECRET: string;
@@ -109,7 +113,7 @@ declare const Env: z.ZodObject<{
     JWT_REFRESH_TTL_SECONDS: number;
     JWT_ALGORITHM: "HS256";
     REFRESH_TOKEN_STRICT_IP_CHECK: boolean;
-    ADMIN_API_TOKEN_ROLE: "admin" | "editor" | "moderator" | "user";
+    ADMIN_API_TOKEN_ROLE: "admin" | "editor" | "user" | "moderator";
     CORS_ORIGINS: string;
     BROADCAST_PRELOAD_LEAD_MS: number;
     RATE_LIMIT_DEFAULT_PER_MINUTE: number;
@@ -130,6 +134,9 @@ declare const Env: z.ZodObject<{
     TRANSCODER_DISABLE: boolean;
     BROADCAST_AUTO_ENQUEUE_DISABLE: boolean;
     BROADCAST_QUEUE_MAX_ITEMS: number;
+    BROADCAST_DEADAIR_FALLBACK_AFTER_MS: number;
+    TRANSCODER_AUTO_RETRY_FAILED: boolean;
+    TRANSCODER_AUTO_RETRY_INTERVAL_MS: number;
     TRANSCODER_PRESET: string;
     TRANSCODER_CRF: number;
     TRANSCODER_KEEP_SCRATCH: boolean;
@@ -166,6 +173,7 @@ declare const Env: z.ZodObject<{
     REDIS_URL?: string | undefined;
     AUTH_BF_BYPASS_TOKEN?: string | undefined;
     SENTRY_DSN?: string | undefined;
+    BROADCAST_DEADAIR_FALLBACK_URL?: string | undefined;
     TRANSCODER_SCRATCH_DIR?: string | undefined;
     SMTP_HOST?: string | undefined;
     SMTP_USER?: string | undefined;
@@ -200,13 +208,13 @@ declare const Env: z.ZodObject<{
     TV_DEV_PORT?: number | undefined;
     MOBILE_DEV_PORT?: number | undefined;
     WEBHOOK_BASE_URL?: string | undefined;
-    LOG_LEVEL?: "error" | "warn" | "info" | "fatal" | "debug" | "trace" | "silent" | undefined;
+    LOG_LEVEL?: "info" | "error" | "debug" | "fatal" | "warn" | "trace" | "silent" | undefined;
     JWT_ACCESS_TTL_SECONDS?: number | undefined;
     JWT_REFRESH_TTL_SECONDS?: number | undefined;
     JWT_ALGORITHM?: "HS256" | undefined;
     REFRESH_TOKEN_STRICT_IP_CHECK?: string | boolean | undefined;
     ADMIN_API_TOKEN?: string | undefined;
-    ADMIN_API_TOKEN_ROLE?: "admin" | "editor" | "moderator" | "user" | undefined;
+    ADMIN_API_TOKEN_ROLE?: "admin" | "editor" | "user" | "moderator" | undefined;
     ADMIN_API_TOKEN_IP_ALLOWLIST?: string | undefined;
     CORS_ORIGINS?: string | undefined;
     CORS_ORIGINS_EXTRA?: string | undefined;
@@ -232,6 +240,10 @@ declare const Env: z.ZodObject<{
     TRANSCODER_DISABLE?: string | boolean | undefined;
     BROADCAST_AUTO_ENQUEUE_DISABLE?: string | boolean | undefined;
     BROADCAST_QUEUE_MAX_ITEMS?: number | undefined;
+    BROADCAST_DEADAIR_FALLBACK_URL?: string | undefined;
+    BROADCAST_DEADAIR_FALLBACK_AFTER_MS?: number | undefined;
+    TRANSCODER_AUTO_RETRY_FAILED?: string | boolean | undefined;
+    TRANSCODER_AUTO_RETRY_INTERVAL_MS?: number | undefined;
     TRANSCODER_SCRATCH_DIR?: string | undefined;
     TRANSCODER_PRESET?: string | undefined;
     TRANSCODER_CRF?: number | undefined;

@@ -38,7 +38,7 @@
  *   'deleted' or 'scheduled' before the transaction completes.)
  */
 
-import { and, eq, lte, or, sql } from "drizzle-orm";
+import { and, eq, inArray, lte, or, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 import { env } from "../../config/env.js";
@@ -233,15 +233,13 @@ async function deleteSourceBlob(
         (r) => r.session_id,
       );
       // Delete chunks first (may have large BYTEA fallback_data).
-      await db.execute(sql`
-        DELETE FROM upload_chunks
-        WHERE session_id = ANY(${sessionIds}::text[])
-      `);
+      await db
+        .delete(schema.uploadChunksTable)
+        .where(inArray(schema.uploadChunksTable.sessionId, sessionIds));
       // Delete the session rows.
-      await db.execute(sql`
-        DELETE FROM upload_sessions
-        WHERE session_id = ANY(${sessionIds}::text[])
-      `);
+      await db
+        .delete(schema.uploadSessionsTable)
+        .where(inArray(schema.uploadSessionsTable.sessionId, sessionIds));
       logger.info(
         { videoId, sessionIds, chunksDeleted: true },
         "[cleanup] upload session + chunks deleted",

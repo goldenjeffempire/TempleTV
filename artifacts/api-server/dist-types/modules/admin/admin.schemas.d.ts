@@ -10,8 +10,8 @@ export declare const AdminUserSchema: z.ZodObject<{
     updatedAt: z.ZodString;
 }, "strip", z.ZodTypeAny, {
     id: string;
-    createdAt: string;
     updatedAt: string;
+    createdAt: string;
     email: string;
     displayName: string;
     avatarUrl: string | null;
@@ -19,8 +19,8 @@ export declare const AdminUserSchema: z.ZodObject<{
     emailVerified: boolean;
 }, {
     id: string;
-    createdAt: string;
     updatedAt: string;
+    createdAt: string;
     email: string;
     displayName: string;
     avatarUrl: string | null;
@@ -39,8 +39,8 @@ export declare const ListUsersQuerySchema: z.ZodObject<{
     role?: string | undefined;
 }, {
     search?: string | undefined;
-    role?: string | undefined;
     limit?: number | undefined;
+    role?: string | undefined;
     offset?: number | undefined;
 }>;
 export declare const ListUsersResponseSchema: z.ZodObject<{
@@ -55,8 +55,8 @@ export declare const ListUsersResponseSchema: z.ZodObject<{
         updatedAt: z.ZodString;
     }, "strip", z.ZodTypeAny, {
         id: string;
-        createdAt: string;
         updatedAt: string;
+        createdAt: string;
         email: string;
         displayName: string;
         avatarUrl: string | null;
@@ -64,8 +64,8 @@ export declare const ListUsersResponseSchema: z.ZodObject<{
         emailVerified: boolean;
     }, {
         id: string;
-        createdAt: string;
         updatedAt: string;
+        createdAt: string;
         email: string;
         displayName: string;
         avatarUrl: string | null;
@@ -77,12 +77,12 @@ export declare const ListUsersResponseSchema: z.ZodObject<{
     offset: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
     limit: number;
-    offset: number;
     total: number;
+    offset: number;
     items: {
         id: string;
-        createdAt: string;
         updatedAt: string;
+        createdAt: string;
         email: string;
         displayName: string;
         avatarUrl: string | null;
@@ -91,12 +91,12 @@ export declare const ListUsersResponseSchema: z.ZodObject<{
     }[];
 }, {
     limit: number;
-    offset: number;
     total: number;
+    offset: number;
     items: {
         id: string;
-        createdAt: string;
         updatedAt: string;
+        createdAt: string;
         email: string;
         displayName: string;
         avatarUrl: string | null;
@@ -107,9 +107,9 @@ export declare const ListUsersResponseSchema: z.ZodObject<{
 export declare const UpdateUserRoleBodySchema: z.ZodObject<{
     role: z.ZodEnum<["user", "editor", "moderator", "admin"]>;
 }, "strip", z.ZodTypeAny, {
-    role: "admin" | "editor" | "moderator" | "user";
+    role: "admin" | "editor" | "user" | "moderator";
 }, {
-    role: "admin" | "editor" | "moderator" | "user";
+    role: "admin" | "editor" | "user" | "moderator";
 }>;
 export declare const AdminStatsSchema: z.ZodObject<{
     videos: z.ZodObject<{
@@ -181,6 +181,11 @@ export declare const AdminStatsSchema: z.ZodObject<{
     }>;
     generatedAt: z.ZodString;
 }, "strip", z.ZodTypeAny, {
+    videos: {
+        featured: number;
+        total: number;
+        bySource: Record<string, number>;
+    };
     playlists: {
         total: number;
     };
@@ -192,6 +197,10 @@ export declare const AdminStatsSchema: z.ZodObject<{
         queueDepth: number;
         activeQueueDepth: number;
     };
+    generatedAt: string;
+    devices: {
+        total: number;
+    };
     schedule: {
         total: number;
         active: number;
@@ -199,17 +208,13 @@ export declare const AdminStatsSchema: z.ZodObject<{
     notifications: {
         sentLast24h: number;
         sentTotal: number;
-    };
-    generatedAt: string;
-    videos: {
-        featured: number;
-        total: number;
-        bySource: Record<string, number>;
-    };
-    devices: {
-        total: number;
     };
 }, {
+    videos: {
+        featured: number;
+        total: number;
+        bySource: Record<string, number>;
+    };
     playlists: {
         total: number;
     };
@@ -221,6 +226,10 @@ export declare const AdminStatsSchema: z.ZodObject<{
         queueDepth: number;
         activeQueueDepth: number;
     };
+    generatedAt: string;
+    devices: {
+        total: number;
+    };
     schedule: {
         total: number;
         active: number;
@@ -228,15 +237,6 @@ export declare const AdminStatsSchema: z.ZodObject<{
     notifications: {
         sentLast24h: number;
         sentTotal: number;
-    };
-    generatedAt: string;
-    videos: {
-        featured: number;
-        total: number;
-        bySource: Record<string, number>;
-    };
-    devices: {
-        total: number;
     };
 }>;
 export declare const AnalyticsSchema: z.ZodObject<{
@@ -320,6 +320,10 @@ export declare const AnalyticsOverviewSchema: z.ZodObject<{
     }>, "many">;
     generatedAt: z.ZodString;
 }, "strip", z.ZodTypeAny, {
+    platformBreakdown: {
+        platform: string;
+        sessions: number;
+    }[];
     generatedAt: string;
     topVideos: {
         id: string;
@@ -331,15 +335,15 @@ export declare const AnalyticsOverviewSchema: z.ZodObject<{
     totalSessions: number;
     completionRate: number;
     avgWatchSecs: number;
-    platformBreakdown: {
-        platform: string;
-        sessions: number;
-    }[];
     dailyViews: {
         date: string;
         views: number;
     }[];
 }, {
+    platformBreakdown: {
+        platform: string;
+        sessions: number;
+    }[];
     generatedAt: string;
     topVideos: {
         id: string;
@@ -351,10 +355,6 @@ export declare const AnalyticsOverviewSchema: z.ZodObject<{
     totalSessions: number;
     completionRate: number;
     avgWatchSecs: number;
-    platformBreakdown: {
-        platform: string;
-        sessions: number;
-    }[];
     dailyViews: {
         date: string;
         views: number;
@@ -412,11 +412,11 @@ export declare const ConcurrentViewersSchema: z.ZodObject<{
     granularity: z.ZodEnum<["hour", "4h", "day"]>;
     generatedAt: z.ZodString;
 }, "strip", z.ZodTypeAny, {
+    generatedAt: string;
     peak: {
         ts: string;
         concurrent: number;
     };
-    generatedAt: string;
     buckets: {
         mobile: number;
         tv: number;
@@ -426,11 +426,11 @@ export declare const ConcurrentViewersSchema: z.ZodObject<{
     }[];
     granularity: "hour" | "4h" | "day";
 }, {
+    generatedAt: string;
     peak: {
         ts: string;
         concurrent: number;
     };
-    generatedAt: string;
     buckets: {
         mobile: number;
         tv: number;
@@ -448,16 +448,16 @@ export declare const DailyPlatformBucketSchema: z.ZodObject<{
     total: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
     date: string;
+    total: number;
     mobile: number;
     tv: number;
     web: number;
-    total: number;
 }, {
     date: string;
+    total: number;
     mobile: number;
     tv: number;
     web: number;
-    total: number;
 }>;
 export declare const DailyPlatformTrendsSchema: z.ZodObject<{
     days: z.ZodArray<z.ZodObject<{
@@ -468,34 +468,34 @@ export declare const DailyPlatformTrendsSchema: z.ZodObject<{
         total: z.ZodNumber;
     }, "strip", z.ZodTypeAny, {
         date: string;
+        total: number;
         mobile: number;
         tv: number;
         web: number;
-        total: number;
     }, {
         date: string;
+        total: number;
         mobile: number;
         tv: number;
         web: number;
-        total: number;
     }>, "many">;
     generatedAt: z.ZodString;
 }, "strip", z.ZodTypeAny, {
     generatedAt: string;
     days: {
         date: string;
+        total: number;
         mobile: number;
         tv: number;
         web: number;
-        total: number;
     }[];
 }, {
     generatedAt: string;
     days: {
         date: string;
+        total: number;
         mobile: number;
         tv: number;
         web: number;
-        total: number;
     }[];
 }>;

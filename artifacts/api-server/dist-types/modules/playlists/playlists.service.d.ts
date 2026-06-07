@@ -26,6 +26,7 @@ export declare const playlistsService: {
             category: string;
             sortOrder: number;
             addedAt: string;
+            youtubeLiveStatus: "live" | "rebroadcast" | null;
         }[];
         id: string;
         name: string;
@@ -71,6 +72,7 @@ export declare const playlistsService: {
         category: string;
         sortOrder: number;
         addedAt: string;
+        youtubeLiveStatus: "live" | "rebroadcast" | null;
     }>;
     removeVideo(playlistId: string, playlistVideoId: string): Promise<{
         id: string;
@@ -88,6 +90,7 @@ export declare const playlistsService: {
             category: string;
             sortOrder: number;
             addedAt: string;
+            youtubeLiveStatus: "live" | "rebroadcast" | null;
         }[];
         id: string;
         name: string;
