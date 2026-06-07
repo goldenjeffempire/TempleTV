@@ -21,7 +21,7 @@ import { markBadUrl, markBadUrlWithTtl, clearAllBadUrls, getItemsHealth, queueRe
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { faststartRecoveryWorker } from "../engine/faststart-recovery.js";
 import { db, schema } from "../../../infrastructure/db.js";
-import { eq, and, isNull, isNotNull, sql } from "drizzle-orm";
+import { eq, and, isNull, isNotNull, sql, inArray } from "drizzle-orm";
 import { enqueueTranscode, boostTranscodePriority } from "../../transcoder/transcoder.queue.js";
 import { transcoderDispatcher } from "../../transcoder/transcoder.dispatcher.js";
 import { logger } from "../../../infrastructure/logger.js";
@@ -923,10 +923,11 @@ export async function restRoutes(app: FastifyInstance) {
       const checkKeys = hlsReadyItems.map((r) => `transcoded/${r.video_id}/master.m3u8`);
       let presentKeys: Set<string>;
       try {
-        const pr = await db.execute<{ key: string }>(sql`
-          SELECT key FROM storage_blobs WHERE key = ANY(${checkKeys}::text[])
-        `);
-        presentKeys = new Set((pr.rows as Array<{ key: string }>).map((r) => r.key));
+        const pr = await db
+          .select({ key: schema.storageBlobsTable.key })
+          .from(schema.storageBlobsTable)
+          .where(inArray(schema.storageBlobsTable.key, checkKeys));
+        presentKeys = new Set(pr.map((r) => r.key));
       } catch (err) {
         logger.warn({ err }, "[broadcast-v2] repair-hls-storage-missing: storage_blobs check failed");
         return reply.code(503).send({ error: "storage_blobs check failed — cannot confirm which blobs are missing" });
@@ -1538,12 +1539,11 @@ async function buildRemediationReport(): Promise<RemediationReportData> {
     const sample = hlsReadyItems.slice(0, 50);
     const checkKeys = sample.map((r) => `transcoded/${r.video_id}/master.m3u8`);
     try {
-      const pr = await db.execute<{ key: string }>(sql`
-        SELECT key FROM storage_blobs WHERE key = ANY(${checkKeys}::text[])
-      `);
-      const presentKeys = new Set(
-        (pr.rows as Array<{ key: string }>).map((r) => r.key),
-      );
+      const pr = await db
+        .select({ key: schema.storageBlobsTable.key })
+        .from(schema.storageBlobsTable)
+        .where(inArray(schema.storageBlobsTable.key, checkKeys));
+      const presentKeys = new Set(pr.map((r) => r.key));
       for (const row of sample) {
         const key = `transcoded/${row.video_id}/master.m3u8`;
         if (!presentKeys.has(key)) {

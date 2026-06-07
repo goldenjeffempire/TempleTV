@@ -1002,12 +1002,11 @@ class QueueIntegrityValidatorImpl {
             });
           } else {
             try {
-              const presentRows = await db.execute<{ key: string }>(sql`
-                SELECT key FROM storage_blobs WHERE key = ANY(${checkKeys}::text[])
-              `);
-              presentKeys = new Set(
-                (presentRows.rows as Array<{ key: string }>).map((r) => r.key),
-              );
+              const presentRows = await db
+                .select({ key: schema.storageBlobsTable.key })
+                .from(schema.storageBlobsTable)
+                .where(inArray(schema.storageBlobsTable.key, checkKeys));
+              presentKeys = new Set(presentRows.map((r) => r.key));
               // Reset consecutive-failure counter on a successful query.
               this.storageCbFailures = 0;
             } catch (storageErr) {
@@ -1160,10 +1159,11 @@ class QueueIntegrityValidatorImpl {
               const keyStrings = reviveKeys.map((r) => r.key);
               let presentReviveKeys: Set<string>;
               try {
-                const pr = await db.execute<{ key: string }>(sql`
-                  SELECT key FROM storage_blobs WHERE key = ANY(${keyStrings}::text[])
-                `);
-                presentReviveKeys = new Set((pr.rows as Array<{ key: string }>).map((r) => r.key));
+                const pr = await db
+                  .select({ key: schema.storageBlobsTable.key })
+                  .from(schema.storageBlobsTable)
+                  .where(inArray(schema.storageBlobsTable.key, keyStrings));
+                presentReviveKeys = new Set(pr.map((r) => r.key));
               } catch {
                 presentReviveKeys = new Set();
               }
