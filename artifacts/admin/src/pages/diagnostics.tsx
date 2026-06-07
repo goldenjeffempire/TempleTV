@@ -392,7 +392,7 @@ export default function DiagnosticsPage() {
 
   const procQuery = useQuery<ProcessInfo>({
     queryKey: ["diagnostics", "process-info"],
-    queryFn: () => api.get("/api/v1/admin/process-info"),
+    queryFn: () => api.get("/admin/process-info"),
     refetchInterval: POLL_MS,
     staleTime: POLL_MS,
     retry: false,
@@ -400,7 +400,7 @@ export default function DiagnosticsPage() {
 
   const transcoderQuery = useQuery<TranscoderStatus>({
     queryKey: ["diagnostics", "transcoder-status"],
-    queryFn: () => api.get("/api/v1/admin/transcoder-status"),
+    queryFn: () => api.get("/admin/transcoder-status"),
     refetchInterval: POLL_MS,
     staleTime: POLL_MS,
     retry: false,
@@ -408,7 +408,7 @@ export default function DiagnosticsPage() {
 
   const broadcastQuery = useQuery<BroadcastHealth>({
     queryKey: ["diagnostics", "broadcast-health"],
-    queryFn: () => api.get("/api/broadcast-v2/health"),
+    queryFn: () => api.get("/broadcast-v2/health"),
     refetchInterval: POLL_MS,
     staleTime: POLL_MS,
     retry: false,
@@ -416,7 +416,7 @@ export default function DiagnosticsPage() {
 
   const streamHealthQuery = useQuery<StreamHealthMetrics>({
     queryKey: ["diagnostics", "stream-health"],
-    queryFn: () => api.get("/api/v1/admin/stream-health/metrics"),
+    queryFn: () => api.get("/admin/stream-health/metrics"),
     refetchInterval: SLOW_POLL_MS,
     staleTime: SLOW_POLL_MS,
     retry: false,
@@ -424,7 +424,7 @@ export default function DiagnosticsPage() {
 
   const memDiagQuery = useQuery<MemoryDiagnostics>({
     queryKey: ["diagnostics", "memory"],
-    queryFn: () => api.get("/api/v1/admin/diagnostics/memory"),
+    queryFn: () => api.get("/admin/diagnostics/memory"),
     refetchInterval: SLOW_POLL_MS,
     staleTime: SLOW_POLL_MS,
     retry: false,

@@ -667,7 +667,7 @@ function VideoCard({ video: initialVideo }: { video: VideoRow }) {
 
   const resetMutation = useMutation({
     mutationFn: () =>
-      api.post(`/api/v1/admin/videos/${video.id}/reset-for-reupload`) as Promise<{
+      api.post(`/admin/videos/${video.id}/reset-for-reupload`) as Promise<{
         ok: boolean; videoId: string; title: string;
         category: string | null; preacher: string | null; description: string;
       }>,
