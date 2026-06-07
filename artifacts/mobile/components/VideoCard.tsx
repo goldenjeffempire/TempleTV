@@ -17,6 +17,7 @@ import {
 import { Feather } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
 import type { Sermon } from "@/types";
+import { VideoLiveStatusBadge } from "@/components/LiveBadge";
 
 const PLACEHOLDER = require("@/assets/images/sermon-placeholder.png");
 
@@ -25,7 +26,7 @@ interface VideoCardProps {
   onPress: () => void;
   /** horizontal = list view, default = card/grid view */
   horizontal?: boolean;
-  /** show a live indicator badge */
+  /** show a live indicator badge (legacy — prefer sermon.youtubeLiveStatus) */
   showLiveBadge?: boolean;
 }
 
@@ -67,9 +68,12 @@ export const VideoCard = React.memo(function VideoCard({
             fadeDuration={0}
             progressiveRenderingEnabled
           />
-          {showLiveBadge && (
-            <View style={styles.liveBadge}>
-              <Text style={styles.liveText}>LIVE</Text>
+          {(sermon.youtubeLiveStatus || showLiveBadge) && (
+            <View style={styles.badgeTopLeft}>
+              {sermon.youtubeLiveStatus
+                ? <VideoLiveStatusBadge status={sermon.youtubeLiveStatus} size="small" />
+                : <View style={styles.liveBadge}><Text style={styles.liveText}>LIVE</Text></View>
+              }
             </View>
           )}
           {!!sermon.duration && (
@@ -136,9 +140,12 @@ export const VideoCard = React.memo(function VideoCard({
           fadeDuration={0}
           progressiveRenderingEnabled
         />
-        {showLiveBadge && (
-          <View style={styles.liveBadge}>
-            <Text style={styles.liveText}>LIVE</Text>
+        {(sermon.youtubeLiveStatus || showLiveBadge) && (
+          <View style={styles.badgeTopLeft}>
+            {sermon.youtubeLiveStatus
+              ? <VideoLiveStatusBadge status={sermon.youtubeLiveStatus} size="small" />
+              : <View style={styles.liveBadge}><Text style={styles.liveText}>LIVE</Text></View>
+            }
           </View>
         )}
         {!!sermon.duration && (
@@ -224,10 +231,12 @@ const styles = StyleSheet.create({
   cardPreacher: { fontSize: 11 },
 
   // Shared
-  liveBadge: {
+  badgeTopLeft: {
     position: "absolute",
     top: 6,
     left: 6,
+  },
+  liveBadge: {
     backgroundColor: "#ef4444",
     borderRadius: 4,
     paddingHorizontal: 6,

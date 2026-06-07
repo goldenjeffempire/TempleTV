@@ -73,6 +73,8 @@ const QueueRowSchema = z.object({
   scheduledAt: z.string().nullable(),
   /** Human-readable programming block label, e.g. "Sunday Morning Service". */
   scheduleLabel: z.string().nullable(),
+  /** Live badge status from managed_videos — "live" | "rebroadcast" | null. */
+  youtubeLiveStatus: z.enum(["live", "rebroadcast"]).nullable(),
 });
 
 /** Queue row optionally enriched with HLS + job error fields. */
@@ -80,6 +82,7 @@ type EnrichedQueueRow = typeof queueTable.$inferSelect & {
   transcodingStatus?: string | null | undefined;
   hlsMasterUrl?: string | null | undefined;
   transcodingError?: string | null | undefined;
+  youtubeLiveStatus?: "live" | "rebroadcast" | null | undefined;
 };
 
 function toDto(row: EnrichedQueueRow): z.infer<typeof QueueRowSchema> {
@@ -101,6 +104,7 @@ function toDto(row: EnrichedQueueRow): z.infer<typeof QueueRowSchema> {
     transcodingError: row.transcodingError ?? null,
     scheduledAt: row.scheduledAt ? row.scheduledAt.toISOString() : null,
     scheduleLabel: row.scheduleLabel ?? null,
+    youtubeLiveStatus: (row.youtubeLiveStatus as "live" | "rebroadcast" | null) ?? null,
   };
 }
 
@@ -180,18 +184,19 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
       // Enrich each row with HLS readiness data from managed_videos.
       // One batched IN query is far cheaper than N individual lookups.
       const videoIds = rows.filter((r) => r.videoId).map((r) => r.videoId!);
-      const hlsMap = new Map<string, { transcodingStatus: string | null; hlsMasterUrl: string | null; transcodingError: string | null }>();
+      const hlsMap = new Map<string, { transcodingStatus: string | null; hlsMasterUrl: string | null; transcodingError: string | null; youtubeLiveStatus: "live" | "rebroadcast" | null }>();
       if (videoIds.length > 0) {
         const vids = await db
           .select({
             id: videosTable.id,
             transcodingStatus: videosTable.transcodingStatus,
             hlsMasterUrl: videosTable.hlsMasterUrl,
+            youtubeLiveStatus: videosTable.youtubeLiveStatus,
           })
           .from(videosTable)
           .where(inArray(videosTable.id, videoIds));
         for (const v of vids) {
-          hlsMap.set(v.id, { transcodingStatus: v.transcodingStatus, hlsMasterUrl: v.hlsMasterUrl, transcodingError: null });
+          hlsMap.set(v.id, { transcodingStatus: v.transcodingStatus, hlsMasterUrl: v.hlsMasterUrl, transcodingError: null, youtubeLiveStatus: (v.youtubeLiveStatus as "live" | "rebroadcast" | null) ?? null });
         }
 
         // For items whose transcoding_status is 'failed', fetch the last error

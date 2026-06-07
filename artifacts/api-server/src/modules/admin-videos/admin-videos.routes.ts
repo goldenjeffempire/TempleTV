@@ -72,6 +72,13 @@ const VideoRowSchema = z.object({
    * Use this field (not regex on errorMessage) to branch on failure type.
    */
   transcodingErrorCode: z.string().nullable(),
+  /**
+   * YouTube live broadcast status for this video.
+   *   'live'         — stream is actively airing on YouTube right now.
+   *   'rebroadcast'  — stream has ended; video is available as a VOD/replay.
+   *   null           — not applicable (non-YouTube) or never went live.
+   */
+  youtubeLiveStatus: z.enum(["live", "rebroadcast"]).nullable(),
 });
 
 const ListQuerySchema = z.object({
@@ -155,6 +162,9 @@ function toDto(row: typeof videos.$inferSelect): z.infer<typeof VideoRowSchema> 
     sourceAvailable,
     transcodingErrorMessage: row.transcodingErrorMessage ?? null,
     transcodingErrorCode: row.transcodingErrorCode ?? null,
+    youtubeLiveStatus: (row.youtubeLiveStatus === "live" || row.youtubeLiveStatus === "rebroadcast")
+      ? row.youtubeLiveStatus as "live" | "rebroadcast"
+      : null,
   };
 }
 

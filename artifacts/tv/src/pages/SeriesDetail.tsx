@@ -18,6 +18,7 @@ interface EpisodeEntry {
   viewCount: number;
   category: string;
   videoId: string;
+  youtubeLiveStatus?: "live" | "rebroadcast" | null;
 }
 
 interface SeriesDetailProps {
@@ -179,19 +180,32 @@ function EpisodeCard({
 
       {/* Text */}
       <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "center", gap: 3 }}>
-        <div
-          style={{
-            fontSize: 13,
-            fontWeight: 600,
-            color: focused ? "#e9d5ff" : "rgba(255,255,255,0.82)",
-            lineHeight: 1.3,
-            overflow: "hidden",
-            display: "-webkit-box",
-            WebkitLineClamp: 2,
-            WebkitBoxOrient: "vertical" as const,
-          }}
-        >
-          {ep.title ?? `Episode ${ep.episodeNumber}`}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <div
+            style={{
+              fontSize: 13,
+              fontWeight: 600,
+              color: focused ? "#e9d5ff" : "rgba(255,255,255,0.82)",
+              lineHeight: 1.3,
+              overflow: "hidden",
+              display: "-webkit-box",
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: "vertical" as const,
+            }}
+          >
+            {ep.title ?? `Episode ${ep.episodeNumber}`}
+          </div>
+          {ep.youtubeLiveStatus === "live" && (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "#dc2626", borderRadius: 20, padding: "1px 7px", fontSize: 9, fontWeight: 700, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase", flexShrink: 0 }}>
+              <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#fff", animation: "yt-live-pulse 1.4s ease-in-out infinite", flexShrink: 0 }} />
+              LIVE
+            </span>
+          )}
+          {ep.youtubeLiveStatus === "rebroadcast" && (
+            <span style={{ display: "inline-flex", alignItems: "center", background: "#d97706", borderRadius: 20, padding: "1px 7px", fontSize: 9, fontWeight: 700, color: "#fff", letterSpacing: "0.1em", textTransform: "uppercase", flexShrink: 0 }}>
+              REBROADCAST
+            </span>
+          )}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           {ep.duration && (

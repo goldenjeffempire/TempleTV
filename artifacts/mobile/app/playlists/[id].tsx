@@ -22,6 +22,7 @@ import { router, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { usePlaylistDetail, type PlaylistVideo } from "@/hooks/usePlaylists";
+import { VideoLiveStatusBadge } from "@/components/LiveBadge";
 
 const PLACEHOLDER = require("@/assets/images/sermon-placeholder.png");
 
@@ -83,6 +84,11 @@ function EpisodeCard({
         <View style={styles.playOverlay}>
           <Feather name="play" size={14} color="#fff" />
         </View>
+        {!!episode.youtubeLiveStatus && (
+          <View style={{ position: "absolute", top: 4, left: 4 }}>
+            <VideoLiveStatusBadge status={episode.youtubeLiveStatus} size="small" />
+          </View>
+        )}
       </View>
 
       {/* Info */}

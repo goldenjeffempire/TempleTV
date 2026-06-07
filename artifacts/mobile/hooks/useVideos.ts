@@ -132,6 +132,7 @@ function apiVideoToSermon(v: ApiVideo, fallbackIndex: number): Sermon {
     videoSource: isLocal ? "local" : "youtube",
     hlsMasterUrl: v.hlsMasterUrl ?? undefined,
     localVideoUrl: v.localVideoUrl ?? undefined,
+    youtubeLiveStatus: v.youtubeLiveStatus ?? null,
   };
 }
 

@@ -231,6 +231,12 @@ video {
 }
 .live-pulse { animation: pulse-live 1.4s ease-in-out infinite; }
 
+/* Inline-style animation used by SermonCard live badge dot */
+@keyframes yt-live-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.35; }
+}
+
 /* LiveHero title entry */
 @keyframes tv-live-title-in {
   from { opacity: 0; transform: translateY(8px); }

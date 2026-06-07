@@ -35,6 +35,39 @@ export function LiveBadge({ size = "medium" }: { size?: "small" | "medium" | "la
   );
 }
 
+/**
+ * RebroadcastBadge — amber static pill shown when a live stream has ended
+ * and the video is now a VOD/replay. Paired with LiveBadge for the full
+ * YouTube Live Status badge system.
+ */
+export function RebroadcastBadge({ size = "medium" }: { size?: "small" | "medium" | "large" }) {
+  const fontSize = size === "small" ? 9 : size === "large" ? 14 : 11;
+  const paddingH = size === "small" ? 7 : size === "large" ? 14 : 10;
+  const paddingV = size === "small" ? 2 : size === "large" ? 7 : 4;
+
+  return (
+    <View style={[styles.rebroadcastBadge, { paddingHorizontal: paddingH, paddingVertical: paddingV }]}>
+      <Text style={[styles.rebroadcastText, { fontSize }]}>REBROADCAST</Text>
+    </View>
+  );
+}
+
+/**
+ * VideoLiveStatusBadge — renders LiveBadge or RebroadcastBadge based on status.
+ * Renders nothing when status is null/undefined.
+ */
+export function VideoLiveStatusBadge({
+  status,
+  size = "small",
+}: {
+  status?: "live" | "rebroadcast" | null;
+  size?: "small" | "medium" | "large";
+}) {
+  if (status === "live") return <LiveBadge size={size} />;
+  if (status === "rebroadcast") return <RebroadcastBadge size={size} />;
+  return null;
+}
+
 const styles = StyleSheet.create({
   badge: {
     flexDirection: "row",
@@ -50,5 +83,14 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontFamily: "Inter_700Bold",
     letterSpacing: 1.5,
+  },
+  rebroadcastBadge: {
+    backgroundColor: "#D97706",
+    borderRadius: 20,
+  },
+  rebroadcastText: {
+    color: "#FFFFFF",
+    fontFamily: "Inter_700Bold",
+    letterSpacing: 1.2,
   },
 });

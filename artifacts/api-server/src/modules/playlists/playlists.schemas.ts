@@ -22,6 +22,7 @@ export const PlaylistVideoSchema = z.object({
   category: z.string(),
   sortOrder: z.number().int(),
   addedAt: z.string(),
+  youtubeLiveStatus: z.enum(["live", "rebroadcast"]).nullable().optional(),
 });
 
 export const PlaylistDetailSchema = PlaylistSchema.extend({

@@ -6,6 +6,7 @@ import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
 import { GlassCard } from "@/components/GlassCard";
 import type { Sermon } from "@/types";
+import { VideoLiveStatusBadge } from "@/components/LiveBadge";
 
 const PLACEHOLDER = require("@/assets/images/sermon-placeholder.png");
 
@@ -114,11 +115,15 @@ export const SermonCard = memo(function SermonCard({
             <Text style={styles.durationBadgeText}>{sermon.duration}</Text>
           </View>
         )}
-        {isLocal && (
+        {sermon.youtubeLiveStatus ? (
+          <View style={styles.liveStatusBadgeThumb}>
+            <VideoLiveStatusBadge status={sermon.youtubeLiveStatus} size="small" />
+          </View>
+        ) : isLocal ? (
           <View style={[styles.localBadgeThumb, { backgroundColor: c.primary }]}>
             <Feather name="upload" size={9} color="#FFF" />
           </View>
-        )}
+        ) : null}
         {showProgress && (
           <View style={[styles.progressTrack, { backgroundColor: "rgba(255,255,255,0.2)" }]}>
             <View
@@ -165,6 +170,11 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontSize: 11,
     fontFamily: "Inter_500Medium",
+  },
+  liveStatusBadgeThumb: {
+    position: "absolute",
+    top: 6,
+    left: 6,
   },
   localBadgeThumb: {
     position: "absolute",

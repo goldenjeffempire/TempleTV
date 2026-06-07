@@ -122,6 +122,64 @@ export const SermonCard = React.memo(function SermonCard({
         }}
       />
 
+      {/* Live status badge — top-left pill */}
+      {sermon.youtubeLiveStatus === "live" && (
+        <div
+          aria-label="Live broadcast"
+          style={{
+            position: "absolute",
+            top: 8,
+            left: 8,
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+            background: "#dc2626",
+            borderRadius: 20,
+            padding: "3px 9px",
+            fontSize: "clamp(8px, 0.55vw, 10px)",
+            fontWeight: 700,
+            color: "#fff",
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+            zIndex: 2,
+          }}
+        >
+          <span
+            aria-hidden
+            style={{
+              width: 7,
+              height: 7,
+              borderRadius: "50%",
+              background: "#fff",
+              animation: "yt-live-pulse 1.4s ease-in-out infinite",
+              flexShrink: 0,
+            }}
+          />
+          LIVE
+        </div>
+      )}
+      {sermon.youtubeLiveStatus === "rebroadcast" && (
+        <div
+          aria-label="Rebroadcast"
+          style={{
+            position: "absolute",
+            top: 8,
+            left: 8,
+            background: "#d97706",
+            borderRadius: 20,
+            padding: "3px 9px",
+            fontSize: "clamp(8px, 0.55vw, 10px)",
+            fontWeight: 700,
+            color: "#fff",
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+            zIndex: 2,
+          }}
+        >
+          REBROADCAST
+        </div>
+      )}
+
       {/* Duration badge — top-right glass pill */}
       {durationLabel && (
         <div

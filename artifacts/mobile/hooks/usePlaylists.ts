@@ -52,6 +52,7 @@ export interface PlaylistVideo {
   category: string;
   preacher: string;
   publishedAt: string;
+  youtubeLiveStatus?: "live" | "rebroadcast" | null;
 }
 
 export interface PlaylistDetail extends PlaylistItem {

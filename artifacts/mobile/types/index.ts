@@ -14,6 +14,13 @@ export interface Sermon {
   hlsMasterUrl?: string;
   /** Raw upload/legacy URL. Prefer hlsMasterUrl when both are present. Populated by useVideos as hlsMasterUrl ?? localVideoUrl. */
   localVideoUrl?: string;
+  /**
+   * YouTube live broadcast status for this video.
+   * 'live'        — stream is actively airing on YouTube right now (pulsing red badge).
+   * 'rebroadcast' — stream has ended; video is a VOD/replay (amber badge).
+   * null/undefined — not applicable (non-YouTube video or never went live).
+   */
+  youtubeLiveStatus?: "live" | "rebroadcast" | null;
 }
 
 export type SermonCategory =

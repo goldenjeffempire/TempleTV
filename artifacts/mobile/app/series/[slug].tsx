@@ -39,6 +39,7 @@ interface Episode {
   preacher: string;
   publishedAt: string;
   videoSource: "youtube" | "local" | "upload" | null;
+  youtubeLiveStatus?: "live" | "rebroadcast" | null;
 }
 
 interface SeriesDetail {
@@ -67,6 +68,7 @@ function episodeToSermon(ep: Episode): Sermon {
     date: ep.publishedAt?.slice(0, 10) ?? "",
     videoSource: (ep.videoSource === "local" || ep.videoSource === "upload") ? "local" : "youtube",
     hlsMasterUrl: ep.hlsMasterUrl ?? undefined,
+    youtubeLiveStatus: ep.youtubeLiveStatus ?? null,
   };
 }
 

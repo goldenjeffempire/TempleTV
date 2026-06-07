@@ -1,7 +1,10 @@
 import type { FastifyInstance } from "fastify";
+import { eq, desc } from "drizzle-orm";
 import { env } from "../../config/env.js";
 import { logger } from "../../infrastructure/logger.js";
 import { trackQuota } from "../youtube-sync/youtube-sync.service.js";
+import { db, schema } from "../../infrastructure/db.js";
+import { ytPoller } from "../youtube-live/youtube-live.poller.js";
 
 /**
  * YouTube channel content proxy for @TEMPLETVJCTM.
@@ -349,4 +352,82 @@ export async function youtubeChannelRoutes(app: FastifyInstance) {
       reply.code(502).send({ error: "Failed to load YouTube videos", detail: message });
     }
   });
+
+  /**
+   * GET /api/v1/youtube/live-status
+   * GET /api/youtube/live-status  (dual-prefix)
+   *
+   * Enriched live-status — returns real-time poller state PLUS the DB-persisted
+   * `youtubeLiveStatus` value for the current (or most-recent) live video.
+   * Cached 30 s so clients can poll safely without hammering the DB.
+   *
+   * Response shape:
+   *   {
+   *     isLive: boolean,
+   *     videoId: string | null,
+   *     title: string | null,
+   *     viewerCount: number | null,
+   *     checkedAt: string | null,
+   *     detectionMethod: string | null,
+   *     dbStatus: "live" | "rebroadcast" | null,
+   *     dbVideoId: string | null,
+   *   }
+   */
+  app.get(
+    "/live-status",
+    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+    async (_req, reply) => {
+      reply.header("Cache-Control", "public, max-age=30, s-maxage=30");
+      const s = ytPoller.getState();
+
+      let dbStatus: "live" | "rebroadcast" | null = null;
+      let dbVideoId: string | null = null;
+
+      try {
+        if (s.videoId) {
+          // Look up the DB row for the currently-live video
+          const rows = await db
+            .select({
+              youtubeLiveStatus: schema.videosTable.youtubeLiveStatus,
+              youtubeId: schema.videosTable.youtubeId,
+            })
+            .from(schema.videosTable)
+            .where(eq(schema.videosTable.youtubeId, s.videoId))
+            .limit(1);
+          if (rows.length > 0) {
+            dbStatus = (rows[0].youtubeLiveStatus as "live" | "rebroadcast" | null) ?? null;
+            dbVideoId = rows[0].youtubeId ?? null;
+          }
+        } else {
+          // Not currently live — return the most recently transitioned rebroadcast row
+          const rows = await db
+            .select({
+              youtubeLiveStatus: schema.videosTable.youtubeLiveStatus,
+              youtubeId: schema.videosTable.youtubeId,
+            })
+            .from(schema.videosTable)
+            .where(eq(schema.videosTable.youtubeLiveStatus, "rebroadcast"))
+            .orderBy(desc(schema.videosTable.youtubeLiveStatusUpdatedAt))
+            .limit(1);
+          if (rows.length > 0) {
+            dbStatus = "rebroadcast";
+            dbVideoId = rows[0].youtubeId ?? null;
+          }
+        }
+      } catch {
+        // DB error is non-fatal — return poller state only
+      }
+
+      return {
+        isLive: s.isLive,
+        videoId: s.videoId,
+        title: s.title,
+        viewerCount: s.viewerCount,
+        checkedAt: s.checkedAt,
+        detectionMethod: s.detectionMethod,
+        dbStatus,
+        dbVideoId,
+      };
+    },
+  );
 }

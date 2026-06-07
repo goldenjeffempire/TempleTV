@@ -35,6 +35,7 @@ import {
 import { formatDistanceToNow, format } from "date-fns";
 import { useSSEEvent } from "@/contexts/sse-context";
 import { uploadQueue } from "@/lib/upload-queue";
+import { LiveStatusBadge } from "@/components/live-status-badge";
 
 const CHANNEL_URL = "https://www.youtube.com/@TEMPLETVJCTM";
 
@@ -97,6 +98,7 @@ interface VideoRow {
   transcodingStatus?: string | null;
   transcodingErrorCode?: string | null;
   transcodingErrorMessage?: string | null;
+  youtubeLiveStatus?: "live" | "rebroadcast" | null;
 }
 
 interface VideosResponse {
@@ -237,6 +239,11 @@ export default function LibraryPage() {
     void qc.invalidateQueries({ queryKey: ["youtube-sync-status"] });
     void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
     void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+  });
+
+  // Refresh live-status badges in real time without a full page reload
+  useSSEEvent("youtube-live-status-changed", () => {
+    void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
   });
 
   const isSyncing = syncMutation.isPending || (status?.syncInProgress ?? false);
@@ -822,6 +829,12 @@ function VideoCard({ video: initialVideo }: { video: VideoRow }) {
           {video.featured && (
             <span className="absolute top-1.5 left-1.5 bg-amber-500/90 text-white p-0.5 rounded">
               <Star size={10} className="fill-white" />
+            </span>
+          )}
+          {/* Live / Rebroadcast status badge */}
+          {video.youtubeLiveStatus && (
+            <span className="absolute bottom-6 left-1.5">
+              <LiveStatusBadge status={video.youtubeLiveStatus} size="sm" />
             </span>
           )}
           {/* Metadata-locked indicator */}

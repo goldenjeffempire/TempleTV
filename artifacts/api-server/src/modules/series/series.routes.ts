@@ -94,9 +94,15 @@ export async function seriesRoutes(app: FastifyInstance) {
 
       if (!series) return reply.code(404).send({ error: "Series not found" });
 
-      const episodes = await db
-        .select()
+      // Left-join managed_videos to carry the current youtubeLiveStatus into
+      // each episode row — it changes in real time, so it must be read live.
+      const episodeRows = await db
+        .select({
+          ep: schema.seriesEpisodesTable,
+          youtubeLiveStatus: schema.videosTable.youtubeLiveStatus,
+        })
         .from(schema.seriesEpisodesTable)
+        .leftJoin(schema.videosTable, eq(schema.videosTable.id, schema.seriesEpisodesTable.videoId))
         .where(eq(schema.seriesEpisodesTable.seriesId, series.id))
         .orderBy(asc(schema.seriesEpisodesTable.episodeNumber));
 
@@ -106,9 +112,10 @@ export async function seriesRoutes(app: FastifyInstance) {
         updatedAt: series.updatedAt.toISOString(),
         startedAt: series.startedAt?.toISOString() ?? null,
         completedAt: series.completedAt?.toISOString() ?? null,
-        episodes: episodes.map((e) => ({
-          ...e,
-          addedAt: e.addedAt.toISOString(),
+        episodes: episodeRows.map(({ ep, youtubeLiveStatus }) => ({
+          ...ep,
+          addedAt: ep.addedAt.toISOString(),
+          youtubeLiveStatus: (youtubeLiveStatus as "live" | "rebroadcast" | null) ?? null,
         })),
       });
     },

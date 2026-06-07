@@ -134,6 +134,7 @@ const KNOWN_EVENTS = [
   "live-ingest-stream-started", "live-ingest-stream-stopped",
   "broadcast-v2-stall", "broadcast-v2-queue-issues",
   "feedback-received", "youtube-quota-warning",
+  "youtube-live-status-changed",
 ];
 
 function summarize(event: string, data: unknown): string | null {
@@ -170,6 +171,12 @@ function summarize(event: string, data: unknown): string | null {
     case "youtube-quota-warning": return `YouTube quota warning: ${String(d.percent ?? "")}% used`;
     case "youtube-quota-exhausted": return "YouTube quota exhausted";
     case "feedback-received": return "New user feedback received";
+    case "youtube-live-status-changed": {
+      const status = d.status as string;
+      if (status === "live") return "YouTube stream went LIVE";
+      if (status === "rebroadcast") return "YouTube stream ended — now in REBROADCAST";
+      return "YouTube live status changed";
+    }
     default: return event;
   }
 }

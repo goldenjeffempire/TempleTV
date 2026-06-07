@@ -203,4 +203,5 @@ export const SAFE_VIDEO_COLS = {
   // in the SQL until the migration adds them.
   transcodingErrorMessage: sql<string | null>`NULL`,
   transcodingErrorCode:    sql<string | null>`NULL`,
+  youtubeLiveStatus:       sql<string | null>`NULL`,
 } as const;

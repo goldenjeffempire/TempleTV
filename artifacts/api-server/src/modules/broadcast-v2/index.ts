@@ -286,7 +286,7 @@ export function ensureBroadcastV2Started(): Promise<void> {
         logger.warn({ err }, "[broadcast-v2] startup: reEnableAllSuspended failed (non-fatal)"),
       )
       .then(() => broadcastOrchestrator.start())
-      .then(() => {
+      .then(async () => {
         lastStartError = null;
         // Run an initial queue integrity validation on successful boot
         // so operators see any pre-existing issues immediately in /diagnostics.
@@ -301,6 +301,12 @@ export function ensureBroadcastV2Started(): Promise<void> {
           installYouTubeAutoOverride();
         } catch (err) {
           logger.warn({ err }, "[broadcast-v2] YouTube auto-override install failed (non-fatal)");
+        }
+        try {
+          const { installYoutubeLiveStatusService } = await import("../youtube-live/live-status.service.js");
+          installYoutubeLiveStatusService();
+        } catch (err) {
+          logger.warn({ err }, "[broadcast-v2] YouTube live-status service install failed (non-fatal)");
         }
       })
       .catch((err) => {

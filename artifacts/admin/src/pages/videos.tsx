@@ -32,6 +32,7 @@ import {
   ArrowUpDown, SlidersHorizontal, Zap, Clapperboard, Globe, AlertTriangle,
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
+import { LiveStatusBadge } from "@/components/live-status-badge";
 import { uploadQueue, useUploadQueue, formatBytes, titleFromFilename } from "@/lib/upload-queue";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -69,6 +70,7 @@ interface AdminVideo {
    * null when the video has not failed or was successfully re-queued.
    */
   transcodingErrorMessage: string | null;
+  youtubeLiveStatus: "live" | "rebroadcast" | null;
 }
 
 interface VideoListResponse {
@@ -234,6 +236,9 @@ export default function VideosPage() {
     refetchInterval: (query) => query.state.status === "error" ? 15_000 : false,
   });
 
+  useSSEEvent("youtube-live-status-changed", () => {
+    void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+  });
   useSSEEvent("videos-library-updated", (payload) => {
     void qc.invalidateQueries({ queryKey: ["admin-videos"] });
     const p = payload as { reason?: string } | null;
@@ -974,6 +979,9 @@ export default function VideosPage() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <p className="font-medium text-sm truncate">{v.title || "Untitled"}</p>
+                      {v.youtubeLiveStatus && (
+                        <LiveStatusBadge status={v.youtubeLiveStatus} size="sm" />
+                      )}
                       {v.featured && <Star size={11} className="text-amber-500 fill-amber-500 flex-shrink-0" />}
                       {v.metadataLocked && (
                         <span title="Metadata locked — YouTube sync won't overwrite">

@@ -26,7 +26,10 @@ function toDto(row: typeof playlists.$inferSelect, videoCount = 0) {
   };
 }
 
-function toVideoDto(row: typeof playlistVideos.$inferSelect) {
+function toVideoDto(
+  row: typeof playlistVideos.$inferSelect,
+  youtubeLiveStatus: "live" | "rebroadcast" | null = null,
+) {
   return {
     id: row.id,
     playlistId: row.playlistId,
@@ -41,6 +44,7 @@ function toVideoDto(row: typeof playlistVideos.$inferSelect) {
     category: row.category ?? "",
     sortOrder: row.sortOrder,
     addedAt: row.addedAt.toISOString(),
+    youtubeLiveStatus,
   };
 }
 
@@ -66,13 +70,27 @@ export const playlistsService = {
     const [head] = await db.select().from(playlists).where(eq(playlists.id, id)).limit(1);
     if (!head) throw new NotFoundError("Playlist not found");
 
-    const items = await db
-      .select()
+    // Left-join managed_videos to surface the current youtubeLiveStatus for
+    // each playlist entry (it changes in real time, so it must be read live
+    // rather than snapshotted at addVideo time).
+    const rows = await db
+      .select({
+        pv: playlistVideos,
+        youtubeLiveStatus: videos.youtubeLiveStatus,
+      })
       .from(playlistVideos)
+      .leftJoin(videos, eq(videos.id, playlistVideos.videoId))
       .where(eq(playlistVideos.playlistId, id))
       .orderBy(asc(playlistVideos.sortOrder), asc(playlistVideos.addedAt));
 
-    return { ...toDto(head, items.length), videos: items.map(toVideoDto) };
+    const items = rows.map((r) =>
+      toVideoDto(
+        r.pv,
+        (r.youtubeLiveStatus as "live" | "rebroadcast" | null) ?? null,
+      ),
+    );
+
+    return { ...toDto(head, items.length), videos: items };
   },
 
   async create(body: z.infer<typeof CreatePlaylistBodySchema>) {

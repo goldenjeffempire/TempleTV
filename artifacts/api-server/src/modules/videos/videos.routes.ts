@@ -54,6 +54,7 @@ const VIDEO_COLS = {
   videoSource:  videos.videoSource,
   localVideoUrl: videos.localVideoUrl,
   hlsMasterUrl: videos.hlsMasterUrl,
+  youtubeLiveStatus: sql<string | null>`CASE WHEN ${videos.youtubeLiveStatus} IN ('live','rebroadcast') THEN ${videos.youtubeLiveStatus} ELSE NULL END`,
 } as const;
 
 const PublicVideoSchema = z.object({
@@ -71,6 +72,7 @@ const PublicVideoSchema = z.object({
   videoSource: z.string(),
   localVideoUrl: z.string().nullable(),
   hlsMasterUrl: z.string().nullable(),
+  youtubeLiveStatus: z.enum(["live", "rebroadcast"]).nullable(),
 });
 
 const ListQuerySchema = z.object({
@@ -137,9 +139,12 @@ type VideoDtoRow = Pick<typeof videos.$inferSelect,
   "id" | "youtubeId" | "title" | "description" | "thumbnailUrl" | "duration" |
   "category" | "preacher" | "publishedAt" | "importedAt" | "viewCount" |
   "videoSource" | "localVideoUrl" | "hlsMasterUrl"
->;
+> & { youtubeLiveStatus?: string | null };
 
 function toDto(v: VideoDtoRow) {
+  const liveStatus = v.youtubeLiveStatus === "live" || v.youtubeLiveStatus === "rebroadcast"
+    ? v.youtubeLiveStatus as "live" | "rebroadcast"
+    : null;
   return {
     id: v.id,
     youtubeId: v.youtubeId,
@@ -155,6 +160,7 @@ function toDto(v: VideoDtoRow) {
     videoSource: v.videoSource,
     localVideoUrl: v.localVideoUrl,
     hlsMasterUrl: v.hlsMasterUrl,
+    youtubeLiveStatus: liveStatus,
   };
 }
 

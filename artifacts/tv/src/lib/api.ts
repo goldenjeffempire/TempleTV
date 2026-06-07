@@ -51,6 +51,13 @@ export interface VideoItem {
   localVideoUrl: string | null;
   /** Category as set by the admin (e.g. "sermon", "music"). Used directly for local uploads. */
   apiCategory: string;
+  /**
+   * YouTube live broadcast status.
+   * 'live'        — stream is actively airing on YouTube right now.
+   * 'rebroadcast' — stream ended; video is a VOD/replay.
+   * null          — not applicable.
+   */
+  youtubeLiveStatus?: "live" | "rebroadcast" | null;
 }
 
 /**
@@ -130,6 +137,7 @@ interface DbVideo {
   videoSource: string;
   localVideoUrl: string | null;
   hlsMasterUrl: string | null;
+  youtubeLiveStatus?: "live" | "rebroadcast" | null;
 }
 
 function dbVideoToVideoItem(v: DbVideo): VideoItem {
@@ -146,6 +154,7 @@ function dbVideoToVideoItem(v: DbVideo): VideoItem {
     videoSource: isLocal ? "local" : "youtube",
     localVideoUrl: v.hlsMasterUrl ?? v.localVideoUrl ?? null,
     apiCategory: v.category ?? "",
+    youtubeLiveStatus: v.youtubeLiveStatus ?? null,
   };
 }
 

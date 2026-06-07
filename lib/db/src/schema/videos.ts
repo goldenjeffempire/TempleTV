@@ -81,6 +81,18 @@ export const videosTable = pgTable("managed_videos", {
   // Set automatically to true for all new uploads. Admin can set to false
   // to publish the video to the public library.
   broadcastOnly: boolean("broadcast_only").notNull().default(false),
+  // ── YouTube Live Status ───────────────────────────────────────────────────
+  // Tracks whether a YouTube-sourced Live Service video is currently airing
+  // live on YouTube or has ended and is in rebroadcast state.
+  //   'live'         — actively streaming on YouTube right now.
+  //   'rebroadcast'  — stream has ended; video is a VOD/replay.
+  //   null           — not applicable (non-YouTube video, or never went live).
+  // Written by live-status.service.ts which subscribes to ytPoller events.
+  // A background sweep every 2 min heals stale 'live' rows whose stream has ended.
+  youtubeLiveStatus: text("youtube_live_status"),
+  // UTC timestamp when youtube_live_status was last updated.
+  // Enables the background sweep to detect stale 'live' rows and heal them.
+  youtubeLiveStatusUpdatedAt: timestamp("youtube_live_status_updated_at", { withTimezone: true }),
 }, (table) => [
   index("idx_managed_videos_imported_at").on(table.importedAt),
   index("idx_managed_videos_category").on(table.category),

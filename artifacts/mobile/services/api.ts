@@ -72,6 +72,7 @@ export interface ApiVideo {
   videoSource: "youtube" | "local";
   localVideoUrl: string | null;
   hlsMasterUrl: string | null;
+  youtubeLiveStatus?: "live" | "rebroadcast" | null;
 }
 
 export interface VideosResponse {
@@ -493,6 +494,7 @@ export async function fetchPlaylistById(id: string): Promise<ApiPlaylistDetail> 
     videoSource: (v.youtubeId ? "youtube" : "local") as ApiVideo["videoSource"],
     localVideoUrl: null,
     hlsMasterUrl: null,
+    youtubeLiveStatus: (v as any).youtubeLiveStatus ?? null,
   }));
 
   return { ...playlist, videos };

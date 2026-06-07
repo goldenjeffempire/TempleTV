@@ -81,6 +81,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { LiveStatusBadge } from "@/components/live-status-badge";
 import {
   ResponsiveContainer,
   ComposedChart,
@@ -131,6 +132,8 @@ interface BroadcastQueueRow {
   scheduledAt: string | null;
   /** Human-readable programming block label. */
   scheduleLabel: string | null;
+  /** Real-time YouTube live status. null = not applicable / not live. */
+  youtubeLiveStatus: "live" | "rebroadcast" | null;
 }
 
 interface ScheduleUpdate {
@@ -540,7 +543,12 @@ const SortableQueueItem = memo(function SortableQueueItem({
       </div>
 
       <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-medium">{item.title}</div>
+        <div className="flex items-center gap-1.5">
+          <span className="truncate text-sm font-medium">{item.title}</span>
+          {item.youtubeLiveStatus && (
+            <LiveStatusBadge status={item.youtubeLiveStatus} size="sm" />
+          )}
+        </div>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span>{fmtDuration(Math.round(item.durationSecs))}</span>
           {secondsUntilAir !== null && !isCurrent && item.isActive && (
