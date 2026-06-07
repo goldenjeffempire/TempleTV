@@ -647,6 +647,34 @@ export async function ensureRuntimeIndexes(): Promise<void> {
       logger.warn({ err }, "db: managed_videos_transcoding_status_check constraint skipped (non-fatal — existing rows may violate the enum)");
     });
 
+    // ── refresh_tokens: composite index for changePassword / logout-all ──────
+    // changePassword() and logout-all both run:
+    //   WHERE user_id = $1 AND revoked_at IS NULL
+    // Without this composite index Postgres falls back to the single-column
+    // refresh_tokens_user_id_idx and post-filters on revoked_at — O(sessions)
+    // per call.  On accounts with many active sessions this causes measurable
+    // slowdowns on every password-change or full logout.
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS refresh_tokens_user_id_revoked_at_idx
+        ON refresh_tokens (user_id, revoked_at)
+    `);
+
+    // ── password_reset_tokens: index on user_id ────────────────────────────
+    // forgotPassword() queries: WHERE user_id = $1 AND expires_at > NOW()
+    // Without this index every forgot-password request scans the full table.
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user_id
+        ON password_reset_tokens (user_id)
+    `);
+
+    // ── scheduled_notifications: index on video_id ────────────────────────
+    // Admin "notifications for this video" queries and cascade-delete lookups
+    // both filter on video_id.  Without the index they degrade to full scans.
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_scheduled_notifications_video_id
+        ON scheduled_notifications (video_id)
+    `);
+
     logger.info("db: functional and partial indexes ensured");
   } catch (err) {
     // Non-fatal — the search falls back to plainto_tsquery without the index

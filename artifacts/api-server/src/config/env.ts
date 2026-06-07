@@ -281,19 +281,6 @@ const Env = z.object({
   // transcodingStatus='failed' and the session resets to 'uploading' so the
   // operator can retry finalization from the upload queue panel.
   ASSEMBLY_WATCHDOG_MS: z.coerce.number().int().positive().default(90 * 60_000),
-  // When true (default), the transcoder dispatcher periodically auto-retries
-  // failed jobs whose error code is NOT terminal (i.e. not CORRUPT_SOURCE or
-  // SOURCE_MISSING). DISK_FULL failures and transient FFmpeg exits are retried
-  // automatically every TRANSCODER_AUTO_RETRY_INTERVAL_MS without operator action.
-  // Set to "false" or "0" to require manual retry for all failures.
-  TRANSCODER_AUTO_RETRY_FAILED: z
-    .union([z.boolean(), z.string()])
-    .transform((v) => v === true || v === "true" || v === "1")
-    .default(true),
-  // How often (ms) the auto-retry sweep runs to re-queue recoverable failed jobs.
-  // Default 30 minutes. Only applies when TRANSCODER_AUTO_RETRY_FAILED=true.
-  TRANSCODER_AUTO_RETRY_INTERVAL_MS: z.coerce.number().int().positive().default(30 * 60_000),
-
   // ── SMTP / email ────────────────────────────────────────────────────────
   // Non-sensitive connection params (set as plain env vars).
   // SMTP_PASS must be provided as a secret — it is never logged.
