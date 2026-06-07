@@ -50,6 +50,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { BroadcastUploadPanel } from "@/components/broadcast/BroadcastUploadPanel";
+import { uploadQueue } from "@/lib/upload-queue";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
@@ -483,6 +484,9 @@ interface SortableItemProps {
   /** Re-probe duration via ffprobe for items stuck at 1800 s placeholder. */
   onReprobe: (itemId: string) => void;
   isReprobing: boolean;
+  /** Re-upload: reset CORRUPT_SOURCE/SOURCE_MISSING and open file picker. */
+  onReupload: (videoId: string) => void;
+  isReuploading: boolean;
 }
 
 const SortableQueueItem = memo(function SortableQueueItem({
@@ -504,6 +508,8 @@ const SortableQueueItem = memo(function SortableQueueItem({
   secondsUntilAir,
   onReprobe,
   isReprobing,
+  onReupload,
+  isReuploading,
 }: SortableItemProps) {
   const {
     attributes,
@@ -694,6 +700,22 @@ const SortableQueueItem = memo(function SortableQueueItem({
                   >
                     <RotateCw className={`h-2.5 w-2.5 ${isRetryingHls ? "animate-spin" : ""}`} />
                     Retry
+                  </button>
+                )}
+                {/* Re-upload: only for terminal error codes where the source file is gone/corrupt */}
+                {item.videoId && isTerminal && (
+                  <button
+                    onClick={() => onReupload(item.videoId!)}
+                    disabled={isReuploading}
+                    className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-blue-700 ring-1 ring-blue-300 hover:bg-blue-50 disabled:opacity-50 dark:text-blue-400 dark:ring-blue-700 dark:hover:bg-blue-950/30"
+                    title={
+                      item.transcodingErrorCode === "CORRUPT_SOURCE"
+                        ? "The original recording was corrupt. Click to clear the failure state and pick a replacement video file to upload."
+                        : "The source file is missing from storage. Click to clear the failure state and pick a replacement video file to upload."
+                    }
+                  >
+                    <Upload className={`h-2.5 w-2.5 ${isReuploading ? "animate-pulse" : ""}`} />
+                    Re-upload
                   </button>
                 )}
               </div>
@@ -1016,6 +1038,53 @@ function BroadcastV2PageInner() {
       toast.error(err instanceof HttpError ? err.message : "Failed to retry HLS transcoding.");
     },
   });
+
+  // Re-upload: reset a CORRUPT_SOURCE/SOURCE_MISSING video so the operator
+  // can supply a fresh source file. The hidden file input below triggers the
+  // browser picker; once a file is selected the handler calls reset-for-reupload
+  // (which clears objectPath + transcodingStatus) then enqueues the new file.
+  const reuploadFileInputRef = useRef<HTMLInputElement | null>(null);
+  const reuploadVideoIdRef = useRef<string | null>(null);
+  const resetForReuploadMutation = useMutation({
+    mutationFn: (videoId: string) =>
+      api.post<{ ok: true; videoId: string; title: string; category: string | null; preacher: string | null; description: string }>(
+        `/admin/videos/${videoId}/reset-for-reupload`,
+        {},
+      ),
+  });
+
+  function handleReuploadClick(videoId: string) {
+    reuploadVideoIdRef.current = videoId;
+    reuploadFileInputRef.current?.click();
+  }
+
+  async function handleReuploadFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    // Always reset the input value so the same file can be re-selected if needed
+    if (e.target) (e.target as HTMLInputElement).value = "";
+    const videoId = reuploadVideoIdRef.current;
+    reuploadVideoIdRef.current = null;
+    if (!file || !videoId) return;
+    try {
+      const meta = await resetForReuploadMutation.mutateAsync(videoId);
+      uploadQueue.enqueue([{
+        file,
+        title: meta.title,
+        category: meta.category ?? "",
+        preacher: meta.preacher ?? "",
+        description: meta.description,
+        featured: false,
+        priority: 0,
+      }]);
+      toast.success(
+        `"${meta.title}" queued for re-upload. The broadcast queue will update automatically once encoding is complete.`,
+        { duration: 7000 },
+      );
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+    } catch (err) {
+      toast.error(err instanceof HttpError ? err.message : "Failed to reset video for re-upload — please try again.");
+    }
+  }
 
   // Download a prod-sync queue item's remote source and queue it for local HLS transcoding.
   const transcodeLocallyMutation = useMutation({
@@ -1826,6 +1895,14 @@ function BroadcastV2PageInner() {
 
   return (
     <>
+    {/* Hidden file picker for the Re-upload flow on terminal-failed queue items */}
+    <input
+      ref={reuploadFileInputRef}
+      type="file"
+      accept="video/*,.mp4,.mov,.mkv,.avi,.webm,.m4v,.flv,.wmv,.ts,.mts,.m2ts"
+      className="hidden"
+      onChange={(e) => { void handleReuploadFileSelected(e); }}
+    />
     <div className="space-y-6 p-4 md:p-6">
       <PageHeader
         title="Master Control"
@@ -3347,6 +3424,8 @@ function BroadcastV2PageInner() {
                         secondsUntilAir={secondsUntilAirByItemId[item.id] ?? null}
                         onReprobe={(itemId) => reprobeMutation.mutate(itemId)}
                         isReprobing={reprobeMutation.isPending}
+                        onReupload={handleReuploadClick}
+                        isReuploading={resetForReuploadMutation.isPending}
                       />
                     );
                   })}
