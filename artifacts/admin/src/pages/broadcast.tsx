@@ -1728,6 +1728,8 @@ export default function BroadcastPage() {
     onSuccess: () => {
       setIsSyncing(false);
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-state"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
     },
     onError: (e) => {
       setIsSyncing(false);
@@ -1738,6 +1740,8 @@ export default function BroadcastPage() {
       toast.error(msg);
       if (queue?.items) setItems(queue.items);
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-state"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
     },
   });
 

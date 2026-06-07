@@ -1305,26 +1305,38 @@ export async function recategorizeAllVideos(): Promise<RecategorizeResult> {
         }
       }
 
-      // Batch-update changed rows individually (category values differ per row)
-      for (const { id, newCategory } of toUpdate) {
+      // Batch-update all changed rows in a single round-trip using a VALUES
+      // clause join.  Each row carries a different newCategory, so individual
+      // UPDATEs would cause N round-trips per 100-row page — O(N) DB calls
+      // replaced with a single parameterised statement.
+      //
+      //   UPDATE managed_videos AS mv
+      //   SET category = v.category
+      //   FROM (VALUES ($1,$2), ($3,$4), …) AS v(id, category)
+      //   WHERE mv.id = v.id
+      //     AND (mv.metadata_locked IS NULL OR mv.metadata_locked = false)
+      if (toUpdate.length > 0) {
         try {
-          await db
-            .update(schema.videosTable)
-            .set({ category: newCategory })
-            .where(
-              and(
-                eq(schema.videosTable.id, id),
-                or(
-                  isNull(schema.videosTable.metadataLocked),
-                  eq(schema.videosTable.metadataLocked, false),
-                ),
-              ),
-            );
-          changed++;
-          changesByCategory[newCategory] = (changesByCategory[newCategory] ?? 0) + 1;
+          // Build the VALUES list as an interpolated sql fragment.
+          // Each pair is cast to (text, text) so Postgres infers column types.
+          const valuesSql = sql.join(
+            toUpdate.map(({ id, newCategory }) => sql`(${id}::text, ${newCategory}::text)`),
+            sql`, `,
+          );
+          await db.execute(sql`
+            UPDATE managed_videos AS mv
+            SET category = v.category
+            FROM (VALUES ${valuesSql}) AS v(id, category)
+            WHERE mv.id = v.id
+              AND (mv.metadata_locked IS NULL OR mv.metadata_locked = false)
+          `);
+          for (const { newCategory } of toUpdate) {
+            changed++;
+            changesByCategory[newCategory] = (changesByCategory[newCategory] ?? 0) + 1;
+          }
         } catch (err) {
-          errors++;
-          logger.warn({ err, id }, "youtube-sync: recategorize update failed for row (non-fatal)");
+          errors += toUpdate.length;
+          logger.warn({ err, count: toUpdate.length }, "youtube-sync: recategorize batch update failed (non-fatal)");
         }
       }
 

@@ -136,6 +136,9 @@ const KNOWN_EVENTS = [
   "dead-air-escalation",
   "feedback-received", "youtube-quota-warning",
   "youtube-live-status-changed",
+  // Viewer-slope monitor events — emitted when sustained viewer-count drops
+  // are detected (degraded) and when counts recover (recovered).
+  "stream-health-degraded", "stream-health-recovered",
 ];
 
 function summarize(event: string, data: unknown): string | null {
@@ -174,6 +177,14 @@ function summarize(event: string, data: unknown): string | null {
     case "dead-air-escalation": {
       const cycles = Number(d.allBlockedRecoveryCycles ?? 1);
       return `Dead air — all sources blocked (recovery cycle ${cycles})`;
+    }
+    case "stream-health-degraded": {
+      const drop = Number(d.dropPercent ?? d.slopePct ?? 0);
+      return `Stream health degraded — viewer drop${drop > 0 ? ` ${drop}%` : ""}`;
+    }
+    case "stream-health-recovered": {
+      const cnt = Number(d.count ?? 0);
+      return `Stream health recovered${cnt > 0 ? ` — ${cnt} viewers` : ""}`;
     }
     case "feedback-received": return "New user feedback received";
     case "youtube-live-status-changed": {

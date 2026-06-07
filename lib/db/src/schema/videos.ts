@@ -122,6 +122,14 @@ export const videosTable = pgTable("managed_videos", {
   // full-scans managed_videos via the JOIN; with it Postgres can use a bitmap
   // index scan to narrow rows before evaluating the heavier OR conditions.
   index("idx_managed_videos_faststart_applied").on(table.faststartApplied),
+  // youtube_live_status: live-status.service.ts runs a background sweep every
+  // 2 minutes to heal stale 'live' rows (WHERE youtube_live_status = 'live').
+  // Without this index every sweep is a full table scan — critical at scale.
+  index("idx_managed_videos_youtube_live_status").on(table.youtubeLiveStatus),
+  // metadata_locked: YouTube sync filters on this boolean to decide whether to
+  // preserve existing category/preacher. Without an index every sync pass scans
+  // the full table before the transcoding_status filter is applied.
+  index("idx_managed_videos_metadata_locked").on(table.metadataLocked),
   // Composite broadcast-admission index: mirrors the primary admission predicate
   // in loadActive() — (video_source, transcoding_status, faststart_applied).
   // faststart_applied is still used for the 'failed' state guard

@@ -501,6 +501,23 @@ export async function adminVideosRoutes(app: FastifyInstance) {
         if (removedEpisodes.length > 0) {
           log.info({ id, removedEpisodeCount: removedEpisodes.length }, "video-delete: removed orphan series_episodes");
         }
+
+        // 7. Orphan playlist_videos rows (no FK cascade on videoId column).
+        //    playlist_videos.videoId references managed_videos but without a
+        //    Postgres FK + cascade, deleting the video leaves ghost entries.
+        //    These ghost entries surface as "Video not found" 404s when the
+        //    player tries to resolve the playlist item's source URL.
+        const removedPlaylistItems = await db
+          .delete(schema.playlistVideosTable)
+          .where(eq(schema.playlistVideosTable.videoId, id))
+          .returning({ pid: schema.playlistVideosTable.id })
+          .catch((err) => {
+            log.warn({ err, id }, "video-delete: failed to remove orphan playlist_videos rows");
+            return [] as { pid: string }[];
+          });
+        if (removedPlaylistItems.length > 0) {
+          log.info({ id, removedPlaylistCount: removedPlaylistItems.length }, "video-delete: removed orphan playlist_videos");
+        }
       })().catch((err) =>
         req.log.warn({ err, id }, "video-delete: unexpected error in cleanup IIFE (non-fatal)"),
       );
