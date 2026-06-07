@@ -14,6 +14,7 @@ export const videosTable = pgTable("managed_videos", {
   preacher: text("preacher").notNull().default(""),
   publishedAt: text("published_at"),
   importedAt: timestamp("imported_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   viewCount: integer("view_count").notNull().default(0),
   featured: boolean("featured").notNull().default(false),
   videoSource: text("video_source").notNull().default("youtube"),
