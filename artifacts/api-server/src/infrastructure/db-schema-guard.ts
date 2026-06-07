@@ -201,7 +201,11 @@ export const SAFE_VIDEO_COLS = {
   broadcastOnly:    sql<boolean>`false`,
   // Late-added text columns — hardcoded NULL so no column reference appears
   // in the SQL until the migration adds them.
-  transcodingErrorMessage: sql<string | null>`NULL`,
-  transcodingErrorCode:    sql<string | null>`NULL`,
-  youtubeLiveStatus:       sql<string | null>`NULL`,
+  transcodingErrorMessage:      sql<string | null>`NULL`,
+  transcodingErrorCode:         sql<string | null>`NULL`,
+  youtubeLiveStatus:            sql<string | null>`NULL`,
+  // Timestamp companion to youtubeLiveStatus — must be in SAFE_VIDEO_COLS
+  // together with youtubeLiveStatus or any query using SAFE_VIDEO_COLS that
+  // also reads youtubeLiveStatusUpdatedAt will throw 42703.
+  youtubeLiveStatusUpdatedAt:   sql<Date | null>`NULL`,
 } as const;

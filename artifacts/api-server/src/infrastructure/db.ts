@@ -752,6 +752,23 @@ export async function ensureUserSchemaColumns(): Promise<void> {
       ALTER TABLE managed_videos
         ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     `);
+    // youtube_live_status — added June 2026 (YouTube Live Status feature).
+    // Tracks whether a YouTube-sourced video is currently airing live or is a
+    // VOD/replay. Written by live-status.service.ts. NULL for non-YouTube rows.
+    // Without this guard, any query referencing schema.videosTable.youtubeLiveStatus
+    // (SELECT, UPDATE, WHERE clause) throws SQLSTATE 42703 on prod DBs that
+    // pre-date this column — crashing YouTube sync and live-status updates.
+    await col("managed_videos.youtube_live_status", `
+      ALTER TABLE managed_videos
+        ADD COLUMN IF NOT EXISTS youtube_live_status TEXT
+    `);
+    // youtube_live_status_updated_at — added June 2026.
+    // UTC timestamp of the last youtube_live_status write. Enables the background
+    // sweep in live-status.service.ts to detect stale 'live' rows and heal them.
+    await col("managed_videos.youtube_live_status_updated_at", `
+      ALTER TABLE managed_videos
+        ADD COLUMN IF NOT EXISTS youtube_live_status_updated_at TIMESTAMPTZ
+    `);
 
     // ── transcoding_jobs ──────────────────────────────────────────────────
     // last_progress_at — added June 2026 (stall-detection sprint 48).
