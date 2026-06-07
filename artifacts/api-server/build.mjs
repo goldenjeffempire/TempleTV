@@ -41,6 +41,8 @@ const shared = {
     ].join("\n"),
   },
   external: [
+    "pg",
+    "pg-protocol",
     "pg-native",
     "bufferutil",
     "utf-8-validate",
