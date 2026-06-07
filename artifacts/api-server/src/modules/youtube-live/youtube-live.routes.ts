@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { ytPoller } from "./youtube-live.poller.js";
 import { sseCorsHeaders } from "../../lib/sse-cors.js";
+import { requireAuth } from "../../middleware/auth.js";
 
 /**
  * YouTube live event stream — SSE channel the admin Live Monitor page
@@ -83,7 +84,7 @@ export async function youtubeLiveRoutes(app: FastifyInstance) {
    * 501 when neither is configured so the admin UI can show a helpful error
    * rather than a silent timeout.
    */
-  app.post("/:broadcastId/start", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req: FastifyRequest<{ Params: { broadcastId: string } }>, reply) => {
+  app.post("/:broadcastId/start", { preHandler: requireAuth("editor"), config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req: FastifyRequest<{ Params: { broadcastId: string } }>, reply) => {
     const { broadcastId } = req.params;
     // YouTube broadcast transitions require OAuth, which is not yet wired.
     // Return a descriptive error so the admin UI shows a clear message.
@@ -98,7 +99,7 @@ export async function youtubeLiveRoutes(app: FastifyInstance) {
   /**
    * Transition a live YouTube broadcast to "complete" status.
    */
-  app.post("/:broadcastId/stop", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req: FastifyRequest<{ Params: { broadcastId: string } }>, reply) => {
+  app.post("/:broadcastId/stop", { preHandler: requireAuth("editor"), config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req: FastifyRequest<{ Params: { broadcastId: string } }>, reply) => {
     const { broadcastId } = req.params;
     reply.code(501);
     return {
