@@ -5,6 +5,7 @@ import { and, asc, count, desc, eq, sql, type SQL } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { db, schema } from "../../infrastructure/db.js";
 import { cache } from "../../infrastructure/cache.js";
+import { isUndefinedColumnError } from "../../infrastructure/db-schema-guard.js";
 
 /**
  * Public video catalogue surface.
@@ -55,6 +56,29 @@ const VIDEO_COLS = {
   localVideoUrl: videos.localVideoUrl,
   hlsMasterUrl: videos.hlsMasterUrl,
   youtubeLiveStatus: sql<string | null>`CASE WHEN ${videos.youtubeLiveStatus} IN ('live','rebroadcast') THEN ${videos.youtubeLiveStatus} ELSE NULL END`,
+} as const;
+
+// Safe fallback projection used when `youtube_live_status` column is absent on the
+// production DB (pre-migration). Identical to VIDEO_COLS except `youtubeLiveStatus`
+// is stubbed as SQL NULL so PostgreSQL never sees the column name in the query.
+// Pattern mirrors SAFE_VIDEO_COLS in db-schema-guard.ts — once the migration runs,
+// the primary VIDEO_COLS path is always used and this projection is never reached.
+const SAFE_CATALOG_COLS = {
+  id:           videos.id,
+  youtubeId:    videos.youtubeId,
+  title:        videos.title,
+  description:  videos.description,
+  thumbnailUrl: videos.thumbnailUrl,
+  duration:     videos.duration,
+  category:     videos.category,
+  preacher:     videos.preacher,
+  publishedAt:  videos.publishedAt,
+  importedAt:   videos.importedAt,
+  viewCount:    videos.viewCount,
+  videoSource:  videos.videoSource,
+  localVideoUrl: videos.localVideoUrl,
+  hlsMasterUrl: videos.hlsMasterUrl,
+  youtubeLiveStatus: sql<string | null>`NULL`,
 } as const;
 
 const PublicVideoSchema = z.object({
@@ -307,16 +331,37 @@ export async function videosRoutes(app: FastifyInstance) {
       }
 
       // ── DB query ──────────────────────────────────────────────────────────
-      const [totalRow, rows] = await Promise.all([
-        db.select({ c: count() }).from(videos).where(where),
-        db
-          .select(VIDEO_COLS)
-          .from(videos)
-          .where(where)
-          .orderBy(orderBy)
-          .limit(limit)
-          .offset(offset),
-      ]);
+      // Primary path uses VIDEO_COLS (includes youtubeLiveStatus CASE expression).
+      // Falls back to SAFE_CATALOG_COLS (stubs youtubeLiveStatus as NULL) on 42703
+      // so production DBs that haven't yet run the youtube_live_status migration
+      // continue to serve the catalog rather than returning 500.
+      type CatalogRows = Array<{ [K in keyof typeof VIDEO_COLS]: unknown }>;
+      let totalRow: Array<{ c: unknown }>;
+      let rows: CatalogRows;
+      try {
+        [totalRow, rows] = await Promise.all([
+          db.select({ c: count() }).from(videos).where(where),
+          db
+            .select(VIDEO_COLS)
+            .from(videos)
+            .where(where)
+            .orderBy(orderBy)
+            .limit(limit)
+            .offset(offset),
+        ]) as [typeof totalRow, CatalogRows];
+      } catch (err) {
+        if (!isUndefinedColumnError(err)) throw err;
+        [totalRow, rows] = await Promise.all([
+          db.select({ c: count() }).from(videos).where(where),
+          db
+            .select(SAFE_CATALOG_COLS)
+            .from(videos)
+            .where(where)
+            .orderBy(orderBy)
+            .limit(limit)
+            .offset(offset),
+        ]) as [typeof totalRow, CatalogRows];
+      }
 
       const total = Number(totalRow[0]?.c ?? 0);
       const totalPages = Math.max(1, Math.ceil(total / limit));
@@ -382,11 +427,21 @@ export async function videosRoutes(app: FastifyInstance) {
     },
     async (req, reply) => {
       const { limit } = req.query;
-      const rows = await db
-        .select(VIDEO_COLS)
-        .from(videos)
-        .orderBy(desc(videos.viewCount))
-        .limit(limit);
+      let rows: Array<{ [K in keyof typeof VIDEO_COLS]: unknown }>;
+      try {
+        rows = await db
+          .select(VIDEO_COLS)
+          .from(videos)
+          .orderBy(desc(videos.viewCount))
+          .limit(limit) as typeof rows;
+      } catch (err) {
+        if (!isUndefinedColumnError(err)) throw err;
+        rows = await db
+          .select(SAFE_CATALOG_COLS)
+          .from(videos)
+          .orderBy(desc(videos.viewCount))
+          .limit(limit) as typeof rows;
+      }
       return reply
         .header("Cache-Control", "public, s-maxage=60, max-age=60, stale-while-revalidate=120")
         .send({ videos: rows.map(toDto) });
@@ -409,16 +464,28 @@ export async function videosRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const [row] = await db
-        .select(VIDEO_COLS)
-        .from(videos)
-        .where(eq(videos.id, req.params.id))
-        .limit(1);
+      let row: ({ [K in keyof typeof VIDEO_COLS]: unknown }) | undefined;
+      try {
+        const [r] = await db
+          .select(VIDEO_COLS)
+          .from(videos)
+          .where(eq(videos.id, req.params.id))
+          .limit(1);
+        row = r as typeof row;
+      } catch (err) {
+        if (!isUndefinedColumnError(err)) throw err;
+        const [r] = await db
+          .select(SAFE_CATALOG_COLS)
+          .from(videos)
+          .where(eq(videos.id, req.params.id))
+          .limit(1);
+        row = r as typeof row;
+      }
       if (!row) {
         reply.status(404);
         return { error: "Video not found" };
       }
-      return toDto(row);
+      return toDto(row as Parameters<typeof toDto>[0]);
     },
   );
 
