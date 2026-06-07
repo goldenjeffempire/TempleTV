@@ -1571,17 +1571,19 @@ class BroadcastOrchestrator extends EventEmitter {
         } else {
           const deadAirElapsedMs = Date.now() - this.deadAirDetectedAtMs;
           if (deadAirElapsedMs >= env.BROADCAST_DEADAIR_FALLBACK_AFTER_MS) {
+            const fallbackKind: "hls" | "rtmp" = /\.m3u8(\?|$)/i.test(fallbackUrl) ? "hls" : "rtmp";
             logger.warn(
               {
                 channel: this.channelId,
                 deadAirElapsedMs,
                 fallbackThresholdMs: env.BROADCAST_DEADAIR_FALLBACK_AFTER_MS,
                 fallbackUrl,
+                fallbackKind,
               },
               "[broadcast-v2] dead-air: threshold exceeded — applying BROADCAST_DEADAIR_FALLBACK_URL emergency override",
             );
             void this.startOverride({
-              kind: "hls",
+              kind: fallbackKind,
               url: fallbackUrl,
               title: "Emergency Broadcast Fallback",
               endsAtMs: null,
@@ -1964,6 +1966,23 @@ class BroadcastOrchestrator extends EventEmitter {
       }
     }
     this.queueCheckpoint = null;
+    // Reset ALL dead-air fallback state so both recovery paths can fire again.
+    //
+    // Without this, an operator who manually stops a fallback override (via the
+    // REST DELETE /override endpoint) leaves both `fallbackOverrideActive` and
+    // `deadAirFallbackActive` permanently set for the rest of the process lifetime.
+    // On the next dead-air event, neither `escalateDeadAir()` nor
+    // `applyDeadAirFallback()` can activate because their guard checks
+    // (`!this.fallbackOverrideActive` and `!this.deadAirFallbackActive`) fail
+    // forever — leaving the broadcast unrecoverable until a process restart.
+    //
+    // Also reset `deadAirDetectedAtMs` so the threshold timer restarts from
+    // zero, giving a fresh "dead-air detected → wait threshold → apply fallback"
+    // cycle rather than immediately re-triggering on the next timer tick.
+    this.fallbackOverrideActive = false;
+    this.deadAirFallbackActive = false;
+    this.deadAirFallbackOverrideId = null;
+    this.deadAirDetectedAtMs = null;
     this.emitSnapshot();
   }
 
