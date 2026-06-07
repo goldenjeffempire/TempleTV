@@ -133,6 +133,7 @@ const KNOWN_EVENTS = [
   "prayer-updated", "prayer-deleted", "chat-message", "emergency-broadcast",
   "live-ingest-stream-started", "live-ingest-stream-stopped",
   "broadcast-v2-stall", "broadcast-v2-queue-issues",
+  "dead-air-escalation",
   "feedback-received", "youtube-quota-warning",
   "youtube-live-status-changed",
 ];
@@ -170,6 +171,10 @@ function summarize(event: string, data: unknown): string | null {
     case "youtube-quota-throttled": return "YouTube quota throttled";
     case "youtube-quota-warning": return `YouTube quota warning: ${String(d.percent ?? "")}% used`;
     case "youtube-quota-exhausted": return "YouTube quota exhausted";
+    case "dead-air-escalation": {
+      const cycles = Number(d.allBlockedRecoveryCycles ?? 1);
+      return `Dead air — all sources blocked (recovery cycle ${cycles})`;
+    }
     case "feedback-received": return "New user feedback received";
     case "youtube-live-status-changed": {
       const status = d.status as string;

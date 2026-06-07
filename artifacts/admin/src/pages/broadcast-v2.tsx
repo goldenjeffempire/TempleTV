@@ -155,7 +155,21 @@ interface QueueSyncStatus {
 
 interface EngineHealth {
   ok: boolean;
+  /**
+   * True when sequence is 0 after >30 s uptime with a non-empty queue and
+   * the event-bus bridge installed — indicates the orchestrator booted but
+   * failed to load or advance the queue. Server-computed (includes itemCount>0
+   * and boot.started guards).
+   */
   stuck?: boolean;
+  /**
+   * True when the orchestrator advanced at least once (sequence > 0) but the
+   * tick loop has since stalled — distinct from "stuck" (never advanced).
+   * Only flagged for non-empty queues outside the item's playback window.
+   */
+  sequenceStale?: boolean;
+  /** Seconds since the last sequence advance — useful for alert copy. */
+  sequenceStaleSec?: number;
   channelId: string;
   sequence: number;
   mode: string;
@@ -821,6 +835,9 @@ function BroadcastV2PageInner() {
   // resolves (sequence > 0) so the banner reappears if the engine gets
   // stuck again in the same session.
   const [stuckAlertDismissed, setStuckAlertDismissed] = useState(false);
+  // Dismissible sequence-stale banner — fires when the tick loop dies after
+  // the orchestrator has already started (sequenceStale=true from /health).
+  const [sequenceStaleAlertDismissed, setSequenceStaleAlertDismissed] = useState(false);
   // Dismissible faststart-in-progress banner. Auto-reset when no items remain
   // in 'processing' state so the banner reappears if a new faststart starts.
   const [processingAlertDismissed, setProcessingAlertDismissed] = useState(false);
@@ -1364,6 +1381,27 @@ function BroadcastV2PageInner() {
     }
   });
 
+  // Dead-air-escalation: fired on every all-sources-blocked TTL recovery cycle.
+  // Each cycle the orchestrator clears the bad-URL cache and retries — if it
+  // keeps firing the operator needs to intervene (broken sources or empty queue).
+  useSSEEvent("dead-air-escalation", (data: unknown) => {
+    const d = data as { allBlockedRecoveryCycles?: number; itemCount?: number } | null;
+    const cycles = d?.allBlockedRecoveryCycles ?? 1;
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+    if (cycles >= 3) {
+      toast.error(
+        `All broadcast sources blocked for ${cycles} recovery cycles — operator action needed.`,
+        { duration: 10_000 },
+      );
+    } else if (cycles === 2) {
+      toast.warning(
+        "Broadcast sources still blocked after retry — checking for recoverable URLs.",
+        { duration: 6_000 },
+      );
+    }
+  });
+
   // Queue validator real-time alerting — fired whenever the issue set changes.
   // Immediately refreshes the diagnostics panel and toasts for critical errors.
   useSSEEvent("broadcast-v2-queue-issues", (data: unknown) => {
@@ -1542,20 +1580,26 @@ function BroadcastV2PageInner() {
     (i) => i.isActive && i.transcodingStatus === "processing",
   ).length;
 
-  // Detect the "stuck-at-sequence-0" signature that indicates the orchestrator
-  // booted but couldn't load the queue (missing table, cold pool, etc.).
-  // Signature: sequence=0 AND uptimeMs>30s AND busBridgeInstalled=true.
-  const isStuck =
-    engineHealth !== undefined &&
-    engineHealth.sequence === 0 &&
-    engineHealth.uptimeMs > 30_000 &&
-    engineHealth.boot.busBridgeInstalled;
+  // Detect the "stuck-at-sequence-0" signature. Use the server-computed
+  // `stuck` field which already incorporates itemCount > 0 and boot.started
+  // guards — avoids a false "stuck" banner on empty queues or un-booted
+  // processes where the local re-computation missed those two conditions.
+  const isStuck = engineHealth?.stuck === true;
 
   // Auto-reset dismissed state when stuck condition clears so the banner
   // reappears if the engine gets stuck again in the same session.
   useEffect(() => {
     if (!isStuck) setStuckAlertDismissed(false);
   }, [isStuck]);
+
+  // Detect the post-advance "tick loop died" condition: sequence advanced at
+  // least once but has not advanced again within the playback window + grace.
+  // Distinct from "stuck" (never advanced). Server computes this correctly
+  // accounting for item duration so long sermons don't false-positive.
+  const isSequenceStale = engineHealth?.sequenceStale === true && !isStuck;
+  useEffect(() => {
+    if (!isSequenceStale) setSequenceStaleAlertDismissed(false);
+  }, [isSequenceStale]);
 
   // Dead air: queue has items but nothing is broadcasting and sources aren't
   // all blocked — a subtle condition that the other banners don't cover.
@@ -1673,10 +1717,12 @@ function BroadcastV2PageInner() {
     },
     {
       label: "No dead air detected",
-      pass: !isDeadAir && !isStuck,
+      pass: !isDeadAir && !isStuck && !isSequenceStale,
       warn: false,
       detail: isStuck
         ? "Orchestrator appears stuck — try Reload"
+        : isSequenceStale
+        ? `Tick loop stalled ${engineHealth?.sequenceStaleSec != null ? `(${Math.round(engineHealth.sequenceStaleSec / 60)} min) ` : ""}— use Reload or Skip`
         : isDeadAir
         ? "Queue has items but nothing is on air"
         : "Broadcast is on air or off air normally",
@@ -1934,6 +1980,13 @@ function BroadcastV2PageInner() {
             Engine stuck — see health panel
           </Badge>
         )}
+        {/* Sequence-stale badge — tick loop died post-advance */}
+        {isSequenceStale && !isStuck && (
+          <Badge variant="destructive" className="gap-1 animate-pulse">
+            <AlertTriangle className="h-3 w-3" />
+            Tick loop stalled — Reload needed
+          </Badge>
+        )}
         {/* Circuit-open workers badge */}
         {circuitOpenWorkers.length > 0 && (
           <Badge variant="destructive" className="gap-1 animate-pulse">
@@ -2010,6 +2063,52 @@ function BroadcastV2PageInner() {
           >
             <X className="h-4 w-4" />
           </button>
+        </div>
+      )}
+
+      {/* Sequence-stale alert strip — tick loop died after first advance */}
+      {isSequenceStale && !sequenceStaleAlertDismissed && (
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-md border border-red-300/60 bg-red-50 px-4 py-3 text-sm text-red-900 dark:border-red-700/60 dark:bg-red-950/30 dark:text-red-200"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div className="flex-1">
+            <strong>Orchestrator tick loop may have stalled.</strong>{" "}
+            The broadcast engine advanced past sequence 0 but has not advanced again in{" "}
+            {engineHealth?.sequenceStaleSec != null
+              ? `${Math.round(engineHealth.sequenceStaleSec / 60)} min`
+              : "several minutes"}
+            {" "}— the current item slot has likely expired with no transition. This is
+            distinct from "stuck" (never started): the engine booted and played at least
+            one item but is now frozen mid-cycle. Use{" "}
+            <strong>Reload from queue</strong> to force a cycle reset, or{" "}
+            <strong>Skip</strong> to advance manually.
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!!busy}
+              onClick={() => void adminPost("/broadcast-v2/reload")}
+              className="h-7 px-2 text-xs border-red-400/70 text-red-800 hover:bg-red-100 dark:text-red-200 dark:border-red-600/70 dark:hover:bg-red-900/30"
+            >
+              {busy === "/broadcast-v2/reload" ? (
+                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+              ) : (
+                <RotateCw className="mr-1 h-3 w-3" />
+              )}
+              Reload
+            </Button>
+            <button
+              type="button"
+              aria-label="Dismiss sequence-stale alert"
+              onClick={() => setSequenceStaleAlertDismissed(true)}
+              className="shrink-0 rounded p-0.5 hover:bg-red-200/60 dark:hover:bg-red-800/40"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
         </div>
       )}
 

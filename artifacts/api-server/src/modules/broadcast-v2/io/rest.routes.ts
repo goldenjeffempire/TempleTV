@@ -1142,6 +1142,11 @@ export async function restRoutes(app: FastifyInstance) {
           "-of", "default=noprint_wrappers=1:nokey=1",
           probeUrl,
         ]);
+        // unref() so a long-running probe (up to 45 s) does not prevent Node
+        // from completing a graceful shutdown when SIGTERM arrives mid-probe.
+        // The timer's proc.kill() still fires via the event loop if the process
+        // outlives its budget during normal operation.
+        proc.unref?.();
         let out = "";
         const timer = setTimeout(() => { proc.kill(); resolve(null); }, 45_000);
         proc.stdout.on("data", (chunk: Buffer) => { out += chunk.toString(); });
