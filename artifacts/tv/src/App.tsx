@@ -433,7 +433,11 @@ export default function App() {
           style={{ width: "100%", height: "100%", position: "relative" }}
         >
           {content}
-          <OnAirOverlays />
+          {/* Isolated boundary: a crash in graphics/emergency-alert hooks must
+              not tear down the player or navigation — it only removes overlays. */}
+          <ErrorBoundary>
+            <OnAirOverlays />
+          </ErrorBoundary>
         </div>
       </Suspense>
       {/* Global PiP indicator — persists across all screen transitions so the

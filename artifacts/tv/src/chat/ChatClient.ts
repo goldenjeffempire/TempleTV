@@ -7,6 +7,7 @@
  * verbatim — keep them in sync when changing.
  */
 
+import { resolveApiOrigin } from "../lib/api";
 import type {
   ChatClientFrame,
   ChatConnectionState,
@@ -45,9 +46,13 @@ const DEFAULT_BUFFER = 60;
 
 function buildUrl(opts: ChatClientOptions): string {
   if (opts.url) return opts.url;
-  const isHttps = typeof window !== "undefined" && window.location.protocol === "https:";
-  const proto = isHttps ? "wss:" : "ws:";
-  const host = typeof window !== "undefined" ? window.location.host : "localhost";
+  // Use resolveApiOrigin() instead of window.location.host so that packaged
+  // TV apps (Tizen, webOS, FireTV) loaded via file:// don't produce
+  // "ws://null/…" URLs — resolveApiOrigin() falls back to the production API
+  // origin in that case and respects VITE_API_URL at build time.
+  const origin = resolveApiOrigin();
+  const proto = origin.startsWith("https") ? "wss:" : "ws:";
+  const host = origin.replace(/^https?:\/\//, "");
   const params = new URLSearchParams();
   if (opts.channelId) params.set("channel", opts.channelId);
   if (opts.token) params.set("token", opts.token);

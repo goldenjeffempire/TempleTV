@@ -359,6 +359,10 @@ function TranscodingProgressPanel() {
 
   useSSEEvent("transcoding-update", () => {
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
+    // A completed transcode (hls_ready) resolves "Missing HLS" warnings in the
+    // remediation report — invalidate so the alert clears without waiting for
+    // the next 60 s remediation-report poll.
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
   });
 
   const activeJobs = data?.active ?? [];
@@ -1189,6 +1193,10 @@ function BroadcastV2PageInner() {
     onSuccess: (result) => {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
+      // Newly enqueued items may have transcoding/source issues immediately
+      // visible in diagnostics and the remediation report — refresh both.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       if (result.enqueued > 0) {
         toast.success(
           `Synced ${result.enqueued} video${result.enqueued !== 1 ? "s" : ""} into the broadcast queue (scanned ${result.scanned}).`,
@@ -1210,8 +1218,13 @@ function BroadcastV2PageInner() {
     (queueData?.items ?? []).map((i) => i.id),
   );
   const isDraggingRef = useRef(false);
+  // True while a reorder save is in-flight (debounce window + mutation).
+  // Prevents an SSE-driven queueData refresh from resetting localOrder before
+  // the PUT lands — without this, the optimistic order is clobbered in the
+  // 250 ms debounce window or while the server round-trip is pending.
+  const reorderInFlightRef = useRef(false);
   useEffect(() => {
-    if (!isDraggingRef.current) {
+    if (!isDraggingRef.current && !reorderInFlightRef.current) {
       // Dedup IDs: DB-sync races can produce duplicate rows; duplicate IDs
       // crash DnD-kit's sortable hook before orderedQueueItems can filter them.
       const seen = new Set<string>();
@@ -1240,11 +1253,16 @@ function BroadcastV2PageInner() {
       // Engine health header shows currentTitle/nextTitle/itemCount — a reorder
       // changes the queue order so those derived fields need refreshing too.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      // Remediation report warns about item order / duration-sequencing issues —
+      // a reorder may resolve or introduce such warnings.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      reorderInFlightRef.current = false;
     },
     onError: (err) => {
       toast.error(
         err instanceof HttpError ? err.message : "Reorder failed — restoring queue from server.",
       );
+      reorderInFlightRef.current = false;
       setLocalOrder((queueData?.items ?? []).map((i) => i.id));
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
     },
@@ -1284,6 +1302,9 @@ function BroadcastV2PageInner() {
         if (oldIdx === -1 || newIdx === -1) return prev;
         const next = arrayMove(prev, oldIdx, newIdx);
         clearTimeout(reorderDebounceRef.current);
+        // Mark in-flight BEFORE the debounce timer fires so that any SSE-driven
+        // queueData update during the 250 ms window does not clobber localOrder.
+        reorderInFlightRef.current = true;
         reorderDebounceRef.current = setTimeout(() => {
           reorderMutation.mutate(next);
         }, 250);
@@ -1390,6 +1411,17 @@ function BroadcastV2PageInner() {
     // readiness — it must refresh whenever any job transitions state, not
     // only when the operator explicitly retries or queues a new job.
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
+    // A completed transcode (hls_ready) resolves "Missing HLS" warnings in the
+    // remediation report — invalidate so the panel clears stale alerts.
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+  });
+
+  // Broadcast schedule changes (startsAt edits, cycle reassignments) arrive
+  // via SSE. Invalidate the queue so the schedule editor and item cards reflect
+  // the new schedule without waiting for the next poll interval.
+  useSSEEvent("broadcast-schedule-updated", () => {
+    void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
   });
 
   // Real-time stall counter — incremented the instant a stall report fires a
@@ -1430,6 +1462,19 @@ function BroadcastV2PageInner() {
     consecutiveSkips: engineHealth?.skipInfo?.consecutiveSkips ?? 0,
     totalStalls: (diagnostics?.analytics?.eventCounts["stall"] ?? 0) + realtimeStallCount,
   };
+
+  // When the diagnostics query refetches, the server-side eventCounts["stall"]
+  // now includes the stalls that we already counted in realtimeStallCount.
+  // Subtract the delta so we never double-count a stall in the StreamQualityPanel.
+  const prevDiagStallRef = useRef<number>(0);
+  useEffect(() => {
+    const diagStalls = diagnostics?.analytics?.eventCounts?.["stall"] ?? 0;
+    const delta = diagStalls - prevDiagStallRef.current;
+    if (delta > 0) {
+      prevDiagStallRef.current = diagStalls;
+      setRealtimeStallCount((n) => Math.max(0, n - delta));
+    }
+  }, [diagnostics]);
 
   const [healthHistory, setHealthHistory] = useState<HealthSample[]>([]);
   const prevStallCountRef = useRef<number | null>(null);
