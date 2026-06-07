@@ -39,6 +39,7 @@ const PLACEHOLDER_IMG = require("@/assets/images/sermon-placeholder.png");
 
 const CATEGORIES: { label: string; value: SermonCategory }[] = [
   { label: "All", value: "All" },
+  { label: "Live Service", value: "Live Service" },
   { label: "Deliverance", value: "Deliverance" },
   { label: "Sermons", value: "Sermons" },
   { label: "Prayers", value: "Prayers" },

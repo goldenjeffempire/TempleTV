@@ -36,6 +36,7 @@ type CategoryConfig = {
 };
 
 const CONTENT_CATEGORIES: CategoryConfig[] = [
+  { label: "Live Service", value: "Live Service", color: "#7c3aed", icon: "video",     description: "Sunday & live services" },
   { label: "Sermons",     value: "Sermons",     color: "#0891b2", icon: "book-open", description: "Sermons & Bible lessons" },
   { label: "Prayers",     value: "Prayers",     color: "#be185d", icon: "feather",   description: "Intercession & vigils" },
   { label: "Crusades",    value: "Crusades",    color: "#b45309", icon: "globe",     description: "Evangelism & outreaches" },

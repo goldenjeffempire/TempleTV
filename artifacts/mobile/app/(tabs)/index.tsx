@@ -49,6 +49,7 @@ import { useV2BroadcastNative } from "@workspace/player-core/react-native";
 import type { Sermon, SermonCategory } from "@/types";
 
 const CATEGORY_ROWS: SermonCategory[] = [
+  "Live Service",
   "Deliverance",
   "Sermons",
   "Prayers",

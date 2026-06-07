@@ -235,7 +235,9 @@ function buildWhere(
     // The remaining synonyms handle plural/singular forms sent by the client
     // (e.g. "prayers" from the mobile filter pill) vs. the singular slugs
     // stored by detectCategory() in the DB ("prayer", "crusade", etc.).
-    if (catLower === "teaching" || catLower === "sermon") {
+    if (catLower === "live_service" || catLower === "live-service" || catLower === "live service") {
+      clauses.push(sql`lower(${videos.category}) IN ('live_service', 'live-service', 'live service')`);
+    } else if (catLower === "teaching" || catLower === "sermon") {
       clauses.push(sql`lower(${videos.category}) IN ('teaching', 'sermon')`);
     } else if (catLower === "prayer" || catLower === "prayers") {
       clauses.push(sql`lower(${videos.category}) IN ('prayer', 'prayers')`);

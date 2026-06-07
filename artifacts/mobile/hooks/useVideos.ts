@@ -30,6 +30,9 @@ const CACHE_KEY = "@temple_tv/videos_v2";
 const CACHE_TTL_MS = 30 * 60 * 1000;
 
 const CATEGORY_MAP: Record<string, SermonCategory> = {
+  live_service: "Live Service",
+  "live-service": "Live Service",
+  "Live Service": "Live Service",
   Deliverance: "Deliverance",
   deliverance: "Deliverance",
   Sermons: "Sermons",
@@ -60,6 +63,7 @@ const CATEGORY_MAP: Record<string, SermonCategory> = {
 };
 
 const CATEGORY_KEYWORDS: Record<SermonCategory, string[]> = {
+  "Live Service": ["sunday service", "live service", "holy spirit sunday", "morning service", "evening service", "church service", "worship service"],
   Deliverance: ["deliver", "freedom", "bondage", "oppress", "demon"],
   Prayers: ["prayer", "fast", "intercession", "supplicate", "vigil"],
   Crusades: ["crusade", "revival", "evangelism", "outreach", "campaign"],
@@ -70,7 +74,7 @@ const CATEGORY_KEYWORDS: Record<SermonCategory, string[]> = {
 };
 
 const CATEGORY_ORDER: SermonCategory[] = [
-  "Deliverance", "Sermons",
+  "Live Service", "Deliverance", "Sermons",
   "Prayers", "Crusades", "Conferences", "Testimonies",
 ];
 
@@ -382,6 +386,7 @@ function useDebounce<T>(value: T, delay: number): T {
 function categoryToApiSlug(category: SermonCategory): string | undefined {
   if (category === "All") return undefined;
   const MAP: Record<SermonCategory, string> = {
+    "Live Service": "live_service",
     Deliverance: "deliverance",
     Sermons: "teaching",
     Prayers: "prayer",

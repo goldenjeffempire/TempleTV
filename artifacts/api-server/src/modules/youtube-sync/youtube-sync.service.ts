@@ -342,6 +342,7 @@ function isValidDateString(val: string | null | undefined): boolean {
 // ── Auto-categorization ───────────────────────────────────────────────────────
 
 const CATEGORY_RULES: Array<{ category: string; keywords: string[] }> = [
+  { category: "live_service", keywords: ["sunday service","live service","holy spirit sunday","morning service","evening service","church service","sunday worship service","sunday worship","worship service","holy ghost service","live sunday","sunday gathering","livestream service","live stream service"] },
   { category: "worship",     keywords: ["worship","praise","glory","choir","anthem","hymn","sing","worship night","praise night","music ministry"] },
   { category: "deliverance", keywords: ["deliverance","deliver","freedom","captive","bondage","oppression","stronghold","deliverance service","breaking chains"] },
   { category: "prophecy",    keywords: ["prophecy","prophetic","prophet","vision","revelation","oracle","word of the lord","thus saith","anointing"] },

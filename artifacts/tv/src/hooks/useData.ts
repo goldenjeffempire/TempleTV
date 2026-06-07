@@ -7,6 +7,7 @@ export interface Sermon extends VideoItem {
 }
 
 const CATEGORIES = [
+  "Live Service",
   "Deliverance",
   "Sermons",
   "Prayers",
@@ -16,6 +17,7 @@ const CATEGORIES = [
 ];
 
 const CATEGORY_KEYWORDS: Record<string, string[]> = {
+  "Live Service": ["sunday service", "live service", "holy spirit sunday", "morning service", "evening service", "church service", "worship service"],
   Deliverance: ["deliverance", "deliver", "freedom", "captive", "bondage", "oppress", "demon", "stronghold"],
   Sermons: ["teaching", "lesson", "study", "message", "sermon", "preach", "doctrine", "truth", "instruction", "faith", "worship", "prophecy"],
   Prayers: ["prayer", "prayer service", "intercession", "intercessory", "fasting", "vigil", "night prayer"],
@@ -26,6 +28,9 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
 
 // Maps admin-set category slugs to display category names used by the TV app.
 const API_CATEGORY_MAP: Record<string, string> = {
+  live_service: "Live Service",
+  "live-service": "Live Service",
+  "live service": "Live Service",
   faith: "Sermons",
   deliverance: "Deliverance",
   worship: "Sermons",

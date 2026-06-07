@@ -18,6 +18,8 @@ async function hasAuthToken(): Promise<boolean> {
 
 function cloudCategoryToSermonCategory(raw: string): SermonCategory {
   const map: Record<string, SermonCategory> = {
+    live_service: "Live Service",
+    "live-service": "Live Service",
     faith: "Sermons",
     deliverance: "Deliverance",
     worship: "Sermons",

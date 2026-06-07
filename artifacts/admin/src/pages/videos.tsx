@@ -130,6 +130,7 @@ function buildEditDelta(original: EditForm, current: EditForm): Partial<EditForm
 
 const CATEGORIES: { value: string; label: string }[] = [
   { value: "midnight-prayers", label: "Midnight Prayers" },
+  { value: "live_service",     label: "Live Service" },
   { value: "sermon",           label: "Sermons" },
   { value: "deliverance",      label: "Deliverance" },
   { value: "prayer",           label: "Prayers" },

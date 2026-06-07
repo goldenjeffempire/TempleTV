@@ -17,6 +17,7 @@ export interface Sermon {
 }
 
 export type SermonCategory =
+  | "Live Service"
   | "Deliverance"
   | "Sermons"
   | "Prayers"

@@ -40,6 +40,7 @@ const MAX_RECENT = 10;
 
 const CATEGORIES: { label: string; value: SermonCategory | "All" }[] = [
   { label: "All", value: "All" },
+  { label: "Live Service", value: "Live Service" },
   { label: "Deliverance", value: "Deliverance" },
   { label: "Sermons", value: "Sermons" },
   { label: "Prayers", value: "Prayers" },

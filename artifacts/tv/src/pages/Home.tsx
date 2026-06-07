@@ -20,6 +20,7 @@ import { useWatchProgress } from "../hooks/useWatchProgress";
 import { useFavorites } from "../hooks/useFavorites";
 
 const CATEGORIES = [
+  "Live Service",
   "Faith",
   "Deliverance",
   "Worship",
