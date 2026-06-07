@@ -188,6 +188,13 @@ class TranscoderDispatcher {
   private partialRecoveryCounter = 0;
   private static readonly PARTIAL_RECOVERY_TICKS = 18; // ~3 min at 10 s/tick
 
+  // Auto-retry recoverable failed jobs counter.  Runs every AUTO_RETRY_TICKS
+  // ticks (default ~30 min). Re-queues status='failed' jobs where the error
+  // code is NOT terminal (CORRUPT_SOURCE / SOURCE_MISSING) and attempts <
+  // maxAttempts. DISK_FULL and transient FFmpeg exits recover automatically
+  // without operator action. Controlled by TRANSCODER_AUTO_RETRY_FAILED env var.
+  private autoRetryCounter = 0;
+
   // Stuck-job watchdog counter — runs every STUCK_JOBS_TICKS ticks (~2 min).
   // With the early-stuck (30 min no-progress) and stale-progress (15 min stall)
   // detectors active, a 2-minute poll cadence keeps the detection window tight
@@ -214,13 +221,7 @@ class TranscoderDispatcher {
   private scratchGcCounter = 0;
   private static readonly SCRATCH_GC_TICKS = 180; // ~30 min at 10 s/tick
 
-  // Gap 3: Auto-retry sweep counter. Every AUTO_RETRY_TICKS ticks the
-  // dispatcher re-arms failed-but-recoverable transcoding jobs (those whose
-  // errorCode is not CORRUPT_SOURCE or SOURCE_MISSING). This ensures transient
-  // failures (DISK_FULL, timeout) self-heal without operator action.
-  // Cadence: AUTO_RETRY_TICKS × TRANSCODER_POLL_MS (default 180 × 10 s = 30 min).
-  // Overridden by TRANSCODER_AUTO_RETRY_INTERVAL_MS env var at start().
-  private autoRetryCounter = 0;
+  private autoRetryTicks = 180; // recomputed from env at start()
 
   // ── In-process heartbeat ────────────────────────────────────────────────────
   // Written on every dispatch tick so the diagnostics panel can surface
@@ -446,63 +447,71 @@ class TranscoderDispatcher {
   }
 
   /**
-   * Gap 3: Periodically re-arm failed-but-recoverable transcoding jobs.
+   * Auto-retry recoverable failed transcoding jobs.
    *
-   * Jobs whose errorCode is CORRUPT_SOURCE or SOURCE_MISSING are permanently
-   * unrecoverable and are left alone. All other failed jobs (DISK_FULL,
-   * ffmpeg timeout, transient DB errors, etc.) are re-queued here so they
-   * self-heal without requiring operator action.
+   * Scans for transcoding_jobs with status='failed' where:
+   *   • attempts < maxAttempts (retry budget not exhausted)
+   *   • The managed_videos error code is NOT terminal:
+   *       – CORRUPT_SOURCE: moov atom absent — re-upload required
+   *       – SOURCE_MISSING: source blob deleted — re-upload required
+   *     DISK_FULL and transient FFmpeg exits are retryable once disk is freed.
+   *   • completedAt is older than TRANSCODER_AUTO_RETRY_INTERVAL_MS so we
+   *     don't immediately re-attempt a job that just failed.
    *
-   * Only runs when TRANSCODER_AUTO_RETRY_FAILED=true (default false — operators
-   * must opt in to avoid unexpected retry storms on corrupt-heavy libraries).
+   * Re-queued jobs reset nextRetryAt to now() so the dispatcher picks them
+   * up on the next tick. At most 20 jobs per sweep to bound DB work.
+   * Controlled by TRANSCODER_AUTO_RETRY_FAILED env var (default: true).
    */
   private async sweepRecoverableFailed(): Promise<void> {
     if (!env.TRANSCODER_AUTO_RETRY_FAILED) return;
-    try {
-      // Find failed jobs whose errorCode is NOT a terminal/unrecoverable code.
-      const failedResult = await db.execute<{
-        id: string;
-        video_id: string;
-        error_code: string | null;
-      }>(sql`
-        SELECT j.id, j.video_id, j.error_code
-        FROM transcoding_jobs j
-        WHERE j.status = 'failed'
-          AND (j.error_code IS NULL OR j.error_code != ALL(ARRAY['CORRUPT_SOURCE','SOURCE_MISSING']))
-        LIMIT 20
-      `);
+    type CandidateRow = { id: string; videoId: string; attempts: number };
+    const candidates = await db.execute<CandidateRow>(sql`
+      SELECT tj.id, tj.video_id AS "videoId", tj.attempts
+      FROM transcoding_jobs tj
+      LEFT JOIN managed_videos mv ON mv.id = tj.video_id
+      WHERE tj.status = 'failed'
+        AND tj.attempts < tj.max_attempts
+        AND (tj.completed_at IS NULL OR tj.completed_at < now() - (${env.TRANSCODER_AUTO_RETRY_INTERVAL_MS} || ' milliseconds')::interval)
+        AND (
+          mv.transcoding_error_code IS NULL
+          OR mv.transcoding_error_code NOT IN ('CORRUPT_SOURCE', 'SOURCE_MISSING')
+        )
+      ORDER BY tj.created_at ASC
+      LIMIT 20
+    `);
+    const rows = (candidates.rows as CandidateRow[]) ?? [];
+    if (rows.length === 0) return;
 
-      const failedRows = failedResult.rows as Array<{
-        id: string;
-        video_id: string;
-        error_code: string | null;
-      }>;
+    const ids = rows.map((r) => r.id);
+    await db
+      .update(jobs)
+      .set({
+        status: "queued",
+        nextRetryAt: new Date(),
+        errorMessage: sql`CONCAT(COALESCE(error_message, ''), ' [auto-retried by dispatcher]')`,
+      })
+      .where(inArray(jobs.id, ids));
 
-      if (failedRows.length === 0) return;
+    // Reset the managed_videos status back to 'queued' so the UI shows
+    // the video as pending rather than permanently failed.
+    const videoIds = [...new Set(rows.map((r) => r.videoId))];
+    await db
+      .update(videos)
+      .set({ transcodingStatus: "queued", transcodingErrorCode: null })
+      .where(and(inArray(videos.id, videoIds), eq(videos.transcodingStatus, "failed")));
 
-      // Re-arm each as 'queued' so the dispatcher picks it up on the next tick.
-      const failedIds = failedRows.map((r) => r.id);
-      await db.execute(sql`
-        UPDATE transcoding_jobs
-        SET status = 'queued',
-            attempts = GREATEST(attempts - 1, 0),
-            started_at = NULL,
-            completed_at = NULL,
-            error_message = NULL,
-            updated_at = NOW()
-        WHERE id = ANY(${failedIds}::text[])
-          AND status = 'failed'
-      `);
+    logger.warn(
+      { count: rows.length, jobIds: ids, videoIds },
+      "transcoder: auto-retry sweep re-queued recoverable failed jobs",
+    );
 
-      logger.warn(
-        {
-          count: failedRows.length,
-          videoIds: failedRows.map((r) => r.video_id),
-        },
-        "transcoder: Gap 3 auto-retry sweep re-armed recoverable failed jobs",
-      );
-    } catch (err) {
-      logger.warn({ err }, "transcoder: Gap 3 auto-retry sweep failed (non-fatal)");
+    for (const r of rows) {
+      adminEventBus.push("transcoding-update", {
+        videoId: r.videoId,
+        jobId: r.id,
+        status: "queued",
+        progress: 0,
+      });
     }
   }
 
@@ -812,16 +821,17 @@ class TranscoderDispatcher {
         });
       }
 
-      // Gap 3: Auto-retry recoverable failed jobs on a periodic cadence.
-      this.autoRetryCounter++;
-      if (
-        this.autoRetryCounter >=
-        Math.max(1, Math.round(env.TRANSCODER_AUTO_RETRY_INTERVAL_MS / env.TRANSCODER_POLL_MS))
-      ) {
-        this.autoRetryCounter = 0;
-        await this.sweepRecoverableFailed().catch((err) => {
-          logger.warn({ err }, "transcoder: auto-retry sweep error (non-fatal)");
-        });
+      // Auto-retry recoverable failed jobs on a periodic cadence.
+      // Guard counter increment behind env flag so it doesn't tick when disabled.
+      if (env.TRANSCODER_AUTO_RETRY_FAILED) {
+        this.autoRetryCounter++;
+        const retryTicks = Math.max(1, Math.round(env.TRANSCODER_AUTO_RETRY_INTERVAL_MS / env.TRANSCODER_POLL_MS));
+        if (this.autoRetryCounter >= retryTicks) {
+          this.autoRetryCounter = 0;
+          await this.sweepRecoverableFailed().catch((err) => {
+            logger.warn({ err }, "transcoder: auto-retry sweep error (non-fatal)");
+          });
+        }
       }
 
       const now = new Date();

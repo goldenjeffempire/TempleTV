@@ -139,6 +139,8 @@ class QueueIntegrityValidatorImpl {
         .where(eq(q.isActive, true))
         .orderBy(asc(q.sortOrder));
 
+      this.cycleCount++;
+
       // Items with SUSPICIOUS_DURATION collected here for background reprobe
       // after the main issue-detection loop (max 3 per cycle).
       const suspiciousDurationItems: Array<{ id: string; videoId: string; localUrl: string }> = [];
@@ -146,6 +148,13 @@ class QueueIntegrityValidatorImpl {
       // duration. ffprobe can recover the real duration from the VOD manifest.
       const hlsPlaceholderDurationItems: Array<{ id: string; videoId: string; hlsUrl: string }> = [];
 
+      // HLS-ready items collected for storage-integrity check (max 5 per cycle).
+      // Verifies that transcoded/{videoId}/master.m3u8 actually exists in
+      // storage_blobs — a crash during segment upload can leave hlsMasterUrl
+      // set in DB with the blob absent, causing dead-air auto-skips.
+      const hlsReadyItems: Array<{ id: string; videoId: string; title: string; hlsUrl: string }> = [];
+
+      // HLS items that still carry the 1800 s placeholder duration, collected
       for (const row of rows) {
         const hasAnyUrl =
           row.qHlsUrl || row.qLocalUrl || row.vHlsUrl || row.vLocalUrl;
@@ -178,6 +187,15 @@ class QueueIntegrityValidatorImpl {
             code: "ORPHANED_VIDEO_REF",
             message: `Video '${row.videoId}' exists but has no playable URLs — upload may be incomplete`,
           });
+        }
+
+        // Collect HLS-ready items for the storage blob integrity check below.
+        // Only items where the video itself reports an HLS URL (vHlsUrl set) —
+        // these are the only ones whose blob key follows the transcoded/{id}/
+        // convention managed by our transcoder. Queue-row-only HLS URLs are
+        // externally hosted and need no storage check.
+        if (row.videoId2 !== null && row.vHlsUrl && row.vStatus === "hls_ready") {
+          hlsReadyItems.push({ id: row.id, videoId: row.videoId2, title: row.title, hlsUrl: row.vHlsUrl });
         }
 
         // UNPLAYABLE_CORRUPT_UPLOAD: video transcoding permanently failed AND
@@ -329,6 +347,46 @@ class QueueIntegrityValidatorImpl {
                 "Viewers may experience long startup buffering. Faststart recovery runs in the background and will fix this automatically.",
             });
           }
+        }
+      }
+
+      // ── HLS Storage Integrity check (max 5 per cycle) ─────────────────────
+      // For active queue items where managed_videos.transcodingStatus='hls_ready'
+      // AND hlsMasterUrl is populated, verify that
+      // `transcoded/{videoId}/master.m3u8` actually exists in storage_blobs.
+      //
+      // Root cause: a server crash during the final segment upload window (after
+      // the DB column was written but before every segment blob was persisted)
+      // leaves the DB reporting hls_ready while the storage object is absent.
+      // The orchestrator resolves the URL, probes it, gets 404, marks it bad,
+      // and causes dead-air auto-skips until the bad-URL TTL expires.
+      //
+      // Checks are sequential (simple PK-index EXISTS query, sub-ms each).
+      // We limit to 5 per validation cycle to bound the added latency.
+      const hlsStorageMissingIds: string[] = [];
+      const hlsStorageMissingVideoIds: string[] = [];
+      for (const item of hlsReadyItems.slice(0, 5)) {
+        try {
+          const masterKey = `transcoded/${item.videoId}/master.m3u8`;
+          const existsResult = await db.execute<{ blob_exists: string }>(
+            sql`SELECT EXISTS(SELECT 1 FROM storage_blobs WHERE key = ${masterKey}) AS blob_exists`,
+          );
+          const blobExists = String((existsResult.rows[0] as Record<string, unknown> | undefined)?.blob_exists) === "true";
+          if (!blobExists) {
+            issues.push({
+              severity: "error",
+              itemId: item.id,
+              itemTitle: item.title,
+              code: "HLS_STORAGE_MISSING",
+              message:
+                `HLS master.m3u8 blob absent from storage (key=${masterKey}) — ` +
+                `DB reports hls_ready but the file is missing; retranscoding triggered automatically`,
+            });
+            hlsStorageMissingIds.push(item.id);
+            hlsStorageMissingVideoIds.push(item.videoId);
+          }
+        } catch {
+          // Non-fatal: a DB error here must not abort the full validation run
         }
       }
 
@@ -785,6 +843,103 @@ class QueueIntegrityValidatorImpl {
             logger.warn(
               { err: fixErr, count: revivedIds.length },
               "[queue-validator] AUTO-FIX (reverse): failed to re-activate ORPHANED_VIDEO_REF items (non-fatal)",
+            );
+          }
+        }
+      }
+
+      // ── Auto-fix: deactivate HLS_STORAGE_MISSING items and trigger retranscode ──
+      // Items whose HLS master blob is absent from storage_blobs cannot be played.
+      // Deactivate them so the orchestrator stops trying to serve them (preventing
+      // repeated bad-URL cache entries and dead-air skip cycles), and re-arm the
+      // transcoder so the HLS is rebuilt automatically without operator action.
+      if (hlsStorageMissingIds.length > 0) {
+        try {
+          await db
+            .update(schema.broadcastQueueTable)
+            .set({
+              isActive: false,
+              validatorDeactivatedReason: "hls_storage_missing",
+            })
+            .where(inArray(schema.broadcastQueueTable.id, hlsStorageMissingIds));
+          logger.error(
+            { count: hlsStorageMissingIds.length, itemIds: hlsStorageMissingIds, videoIds: hlsStorageMissingVideoIds },
+            "[queue-validator] AUTO-FIX: deactivated HLS_STORAGE_MISSING items " +
+            "(hlsMasterUrl set in DB but blob absent from storage_blobs) — " +
+            "removed from broadcast rotation; retranscoding triggered automatically",
+          );
+          adminEventBus.push("broadcast-queue-updated", {
+            reason: "integrity-fix-hls-storage-missing",
+            count: hlsStorageMissingIds.length,
+          });
+        } catch (fixErr) {
+          logger.warn(
+            { err: fixErr, count: hlsStorageMissingIds.length },
+            "[queue-validator] AUTO-FIX: failed to deactivate HLS_STORAGE_MISSING items (non-fatal)",
+          );
+        }
+        // Trigger retranscode for each video — enqueueTranscode is idempotent
+        // (creates a new job or re-arms an existing one with backoff reset).
+        for (const videoId of hlsStorageMissingVideoIds) {
+          try {
+            await enqueueTranscode({ videoId, priority: 10 });
+          } catch (enqErr) {
+            logger.warn(
+              { err: enqErr, videoId },
+              "[queue-validator] AUTO-FIX: failed to enqueue retranscode for HLS_STORAGE_MISSING video (non-fatal)",
+            );
+          }
+        }
+      }
+
+      // ── Auto-fix (reverse): re-activate HLS_STORAGE_MISSING items once healed ──
+      // When retranscoding completes (transcodingStatus='hls_ready'), re-activate
+      // the queue item so the content returns to air automatically.
+      {
+        type RevivedHlsRow = { id: string; title: string };
+        let revivedHlsRows: RevivedHlsRow[] = [];
+        try {
+          const result = await db.execute<RevivedHlsRow>(sql`
+            SELECT bq.id, bq.title
+            FROM broadcast_queue bq
+            INNER JOIN managed_videos mv ON mv.id = bq.video_id
+            WHERE bq.is_active = false
+              AND bq.validator_deactivated_reason = 'hls_storage_missing'
+              AND mv.transcoding_status = 'hls_ready'
+              AND mv.hls_master_url IS NOT NULL
+              AND EXISTS (
+                SELECT 1 FROM storage_blobs sb
+                WHERE sb.key = CONCAT('transcoded/', mv.id::text, '/master.m3u8')
+              )
+          `);
+          revivedHlsRows = (result.rows as RevivedHlsRow[]) ?? [];
+        } catch (qErr) {
+          logger.debug(
+            { err: qErr },
+            "[queue-validator] reverse-HLS_STORAGE_MISSING query failed (non-fatal)",
+          );
+        }
+
+        if (revivedHlsRows.length > 0) {
+          const revivedHlsIds = revivedHlsRows.map((r) => r.id);
+          try {
+            await db
+              .update(schema.broadcastQueueTable)
+              .set({ isActive: true, validatorDeactivatedReason: null })
+              .where(inArray(schema.broadcastQueueTable.id, revivedHlsIds));
+            logger.warn(
+              { count: revivedHlsIds.length, itemIds: revivedHlsIds },
+              "[queue-validator] AUTO-FIX (reverse): re-activated HLS_STORAGE_MISSING items " +
+              "whose video now has hls_ready status — items returned to broadcast rotation",
+            );
+            adminEventBus.push("broadcast-queue-updated", {
+              reason: "integrity-fix-revived-hls-storage-missing",
+              count: revivedHlsIds.length,
+            });
+          } catch (fixErr) {
+            logger.warn(
+              { err: fixErr, count: revivedHlsIds.length },
+              "[queue-validator] AUTO-FIX (reverse): failed to re-activate HLS_STORAGE_MISSING items (non-fatal)",
             );
           }
         }

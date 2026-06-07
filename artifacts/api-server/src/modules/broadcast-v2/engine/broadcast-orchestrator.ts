@@ -583,6 +583,21 @@ class BroadcastOrchestrator extends EventEmitter {
               );
             });
         }
+
+        // Dead-air external stream fallback: when all queue sources have been
+        // blocked for >BROADCAST_DEADAIR_FALLBACK_AFTER_MS AND a fallback URL
+        // is configured, apply it as a broadcast override so viewers never see
+        // dead air due to a fully-blocked queue. Auto-cleared when the queue
+        // recovers playable content (see reloadInner).
+        if (
+          this.allBlockedSinceMs !== null &&
+          env.BROADCAST_DEADAIR_FALLBACK_URL &&
+          Date.now() - this.allBlockedSinceMs >= env.BROADCAST_DEADAIR_FALLBACK_AFTER_MS &&
+          this.mode !== "override" &&
+          !this.deadAirFallbackActive
+        ) {
+          this.applyDeadAirFallback();
+        }
       }
     }, SELF_HEAL_STALE_MS);
     this.selfHealStaleTimer.unref?.();
@@ -906,6 +921,24 @@ class BroadcastOrchestrator extends EventEmitter {
         logger.debug(
           { channel: this.channelId, resolvedCount: resolved.length },
           "[broadcast-v2] reloadInner: items resolved — reset all-blocked tracking state",
+        );
+      }
+      // Auto-clear dead-air fallback override when the queue recovers playable
+      // content. Only clears overrides that THIS code applied — operator-applied
+      // overrides (different override id) are left untouched.
+      if (
+        this.deadAirFallbackActive &&
+        this.deadAirFallbackOverrideId !== null &&
+        this.override?.id === this.deadAirFallbackOverrideId
+      ) {
+        this.deadAirFallbackActive = false;
+        this.deadAirFallbackOverrideId = null;
+        logger.info(
+          { channel: this.channelId, resolvedCount: resolved.length },
+          "[broadcast-v2] dead-air fallback override auto-cleared — queue has recovered playable content",
+        );
+        void this.stopOverride().catch((err) =>
+          logger.warn({ err, channel: this.channelId }, "[broadcast-v2] dead-air fallback override stop failed (non-fatal)"),
         );
       }
     }
@@ -1269,6 +1302,20 @@ class BroadcastOrchestrator extends EventEmitter {
   /** Timestamp (ms) when we first detected items loaded but all URLs blocked.
    *  Null when not in that state. Used for auto-recovery after the TTL window. */
   private allBlockedSinceMs: number | null = null;
+
+  /**
+   * Dead-air external stream fallback state.
+   *
+   * When all queue sources remain blocked for >BROADCAST_DEADAIR_FALLBACK_AFTER_MS
+   * AND BROADCAST_DEADAIR_FALLBACK_URL is set, applyDeadAirFallback() is called
+   * once to apply the fallback URL as a broadcast override. The override id is
+   * tracked in deadAirFallbackOverrideId so the fallback can be identified and
+   * auto-cleared when the queue recovers playable content.
+   *
+   * Guard: deadAirFallbackActive prevents duplicate concurrent calls.
+   */
+  private deadAirFallbackActive = false;
+  private deadAirFallbackOverrideId: string | null = null;
   /**
    * How many times the all-blocked TTL recovery cycle has fired without any
    * item successfully playing to completion (naturalItemEnd).
@@ -1416,6 +1463,54 @@ class BroadcastOrchestrator extends EventEmitter {
    * The cooldown is reset to 0 whenever the orchestrator successfully loads
    * items, so the next outage always gets an immediate first escalation.
    */
+  /**
+   * Apply the configured BROADCAST_DEADAIR_FALLBACK_URL as a broadcast override.
+   *
+   * Fires when all queue sources remain blocked for >BROADCAST_DEADAIR_FALLBACK_AFTER_MS.
+   * The URL kind is inferred from the URL pattern (.m3u8 → hls, otherwise rtmp).
+   * The override runs indefinitely (endsAtMs=null) with resumeQueueOnEnd=true so
+   * that when the override is manually stopped the queue resumes from where it left off.
+   *
+   * Auto-cleared in reloadInner() when the queue recovers playable content
+   * (deadAirFallbackActive=true AND override.id matches deadAirFallbackOverrideId
+   * AND items.length>0 with at least one resolved source).
+   *
+   * Fire-and-forget via void to avoid blocking the setInterval callback.
+   */
+  private applyDeadAirFallback(): void {
+    if (this.deadAirFallbackActive) return;
+    const fallbackUrl = env.BROADCAST_DEADAIR_FALLBACK_URL;
+    if (!fallbackUrl) return;
+    if (this.mode === "override") return;
+    this.deadAirFallbackActive = true;
+
+    const kind: "hls" | "rtmp" = /\.m3u8(\?|$)/i.test(fallbackUrl) ? "hls" : "rtmp";
+    const allBlockedMs = this.allBlockedSinceMs !== null ? Date.now() - this.allBlockedSinceMs : 0;
+
+    logger.warn(
+      { channel: this.channelId, fallbackUrl, kind, allBlockedMs },
+      "[broadcast-v2] dead-air fallback: all sources blocked >threshold — applying external stream override",
+    );
+
+    void this.startOverride({
+      kind,
+      url: fallbackUrl,
+      title: "Emergency Fallback Stream",
+      endsAtMs: null,
+      resumeQueueOnEnd: true,
+    }).then((ov) => {
+      this.deadAirFallbackOverrideId = ov.id;
+      logger.warn(
+        { channel: this.channelId, overrideId: ov.id, kind, url: fallbackUrl },
+        "[broadcast-v2] dead-air fallback override activated — will auto-clear when queue recovers",
+      );
+    }).catch((err) => {
+      this.deadAirFallbackActive = false;
+      this.deadAirFallbackOverrideId = null;
+      logger.warn({ err, channel: this.channelId }, "[broadcast-v2] dead-air fallback override failed (non-fatal)");
+    });
+  }
+
   private escalateDeadAir(): void {
     const now = Date.now();
     if (now - this.lastDeadAirEscalationMs < DEAD_AIR_ESCALATION_COOLDOWN_MS) return;
