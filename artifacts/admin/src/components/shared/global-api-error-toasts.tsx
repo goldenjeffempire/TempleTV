@@ -23,6 +23,12 @@ import { apiErrorBus, type ApiErrorEvent } from "@/lib/api-error-bus";
 const DEDUP_WINDOW_MS = 10_000;
 const MAX_ACTIVE_TOASTS = 3;
 
+// How many transient errors (502/503/504/network) must occur within
+// TRANSIENT_WINDOW_MS before the "Server unreachable" toast is shown.
+// A single rolling-restart blip in production should not alarm operators.
+const TRANSIENT_SHOW_THRESHOLD = 2;
+const TRANSIENT_WINDOW_MS = 30_000;
+
 // Normalise a path for deduplication: strip query strings and replace
 // UUID/numeric segments with ":id" so bulk row failures collapse to one toast.
 function normalisePath(raw: string): string {
@@ -35,6 +41,11 @@ function normalisePath(raw: string): string {
 export function GlobalApiErrorToasts() {
   const seenRef = useRef<Map<string, number>>(new Map());
   const activeRef = useRef(0);
+  // Tracks timestamps of recent transient errors (502/503/504/network) across
+  // all paths. The "Server unreachable" toast is only shown once at least
+  // TRANSIENT_SHOW_THRESHOLD errors have occurred within TRANSIENT_WINDOW_MS.
+  // This prevents a single rolling-restart blip from alarming operators.
+  const transientTimestampsRef = useRef<number[]>([]);
 
   useEffect(() => {
     const unsub = apiErrorBus.subscribe((ev: ApiErrorEvent) => {
@@ -50,25 +61,38 @@ export function GlobalApiErrorToasts() {
       if (now - lastSeen < DEDUP_WINDOW_MS) return;
       if (activeRef.current >= MAX_ACTIVE_TOASTS) return;
 
-      seenRef.current.set(key, now);
-      activeRef.current += 1;
-
-      const onClose = () => {
-        activeRef.current = Math.max(0, activeRef.current - 1);
-      };
-
       const isTransient =
         status === 0 || status === 502 || status === 503 || status === 504;
 
       if (isTransient) {
-        toast.warning("Server unreachable — retrying automatically", {
+        // Append timestamp and prune entries outside the rolling window.
+        transientTimestampsRef.current.push(now);
+        transientTimestampsRef.current = transientTimestampsRef.current.filter(
+          (ts) => now - ts < TRANSIENT_WINDOW_MS,
+        );
+
+        // Only show the toast once the threshold is reached to avoid alarming
+        // operators on a single brief server blip (e.g. rolling restart).
+        if (transientTimestampsRef.current.length < TRANSIENT_SHOW_THRESHOLD) {
+          return;
+        }
+
+        seenRef.current.set(key, now);
+        activeRef.current += 1;
+        const onClose = () => { activeRef.current = Math.max(0, activeRef.current - 1); };
+
+        toast.warning("API server temporarily unavailable", {
           description:
-            "The API server is briefly unavailable. In-flight requests will retry on the next attempt.",
-          duration: 5_000,
+            "Multiple requests failed in quick succession. The server may be restarting — requests will retry automatically.",
+          duration: 4_000,
           onDismiss: onClose,
           onAutoClose: onClose,
         });
       } else {
+        seenRef.current.set(key, now);
+        activeRef.current += 1;
+        const onClose = () => { activeRef.current = Math.max(0, activeRef.current - 1); };
+
         const title =
           status >= 500 ? `Server error (${status})` : message;
         const description =

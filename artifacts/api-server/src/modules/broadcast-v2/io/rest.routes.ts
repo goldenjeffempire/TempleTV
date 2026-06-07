@@ -17,7 +17,7 @@ import {
 import { requireAuth } from "../../../middleware/auth.js";
 import { broadcastService } from "../../broadcast/broadcast.service.js";
 import { scanLibraryAndEnqueue, listMissingFromQueue } from "../../broadcast/auto-enqueue.service.js";
-import { markBadUrl, clearAllBadUrls, getItemsHealth, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, getRecentlySuspended, reEnableAllSuspended, normalizeQueueUrl } from "../repository/queue.repo.js";
+import { markBadUrl, markBadUrlWithTtl, clearAllBadUrls, getItemsHealth, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, SUSPENSION_TTL_MS, getRecentlySuspended, reEnableAllSuspended, normalizeQueueUrl } from "../repository/queue.repo.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { faststartRecoveryWorker } from "../engine/faststart-recovery.js";
 import { db, schema } from "../../../infrastructure/db.js";
@@ -107,6 +107,13 @@ async function autoEnqueueMissingHls(): Promise<{ triggered: number }> {
     _hlsScanInFlight = false;
   }
 }
+// How long to suppress a missing-HLS item's URL in the bad-URL cache.
+// Matches SUSPENSION_TTL_MS (5 min) from queue.repo so the item stays
+// out of the orchestrator's rotation while transcoding is in progress.
+// Once the TTL expires the orchestrator tries again — if HLS is still
+// absent another autoEnqueueMissingHls call re-suppresses it.
+const MISSING_HLS_SUPPRESS_TTL_MS = SUSPENSION_TTL_MS;
+
 async function _doAutoEnqueueMissingHls(): Promise<{ triggered: number }> {
   const q = schema.broadcastQueueTable;
   const v = schema.videosTable;
@@ -154,6 +161,22 @@ async function _doAutoEnqueueMissingHls(): Promise<{ triggered: number }> {
     void boostTranscodePriority(row.videoId, 10).catch((err: unknown) => {
       logger.warn({ err, videoId: row.videoId }, "[broadcast-v2] auto-enqueue-missing-hls: boostTranscodePriority error (non-fatal)");
     });
+
+    // ── Suppress this item's raw MP4 URL in the bad-URL cache ────────────
+    // Without this, the orchestrator keeps serving the raw localVideoUrl as
+    // a fallback while transcoding is queued — but that MP4 often fails too
+    // (missing faststart, large file, or blob absent from storage), causing:
+    //   RECOVERING_PRIMARY → RECOVERING_FAILOVER → SKIP_PENDING (×3) → FATAL
+    // for every player. Marking the URL bad immediately removes the item from
+    // the orchestrator's rotation for MISSING_HLS_SUPPRESS_TTL_MS (5 min),
+    // causing snapshot().current to advance to the next playable item. The
+    // item auto-recovers once HLS transcoding completes (the bad-URL entry
+    // expires and the HLS URL replaces the raw MP4 as the primary source).
+    const suppressUrl = normalizeQueueUrl(row.localVideoUrl);
+    if (suppressUrl) {
+      markBadUrlWithTtl(suppressUrl, MISSING_HLS_SUPPRESS_TTL_MS);
+    }
+
     triggered++;
   }
   if (triggered > 0) {

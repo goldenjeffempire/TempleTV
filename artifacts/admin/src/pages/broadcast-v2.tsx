@@ -1981,7 +1981,14 @@ function BroadcastV2PageInner() {
           {fullyConnected ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
           {linkLabel}
         </Badge>
-        <Badge variant="outline">FSM: {snapshot.state}</Badge>
+        <Badge
+          variant={snapshot.state === "FATAL" ? "destructive" : "outline"}
+          className={snapshot.state === "FATAL" ? "gap-1" : undefined}
+          title={snapshot.state === "FATAL" ? "The broadcast player has entered a terminal failure state. It will auto-retry after a backoff period. If items have missing HLS, use 'Prepare HLS' to queue transcoding." : undefined}
+        >
+          {snapshot.state === "FATAL" && <AlertTriangle className="h-3 w-3" />}
+          FSM: {snapshot.state}
+        </Badge>
         {server && (
           <>
             <Badge variant="secondary">Mode: {server.mode}</Badge>
@@ -2086,6 +2093,30 @@ function BroadcastV2PageInner() {
             : sse.state === "connected"
             ? "Broadcast preview reconnecting — playback continues from last known state."
             : "Reconnecting to live services…"}
+        </div>
+      )}
+
+      {/* FATAL + missing HLS correlation alert — explains the root cause when
+          the player FSM has entered FATAL state because items in the queue
+          have no playable source. Guides the operator to Prepare HLS. */}
+      {snapshot.state === "FATAL" && pendingHlsCount > 0 && (
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-md border border-red-300/60 bg-red-50 px-4 py-3 text-sm text-red-900 dark:border-red-700/60 dark:bg-red-950/30 dark:text-red-200"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div className="flex-1">
+            <span className="font-medium">Broadcast in recovery — {pendingHlsCount} queue item{pendingHlsCount !== 1 ? "s" : ""} have no playable source.</span>
+            {" "}HLS transcoding is not yet complete, so those items cannot air. Use{" "}
+            <button
+              className="underline underline-offset-2 font-medium hover:opacity-80 transition-opacity"
+              onClick={() => void prepareHls()}
+              disabled={busy === "prepare-hls"}
+            >
+              Prepare HLS
+            </button>
+            {" "}to queue transcoding and restore normal broadcast automatically.
+          </div>
         </div>
       )}
 

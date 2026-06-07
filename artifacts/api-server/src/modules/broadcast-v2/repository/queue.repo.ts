@@ -253,6 +253,33 @@ export function markBadUrl(url: string): void {
   logger.info({ url, ttlMs: BAD_URL_TTL_MS }, "[broadcast-v2] URL marked bad — will skip in snapshots");
 }
 
+/**
+ * Mark a source URL as temporarily unavailable with a custom TTL.
+ *
+ * Used by autoEnqueueMissingHls to suppress items whose HLS is absent and
+ * are being re-transcoded — those items should not air as raw MP4 (which
+ * often fails too) while the transcoding job is in progress. A 10-minute
+ * TTL covers worst-case transcoding time on a lightly-loaded server and
+ * prevents the RECOVERING → SKIP_PENDING → FATAL cycle for every player.
+ *
+ * The item auto-recovers once the TTL expires regardless of transcoding
+ * completion — the orchestrator will then serve it again. If HLS is still
+ * absent at that point, the next autoEnqueueMissingHls call re-suppresses it.
+ */
+export function markBadUrlWithTtl(url: string, ttlMs: number): void {
+  const now = Date.now();
+  if (badUrlCache.size > 500) {
+    for (const [u, exp] of badUrlCache) {
+      if (exp < now) badUrlCache.delete(u);
+    }
+  }
+  badUrlCache.set(url, now + ttlMs);
+  logger.info(
+    { url, ttlMs },
+    "[broadcast-v2] URL suppressed with custom TTL — will skip in snapshots until transcoding completes",
+  );
+}
+
 /** Clear a URL from the bad cache (e.g. after a queue reload with new sources). */
 export function clearBadUrl(url: string): void {
   badUrlCache.delete(url);
