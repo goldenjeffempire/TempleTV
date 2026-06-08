@@ -439,28 +439,42 @@ class QueueIntegrityValidatorImpl {
       // the DB query uses ORDER BY sort_order, so ties resolve to arbitrary
       // DB page order, which can differ between reloads. The fix reassigns
       // ALL active items (not just the duplicates) to a clean monotonic
-      // sequence (gap of 10) in the order they appear in the current query
-      // result. rows is already ordered by asc(sortOrder) so the existing
-      // intended sequence is preserved.
+      // sequence (gap of 10) in the order they appear in a fresh query
+      // result. A fresh fetch is used rather than re-using `rows` to exclude
+      // any items deactivated earlier in this same validator cycle
+      // (MISSING_VIDEO_JOIN, DUPLICATE_ACTIVE_VIDEO, UNPLAYABLE_CORRUPT_UPLOAD)
+      // so they don't consume sequence slots while is_active=false.
       if (duplicateItemIds.length > 0) {
         try {
-          // Single batched UPDATE instead of N individual round-trips inside a
-          // transaction. PostgreSQL's UPDATE … FROM (VALUES …) processes all
-          // reassignments atomically in one statement, which is O(1) DB latency
-          // regardless of queue length.  broadcast_queue.id is a text column
-          // (nanoid format), NOT uuid — cast to ::text, not ::uuid.
-          const valuesList = rows
-            .map((r, i) => `('${r.id.replace(/'/g, "''")}', ${(i + 1) * 10}::int)`)
-            .join(",");
-          await db.execute(
-            sql.raw(
-              `UPDATE broadcast_queue bq SET sort_order = v.new_order` +
-              ` FROM (VALUES ${valuesList}) AS v(id, new_order)` +
-              ` WHERE bq.id = v.id`,
-            ),
-          );
+          // Re-fetch active IDs immediately before reassignment. Items
+          // deactivated earlier in this cycle are now is_active=false and
+          // will be excluded from the ORDER BY sort_order scan, giving the
+          // remaining active items a clean contiguous sequence.
+          const freshRows = await db
+            .select({ id: q.id })
+            .from(q)
+            .where(eq(q.isActive, true))
+            .orderBy(asc(q.sortOrder));
+
+          // Use individual parameterised Drizzle updates inside a transaction
+          // instead of sql.raw() string interpolation. The original approach
+          // manually escaped the id column with replace(/'/g,"''") which is
+          // structurally unsafe (SQL injection) even though nanoid IDs happen
+          // to be alphanumeric. Individual updates are O(N) DB round-trips
+          // but queue lengths rarely exceed a few dozen items, making the
+          // latency difference negligible compared to the correctness gain.
+          await db.transaction(async (tx) => {
+            for (let i = 0; i < freshRows.length; i++) {
+              const row = freshRows[i]!;
+              await tx
+                .update(schema.broadcastQueueTable)
+                .set({ sortOrder: (i + 1) * 10 })
+                .where(eq(schema.broadcastQueueTable.id, row.id));
+            }
+          });
+
           logger.warn(
-            { count: duplicateItemIds.length, totalReassigned: rows.length },
+            { count: duplicateItemIds.length, totalReassigned: freshRows.length },
             "[queue-validator] AUTO-FIX: reassigned sort_order for all active items to restore deterministic queue ordering",
           );
           adminEventBus.push("broadcast-queue-updated", {

@@ -346,12 +346,16 @@ export function incrementBadUrlSkipCount(itemId: string): number {
   // In normal operation the map rarely exceeds single digits; > 500 entries
   // indicates something unusual and pruning to 450 is safe.
   if (badUrlSkipCounts.size > 500) {
+    // Evict the entries with the LOWEST skip count (least relevant) rather
+    // than the oldest-inserted. This ensures actively-failing items (high
+    // skip count, close to the suspension threshold) are never displaced to
+    // make room for new entries — those are precisely the items whose
+    // accumulated count must be preserved so they reach suspension and stop
+    // burning broadcast skip budget.
     const toEvict = badUrlSkipCounts.size - 450;
-    let evicted = 0;
-    for (const key of badUrlSkipCounts.keys()) {
-      if (evicted >= toEvict) break;
-      badUrlSkipCounts.delete(key);
-      evicted++;
+    const sorted = [...badUrlSkipCounts.entries()].sort((a, b) => a[1] - b[1]);
+    for (let i = 0; i < toEvict; i++) {
+      badUrlSkipCounts.delete(sorted[i]![0]);
     }
   }
   const next = (badUrlSkipCounts.get(itemId) ?? 0) + 1;
