@@ -405,7 +405,37 @@ export async function restRoutes(app: FastifyInstance) {
 
 const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegative().default(0) });
 
+// ── Shared response schemas for broadcast-v2 POST routes ─────────────────────
+// Defined at module scope (once) to avoid repeated object allocations on
+// every route registration. Not per-request.
+const _400err = z.object({ error: z.string() });
+const _429err = z.object({ error: z.string() });
+const _200ok = z.object({ ok: z.literal(true), duplicate: z.boolean().optional() });
+const _200okSeq = z.object({
+  ok: z.literal(true),
+  sequence: z.number().int().nonnegative(),
+  duplicate: z.boolean().optional(),
+  reEnabled: z.number().int().optional(),
+});
+
   app.get("/rehydrate", {
+    schema: {
+      querystring: _rehydrateQS,
+      response: {
+        200: z.object({
+          sequence: z.number().int(),
+          events: z.array(z.object({
+            sequence: z.number().int(),
+            type: z.string(),
+            payload: z.unknown(),
+            createdAt: z.string(),
+          })),
+        }),
+        400: _400err,
+        429: _429err,
+        503: z.object({ error: z.string() }),
+      },
+    },
     config: {
       // Each call triggers a DB query (eventLogRepo.replayFrom). Limit to
       // 10 req/min per IP — replay is only needed on cold start and after
@@ -413,9 +443,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       rateLimit: { max: 10, timeWindow: "1 minute" },
     },
   }, async (req, reply) => {
-    const qsParsed = _rehydrateQS.safeParse(req.query);
-    if (!qsParsed.success) return reply.code(400).send({ error: "invalid fromSequence" });
-    const fromSeq = qsParsed.data.fromSequence;
+    const fromSeq = (req.query as z.infer<typeof _rehydrateQS>).fromSequence;
     try {
       const events = await eventLogRepo.replayFrom(broadcastOrchestrator.channelId, fromSeq, 200);
       return {
@@ -437,36 +465,55 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   // Authz piggybacks on the existing /admin RBAC chain — these routes get
   // mounted under both /broadcast-v2 (public read) and /admin/broadcast-v2
   // (full command surface) by the parent plugin.
-  app.post("/skip", { ...adminGuard, bodyLimit: 1048576, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
-    const parsed = SkipCommand.safeParse(req.body);
-    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    if (!checkIdempotency(parsed.data.idempotencyKey)) {
+  app.post("/skip", {
+    ...adminGuard,
+    bodyLimit: 1048576,
+    schema: { body: SkipCommand, response: { 200: _200okSeq, 400: _400err, 429: _429err } },
+    config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+  }, async (req, _reply) => {
+    const body = req.body as z.infer<typeof SkipCommand>;
+    if (!checkIdempotency(body.idempotencyKey)) {
       return { ok: true, sequence: broadcastOrchestrator.getSequence(), duplicate: true };
     }
     await broadcastOrchestrator.skip();
     return { ok: true, sequence: broadcastOrchestrator.getSequence() };
   });
 
-  app.post("/override/start", { ...adminOnlyGuard, bodyLimit: 1048576, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
-    const parsed = StartOverrideCommand.safeParse(req.body);
-    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    if (!checkIdempotency(parsed.data.idempotencyKey)) {
+  app.post("/override/start", {
+    ...adminOnlyGuard,
+    bodyLimit: 1048576,
+    schema: {
+      body: StartOverrideCommand,
+      response: {
+        200: z.object({ ok: z.literal(true), override: z.unknown(), duplicate: z.boolean().optional() }),
+        400: _400err,
+        429: _429err,
+      },
+    },
+    config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+  }, async (req, _reply) => {
+    const body = req.body as z.infer<typeof StartOverrideCommand>;
+    if (!checkIdempotency(body.idempotencyKey)) {
       return { ok: true, override: broadcastOrchestrator.snapshot().override, duplicate: true };
     }
     const ov = await broadcastOrchestrator.startOverride({
-      kind: parsed.data.kind,
-      url: parsed.data.url,
-      title: parsed.data.title,
-      endsAtMs: parsed.data.endsAtMs ?? null,
-      resumeQueueOnEnd: parsed.data.resumeQueueOnEnd,
+      kind: body.kind,
+      url: body.url,
+      title: body.title,
+      endsAtMs: body.endsAtMs ?? null,
+      resumeQueueOnEnd: body.resumeQueueOnEnd,
     });
     return { ok: true, override: ov };
   });
 
-  app.post("/override/stop", { ...adminOnlyGuard, bodyLimit: 1048576, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
-    const parsed = StopOverrideCommand.safeParse(req.body);
-    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    if (!checkIdempotency(parsed.data.idempotencyKey)) return { ok: true, duplicate: true };
+  app.post("/override/stop", {
+    ...adminOnlyGuard,
+    bodyLimit: 1048576,
+    schema: { body: StopOverrideCommand, response: { 200: _200ok, 400: _400err, 429: _429err } },
+    config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+  }, async (req, _reply) => {
+    const body = req.body as z.infer<typeof StopOverrideCommand>;
+    if (!checkIdempotency(body.idempotencyKey)) return { ok: true, duplicate: true };
     await broadcastOrchestrator.stopOverride();
     return { ok: true };
   });
@@ -474,11 +521,15 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   // Force-failover switches to the failover source immediately.
   // 5/min — a rapid loop could cycle through sources faster than the
   // orchestrator can establish a stable stream.
-  app.post("/force-failover", { ...adminOnlyGuard, bodyLimit: 1048576, config: { rateLimit: { max: 5, timeWindow: "1 minute" } } }, async (req, reply) => {
-    const parsed = ForceFailoverCommand.safeParse(req.body);
-    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    if (!checkIdempotency(parsed.data.idempotencyKey)) return { ok: true, duplicate: true };
-    await broadcastOrchestrator.forceFailover(parsed.data.reason);
+  app.post("/force-failover", {
+    ...adminOnlyGuard,
+    bodyLimit: 1048576,
+    schema: { body: ForceFailoverCommand, response: { 200: _200ok, 400: _400err, 429: _429err } },
+    config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+  }, async (req, _reply) => {
+    const body = req.body as z.infer<typeof ForceFailoverCommand>;
+    if (!checkIdempotency(body.idempotencyKey)) return { ok: true, duplicate: true };
+    await broadcastOrchestrator.forceFailover(body.reason);
     return { ok: true };
   });
 
@@ -489,10 +540,14 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   // reload (one POST per queue mutation) and the operator's "Reload"
   // button could race and apply twice — harmless for `reload()` today
   // but a contract violation that future engine refactors could exploit.
-  app.post("/clear-failover", { ...adminOnlyGuard, bodyLimit: 1048576, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
-    const parsed = StopOverrideCommand.safeParse(req.body);
-    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    if (!checkIdempotency(parsed.data.idempotencyKey)) return { ok: true, duplicate: true };
+  app.post("/clear-failover", {
+    ...adminOnlyGuard,
+    bodyLimit: 1048576,
+    schema: { body: StopOverrideCommand, response: { 200: _200ok, 400: _400err, 429: _429err } },
+    config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+  }, async (req, _reply) => {
+    const body = req.body as z.infer<typeof StopOverrideCommand>;
+    if (!checkIdempotency(body.idempotencyKey)) return { ok: true, duplicate: true };
     await broadcastOrchestrator.clearFailover();
     return { ok: true };
   });
@@ -506,10 +561,14 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   // clear the in-process bad-URL cache so previously-failing items get a fresh
   // attempt. This turns the operator "Reload from queue" button into a full
   // recovery action that rescues a permanently Off Air broadcast without a deploy.
-  app.post("/reload", { ...adminGuard, bodyLimit: 1048576, config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (req, reply) => {
-    const parsed = StopOverrideCommand.safeParse(req.body);
-    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    if (!checkIdempotency(parsed.data.idempotencyKey)) {
+  app.post("/reload", {
+    ...adminGuard,
+    bodyLimit: 1048576,
+    schema: { body: StopOverrideCommand, response: { 200: _200okSeq, 400: _400err, 429: _429err } },
+    config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+  }, async (req, _reply) => {
+    const body = req.body as z.infer<typeof StopOverrideCommand>;
+    if (!checkIdempotency(body.idempotencyKey)) {
       return { ok: true, sequence: broadcastOrchestrator.getSequence(), duplicate: true };
     }
     const reEnabled = await reEnableAllSuspended();
@@ -584,19 +643,32 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
 
   app.post("/report-stall", {
     bodyLimit: 1048576,
+    schema: {
+      body: ReportStallCommand,
+      response: {
+        200: z.object({
+          ok: z.boolean(),
+          acted: z.boolean().optional(),
+          reason: z.string().optional(),
+          count: z.number().int().optional(),
+          skipped: z.boolean().optional(),
+          failCount: z.number().int().optional(),
+        }),
+        429: _429err,
+      },
+    },
     config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
   }, async (req, _reply) => {
-    const parsed = ReportStallCommand.safeParse(req.body);
-    if (!parsed.success) return { ok: false, reason: "invalid body" };
+    const body = req.body as z.infer<typeof ReportStallCommand>;
 
     const snap = broadcastOrchestrator.snapshot();
     // Only count votes for the item that is *currently* playing. Stale
     // reports (client reconnected but server already advanced) are no-ops.
-    if (!snap.current || snap.current.id !== parsed.data.itemId) {
+    if (!snap.current || snap.current.id !== body.itemId) {
       return { ok: true, acted: false, reason: "item-not-current" };
     }
 
-    const key = `${broadcastOrchestrator.channelId}:${parsed.data.itemId}`;
+    const key = `${broadcastOrchestrator.channelId}:${body.itemId}`;
     const now = Date.now();
     const prev = stallVotes.get(key);
     const count =
@@ -606,7 +678,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     // Record stall in analytics regardless of threshold
     playbackAnalytics.record({
       type: "stall",
-      itemId: parsed.data.itemId,
+      itemId: body.itemId,
       itemTitle: snap.current.title ?? null,
       ts: Date.now(),
       meta: { voteCount: count },
@@ -621,7 +693,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       // await resolves). The cooldown ensures only one skip+blacklist action
       // fires per item within STALL_ACTION_COOLDOWN_MS, preventing the second
       // report from advancing to a perfectly-good next item.
-      const cooldownKey = `cooldown:${broadcastOrchestrator.channelId}:${parsed.data.itemId}`;
+      const cooldownKey = `cooldown:${broadcastOrchestrator.channelId}:${body.itemId}`;
       const lastActionAt = stallActionCooldown.get(cooldownKey);
       if (lastActionAt && Date.now() - lastActionAt < STALL_ACTION_COOLDOWN_MS) {
         return { ok: true, acted: false, reason: "cooldown", count };
@@ -648,7 +720,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       // Increment the per-item failure counter and auto-suspend if it has
       // exceeded the threshold. The item is deactivated in the DB and a
       // queue reload removes it from the in-memory cycle immediately.
-      const failCount = incrementBadUrlSkipCount(parsed.data.itemId);
+      const failCount = incrementBadUrlSkipCount(body.itemId);
       if (failCount >= BAD_URL_SKIP_THRESHOLD) {
         const itemTitle = snapForBlacklist.current?.title ?? null;
         // Pass primaryUrl so autoSuspendQueueItem extends the bad-URL cache TTL
@@ -657,13 +729,13 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         // immediately fails again, and the stall-report → auto-suspend cycle
         // repeats continuously instead of giving the operator 5 min to intervene.
         autoSuspendQueueItem(
-          parsed.data.itemId,
+          body.itemId,
           itemTitle,
           failCount,
           snapForBlacklist.current?.source?.url ?? undefined,
         );
         void broadcastOrchestrator.reload().catch((err) => {
-          logger.warn({ err, itemId: parsed.data.itemId }, "[broadcast-v2] stall-report: background reload after auto-suspend failed (non-fatal)");
+          logger.warn({ err, itemId: body.itemId }, "[broadcast-v2] stall-report: background reload after auto-suspend failed (non-fatal)");
         });
       }
       // Push a real-time event to all connected admin SSE clients so the
@@ -671,7 +743,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       // for the next diagnostics poll (up to 15 s later). The event carries
       // enough detail for the StreamQualityPanel and alert banners to update.
       adminEventBus.push("broadcast-v2-stall", {
-        itemId: parsed.data.itemId,
+        itemId: body.itemId,
         itemTitle: snapForBlacklist.current?.title ?? null,
         failCount,
         autoSuspended: failCount >= BAD_URL_SKIP_THRESHOLD,
@@ -705,14 +777,25 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   const CHECKPOINT_DRIFT_THRESHOLD_S = 30;
   app.post("/checkpoint", {
     bodyLimit: 1048576,
+    schema: {
+      body: z.object({ itemId: z.string().min(1).max(128), positionSecs: z.number().min(0).max(86400) }),
+      response: {
+        200: z.object({
+          ok: z.boolean(),
+          accepted: z.boolean().optional(),
+          reason: z.string().optional(),
+          itemId: z.string().optional(),
+          positionSecs: z.number().optional(),
+          expectedPositionSecs: z.number().optional(),
+          driftSecs: z.number().optional(),
+          driftExceeded: z.boolean().optional(),
+        }),
+        429: _429err,
+      },
+    },
     config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
   }, async (req, _reply) => {
-    const body = req.body as Record<string, unknown> | null;
-    const itemId = typeof body?.itemId === "string" ? body.itemId.trim() : null;
-    const positionSecs = typeof body?.positionSecs === "number" ? body.positionSecs : null;
-    if (!itemId || positionSecs === null || !Number.isFinite(positionSecs) || positionSecs < 0) {
-      return { ok: false, reason: "missing or invalid fields (itemId, positionSecs)" };
-    }
+    const { itemId, positionSecs } = req.body as { itemId: string; positionSecs: number };
 
     const snap = broadcastOrchestrator.snapshot();
     if (!snap.current || snap.current.id !== itemId) {
@@ -753,10 +836,22 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   //   3. Skips the orchestrator to advance to the (now first) item.
   // Combining all three in one endpoint eliminates the race window that
   // exists when callers do reorder + skip as two sequential API calls.
-  app.post("/play-now", { ...adminGuard, bodyLimit: 1048576, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
-    const parsed = PlayNowCommand.safeParse(req.body);
-    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    if (!checkIdempotency(parsed.data.idempotencyKey)) {
+  app.post("/play-now", {
+    ...adminGuard,
+    bodyLimit: 1048576,
+    schema: {
+      body: PlayNowCommand,
+      response: {
+        200: _200okSeq,
+        400: _400err,
+        404: z.object({ error: z.string() }),
+        429: _429err,
+      },
+    },
+    config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+  }, async (req, reply) => {
+    const body = req.body as z.infer<typeof PlayNowCommand>;
+    if (!checkIdempotency(body.idempotencyKey)) {
       return { ok: true, sequence: broadcastOrchestrator.getSequence(), duplicate: true };
     }
 
@@ -764,7 +859,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     // their current sort order. Using DB rows instead of orchestrator memory
     // ensures Play Now works regardless of the orchestrator's current mode
     // (failover, offline_hold, or an empty queue where getItems() returns []).
-    const targetId = parsed.data.queueItemId;
+    const targetId = body.queueItemId;
     const activeRows = await queueRepo.loadActive();
     const targetExists = activeRows.some((r) => r.id === targetId);
     if (!targetExists) {
@@ -813,10 +908,14 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   // on the next playback cycle. Useful when an operator has fixed a
   // broken stream or replaced a bad file and wants immediate retry
   // without waiting for the 2-minute TTL to expire.
-  app.post("/clear-bad-urls", { ...adminGuard, bodyLimit: 1048576, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
-    const parsed = StopOverrideCommand.safeParse(req.body);
-    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    if (!checkIdempotency(parsed.data.idempotencyKey)) return { ok: true, duplicate: true };
+  app.post("/clear-bad-urls", {
+    ...adminGuard,
+    bodyLimit: 1048576,
+    schema: { body: StopOverrideCommand, response: { 200: _200okSeq, 400: _400err, 429: _429err } },
+    config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+  }, async (req, _reply) => {
+    const body = req.body as z.infer<typeof StopOverrideCommand>;
+    if (!checkIdempotency(body.idempotencyKey)) return { ok: true, sequence: broadcastOrchestrator.getSequence(), duplicate: true };
     clearAllBadUrls();
     // Reload the orchestrator so it immediately re-evaluates all items now
     // that the cache is empty — without this the orchestrator's next drift-
@@ -839,11 +938,16 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   // because the anchor has already moved past that item.
   app.post("/natural-end", {
     bodyLimit: 1048576,
+    schema: {
+      body: z.object({ itemId: z.string().min(1).max(128) }),
+      response: {
+        200: z.object({ ok: z.boolean(), advanced: z.boolean().optional(), reason: z.string().optional() }),
+        429: _429err,
+      },
+    },
     config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
   }, async (req, _reply) => {
-    const body = req.body as Record<string, unknown> | null;
-    const itemId = typeof body?.itemId === "string" ? body.itemId.trim() : null;
-    if (!itemId) return { ok: false, reason: "missing itemId" };
+    const { itemId } = req.body as { itemId: string };
     const result = await broadcastOrchestrator.naturalItemEnd(itemId);
     return { ok: true, ...result };
   });
@@ -852,11 +956,22 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   // Delegates to autoEnqueueMissingHls() — the same function that runs
   // automatically 15 s after boot. Idempotent; rate-limited to 3/min
   // because each call may spawn real FFmpeg processes.
-  app.post("/prepare-hls", { ...adminGuard, bodyLimit: 1048576, config: { rateLimit: { max: 3, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.post("/prepare-hls", {
+    ...adminGuard,
+    bodyLimit: 1048576,
+    schema: {
+      body: StopOverrideCommand,
+      response: {
+        200: z.object({ ok: z.literal(true), triggered: z.number().int().nonnegative(), duplicate: z.boolean().optional() }),
+        400: _400err,
+        429: _429err,
+      },
+    },
+    config: { rateLimit: { max: 3, timeWindow: "1 minute" } },
+  }, async (req, reply) => {
     reply.header("Cache-Control", "no-store, max-age=0");
-    const parsed = StopOverrideCommand.safeParse(req.body);
-    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    if (!checkIdempotency(parsed.data.idempotencyKey)) return { ok: true, triggered: 0, duplicate: true };
+    const body = req.body as z.infer<typeof StopOverrideCommand>;
+    if (!checkIdempotency(body.idempotencyKey)) return { ok: true, triggered: 0, duplicate: true };
 
     const { triggered } = await autoEnqueueMissingHls();
     logger.info({ triggered }, "[broadcast-v2] prepare-hls: triggered HLS jobs for queue items");
@@ -887,6 +1002,14 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     {
       preHandler: requireAuth("admin"),
       bodyLimit: 1048576,
+      schema: {
+        response: {
+          200: z.object({ repaired: z.number().int(), noSource: z.number().int(), alreadyHealthy: z.number().int(), message: z.string() }),
+          429: _429err,
+          500: z.object({ error: z.string() }),
+          503: z.object({ error: z.string() }),
+        },
+      },
       config: { rateLimit: { max: 3, timeWindow: "1 minute" } },
     },
     async (_req, reply) => {
@@ -1113,6 +1236,12 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   app.post("/sync-library", {
     ...adminGuard,
     bodyLimit: 1048576,
+    schema: {
+      response: {
+        200: z.object({ ok: z.literal(true), scanned: z.number().int(), enqueued: z.number().int(), skipped: z.number().int() }),
+        429: _429err,
+      },
+    },
     config: { rateLimit: { max: 6, timeWindow: "1 minute" } },
   }, async (_req, reply) => {
     reply.header("Cache-Control", "no-store, max-age=0");

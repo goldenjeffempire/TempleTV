@@ -339,15 +339,19 @@ const recentlySuspended: Array<{
 
 /** Increment the URL-failure counter for `itemId`. Returns the new count. */
 export function incrementBadUrlSkipCount(itemId: string): number {
-  // Lazy GC: prune stale entries when the map grows large. Entries whose
-  // corresponding URL is no longer in the bad-URL cache have expired and
-  // can be removed — the counter is only meaningful while the URL is
-  // actively blacklisted.
+  // Lazy GC: prune oldest entries (by insertion order) when the map grows
+  // beyond the cap. The map is keyed by itemId — not by URL — so we cannot
+  // use isKnownBadUrl() here (that function expects a URL key and would
+  // always return false for an itemId, incorrectly evicting live counters).
+  // In normal operation the map rarely exceeds single digits; > 500 entries
+  // indicates something unusual and pruning to 450 is safe.
   if (badUrlSkipCounts.size > 500) {
-    for (const id of badUrlSkipCounts.keys()) {
-      // If this item's URL is no longer bad (TTL expired / cleared),
-      // its failure count is stale — remove it.
-      if (!isKnownBadUrl(id)) badUrlSkipCounts.delete(id);
+    const toEvict = badUrlSkipCounts.size - 450;
+    let evicted = 0;
+    for (const key of badUrlSkipCounts.keys()) {
+      if (evicted >= toEvict) break;
+      badUrlSkipCounts.delete(key);
+      evicted++;
     }
   }
   const next = (badUrlSkipCounts.get(itemId) ?? 0) + 1;

@@ -694,8 +694,21 @@ export async function ensureRuntimeIndexes(): Promise<void> {
     // Not declared in the Drizzle schema DSL because drizzle-kit's CJS bundler
     // cannot resolve cross-file table references (MODULE_NOT_FOUND for .js →
     // .ts remapping). Applied idempotently here instead.
+    // First null out any orphaned video_id references so the FK constraint
+    // is guaranteed to succeed. Then apply the constraint (idempotent).
+    // Failure here is NOT tolerated — a broken FK invariant means the queue
+    // could reference deleted videos indefinitely.
     await client.query(`
       DO $$ BEGIN
+        -- Null out orphaned references before adding FK so the constraint
+        -- is guaranteed to apply cleanly on existing data.
+        UPDATE broadcast_queue
+        SET video_id = NULL
+        WHERE video_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM managed_videos WHERE id = broadcast_queue.video_id
+          );
+
         IF NOT EXISTS (
           SELECT 1 FROM pg_constraint
           WHERE conname = 'fk_broadcast_queue_video_id'
@@ -707,9 +720,7 @@ export async function ensureRuntimeIndexes(): Promise<void> {
             ON DELETE SET NULL;
         END IF;
       END $$
-    `).catch((err: unknown) => {
-      logger.warn({ err }, "db: fk_broadcast_queue_video_id constraint skipped (non-fatal — may indicate orphaned video_id references in existing data)");
-    });
+    `);
 
     logger.info("db: functional and partial indexes ensured");
   } finally {
