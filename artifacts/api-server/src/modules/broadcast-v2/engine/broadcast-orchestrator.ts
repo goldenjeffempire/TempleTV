@@ -678,6 +678,15 @@ class BroadcastOrchestrator extends EventEmitter {
             "[broadcast-v2] hydrate: loaded cycle anchor from runtime state",
           );
         }
+        // Restore operator-engaged failover so the engine stays in failover mode
+        // after a crash/restart without requiring the operator to re-engage it.
+        if (runtime.failoverActive) {
+          this.failover = { active: true, reason: runtime.failoverReason };
+          logger.warn(
+            { channelId: this.channelId, reason: runtime.failoverReason },
+            "[broadcast-v2] hydrate: restored failover state — operator-engaged failover is active",
+          );
+        }
       }
     } catch (err) {
       logger.warn(
@@ -2130,6 +2139,8 @@ class BroadcastOrchestrator extends EventEmitter {
         offsetMs: 0,
         activeOverrideId: this.override?.id ?? null,
         sequence: seq,
+        failoverActive: this.failover.active,
+        failoverReason: this.failover.reason,
       }),
     ]).catch((err) => logger.warn({ err }, "[broadcast-v2] persistence error"));
 

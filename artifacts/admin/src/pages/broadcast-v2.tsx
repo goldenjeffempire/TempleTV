@@ -1005,6 +1005,8 @@ function BroadcastV2PageInner() {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       toast.success("Item removed from broadcast queue.");
     },
     onError: (err) => {
@@ -1121,6 +1123,7 @@ function BroadcastV2PageInner() {
       // Reactivating changes what the next item will be — refresh engine health
       // so the "Now / Next" header reflects the updated queue state immediately.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       toast.success("Item re-enabled and will resume playback on the next cycle.");
     },
     onError: (err) => {
@@ -1144,6 +1147,7 @@ function BroadcastV2PageInner() {
       // Queue sync status tracks which library videos are missing from the queue;
       // playing now reorders items so missing-count may change.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       toast.success("Switched — item is now on air.");
     },
     onError: (err) => {
@@ -1278,6 +1282,7 @@ function BroadcastV2PageInner() {
       // panel and engine health header both show this info and need refreshing.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     },
     onError: (err) => {
       toast.error(err instanceof HttpError ? err.message : "Schedule save failed.");

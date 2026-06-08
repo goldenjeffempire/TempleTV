@@ -12,6 +12,8 @@ export interface RuntimeStateRecord {
   offsetMs: number;
   activeOverrideId: string | null;
   sequence: number;
+  failoverActive: boolean;
+  failoverReason: string | null;
 }
 
 export interface PersistedBadUrlState {
@@ -33,6 +35,8 @@ export const runtimeRepo = {
       offsetMs: row.offsetMs,
       activeOverrideId: row.activeOverrideId,
       sequence: row.sequence,
+      failoverActive: row.failoverActive ?? false,
+      failoverReason: row.failoverReason ?? null,
     };
   },
 
@@ -47,6 +51,8 @@ export const runtimeRepo = {
         offsetMs: rec.offsetMs,
         activeOverrideId: rec.activeOverrideId,
         sequence: rec.sequence,
+        failoverActive: rec.failoverActive,
+        failoverReason: rec.failoverReason,
         updatedAt: new Date(),
       })
       .onConflictDoUpdate({
@@ -58,6 +64,8 @@ export const runtimeRepo = {
           offsetMs: rec.offsetMs,
           activeOverrideId: rec.activeOverrideId,
           sequence: rec.sequence,
+          failoverActive: rec.failoverActive,
+          failoverReason: rec.failoverReason,
           updatedAt: new Date(),
         },
       });

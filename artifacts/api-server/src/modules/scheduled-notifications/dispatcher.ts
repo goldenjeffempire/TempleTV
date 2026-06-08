@@ -110,12 +110,14 @@ class ScheduledNotificationDispatcher {
       void this.runOnce().finally(() => {
         if (this.stopped) return;
         this.timer = setTimeout(tick, env.SCHEDULED_NOTIF_POLL_MS);
+        this.timer.unref?.();
       });
     };
     // First tick fires after one interval, not immediately on boot —
     // gives the rest of the process (DB pool, broadcast engine, etc.)
     // a chance to warm up before we start hitting the DB.
     this.timer = setTimeout(tick, env.SCHEDULED_NOTIF_POLL_MS);
+    this.timer.unref?.();
     logger.info(
       { pollMs: env.SCHEDULED_NOTIF_POLL_MS },
       "scheduled-notification dispatcher started",

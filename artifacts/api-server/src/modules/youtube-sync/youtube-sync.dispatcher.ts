@@ -54,6 +54,7 @@ class YouTubeSyncDispatcher {
     const nextAt = new Date(Date.now() + delayMs);
     setNextSyncAt(nextAt);
     this.timer = setTimeout(() => void this.runOnce(), delayMs);
+    this.timer.unref?.();
   }
 
   private async runOnce(): Promise<void> {

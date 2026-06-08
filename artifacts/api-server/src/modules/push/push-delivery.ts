@@ -121,7 +121,7 @@ async function sendChunkWithRetry(chunk: ExpoPushMessage[]): Promise<ExpoPushTic
         { err, attempt: attempt + 1, maxAttempts: MAX_CHUNK_RETRIES + 1, retryAfterMs: delayMs },
         "[push-delivery] expo chunk send failed (transient) — retrying",
       );
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      await new Promise<void>((resolve) => { const t = setTimeout(resolve, delayMs); t.unref?.(); });
     }
   }
   throw lastErr;
@@ -265,7 +265,7 @@ async function deliverToWebPush(payload: PushPayload): Promise<number> {
               return;
             }
             if (attempt < WEB_PUSH_MAX_RETRIES) {
-              await new Promise((r) => setTimeout(r, WEB_PUSH_BACKOFF_MS[attempt]));
+              await new Promise<void>((r) => { const t = setTimeout(r, WEB_PUSH_BACKOFF_MS[attempt]); t.unref?.(); });
             }
           }
         }

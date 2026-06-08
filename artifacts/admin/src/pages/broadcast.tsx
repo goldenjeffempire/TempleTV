@@ -1681,6 +1681,8 @@ export default function BroadcastPage() {
       toast.success("Skipped to next item");
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-state"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Skip failed"),
   });
@@ -1755,6 +1757,8 @@ export default function BroadcastPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-state"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       setAddOpen(false);
       setSelectedVideoId("");
     },
@@ -1774,6 +1778,8 @@ export default function BroadcastPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-state"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to remove"),
   });
@@ -1789,6 +1795,8 @@ export default function BroadcastPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-state"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Bulk remove failed"),
   });
@@ -1814,6 +1822,8 @@ export default function BroadcastPage() {
       toast.success(item ? `Now playing: ${item.title}` : "Switched to item");
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-state"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Play Now failed"),
   });

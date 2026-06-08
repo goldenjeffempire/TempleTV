@@ -21,6 +21,7 @@ export async function notificationsRoutes(app: FastifyInstance) {
     "/history",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["notifications"],
         summary: "List sent push notifications",
@@ -40,6 +41,7 @@ export async function notificationsRoutes(app: FastifyInstance) {
     "/",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["notifications"],
         summary: "Root alias for /history (admin SPA compatibility)",
@@ -60,6 +62,7 @@ export async function notificationsRoutes(app: FastifyInstance) {
     "/stats",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["notifications"],
         summary: "Push subscriber counts (Expo tokens + Web Push subscriptions)",

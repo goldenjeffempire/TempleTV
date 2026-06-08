@@ -1,4 +1,4 @@
-import { pgTable, text, integer, bigint, timestamp, index, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, bigint, boolean, timestamp, index, jsonb } from "drizzle-orm/pg-core";
 
 export const broadcastRuntimeStateTable = pgTable(
   "broadcast_runtime_state",
@@ -16,6 +16,10 @@ export const broadcastRuntimeStateTable = pgTable(
     // failure counts survive short process restarts.
     // Shape: { urlCache: { [url]: expiresAtMs }, skipCounts: { [itemId]: count } }
     badUrlCache: jsonb("bad_url_cache"),
+    // Operator-engaged failover state persisted across restarts so the engine
+    // resumes in failover mode after a crash without requiring manual re-engagement.
+    failoverActive: boolean("failover_active").notNull().default(false),
+    failoverReason: text("failover_reason"),
     // $onUpdateFn ensures the column is refreshed on every Drizzle-driven UPDATE,
     // not just on INSERT (defaultNow() only fires at INSERT time).
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdateFn(() => new Date()),
