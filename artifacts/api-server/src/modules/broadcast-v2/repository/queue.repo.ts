@@ -450,16 +450,30 @@ export function autoSuspendQueueItem(
  */
 export async function reEnableAllSuspended(): Promise<number> {
   try {
+    // Only re-enable items that were deactivated by the system (validator,
+    // auto-suspend, or legacy per-session auto-suspend) — identified by having
+    // a non-null validatorDeactivatedReason. Items that operators intentionally
+    // disabled have validatorDeactivatedReason=null and must never be silently
+    // re-activated here; operators must re-enable those explicitly.
+    //
+    // This guards against "Reload from queue" blowing away deliberate operator
+    // choices (e.g. a paused live event, a video flagged for review) when the
+    // intent is only to recover from system-generated suspensions.
     const result = await db
       .update(schema.broadcastQueueTable)
-      .set({ isActive: true })
-      .where(eq(schema.broadcastQueueTable.isActive, false))
+      .set({ isActive: true, validatorDeactivatedReason: null })
+      .where(
+        and(
+          eq(schema.broadcastQueueTable.isActive, false),
+          isNotNull(schema.broadcastQueueTable.validatorDeactivatedReason),
+        ),
+      )
       .returning({ id: schema.broadcastQueueTable.id });
     const count = result.length;
     if (count > 0) {
       logger.info(
         { count },
-        "[broadcast-v2] startup: re-enabled previously-suspended queue items — broadcast queue restored",
+        "[broadcast-v2] startup: re-enabled system-deactivated queue items — broadcast queue restored",
       );
     }
     return count;

@@ -117,10 +117,13 @@ function buildFfmpegArgs(
     "-loglevel", "error",
     "-progress", "pipe:1",
     "-stats_period", "5",
-    // Use all available CPU cores for encoding (FFmpeg defaults to 1 thread
-    // per encoder/filter which is far below modern core counts). On a 4-core
-    // Replit instance this roughly halves encode time for 1080p content.
-    "-threads", "0",
+    // Limit FFmpeg thread count to avoid starving other processes on shared
+    // Replit/Render instances. "-threads 0" (unlimited) claims all available
+    // cores, which starves the Fastify event loop and upstream HTTP connections
+    // during active transcoding. Default 2 keeps encode speed reasonable while
+    // leaving enough headroom for the API and DB pool. Override per-deployment
+    // via TRANSCODER_THREADS env var (e.g. set to "4" on a dedicated worker).
+    "-threads", (process.env["TRANSCODER_THREADS"] ?? "2"),
     "-i", input,
     // Prevent "Too many packets buffered for output stream" muxer errors that
     // occur when input audio/video streams have high bitrate-mismatch. Raises

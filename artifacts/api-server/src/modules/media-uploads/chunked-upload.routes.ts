@@ -475,27 +475,43 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         );
       }
 
-      await db.insert(sessions).values({
-        sessionId: body.sessionId,
-        uploadId,
-        objectKey: storageBackend !== "db_fallback" ? objectKey : null,
-        title: body.title,
-        description: body.description ?? "",
-        category: body.category ?? "sermon",
-        preacher: body.preacher ?? "",
-        featured: body.featured ?? false,
-        contentType,
-        sizeBytes: Number(body.totalBytes),
-        totalChunks: Number(body.totalChunks),
-        chunkSize,
-        originalFilename: body.originalFilename ?? null,
-        mimeType: body.mimeType ?? null,
-        durationSecs:
-          body.durationSecs !== undefined ? Math.round(Number(body.durationSecs)) : null,
-        uploadedBy: req.principal?.id ?? null,
-        storageBackend,
-        status: "uploading",
-      });
+      try {
+        await db.insert(sessions).values({
+          sessionId: body.sessionId,
+          uploadId,
+          objectKey: storageBackend !== "db_fallback" ? objectKey : null,
+          title: body.title,
+          description: body.description ?? "",
+          category: body.category ?? "sermon",
+          preacher: body.preacher ?? "",
+          featured: body.featured ?? false,
+          contentType,
+          sizeBytes: Number(body.totalBytes),
+          totalChunks: Number(body.totalChunks),
+          chunkSize,
+          originalFilename: body.originalFilename ?? null,
+          mimeType: body.mimeType ?? null,
+          durationSecs:
+            body.durationSecs !== undefined ? Math.round(Number(body.durationSecs)) : null,
+          uploadedBy: req.principal?.id ?? null,
+          storageBackend,
+          status: "uploading",
+        });
+      } catch (insertErr) {
+        // If the DB session insert fails but we already reserved a multipart
+        // upload slot in storage_blobs, abort it so orphaned _parts rows don't
+        // accumulate. The client can safely retry with the same sessionId — the
+        // idempotency check at the top of this handler will create a fresh session.
+        if (uploadId) {
+          await storage().abortMultipartUpload({ key: objectKey, uploadId }).catch((abortErr: unknown) =>
+            req.log.warn(
+              { abortErr, sessionId: body.sessionId, uploadId },
+              "[chunked-init] failed to abort orphaned multipart upload after session insert error (non-fatal)",
+            ),
+          );
+        }
+        throw insertErr;
+      }
 
       req.log.info(
         {

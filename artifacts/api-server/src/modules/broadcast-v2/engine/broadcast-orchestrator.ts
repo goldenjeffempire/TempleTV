@@ -466,7 +466,15 @@ class BroadcastOrchestrator extends EventEmitter {
     this.checkpointTimer.unref?.();
 
     // ── Event log trim (low-frequency housekeeping) ───────────────────────
-    this.trimTimer = setInterval(() => eventLogRepo.trim(this.channelId), EVENT_LOG_TRIM_INTERVAL_MS);
+    // Wrap in void+catch: setInterval callbacks that return a rejected Promise
+    // produce an unhandled rejection (fatal in Node ≥15). The trim is best-effort
+    // housekeeping — a failure must not crash or restart the process.
+    this.trimTimer = setInterval(
+      () => void eventLogRepo.trim(this.channelId).catch((err: unknown) =>
+        logger.warn({ err }, "[broadcast-v2] event-log trim failed (non-fatal)"),
+      ),
+      EVENT_LOG_TRIM_INTERVAL_MS,
+    );
     this.trimTimer.unref?.();
 
     // ── Keep-alive snapshot (raised 8 s → 15 s) ──────────────────────────
@@ -639,6 +647,9 @@ class BroadcastOrchestrator extends EventEmitter {
     if (this.selfHealStaleTimer)      clearInterval(this.selfHealStaleTimer);
     if (this.currentItemProbeTimer)   clearInterval(this.currentItemProbeTimer);
     if (this.badUrlCacheTimer)        clearInterval(this.badUrlCacheTimer);
+    // Cancel any pending circuit-breaker reset timer so it cannot fire on a
+    // stopped orchestrator and trigger a spurious scheduleSelfHealReload().
+    if (this._cbResetTimer)           clearTimeout(this._cbResetTimer);
     this.tickTimer               = null;
     this.checkpointTimer         = null;
     this.trimTimer               = null;
@@ -647,9 +658,12 @@ class BroadcastOrchestrator extends EventEmitter {
     this.selfHealStaleTimer      = null;
     this.currentItemProbeTimer   = null;
     this.badUrlCacheTimer        = null;
+    this._cbResetTimer           = null;
     this.started = false;
     // Best-effort final save of bad-URL state on graceful shutdown.
-    void persistBadUrlCache(this.channelId);
+    void persistBadUrlCache(this.channelId).catch((err: unknown) =>
+      logger.warn({ err }, "[broadcast-v2] stop: persistBadUrlCache failed (non-fatal)"),
+    );
   }
 
   /**
@@ -1381,6 +1395,14 @@ class BroadcastOrchestrator extends EventEmitter {
   private readonly TICK_CIRCUIT_RESET_MS = 15_000;
   private tickFailures = 0;
   private tickCircuitOpen = false;
+  /**
+   * Handle for the circuit-breaker reset timer so stop() can cancel it.
+   * Without clearing this timer, calling stop() while the circuit is open
+   * leaves a pending setTimeout that fires after stop() and calls
+   * scheduleSelfHealReload() on a stopped orchestrator, triggering a spurious
+   * reload and potentially restarting the tick loop.
+   */
+  private _cbResetTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * Consecutive self-heal failure counter and backoff state.
@@ -1663,7 +1685,8 @@ class BroadcastOrchestrator extends EventEmitter {
           { failures: this.tickFailures, resetMs: this.TICK_CIRCUIT_RESET_MS },
           "[broadcast-v2] tick circuit breaker OPEN — pausing tick loop, will self-heal on reset",
         );
-        const resetTimer = setTimeout(() => {
+        this._cbResetTimer = setTimeout(() => {
+          this._cbResetTimer = null;
           this.tickCircuitOpen = false;
           this.tickFailures = 0;
           logger.warn("[broadcast-v2] tick circuit breaker CLOSED — resuming");
@@ -1671,7 +1694,7 @@ class BroadcastOrchestrator extends EventEmitter {
           // without waiting for the next successful tick to fire.
           this.scheduleSelfHealReload("circuit-breaker-reset");
         }, this.TICK_CIRCUIT_RESET_MS);
-        resetTimer.unref?.();
+        this._cbResetTimer.unref?.();
       }
     }
   }

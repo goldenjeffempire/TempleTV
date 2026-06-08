@@ -363,6 +363,9 @@ function TranscodingProgressPanel() {
     // remediation report — invalidate so the alert clears without waiting for
     // the next 60 s remediation-report poll.
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+    // A newly-hls_ready item may now be playable in the queue — broadcast-queue
+    // must refresh so the HLS-ready badge and "Now / Next" header update live.
+    void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
   });
 
   const activeJobs = data?.active ?? [];
@@ -1087,6 +1090,9 @@ function BroadcastV2PageInner() {
         { duration: 7000 },
       );
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     } catch (err) {
       toast.error(err instanceof HttpError ? err.message : "Failed to reset video for re-upload — please try again.");
     }
@@ -1172,6 +1178,10 @@ function BroadcastV2PageInner() {
       // Remediation report shows duration-mismatch alerts — clear it so
       // a successful re-probe doesn't leave a stale "Duration Mismatch" warning.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      // Updated duration affects engine health and diagnostics (drift calculations,
+      // playback-window guard) — refresh both so the console reflects the change.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       const diff = result.newDurSecs - result.oldDurSecs;
       toast.success(
         `Duration updated: ${result.oldDurSecs}s → ${result.newDurSecs}s (${diff > 0 ? "+" : ""}${diff}s).`,
@@ -1475,9 +1485,17 @@ function BroadcastV2PageInner() {
   useEffect(() => {
     const diagStalls = diagnostics?.analytics?.eventCounts?.["stall"] ?? 0;
     const delta = diagStalls - prevDiagStallRef.current;
+    // Always update the ref so subsequent deltas are computed from the latest
+    // server value — even when diagStalls drops to 0 (server restart).
+    prevDiagStallRef.current = diagStalls;
     if (delta > 0) {
-      prevDiagStallRef.current = diagStalls;
+      // Server stall count increased — subtract from realtime counter to avoid
+      // double-counting stalls that are now in the server-side total.
       setRealtimeStallCount((n) => Math.max(0, n - delta));
+    } else if (delta < 0) {
+      // Server restarted (diagStalls reset to 0) — clear the realtime counter
+      // so we don't carry a phantom stall count from the previous server session.
+      setRealtimeStallCount(0);
     }
   }, [diagnostics]);
 
