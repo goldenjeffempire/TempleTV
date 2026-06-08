@@ -41,6 +41,7 @@
 
 import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
+import { storage } from "../../../infrastructure/storage.js";
 import { logger as rootLogger } from "../../../infrastructure/logger.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { runFaststart } from "../../transcoder/faststart.service.js";
@@ -68,6 +69,21 @@ const inFlight = new Set<string>();
 // video until the process is restarted.
 const inFlightSince = new Map<string, number>();
 const INFLIGHT_TTL_MS = 30 * 60_000; // 30 minutes — > faststart internal timeout
+
+/**
+ * objectPaths that have been confirmed absent from storage (SOURCE_MISSING) in a
+ * prior sweep.  Skipping them prevents re-downloading a large missing blob on
+ * every 60-second cycle.  Cleared on process restart so a re-uploaded source is
+ * retried automatically on the next deploy.
+ */
+const probeSkipObjectPaths = new Set<string>();
+
+/**
+ * Set to true by stop() when shutdown begins.  Checked at every DB-call
+ * boundary inside sweep() so in-flight operations bail out before the
+ * connection pool is closed.
+ */
+let _faststartRecoveryStopped = false;
 
 interface RecoveryStats {
   enabled: boolean;
@@ -317,15 +333,51 @@ async function backfillPlaceholderDurations(): Promise<void> {
 
   if (rows.length === 0) return;
 
+  // Bug A: Deduplicate by objectPath within this sweep.  A video that appears N
+  // times in broadcast_queue (DUPLICATE_ACTIVE_VIDEO scenario) would otherwise
+  // trigger N sequential full-file downloads of the same blob, saturating the
+  // DB connection pool.  The per-sweep Set keeps each unique source probed once.
+  //
+  // Bug B: Also skip objectPaths already confirmed absent from storage in a prior
+  // sweep (SOURCE_MISSING).  Without this, a missing 466 MB blob is re-downloaded
+  // (and fails) on every 60-second cycle, generating continuous error noise and
+  // burning DB connections.
+  const seenInThisSweep = new Set<string>();
+  const filteredRows = rows.filter((row) => {
+    if (!row.objectPath) return false;
+    if (probeSkipObjectPaths.has(row.objectPath)) return false;
+    if (seenInThisSweep.has(row.objectPath)) return false;
+    seenInThisSweep.add(row.objectPath);
+    return true;
+  });
+
+  if (filteredRows.length === 0) return;
+
   logger.info(
-    { count: rows.length },
+    { totalRows: rows.length, uniqueToProbe: filteredRows.length },
     "faststart-recovery: probing duration for placeholder items",
   );
 
-  for (const row of rows) {
+  for (const row of filteredRows) {
     try {
       const secs = await probeUploadedDuration(row.objectPath!);
-      if (secs == null || secs < 5) continue; // probe failed or suspiciously short
+      if (secs == null || secs < 5) {
+        // Probe returned null — confirm whether the source blob is permanently
+        // absent so we can stop wasting a full download attempt every sweep.
+        // headObject is a lightweight metadata-only lookup (no body transfer).
+        const s = storage();
+        if (s.enabled) {
+          const head = await s.headObject(row.objectPath!).catch(() => null);
+          if (head === null) {
+            probeSkipObjectPaths.add(row.objectPath!);
+            logger.warn(
+              { videoId: row.videoId, objectPath: row.objectPath, title: row.title },
+              "faststart-recovery: source object not found in storage — skipping in all future sweeps (restart to re-enable)",
+            );
+          }
+        }
+        continue; // probe failed or suspiciously short
+      }
       const rounded = Math.round(secs);
       // Update the managed_videos duration
       await db
@@ -362,7 +414,21 @@ async function backfillPlaceholderDurations(): Promise<void> {
 }
 
 export const faststartRecoveryWorker = {
+  /**
+   * Signal sweep() to abort at the next DB-call checkpoint.  Called during
+   * graceful shutdown before the connection pool closes so we never attempt
+   * a DB query against a closed pool.  This is intentionally separate from
+   * workerSupervisor.stopAll() — the supervisor only cancels the pending
+   * timer; it cannot interrupt an already-executing async sweep().
+   */
+  stop(): void {
+    _faststartRecoveryStopped = true;
+  },
+
   async sweep(): Promise<void> {
+    // Bail immediately if stop() was called (e.g. rapid restart between sweeps).
+    if (_faststartRecoveryStopped) return;
+
     stats.totalSweeps += 1;
     stats.lastSweepAt = Date.now();
 
@@ -370,6 +436,13 @@ export const faststartRecoveryWorker = {
     // Fix items stuck at the 1800 s upload-time placeholder by running
     // ffprobe on their objectPath. No moov relocation or re-upload needed.
     await backfillPlaceholderDurations();
+
+    // Bug C: After the (potentially long) backfill, re-check the stopped flag
+    // before issuing any further DB queries.  Shutdown calls stop() while
+    // backfillPlaceholderDurations() is running; without this guard,
+    // findCandidates() fires after pool.end() producing
+    // "Cannot use a pool after calling end on the pool".
+    if (_faststartRecoveryStopped) return;
 
     // ── Faststart recovery (heavy, gated by MAX_ATTEMPTS) ─────────────────
     let candidates: Candidate[];

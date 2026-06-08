@@ -362,7 +362,14 @@ export async function stopBroadcastV2(): Promise<void> {
   //    can complete without waiting for the SHUTDOWN_DRAIN_MS timeout.
   closeAllSseSessions();
 
-  // 3. Stop supervised workers (clears their internal timers + circuit-reset timers).
+  // 3a. Signal the faststart-recovery worker to abort at its next DB-call
+  //     checkpoint.  workerSupervisor.stopAll() (below) cancels the pending
+  //     timer but cannot interrupt an already-executing async sweep().
+  //     Without this, a sweep in progress calls findCandidates() after the
+  //     DB pool is closed, producing "Cannot use a pool after calling end".
+  faststartRecoveryWorker.stop();
+
+  // 3b. Stop supervised workers (clears their internal timers + circuit-reset timers).
   workerSupervisor.stopAll();
   supervisedWorkersStarted = false;
 
