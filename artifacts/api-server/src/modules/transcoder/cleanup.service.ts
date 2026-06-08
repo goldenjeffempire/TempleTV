@@ -572,6 +572,7 @@ class CleanupWorker {
       if (this.stopped) return;
       if (this.running) {
         this.timer = setTimeout(tick, env.CLEANUP_SWEEP_MS);
+        this.timer.unref();
         return;
       }
       this.running = true;
@@ -581,6 +582,7 @@ class CleanupWorker {
           this.running = false;
           if (!this.stopped) {
             this.timer = setTimeout(tick, env.CLEANUP_SWEEP_MS);
+            this.timer.unref();
           }
         });
     };
@@ -588,6 +590,7 @@ class CleanupWorker {
     // Initial delay: run first sweep 60 s after startup to let the server
     // fully warm up before doing DB-heavy cleanup work.
     this.timer = setTimeout(tick, Math.min(60_000, env.CLEANUP_SWEEP_MS));
+    this.timer.unref();
     logger.info(
       { sweepMs: env.CLEANUP_SWEEP_MS, retentionHours: env.CLEANUP_RETENTION_HOURS },
       "[cleanup-worker] started",

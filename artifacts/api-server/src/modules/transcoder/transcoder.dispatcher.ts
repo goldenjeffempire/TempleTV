@@ -135,6 +135,7 @@ class TranscoderDispatcher {
     void this.purgeOrphanedScratchDirs();
 
     this.timer = setTimeout(() => this.tick(), env.TRANSCODER_POLL_MS);
+    this.timer.unref();
     logger.info({ pollMs: env.TRANSCODER_POLL_MS }, "transcoder dispatcher started");
 
     // Verify the ffmpeg binary is reachable so we surface a clear error
@@ -581,6 +582,7 @@ class TranscoderDispatcher {
     }).finally(() => {
       if (this.stopped) return;
       this.timer = setTimeout(() => this.tick(), env.TRANSCODER_POLL_MS);
+      this.timer.unref();
     });
   }
 

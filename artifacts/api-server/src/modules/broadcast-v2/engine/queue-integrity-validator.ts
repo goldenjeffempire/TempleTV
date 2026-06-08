@@ -444,14 +444,21 @@ class QueueIntegrityValidatorImpl {
       // intended sequence is preserved.
       if (duplicateItemIds.length > 0) {
         try {
-          await db.transaction(async (tx) => {
-            for (let i = 0; i < rows.length; i++) {
-              await tx
-                .update(schema.broadcastQueueTable)
-                .set({ sortOrder: (i + 1) * 10 })
-                .where(eq(schema.broadcastQueueTable.id, rows[i]!.id));
-            }
-          });
+          // Single batched UPDATE instead of N individual round-trips inside a
+          // transaction. PostgreSQL's UPDATE … FROM (VALUES …) processes all
+          // reassignments atomically in one statement, which is O(1) DB latency
+          // regardless of queue length.  UUIDs are safe for string interpolation
+          // (only [0-9a-f-] characters — validated by the DB constraint on insert).
+          const valuesList = rows
+            .map((r, i) => `('${r.id}'::uuid, ${(i + 1) * 10}::int)`)
+            .join(",");
+          await db.execute(
+            sql.raw(
+              `UPDATE broadcast_queue bq SET sort_order = v.new_order` +
+              ` FROM (VALUES ${valuesList}) AS v(id, new_order)` +
+              ` WHERE bq.id = v.id`,
+            ),
+          );
           logger.warn(
             { count: duplicateItemIds.length, totalReassigned: rows.length },
             "[queue-validator] AUTO-FIX: reassigned sort_order for all active items to restore deterministic queue ordering",
