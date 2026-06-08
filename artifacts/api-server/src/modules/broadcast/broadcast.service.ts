@@ -15,7 +15,7 @@ export const broadcastService = {
   },
 
   async listQueue(): Promise<typeof queueTable.$inferSelect[]> {
-    return db.select().from(queueTable).orderBy(asc(queueTable.sortOrder), asc(queueTable.addedAt));
+    return db.select().from(queueTable).orderBy(asc(queueTable.sortOrder), asc(queueTable.addedAt)).limit(1000);
   },
 
   async addToQueue(item: z.infer<typeof AddQueueItemSchema>) {

@@ -726,6 +726,21 @@ class BroadcastOrchestrator extends EventEmitter {
     if (this.mode === "override" && !this.override) {
       this.mode = "queue";
       logger.warn({ channelId: this.channelId }, "[broadcast-v2] hydrate: dropping stale override mode");
+      // Persist the corrected mode immediately so a second crash before the
+      // next bump() doesn't boot back into a zombie override state.
+      void runtimeRepo.save({
+        channelId: this.channelId,
+        mode: "queue",
+        currentItemId: null,
+        startedAtMs: this.restoredCycleAnchor ?? null,
+        offsetMs: 0,
+        activeOverrideId: null,
+        sequence: this.sequence,
+        failoverActive: this.failover.active,
+        failoverReason: this.failover.reason,
+      }).catch((err: unknown) =>
+        logger.warn({ err }, "[broadcast-v2] hydrate: failed to persist override correction (non-fatal)"),
+      );
     }
   }
 
@@ -1681,7 +1696,8 @@ class BroadcastOrchestrator extends EventEmitter {
           const span = this.items[i]!.durationSecs * 1000;
           if (elapsed < acc + span) {
             this.cycleStartedAtMs -= span - (elapsed - acc);
-            void this.bump("item.skipped", { itemId: this.items[i]!.id, reason: "unresolvable" });
+            void this.bump("item.skipped", { itemId: this.items[i]!.id, reason: "unresolvable" })
+              .catch((err: unknown) => logger.warn({ err }, "[broadcast-v2] tick: item.skipped bump failed (non-fatal)"));
             this.emitSnapshot();
             break;
           }
@@ -1703,7 +1719,7 @@ class BroadcastOrchestrator extends EventEmitter {
           void this.bump("dead_air.detected", {
             consecutiveSkips: 2,
             itemCount: this.items.length,
-          });
+          }).catch((err: unknown) => logger.warn({ err }, "[broadcast-v2] tick: dead_air.detected bump failed (non-fatal)"));
         }
       }
       // All-sources-blocked auto-recovery: when items are loaded but every URL
@@ -1731,7 +1747,7 @@ class BroadcastOrchestrator extends EventEmitter {
           void this.bump("all_sources_blocked", {
             channel: this.channelId,
             itemCount: this.items.length,
-          });
+          }).catch((err: unknown) => logger.warn({ err }, "[broadcast-v2] tick: all_sources_blocked bump failed (non-fatal)"));
         } else if (now - this.allBlockedSinceMs >= BAD_URL_TTL_MS) {
           this.allBlockedSinceMs = null;
           // Reset autoSkipAttempts so the next tick can attempt skipping again.
@@ -1876,7 +1892,8 @@ class BroadcastOrchestrator extends EventEmitter {
       // heartbeat (15 s window). Without this, clients play the previous item
       // indefinitely because the `event` frame is intentionally ignored by the
       // transport — only `snapshot` frames trigger machine state transitions.
-      void this.bump("item.advanced", { itemId: snap.current.id, title: snap.current.title });
+      void this.bump("item.advanced", { itemId: snap.current.id, title: snap.current.title })
+        .catch((err: unknown) => logger.warn({ err }, "[broadcast-v2] tick: item.advanced bump failed (non-fatal)"));
       this.emitSnapshot();
     } else if (
       // Single-item loop detection: same item ID but startsAtMs jumped
@@ -1902,7 +1919,8 @@ class BroadcastOrchestrator extends EventEmitter {
       this.lastCurrentItemStartsAtMs = snap.current.startsAtMs;
       // Emit item.advanced so clients know the loop restarted and update
       // their startsAtMs reference for wall-clock position correction.
-      void this.bump("item.advanced", { itemId: snap.current.id, title: snap.current.title });
+      void this.bump("item.advanced", { itemId: snap.current.id, title: snap.current.title })
+        .catch((err: unknown) => logger.warn({ err }, "[broadcast-v2] tick: item.advanced (loop) bump failed (non-fatal)"));
       this.emitSnapshot();
     }
 

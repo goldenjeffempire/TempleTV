@@ -460,6 +460,9 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
 
       const localVideoUrl = completed.location || storage().publicUrl(body.objectKey);
       const videoId = randomUUID();
+      // Guard: if the DB insert fails after storage assembly succeeded, the object
+      // would be orphaned forever. Catch the error, clean up the storage object,
+      // then re-throw a 500 so the client knows to retry.
       const inserted = await db
         .insert(videos)
         .values({
@@ -476,7 +479,18 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
           localVideoUrl: localVideoUrl ?? null,
           featured: body.featured ?? false,
         })
-        .returning();
+        .returning()
+        .catch(async (dbErr: unknown) => {
+          req.log.error(
+            { err: dbErr, objectKey: body.objectKey },
+            "[s3-multipart-complete] videos insert failed after storage write — cleaning up orphaned object",
+          );
+          await cleanupRejectedUpload(body.sessionId, body.objectKey, "db-insert-failed");
+          throw Object.assign(
+            new Error("Failed to create video record — the upload is safe to retry."),
+            { statusCode: 500 },
+          );
+        });
       const row = inserted[0];
       if (!row) throw new Error("videos insert returned no rows");
 

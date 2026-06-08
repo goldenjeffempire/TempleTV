@@ -137,6 +137,9 @@ class YtLivePoller extends EventEmitter {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   private _subs = new Set<Listener>();
+  // Timestamp until which pollApi() calls are suppressed after a quota/API error.
+  // Prevents hammering an exhausted quota (resets daily) for the remaining day.
+  private apiCooldownUntilMs = 0;
 
   getState(): YtLiveState {
     return this.state;
@@ -185,14 +188,22 @@ class YtLivePoller extends EventEmitter {
     const apiKey = ytApiKey();
     const channelId = ytChannelId();
     if (apiKey && channelId) {
-      result = await this.pollApi();
-      // If the API returned an error (403 quota exhausted, invalid key, rate
-      // limit, or any network failure), fall back to the RSS feed so live
-      // detection remains accurate even when the Data API v3 key is temporarily
-      // or permanently unavailable. RSS is quota-free and returns live status
-      // via yt:liveBroadcastContent in the XML feed.
-      if (result.detectionMethod === "api-error") {
+      if (Date.now() < this.apiCooldownUntilMs) {
+        // API quota exhausted or key invalid — skip Data API v3 call and use
+        // quota-free RSS exclusively until the cooldown window expires.
         result = await this.pollRss();
+      } else {
+        result = await this.pollApi();
+        // If the API returned an error (403 quota exhausted, invalid key, rate
+        // limit, or any network failure), back off API calls for 1 hour and fall
+        // back to RSS so live detection remains accurate. Without the cooldown the
+        // poller would hammer an exhausted quota at full speed (every 90 s) for
+        // the rest of the day, wasting quota units that become available again at
+        // midnight Pacific.
+        if (result.detectionMethod === "api-error") {
+          this.apiCooldownUntilMs = Date.now() + 60 * 60 * 1000;
+          result = await this.pollRss();
+        }
       }
     } else if (channelId) {
       result = await this.pollRss();
