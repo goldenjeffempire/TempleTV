@@ -180,7 +180,7 @@ export async function authRoutes(app: FastifyInstance) {
         tags: ["auth"],
         summary: "Extend session — issues new access token without rotating refresh token",
         body: ExtendBodySchema,
-        response: { 200: ExtendResponseSchema },
+        response: { 200: ExtendResponseSchema, 429: z.object({ error: z.string() }) },
       },
     },
     async (req) => authService.extend(req.body.refreshToken),
@@ -209,6 +209,7 @@ export async function authRoutes(app: FastifyInstance) {
             userId: z.string(),
             role: z.string(),
           }),
+          429: z.object({ error: z.string() }),
         },
       },
     },
@@ -341,7 +342,7 @@ export async function authRoutes(app: FastifyInstance) {
           // legitimate owner out without needing their second factor.
           totpCode: z.string().regex(/^\d{6}$/).optional(),
         }),
-        response: { 200: z.object({ message: z.string() }) },
+        response: { 200: z.object({ message: z.string() }), 429: z.object({ error: z.string() }) },
       },
     },
     async (req) => {
@@ -551,6 +552,7 @@ export async function authRoutes(app: FastifyInstance) {
         body: z.object({ deviceLabel: z.string().max(80).optional() }),
         response: {
           200: z.object({ code: z.string(), expiresIn: z.number(), expiresAt: z.string() }),
+          429: z.object({ error: z.string() }),
         },
       },
     },

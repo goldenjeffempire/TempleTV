@@ -56,7 +56,7 @@ export async function liveOverridesRoutes(app: FastifyInstance) {
         tags: ["live"],
         summary: "Admin: start a live override (deactivates any prior)",
         body: StartOverrideBodySchema,
-        response: { 201: LiveOverrideSchema },
+        response: { 201: LiveOverrideSchema, 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },
@@ -92,7 +92,7 @@ export async function liveOverridesRoutes(app: FastifyInstance) {
       schema: {
         tags: ["live"],
         summary: "Admin: stop the currently active live override",
-        response: { 200: LiveOverrideSchema },
+        response: { 200: LiveOverrideSchema, 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },
@@ -116,7 +116,7 @@ export async function liveOverridesRoutes(app: FastifyInstance) {
         // Cap at 12 h (720 min) — prevents a typo from scheduling an
         // override that will never auto-expire in any meaningful timeframe.
         body: z.object({ extraMinutes: z.number().int().positive().max(720) }),
-        response: { 200: LiveOverrideSchema },
+        response: { 200: LiveOverrideSchema, 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },
@@ -159,7 +159,7 @@ export async function liveOverridesRoutes(app: FastifyInstance) {
         tags: ["live"],
         summary: "Admin: schedule a future live override",
         body: StartOverrideBodySchema,
-        response: { 201: LiveOverrideSchema },
+        response: { 201: LiveOverrideSchema, 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },
@@ -179,7 +179,7 @@ export async function liveOverridesRoutes(app: FastifyInstance) {
         tags: ["live"],
         summary: "Admin: cancel a scheduled (not yet active) override",
         params: z.object({ id: z.string().min(1).max(128) }),
-        response: { 200: z.object({ ok: z.literal(true), id: z.string() }) },
+        response: { 200: z.object({ ok: z.literal(true), id: z.string() }), 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },
@@ -204,7 +204,7 @@ export async function liveOverridesRoutes(app: FastifyInstance) {
           errorCode: z.string().max(64).optional(),
           errorMessage: z.string().max(1024).optional(),
         }),
-        response: { 202: z.object({ ok: z.literal(true) }) },
+        response: { 202: z.object({ ok: z.literal(true) }), 429: z.object({ error: z.string() }) },
       },
     },
     async (req, reply) => {

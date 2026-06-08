@@ -412,7 +412,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
       schema: {
         tags: ["broadcast"],
         summary: "Admin: skip the currently playing queue item and advance to the next",
-        response: { 200: z.object({ ok: z.literal(true) }) },
+        response: { 200: z.object({ ok: z.literal(true) }), 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },
@@ -620,6 +620,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
         body: PlaybackTelemetrySchema,
         response: {
           202: z.object({ ok: z.literal(true), receivedAt: z.string() }),
+          429: z.object({ error: z.string() }),
         },
       },
     },
@@ -709,6 +710,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
         }),
         response: {
           201: z.object({ ok: z.literal(true), id: z.string() }),
+          429: z.object({ error: z.string() }),
         },
       },
     },
@@ -781,7 +783,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
         tags: ["broadcast"],
         summary: "Admin: update playback engine configuration",
         body: PlaybackStateSchema.partial(),
-        response: { 200: PlaybackStateSchema },
+        response: { 200: PlaybackStateSchema, 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },

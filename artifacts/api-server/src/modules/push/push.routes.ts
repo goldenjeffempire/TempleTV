@@ -48,6 +48,7 @@ export async function pushRoutes(app: FastifyInstance) {
         }),
         response: {
           200: z.object({ ok: z.literal(true), created: z.boolean() }),
+          429: z.object({ error: z.string() }),
         },
       },
     },
@@ -98,6 +99,7 @@ export async function pushRoutes(app: FastifyInstance) {
         }),
         response: {
           200: z.object({ ok: z.literal(true), created: z.boolean() }),
+          429: z.object({ error: z.string() }),
         },
       },
     },

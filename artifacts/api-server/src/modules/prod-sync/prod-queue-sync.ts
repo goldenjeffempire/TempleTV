@@ -99,6 +99,7 @@ async function probeDurationSecs(url: string): Promise<{ secs: number | null; fr
         "-probesize", "20000000",
         url,
       ]);
+      child.unref();
     } catch {
       clearTimeout(timer);
       done(null);

@@ -464,6 +464,8 @@ export default function VideosPage() {
       // Queueing for transcoding directly addresses "Missing HLS" entries in
       // the remediation report — refresh so operators see the status change.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Transcoding request failed"),
   });
@@ -480,6 +482,8 @@ export default function VideosPage() {
       // Faststart directly addresses "UNSTARTED_FASTSTART" remediation items —
       // refresh the report so the panel reflects the in-progress state.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Faststart request failed"),
   });
@@ -501,6 +505,7 @@ export default function VideosPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Batch retry failed"),
   });
@@ -539,6 +544,8 @@ export default function VideosPage() {
       void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
       // Bulk-queuing directly addresses "Missing HLS" remediation entries.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
     },
     onError: () => toast.error("Bulk transcode request failed"),
   });
@@ -572,6 +579,8 @@ export default function VideosPage() {
       // Bulk deletion can resolve orphaned-queue remediation entries — refresh
       // the panel so the report reflects the post-delete state immediately.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
     },
     onError: () => toast.error("Bulk delete failed"),
   });
