@@ -263,6 +263,33 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(cors, {
     origin: wildcardOrigin ? true : parsedOrigins,
     credentials: !wildcardOrigin,
+    // Explicitly list every HTTP method the API exposes so the preflight
+    // response is deterministic regardless of the @fastify/cors version's
+    // default behaviour.
+    methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
+    // List every custom request header the admin SPA or any other client
+    // sends. Without this, @fastify/cors falls back to reflecting whatever
+    // is in Access-Control-Request-Headers — a mechanism that silently
+    // breaks when Render's edge returns a bare 503 (no CORS headers at all)
+    // during a cold-start, causing fetch() to throw "Network request failed"
+    // for DELETE/POST/PATCH mutations specifically (GET requests often hit
+    // the TanStack Query cache and appear to work).
+    //
+    // X-Admin-CSRF is the custom CSRF-proof header required on all mutating
+    // admin requests. Its absence from allowedHeaders is what made CORS
+    // preflights for DELETE fail while GET continued to serve cached data.
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-Admin-CSRF",
+      "Range",
+    ],
+    // Expose pagination / range headers so clients can read them.
+    exposedHeaders: ["Content-Range", "Content-Disposition", "X-Total-Count"],
+    // Cache the preflight result for 10 minutes. Reduces the number of
+    // OPTIONS round-trips (and therefore cold-start exposure windows on the
+    // Render free tier) for all authenticated admin sessions.
+    maxAge: 600,
   });
   await app.register(rateLimit, {
     global: true,

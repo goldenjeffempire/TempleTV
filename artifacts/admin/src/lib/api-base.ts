@@ -45,28 +45,48 @@ function inferProductionApiOrigin(): string | null {
   // SSR/Node contexts have no window; relative paths are correct there.
   if (typeof window === "undefined") return null;
   const { hostname } = window.location;
-  // Convention: a host of `admin.<domain>` implies the API lives at
-  // `api.<domain>`. Only triggered when the hostname literally begins with
-  // `admin.` so dev URLs (replit-dev domains, localhost, path-routed
-  // workspace previews) keep using the relative same-origin /api path.
-  //
-  // Explicitly excluded: *.replit.dev and *.worf.replit.dev — Replit's dev
-  // proxy may assign a subdomain beginning with "admin" to the admin artifact,
-  // but the Vite dev server already proxies /api → localhost:5000, so we must
-  // use the relative path here rather than rewriting to api.templetv.org.ng.
-  // NOTE: The canonical production domain is admin.templetv.org.ng which
-  // serves BOTH the admin SPA and the API on the same origin — no cross-origin
-  // rewrite is needed. The old admin.* → api.* inference was for a deprecated
-  // split-domain Render setup and has been removed. When the SPA is served at
-  // admin.templetv.org.ng, all /api/* calls resolve to the same host correctly
-  // via the relative base. Set VITE_API_BASE_URL explicitly for any
-  // non-unified deployment where the API lives on a separate subdomain.
 
-  // Legacy fallback: deprecated Render auto-generated admin service URLs.
-  // These point at admin.templetv.org.ng (the canonical unified domain).
+  // ── Replit dev domains — always use relative /api path ───────────────────
+  // Replit's preview proxy may assign a subdomain beginning with "admin" to
+  // the admin artifact, but the Vite dev server already proxies /api →
+  // localhost, so we must NOT rewrite to api.templetv.org.ng here.
+  if (
+    hostname.endsWith(".replit.dev") ||
+    hostname.endsWith(".worf.replit.dev") ||
+    hostname.endsWith(".replit.app") ||
+    hostname === "localhost" ||
+    hostname === "127.0.0.1"
+  ) {
+    return null;
+  }
+
+  // ── Production split-domain safety net ───────────────────────────────────
+  // The Render deployment serves the admin SPA at admin.templetv.org.ng and
+  // the API at api.templetv.org.ng — two SEPARATE origins. VITE_API_URL is
+  // baked into the build at render.yaml time and is the primary source of
+  // truth. This inference acts as a safety net: if the Render build cache
+  // ever serves a stale JS bundle that pre-dates the VITE_API_URL env var,
+  // callers at admin.<domain> would silently fall back to the same-origin
+  // static host (which returns index.html for every path) and all mutations
+  // would fail with "Server returned an unexpected response". The inference
+  // restores correct cross-origin routing in that scenario.
+  //
+  // ── Render auto-generated admin service URLs ──────────────────────────────
+  // temple-tv-admin-<hash>.onrender.com → canonical admin.templetv.org.ng.
+  // Must be checked BEFORE the admin.* inference below so these preview URLs
+  // are not rewritten to api.onrender.com (which doesn't exist).
   if (/(^|\.)temple-tv-admin[^.]*\.onrender\.com$/i.test(hostname)) {
     return "https://admin.templetv.org.ng";
   }
+
+  // Any hostname starting with "admin." in production implies the API lives
+  // at "api.<rest>". Works for both 3-part (admin.example.com) and 4-part
+  // (admin.templetv.org.ng) hostnames because we simply replace the prefix.
+  if (hostname.startsWith("admin.")) {
+    const apiHost = "api." + hostname.slice("admin.".length);
+    return `https://${apiHost}`;
+  }
+
   return null;
 }
 
