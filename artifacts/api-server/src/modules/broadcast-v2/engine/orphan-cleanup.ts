@@ -170,11 +170,20 @@ class OrphanCleanupWorkerImpl {
       );
       let staleSessionsClosed = 0;
       try {
+        // LIMIT 5000 prevents this UPDATE from taking a heavy lock on the entire
+        // viewer_sessions table during a 24/7 broadcast where thousands of sessions
+        // can accumulate. Without the LIMIT, a slow sweep can block concurrent
+        // heartbeat INSERTs and viewer-count queries for several seconds. Rows
+        // beyond the limit are picked up on the next 4-hour sweep.
         const result = await db.execute(
           sql`UPDATE viewer_sessions
               SET    ended_at = last_heartbeat_at
-              WHERE  ended_at IS NULL
-                AND  last_heartbeat_at < ${staleThreshold}`,
+              WHERE  id IN (
+                SELECT id FROM viewer_sessions
+                WHERE  ended_at IS NULL
+                  AND  last_heartbeat_at < ${staleThreshold}
+                LIMIT  5000
+              )`,
         );
         staleSessionsClosed = result.rowCount ?? 0;
         if (staleSessionsClosed > 0) {

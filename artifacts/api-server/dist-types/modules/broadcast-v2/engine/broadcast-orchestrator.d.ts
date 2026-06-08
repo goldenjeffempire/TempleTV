@@ -346,6 +346,14 @@ declare class BroadcastOrchestrator extends EventEmitter {
     private tickFailures;
     private tickCircuitOpen;
     /**
+     * Handle for the circuit-breaker reset timer so stop() can cancel it.
+     * Without clearing this timer, calling stop() while the circuit is open
+     * leaves a pending setTimeout that fires after stop() and calls
+     * scheduleSelfHealReload() on a stopped orchestrator, triggering a spurious
+     * reload and potentially restarting the tick loop.
+     */
+    private _cbResetTimer;
+    /**
      * Consecutive self-heal failure counter and backoff state.
      *
      * When loadActive() throws repeatedly (e.g. DB schema mismatch, pool down)

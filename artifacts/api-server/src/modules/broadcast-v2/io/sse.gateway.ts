@@ -236,5 +236,17 @@ export async function sseRoutes(app: FastifyInstance) {
 
     openSseCleanups.add(cleanup);
     req.raw.on("close", cleanup);
+
+    // Narrow-race guard: `markAborted` was removed from req.raw at line 189,
+    // so a "close" event that fires AFTER the `aborted` check above (line 202)
+    // but BEFORE `req.raw.on("close", cleanup)` above cannot set `aborted` and
+    // would therefore leave `heartbeat` + `onFrame` registered against a dead
+    // socket. Checking `req.raw.destroyed` here — which is set synchronously by
+    // Node when the socket closes — catches that window and performs a safe
+    // inline teardown via the now-registered `cleanup()`.
+    if (req.raw.destroyed) {
+      cleanup();
+      return;
+    }
   });
 }

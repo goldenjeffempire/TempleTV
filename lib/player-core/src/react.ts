@@ -354,7 +354,11 @@ function createSession(baseUrl: string): BroadcastSession {
           // can evaluate the server's current state immediately and clear
           // the 30 s guard as soon as the server finally advances on its
           // own drift-poll tick (≤ 30 s from the slot expiry).
-          transport.requestSnapshot();
+          // Guard: isStopped check mirrors the pre-POST check at the top of
+          // doPost() — without this, sessions evicted by the janitor fire
+          // requestSnapshot() on a stopped transport, generating a live REST
+          // fetch that then attaches a new frame handler to a dead session.
+          if (!transport.isStopped) transport.requestSnapshot();
         }
       });
     };

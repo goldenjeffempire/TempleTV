@@ -101,19 +101,19 @@ declare const Env: z.ZodObject<{
     SEED_ADMIN_PASSWORD: z.ZodOptional<z.ZodString>;
     SEED_ADMIN_FORCE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
 }, "strip", z.ZodTypeAny, {
+    DATABASE_URL: string;
     NODE_ENV: "development" | "test" | "production";
     PORT: number;
     TV_DEV_PORT: number;
     MOBILE_DEV_PORT: number;
     LOG_LEVEL: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
-    DATABASE_URL: string;
     JWT_ACCESS_SECRET: string;
     JWT_REFRESH_SECRET: string;
     JWT_ACCESS_TTL_SECONDS: number;
     JWT_REFRESH_TTL_SECONDS: number;
     JWT_ALGORITHM: "HS256";
     REFRESH_TOKEN_STRICT_IP_CHECK: boolean;
-    ADMIN_API_TOKEN_ROLE: "admin" | "editor" | "user" | "moderator";
+    ADMIN_API_TOKEN_ROLE: "admin" | "editor" | "moderator" | "user";
     CORS_ORIGINS: string;
     BROADCAST_PRELOAD_LEAD_MS: number;
     RATE_LIMIT_DEFAULT_PER_MINUTE: number;
@@ -214,7 +214,7 @@ declare const Env: z.ZodObject<{
     JWT_ALGORITHM?: "HS256" | undefined;
     REFRESH_TOKEN_STRICT_IP_CHECK?: string | boolean | undefined;
     ADMIN_API_TOKEN?: string | undefined;
-    ADMIN_API_TOKEN_ROLE?: "admin" | "editor" | "user" | "moderator" | undefined;
+    ADMIN_API_TOKEN_ROLE?: "admin" | "editor" | "moderator" | "user" | undefined;
     ADMIN_API_TOKEN_IP_ALLOWLIST?: string | undefined;
     CORS_ORIGINS?: string | undefined;
     CORS_ORIGINS_EXTRA?: string | undefined;

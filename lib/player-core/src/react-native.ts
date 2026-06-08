@@ -231,7 +231,10 @@ function getOrCreateSession(baseUrl: string): NativeSession {
           // All retries exhausted — fetch a fresh snapshot so the machine
           // can evaluate the server's current state and clear the 30 s guard
           // as soon as the server advances on its own drift-poll tick.
-          transport.requestSnapshot();
+          // Guard: mirrors the pre-POST isStopped check — prevents zombie
+          // requestSnapshot() calls on evicted RN sessions (battery drain +
+          // server noise from repeated POST /natural-end on mobile).
+          if (!transport.isStopped) transport.requestSnapshot();
         }
       });
     };

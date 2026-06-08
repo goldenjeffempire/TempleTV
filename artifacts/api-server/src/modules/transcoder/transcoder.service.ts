@@ -1206,6 +1206,11 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
     // Run HLS transcoding and thumbnail extraction in parallel.
     const hlsPromise = new Promise<void>((resolve, reject) => {
       const proc = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
+      // unref() lets the Node process exit cleanly on SIGTERM/SIGKILL even while
+      // FFmpeg is still encoding. Without this, a Replit memory-watchdog restart
+      // or operator SIGTERM would block for up to TRANSCODER_JOB_TIMEOUT_MS
+      // waiting for the orphaned FFmpeg child to finish or time out.
+      proc.unref();
       let stderrTail = "";
       let stdoutBuf = "";
 
@@ -1388,6 +1393,9 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
         try {
           await new Promise<void>((resolve, reject) => {
             const proc = spawn("ffmpeg", fallbackArgs, { stdio: ["ignore", "pipe", "pipe"] });
+            // Mirror the main-path unref() so a SIGTERM/watchdog restart during
+            // the 360p fallback encode doesn't block the process from exiting.
+            proc.unref();
             let tail = "";
             // Buffer stdout across chunks so out_time_ms= lines split over
             // two data events are assembled correctly (mirrors the main path).

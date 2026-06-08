@@ -153,6 +153,11 @@ export default function MidnightPrayersPage() {
     onSuccess: () => {
       setPendingConfig({});
       qc.invalidateQueries({ queryKey: ["midnight-prayers/queue"] });
+      // Also invalidate state so the "In Window / Out of Window" badge and
+      // current/next track display reflect the new start/end hours immediately —
+      // without this, the state query keeps showing the previous window until
+      // its 10 s refetchInterval fires.
+      qc.invalidateQueries({ queryKey: ["midnight-prayers/state"] });
       toast({ title: "Schedule saved", description: "Midnight Prayers schedule updated." });
     },
     onError: () => toast({ title: "Save failed", variant: "destructive" }),
