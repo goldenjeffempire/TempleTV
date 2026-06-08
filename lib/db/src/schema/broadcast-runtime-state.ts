@@ -20,6 +20,11 @@ export const broadcastRuntimeStateTable = pgTable(
     // resumes in failover mode after a crash without requiring manual re-engagement.
     failoverActive: boolean("failover_active").notNull().default(false),
     failoverReason: text("failover_reason"),
+    // Per-item consecutive failure counts from the media-integrity-scanner.
+    // Persisted so failure budgets survive process restarts and bad URLs cannot
+    // dodge suspension by triggering a restart before hitting the threshold.
+    // Shape: { [itemId]: { count: number; lastFailedAtMs: number | null } }
+    scannerFailureCounts: jsonb("scanner_failure_counts"),
     // $onUpdateFn ensures the column is refreshed on every Drizzle-driven UPDATE,
     // not just on INSERT (defaultNow() only fires at INSERT time).
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdateFn(() => new Date()),

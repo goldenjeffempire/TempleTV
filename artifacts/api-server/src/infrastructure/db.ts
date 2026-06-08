@@ -162,6 +162,27 @@ export async function ensureBroadcastV2Tables(): Promise<void> {
       ALTER TABLE broadcast_runtime_state
         ADD COLUMN IF NOT EXISTS bad_url_cache JSONB
     `);
+    // failover_active / failover_reason — added to persist operator-engaged
+    // failover state so the engine resumes in failover mode after a crash.
+    await client.query(`
+      ALTER TABLE broadcast_runtime_state
+        ADD COLUMN IF NOT EXISTS failover_active BOOLEAN NOT NULL DEFAULT FALSE
+    `);
+    await client.query(`
+      ALTER TABLE broadcast_runtime_state
+        ADD COLUMN IF NOT EXISTS failover_reason TEXT
+    `);
+    // scanner_failure_counts — added June 2026.
+    // Persists the media-integrity-scanner's per-item consecutive failure counts
+    // across process restarts. Without this column, every restart resets all
+    // failure counts to 0, allowing a persistently-unreachable source URL to
+    // avoid suspension indefinitely (it never accumulates the
+    // SCANNER_BAD_URL_THRESHOLD consecutive failures needed to trigger
+    // proactive bad-URL marking). Shape: { [itemId]: { count, lastFailedAtMs } }
+    await client.query(`
+      ALTER TABLE broadcast_runtime_state
+        ADD COLUMN IF NOT EXISTS scanner_failure_counts JSONB
+    `);
 
     // broadcast_event_log — append-only event journal for SSE/WS replay
     await client.query(`
@@ -633,6 +654,16 @@ export async function ensureRuntimeIndexes(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_viewer_sessions_heartbeat
         ON viewer_sessions (last_heartbeat_at)
         WHERE ended_at IS NULL
+    `);
+    // broadcast_queue.video_id — unconditional index for JOIN patterns that
+    // include inactive rows (e.g. orphan detection, integrity validator
+    // reverse-pass, duration-sync UPDATE FROM broadcast_queue). The partial
+    // unique index uq_broadcast_queue_video_id_active already covers active-only
+    // lookups; this complements it for full-table JOIN and non-active scans.
+    await run("idx_broadcast_queue_video_id", `
+      CREATE INDEX IF NOT EXISTS idx_broadcast_queue_video_id
+        ON broadcast_queue (video_id)
+        WHERE video_id IS NOT NULL
     `);
 
     // ── Check constraints (DO-block pattern for idempotency) ───────────────

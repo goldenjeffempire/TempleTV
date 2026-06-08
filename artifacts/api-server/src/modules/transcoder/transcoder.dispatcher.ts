@@ -346,18 +346,37 @@ class TranscoderDispatcher {
       .from(jobs)
       .where(and(eq(jobs.status, "done"), inArray(jobs.videoId, recoverableVideoIds)));
 
+    // Batch-check ALL master HLS keys in a single round-trip instead of one
+    // SELECT per job (N+1 → 1). For N done-but-stuck jobs this eliminates
+    // N−1 sequential DB round-trips on every recoverPartialSuccessVideos() call.
+    // Falls back to an empty Set on error so no jobs are healed in that cycle —
+    // safer than crashing and skipping recovery entirely.
+    const jobEntries = doneJobs.map((job) => ({
+      job,
+      masterKey: `transcoded/${job.videoId}/master.m3u8`,
+    }));
+    const masterKeysToProbe = jobEntries.map((e) => e.masterKey);
+    const existingMasterKeys: Set<string> = masterKeysToProbe.length > 0
+      ? await db
+          .execute(sql`
+            SELECT key FROM storage_blobs
+            WHERE key = ANY(${masterKeysToProbe}::text[])
+          `)
+          .then((r) => new Set((r.rows as Array<{ key: string }>).map((row) => row.key)))
+          .catch((err) => {
+            logger.warn({ err }, "transcoder: batch master-key probe failed — skipping recovery this cycle");
+            return new Set<string>();
+          })
+      : new Set<string>();
+
     // Collect video IDs that are successfully healed so we can batch-sync
     // broadcast_queue.duration_secs in a single UPDATE after the loop instead
     // of one SELECT + UPDATE per video (N+1 → 1 batch query).
     const healedVideoIds: string[] = [];
 
-    for (const job of doneJobs) {
+    for (const { job, masterKey } of jobEntries) {
       try {
-        const masterKey = `transcoded/${job.videoId}/master.m3u8`;
-        const masterExists = await db
-          .execute(sql`SELECT 1 FROM storage_blobs WHERE key = ${masterKey} LIMIT 1`)
-          .then((r) => (r.rows as unknown[]).length > 0)
-          .catch(() => false);
+        const masterExists = existingMasterKeys.has(masterKey);
 
         if (masterExists) {
           const masterUrl = `/api/hls/${job.videoId}/master.m3u8`;

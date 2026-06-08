@@ -38,7 +38,7 @@
  *   'deleted' or 'scheduled' before the transaction completes.)
  */
 
-import { and, eq, inArray, lte, or, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 import { env } from "../../config/env.js";
@@ -490,26 +490,36 @@ export async function runCleanupSweep(): Promise<{
 
   const now = new Date();
 
-  // Claim eligible videos atomically.
-  const candidates = await db
-    .select({
-      id: videos.id,
-      objectPath: videos.objectPath,
-      sourceCleanupAfter: videos.sourceCleanupAfter,
-    })
-    .from(videos)
-    .where(
-      and(
-        eq(videos.sourceCleanupStatus, "scheduled"),
-        or(
-          lte(videos.sourceCleanupAfter, now),
-          // Also catch rows where sourceCleanupAfter was never set (edge case).
-          sql`${videos.sourceCleanupAfter} IS NULL`,
-        ),
-        sql`${videos.objectPath} IS NOT NULL`,
-      ),
+  // Atomically claim eligible candidates by marking them 'running' so that
+  // concurrent replicas or a rapid restart cannot pick up the same video and
+  // attempt a double-delete. The FOR UPDATE SKIP LOCKED subquery ensures only
+  // one process owns each row at a time; the outer UPDATE marks them 'running'
+  // so a second sweep's WHERE source_cleanup_status='scheduled' filter skips
+  // them for the duration of this cycle.
+  // If the process crashes mid-cycle, CleanupWorker.start() resets any rows
+  // still 'running' back to 'scheduled' before the first sweep fires.
+  const limit = env.CLEANUP_MAX_PER_SWEEP;
+  const claimedRows = await db.execute(sql`
+    UPDATE managed_videos
+    SET source_cleanup_status = 'running'
+    WHERE id IN (
+      SELECT id FROM managed_videos
+      WHERE source_cleanup_status = 'scheduled'
+        AND (source_cleanup_after <= ${now} OR source_cleanup_after IS NULL)
+        AND object_path IS NOT NULL
+      ORDER BY source_cleanup_after NULLS LAST
+      LIMIT ${limit}
+      FOR UPDATE SKIP LOCKED
     )
-    .limit(env.CLEANUP_MAX_PER_SWEEP);
+    RETURNING id,
+              object_path          AS "objectPath",
+              source_cleanup_after AS "sourceCleanupAfter"
+  `);
+  const candidates = claimedRows.rows as Array<{
+    id: string;
+    objectPath: string | null;
+    sourceCleanupAfter: Date | null;
+  }>;
 
   if (candidates.length === 0) return { processed: 0, deleted: 0, deferred: 0, errors: 0 };
 
@@ -567,6 +577,19 @@ class CleanupWorker {
       return;
     }
     this.stopped = false;
+
+    // Reset any rows left in 'running' state from a previous crashed process.
+    // These are guaranteed stale — if the worker is starting now, no sweep is
+    // currently executing — so flipping them back to 'scheduled' is safe and
+    // ensures the sweep picks them up on its next tick rather than leaving
+    // them orphaned indefinitely in the 'running' state.
+    void db
+      .update(videos)
+      .set({ sourceCleanupStatus: "scheduled" })
+      .where(eq(videos.sourceCleanupStatus, "running"))
+      .catch((err: unknown) =>
+        logger.warn({ err }, "[cleanup-worker] startup reset of stale 'running' rows failed (non-fatal)"),
+      );
 
     const tick = () => {
       if (this.stopped) return;

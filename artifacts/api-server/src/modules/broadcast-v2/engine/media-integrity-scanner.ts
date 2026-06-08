@@ -23,6 +23,11 @@ import {
   BAD_URL_SKIP_THRESHOLD,
 } from "../repository/queue.repo.js";
 import { playbackAnalytics } from "./playback-analytics.js";
+import { runtimeRepo } from "../repository/runtime.repo.js";
+
+// Channel ID used for runtime state persistence — matches the hardcoded "main"
+// channel used throughout the broadcast-v2 module.
+const CHANNEL_ID = "main";
 
 export interface ScanItemResult {
   id: string;
@@ -197,6 +202,31 @@ class MediaIntegrityScannerImpl {
 
   start(intervalMs = DEFAULT_INTERVAL_MS): void {
     if (this.bootTimer || this.scanInterval) return;
+
+    // Restore persisted failure counts from the previous process run so that
+    // URLs which were accumulating consecutive failures before a restart
+    // continue from where they left off instead of resetting to 0. Without
+    // this, a bad URL could dodge auto-suspension indefinitely by triggering
+    // restarts before SCANNER_BAD_URL_THRESHOLD consecutive failures accumulate.
+    void runtimeRepo
+      .loadFailureCounts(CHANNEL_ID)
+      .then((saved) => {
+        if (!saved) return;
+        let restored = 0;
+        for (const [id, entry] of Object.entries(saved)) {
+          if (entry && typeof entry.count === "number") {
+            this.failureCounts.set(id, entry);
+            restored++;
+          }
+        }
+        if (restored > 0) {
+          logger.info({ restored }, "[media-scanner] restored failure counts from DB");
+        }
+      })
+      .catch((err) => {
+        logger.warn({ err }, "[media-scanner] failed to restore failure counts (non-fatal — starting fresh)");
+      });
+
     const scheduleRecurring = (): void => {
       this.scanInterval = setInterval(() => {
         void this.scan().catch((err) =>
@@ -386,6 +416,17 @@ class MediaIntegrityScannerImpl {
       },
       "[media-scanner] scan complete",
     );
+
+    // Persist failure counts to DB after every scan so they survive process
+    // restarts. Fire-and-forget — a failed write is logged but does not affect
+    // scan results or the next scan cycle.
+    const countsSnapshot = Object.fromEntries(this.failureCounts.entries());
+    void runtimeRepo
+      .saveFailureCounts(CHANNEL_ID, countsSnapshot)
+      .catch((err) => {
+        logger.warn({ err }, "[media-scanner] failed to persist failure counts (non-fatal)");
+      });
+
     this.scanning = false;
     return this.report;
   }

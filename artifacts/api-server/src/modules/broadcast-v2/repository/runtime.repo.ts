@@ -104,4 +104,39 @@ export const runtimeRepo = {
     if (!row?.badUrlCache) return null;
     return row.badUrlCache as unknown as PersistedBadUrlState;
   },
+
+  /**
+   * Persist the media-integrity-scanner's per-item consecutive failure counts
+   * so they survive process restarts. Writes only the `scanner_failure_counts`
+   * column — does not clobber any other runtime state. Non-throwing; callers
+   * fire-and-forget.
+   */
+  async saveFailureCounts(
+    channelId: string,
+    counts: Record<string, { count: number; lastFailedAtMs: number | null }>,
+  ): Promise<void> {
+    await db
+      .update(t)
+      .set({ scannerFailureCounts: counts as unknown as Record<string, unknown>, updatedAt: new Date() })
+      .where(eq(t.channelId, channelId));
+  },
+
+  /**
+   * Load the persisted scanner failure counts. Returns null when no row exists
+   * or the column is NULL (first boot, column just added, or deliberately cleared).
+   */
+  async loadFailureCounts(
+    channelId: string,
+  ): Promise<Record<string, { count: number; lastFailedAtMs: number | null }> | null> {
+    const [row] = await db
+      .select({ scannerFailureCounts: t.scannerFailureCounts })
+      .from(t)
+      .where(eq(t.channelId, channelId))
+      .limit(1);
+    if (!row?.scannerFailureCounts) return null;
+    return row.scannerFailureCounts as unknown as Record<
+      string,
+      { count: number; lastFailedAtMs: number | null }
+    >;
+  },
 };

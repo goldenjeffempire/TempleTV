@@ -10,7 +10,7 @@ import { queueIntegrityValidator } from "./engine/queue-integrity-validator.js";
 import { orphanCleanupWorker } from "./engine/orphan-cleanup.js";
 import { workerSupervisor } from "./engine/worker-supervisor.js";
 import { broadcastFanout } from "./io/broadcast-fanout.js";
-import { installYouTubeAutoOverride } from "../youtube-live/auto-override.js";
+import { installYouTubeAutoOverride, uninstallYouTubeAutoOverride } from "../youtube-live/auto-override.js";
 import { faststartRecoveryWorker } from "./engine/faststart-recovery.js";
 import { reEnableAllSuspended } from "./repository/queue.repo.js";
 
@@ -374,7 +374,18 @@ export async function stopBroadcastV2(): Promise<void> {
     logger.warn({ err }, "[broadcast-v2] final checkpoint flush failed (non-fatal)"),
   );
 
-  // 6. Close Redis fan-out subscriber and leader renewal timer.
+  // 6. Uninstall YouTube live services. These are installed on successful boot
+  //    and run on their own timers. uninstallYouTubeAutoOverride clears the
+  //    polling interval and the event listener; uninstallYoutubeLiveStatusService
+  //    clears its setInterval sweep timer. Both are no-ops if not installed.
+  uninstallYouTubeAutoOverride();
+  await import("../youtube-live/live-status.service.js")
+    .then(({ uninstallYoutubeLiveStatusService }) => uninstallYoutubeLiveStatusService())
+    .catch((err) =>
+      logger.warn({ err }, "[broadcast-v2] YouTube live-status service uninstall failed (non-fatal)"),
+    );
+
+  // 7. Close Redis fan-out subscriber and leader renewal timer.
   await broadcastFanout.close().catch((err) =>
     logger.warn({ err }, "[broadcast-v2] fanout close error (non-fatal)"),
   );

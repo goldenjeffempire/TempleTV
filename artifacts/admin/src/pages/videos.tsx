@@ -319,6 +319,10 @@ export default function VideosPage() {
       // panel still shows the old values until the next SSE push. Invalidate
       // immediately so operators see accurate metadata in the queue view.
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      // Metadata changes (title, category, preacher) can resolve or expose
+      // remediation-report warnings — refresh the panel so it reflects the
+      // current state without waiting for the next SSE-triggered invalidation.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       // Playlists display video titles in their item lists — refresh so the
       // updated title is visible without a full page reload.
       void qc.invalidateQueries({ queryKey: ["playlists"] });
@@ -358,6 +362,9 @@ export default function VideosPage() {
       // A video may be a scheduled entry (contentType="video", contentId=id).
       // Invalidate schedule so the operator sees the orphaned slot immediately.
       void qc.invalidateQueries({ queryKey: ["schedule"] });
+      // Deletion may resolve remediation-report warnings (e.g. dead entries in
+      // the queue that referenced this video) — refresh the panel immediately.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       setDeleteVideo(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Delete failed"),
@@ -382,6 +389,8 @@ export default function VideosPage() {
       // Featured status can affect how video appears in the broadcast queue
       // diagnostics panel — refresh so the flag is current.
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      // Featured/unfeatured state can surface or resolve remediation items.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     },
     onError: (_e, _vars, ctx) => {
       if (ctx?.prev) ctx.prev.forEach(([key, data]) => qc.setQueryData(key, data));
@@ -405,6 +414,9 @@ export default function VideosPage() {
     onSuccess: (_data, { metadataLocked }) => {
       toast.success(metadataLocked ? "Metadata locked — YouTube sync won't overwrite" : "Metadata unlocked");
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      // Metadata-lock state affects YouTube sync behavior which can produce
+      // broadcast-queue drift — refresh remediation report to reflect current state.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     },
     onError: (_e, _vars, ctx) => {
       if (ctx?.prev) ctx.prev.forEach(([key, data]) => qc.setQueryData(key, data));
@@ -428,6 +440,9 @@ export default function VideosPage() {
     onSuccess: (_data, { broadcastOnly }) => {
       toast.success(broadcastOnly ? "Hidden from public library" : "Published to public library");
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      // Visibility change can affect which items appear in the broadcast queue
+      // remediation report (e.g. hidden videos with queue entries).
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     },
     onError: (_e, _vars, ctx) => {
       if (ctx?.prev) ctx.prev.forEach(([key, data]) => qc.setQueryData(key, data));
@@ -446,6 +461,9 @@ export default function VideosPage() {
       // Broadcast queue shows "Missing HLS" warnings — invalidate so the
       // orchestrator panel reflects the new queued status immediately.
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      // Queueing for transcoding directly addresses "Missing HLS" entries in
+      // the remediation report — refresh so operators see the status change.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Transcoding request failed"),
   });
@@ -459,6 +477,9 @@ export default function VideosPage() {
       // Broadcast queue shows source URL status — invalidate so the Broadcast
       // panel reflects the faststart-in-progress state without waiting for SSE.
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      // Faststart directly addresses "UNSTARTED_FASTSTART" remediation items —
+      // refresh the report so the panel reflects the in-progress state.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Faststart request failed"),
   });
@@ -474,6 +495,12 @@ export default function VideosPage() {
         void qc.invalidateQueries({ queryKey: ["admin-videos"] });
         void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
       }
+      // Always refresh engine-health and remediation-report regardless of
+      // retry count — even 0 retried is meaningful (confirms no actionable
+      // failures) and avoids stale "N failed jobs" badges in the UI.
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Batch retry failed"),
   });
@@ -510,6 +537,8 @@ export default function VideosPage() {
       // they are enqueued, so a cross-invalidation here avoids the operator
       // switching tabs and seeing a stale "no jobs" state.
       void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+      // Bulk-queuing directly addresses "Missing HLS" remediation entries.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     },
     onError: () => toast.error("Bulk transcode request failed"),
   });
@@ -540,6 +569,9 @@ export default function VideosPage() {
       // Match single-delete: evict YouTube Library tab so deleted YouTube
       // videos don't linger there until stale time expires.
       void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
+      // Bulk deletion can resolve orphaned-queue remediation entries — refresh
+      // the panel so the report reflects the post-delete state immediately.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     },
     onError: () => toast.error("Bulk delete failed"),
   });
