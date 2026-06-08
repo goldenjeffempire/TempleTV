@@ -273,6 +273,7 @@ export async function userRoutes(app: FastifyInstance) {
     "/watch-history",
     {
       preHandler: requireAuth(),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["user"],
         summary: "Watch history alias (same as GET /user/history)",
@@ -280,6 +281,7 @@ export async function userRoutes(app: FastifyInstance) {
         querystring: z.object({ limit: z.coerce.number().int().min(1).max(500).default(100) }),
         response: {
           200: z.object({ history: z.array(HistoryItemSchema) }),
+          429: z.object({ error: z.string() }),
         },
       },
     },
@@ -309,6 +311,7 @@ export async function userRoutes(app: FastifyInstance) {
     "/history",
     {
       preHandler: requireAuth(),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["user"],
         summary: "List watch history for the authenticated user (newest first)",
@@ -316,6 +319,7 @@ export async function userRoutes(app: FastifyInstance) {
         querystring: z.object({ limit: z.coerce.number().int().min(1).max(500).default(100) }),
         response: {
           200: z.object({ history: z.array(HistoryItemSchema) }),
+          429: z.object({ error: z.string() }),
         },
       },
     },

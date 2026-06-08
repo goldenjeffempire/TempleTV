@@ -665,6 +665,14 @@ export async function ensureRuntimeIndexes(): Promise<void> {
         ON broadcast_queue (video_id)
         WHERE video_id IS NOT NULL
     `);
+    // Chat history: queries filter by channel_id + order by created_at, with a
+    // partial predicate on deleted_at IS NULL. Without this index each
+    // GET /chat/:channel/history performs a sequential scan over the full table.
+    await run("idx_chat_messages_channel_history", `
+      CREATE INDEX IF NOT EXISTS idx_chat_messages_channel_history
+        ON chat_messages (channel_id, created_at)
+        WHERE deleted_at IS NULL
+    `);
 
     // ── Check constraints (DO-block pattern for idempotency) ───────────────
     // ALTER TABLE ADD CONSTRAINT has no IF NOT EXISTS; use a DO block.

@@ -670,6 +670,8 @@ function VideoCard({ video: initialVideo }: { video: VideoRow }) {
   const invalidateLibrary = () => {
     void queryClient.invalidateQueries({ queryKey: ["youtube-library-videos"] });
     void queryClient.invalidateQueries({ queryKey: ["admin-stats"] });
+    void queryClient.invalidateQueries({ queryKey: ["broadcast-queue"] });
+    void queryClient.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
   };
 
   const resetMutation = useMutation({

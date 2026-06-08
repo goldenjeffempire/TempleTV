@@ -83,6 +83,7 @@ async function extractPosterFrame(
       outputPath,
     ];
     const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
+    proc.unref();
     const timer = setTimeout(() => {
       proc.kill("SIGKILL");
       log.debug({ targetSecs }, "faststart: thumbnail extraction timed out — skipping");
@@ -440,7 +441,7 @@ export async function runFaststart(
         });
     }
 
-    void invalidateVideosCatalogCache();
+    void invalidateVideosCatalogCache().catch(() => {});
     adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-complete" });
 
     // Auto-add to broadcast queue if not already there.
@@ -533,6 +534,7 @@ function spawnFfmpegFaststart(
       "-movflags", "+faststart",
       outputPath,
     ]);
+    proc.unref();
 
     let stderr = "";
     let settled = false;
@@ -580,6 +582,7 @@ function probeDuration(filePath: string, log: typeof rootLogger): Promise<number
       "-of", "default=noprint_wrappers=1:nokey=1",
       filePath,
     ]);
+    proc.unref();
     let out = "";
     let settled = false;
     const settle = (val: number | null) => {

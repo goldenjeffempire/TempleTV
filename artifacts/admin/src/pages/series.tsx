@@ -149,6 +149,7 @@ function EpisodesDialog({
       void qc.invalidateQueries({ queryKey: ["series"] });
       // Keep dashboard episode-count stats accurate after adding episodes.
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to add episode"),
   });
@@ -162,6 +163,7 @@ function EpisodesDialog({
       void qc.invalidateQueries({ queryKey: ["series"] });
       // Keep dashboard episode-count stats accurate after removing episodes.
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to remove episode"),
   });

@@ -49,10 +49,11 @@ export async function adminRoutes(app: FastifyInstance) {
     "/analytics",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Top videos by view count and total views",
-        response: { 200: AnalyticsSchema },
+        response: { 200: AnalyticsSchema, 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },
@@ -63,6 +64,7 @@ export async function adminRoutes(app: FastifyInstance) {
     "/analytics/overview",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary:
@@ -70,7 +72,7 @@ export async function adminRoutes(app: FastifyInstance) {
         querystring: z.object({
           range: z.enum(["7d", "30d", "90d"]).default("30d"),
         }),
-        response: { 200: AnalyticsOverviewSchema },
+        response: { 200: AnalyticsOverviewSchema, 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },

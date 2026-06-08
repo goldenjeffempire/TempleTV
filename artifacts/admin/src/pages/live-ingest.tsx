@@ -153,6 +153,7 @@ export default function LiveIngestPage() {
     onSuccess: () => {
       toast.success("Ingest endpoint created");
       void qc.invalidateQueries({ queryKey: ["live-ingest-endpoints"] });
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
       setAddOpen(false);
       setForm(BLANK_FORM);
     },
@@ -169,6 +170,7 @@ export default function LiveIngestPage() {
     onSuccess: () => {
       toast.success("Endpoint updated");
       void qc.invalidateQueries({ queryKey: ["live-ingest-endpoints"] });
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
       setEditEndpoint(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to update"),
@@ -179,6 +181,7 @@ export default function LiveIngestPage() {
     onSuccess: () => {
       toast.success("Endpoint removed");
       void qc.invalidateQueries({ queryKey: ["live-ingest-endpoints"] });
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
       setDeleteId(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to delete"),
@@ -189,6 +192,7 @@ export default function LiveIngestPage() {
     onSuccess: (ep) => {
       toast.success(`"${ep.name}" is now the primary ingest`);
       void qc.invalidateQueries({ queryKey: ["live-ingest-endpoints"] });
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Promotion failed"),
   });
@@ -199,6 +203,7 @@ export default function LiveIngestPage() {
     onSuccess: () => {
       toast.success("Stream key rotated — update your encoder");
       void qc.invalidateQueries({ queryKey: ["live-ingest-endpoints"] });
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Key rotation failed"),
   });

@@ -366,6 +366,7 @@ async function probeDurationSecs(inputUrl: string): Promise<number | null> {
       "-of", "default=noprint_wrappers=1:nokey=1",
       inputUrl,
     ]);
+    proc.unref();
     let out = "";
     let settled = false;
     const settle = (val: number | null) => {
@@ -405,6 +406,7 @@ async function probeHasAudio(inputPath: string): Promise<boolean> {
       "-of", "csv=p=0",
       inputPath,
     ]);
+    proc.unref();
     let out = "";
     let settled = false;
     const settle = (val: boolean) => {
@@ -448,6 +450,7 @@ async function probeResolution(inputPath: string): Promise<{ width: number; heig
       "-of", "csv=s=x:p=0",
       inputPath,
     ]);
+    proc.unref();
     let out = "";
     let settled = false;
     const settle = (val: { width: number; height: number } | null) => {
@@ -559,6 +562,7 @@ export async function probeContainerIsValid(inputPath: string): Promise<boolean>
       "-of", "default=noprint_wrappers=1:nokey=1",
       inputPath,
     ]);
+    proc.unref();
     let out = "";
     let err = "";
     let settled = false;
@@ -666,6 +670,7 @@ export async function detectMdatWithoutMoov(inputPath: string): Promise<boolean>
         "-of", "csv=p=0",
         inputPath,
       ], { stdio: ["ignore", "pipe", "pipe"] });
+      proc.unref();
       let stdout = "";
       let stderr = "";
       proc.stdout.on("data", (d: Buffer) => { stdout += d.toString("utf8"); });
@@ -721,6 +726,7 @@ export async function remuxForFaststart(
   const tryFfmpeg = (args: string[], strategyName: string, timeoutMs: number): Promise<boolean> =>
     new Promise((resolve) => {
       const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
+      proc.unref();
       let stderr = "";
       let settled = false;
       const settle = (val: boolean) => { if (!settled) { settled = true; resolve(val); } };
@@ -814,6 +820,7 @@ async function generateThumbnail(sourceUrl: string, scratchDir: string): Promise
       "-vf", "scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2:black,setsar=1",
       thumbPath,
     ], { stdio: ["ignore", "ignore", "pipe"] });
+    proc.unref();
 
     let stderrTail = "";
     let settled = false;
@@ -1717,6 +1724,7 @@ export async function normalizeThumbnailBuffer(input: Buffer): Promise<Buffer | 
         "-q:v", "2",
         outPath,
       ], { stdio: ["ignore", "ignore", "pipe"] });
+      proc.unref();
 
       let settled = false;
       const settle = (val: boolean) => { if (!settled) { settled = true; resolve(val); } };
@@ -1751,6 +1759,7 @@ export const _internal = { buildFfmpegArgs, ALL_RENDITIONS };
 export function checkFfmpegAvailable(): Promise<boolean> {
   return new Promise((resolve) => {
     const proc = spawn("ffmpeg", ["-version"], { stdio: "ignore" });
+    proc.unref();
     proc.on("error", () => resolve(false));
     proc.on("close", (code) => resolve(code === 0));
   });
