@@ -40,6 +40,7 @@ import { env } from "../../../config/env.js";
 
 const adminGuard = { preHandler: requireAuth("editor") } as const;
 const adminOnlyGuard = { preHandler: requireAuth("admin") } as const;
+const userGuard = { preHandler: requireAuth("user") } as const;
 
 // Per-process idempotency cache. Architect-flagged: we accept the same
 // `idempotencyKey` only once within a 5-minute window per channel.
@@ -262,6 +263,19 @@ async function checkRemoteTranscodeDiskSpace(
 }
 
 export async function restRoutes(app: FastifyInstance) {
+  // ── Shared response schemas ───────────────────────────────────────────
+  // Defined once at the top of the function (not module scope) to avoid
+  // the temporal dead zone when referenced by the first routes registered.
+  const _400err = z.object({ error: z.string() });
+  const _429err = z.object({ error: z.string() });
+  const _200ok = z.object({ ok: z.literal(true), duplicate: z.boolean().optional() });
+  const _200okSeq = z.object({
+    ok: z.literal(true),
+    sequence: z.number().int().nonnegative(),
+    duplicate: z.boolean().optional(),
+    reEnabled: z.number().int().optional(),
+  });
+
   // ── Public: lightweight health probe ─────────────────────────────────
   // Unauthenticated, in-memory only (no DB round-trip), safe to expose
   // on the open internet. Designed for external uptime monitors and
@@ -273,6 +287,7 @@ export async function restRoutes(app: FastifyInstance) {
   // queue and never reloaded — `scheduleSelfHealReload()` should make
   // that impossible now, but the probe stays as a safety net.
   app.get("/health", {
+    schema: { response: { 429: _429err } },
     config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
   }, async (_req, reply) => {
     reply.header("Cache-Control", "no-store, max-age=0");
@@ -390,6 +405,7 @@ export async function restRoutes(app: FastifyInstance) {
   // though the response is small; the cost is one round-trip per cold
   // start and that's already the design.
   app.get("/state", {
+    schema: { response: { 429: _429err } },
     config: {
       // Cold-start authority for every player surface and the recover-frame
       // refetch target. Rate-limited to absorb aggressive polling from
@@ -404,19 +420,6 @@ export async function restRoutes(app: FastifyInstance) {
   });
 
 const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegative().default(0) });
-
-// ── Shared response schemas for broadcast-v2 POST routes ─────────────────────
-// Defined at module scope (once) to avoid repeated object allocations on
-// every route registration. Not per-request.
-const _400err = z.object({ error: z.string() });
-const _429err = z.object({ error: z.string() });
-const _200ok = z.object({ ok: z.literal(true), duplicate: z.boolean().optional() });
-const _200okSeq = z.object({
-  ok: z.literal(true),
-  sequence: z.number().int().nonnegative(),
-  duplicate: z.boolean().optional(),
-  reEnabled: z.number().int().optional(),
-});
 
   app.get("/rehydrate", {
     schema: {
@@ -642,6 +645,7 @@ const _200okSeq = z.object({
   registerNamedStore("broadcast-v2-stall-cooldown", () => stallActionCooldown.size);
 
   app.post("/report-stall", {
+    ...userGuard,
     bodyLimit: 1048576,
     schema: {
       body: ReportStallCommand,
@@ -776,6 +780,7 @@ const _200okSeq = z.object({
   // can be called by all connected clients simultaneously without risk.
   const CHECKPOINT_DRIFT_THRESHOLD_S = 30;
   app.post("/checkpoint", {
+    ...userGuard,
     bodyLimit: 1048576,
     schema: {
       body: z.object({ itemId: z.string().min(1).max(128), positionSecs: z.number().min(0).max(86400) }),
@@ -896,7 +901,11 @@ const _200okSeq = z.object({
   // Powers the "Source blocked" badges on the Master Control page.
   // Admin-protected (editors + admins) — no rate-limit needed since it's
   // authenticated and does only one DB read + in-memory cache lookups.
-  app.get("/source-health", adminGuard, async (_req, reply) => {
+  app.get("/source-health", {
+    ...adminGuard,
+    schema: { response: { 429: _429err } },
+    config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+  }, async (_req, reply) => {
     reply.header("Cache-Control", "no-store, max-age=0");
     const rows = await queueRepo.loadActive();
     const healthByItemId = getItemsHealth(rows);
@@ -937,6 +946,7 @@ const _200okSeq = z.object({
   // advances the anchor; subsequent calls for the same itemId are no-ops
   // because the anchor has already moved past that item.
   app.post("/natural-end", {
+    ...userGuard,
     bodyLimit: 1048576,
     schema: {
       body: z.object({ itemId: z.string().min(1).max(128) }),
@@ -1149,7 +1159,11 @@ const _200okSeq = z.object({
   // response for operators and monitoring tools. Covers boot state,
   // orchestrator runtime, media scanner, queue validation, worker
   // health, orphan cleanup, prod-sync, and analytics summary.
-  app.get("/diagnostics", adminGuard, async (_req, reply) => {
+  app.get("/diagnostics", {
+    ...adminGuard,
+    schema: { response: { 429: _429err } },
+    config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+  }, async (_req, reply) => {
     reply.header("Cache-Control", "no-store, max-age=0");
     const boot = getBroadcastV2BootStatus();
     const snap = broadcastOrchestrator.snapshot();
@@ -1219,7 +1233,11 @@ const _200okSeq = z.object({
   // ── Admin: playback analytics ─────────────────────────────────────────
   // Returns the full in-memory analytics report with per-item breakdown.
   // Accepts optional `windowMs` query parameter (default: 1 hour).
-  app.get("/analytics", adminGuard, async (req, reply) => {
+  app.get("/analytics", {
+    ...adminGuard,
+    schema: { response: { 429: _429err } },
+    config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+  }, async (req, reply) => {
     reply.header("Cache-Control", "no-store, max-age=0");
     const q = req.query as Record<string, string>;
     const windowMs = q.windowMs ? Math.min(Math.max(Number(q.windowMs), 60_000), 24 * 60 * 60_000) : 60 * 60_000;
@@ -1255,6 +1273,7 @@ const _200okSeq = z.object({
   // "N videos not in queue — Sync now?" banner without running a full scan.
   app.get("/queue-sync-status", {
     ...adminGuard,
+    schema: { response: { 429: _429err } },
     config: { rateLimit: { max: 12, timeWindow: "1 minute" } },
   }, async (_req, reply) => {
     reply.header("Cache-Control", "no-store, max-age=0");
@@ -1339,6 +1358,7 @@ const _200okSeq = z.object({
     "/queue/:id/transcode-remote",
     {
       preHandler: requireAuth("admin"),
+      schema: { response: { 429: _429err } },
       config: { rateLimit: { max: 10, timeWindow: "10 minutes" } },
     },
     async (req, reply) => {
@@ -1430,6 +1450,7 @@ const _200okSeq = z.object({
     "/queue/:id/reprobe",
     {
       preHandler: requireAuth("editor"),
+      schema: { response: { 429: _429err } },
       config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
     },
     async (req, reply) => {
@@ -1531,7 +1552,11 @@ const _200okSeq = z.object({
 
     app.get(
       "/remediation-report",
-      adminGuard,
+      {
+        ...adminGuard,
+        schema: { response: { 429: _429err } },
+        config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+      },
       async (_req, reply) => {
         const now = Date.now();
         if (remediationCache && now - remediationCache.ts < REMEDIATION_TTL_MS) {

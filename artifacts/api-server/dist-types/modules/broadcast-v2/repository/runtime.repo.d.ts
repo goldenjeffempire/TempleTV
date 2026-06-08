@@ -32,4 +32,22 @@ export declare const runtimeRepo: {
      * urlCache entries by checking `expiresAtMs > Date.now()`.
      */
     loadBadUrlCache(channelId: string): Promise<PersistedBadUrlState | null>;
+    /**
+     * Persist the media-integrity-scanner's per-item consecutive failure counts
+     * so they survive process restarts. Writes only the `scanner_failure_counts`
+     * column — does not clobber any other runtime state. Non-throwing; callers
+     * fire-and-forget.
+     */
+    saveFailureCounts(channelId: string, counts: Record<string, {
+        count: number;
+        lastFailedAtMs: number | null;
+    }>): Promise<void>;
+    /**
+     * Load the persisted scanner failure counts. Returns null when no row exists
+     * or the column is NULL (first boot, column just added, or deliberately cleared).
+     */
+    loadFailureCounts(channelId: string): Promise<Record<string, {
+        count: number;
+        lastFailedAtMs: number | null;
+    }> | null>;
 };

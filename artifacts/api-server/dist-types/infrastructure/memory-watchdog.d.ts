@@ -47,11 +47,13 @@ export interface WatchdogState {
         consecutiveSlopeOver: number;
         heapUsedGrowthMbPerMin: number | null;
         consecutiveHeapOver: number;
+        eventLoopLagMs: number;
     };
     alerts: {
         rssAlertActive: boolean;
         slopeAlertActive: boolean;
         heapUsedAlertActive: boolean;
+        eventLoopLagAlertActive: boolean;
     };
 }
 /**
