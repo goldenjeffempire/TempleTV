@@ -18,6 +18,7 @@ import { verifyMailer } from "./infrastructure/mailer.js";
 import { broadcastScheduler } from "./modules/broadcast/broadcast-scheduler.js";
 import { startKeepAlive, stopKeepAlive } from "./modules/network/keep-alive.js";
 import { startMemoryWatchdog, stopMemoryWatchdog } from "./infrastructure/memory-watchdog.js";
+import { startEventLoopLagMonitor, stopEventLoopLagMonitor } from "./infrastructure/event-loop-lag.js";
 import { markShuttingDown } from "./infrastructure/shutdown-flag.js";
 import { schema } from "./infrastructure/db.js";
 import { hashPassword } from "./modules/auth/password.js";
@@ -511,6 +512,9 @@ async function main() {
     // F17: memory pressure watchdog — emits ops-alert SSE when RSS
     // exceeds MEMORY_WARN_RSS_MB so the admin console can warn operators.
     startMemoryWatchdog();
+    // Monitor event-loop lag so CPU starvation on constrained hosts (0.1 vCPU
+    // Render free tier) is visible before health-check timeouts trigger SIGTERM.
+    startEventLoopLagMonitor();
     logger.info({ port: env.PORT }, "API ready — http://0.0.0.0:" + env.PORT);
 
     // Dev-only: bind a secondary port and forward to the real listener.
@@ -553,10 +557,27 @@ async function main() {
     workerKeepalive = setInterval(() => undefined, 1 << 30);
   }
 
+  // Set to true once all initialisation is complete. Guards unhandledRejection
+  // and uncaughtException handlers: before startup is done there is no live
+  // broadcast state to checkpoint, so those handlers exit immediately rather
+  // than attempting a potentially half-initialised drain sequence.
+  let startupComplete = false;
   let shuttingDown = false;
-  const shutdown = async (signal: string) => {
+  const shutdown = async (signal: string, exitCode = 0) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    // Safety net: if the drain sequence hangs (DB pool stalls, a worker
+    // deadlocks, a spawned child won't die), force-exit before the platform
+    // escalates to SIGKILL. SIGKILL skips checkpoint flush and leaves broadcast
+    // position unsaved. 25 s budget: PRECLOSE(10 s) + SSE/WS drain(10 s) +
+    // storage/DB close(5 s). The memory-watchdog has its own 60 s gate for
+    // watchdog-triggered SIGTERMs; this gate covers all other SIGTERM sources.
+    const SHUTDOWN_FORCE_EXIT_MS = 25_000;
+    const forceExitTimer = setTimeout(() => {
+      logger.fatal({ signal, budgetMs: SHUTDOWN_FORCE_EXIT_MS }, "shutdown drain budget exceeded — force-exiting");
+      process.exit(exitCode || 1);
+    }, SHUTDOWN_FORCE_EXIT_MS);
+    forceExitTimer.unref();
     // Signal the health liveness probe to return 503 immediately so upstream
     // load balancers (Render, AWS ALB, k8s ingress, Replit proxy) observe the
     // failure and stop routing new requests before we close any connections.
@@ -586,6 +607,7 @@ async function main() {
       broadcastScheduler.stop();
       stopKeepAlive();
       stopMemoryWatchdog();
+      stopEventLoopLagMonitor();
       // Stop the viewer-slope monitor (1-min setInterval) so it does not
       // keep the event loop alive after all other subsystems have shut down.
       try {
@@ -711,23 +733,30 @@ async function main() {
     }
     await closeDb().catch((err) => logger.warn({ err }, "error closing db pool during shutdown"));
     await closeRedis().catch((err) => logger.warn({ err }, "error closing redis during shutdown"));
-    process.exit(0);
+    process.exit(exitCode);
   };
+
+  // All initialisation complete — subsystems live, broadcast started,
+  // DB pool warm. Mark startup done so the error handlers below can call
+  // shutdown() safely.
+  startupComplete = true;
 
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("unhandledRejection", (reason) => {
-    // Treat unhandled rejections the same as uncaught exceptions: log, then
-    // exit so the supervisor restarts with a clean slate. Continuing after an
-    // unhandled rejection risks corrupted state (uncommitted transactions,
-    // dangling SSE connections, broken invariants) that silently degrades the
-    // service without any visible crash to alert on.
-    logger.fatal({ reason }, "unhandledRejection — exiting");
-    process.exit(1);
+    logger.fatal({ reason }, "unhandledRejection — triggering graceful shutdown");
+    // Before startup completes there is no live broadcast state to save —
+    // exit immediately so pnpm restarts cleanly without a hung drain.
+    if (!startupComplete) { process.exit(1); return; }
+    // After startup: flush broadcast checkpoint + drain connections before
+    // exiting. The shuttingDown guard in shutdown() prevents re-entry if a
+    // second rejection fires during the drain (e.g. DB pool error on close).
+    void shutdown("unhandledRejection", 1);
   });
   process.on("uncaughtException", (err) => {
-    logger.fatal({ err }, "uncaughtException — exiting");
-    process.exit(1);
+    logger.fatal({ err }, "uncaughtException — triggering graceful shutdown");
+    if (!startupComplete) { process.exit(1); return; }
+    void shutdown("uncaughtException", 1);
   });
 }
 

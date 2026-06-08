@@ -29,6 +29,7 @@ import { logger } from "./logger.js";
 import { env } from "../config/env.js";
 import { processRssGauge, SERVICE_LABELS } from "./metrics.js";
 import { sampleNamedStorePeaks, getRegisteredCacheStats } from "./cache.js";
+import { getEventLoopLagMs, isEventLoopLagAlertActive } from "./event-loop-lag.js";
 
 const SAMPLE_INTERVAL_MS = 30_000;
 const SUSTAIN_SAMPLES = 3;
@@ -87,11 +88,13 @@ export interface WatchdogState {
     consecutiveSlopeOver: number;
     heapUsedGrowthMbPerMin: number | null;
     consecutiveHeapOver: number;
+    eventLoopLagMs: number;
   };
   alerts: {
     rssAlertActive: boolean;
     slopeAlertActive: boolean;
     heapUsedAlertActive: boolean;
+    eventLoopLagAlertActive: boolean;
   };
 }
 
@@ -562,11 +565,13 @@ export function getWatchdogState(): WatchdogState {
       consecutiveSlopeOver,
       heapUsedGrowthMbPerMin: lastHeapUsedGrowthMbPerMin,
       consecutiveHeapOver,
+      eventLoopLagMs: getEventLoopLagMs(),
     },
     alerts: {
       rssAlertActive,
       slopeAlertActive,
       heapUsedAlertActive,
+      eventLoopLagAlertActive: isEventLoopLagAlertActive(),
     },
   };
 }

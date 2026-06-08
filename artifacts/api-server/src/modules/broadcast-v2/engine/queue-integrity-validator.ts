@@ -447,10 +447,10 @@ class QueueIntegrityValidatorImpl {
           // Single batched UPDATE instead of N individual round-trips inside a
           // transaction. PostgreSQL's UPDATE … FROM (VALUES …) processes all
           // reassignments atomically in one statement, which is O(1) DB latency
-          // regardless of queue length.  UUIDs are safe for string interpolation
-          // (only [0-9a-f-] characters — validated by the DB constraint on insert).
+          // regardless of queue length.  broadcast_queue.id is a text column
+          // (nanoid format), NOT uuid — cast to ::text, not ::uuid.
           const valuesList = rows
-            .map((r, i) => `('${r.id}'::uuid, ${(i + 1) * 10}::int)`)
+            .map((r, i) => `('${r.id.replace(/'/g, "''")}', ${(i + 1) * 10}::int)`)
             .join(",");
           await db.execute(
             sql.raw(
