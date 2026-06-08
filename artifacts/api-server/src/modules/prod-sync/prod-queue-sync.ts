@@ -197,6 +197,14 @@ const prevItemPollState = new Map<string, ItemPollState>();
  * the row — re-appearance instantly re-activates via the upsert path.
  */
 const lastSeenAtMs = new Map<string, number>();
+
+/**
+ * Cap for both tracking maps. Prevents unbounded growth when an upstream
+ * source cycles through thousands of unique item IDs over days of polling.
+ * Pruning strategy: keep the MAX_TRACKED_ITEMS most-recently-seen entries
+ * by discarding those with the oldest lastSeenAtMs value.
+ */
+const MAX_TRACKED_ITEMS = 2_000;
 const GHOST_GRACE_MS = 10 * 60 * 1000;
 
 let pollTimer: NodeJS.Timeout | null = null;
@@ -588,6 +596,23 @@ async function pollOnce(): Promise<void> {
   const nowSweepMs = Date.now();
   const currentIds = new Set(resolved.map((r) => r.item.id));
   for (const id of currentIds) lastSeenAtMs.set(id, nowSweepMs);
+
+  // Cap both tracking maps to MAX_TRACKED_ITEMS. Evict the entries with the
+  // oldest lastSeenAtMs — items unseen for the longest time are most likely
+  // permanently gone from upstream and safe to drop.
+  if (lastSeenAtMs.size > MAX_TRACKED_ITEMS) {
+    const sorted = [...lastSeenAtMs.entries()].sort((a, b) => a[1] - b[1]);
+    const toEvict = sorted.slice(0, lastSeenAtMs.size - MAX_TRACKED_ITEMS);
+    for (const [id] of toEvict) {
+      lastSeenAtMs.delete(id);
+      prevItemPollState.delete(id);
+    }
+    logger.debug(
+      { evicted: toEvict.length, remaining: lastSeenAtMs.size },
+      "[prod-sync] tracking maps pruned — evicted oldest entries to stay within MAX_TRACKED_ITEMS",
+    );
+  }
+
   let ghostDeactivated = 0;
   if (!anyReachable && items.length > 0) {
     logger.debug(

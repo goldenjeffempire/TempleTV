@@ -339,6 +339,17 @@ const recentlySuspended: Array<{
 
 /** Increment the URL-failure counter for `itemId`. Returns the new count. */
 export function incrementBadUrlSkipCount(itemId: string): number {
+  // Lazy GC: prune stale entries when the map grows large. Entries whose
+  // corresponding URL is no longer in the bad-URL cache have expired and
+  // can be removed — the counter is only meaningful while the URL is
+  // actively blacklisted.
+  if (badUrlSkipCounts.size > 500) {
+    for (const id of badUrlSkipCounts.keys()) {
+      // If this item's URL is no longer bad (TTL expired / cleared),
+      // its failure count is stale — remove it.
+      if (!isKnownBadUrl(id)) badUrlSkipCounts.delete(id);
+    }
+  }
   const next = (badUrlSkipCounts.get(itemId) ?? 0) + 1;
   badUrlSkipCounts.set(itemId, next);
   return next;

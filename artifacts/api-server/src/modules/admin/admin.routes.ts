@@ -38,7 +38,7 @@ export async function adminRoutes(app: FastifyInstance) {
       schema: {
         tags: ["admin"],
         summary: "Aggregate dashboard counts (videos, users, queue, schedule)",
-        response: { 200: AdminStatsSchema },
+        response: { 200: AdminStatsSchema, 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },
@@ -88,7 +88,7 @@ export async function adminRoutes(app: FastifyInstance) {
         querystring: z.object({
           range: z.enum(["7d", "30d", "90d"]).default("7d"),
         }),
-        response: { 200: ConcurrentViewersSchema },
+        response: { 200: ConcurrentViewersSchema, 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },
@@ -106,7 +106,7 @@ export async function adminRoutes(app: FastifyInstance) {
         querystring: z.object({
           range: z.enum(["7d", "30d", "90d"]).default("30d"),
         }),
-        response: { 200: DailyPlatformTrendsSchema },
+        response: { 200: DailyPlatformTrendsSchema, 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },
@@ -120,12 +120,14 @@ export async function adminRoutes(app: FastifyInstance) {
       // Hard-deletes user + all PII. 5/min prevents bulk account wipes via
       // a compromised admin token — each delete should be a deliberate act.
       config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+      bodyLimit: 1 * 1024 * 1024,
       schema: {
         tags: ["admin"],
         summary: "Permanently delete a user account and all associated data",
         params: idParam,
         response: {
           200: z.object({ deleted: z.literal(true), id: z.string() }),
+          429: z.object({ error: z.string() }),
         },
         security: [{ bearerAuth: [] }],
       },
@@ -170,6 +172,7 @@ export async function adminRoutes(app: FastifyInstance) {
     {
       preHandler: requireAuth("editor"),
       config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+      bodyLimit: 1 * 1024 * 1024,
       schema: {
         tags: ["admin"],
         summary: "Ban a user from chat (creates indefinite chat_moderation ban record)",
@@ -184,6 +187,7 @@ export async function adminRoutes(app: FastifyInstance) {
             userId: z.string(),
             action: z.literal("ban"),
           }),
+          429: z.object({ error: z.string() }),
         },
         security: [{ bearerAuth: [] }],
       },
@@ -236,12 +240,13 @@ export async function adminRoutes(app: FastifyInstance) {
       // Role escalation to admin/system is high privilege. 10/min is ample
       // for legitimate use while blocking automated privilege-escalation loops.
       config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+      bodyLimit: 1 * 1024 * 1024,
       schema: {
         tags: ["admin"],
         summary: "Update a user's role",
         params: idParam,
         body: UpdateUserRoleBodySchema,
-        response: { 200: AdminUserSchema },
+        response: { 200: AdminUserSchema, 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },

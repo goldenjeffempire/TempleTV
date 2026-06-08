@@ -85,7 +85,12 @@ export default function UsersPage() {
   });
 
   const banChatMutation = useMutation({
-    mutationFn: (id: string) => api.post(`/admin/users/${id}/ban`, {}),
+    mutationFn: (id: string) => {
+      if (id === currentUserId) {
+        return Promise.reject(new Error("You cannot ban yourself from chat."));
+      }
+      return api.post(`/admin/users/${id}/ban`, {});
+    },
     onSuccess: () => {
       toast.success("User banned from chat");
       void qc.invalidateQueries({ queryKey: ["users"] });

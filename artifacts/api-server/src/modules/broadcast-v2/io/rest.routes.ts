@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { z } from "zod/v4";
 import { broadcastOrchestrator } from "../engine/broadcast-orchestrator.js";
 import { eventLogRepo } from "../repository/event-log.repo.js";
 import { getBroadcastV2BootStatus, broadcastFanout } from "../index.js";
@@ -402,6 +403,8 @@ export async function restRoutes(app: FastifyInstance) {
     return { state: broadcastOrchestrator.snapshot() };
   });
 
+const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegative().default(0) });
+
   app.get("/rehydrate", {
     config: {
       // Each call triggers a DB query (eventLogRepo.replayFrom). Limit to
@@ -410,11 +413,9 @@ export async function restRoutes(app: FastifyInstance) {
       rateLimit: { max: 10, timeWindow: "1 minute" },
     },
   }, async (req, reply) => {
-    const q = req.query as { fromSequence?: string };
-    const fromSeq = Number(q?.fromSequence ?? 0);
-    if (!Number.isFinite(fromSeq) || fromSeq < 0) {
-      return reply.code(400).send({ error: "invalid fromSequence" });
-    }
+    const qsParsed = _rehydrateQS.safeParse(req.query);
+    if (!qsParsed.success) return reply.code(400).send({ error: "invalid fromSequence" });
+    const fromSeq = qsParsed.data.fromSequence;
     try {
       const events = await eventLogRepo.replayFrom(broadcastOrchestrator.channelId, fromSeq, 200);
       return {
@@ -436,7 +437,7 @@ export async function restRoutes(app: FastifyInstance) {
   // Authz piggybacks on the existing /admin RBAC chain — these routes get
   // mounted under both /broadcast-v2 (public read) and /admin/broadcast-v2
   // (full command surface) by the parent plugin.
-  app.post("/skip", { ...adminGuard, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.post("/skip", { ...adminGuard, bodyLimit: 1048576, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const parsed = SkipCommand.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     if (!checkIdempotency(parsed.data.idempotencyKey)) {
@@ -446,7 +447,7 @@ export async function restRoutes(app: FastifyInstance) {
     return { ok: true, sequence: broadcastOrchestrator.getSequence() };
   });
 
-  app.post("/override/start", { ...adminOnlyGuard, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.post("/override/start", { ...adminOnlyGuard, bodyLimit: 1048576, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const parsed = StartOverrideCommand.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     if (!checkIdempotency(parsed.data.idempotencyKey)) {
@@ -462,7 +463,7 @@ export async function restRoutes(app: FastifyInstance) {
     return { ok: true, override: ov };
   });
 
-  app.post("/override/stop", { ...adminOnlyGuard, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.post("/override/stop", { ...adminOnlyGuard, bodyLimit: 1048576, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const parsed = StopOverrideCommand.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     if (!checkIdempotency(parsed.data.idempotencyKey)) return { ok: true, duplicate: true };
@@ -473,7 +474,7 @@ export async function restRoutes(app: FastifyInstance) {
   // Force-failover switches to the failover source immediately.
   // 5/min — a rapid loop could cycle through sources faster than the
   // orchestrator can establish a stable stream.
-  app.post("/force-failover", { ...adminOnlyGuard, config: { rateLimit: { max: 5, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.post("/force-failover", { ...adminOnlyGuard, bodyLimit: 1048576, config: { rateLimit: { max: 5, timeWindow: "1 minute" } } }, async (req, reply) => {
     const parsed = ForceFailoverCommand.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     if (!checkIdempotency(parsed.data.idempotencyKey)) return { ok: true, duplicate: true };
@@ -488,7 +489,7 @@ export async function restRoutes(app: FastifyInstance) {
   // reload (one POST per queue mutation) and the operator's "Reload"
   // button could race and apply twice — harmless for `reload()` today
   // but a contract violation that future engine refactors could exploit.
-  app.post("/clear-failover", { ...adminOnlyGuard, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.post("/clear-failover", { ...adminOnlyGuard, bodyLimit: 1048576, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const parsed = StopOverrideCommand.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     if (!checkIdempotency(parsed.data.idempotencyKey)) return { ok: true, duplicate: true };
@@ -505,7 +506,7 @@ export async function restRoutes(app: FastifyInstance) {
   // clear the in-process bad-URL cache so previously-failing items get a fresh
   // attempt. This turns the operator "Reload from queue" button into a full
   // recovery action that rescues a permanently Off Air broadcast without a deploy.
-  app.post("/reload", { ...adminGuard, config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.post("/reload", { ...adminGuard, bodyLimit: 1048576, config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (req, reply) => {
     const parsed = StopOverrideCommand.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     if (!checkIdempotency(parsed.data.idempotencyKey)) {
@@ -582,6 +583,7 @@ export async function restRoutes(app: FastifyInstance) {
   registerNamedStore("broadcast-v2-stall-cooldown", () => stallActionCooldown.size);
 
   app.post("/report-stall", {
+    bodyLimit: 1048576,
     config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
   }, async (req, _reply) => {
     const parsed = ReportStallCommand.safeParse(req.body);
@@ -702,6 +704,7 @@ export async function restRoutes(app: FastifyInstance) {
   // can be called by all connected clients simultaneously without risk.
   const CHECKPOINT_DRIFT_THRESHOLD_S = 30;
   app.post("/checkpoint", {
+    bodyLimit: 1048576,
     config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
   }, async (req, _reply) => {
     const body = req.body as Record<string, unknown> | null;
@@ -750,7 +753,7 @@ export async function restRoutes(app: FastifyInstance) {
   //   3. Skips the orchestrator to advance to the (now first) item.
   // Combining all three in one endpoint eliminates the race window that
   // exists when callers do reorder + skip as two sequential API calls.
-  app.post("/play-now", { ...adminGuard, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.post("/play-now", { ...adminGuard, bodyLimit: 1048576, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const parsed = PlayNowCommand.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     if (!checkIdempotency(parsed.data.idempotencyKey)) {
@@ -810,7 +813,7 @@ export async function restRoutes(app: FastifyInstance) {
   // on the next playback cycle. Useful when an operator has fixed a
   // broken stream or replaced a bad file and wants immediate retry
   // without waiting for the 2-minute TTL to expire.
-  app.post("/clear-bad-urls", { ...adminGuard, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.post("/clear-bad-urls", { ...adminGuard, bodyLimit: 1048576, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const parsed = StopOverrideCommand.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     if (!checkIdempotency(parsed.data.idempotencyKey)) return { ok: true, duplicate: true };
@@ -835,6 +838,7 @@ export async function restRoutes(app: FastifyInstance) {
   // advances the anchor; subsequent calls for the same itemId are no-ops
   // because the anchor has already moved past that item.
   app.post("/natural-end", {
+    bodyLimit: 1048576,
     config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
   }, async (req, _reply) => {
     const body = req.body as Record<string, unknown> | null;
@@ -848,7 +852,7 @@ export async function restRoutes(app: FastifyInstance) {
   // Delegates to autoEnqueueMissingHls() — the same function that runs
   // automatically 15 s after boot. Idempotent; rate-limited to 3/min
   // because each call may spawn real FFmpeg processes.
-  app.post("/prepare-hls", { ...adminGuard, config: { rateLimit: { max: 3, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.post("/prepare-hls", { ...adminGuard, bodyLimit: 1048576, config: { rateLimit: { max: 3, timeWindow: "1 minute" } } }, async (req, reply) => {
     reply.header("Cache-Control", "no-store, max-age=0");
     const parsed = StopOverrideCommand.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
@@ -882,6 +886,7 @@ export async function restRoutes(app: FastifyInstance) {
     "/repair-hls-storage-missing",
     {
       preHandler: requireAuth("admin"),
+      bodyLimit: 1048576,
       config: { rateLimit: { max: 3, timeWindow: "1 minute" } },
     },
     async (_req, reply) => {
@@ -1107,6 +1112,7 @@ export async function restRoutes(app: FastifyInstance) {
   // from hammering the DB with back-to-back full-library scans.
   app.post("/sync-library", {
     ...adminGuard,
+    bodyLimit: 1048576,
     config: { rateLimit: { max: 6, timeWindow: "1 minute" } },
   }, async (_req, reply) => {
     reply.header("Cache-Control", "no-store, max-age=0");

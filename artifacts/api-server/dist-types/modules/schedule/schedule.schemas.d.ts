@@ -11,25 +11,25 @@ export declare const ScheduleEntrySchema: z.ZodObject<{
     isActive: z.ZodBoolean;
     createdAt: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    title: string;
     id: string;
+    title: string;
+    contentType: string;
     isActive: boolean;
     createdAt: string;
     dayOfWeek: number;
     startTime: string;
     endTime: string | null;
-    contentType: string;
     contentId: string | null;
     isRecurring: boolean;
 }, {
-    title: string;
     id: string;
+    title: string;
+    contentType: string;
     isActive: boolean;
     createdAt: string;
     dayOfWeek: number;
     startTime: string;
     endTime: string | null;
-    contentType: string;
     contentId: string | null;
     isRecurring: boolean;
 }>;
@@ -46,53 +46,53 @@ export declare const ListScheduleResponseSchema: z.ZodObject<{
         isActive: z.ZodBoolean;
         createdAt: z.ZodString;
     }, "strip", z.ZodTypeAny, {
-        title: string;
         id: string;
+        title: string;
+        contentType: string;
         isActive: boolean;
         createdAt: string;
         dayOfWeek: number;
         startTime: string;
         endTime: string | null;
-        contentType: string;
         contentId: string | null;
         isRecurring: boolean;
     }, {
-        title: string;
         id: string;
+        title: string;
+        contentType: string;
         isActive: boolean;
         createdAt: string;
         dayOfWeek: number;
         startTime: string;
         endTime: string | null;
-        contentType: string;
         contentId: string | null;
         isRecurring: boolean;
     }>, "many">;
     total: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
     items: {
-        title: string;
         id: string;
+        title: string;
+        contentType: string;
         isActive: boolean;
         createdAt: string;
         dayOfWeek: number;
         startTime: string;
         endTime: string | null;
-        contentType: string;
         contentId: string | null;
         isRecurring: boolean;
     }[];
     total: number;
 }, {
     items: {
-        title: string;
         id: string;
+        title: string;
+        contentType: string;
         isActive: boolean;
         createdAt: string;
         dayOfWeek: number;
         startTime: string;
         endTime: string | null;
-        contentType: string;
         contentId: string | null;
         isRecurring: boolean;
     }[];
@@ -110,18 +110,18 @@ export declare const CreateScheduleBodySchema: z.ZodObject<{
     isActive: z.ZodDefault<z.ZodBoolean>;
 }, "strip", z.ZodTypeAny, {
     title: string;
+    contentType: "live" | "external" | "video" | "playlist";
     isActive: boolean;
     dayOfWeek: number;
     startTime: string;
-    contentType: "live" | "video" | "playlist" | "external";
     isRecurring: boolean;
     endTime?: string | null | undefined;
     contentId?: string | null | undefined;
 }, {
     title: string;
+    contentType: "live" | "external" | "video" | "playlist";
     dayOfWeek: number;
     startTime: string;
-    contentType: "live" | "video" | "playlist" | "external";
     isActive?: boolean | undefined;
     endTime?: string | null | undefined;
     contentId?: string | null | undefined;
@@ -138,20 +138,20 @@ export declare const UpdateScheduleBodySchema: z.ZodObject<{
     isActive: z.ZodOptional<z.ZodDefault<z.ZodBoolean>>;
 }, "strip", z.ZodTypeAny, {
     title?: string | undefined;
+    contentType?: "live" | "external" | "video" | "playlist" | undefined;
     isActive?: boolean | undefined;
     dayOfWeek?: number | undefined;
     startTime?: string | undefined;
     endTime?: string | null | undefined;
-    contentType?: "live" | "video" | "playlist" | "external" | undefined;
     contentId?: string | null | undefined;
     isRecurring?: boolean | undefined;
 }, {
     title?: string | undefined;
+    contentType?: "live" | "external" | "video" | "playlist" | undefined;
     isActive?: boolean | undefined;
     dayOfWeek?: number | undefined;
     startTime?: string | undefined;
     endTime?: string | null | undefined;
-    contentType?: "live" | "video" | "playlist" | "external" | undefined;
     contentId?: string | null | undefined;
     isRecurring?: boolean | undefined;
 }>;

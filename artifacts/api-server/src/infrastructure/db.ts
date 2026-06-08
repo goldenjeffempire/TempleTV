@@ -687,6 +687,30 @@ export async function ensureRuntimeIndexes(): Promise<void> {
       logger.warn({ err }, "db: managed_videos_transcoding_status_check constraint skipped (non-fatal)");
     });
 
+    // ── FK constraint: broadcast_queue.video_id → managed_videos.id ──────
+    // ON DELETE SET NULL: deleting a video nulls out any queue row that
+    // references it, rather than raising a FK violation. The queue-integrity
+    // validator deactivates rows with null video_id on the next cycle.
+    // Not declared in the Drizzle schema DSL because drizzle-kit's CJS bundler
+    // cannot resolve cross-file table references (MODULE_NOT_FOUND for .js →
+    // .ts remapping). Applied idempotently here instead.
+    await client.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'fk_broadcast_queue_video_id'
+            AND conrelid = 'broadcast_queue'::regclass
+        ) THEN
+          ALTER TABLE broadcast_queue
+            ADD CONSTRAINT fk_broadcast_queue_video_id
+            FOREIGN KEY (video_id) REFERENCES managed_videos(id)
+            ON DELETE SET NULL;
+        END IF;
+      END $$
+    `).catch((err: unknown) => {
+      logger.warn({ err }, "db: fk_broadcast_queue_video_id constraint skipped (non-fatal — may indicate orphaned video_id references in existing data)");
+    });
+
     logger.info("db: functional and partial indexes ensured");
   } finally {
     client.release();

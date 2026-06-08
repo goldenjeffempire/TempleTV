@@ -16,34 +16,34 @@ export declare const MediaItemSchema: z.ZodObject<{
     localVideoUrl: z.ZodNullable<z.ZodString>;
     hlsMasterUrl: z.ZodNullable<z.ZodString>;
 }, "strip", z.ZodTypeAny, {
+    category: string;
+    featured: boolean;
+    id: string;
+    youtubeId: string | null;
     title: string;
     description: string;
-    id: string;
-    duration: string;
-    youtubeId: string | null;
     thumbnailUrl: string;
-    category: string;
+    duration: string;
     preacher: string;
     publishedAt: string | null;
     importedAt: string;
     viewCount: number;
-    featured: boolean;
     videoSource: string;
     localVideoUrl: string | null;
     hlsMasterUrl: string | null;
 }, {
+    category: string;
+    featured: boolean;
+    id: string;
+    youtubeId: string | null;
     title: string;
     description: string;
-    id: string;
-    duration: string;
-    youtubeId: string | null;
     thumbnailUrl: string;
-    category: string;
+    duration: string;
     preacher: string;
     publishedAt: string | null;
     importedAt: string;
     viewCount: number;
-    featured: boolean;
     videoSource: string;
     localVideoUrl: string | null;
     hlsMasterUrl: string | null;
@@ -57,15 +57,15 @@ export declare const ListMediaQuerySchema: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     limit: number;
     offset: number;
-    search?: string | undefined;
     category?: string | undefined;
     featured?: boolean | undefined;
+    search?: string | undefined;
 }, {
-    search?: string | undefined;
-    category?: string | undefined;
-    featured?: boolean | undefined;
     limit?: number | undefined;
     offset?: number | undefined;
+    category?: string | undefined;
+    featured?: boolean | undefined;
+    search?: string | undefined;
 }>;
 export declare const ListMediaResponseSchema: z.ZodObject<{
     items: z.ZodArray<z.ZodObject<{
@@ -85,34 +85,34 @@ export declare const ListMediaResponseSchema: z.ZodObject<{
         localVideoUrl: z.ZodNullable<z.ZodString>;
         hlsMasterUrl: z.ZodNullable<z.ZodString>;
     }, "strip", z.ZodTypeAny, {
+        category: string;
+        featured: boolean;
+        id: string;
+        youtubeId: string | null;
         title: string;
         description: string;
-        id: string;
-        duration: string;
-        youtubeId: string | null;
         thumbnailUrl: string;
-        category: string;
+        duration: string;
         preacher: string;
         publishedAt: string | null;
         importedAt: string;
         viewCount: number;
-        featured: boolean;
         videoSource: string;
         localVideoUrl: string | null;
         hlsMasterUrl: string | null;
     }, {
+        category: string;
+        featured: boolean;
+        id: string;
+        youtubeId: string | null;
         title: string;
         description: string;
-        id: string;
-        duration: string;
-        youtubeId: string | null;
         thumbnailUrl: string;
-        category: string;
+        duration: string;
         preacher: string;
         publishedAt: string | null;
         importedAt: string;
         viewCount: number;
-        featured: boolean;
         videoSource: string;
         localVideoUrl: string | null;
         hlsMasterUrl: string | null;
@@ -124,18 +124,18 @@ export declare const ListMediaResponseSchema: z.ZodObject<{
     limit: number;
     offset: number;
     items: {
+        category: string;
+        featured: boolean;
+        id: string;
+        youtubeId: string | null;
         title: string;
         description: string;
-        id: string;
-        duration: string;
-        youtubeId: string | null;
         thumbnailUrl: string;
-        category: string;
+        duration: string;
         preacher: string;
         publishedAt: string | null;
         importedAt: string;
         viewCount: number;
-        featured: boolean;
         videoSource: string;
         localVideoUrl: string | null;
         hlsMasterUrl: string | null;
@@ -145,18 +145,18 @@ export declare const ListMediaResponseSchema: z.ZodObject<{
     limit: number;
     offset: number;
     items: {
+        category: string;
+        featured: boolean;
+        id: string;
+        youtubeId: string | null;
         title: string;
         description: string;
-        id: string;
-        duration: string;
-        youtubeId: string | null;
         thumbnailUrl: string;
-        category: string;
+        duration: string;
         preacher: string;
         publishedAt: string | null;
         importedAt: string;
         viewCount: number;
-        featured: boolean;
         videoSource: string;
         localVideoUrl: string | null;
         hlsMasterUrl: string | null;
@@ -176,27 +176,27 @@ export declare const CreateMediaBodySchema: z.ZodObject<{
     featured: z.ZodDefault<z.ZodBoolean>;
     publishedAt: z.ZodOptional<z.ZodString>;
 }, "strip", z.ZodTypeAny, {
+    category: string;
+    featured: boolean;
+    youtubeId: string;
     title: string;
     description: string;
-    duration: string;
-    youtubeId: string;
     thumbnailUrl: string;
-    category: string;
+    duration: string;
     preacher: string;
-    featured: boolean;
     videoSource: "youtube" | "local" | "hls";
     publishedAt?: string | undefined;
     localVideoUrl?: string | null | undefined;
 }, {
-    title: string;
     youtubeId: string;
-    description?: string | undefined;
-    duration?: string | undefined;
-    thumbnailUrl?: string | undefined;
+    title: string;
     category?: string | undefined;
+    featured?: boolean | undefined;
+    description?: string | undefined;
+    thumbnailUrl?: string | undefined;
+    duration?: string | undefined;
     preacher?: string | undefined;
     publishedAt?: string | undefined;
-    featured?: boolean | undefined;
     videoSource?: "youtube" | "local" | "hls" | undefined;
     localVideoUrl?: string | null | undefined;
 }>;
@@ -210,65 +210,65 @@ export declare const UpdateMediaBodySchema: z.ZodEffects<z.ZodObject<{
     featured: z.ZodOptional<z.ZodBoolean>;
     publishedAt: z.ZodOptional<z.ZodNullable<z.ZodString>>;
 }, "strip", z.ZodTypeAny, {
+    category?: string | undefined;
+    featured?: boolean | undefined;
     title?: string | undefined;
     description?: string | undefined;
-    duration?: string | undefined;
     thumbnailUrl?: string | undefined;
-    category?: string | undefined;
+    duration?: string | undefined;
     preacher?: string | undefined;
     publishedAt?: string | null | undefined;
-    featured?: boolean | undefined;
 }, {
+    category?: string | undefined;
+    featured?: boolean | undefined;
     title?: string | undefined;
     description?: string | undefined;
-    duration?: string | undefined;
     thumbnailUrl?: string | undefined;
-    category?: string | undefined;
+    duration?: string | undefined;
     preacher?: string | undefined;
     publishedAt?: string | null | undefined;
-    featured?: boolean | undefined;
 }>, {
+    category?: string | undefined;
+    featured?: boolean | undefined;
     title?: string | undefined;
     description?: string | undefined;
-    duration?: string | undefined;
     thumbnailUrl?: string | undefined;
-    category?: string | undefined;
+    duration?: string | undefined;
     preacher?: string | undefined;
     publishedAt?: string | null | undefined;
-    featured?: boolean | undefined;
 }, {
+    category?: string | undefined;
+    featured?: boolean | undefined;
     title?: string | undefined;
     description?: string | undefined;
-    duration?: string | undefined;
     thumbnailUrl?: string | undefined;
-    category?: string | undefined;
+    duration?: string | undefined;
     preacher?: string | undefined;
     publishedAt?: string | null | undefined;
-    featured?: boolean | undefined;
 }>;
 export declare const SignedUploadBodySchema: z.ZodObject<{
     filename: z.ZodString;
     contentType: z.ZodString;
     sizeBytes: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
-    sizeBytes: number;
-    contentType: string;
     filename: string;
+    contentType: string;
+    sizeBytes: number;
 }, {
-    sizeBytes: number;
-    contentType: string;
     filename: string;
+    contentType: string;
+    sizeBytes: number;
 }>;
 export declare const SignedUploadResponseSchema: z.ZodObject<{
     key: z.ZodString;
     url: z.ZodString;
     expiresIn: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
-    url: string;
     key: string;
+    url: string;
     expiresIn: number;
 }, {
-    url: string;
     key: string;
+    url: string;
     expiresIn: number;
 }>;

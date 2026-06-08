@@ -29,6 +29,7 @@ declare class YtLivePoller extends EventEmitter {
     private timer;
     private running;
     private _subs;
+    private apiCooldownUntilMs;
     getState(): YtLiveState;
     subscribe(fn: Listener): () => void;
     start(): void;

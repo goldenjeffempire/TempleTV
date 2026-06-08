@@ -1168,6 +1168,8 @@ class BroadcastOrchestrator extends EventEmitter {
           offsetMs: 0,
           activeOverrideId: this.override?.id ?? null,
           sequence: this.sequence,
+          failoverActive: this.failover.active,
+          failoverReason: this.failover.reason,
         })
         .catch((err) => logger.warn({ err }, "[broadcast-v2] silent anchor persist failed"));
     }

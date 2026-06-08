@@ -7,6 +7,8 @@ export interface RuntimeStateRecord {
     offsetMs: number;
     activeOverrideId: string | null;
     sequence: number;
+    failoverActive: boolean;
+    failoverReason: string | null;
 }
 export interface PersistedBadUrlState {
     /** url → expiresAtMs */
