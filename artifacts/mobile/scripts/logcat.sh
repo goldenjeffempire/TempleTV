@@ -36,7 +36,7 @@ fi
 
 PACKAGE="$(node -p "require('./app.json').expo.android.package" 2>/dev/null || true)"
 if [ -z "$PACKAGE" ] || [ "$PACKAGE" = "undefined" ]; then
-  PACKAGE="com.templetv.app"
+  PACKAGE="com.templetv.jctm"
 fi
 
 # pidof returns empty if app isn't running. Strip CR (adb shell line endings).

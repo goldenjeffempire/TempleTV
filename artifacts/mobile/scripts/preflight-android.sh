@@ -28,7 +28,7 @@ PKG=$(node -p "require('./app.json').expo.android.package")
 SLUG=$(node -p "require('./app.json').expo.slug")
 OWNER=$(node -p "require('./app.json').expo.owner")
 PROJ=$(node -p "require('./app.json').expo.extra.eas.projectId")
-[ "$PKG" = "com.templetv.app" ] && ok "package: $PKG" || bad "package: $PKG (expected com.templetv.app)"
+[ "$PKG" = "com.templetv.jctm" ] && ok "package: $PKG" || bad "package: $PKG (expected com.templetv.jctm)"
 [ -n "$OWNER" ] && ok "owner: $OWNER" || bad "owner missing"
 [ -n "$PROJ" ] && ok "eas.projectId: $PROJ" || bad "eas.projectId missing"
 echo "  · slug: $SLUG"
