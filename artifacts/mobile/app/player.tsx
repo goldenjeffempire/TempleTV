@@ -139,6 +139,15 @@ function PrayerSection() {
   const c = useColors();
   const [submitted, setSubmitted] = useState(false);
   const [sending, setSending] = useState(false);
+  // Guard against setState on an unmounted component. The player screen can
+  // be dismissed via hardware-back while a prayer-request fetch is in flight,
+  // leaving the promise callbacks referencing an unmounted component and
+  // triggering React Native warnings (and in strict mode, errors).
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => { isMountedRef.current = false; };
+  }, []);
 
   if (submitted) {
     return (
@@ -171,9 +180,11 @@ function PrayerSection() {
         onPress={() => {
           setSending(true);
           submitPrayerRequest(null, "Praying with Temple TV").then((ok) => {
+            if (!isMountedRef.current) return;
             setSending(false);
             if (ok) setSubmitted(true);
           }).catch(() => {
+            if (!isMountedRef.current) return;
             setSending(false);
           });
         }}

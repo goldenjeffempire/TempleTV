@@ -713,6 +713,23 @@ export class V2Transport {
 
   private connectSse(): void {
     if (typeof EventSource === "undefined") {
+      // React Native has no EventSource. If we previously crossed
+      // WS_FAIL_STREAK_SSE_FALLBACK failures and set wsPreferSseUntilWsOpens,
+      // each subsequent connectSse() call immediately calls scheduleReconnect()
+      // and returns — creating a tight loop:
+      //   scheduleReconnect → tick → connectWs →
+      //     (wsPreferSseUntilWsOpens? yes) → connectSse →
+      //   scheduleReconnect → …
+      // WS is only probed once every WS_PROBE_INTERVAL_SSE_ROUNDS cycles,
+      // so every intermediate backoff slot is wasted on a no-op SSE round.
+      // On RN, SSE will NEVER succeed, so holding the preference flag is
+      // permanently counter-productive.  Clear it here so the next tick
+      // goes straight to connectWs and probes the only transport that can work.
+      if (this.wsPreferSseUntilWsOpens) {
+        this.wsPreferSseUntilWsOpens = false;
+        this.wsFailStreak = 0;
+        this.sseReconnectCount = 0;
+      }
       this.scheduleReconnect();
       return;
     }
@@ -942,6 +959,10 @@ export class V2Transport {
         return;
       }
       const body = (await res.json()) as { state?: unknown };
+      // Guard: stop() may have been called while the fetch was in flight.
+      // The retry path (above) already has this guard; mirror it here for
+      // the primary path so we don't fire onPlayerEvent into a dead session.
+      if (this.stopped) return;
       if (body.state) {
         // Cache the state so subsequent outages can serve it immediately.
         saveSnapshotCache(body.state as V2Snapshot);
