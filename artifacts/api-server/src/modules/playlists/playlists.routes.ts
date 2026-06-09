@@ -26,10 +26,11 @@ export async function playlistsRoutes(app: FastifyInstance) {
   r.get(
     "/",
     {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["playlists"],
         summary: "List all playlists with video counts",
-        response: { 200: ListPlaylistsResponseSchema },
+        response: { 200: ListPlaylistsResponseSchema, 429: z.object({ error: z.string() }) },
       },
     },
     async () => playlistsService.list(),
@@ -38,11 +39,12 @@ export async function playlistsRoutes(app: FastifyInstance) {
   r.get(
     "/:id",
     {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["playlists"],
         summary: "Get a single playlist with its ordered video list",
         params: idParam,
-        response: { 200: PlaylistDetailSchema },
+        response: { 200: PlaylistDetailSchema, 429: z.object({ error: z.string() }) },
       },
     },
     async (req) => playlistsService.getById(req.params.id),

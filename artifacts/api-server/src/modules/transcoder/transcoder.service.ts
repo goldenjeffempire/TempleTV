@@ -1373,6 +1373,11 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
         await mkdir(path.join(scratchDir, "v0"), { recursive: true });
 
         // Re-start the progressive uploader for the 360p fallback run.
+        // Build FFmpeg args BEFORE starting the loop: if buildFfmpegArgs
+        // throws (e.g. unsupported rendition config), fallbackProgressiveLoop
+        // would otherwise start and run indefinitely because the error escapes
+        // to the outer catch block without ever setting progressiveActive=false.
+        const fallbackArgs = buildFfmpegArgs(activeSourcePath, scratchDir, renditionsToUse, hasAudio);
         progressiveActive = true;
         const fallbackProgressiveLoop = (async () => {
           while (progressiveActive) {
@@ -1388,8 +1393,6 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
             }
           }
         })();
-
-        const fallbackArgs = buildFfmpegArgs(activeSourcePath, scratchDir, renditionsToUse, hasAudio);
         try {
           await new Promise<void>((resolve, reject) => {
             const proc = spawn("ffmpeg", fallbackArgs, { stdio: ["ignore", "pipe", "pipe"] });

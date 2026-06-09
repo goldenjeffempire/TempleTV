@@ -227,6 +227,9 @@ export default function LibraryPage() {
       void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
       void qc.invalidateQueries({ queryKey: ["youtube-sync-history"] });
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      // A YouTube sync can resolve "missing video" remediation warnings — refresh
+      // the report panel so resolved items disappear without waiting for SSE.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     },
     onError: (err) => {
       const msg = (err as Error).message ?? "Sync failed";

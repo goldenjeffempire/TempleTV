@@ -28,6 +28,7 @@ export async function seriesRoutes(app: FastifyInstance) {
   r.get(
     "/series",
     {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["series"],
         summary: "List all published sermon series",
@@ -76,6 +77,7 @@ export async function seriesRoutes(app: FastifyInstance) {
   r.get(
     "/series/:slug",
     {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["series"],
         summary: "Get a series with its episodes",

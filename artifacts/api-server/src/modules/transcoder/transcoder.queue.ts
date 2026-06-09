@@ -202,6 +202,15 @@ export async function getJob(id: string): Promise<TranscodingJobWithVideo | null
 }
 
 export async function deleteJob(id: string): Promise<boolean> {
+  // Safety guard: never delete a queued or processing job — doing so orphans
+  // the live FFmpeg child process (it keeps running but has no DB record to
+  // update) and leaves the associated managed_videos row stuck at "encoding"
+  // or "processing" indefinitely until the next watchdog sweep or server
+  // restart.  Callers that need to abort an active job must first cancel it
+  // through the dispatcher (which kills the FFmpeg process), then delete.
+  const [existing] = await db.select({ status: jobs.status }).from(jobs).where(eq(jobs.id, id)).limit(1);
+  if (!existing) return false;
+  if (existing.status === "queued" || existing.status === "processing") return false;
   const out = await db.delete(jobs).where(eq(jobs.id, id)).returning({ id: jobs.id });
   return out.length > 0;
 }

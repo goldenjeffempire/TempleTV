@@ -146,11 +146,11 @@ export declare const AdminStatsSchema: z.ZodObject<{
         total: z.ZodNumber;
         active: z.ZodNumber;
     }, "strip", z.ZodTypeAny, {
-        active: number;
         total: number;
+        active: number;
     }, {
-        active: number;
         total: number;
+        active: number;
     }>;
     notifications: z.ZodObject<{
         sentLast24h: z.ZodNumber;
@@ -193,8 +193,8 @@ export declare const AdminStatsSchema: z.ZodObject<{
         activeQueueDepth: number;
     };
     schedule: {
-        active: number;
         total: number;
+        active: number;
     };
     notifications: {
         sentLast24h: number;
@@ -222,8 +222,8 @@ export declare const AdminStatsSchema: z.ZodObject<{
         activeQueueDepth: number;
     };
     schedule: {
-        active: number;
         total: number;
+        active: number;
     };
     notifications: {
         sentLast24h: number;

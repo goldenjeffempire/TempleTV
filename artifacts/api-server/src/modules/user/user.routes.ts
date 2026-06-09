@@ -107,6 +107,7 @@ export async function userRoutes(app: FastifyInstance) {
     "/me",
     {
       preHandler: requireAuth(),
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["user"],
         summary: "Get authenticated user's profile (alias for GET /auth/me)",
@@ -119,6 +120,7 @@ export async function userRoutes(app: FastifyInstance) {
             displayName: z.string(),
             createdAt: z.string(),
           }),
+          429: z.object({ error: z.string() }),
         },
       },
     },
@@ -131,6 +133,7 @@ export async function userRoutes(app: FastifyInstance) {
     "/favorites",
     {
       preHandler: requireAuth(),
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["user"],
         summary: "List all favorited videos for the authenticated user",
@@ -141,6 +144,7 @@ export async function userRoutes(app: FastifyInstance) {
         }),
         response: {
           200: z.object({ favorites: z.array(FavoriteItemSchema) }),
+          429: z.object({ error: z.string() }),
         },
       },
     },

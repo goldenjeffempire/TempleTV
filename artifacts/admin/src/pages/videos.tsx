@@ -323,6 +323,11 @@ export default function VideosPage() {
       // remediation-report warnings — refresh the panel so it reflects the
       // current state without waiting for the next SSE-triggered invalidation.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      // If a title/category changes while a transcoding job is in-flight, the
+      // Transcoding dashboard would show the old title. Invalidate so operators
+      // always see accurate metadata in the queue without a manual refresh.
+      void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
       // Playlists display video titles in their item lists — refresh so the
       // updated title is visible without a full page reload.
       void qc.invalidateQueries({ queryKey: ["playlists"] });
@@ -365,6 +370,12 @@ export default function VideosPage() {
       // Deletion may resolve remediation-report warnings (e.g. dead entries in
       // the queue that referenced this video) — refresh the panel immediately.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      // If a video is deleted while a transcoding job is in-flight, the
+      // Transcoding dashboard will show a ghost job until the next poll unless
+      // we invalidate it here. The ghost job row will fail any interaction, so
+      // showing it at all is confusing and misleading to operators.
+      void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
       setDeleteVideo(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Delete failed"),
@@ -479,6 +490,10 @@ export default function VideosPage() {
       // Broadcast queue shows source URL status — invalidate so the Broadcast
       // panel reflects the faststart-in-progress state without waiting for SSE.
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      // Faststart creates a transcoding-type job visible in the Transcoding
+      // dashboard — invalidate so the new in-progress row appears immediately.
+      void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
       // Faststart directly addresses "UNSTARTED_FASTSTART" remediation items —
       // refresh the report so the panel reflects the in-progress state.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });

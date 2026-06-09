@@ -69,10 +69,12 @@ export async function channelsRoutes(app: FastifyInstance) {
   r.get(
     "/channels",
     {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["channels"],
         summary: "List all active channels",
         response: {
+          429: ErrSchema,
           200: z.array(z.object({
             id: z.string(),
             name: z.string(),
@@ -135,6 +137,7 @@ export async function channelsRoutes(app: FastifyInstance) {
   r.get(
     "/channels/:slug/current",
     {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["channels"],
         summary: "Get current broadcast snapshot for a channel by slug",
@@ -280,6 +283,7 @@ export async function channelsRoutes(app: FastifyInstance) {
     "/admin/channels/:id/queue",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["channels"],
         summary: "List queue items for a channel",
