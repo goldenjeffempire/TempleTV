@@ -199,6 +199,13 @@ export default function StreamHealthPage() {
       toast.success("Bad-URL cache cleared");
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      // Source-health tracks the blocked-URL count — it must be refreshed so
+      // the "N URLs suspended" counter drops to zero immediately after clearing.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+      // Remediation report may have SOURCE_MISSING / HLS_STORAGE_MISSING rows
+      // that were caused by the now-cleared bad-URL suspensions — refresh so
+      // resolved items disappear without waiting for the next SSE event.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     },
     onError: (e) =>
       toast.error("Failed to clear bad-URL cache", {

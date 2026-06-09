@@ -125,6 +125,7 @@ export async function youtubeLiveRoutes(app: FastifyInstance) {
   // multi-tab admin usage.
   app.get("/events", {
     config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+    schema: { response: { 429: z.object({ error: z.string() }) } },
   }, async (req, reply) => {
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
