@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import { env } from "../../config/env.js";
 import { logger } from "../../infrastructure/logger.js";
 import { youtubeSyncDispatcher } from "../youtube-sync/youtube-sync.dispatcher.js";
@@ -155,6 +156,7 @@ export async function youtubeWebhookRoutes(app: FastifyInstance): Promise<void> 
     // notifications per minute, so this is generous while bounding replay
     // attacks that could spam the sync dispatcher.
     config: { bodyLimit: 64 * 1024, rateLimit: { max: 60, timeWindow: "1 minute" } },
+    schema: { response: { 429: z.object({ error: z.string() }) } },
   }, async (req, reply) => {
     // Extract YouTube video ID from the Atom XML body.
     const body = typeof req.body === "string"

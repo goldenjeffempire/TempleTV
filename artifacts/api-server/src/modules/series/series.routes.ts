@@ -37,6 +37,7 @@ export async function seriesRoutes(app: FastifyInstance) {
           limit: z.coerce.number().int().positive().max(50).optional().default(20),
           offset: z.coerce.number().int().nonnegative().optional().default(0),
         }),
+        response: { 429: z.object({ error: z.string() }) },
       },
     },
     async (req, reply) => {
@@ -82,6 +83,7 @@ export async function seriesRoutes(app: FastifyInstance) {
         tags: ["series"],
         summary: "Get a series with its episodes",
         params: z.object({ slug: z.string().min(1).max(80) }),
+        response: { 429: z.object({ error: z.string() }) },
       },
     },
     async (req, reply) => {

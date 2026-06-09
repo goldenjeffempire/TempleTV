@@ -17,6 +17,7 @@
  * Returns 401 for unauthenticated requests and 403 for insufficient role.
  */
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import { requireAuth } from "../../middleware/auth.js";
 import { promRegistry } from "../../infrastructure/metrics.js";
 
@@ -47,6 +48,7 @@ export async function metricsRoutes(app: FastifyInstance) {
     {
       preHandler: requireAuth("admin"),
       config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+      schema: { response: { 429: z.object({ error: z.string() }) } },
     },
     async (_req, reply) => {
       const [customMetrics, otelMetrics] = await Promise.all([

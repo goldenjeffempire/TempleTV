@@ -223,7 +223,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
       schema: {
         tags: ["broadcast"],
         summary: "Current channel state — what is airing now and what's next (mobile-compatible shape)",
-        response: { 200: BroadcastCurrentResultSchema },
+        response: { 200: BroadcastCurrentResultSchema, 429: z.object({ error: z.string() }) },
       },
     },
     // Project to BroadcastCurrentResult so mobile clients (deployed React Native
@@ -326,6 +326,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
         summary: "Admin: append a program to the queue",
         body: AddQueueItemSchema,
         security: [{ bearerAuth: [] }],
+        response: { 429: z.object({ error: z.string() }) },
       },
     },
     async (req, reply) => {
@@ -380,6 +381,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
         summary: "Admin: remove a program from the queue",
         params: z.object({ id: z.string().min(1).max(128) }),
         security: [{ bearerAuth: [] }],
+        response: { 429: z.object({ error: z.string() }) },
       },
     },
     async (req) => broadcastService.removeFromQueue(req.params.id),
@@ -397,6 +399,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
         summary: "Admin: reorder the active queue",
         body: ReorderQueueSchema,
         security: [{ bearerAuth: [] }],
+        response: { 429: z.object({ error: z.string() }) },
       },
     },
     async (req) => broadcastService.reorder(req.body.itemIds),
@@ -442,6 +445,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
         params: z.object({ id: z.string().min(1).max(128) }),
         body: z.object({ isActive: z.boolean() }),
         security: [{ bearerAuth: [] }],
+        response: { 429: z.object({ error: z.string() }) },
       },
     },
     async (req) => broadcastService.toggleActive(req.params.id, req.body.isActive),

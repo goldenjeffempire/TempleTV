@@ -4,6 +4,7 @@
 // that template literal are necessary for correct browser-side JS execution
 // even though ESLint's no-useless-escape rule cannot detect that context.
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 
 /* ============================================================
    Temple TV — Broadcast Control Dashboard
@@ -1715,7 +1716,7 @@ export async function adminUiRoutes(app: FastifyInstance) {
   // for production deployments where no proxy restriction applies.
 
   app.get("/dashboard", {
-    schema: { hide: true },
+    schema: { hide: true, response: { 429: z.object({ error: z.string() }) } },
     config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
   }, async (_req, reply) => {
     reply.redirect("/dashboard/broadcast", 302);
@@ -1723,7 +1724,7 @@ export async function adminUiRoutes(app: FastifyInstance) {
 
   // compress: false — Replit's proxy drops gzip-encoded HTML (Content-Length: 0 bug)
   app.get("/dashboard/broadcast", {
-    schema: { hide: true },
+    schema: { hide: true, response: { 429: z.object({ error: z.string() }) } },
     compress: false,
     config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
   }, async (_req, reply) => {
@@ -1735,14 +1736,14 @@ export async function adminUiRoutes(app: FastifyInstance) {
   });
 
   app.get("/admin", {
-    schema: { hide: true },
+    schema: { hide: true, response: { 429: z.object({ error: z.string() }) } },
     config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
   }, async (_req, reply) => {
     reply.redirect("/dashboard/broadcast", 302);
   });
 
   app.get("/admin/broadcast", {
-    schema: { hide: true },
+    schema: { hide: true, response: { 429: z.object({ error: z.string() }) } },
     config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
   }, async (_req, reply) => {
     reply.redirect("/dashboard/broadcast", 302);

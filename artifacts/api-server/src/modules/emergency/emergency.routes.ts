@@ -229,6 +229,7 @@ export async function emergencyRoutes(app: FastifyInstance) {
         summary: "Dismiss an active emergency alert",
         params: z.object({ id: z.string().min(1).max(128) }),
         security: [{ bearerAuth: [] }],
+        response: { 204: z.void(), 404: z.object({ error: z.string() }), 429: z.object({ error: z.string() }) },
       },
     },
     async (req, reply) => {

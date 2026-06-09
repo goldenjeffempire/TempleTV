@@ -255,7 +255,7 @@ export async function healthRoutes(app: FastifyInstance) {
       schema: {
         tags: ["health"],
         summary: "Public platform status summary for mobile / TV clients",
-        response: { 200: OpsStatusSchema },
+        response: { 200: OpsStatusSchema, 429: z.object({ error: z.string() }) },
       },
     },
     async (_req, reply) => {

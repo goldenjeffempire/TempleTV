@@ -555,6 +555,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       // 600/min per IP covers 3 concurrent uploads × 4 parallel chunks
       // at the maximum speed, with headroom for retries.
       config: { rateLimit: { max: 600, timeWindow: "1 minute" } },
+      schema: { response: { 429: z.object({ error: z.string() }) } },
     },
     async (req: FastifyRequest, reply: FastifyReply) => {
       // Disable proxy buffering so Nginx/Replit proxy streams bytes through
@@ -761,6 +762,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       // One thumbnail per upload session; 10/min covers retries and
       // multi-file batches.
       config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+      schema: { response: { 429: z.object({ error: z.string() }) } },
     },
     async (req: FastifyRequest, reply: FastifyReply) => {
       const { sessionId } = req.params as { sessionId: string };
