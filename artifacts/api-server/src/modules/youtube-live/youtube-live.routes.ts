@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import { z } from "zod";
 import { ytPoller } from "./youtube-live.poller.js";
 import { sseCorsHeaders } from "../../lib/sse-cors.js";
 import { requireAuth } from "../../middleware/auth.js";
@@ -24,7 +25,7 @@ export async function youtubeLiveRoutes(app: FastifyInstance) {
    * Rate-limited to 120 req/min (= 2 req/s) — generous enough for all clients
    * polling at ≥30 s intervals while blocking accidental polling storms.
    */
-  app.get("/", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async () => {
+  app.get("/", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, async () => {
     const s = ytPoller.getState();
     return {
       isLive: s.isLive,
@@ -41,7 +42,7 @@ export async function youtubeLiveRoutes(app: FastifyInstance) {
    * every 30 s as a fallback when SSE drops.
    * Rate-limited to 120 req/min — same budget as the root endpoint.
    */
-  app.get("/status", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async () => {
+  app.get("/status", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, async () => {
     const s = ytPoller.getState();
     return {
       isLive: s.isLive,
@@ -84,7 +85,7 @@ export async function youtubeLiveRoutes(app: FastifyInstance) {
    * 501 when neither is configured so the admin UI can show a helpful error
    * rather than a silent timeout.
    */
-  app.post("/:broadcastId/start", { preHandler: requireAuth("editor"), config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req: FastifyRequest<{ Params: { broadcastId: string } }>, reply) => {
+  app.post("/:broadcastId/start", { preHandler: requireAuth("editor"), config: { rateLimit: { max: 10, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, async (req: FastifyRequest<{ Params: { broadcastId: string } }>, reply) => {
     const { broadcastId } = req.params;
     // YouTube broadcast transitions require OAuth, which is not yet wired.
     // Return a descriptive error so the admin UI shows a clear message.
@@ -99,7 +100,7 @@ export async function youtubeLiveRoutes(app: FastifyInstance) {
   /**
    * Transition a live YouTube broadcast to "complete" status.
    */
-  app.post("/:broadcastId/stop", { preHandler: requireAuth("editor"), config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req: FastifyRequest<{ Params: { broadcastId: string } }>, reply) => {
+  app.post("/:broadcastId/stop", { preHandler: requireAuth("editor"), config: { rateLimit: { max: 10, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, async (req: FastifyRequest<{ Params: { broadcastId: string } }>, reply) => {
     const { broadcastId } = req.params;
     reply.code(501);
     return {

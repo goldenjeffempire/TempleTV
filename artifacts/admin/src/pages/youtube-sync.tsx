@@ -179,6 +179,7 @@ export default function YoutubeSyncPage() {
       void qc.invalidateQueries({ queryKey: ["yt-sync-history"] });
       void qc.invalidateQueries({ queryKey: ["youtube-quota"] });
       void qc.invalidateQueries({ queryKey: ["yt-category-stats"] });
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
     },
     onError: (e) => {
       const msg = e instanceof HttpError ? e.message : "Sync failed";
@@ -195,6 +196,7 @@ export default function YoutubeSyncPage() {
         { duration: 8000 },
       );
       void qc.invalidateQueries({ queryKey: ["yt-category-stats"] });
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
       void refetchCatStats();
     },
     onError: (e) => {

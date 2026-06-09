@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import { eq, desc } from "drizzle-orm";
 import { env } from "../../config/env.js";
 import { logger } from "../../infrastructure/logger.js";
@@ -315,7 +316,7 @@ export async function youtubeChannelRoutes(app: FastifyInstance) {
    * GET /api/youtube/rss
    * Proxies the YouTube RSS XML so web clients avoid CORS.
    */
-  app.get("/rss", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (_req, reply) => {
+  app.get("/rss", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, async (_req, reply) => {
     try {
       const xml = await fetchRss();
       reply
@@ -335,7 +336,7 @@ export async function youtubeChannelRoutes(app: FastifyInstance) {
    * Uses YouTube Data API v3 when YOUTUBE_API_KEY is set (all videos),
    * otherwise falls back to RSS (last ~15 videos only).
    */
-  app.get("/videos", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (_req, reply) => {
+  app.get("/videos", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, async (_req, reply) => {
     try {
       const videos = await fetchVideos();
       reply
@@ -375,7 +376,7 @@ export async function youtubeChannelRoutes(app: FastifyInstance) {
    */
   app.get(
     "/live-status",
-    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } },
     async (_req, reply) => {
       reply.header("Cache-Control", "public, max-age=30, s-maxage=30");
       const s = ytPoller.getState();

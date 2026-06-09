@@ -30,7 +30,7 @@ export async function midnightPrayersRoutes(app: FastifyInstance) {
   // Compatible with V2Transport: returns { state: V2Snapshot }.
   // Accepts ?epochMs=<number> so each viewer can request a cycle anchored to
   // their own local midnight — the server stays stateless w.r.t. timezone.
-  app.get("/state", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.get("/state", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, async (req, reply) => {
     const query = req.query as Record<string, string>;
     const epochMs = query["epochMs"] ? Number(query["epochMs"]) : undefined;
     const snapshot = midnightPrayersService.getSnapshot(epochMs);
@@ -39,7 +39,7 @@ export async function midnightPrayersRoutes(app: FastifyInstance) {
 
   // ── GET /config ───────────────────────────────────────────────────────────
   // Public: clients need this to decide whether / when to switch channel.
-  app.get("/config", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (_req, reply) => {
+  app.get("/config", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, async (_req, reply) => {
     return reply.send(midnightPrayersService.getConfig());
   });
 
@@ -51,7 +51,7 @@ export async function midnightPrayersRoutes(app: FastifyInstance) {
     timezone:  z.string().min(1).max(100).optional(),
   });
 
-  app.patch("/config", { ...editorGuard, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.patch("/config", { ...editorGuard, config: { rateLimit: { max: 10, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, async (req, reply) => {
     const result = PatchConfigBody.safeParse(req.body);
     if (!result.success) {
       return reply.status(400).send({ error: "Invalid config", details: result.error.flatten() });
@@ -61,7 +61,7 @@ export async function midnightPrayersRoutes(app: FastifyInstance) {
   });
 
   // ── GET /queue ────────────────────────────────────────────────────────────
-  app.get("/queue", { ...editorGuard, config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (_req, reply) => {
+  app.get("/queue", { ...editorGuard, config: { rateLimit: { max: 30, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, async (_req, reply) => {
     const videos = midnightPrayersService.getVideos();
     const config = midnightPrayersService.getConfig();
     const totalDurationSecs = videos.reduce((a, v) => a + v.durationSecs, 0);
@@ -75,7 +75,7 @@ export async function midnightPrayersRoutes(app: FastifyInstance) {
   });
 
   // ── POST /queue/refresh ───────────────────────────────────────────────────
-  app.post("/queue/refresh", { ...editorGuard, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (_req, reply) => {
+  app.post("/queue/refresh", { ...editorGuard, config: { rateLimit: { max: 10, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, async (_req, reply) => {
     await midnightPrayersService.loadVideos();
     const videos = midnightPrayersService.getVideos();
     return reply.send({ ok: true, videoCount: videos.length });
@@ -84,7 +84,7 @@ export async function midnightPrayersRoutes(app: FastifyInstance) {
   // ── GET /events (SSE) ─────────────────────────────────────────────────────
   // Compatible with V2Transport SSE path.
   // Rate-limit the initial connection (30/min per IP) to prevent SSE exhaustion.
-  app.get("/events", { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.get("/events", { config: { rateLimit: { max: 30, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, async (req, reply) => {
     reply.raw.writeHead(200, {
       "Content-Type":    "text/event-stream",
       "Cache-Control":   "no-cache, no-transform",
@@ -109,8 +109,16 @@ export async function midnightPrayersRoutes(app: FastifyInstance) {
 
     const unsubscribe = midnightPrayersService.subscribeSSE(send);
 
+    // Keepalive ping every 25 s — prevents proxy/LB idle-timeout from silently
+    // closing the stream. .unref() so this never blocks graceful SIGTERM drain.
+    const heartbeat = setInterval(() => {
+      try { reply.raw.write(": ping\n\n"); } catch { /* client gone */ }
+    }, 25_000);
+    heartbeat.unref();
+
     req.raw.on("close", () => {
       unsubscribe();
+      clearInterval(heartbeat);
     });
 
     // Keep the handler alive (Fastify won't auto-close the stream)
@@ -122,7 +130,7 @@ export async function midnightPrayersRoutes(app: FastifyInstance) {
   // ── GET /ws (WebSocket) ───────────────────────────────────────────────────
   // Compatible with V2Transport WS path.
   // Rate-limit the initial WS upgrade (30/min per IP) to prevent exhaustion.
-  app.get("/ws", { websocket: true, config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, (socket, req) => {
+  app.get("/ws", { websocket: true, config: { rateLimit: { max: 30, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, (socket, req) => {
     const send = (frame: MPServerFrame) => {
       try {
         socket.send(JSON.stringify(frame));
