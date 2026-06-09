@@ -96,6 +96,8 @@ export default function SchedulePage() {
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
       void qc.invalidateQueries({ queryKey: ["playlists"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       setAddOpen(false);
       setForm(BLANK_FORM);
     },
@@ -116,6 +118,8 @@ export default function SchedulePage() {
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
       void qc.invalidateQueries({ queryKey: ["playlists"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       setEditEntry(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to update entry"),
@@ -130,6 +134,8 @@ export default function SchedulePage() {
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
       void qc.invalidateQueries({ queryKey: ["playlists"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       setDeleteId(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to delete"),

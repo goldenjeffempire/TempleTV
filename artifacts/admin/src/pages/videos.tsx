@@ -404,6 +404,8 @@ export default function VideosPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       // Featured/unfeatured state can surface or resolve remediation items.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      // Featured flag may affect ordering/filtering in the YouTube library view.
+      void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
     },
     onError: (_e, _vars, ctx) => {
       if (ctx?.prev) ctx.prev.forEach(([key, data]) => qc.setQueryData(key, data));
@@ -430,6 +432,8 @@ export default function VideosPage() {
       // Metadata-lock state affects YouTube sync behavior which can produce
       // broadcast-queue drift — refresh remediation report to reflect current state.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      // Lock status is displayed in the YouTube library view.
+      void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
     },
     onError: (_e, _vars, ctx) => {
       if (ctx?.prev) ctx.prev.forEach(([key, data]) => qc.setQueryData(key, data));
@@ -456,6 +460,8 @@ export default function VideosPage() {
       // Visibility change can affect which items appear in the broadcast queue
       // remediation report (e.g. hidden videos with queue entries).
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      // broadcastOnly controls whether the video appears in the public/YouTube library view.
+      void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
     },
     onError: (_e, _vars, ctx) => {
       if (ctx?.prev) ctx.prev.forEach(([key, data]) => qc.setQueryData(key, data));

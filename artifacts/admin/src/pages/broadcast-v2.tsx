@@ -905,6 +905,8 @@ function BroadcastV2PageInner() {
   const [showReloadConfirm, setShowReloadConfirm] = useState(false);
   const [showFailoverConfirm, setShowFailoverConfirm] = useState(false);
   const [showClearFailoverConfirm, setShowClearFailoverConfirm] = useState(false);
+  const [showPlayNowConfirm, setShowPlayNowConfirm] = useState(false);
+  const [pendingPlayNowId, setPendingPlayNowId] = useState<string | null>(null);
 
 
   async function adminPost(path: string, body: Record<string, unknown> = {}) {
@@ -3500,7 +3502,7 @@ function BroadcastV2PageInner() {
                         isRetryingHls={retryHlsMutation.isPending}
                         onTranscodeLocally={(itemId) => transcodeLocallyMutation.mutate(itemId)}
                         isTranscodingLocally={transcodeLocallyMutation.isPending}
-                        onPlayNow={(itemId) => playNowMutation.mutate(itemId)}
+                        onPlayNow={(itemId) => { setPendingPlayNowId(itemId); setShowPlayNowConfirm(true); }}
                         isPlayingNow={playNowMutation.isPending}
                         secondsUntilAir={secondsUntilAirByItemId[item.id] ?? null}
                         onReprobe={(itemId) => reprobeMutation.mutate(itemId)}
@@ -3631,6 +3633,30 @@ function BroadcastV2PageInner() {
             onClick={() => { setShowReloadConfirm(false); void adminPost("/broadcast-v2/reload"); }}
           >
             Reload
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    <AlertDialog open={showPlayNowConfirm} onOpenChange={(open) => { setShowPlayNowConfirm(open); if (!open) setPendingPlayNowId(null); }}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Play this item now?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This immediately promotes the selected item to the front of the queue and skips to it,
+            interrupting whatever is currently on air. Viewers will experience a brief gap.
+            Only proceed if you intentionally want to switch to this item right now.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={() => {
+              setShowPlayNowConfirm(false);
+              if (pendingPlayNowId) playNowMutation.mutate(pendingPlayNowId);
+              setPendingPlayNowId(null);
+            }}
+          >
+            Play now
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

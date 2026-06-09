@@ -498,7 +498,7 @@ class TranscoderDispatcher {
         AND (tj.completed_at IS NULL OR tj.completed_at < now() - (${env.TRANSCODER_AUTO_RETRY_INTERVAL_MS} || ' milliseconds')::interval)
         AND (
           mv.transcoding_error_code IS NULL
-          OR mv.transcoding_error_code NOT IN ('CORRUPT_SOURCE', 'SOURCE_MISSING', 'DISK_FULL')
+          OR mv.transcoding_error_code NOT IN ('CORRUPT_SOURCE', 'SOURCE_MISSING')
         )
       ORDER BY tj.created_at ASC
       LIMIT 20
@@ -1149,12 +1149,33 @@ class TranscoderDispatcher {
           this.storageErrorStreak = 0; // non-storage error → reset streak
         }
 
-        // Neither disk-full nor corrupt-source should burn through retry slots —
-        // waiting and retrying the same broken input is pointless.
-        const isImmediateFail = isDiskFull || isCorruptSource || isSourceMissing;
+        // DISK_FULL (ENOSPC/EDQUOT): treat as a temporary infrastructure failure,
+        // not a permanent job failure. The disk may be freed (old scratch files GC'd,
+        // operator action) and the job should retry automatically once space is
+        // available. Open the dispatch circuit for 30 min so the queue doesn't
+        // hammer the disk while it's full, and schedule a retry with a long backoff.
+        if (isDiskFull) {
+          this.storageCircuitOpenUntil = Date.now() + 30 * 60_000; // 30-min cool-down
+          this.storageErrorStreak = 0;
+          logger.error(
+            { errCode, jobId: job.id, videoId: job.videoId, cooldownMs: 30 * 60_000 },
+            "transcoder: DISK_FULL (ENOSPC/EDQUOT) — dispatch PAUSED 30 min; " +
+            "job will be retried automatically once space is freed",
+          );
+        }
+
+        // Corrupt-source and source-missing are unrecoverable: no amount of retrying
+        // will fix a structurally corrupt file or a deleted source blob. Fail immediately
+        // without burning any retry slots so the operator knows the root cause.
+        // DISK_FULL is retryable (disk may be freed), so it uses the normal retry path.
+        const isImmediateFail = isCorruptSource || isSourceMissing;
         const attempts = job.attempts + (isImmediateFail ? 0 : 1);
         const exceeded = isImmediateFail || attempts >= job.maxAttempts;
-        const backoffMs = Math.min(60_000 * 2 ** attempts, 30 * 60_000);
+        // DISK_FULL gets a 30-min backoff on top of the circuit breaker to spread
+        // retries after disk is freed; other errors use exponential backoff capped at 30 min.
+        const backoffMs = isDiskFull
+          ? 30 * 60_000
+          : Math.min(60_000 * 2 ** attempts, 30 * 60_000);
         const nextRetry = new Date(Date.now() + backoffMs);
 
         await db.update(jobs)
