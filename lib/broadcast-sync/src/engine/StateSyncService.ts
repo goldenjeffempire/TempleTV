@@ -38,6 +38,15 @@ const OMEGA_RESYNC_MS  = 30_000;
 const FETCH_TIMEOUT_MS = 8_000;
 /** How long to wait for any SSE frame before treating the connection as zombie and reconnecting. */
 const SSE_WATCHDOG_MS  = 60_000;
+/**
+ * Maximum time to wait for a WebSocket `open` event after calling
+ * `new WebSocket(url)`. On flaky mobile networks or TV browsers the TCP
+ * SYN can hang in CONNECTING state for minutes without firing `open` or
+ * `error`. After this deadline we close the socket and schedule a
+ * normal reconnect so the client falls back to HTTP polling instead of
+ * showing "Connecting…" indefinitely.
+ */
+const WS_HANDSHAKE_TIMEOUT_MS = 10_000;
 
 // ── Callbacks ─────────────────────────────────────────────────────────────────
 
@@ -65,6 +74,8 @@ export class StateSyncService {
   private sseLastEventMs = 0;
   private destroyed = false;
   private lastServerTimeMs = 0;
+  /** Fires if the WebSocket `open` event never arrives within WS_HANDSHAKE_TIMEOUT_MS. */
+  private wsHandshakeTimer: ReturnType<typeof setTimeout> | null = null;
   /** True while the WebSocket is open and healthy. Used to suppress the
    *  OMEGA 30-s resync loop — when WS is delivering push updates there is
    *  no need to also poll /api/playback/state every 30 s. */
@@ -124,7 +135,24 @@ export class StateSyncService {
     }
     this.ws = ws;
 
+    // Handshake watchdog: if `open` never fires (e.g. TCP SYN hangs on a
+    // flaky mobile network or TV browser), force-close and reconnect via the
+    // normal backoff path so the client falls back to HTTP polling instead of
+    // showing "Connecting…" indefinitely.
+    this.wsHandshakeTimer = setTimeout(() => {
+      this.wsHandshakeTimer = null;
+      if (ws.readyState === WebSocket.CONNECTING) {
+        try { ws.close(); } catch { /* noop */ }
+        // close event fires after close() and will trigger scheduleReconnect.
+      }
+    }, WS_HANDSHAKE_TIMEOUT_MS);
+
     ws.addEventListener("open", () => {
+      // Handshake succeeded — cancel the timeout.
+      if (this.wsHandshakeTimer) {
+        clearTimeout(this.wsHandshakeTimer);
+        this.wsHandshakeTimer = null;
+      }
       if (this.destroyed) return;
       this.reconnectDelay = MIN_RETRY_MS;
       this.wsConnected = true;
@@ -147,6 +175,12 @@ export class StateSyncService {
     });
 
     ws.addEventListener("close", () => {
+      // Cancel the handshake watchdog if it's still pending (e.g. the socket
+      // failed before `open` via an `error` + `close` sequence).
+      if (this.wsHandshakeTimer) {
+        clearTimeout(this.wsHandshakeTimer);
+        this.wsHandshakeTimer = null;
+      }
       this.ws = null;
       this.wsConnected = false;
       if (this.destroyed) return;
@@ -161,6 +195,10 @@ export class StateSyncService {
   }
 
   private closeWs(): void {
+    if (this.wsHandshakeTimer) {
+      clearTimeout(this.wsHandshakeTimer);
+      this.wsHandshakeTimer = null;
+    }
     try { this.ws?.close(); } catch { /* noop */ }
     this.ws = null;
   }
