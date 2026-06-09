@@ -176,11 +176,17 @@ export async function adminVideosRoutes(app: FastifyInstance) {
     "/videos",
     {
       preHandler: requireAuth("editor"),
+      // The library listing runs a paginated full-text search across the
+      // managed_videos table (GIN index). Without a rate limit a compromised
+      // editor token can drive arbitrarily many expensive search queries.
+      // 60/min covers heavy admin usage (fast typing in the search box, bulk
+      // picker opens) while still blocking automated enumeration.
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Paginated, searchable video library for the admin picker",
         querystring: ListQuerySchema,
-        response: { 200: ListResponseSchema },
+        response: { 200: ListResponseSchema, 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },

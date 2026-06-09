@@ -155,10 +155,14 @@ export async function seriesRoutes(app: FastifyInstance) {
     "/admin/series",
     {
       preHandler: requireAuth("editor"),
+      // Series listing scans the entire series table (including unpublished
+      // rows invisible to the public endpoint). 30/min is ample for the admin
+      // UI while blocking automated scraping via a compromised editor token.
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["series"],
         summary: "List all series (admin, includes unpublished)",
-        response: { 200: z.array(SeriesRowSchema) },
+        response: { 200: z.array(SeriesRowSchema), 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },

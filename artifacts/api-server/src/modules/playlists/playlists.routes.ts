@@ -94,7 +94,10 @@ export async function playlistsRoutes(app: FastifyInstance) {
         tags: ["playlists"],
         summary: "Delete a playlist (cascades to its videos)",
         params: idParam,
-        response: { 429: z.object({ error: z.string() }) },
+        response: {
+          200: z.object({ id: z.string(), deleted: z.boolean() }),
+          429: z.object({ error: z.string() }),
+        },
         security: [{ bearerAuth: [] }],
       },
     },
@@ -131,7 +134,10 @@ export async function playlistsRoutes(app: FastifyInstance) {
         tags: ["playlists"],
         summary: "Remove a video entry from a playlist",
         params: playlistVideoParams,
-        response: { 429: z.object({ error: z.string() }) },
+        response: {
+          200: z.object({ id: z.string(), deleted: z.boolean() }),
+          429: z.object({ error: z.string() }),
+        },
         security: [{ bearerAuth: [] }],
       },
     },

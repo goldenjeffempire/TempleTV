@@ -158,11 +158,16 @@ export async function adminRoutes(app: FastifyInstance) {
     "/users",
     {
       preHandler: requireAuth("admin"),
+      // List-users fans out into a paginated scan of the users table with an
+      // optional full-text search filter. 30/min is generous for a human
+      // operator but blocks automated scraping of the user base via a
+      // compromised admin token.
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "List all users",
         querystring: ListUsersQuerySchema,
-        response: { 200: ListUsersResponseSchema },
+        response: { 200: ListUsersResponseSchema, 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },
