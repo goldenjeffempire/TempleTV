@@ -17,7 +17,8 @@
 
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { mkdir, open, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
+import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
 import os from "node:os";
@@ -244,10 +245,57 @@ export async function runFaststart(
         .where(eq(videos.id, videoId));
     }
 
-    log.info("faststart: downloading source from storage");
-    const { body, contentLength } = await storage().getObject(objectKey);
-    await pipeline(body, createWriteStream(inputPath));
+    // ── Pre-download metadata validation ──────────────────────────────────────
+    // Validate size_bytes BEFORE fetching any bytes.  A zero or null size_bytes
+    // indicates a corrupt or incompletely-assembled storage record — fetching it
+    // would produce a 0-byte file that causes probeContainerIsValid to fail and
+    // triggers the erroneous CORRUPT_UPLOAD permanent-failure path.
+    // headObject failure is swallowed (non-fatal) because faststart has a fallback
+    // (HLS transcoder) and shouldn't block the upload pipeline on a transient DB
+    // blip.  A genuinely missing / zero-size record throws immediately.
+    log.info("faststart: validating source metadata before download");
+    const fsHead = await storage().headObject(objectKey).catch(() => null);
+    if (fsHead?.exists === false) {
+      throw Object.assign(
+        new Error(
+          `faststart: source object not found in storage (key="${objectKey}"). ` +
+          `The upload blob may have been deleted. Re-upload to recover.`,
+        ),
+        { code: "CORRUPT_UPLOAD" },
+      );
+    }
+    if (fsHead?.contentLength != null && fsHead.contentLength <= 0) {
+      throw Object.assign(
+        new Error(
+          `faststart: invalid source metadata — size_bytes=${fsHead.contentLength} for key="${objectKey}". ` +
+          `The storage record is corrupt or the multipart upload was never fully assembled.`,
+        ),
+        { code: "CORRUPT_UPLOAD" },
+      );
+    }
 
+    // ── Atomic download with byte counting ────────────────────────────────────
+    // Write to a .part file first; rename atomically to inputPath on success so
+    // the final path never contains a partial file.
+    log.info("faststart: downloading source from storage");
+    const fsPartPath = `${inputPath}.part`;
+    await rm(fsPartPath, { force: true }).catch(() => undefined);
+
+    let fsBytesWritten = 0;
+    const { body, contentLength } = await storage().getObject(objectKey);
+    const fsByteCounter = new Transform({
+      transform(chunk: Buffer, _enc, cb) {
+        fsBytesWritten += chunk.length;
+        cb(null, chunk);
+      },
+    });
+
+    await pipeline(body, fsByteCounter, createWriteStream(fsPartPath));
+
+    // Atomic promotion: .part → final path (rename(2), atomic on Linux).
+    await rename(fsPartPath, inputPath);
+
+    // ── Post-download size verification ───────────────────────────────────────
     // Verify the download completed in full. The chunked streaming path for
     // large blobs (> 64 MiB) exits the generator early on a short SUBSTRING
     // result — the `pipeline` call succeeds but the written file is shorter
@@ -257,17 +305,36 @@ export async function runFaststart(
     // Throwing DOWNLOAD_TRUNCATED here instead lets the finalize handler treat
     // it as a non-fatal faststart failure so the video continues to the HLS
     // transcoder, which performs its own verified download.
-    if (contentLength != null && contentLength > 0) {
-      const { size: actualSize } = await stat(inputPath);
-      if (actualSize !== contentLength) {
-        throw Object.assign(
-          new Error(
-            `faststart: source download truncated — expected ${contentLength} bytes but received ${actualSize}. ` +
-            `The video will be processed by the HLS transcoder instead.`,
-          ),
-          { code: "DOWNLOAD_TRUNCATED" },
-        );
-      }
+    const { size: actualSize } = await stat(inputPath);
+
+    if (actualSize === 0) {
+      throw Object.assign(
+        new Error(
+          `faststart: source download produced an empty file (0 bytes) for key="${objectKey}". ` +
+          `The video will be processed by the HLS transcoder instead.`,
+        ),
+        { code: "DOWNLOAD_TRUNCATED" },
+      );
+    }
+
+    if (fsBytesWritten !== actualSize) {
+      throw Object.assign(
+        new Error(
+          `faststart: download write mismatch — ${fsBytesWritten} bytes counted in stream but ` +
+          `${actualSize} bytes on disk (key="${objectKey}"). Possible disk I/O error.`,
+        ),
+        { code: "DOWNLOAD_TRUNCATED" },
+      );
+    }
+
+    if (contentLength != null && contentLength > 0 && actualSize !== contentLength) {
+      throw Object.assign(
+        new Error(
+          `faststart: source download truncated — expected ${contentLength} bytes but received ${actualSize}. ` +
+          `The video will be processed by the HLS transcoder instead.`,
+        ),
+        { code: "DOWNLOAD_TRUNCATED" },
+      );
     }
 
     // ── Container pre-flight: detect moov-missing / structurally corrupt MP4 ──

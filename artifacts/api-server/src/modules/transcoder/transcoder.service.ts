@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { mkdir, readdir, readFile, rm, stat, statfs, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
+import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
 import os from "node:os";
@@ -8,6 +9,22 @@ import { randomUUID } from "node:crypto";
 import { storage } from "../../infrastructure/storage.js";
 import { logger } from "../../infrastructure/logger.js";
 import { env } from "../../config/env.js";
+
+// ── Download pipeline reliability constants ───────────────────────────────
+/** Maximum per-download attempts before propagating the error. */
+const DOWNLOAD_MAX_ATTEMPTS = 3;
+/** Base back-off delay between retry attempts: 2 s → 6 s (× 3 per attempt). */
+const DOWNLOAD_RETRY_BASE_MS = 2_000;
+/**
+ * In-process per-destination-path download lock.
+ *
+ * Prevents two concurrent callers from writing to the same `destPath`
+ * simultaneously (would interleave bytes and corrupt the file).
+ * Keyed by the resolved absolute path; value is the Promise from the active
+ * download.  Waiters `await` it and then re-check whether the file arrived
+ * before deciding to download themselves.
+ */
+const _downloadInProgress = new Map<string, Promise<void>>();
 
 export interface TranscodeRequest {
   jobId: string;
@@ -481,16 +498,26 @@ async function probeResolution(inputPath: string): Promise<{ width: number; heig
 }
 
 /**
- * Download a source object from object storage to a local temp file.
- * All ffprobe/ffmpeg calls go against the local path so they work without
- * any special network access or auth tokens.
+ * Download a source object from object storage (or a remote HTTP(S) URL)
+ * to a local temp file with full reliability guarantees:
  *
- * Verifies the downloaded file's byte count matches storage's HEAD. A
- * truncated download (network glitch, storage hiccup, partial read) leaves
- * an MP4 with a missing tail — and since the moov atom is often at EOF,
- * ffmpeg fails with the misleading "moov atom not found" instead of a
- * size-mismatch error. Failing here forces the dispatcher's retry loop to
- * re-download the source instead of running ffmpeg against bad bytes.
+ *  1. Atomic write  — data is written to `${destPath}.part` then atomically
+ *     renamed (rename(2)) so the final path never contains a partial file.
+ *  2. Stale-part cleanup — any leftover `.part` file from a prior failed
+ *     attempt is removed before each attempt begins.
+ *  3. In-process per-path lock — prevents two concurrent callers from
+ *     writing to the same destination path simultaneously.
+ *  4. Metadata validation — rejects blobs whose stored `size_bytes` is 0
+ *     or null before any bytes are fetched (corrupt / incomplete storage
+ *     record — re-upload required).
+ *  5. Byte-count validation — bytes written to disk are counted during
+ *     streaming and compared against both the Content-Length header (remote)
+ *     and the DB-reported `size_bytes` (local).  Truncated downloads fail
+ *     loudly here instead of silently producing a short file that makes
+ *     ffmpeg emit the misleading "moov atom not found".
+ *  6. Retry with back-off — up to DOWNLOAD_MAX_ATTEMPTS for transient I/O
+ *     errors (DB blip, HTTP 5xx, broken pipe).  Terminal errors (missing
+ *     blob, invalid metadata, HTTP 4xx) are NOT retried.
  */
 async function downloadSourceToTempFile(rawObjectKey: string, destPath: string): Promise<void> {
   // Defensive normalisation: jobs already sitting in the DB may have been
@@ -503,42 +530,327 @@ async function downloadSourceToTempFile(rawObjectKey: string, destPath: string):
       ? rawObjectKey.replace(/^\/(?:api\/(?:v\d+\/)?)?/, "")
       : rawObjectKey;
 
-  // Remote HTTP(S) URL — download directly from the external server rather than
-  // from local object storage. This supports prod-sync queue items whose source
-  // lives on the production API (no local storage blob exists for them).
-  if (/^https?:\/\//i.test(objectKey)) {
-    const ac = new AbortController();
-    const t = setTimeout(() => ac.abort(), 20 * 60 * 1000); // 20-min timeout for large files
+  // ── Per-path lock: serialise concurrent downloads to the same destination ──
+  // Two callers writing to the same destPath would interleave bytes.
+  // Wait for any in-flight download to the same path to finish, then
+  // return early if it succeeded (file exists and non-empty).
+  const lockKey = path.resolve(destPath);
+  const inflight = _downloadInProgress.get(lockKey);
+  if (inflight !== undefined) {
+    await inflight.catch(() => { /* ignore error from parallel download */ });
     try {
-      const res = await fetch(objectKey, { signal: ac.signal });
-      if (!res.ok || !res.body) {
-        throw new Error(
-          `transcoder: remote source download failed — ${res.status} ${res.statusText} (url=${objectKey})`,
+      const s = await stat(destPath);
+      if (s.size > 0) {
+        logger.debug(
+          { objectKey, destPath },
+          "transcoder: download dequeued — reusing result from parallel download",
         );
+        return;
       }
-      await pipeline(res.body as unknown as NodeJS.ReadableStream, createWriteStream(destPath));
-    } finally {
-      clearTimeout(t);
+    } catch {
+      // File absent or empty after the parallel download — fall through and
+      // attempt the download ourselves.
     }
-    return;
   }
 
-  const head = await storage().headObject(objectKey).catch(() => null);
-  const { body } = await storage().getObject(objectKey);
-  await pipeline(body, createWriteStream(destPath));
+  let releaseLock!: () => void;
+  const lockPromise = new Promise<void>((resolve) => { releaseLock = resolve; });
+  _downloadInProgress.set(lockKey, lockPromise);
 
-  const expected = head?.contentLength;
-  if (expected != null && expected > 0) {
-    const actual = (await stat(destPath)).size;
-    if (actual !== expected) {
-      throw new Error(
-        `transcoder: source download truncated — expected ${expected} bytes from storage, ` +
-          `got ${actual} bytes on disk (objectKey=${objectKey}). ` +
-          `This typically presents as "moov atom not found" when ffmpeg runs. ` +
-          `The job will retry and re-download the source.`,
+  try {
+    await _downloadWithRetry(objectKey, destPath);
+  } finally {
+    _downloadInProgress.delete(lockKey);
+    releaseLock();
+  }
+}
+
+/**
+ * Retry wrapper — attempts the download up to DOWNLOAD_MAX_ATTEMPTS times
+ * with exponential back-off for transient errors.
+ *
+ * Uses an atomic `.part` file pattern: bytes are written to `${destPath}.part`
+ * and only renamed to `destPath` on successful completion, so the final path
+ * never contains a partial file regardless of crash or error.
+ */
+async function _downloadWithRetry(objectKey: string, destPath: string): Promise<void> {
+  const partPath = `${destPath}.part`;
+  let lastErr: Error = new Error("download did not attempt");
+
+  for (let attempt = 1; attempt <= DOWNLOAD_MAX_ATTEMPTS; attempt++) {
+    // Remove any stale .part file left by the previous failed attempt so each
+    // attempt starts with a fresh, empty file.
+    await rm(partPath, { force: true }).catch(() => undefined);
+
+    const t0 = Date.now();
+    try {
+      if (/^https?:\/\//i.test(objectKey)) {
+        await _downloadRemoteUrl(objectKey, partPath);
+      } else {
+        await _downloadLocalStorage(objectKey, partPath);
+      }
+
+      // Atomic promotion: .part → final path.
+      // On Linux, rename(2) is guaranteed atomic within the same filesystem,
+      // so readers of destPath never observe a partial file.
+      await rename(partPath, destPath);
+
+      const elapsedMs = Date.now() - t0;
+      const finalSize = await stat(destPath).then((s) => s.size).catch(() => null);
+      logger.info(
+        { objectKey, destPath, attempt, elapsedMs, sizeBytes: finalSize },
+        "transcoder: source download succeeded",
+      );
+      return; // ← success
+
+    } catch (err) {
+      lastErr = err instanceof Error ? err : new Error(String(err));
+
+      // Clean up any partial .part file left by the failed attempt.
+      await rm(partPath, { force: true }).catch(() => undefined);
+
+      // Terminal errors: retrying is futile — propagate immediately.
+      if (_isTerminalDownloadError(lastErr)) {
+        logger.warn(
+          { objectKey, attempt, err: lastErr.message },
+          "transcoder: source download failed with terminal error — not retrying",
+        );
+        throw lastErr;
+      }
+
+      if (attempt < DOWNLOAD_MAX_ATTEMPTS) {
+        const delayMs = DOWNLOAD_RETRY_BASE_MS * (3 ** (attempt - 1)); // 2 s, 6 s
+        logger.warn(
+          {
+            objectKey,
+            attempt,
+            maxAttempts: DOWNLOAD_MAX_ATTEMPTS,
+            delayMs,
+            err: lastErr.message,
+          },
+          "transcoder: source download failed — will retry",
+        );
+        await new Promise<void>((r) => { setTimeout(r, delayMs).unref(); });
+      }
+    }
+  }
+
+  throw new Error(
+    `transcoder: source download failed after ${DOWNLOAD_MAX_ATTEMPTS} attempts ` +
+    `(objectKey=${objectKey}): ${lastErr.message}`,
+  );
+}
+
+/**
+ * Download a remote HTTP(S) source URL.
+ * Used for prod-sync queue items whose blob lives on the production API rather
+ * than in local object storage.
+ *
+ * Enforces:
+ *  - Non-OK HTTP status → throw (4xx = terminal, 5xx = retryable).
+ *  - Content-Length presence → size validation after download.
+ *  - Per-byte counting via a passthrough Transform so the streamed byte
+ *    count can be compared against both on-disk size and Content-Length.
+ *  - Hard failure on 0-byte result.
+ */
+async function _downloadRemoteUrl(url: string, partPath: string): Promise<void> {
+  const ac = new AbortController();
+  const timeoutTimer = setTimeout(() => { ac.abort(); }, 20 * 60_000);
+
+  let expectedSize: number | null = null;
+  let bytesWritten = 0;
+
+  try {
+    const res = await fetch(url, { signal: ac.signal });
+
+    if (!res.ok) {
+      throw Object.assign(
+        new Error(
+          `transcoder: remote source download failed — HTTP ${res.status} ${res.statusText} ` +
+          `(url=${url})` +
+          (res.status >= 400 && res.status < 500
+            ? ". Client error — check the URL and access permissions."
+            : ". Server error — will retry if attempts remain."),
+        ),
+        { httpStatus: res.status },
       );
     }
+    if (!res.body) {
+      throw new Error(`transcoder: remote source returned no response body (url=${url})`);
+    }
+
+    // Extract expected size from Content-Length for post-download validation.
+    // Header absence means we skip the size check (valid for chunked responses),
+    // but truncation will still be caught by the 0-byte guard below.
+    const clHeader = res.headers.get("content-length");
+    if (clHeader) {
+      const parsed = parseInt(clHeader, 10);
+      if (Number.isFinite(parsed) && parsed > 0) expectedSize = parsed;
+    }
+
+    const counter = new Transform({
+      transform(chunk: Buffer, _enc, cb) {
+        bytesWritten += chunk.length;
+        cb(null, chunk);
+      },
+    });
+
+    await pipeline(
+      res.body as unknown as NodeJS.ReadableStream,
+      counter,
+      createWriteStream(partPath),
+    );
+  } finally {
+    clearTimeout(timeoutTimer);
   }
+
+  // ── Post-download validation ───────────────────────────────────────────────
+  const actualSize = (await stat(partPath)).size;
+
+  if (actualSize === 0) {
+    throw new Error(
+      `transcoder: remote source download produced an empty file (0 bytes). URL: ${url}`,
+    );
+  }
+
+  if (bytesWritten !== actualSize) {
+    throw new Error(
+      `transcoder: remote source write mismatch — ${bytesWritten} bytes counted in stream ` +
+      `but ${actualSize} bytes on disk (url=${url}). Possible disk I/O error.`,
+    );
+  }
+
+  if (expectedSize !== null && actualSize !== expectedSize) {
+    throw new Error(
+      `transcoder: remote source truncated — Content-Length was ${expectedSize} bytes but ` +
+      `only ${actualSize} bytes were received (url=${url}). ` +
+      `This typically manifests as "moov atom not found" in ffmpeg. ` +
+      `Will retry if attempts remain.`,
+    );
+  }
+}
+
+/**
+ * Download a source from local object storage (PostgreSQL BYTEA blobs).
+ *
+ * Enforces:
+ *  - headObject MUST succeed — a failure surfaces the infrastructure error
+ *    so the retry loop can decide whether to retry, rather than silently
+ *    skipping all size validation (the old `.catch(() => null)` behaviour).
+ *  - Blob not-found → SOURCE_MISSING (terminal — re-upload required).
+ *  - size_bytes = 0 or NULL → CORRUPT_SOURCE (terminal — invalid storage
+ *    record, re-upload required).
+ *  - Byte-count validation after the pipeline completes, compared against
+ *    the DB-reported size_bytes.
+ */
+async function _downloadLocalStorage(objectKey: string, partPath: string): Promise<void> {
+  // ── Pre-download metadata validation ──────────────────────────────────────
+  // headObject failure is a DB/storage infrastructure error (connection blip,
+  // pool timeout) — treat as transient so the retry loop can recover.
+  let head: { exists: boolean; contentLength?: number; contentType?: string };
+  try {
+    head = await storage().headObject(objectKey);
+  } catch (headErr) {
+    throw new Error(
+      `transcoder: headObject("${objectKey}") failed — DB may be temporarily unavailable. ` +
+      `Error: ${headErr instanceof Error ? headErr.message : String(headErr)}`,
+    );
+  }
+
+  if (!head.exists) {
+    throw Object.assign(
+      new Error(
+        `transcoder: source object not found in storage (key="${objectKey}"). ` +
+        `The upload blob may have been deleted or never fully assembled. ` +
+        `Re-upload the source file to recover.`,
+      ),
+      { code: "SOURCE_MISSING" },
+    );
+  }
+
+  const expectedSize = head.contentLength;
+
+  if (expectedSize == null || expectedSize <= 0) {
+    throw Object.assign(
+      new Error(
+        `transcoder: invalid source metadata — size_bytes=${expectedSize} for key="${objectKey}". ` +
+        `The storage record is corrupt or the multipart upload was never fully assembled. ` +
+        `Re-upload the source file to recover.`,
+      ),
+      { code: "CORRUPT_SOURCE" },
+    );
+  }
+
+  logger.debug(
+    { objectKey, expectedSize },
+    "transcoder: source metadata validated — beginning download",
+  );
+
+  // ── Stream source to part file with byte counting ─────────────────────────
+  const { body } = await storage().getObject(objectKey);
+
+  let bytesWritten = 0;
+  const counter = new Transform({
+    transform(chunk: Buffer, _enc, cb) {
+      bytesWritten += chunk.length;
+      cb(null, chunk);
+    },
+  });
+
+  await pipeline(body, counter, createWriteStream(partPath));
+
+  // ── Post-download size validation ─────────────────────────────────────────
+  const actualSize = (await stat(partPath)).size;
+
+  if (actualSize === 0) {
+    throw new Error(
+      `transcoder: storage object "${objectKey}" downloaded as empty file (0 bytes). ` +
+      `The storage record may be corrupt. Re-upload the source file.`,
+    );
+  }
+
+  if (bytesWritten !== actualSize) {
+    throw new Error(
+      `transcoder: download write mismatch for "${objectKey}" — ` +
+      `${bytesWritten} bytes counted in stream but ${actualSize} bytes on disk. ` +
+      `Possible disk I/O error.`,
+    );
+  }
+
+  if (actualSize !== expectedSize) {
+    throw new Error(
+      `transcoder: source download truncated for "${objectKey}" — ` +
+      `expected ${expectedSize} bytes (from storage metadata) but received ${actualSize} bytes on disk. ` +
+      `This typically manifests as "moov atom not found" from ffmpeg. ` +
+      `The partial file has been removed; the job will retry.`,
+    );
+  }
+}
+
+/**
+ * Returns true for errors where retrying the download will always produce the
+ * same result — propagated immediately without burning retry slots.
+ *
+ *  SOURCE_MISSING   — blob is gone from storage; re-upload required.
+ *  CORRUPT_SOURCE   — storage metadata is invalid; re-upload required.
+ *  HTTP 4xx ≠ 429   — client error (wrong URL / permissions); the same
+ *                     request will fail identically on every retry.
+ *  zero-byte result — corrupt storage record; re-upload required.
+ *  invalid metadata — corrupt storage record; re-upload required.
+ */
+function _isTerminalDownloadError(err: Error): boolean {
+  const code = (err as Error & { code?: string }).code;
+  if (code === "SOURCE_MISSING" || code === "CORRUPT_SOURCE") return true;
+
+  const httpStatus = (err as Error & { httpStatus?: number }).httpStatus;
+  if (httpStatus !== undefined && httpStatus >= 400 && httpStatus < 500 && httpStatus !== 429) {
+    return true;
+  }
+
+  if (err.message.includes("empty file (0 bytes)")) return true;
+  if (err.message.includes("invalid source metadata")) return true;
+
+  return false;
 }
 
 /**
