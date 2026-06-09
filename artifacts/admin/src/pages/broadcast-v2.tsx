@@ -1010,6 +1010,7 @@ function BroadcastV2PageInner() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
       toast.success("Item removed from broadcast queue.");
     },
     onError: (err) => {
@@ -1429,6 +1430,9 @@ function BroadcastV2PageInner() {
     // A completed transcode (hls_ready) resolves "Missing HLS" warnings in the
     // remediation report — invalidate so the panel clears stale alerts.
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+    // The admin-videos list shows per-video HLS status badges — refresh so
+    // the "Encoding" badge flips to "HLS Ready" without a manual page reload.
+    void qc.invalidateQueries({ queryKey: ["admin-videos"] });
   });
 
   // Broadcast schedule changes (startsAt edits, cycle reassignments) arrive

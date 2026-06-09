@@ -376,6 +376,8 @@ export default function VideosPage() {
       // showing it at all is confusing and misleading to operators.
       void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
       void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       setDeleteVideo(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Delete failed"),

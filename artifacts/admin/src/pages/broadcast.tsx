@@ -1684,6 +1684,9 @@ export default function BroadcastPage() {
     onSuccess: () => {
       toast.success("Skipped to next item");
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-state"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
@@ -1821,6 +1824,12 @@ export default function BroadcastPage() {
     onSuccess: () => {
       toast.success("Faststart started — moov atom will be relocated in ~30–90 s. Queue will reload automatically when done.");
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Faststart request failed"),
   });

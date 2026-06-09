@@ -242,6 +242,7 @@ export default function LibraryPage() {
     void qc.invalidateQueries({ queryKey: ["youtube-sync-status"] });
     void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
     void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
   });
 
   // Refresh live-status badges in real time without a full page reload
