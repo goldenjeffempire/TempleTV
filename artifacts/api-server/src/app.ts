@@ -831,6 +831,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   if (env.NODE_ENV === "production") {
     const { resolve: pathResolve, join, extname } = await import("node:path");
     const { existsSync, createReadStream } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
 
     const MIME_MAP: Record<string, string> = {
       ".html": "text/html; charset=utf-8",
@@ -908,11 +909,25 @@ export async function buildApp(): Promise<FastifyInstance> {
       logger.info({ distDir, prefix }, "prod SPA mounted");
     }
 
-    const cwd = process.cwd();
+    // Derive the project root from THIS FILE's location so SPA paths resolve
+    // correctly regardless of where pnpm runs the start script from.
+    //
+    // When `pnpm --filter @workspace/api-server run start:render-free` is
+    // invoked, the working directory is the package directory:
+    //   process.cwd() = /opt/render/project/src/artifacts/api-server/
+    // That makes process.cwd()-relative paths wrong — they'd resolve to
+    //   artifacts/api-server/artifacts/mobile/...  (double-prefixed, 404).
+    //
+    // Using import.meta.url is reliable:
+    //   this file in the build = .../artifacts/api-server/dist/app.mjs
+    //   dirname(file)          = .../artifacts/api-server/dist/
+    //   up 2 levels            = project root  (.../src/)
+    const thisDir = pathResolve(fileURLToPath(import.meta.url), "..");
+    const projectRoot = pathResolve(thisDir, "../..");
     // Mobile web app — built with: EXPO_BASE_URL=/mobile expo export --platform web --output-dir web-dist
-    mountSpa(pathResolve(cwd, "artifacts/mobile/web-dist"), "/mobile");
+    mountSpa(pathResolve(projectRoot, "artifacts/mobile/web-dist"), "/mobile");
     // TV web app  — built with: BASE_PATH=/tv/ vite build
-    mountSpa(pathResolve(cwd, "artifacts/tv/dist/public"), "/tv");
+    mountSpa(pathResolve(projectRoot, "artifacts/tv/dist/public"), "/tv");
   }
 
   // Subscribe to YouTube's PubSubHubbub hub once the server is fully ready

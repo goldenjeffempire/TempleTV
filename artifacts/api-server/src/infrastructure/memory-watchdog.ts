@@ -514,17 +514,35 @@ export function startMemoryWatchdog(): void {
   // Previous root cause of Render restart loops: MEMORY_RESTART_RSS_MB=430 with
   // HLS_MAX_CONCURRENT=50 pushed RSS to 550+ MB → restart cycle every ~5 min.
   const effectiveRestartMb = Math.max(env.MEMORY_RESTART_RSS_MB, env.MEMORY_WARN_RSS_MB);
-  if (effectiveRestartMb < 500) {
+  if (effectiveRestartMb < 350) {
+    // < 350 MB is genuinely dangerous on any host — RSS at idle typically
+    // reaches 350+ MB (V8 heap + glibc arenas + pg pool + pino buffers) and
+    // the process would restart before serving a single request.
     logger.warn(
       {
         MEMORY_RESTART_RSS_MB: env.MEMORY_RESTART_RSS_MB,
         MEMORY_WARN_RSS_MB: env.MEMORY_WARN_RSS_MB,
         effectiveRestartMb,
-        recommendedMinimumMb: 600,
+        recommendedMinimumMb: 400,
       },
-      "[memory-watchdog] MEMORY_RESTART_RSS_MB is below 500 MB — HLS segment " +
-      "serving pushes RSS to 400+ MB under normal load which will cause frequent " +
-      "restart cycles. Raise MEMORY_RESTART_RSS_MB to ≥ 600 MB in your environment.",
+      "[memory-watchdog] MEMORY_RESTART_RSS_MB is dangerously low — the process " +
+      "will restart before it can serve requests. Set to ≥ 400 MB. " +
+      "For 512 MiB free-tier hosts use HLS_MAX_CONCURRENT=5 and MEMORY_RESTART_RSS_MB=470.",
+    );
+  } else if (effectiveRestartMb < 500) {
+    // 350–499 MB: acceptable on a 512 MiB constrained host (e.g. Render free
+    // tier) when HLS_MAX_CONCURRENT is capped low enough that peak RSS stays
+    // below the threshold. Formula: 24×HLS_MAX_CONCURRENT + 300 + 30 margin.
+    // At HLS_MAX_CONCURRENT=5: peak ≈ 420 MiB, so 470 MB is safe and correct.
+    logger.info(
+      {
+        MEMORY_RESTART_RSS_MB: env.MEMORY_RESTART_RSS_MB,
+        MEMORY_WARN_RSS_MB: env.MEMORY_WARN_RSS_MB,
+        effectiveRestartMb,
+        note: "constrained-host mode — ensure HLS_MAX_CONCURRENT is capped appropriately",
+      },
+      "[memory-watchdog] running in constrained-host mode (restart threshold < 500 MB). " +
+      "This is correct for 512 MiB free-tier hosts with HLS_MAX_CONCURRENT ≤ 5.",
     );
   }
 }

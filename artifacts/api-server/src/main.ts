@@ -251,9 +251,13 @@ async function main() {
       );
     }
     if (!env.CDN_BASE_URL) {
-      configErrors.push(
+      // Warning only — origin-direct HLS is functional but will saturate under
+      // high concurrent viewership. On single-instance free-tier deployments
+      // this is an expected trade-off; set CDN_BASE_URL when you add a CDN.
+      configWarnings.push(
         "CDN_BASE_URL unset — all HLS segment requests hit origin directly; " +
-        "origin will saturate under concurrent viewership",
+        "origin will saturate under concurrent viewership; set CDN_BASE_URL to " +
+        "a CloudFront/Cloudflare distribution to offload origin traffic",
       );
     }
     if (!env.HLS_TOKEN_SECRET) {
@@ -262,10 +266,24 @@ async function main() {
         "enable REQUIRE_HLS_TOKEN=true after setting a real secret",
       );
     }
-    if (env.MEMORY_RESTART_RSS_MB < 600) {
+    if (env.MEMORY_RESTART_RSS_MB < 300) {
+      // Genuinely unsafe — less than 300 MB leaves no headroom for V8 heap +
+      // pg pool + pino buffers and will cause constant OOM restart loops.
       configErrors.push(
-        `MEMORY_RESTART_RSS_MB=${env.MEMORY_RESTART_RSS_MB} is below safe minimum 600 MB — ` +
-        "server will restart on normal RSS peaks; raise to ≥700 MB",
+        `MEMORY_RESTART_RSS_MB=${env.MEMORY_RESTART_RSS_MB} is dangerously low — ` +
+        "the server will OOM-restart before completing a single request; " +
+        "set to at least 400 MB (e.g. 470 for a 512 MiB free-tier host)",
+      );
+    } else if (env.MEMORY_RESTART_RSS_MB < 600) {
+      // Warning for constrained hosts (free tier): 400–599 MB is functional
+      // provided HLS_MAX_CONCURRENT is tuned to keep estimated peak RSS below
+      // MEMORY_RESTART_RSS_MB. For a 512 MiB host: HLS_MAX_CONCURRENT=5 gives
+      // ~420 MiB peak, so MEMORY_RESTART_RSS_MB=470 is safe and correct.
+      configWarnings.push(
+        `MEMORY_RESTART_RSS_MB=${env.MEMORY_RESTART_RSS_MB} is below the recommended ` +
+        "600 MB for unconstrained hosts. On a 512 MiB host this is correct — " +
+        "verify that HLS_MAX_CONCURRENT is set low enough that the estimated peak " +
+        "RSS stays below this threshold (5 concurrent ≈ 420 MiB peak).",
       );
     }
     if (!env.REQUIRE_HLS_TOKEN) {
