@@ -11,6 +11,7 @@ import { enqueueTranscode } from "../transcoder/transcoder.queue.js";
 import { generateQuickThumbnail, probeUploadedContainerValidity, probeUploadedDuration } from "../transcoder/transcoder.service.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
+import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { chunkedUploadRoutes } from "./chunked-upload.routes.js";
 import { logger } from "../../infrastructure/logger.js";
 import { ServiceUnavailableError } from "../../shared/errors.js";
@@ -522,6 +523,11 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
         // Non-fatal — SSE push is best-effort; the cache bust above ensures
         // the next HTTP poll will always see the new video.
       }
+      // Notify SSE-subscribed admin tabs (transcoding panel, library, broadcast
+      // queue) that a new video has landed. Without this push they only update
+      // on their next poll interval, not in real time.
+      adminEventBus.push("videos-library-updated", { videoId: row.id, reason: "upload-finalize" });
+      adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize", videoId: row.id });
 
       // Enqueue HLS transcoding job. The in-process dispatcher
       // (artifacts/api-server/src/modules/transcoder/transcoder.dispatcher.ts)
@@ -762,6 +768,11 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
       } catch {
         /* non-fatal */
       }
+      // Notify SSE-subscribed admin tabs (transcoding panel, library, broadcast
+      // queue) that a new video has landed. Without this push they only update
+      // on their next poll interval, not in real time.
+      adminEventBus.push("videos-library-updated", { videoId: row.id, reason: "upload-finalize" });
+      adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize", videoId: row.id });
 
       let transcodingWarning: string | null = null;
       try {

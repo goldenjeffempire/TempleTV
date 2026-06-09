@@ -352,12 +352,23 @@ export function UploadQueuePanel() {
   const [collapsed, setCollapsed] = useState(false);
   const qc = useQueryClient();
 
-  // Invalidate video library queries whenever a file completes
-  // (register once; the callback is stable because uploadQueue is a module singleton)
+  // Invalidate video library queries whenever a file completes.
+  // Mirrors the full invalidation set used by single-video mutations in
+  // videos.tsx so the transcoding panel, broadcast diagnostics, remediation
+  // report, engine-health badge, and dashboard stats all refresh immediately
+  // after a new upload lands — not just admin-videos / broadcast-queue.
+  // (registered once; callback is stable because uploadQueue is a module singleton)
   useEffect(() => {
     return uploadQueue.onComplete(() => {
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
     });
   }, [qc]);
 

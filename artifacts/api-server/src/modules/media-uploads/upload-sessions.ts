@@ -33,6 +33,11 @@ export interface UploadSession {
   // Set when `s3-multipart-complete` succeeds — used so a retried
   // complete returns the same video row instead of erroring.
   completedVideoId: string | null;
+  /** Timestamp (ms since epoch) at which markCompleted() was called.
+   *  Used to anchor COMPLETED_TTL_MS correctly — startedAt can be hours
+   *  before completion, so using it would evict the session on the very
+   *  first sweep after a long upload. */
+  completedAt: number | null;
 }
 
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;       // 24 h — abandoned incomplete uploads
@@ -45,18 +50,27 @@ class UploadSessionRegistry {
     setInterval(() => {
       const now = Date.now();
       for (const [id, s] of this.sessions) {
-        const ttl = s.completedVideoId !== null ? COMPLETED_TTL_MS : SESSION_TTL_MS;
-        if (now - s.startedAt > ttl) this.sessions.delete(id);
+        if (s.completedVideoId !== null) {
+          // Anchor to completedAt so COMPLETED_TTL_MS is measured from the
+          // time of completion, not session start. Without this, a session
+          // that took 23+ hours to upload would be evicted on the very first
+          // sweep after completion (now - startedAt > 1h is always true).
+          const anchor = s.completedAt ?? s.startedAt;
+          if (now - anchor > COMPLETED_TTL_MS) this.sessions.delete(id);
+        } else {
+          if (now - s.startedAt > SESSION_TTL_MS) this.sessions.delete(id);
+        }
       }
     }, 15 * 60 * 1000).unref(); // sweep every 15 min
   }
 
-  start(args: Omit<UploadSession, "sessionId" | "startedAt" | "completedVideoId">): UploadSession {
+  start(args: Omit<UploadSession, "sessionId" | "startedAt" | "completedVideoId" | "completedAt">): UploadSession {
     const session: UploadSession = {
       ...args,
       sessionId: randomUUID(),
       startedAt: Date.now(),
       completedVideoId: null,
+      completedAt: null,
     };
     this.sessions.set(session.sessionId, session);
     return session;
@@ -68,7 +82,10 @@ class UploadSessionRegistry {
 
   markCompleted(sessionId: string, videoId: string): void {
     const s = this.sessions.get(sessionId);
-    if (s) s.completedVideoId = videoId;
+    if (s) {
+      s.completedVideoId = videoId;
+      s.completedAt = Date.now();
+    }
   }
 
   remove(sessionId: string): UploadSession | undefined {
@@ -81,10 +98,13 @@ class UploadSessionRegistry {
    * Re-hydrate a session recovered from the DB into the in-memory registry
    * (used after a server restart to restore in-flight sessions). Does not
    * overwrite an existing in-memory session with the same ID.
+   * completedAt is not persisted to the DB, so it defaults to null for
+   * recovered sessions; the TTL sweep will use startedAt as a fallback,
+   * which is acceptable for the rare post-restart idempotency window.
    */
   restore(session: UploadSession): void {
     if (!this.sessions.has(session.sessionId)) {
-      this.sessions.set(session.sessionId, session);
+      this.sessions.set(session.sessionId, { completedAt: null, ...session });
     }
   }
 
