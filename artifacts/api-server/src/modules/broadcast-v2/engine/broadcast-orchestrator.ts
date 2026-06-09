@@ -462,7 +462,16 @@ class BroadcastOrchestrator extends EventEmitter {
     this.tickTimer.unref?.();
 
     // ── Checkpoint persistence (dirty-flag gated) ─────────────────────────
-    this.checkpointTimer = setInterval(() => this.persistCheckpoint(), CHECKPOINT_INTERVAL_MS);
+    // persistCheckpoint() is async.  Returning a rejected Promise from a
+    // setInterval callback produces an unhandledRejection (fatal in Node ≥15).
+    // Wrap in void + .catch() so any unexpected throw (e.g. snapshot() error
+    // before the internal try/catch fires) is swallowed non-fatally here.
+    this.checkpointTimer = setInterval(
+      () => void this.persistCheckpoint().catch((err: unknown) =>
+        logger.warn({ err }, "[broadcast-v2] checkpoint persist failed (non-fatal)"),
+      ),
+      CHECKPOINT_INTERVAL_MS,
+    );
     this.checkpointTimer.unref?.();
 
     // ── Event log trim (low-frequency housekeeping) ───────────────────────

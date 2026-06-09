@@ -193,6 +193,12 @@ export default function LiveIngestPage() {
       toast.success(`"${ep.name}" is now the primary ingest`);
       void qc.invalidateQueries({ queryKey: ["live-ingest-endpoints"] });
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      // Promoting a different ingest endpoint changes the active live signal —
+      // refresh engine health and diagnostics so the broadcast dashboard
+      // immediately reflects the new primary source without waiting for the
+      // next SSE heartbeat.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Promotion failed"),
   });

@@ -549,6 +549,9 @@ export default function SeriesPage() {
       toast.success("Series created");
       void qc.invalidateQueries({ queryKey: ["series"] });
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      // Series metadata (preacher, category) is displayed in the video library
+      // and YouTube library — refresh so cards reflect the new series mapping.
+      void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
       setFormOpen(false);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to create"),
@@ -561,6 +564,8 @@ export default function SeriesPage() {
       toast.success("Series updated");
       void qc.invalidateQueries({ queryKey: ["series"] });
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      // Series name/thumbnail changes surface in the video library cards.
+      void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
       setEditing(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to update"),
@@ -573,6 +578,10 @@ export default function SeriesPage() {
       void qc.invalidateQueries({ queryKey: ["series"] });
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
       void qc.invalidateQueries({ queryKey: ["series-episodes", id] });
+      // Videos that belonged to this series now appear as orphans in the
+      // library — invalidate both libraries so the UI reflects the unlinked state.
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
       setDeleting(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to delete"),
@@ -587,6 +596,8 @@ export default function SeriesPage() {
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
       // Keep the episode detail panel in sync — publish state is shown there too.
       void qc.invalidateQueries({ queryKey: ["series-episodes", id] });
+      // Publish state is surfaced on video library cards — keep in sync.
+      void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to update"),
   });

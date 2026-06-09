@@ -564,7 +564,11 @@ export default function VideosPage() {
       // Keep the Transcoding Pipeline tab in sync — jobs appear there the moment
       // they are enqueued, so a cross-invalidation here avoids the operator
       // switching tabs and seeing a stale "no jobs" state.
+      void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
       void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+      // Broadcast queue shows "Missing HLS" banners — invalidate so the status
+      // columns update immediately when videos are queued for transcoding.
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       // Bulk-queuing directly addresses "Missing HLS" remediation entries.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
