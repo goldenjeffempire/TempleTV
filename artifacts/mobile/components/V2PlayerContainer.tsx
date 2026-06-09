@@ -1086,13 +1086,32 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
         // suppressEvents: do NOT arm the watchdog on view-only instances —
         // their isBuffering state (often true while backgrounded) must never
         // trigger FSM recovery for the primary player instance.
-        if (status.isBuffering && state.playing && state.active && !suppressEventsRef.current && fsmIsWaitingRef.current) {
-          // fsmIsWaiting guard: do NOT arm when the FSM is already PLAYING.
-          // A freshly-mounted Video (e.g. Player screen opening while Hero's
-          // singleton session was broadcasting) starts in isBuffering=true.
-          // Without this guard the 15 s stall watchdog fires buffer-error
-          // and drives the FSM into RECOVERING_PRIMARY — disrupting a live
-          // stream that was healthy before the new consumer mounted.
+        //
+        // loadedRevision guard: do NOT arm when this Video element has not
+        // yet fired onLoad for the current bind revision. A freshly-mounted
+        // Video (e.g. Player screen opening while Hero's singleton session
+        // was already PLAYING) starts in isBuffering=true while the FSM is
+        // PLAYING — the old fsmIsWaitingRef.current guard suppressed the
+        // watchdog here correctly, but it also prevented the watchdog from
+        // arming during genuine mid-stream stalls (network drop during
+        // PLAYING), leaving the player frozen indefinitely with no recovery
+        // path. Using loadedRevisionRef.current === bindRevisionRef.current
+        // instead distinguishes the two cases:
+        //
+        //   • Fresh mount (loadedRevision=-1 ≠ bindRevision=N): Video has
+        //     not yet completed onLoad — isBuffering=true is expected and
+        //     harmless. Do NOT arm the watchdog.
+        //
+        //   • Genuine stall (loadedRevision=N = bindRevision=N): Video
+        //     previously loaded this exact source, so isBuffering=true is
+        //     a real network stall. ARM the watchdog so the FSM can recover.
+        //
+        // This correctly handles all FSM states: PLAYING, RECOVERING_PRIMARY
+        // (same-URL fast-path immediately sets loadedRevision=bindRevision),
+        // and LIVE_OVERRIDE_ACTIVE. The load-timeout watchdog (still gated
+        // on fsmIsWaitingRef) remains the catch-all for silent ExoPlayer
+        // failures before onLoad ever fires.
+        if (status.isBuffering && state.playing && state.active && !suppressEventsRef.current && loadedRevisionRef.current === bindRevisionRef.current) {
           if (!bufferingWatchdogRef.current) {
             bufferingWatchdogRef.current = setTimeout(() => {
               bufferingWatchdogRef.current = null;
@@ -1104,8 +1123,8 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
             }, BUFFERING_STALL_THRESHOLD_MS);
           }
         } else {
-          // Not buffering, not the active playing buffer, suppressed, or FSM
-          // not waiting for this buffer's signal — disarm.
+          // Not buffering, not the active playing buffer, suppressed, or
+          // Video not yet loaded for the current bind revision — disarm.
           clearBufferingWatchdog();
         }
       }}
@@ -1253,8 +1272,29 @@ export function V2PlayerContainer({
   const { isOnline, justRecovered } = useNetworkContext();
 
   const fatalFiredRef = useRef(false);
+  // Track the previous FSM state so we only fire onFatal on a genuine
+  // transition INTO FATAL (prevState !== "FATAL" → "FATAL"), not when the
+  // component mounts while the singleton FSM is already in FATAL.
+  //
+  // Without this, the "FATAL navigation loop" occurs:
+  //   1. Broadcast goes down → FSM enters FATAL → user is navigated to Home.
+  //   2. User taps "Watch Now" again → Player screen mounts.
+  //   3. FSM is still in FATAL (auto-retry hasn't fired yet — 30–60 s backoff).
+  //   4. Effect fires immediately on mount → onFatal → router.back() before
+  //      the FATAL overlay is visible or the auto-retry timer can fire.
+  //   5. Loop: user can never stay on Player screen until broadcast resumes.
+  //
+  // With prevSnapshotStateRef initialised to snapshot.state at render time:
+  //   • Mount-with-FATAL: prevState = "FATAL" → guard fails → no router.back().
+  //     The FATAL overlay renders; the user can tap "Reconnect" or wait for
+  //     the 30-s auto-retry to restore the stream.
+  //   • Genuine in-session FATAL: prevState = "PLAYING"/"SYNCING"/… → guard
+  //     passes → onFatal fires → router.back() (correct, stream truly lost).
+  const prevSnapshotStateRef = useRef(snapshot.state);
   useEffect(() => {
-    if (snapshot.state === "FATAL" && !fatalFiredRef.current) {
+    const prevState = prevSnapshotStateRef.current;
+    prevSnapshotStateRef.current = snapshot.state;
+    if (snapshot.state === "FATAL" && prevState !== "FATAL" && !fatalFiredRef.current) {
       fatalFiredRef.current = true;
       // Only the PRIMARY driver fires onFatal.  Suppressed instances (inline
       // player muted while fullscreen Modal is open) and minimal instances
