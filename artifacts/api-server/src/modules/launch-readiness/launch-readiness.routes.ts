@@ -89,10 +89,13 @@ export async function launchReadinessRoutes(app: FastifyInstance) {
     "/launch/readiness",
     {
       preHandler: requireAuth("editor"),
+      // 10/min: this endpoint fans out 13 parallel COUNT queries — rate-limit
+      // to prevent DB connection pool exhaustion under rapid-fire polling.
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Pre-launch checklist with per-category statuses",
-        response: { 200: ReadinessSchema },
+        response: { 200: ReadinessSchema, 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },

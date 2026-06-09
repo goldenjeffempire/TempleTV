@@ -263,11 +263,15 @@ export async function playbackRoutes(app: FastifyInstance) {
   r.get(
     "/state",
     {
+      // 60/min: called on every TV/mobile (re)connect and cold-start poll.
+      // In-memory projection only (no DB) but still rate-limited to prevent
+      // a runaway client from hammering the event loop.
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["playback"],
         summary:
           "Current playback snapshot (current/next/nextNext) for the new dual-buffer player",
-        response: { 200: PlaybackStateSchema },
+        response: { 200: PlaybackStateSchema, 429: z.object({ error: z.string() }) },
       },
     },
     async (_req, reply) => {
@@ -283,7 +287,8 @@ export async function playbackRoutes(app: FastifyInstance) {
   // WebSocket push channel. Mirrors the broadcast engine's event stream
   // (`snapshot`, `preload`, `advance`, `viewer-count`) but reshaped into
   // the `state | preload | ping` envelope the new client expects.
-  app.get("/ws", { websocket: true }, (socket, _req) => {
+  // Rate-limit the initial WS upgrade (30/min per IP) to prevent exhaustion.
+  app.get("/ws", { websocket: true, config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, (socket, _req) => {
     const send = (msg: unknown) => {
       try {
         socket.send(JSON.stringify(msg));
@@ -374,6 +379,9 @@ export async function playbackRoutes(app: FastifyInstance) {
         try { (socket as { terminate?: () => void }).terminate?.(); } catch { /* already closed */ }
       }
     }, 25_000);
+    // unref() so this timer does not prevent graceful SIGTERM shutdown if the
+    // socket is the last thing keeping the event loop alive.
+    heartbeat.unref?.();
 
     // Native WS pong: fired automatically by the `ws` library when the remote
     // end responds to our socket.ping() frames.

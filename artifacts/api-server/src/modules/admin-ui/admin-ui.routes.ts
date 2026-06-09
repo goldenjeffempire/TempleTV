@@ -1714,12 +1714,19 @@ export async function adminUiRoutes(app: FastifyInstance) {
   // The admin UI is served at /dashboard/broadcast with /admin/* as aliases
   // for production deployments where no proxy restriction applies.
 
-  app.get("/dashboard", { schema: { hide: true } }, async (_req, reply) => {
+  app.get("/dashboard", {
+    schema: { hide: true },
+    config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+  }, async (_req, reply) => {
     reply.redirect("/dashboard/broadcast", 302);
   });
 
   // compress: false — Replit's proxy drops gzip-encoded HTML (Content-Length: 0 bug)
-  app.get("/dashboard/broadcast", { schema: { hide: true }, compress: false }, async (_req, reply) => {
+  app.get("/dashboard/broadcast", {
+    schema: { hide: true },
+    compress: false,
+    config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+  }, async (_req, reply) => {
     reply
       .header("content-type", "text/html; charset=utf-8")
       .header("cache-control", "no-store")
@@ -1727,11 +1734,17 @@ export async function adminUiRoutes(app: FastifyInstance) {
       .send(HTML);
   });
 
-  app.get("/admin", { schema: { hide: true } }, async (_req, reply) => {
+  app.get("/admin", {
+    schema: { hide: true },
+    config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+  }, async (_req, reply) => {
     reply.redirect("/dashboard/broadcast", 302);
   });
 
-  app.get("/admin/broadcast", { schema: { hide: true } }, async (_req, reply) => {
+  app.get("/admin/broadcast", {
+    schema: { hide: true },
+    config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+  }, async (_req, reply) => {
     reply.redirect("/dashboard/broadcast", 302);
   });
 }

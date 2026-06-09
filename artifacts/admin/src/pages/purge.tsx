@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, HttpError } from "@/lib/api";
 import { useAuth } from "@/contexts/use-auth";
 import { PageHeader } from "@/components/shared/page-header";
@@ -73,6 +73,7 @@ const CONFIRMATION_PHRASE = "PURGE CONFIRMED";
 
 export default function PurgePage() {
   const { isAdmin } = useAuth();
+  const qc = useQueryClient();
   const [selected, setSelected] = useState<Set<PurgeTarget>>(new Set());
   const [dialogOpen, setDialogOpen] = useState(false);
   const [confirmInput, setConfirmInput] = useState("");
@@ -96,6 +97,20 @@ export default function PurgePage() {
       } else {
         toast.success(`Purge completed. ${total} records deleted.`);
       }
+      // Purge can delete videos, queue items, playlists, schedules, and
+      // transcoding jobs — invalidate every derived cache so all panels
+      // reflect the cleared state immediately rather than showing ghosts.
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["playlists"] });
+      void qc.invalidateQueries({ queryKey: ["series"] });
+      void qc.invalidateQueries({ queryKey: ["schedule"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+      void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Purge failed"),
   });

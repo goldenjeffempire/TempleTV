@@ -142,6 +142,7 @@ export async function graphicsRoutes(app: FastifyInstance) {
       const heartbeat = setInterval(() => {
         try { reply.raw.write(": ping\n\n"); } catch { /* ignore */ }
       }, 15_000);
+      heartbeat.unref?.();
 
       const cleanup = () => {
         clearInterval(heartbeat);

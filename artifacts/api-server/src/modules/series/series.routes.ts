@@ -269,7 +269,7 @@ export async function seriesRoutes(app: FastifyInstance) {
         tags: ["series"],
         summary: "Delete a series (removes episodes too via cascade)",
         params: z.object({ id: z.string().min(1).max(128) }),
-        response: { 204: z.null(), 429: z.object({ error: z.string() }) },
+        response: { 204: z.void(), 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },
@@ -279,7 +279,7 @@ export async function seriesRoutes(app: FastifyInstance) {
         { seriesId: req.params.id, deletedBy: req.principal?.email ?? "admin" },
         "[series] series deleted (cascade)",
       );
-      return reply.code(204).send(null);
+      return reply.code(204).send();
     },
   );
 
@@ -388,7 +388,7 @@ export async function seriesRoutes(app: FastifyInstance) {
         tags: ["series"],
         summary: "Remove an episode from a series",
         params: z.object({ id: z.string().min(1).max(128), episodeId: z.string().min(1).max(128) }),
-        response: { 204: z.null(), 429: z.object({ error: z.string() }) },
+        response: { 204: z.void(), 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },
@@ -406,7 +406,7 @@ export async function seriesRoutes(app: FastifyInstance) {
           .where(eq(schema.seriesTable.id, req.params.id));
       });
 
-      return reply.code(204).send(null);
+      return reply.code(204).send();
     },
   );
 }
