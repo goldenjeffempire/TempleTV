@@ -53,6 +53,14 @@ interface RecoveryStats {
     lastErrorAt: number | null;
 }
 export declare const faststartRecoveryWorker: {
+    /**
+     * Signal sweep() to abort at the next DB-call checkpoint.  Called during
+     * graceful shutdown before the connection pool closes so we never attempt
+     * a DB query against a closed pool.  This is intentionally separate from
+     * workerSupervisor.stopAll() — the supervisor only cancels the pending
+     * timer; it cannot interrupt an already-executing async sweep().
+     */
+    stop(): void;
     sweep(): Promise<void>;
     markEnabled(): void;
     getStats(): Readonly<RecoveryStats>;

@@ -52,6 +52,10 @@ export default function PlaylistsPage() {
       toast.success("Playlist created");
       void qc.invalidateQueries({ queryKey: ["playlists"] });
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      // A new playlist may be referenced by schedule or queued immediately — refresh
+      // both so operators don't have to manually reload.
+      void qc.invalidateQueries({ queryKey: ["schedule"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       setOpen(false);
       setForm({ name: "", description: "" });
@@ -86,6 +90,9 @@ export default function PlaylistsPage() {
       // A deleted playlist may appear as a schedule entry contentId — refresh
       // the schedule so operators see that the referenced content is gone.
       void qc.invalidateQueries({ queryKey: ["schedule"] });
+      // The broadcast queue may reference this playlist as an active item —
+      // refresh so Master Control reflects the removal without a manual reload.
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       setDeleting(null);
     },

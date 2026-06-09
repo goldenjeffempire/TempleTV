@@ -271,7 +271,7 @@ export async function channelsRoutes(app: FastifyInstance) {
       // Remove from in-memory registry AFTER the DB transaction commits so
       // a DB failure leaves the registry consistent with the DB state.
       await channelRegistry.remove(req.params.id);
-      return reply.code(204).send(null);
+      return reply.code(204).send();
     },
   );
 
@@ -335,7 +335,12 @@ export async function channelsRoutes(app: FastifyInstance) {
       });
 
       await channelRegistry.reload(req.params.id);
-      return reply.code(201).send(item);
+      // Cast videoSource to the literal union — the DB column is plain text but
+      // the Zod schema (and ChannelQueueItemSchema) narrows it to the enum.
+      return reply.code(201).send({
+        ...item,
+        videoSource: item!.videoSource as "youtube" | "local" | "hls",
+      });
     },
   );
 
@@ -366,7 +371,7 @@ export async function channelsRoutes(app: FastifyInstance) {
           ),
         );
       await channelRegistry.reload(req.params.channelId);
-      return reply.code(204).send(null);
+      return reply.code(204).send();
     },
   );
 
@@ -399,7 +404,7 @@ export async function channelsRoutes(app: FastifyInstance) {
           ),
         );
       await channelRegistry.reload(req.params.channelId);
-      return reply.code(204).send(null);
+      return reply.code(204).send();
     },
   );
 }

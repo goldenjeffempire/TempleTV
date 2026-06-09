@@ -905,6 +905,7 @@ function EmergencyOverridePanel({
     void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
   }
 
@@ -1699,6 +1700,8 @@ export default function BroadcastPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Reload failed"),
@@ -1713,6 +1716,8 @@ export default function BroadcastPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-state"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to clear blocks"),
@@ -1739,6 +1744,8 @@ export default function BroadcastPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-state"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     },
     onError: (e) => {
       setIsSyncing(false);

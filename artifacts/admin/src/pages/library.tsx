@@ -680,6 +680,12 @@ function VideoCard({ video: initialVideo }: { video: VideoRow }) {
         ok: boolean; videoId: string; title: string;
         category: string | null; preacher: string | null; description: string;
       }>,
+    onSuccess: () => {
+      // Refresh the library and broadcast views so the reset state (transcodingStatus
+      // cleared, video now accepts a fresh upload) is immediately visible without
+      // waiting for the next poll interval.
+      invalidateLibrary();
+    },
     onError: (err: unknown) => {
       toast.error(err instanceof Error ? err.message : "Failed to reset video — try again.");
     },
