@@ -1229,6 +1229,10 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-watchdog-timeout" });
             })();
           }, env.ASSEMBLY_WATCHDOG_MS);
+          // .unref() so this timer does not prevent Node from exiting on SIGTERM
+          // while the watchdog is pending (the background assembly async task
+          // will still run to completion on its own if the server stays up).
+          assemblyWatchdog.unref();
 
           try {
             capturedLog.info(
@@ -1657,6 +1661,9 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "assembly-watchdog-timeout" });
           })();
         }, 60 * 60 * 1000);
+        // .unref() so this timer does not prevent Node from exiting on SIGTERM
+        // while the watchdog is pending.
+        watchdogB.unref();
 
         try {
           const result = await finalizeFromDbFallback(sessionForAssembly, allChunks.length, capturedLogB);

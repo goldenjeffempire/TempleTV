@@ -370,7 +370,9 @@ class UploadQueueEngine {
       const item = this.items.get(id);
       if (item && (item.status === "uploading" || item.status === "finalizing")) {
         this.networkPausedIds.add(id);
-        this.pause(id);
+        // System-initiated pause — wasUserPaused stays false so the upload
+        // auto-resumes when connectivity is restored.
+        this._pauseForSystem(id);
       }
     }
     // Notify so the panel can show the offline indicator immediately
@@ -396,10 +398,25 @@ class UploadQueueEngine {
     for (const id of Array.from(this.activeWorkers)) {
       const item = this.items.get(id);
       if (item && (item.status === "uploading" || item.status === "finalizing")) {
-        this.pause(id);
+        // System-initiated pause — wasUserPaused stays false.
+        this._pauseForSystem(id);
       }
     }
     this.notify();
+  }
+
+  /**
+   * Internal pause used by system events (network offline, auth expiry).
+   * Does NOT set wasUserPaused=true — the upload will auto-resume when
+   * the triggering condition resolves (network restored, re-login).
+   */
+  private _pauseForSystem(id: string): void {
+    const ws = this.workerStates.get(id);
+    const item = this.items.get(id);
+    if (!item || !ws) return;
+    if (item.status !== "uploading" && item.status !== "finalizing") return;
+    ws.paused = true;
+    ws.cancelCtrl.abort();
   }
 
   /**
@@ -468,6 +485,15 @@ class UploadQueueEngine {
     if ("status" in patch) {
       if (patch.status === "completed" || patch.status === "cancelled") {
         removePersistedSession(id).catch(() => {});
+      } else if (patch.status === "paused") {
+        // Persist progress and wasUserPaused when the item pauses so that a
+        // page reload restores the correct progress bar position and does not
+        // auto-resume uploads the user explicitly paused.
+        const updated = this.items.get(id)!;
+        updatePersistedSession(id, {
+          wasUserPaused: updated.wasUserPaused,
+          progressPercent: updated.progress,
+        }).catch(() => {});
       }
     }
     // Normal retry assigns a new sessionId — update IDB so a subsequent reload
@@ -478,6 +504,12 @@ class UploadQueueEngine {
         sessionId: updated.sessionId,
         finalizeOnly: updated.finalizeOnly,
       }).catch(() => {});
+    }
+    // Persist finalizeOnly transitions to IDB so a page reload after a finalize
+    // timeout correctly resumes with just a /finalize call instead of
+    // re-uploading all chunks from scratch.
+    if ("finalizeOnly" in patch && !!patch.finalizeOnly !== !!item.finalizeOnly) {
+      updatePersistedSession(id, { finalizeOnly: !!patch.finalizeOnly }).catch(() => {});
     }
 
     this.notify();
@@ -589,6 +621,13 @@ class UploadQueueEngine {
     const item = this.items.get(id);
     if (!item || !ws) return;
     if (item.status !== "uploading" && item.status !== "finalizing") return;
+    // Mark as user-paused BEFORE aborting so the runUpload catch block's
+    // update({ status: "paused" }) picks up wasUserPaused=true and persists
+    // it to IDB. Without this, the auto-resume pass would incorrectly resume
+    // all paused items after a page reload — including ones the user paused.
+    if (!item.wasUserPaused) {
+      this.update(id, { wasUserPaused: true });
+    }
     ws.paused = true;
     ws.cancelCtrl.abort();
     // Status will be updated to 'paused' by the runUpload catch block
