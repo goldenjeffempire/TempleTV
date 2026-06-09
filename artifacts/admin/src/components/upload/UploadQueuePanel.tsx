@@ -130,6 +130,13 @@ function UploadRow({
       await api.post("/admin/broadcast", { videoId: item.videoId, allowPending: true });
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
+      // Adding an item to the queue can resolve "missing from queue" and related
+      // warnings in the remediation report — invalidate so the alert clears
+      // immediately instead of waiting for the next SSE push (which may be
+      // missed on a reconnect). Also refresh engine-health so the queue-depth
+      // badge and stuck-state indicator update without waiting for the next poll.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       setQueueAction("queued");
       toast.success(`"${item.title || item.file.name}" added to broadcast queue.`);
     } catch (err) {

@@ -1177,11 +1177,25 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
       const { bavail, bsize } = await statfs(scratchDir);
       const availableBytes = bavail * bsize;
       const sourceSize = (await stat(activeSourcePath)).size;
-      const requiredBytes = sourceSize * 3;
+      // Disk requirement scales with the number of renditions being produced.
+      // Each HLS rendition outputs roughly 0.7× the source size in .ts segments,
+      // plus the source file itself occupies the scratch directory. For a full
+      // 4-rendition ladder (360p/480p/720p/1080p) the actual scratch usage is:
+      //   source (1×) + 4 renditions × ~0.7× + thumbnails/playlists overhead
+      //   ≈ 3.8–4.0× source
+      // A flat 3× multiplier (the old value) passes the pre-flight check and
+      // then causes an ENOSPC mid-encode, burning a full FFmpeg attempt.
+      // Fix: multiply by (renditions + 1) rounded up to at least 3, giving:
+      //   1 rendition  → 3× (same as before — conservative single-rendition)
+      //   2 renditions → 3× (still safe)
+      //   3 renditions → 4×
+      //   4 renditions → 5×
+      const requiredBytes = sourceSize * Math.max(3, renditionsToUse.length + 1);
       if (availableBytes < requiredBytes) {
         throw Object.assign(
           new Error(
-            `Insufficient disk space: need ~${Math.round(requiredBytes / 1024 / 1024)} MB for transcoding, ` +
+            `Insufficient disk space: need ~${Math.round(requiredBytes / 1024 / 1024)} MB for transcoding ` +
+            `(${renditionsToUse.length} rendition(s), ~${Math.max(3, renditionsToUse.length + 1)}× source size), ` +
             `but only ${Math.round(availableBytes / 1024 / 1024)} MB available in ${scratchDir}. ` +
             `The job will retry automatically once disk space is freed.`,
           ),

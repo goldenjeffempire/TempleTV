@@ -104,7 +104,10 @@ class UploadSessionRegistry {
    */
   restore(session: UploadSession): void {
     if (!this.sessions.has(session.sessionId)) {
-      this.sessions.set(session.sessionId, { completedAt: null, ...session });
+      // Spread session first, then override completedAt to null so that
+      // any stale completedAt value from the recovered session is cleared.
+      // (Explicit override AFTER spread avoids TS2783 "specified more than once".)
+      this.sessions.set(session.sessionId, { ...session, completedAt: null });
     }
   }
 

@@ -142,7 +142,11 @@ export async function channelsRoutes(app: FastifyInstance) {
         tags: ["channels"],
         summary: "Get current broadcast snapshot for a channel by slug",
         params: z.object({ slug: z.string().min(1).max(80) }),
-        response: { 429: z.object({ error: z.string() }) },
+        response: {
+          200: z.unknown(),
+          404: z.object({ error: z.string() }),
+          429: z.object({ error: z.string() }),
+        },
       },
     },
     async (req, reply) => {
@@ -290,7 +294,7 @@ export async function channelsRoutes(app: FastifyInstance) {
         summary: "List queue items for a channel",
         params: z.object({ id: z.string().min(1).max(128) }),
         security: [{ bearerAuth: [] }],
-        response: { 429: z.object({ error: z.string() }) },
+        response: { 200: z.array(z.unknown()), 429: z.object({ error: z.string() }) },
       },
     },
     async (req, reply) => {

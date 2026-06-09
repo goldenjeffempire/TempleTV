@@ -51,7 +51,7 @@ export async function midnightPrayersRoutes(app: FastifyInstance) {
     timezone:  z.string().min(1).max(100).optional(),
   });
 
-  app.patch("/config", { ...editorGuard, config: { rateLimit: { max: 10, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, async (req, reply) => {
+  app.patch("/config", { ...editorGuard, config: { rateLimit: { max: 10, timeWindow: "1 minute" } }, schema: { response: { 400: z.object({ error: z.string(), details: z.unknown() }), 429: z.object({ error: z.string() }) } } }, async (req, reply) => {
     const result = PatchConfigBody.safeParse(req.body);
     if (!result.success) {
       return reply.status(400).send({ error: "Invalid config", details: result.error.flatten() });

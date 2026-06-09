@@ -2937,7 +2937,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
   // Rate-limit session/auto even though it's protected by the X-Admin-CSRF
   // header — double-protection against bots that forge the header value.
   // 10/min matches the manually-keyed /session endpoint.
-  app.post("/session/auto", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, async (req, reply) => {
+  app.post("/session/auto", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } }, schema: { response: { 403: z.object({ error: z.string() }), 503: z.object({ error: z.string() }), 429: z.object({ error: z.string() }) } } }, async (req, reply) => {
     const csrfHeader = req.headers["x-admin-csrf"];
     if (csrfHeader !== "1") {
       reply.code(403).send({ error: "CSRF check failed" });
@@ -3126,7 +3126,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
   // Requires a valid Bearer admin token in the Authorization header.
   app.post(
     "/sse-token",
-    { preHandler: [requireAuth("editor")], config: { rateLimit: { max: 30, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } },
+    { preHandler: [requireAuth("editor")], config: { rateLimit: { max: 30, timeWindow: "1 minute" } }, schema: { response: { 201: z.object({ token: z.string(), expiresAt: z.string(), ttlMs: z.number() }), 429: z.object({ error: z.string() }) } } },
     async (_req, reply) => {
       const subToken = crypto.randomUUID();
       // F04: persist sub-token in Redis (when available) so it survives across

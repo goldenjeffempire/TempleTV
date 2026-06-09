@@ -66,6 +66,10 @@ async function recoverSessionFromDb(sessionId: string): Promise<UploadSession | 
       totalParts: row.totalChunks,
       startedAt: row.createdAt.getTime(),
       completedVideoId: row.completedVideoId ?? null,
+      // completedAt is not persisted to DB; default to null for recovered sessions.
+      // The TTL sweep uses startedAt as a fallback, which is acceptable for the
+      // rare post-restart idempotency window.
+      completedAt: null,
     };
     // Re-hydrate into the in-memory registry for future lookups
     uploadSessions.restore(recovered);

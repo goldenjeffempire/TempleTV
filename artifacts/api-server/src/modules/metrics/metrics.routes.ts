@@ -48,7 +48,7 @@ export async function metricsRoutes(app: FastifyInstance) {
     {
       preHandler: requireAuth("admin"),
       config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: { response: { 429: z.object({ error: z.string() }) } },
+      schema: { response: { 200: z.unknown(), 429: z.object({ error: z.string() }) } },
     },
     async (_req, reply) => {
       const [customMetrics, otelMetrics] = await Promise.all([

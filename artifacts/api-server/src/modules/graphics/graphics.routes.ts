@@ -303,7 +303,7 @@ export async function graphicsRoutes(app: FastifyInstance) {
         },
       } satisfies GraphicsEvent);
 
-      return reply.code(204).send(null);
+      return reply.code(204).send();
     },
   );
 
@@ -344,7 +344,7 @@ export async function graphicsRoutes(app: FastifyInstance) {
         allActive: [],
       } satisfies GraphicsEvent);
 
-      return reply.code(204).send(null);
+      return reply.code(204).send();
     },
   );
 }

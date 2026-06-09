@@ -29,11 +29,16 @@ export interface UploadSession {
     totalParts: number;
     startedAt: number;
     completedVideoId: string | null;
+    /** Timestamp (ms since epoch) at which markCompleted() was called.
+     *  Used to anchor COMPLETED_TTL_MS correctly — startedAt can be hours
+     *  before completion, so using it would evict the session on the very
+     *  first sweep after a long upload. */
+    completedAt: number | null;
 }
 declare class UploadSessionRegistry {
     private sessions;
     constructor();
-    start(args: Omit<UploadSession, "sessionId" | "startedAt" | "completedVideoId">): UploadSession;
+    start(args: Omit<UploadSession, "sessionId" | "startedAt" | "completedVideoId" | "completedAt">): UploadSession;
     get(sessionId: string): UploadSession | undefined;
     markCompleted(sessionId: string, videoId: string): void;
     remove(sessionId: string): UploadSession | undefined;
@@ -41,6 +46,9 @@ declare class UploadSessionRegistry {
      * Re-hydrate a session recovered from the DB into the in-memory registry
      * (used after a server restart to restore in-flight sessions). Does not
      * overwrite an existing in-memory session with the same ID.
+     * completedAt is not persisted to the DB, so it defaults to null for
+     * recovered sessions; the TTL sweep will use startedAt as a fallback,
+     * which is acceptable for the rare post-restart idempotency window.
      */
     restore(session: UploadSession): void;
     list(): UploadSession[];

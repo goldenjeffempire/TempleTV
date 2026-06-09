@@ -17,12 +17,12 @@ export declare const httpRequestDuration: Histogram<"method" | "service" | "env"
 export declare const httpRequestTotal: Counter<"method" | "service" | "env" | "route" | "status_code">;
 export declare const activeSseConnections: Gauge<"service" | "env" | "surface">;
 export declare const activeWsConnections: Gauge<"service" | "env" | "surface">;
-export declare const broadcastSequence: Gauge<"service" | "env" | "channel">;
-export declare const broadcastModeGauge: Gauge<"mode" | "service" | "env" | "channel">;
+export declare const broadcastSequence: Gauge<"channel" | "service" | "env">;
+export declare const broadcastModeGauge: Gauge<"mode" | "channel" | "service" | "env">;
 export declare const transcodingQueueDepth: Gauge<"service" | "env">;
-export declare const broadcastQueueDepth: Gauge<"service" | "env" | "channel">;
-export declare const broadcastViewerCount: Gauge<"service" | "env" | "channel">;
-export declare const broadcastQueueStuck: Gauge<"service" | "env" | "channel">;
+export declare const broadcastQueueDepth: Gauge<"channel" | "service" | "env">;
+export declare const broadcastViewerCount: Gauge<"channel" | "service" | "env">;
+export declare const broadcastQueueStuck: Gauge<"channel" | "service" | "env">;
 export declare const dbPoolConnectionsActive: Gauge<"service" | "env">;
 export declare const dbPoolConnectionsIdle: Gauge<"service" | "env">;
 export declare const dbPoolConnectionsWaiting: Gauge<"service" | "env">;

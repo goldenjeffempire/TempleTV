@@ -135,7 +135,13 @@ export async function youtubeWebhookRoutes(app: FastifyInstance): Promise<void> 
   // subscription time; higher frequency is unexpected and may be abuse.
   app.get("/webhook", {
     config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-    schema: { response: { 429: z.object({ error: z.string() }) } },
+    schema: {
+      response: {
+        200: z.unknown(),
+        400: z.object({ error: z.string() }),
+        429: z.object({ error: z.string() }),
+      },
+    },
   }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
     const mode = q["hub.mode"];
@@ -161,7 +167,13 @@ export async function youtubeWebhookRoutes(app: FastifyInstance): Promise<void> 
     // notifications per minute, so this is generous while bounding replay
     // attacks that could spam the sync dispatcher.
     config: { bodyLimit: 64 * 1024, rateLimit: { max: 60, timeWindow: "1 minute" } },
-    schema: { response: { 429: z.object({ error: z.string() }) } },
+    schema: {
+      response: {
+        200: z.unknown(),
+        403: z.object({ error: z.string() }),
+        429: z.object({ error: z.string() }),
+      },
+    },
   }, async (req, reply) => {
     // Extract YouTube video ID from the Atom XML body.
     const body = typeof req.body === "string"

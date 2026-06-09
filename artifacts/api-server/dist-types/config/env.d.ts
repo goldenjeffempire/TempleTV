@@ -105,7 +105,7 @@ declare const Env: z.ZodObject<{
     PORT: number;
     TV_DEV_PORT: number;
     MOBILE_DEV_PORT: number;
-    LOG_LEVEL: "error" | "info" | "debug" | "fatal" | "warn" | "trace" | "silent";
+    LOG_LEVEL: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
     DATABASE_URL: string;
     JWT_ACCESS_SECRET: string;
     JWT_REFRESH_SECRET: string;
@@ -208,7 +208,7 @@ declare const Env: z.ZodObject<{
     TV_DEV_PORT?: number | undefined;
     MOBILE_DEV_PORT?: number | undefined;
     WEBHOOK_BASE_URL?: string | undefined;
-    LOG_LEVEL?: "error" | "info" | "debug" | "fatal" | "warn" | "trace" | "silent" | undefined;
+    LOG_LEVEL?: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent" | undefined;
     JWT_ACCESS_TTL_SECONDS?: number | undefined;
     JWT_REFRESH_TTL_SECONDS?: number | undefined;
     JWT_ALGORITHM?: "HS256" | undefined;

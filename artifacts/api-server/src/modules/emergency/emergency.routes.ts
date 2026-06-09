@@ -252,7 +252,7 @@ export async function emergencyRoutes(app: FastifyInstance) {
         payload: { alertId: alert.id, dismissed: true },
       });
 
-      return reply.code(204).send(null);
+      return reply.code(204).send();
     },
   );
 }
