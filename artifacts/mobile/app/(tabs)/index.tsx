@@ -46,6 +46,7 @@ import { SkeletonVerticalCard } from "@/components/SkeletonCard";
 import { V2PlayerContainer } from "@/components/V2PlayerContainer";
 import { getApiBase } from "@/lib/apiBase";
 import { useV2BroadcastNative } from "@workspace/player-core/react-native";
+import { usePlayer } from "@/context/PlayerContext";
 import type { Sermon, SermonCategory } from "@/types";
 
 const CATEGORY_ROWS: SermonCategory[] = [
@@ -109,6 +110,14 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
   const { width } = useWindowDimensions();
   const heroHeight = Math.round(width * 0.58);
   const apiBase = getApiBase() ?? "";
+  // Read broadcast mode and data-saver from PlayerContext:
+  //   isBroadcastMode=true  → full player screen is open; hero yields FSM control
+  //   dataSaver=true        → avoid pre-loading stream in background to conserve data
+  // When both are false the hero's BroadcastBuffers act as the FSM primary driver,
+  // advancing the session to PLAYING before the user taps Watch Now — making the
+  // Watch Now transition instant (warm FSM + warm OS HLS cache, no "Preparing
+  // Video" overlay, just a brief corner spinner).
+  const { isBroadcastMode, dataSaver } = usePlayer();
 
   // Use the V2 FSM snapshot as the single source of truth for broadcast state.
   // The singleton session is already running (created at app boot). Calling the

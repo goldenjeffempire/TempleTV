@@ -266,6 +266,24 @@ interface Props {
    */
   suppressEvents?: boolean;
   /**
+   * When provided, directly overrides the derived `suppressEvents` value
+   * (`minimal || !!suppressEvents`) passed to both BroadcastBuffer instances.
+   *
+   * Primary use-case — the homepage hero (minimal=true, muted):
+   *   • suppressEventsOverride=false (player screen NOT open, isBroadcastMode=false):
+   *     Hero's BroadcastBuffers drive the FSM normally (BOOTSTRAP → PLAYING).
+   *     The HLS stream is loaded and the FSM advances to PLAYING while the user
+   *     browses the home tab — so Watch Now has an already-PLAYING session ready.
+   *   • suppressEventsOverride=true (player screen IS open, isBroadcastMode=true):
+   *     Hero's BroadcastBuffers yield FSM control to the player screen's instance.
+   *     Hero Videos continue playing (muted) as a background warm-up layer but do
+   *     not compete with the player for buffer-ready / buffer-error events.
+   *
+   * When undefined the existing `minimal || !!suppressEvents` logic applies
+   * (backward-compatible default).
+   */
+  suppressEventsOverride?: boolean;
+  /**
    * Reactive PiP-mode flag from the parent screen. When provided, the
    * YouTube-override-in-PiP exit effect becomes reactive to PiP *entry*, so it
    * fires onFatal both when an override starts during PiP AND when PiP is
@@ -1260,6 +1278,7 @@ export function V2PlayerContainer({
   muted = false,
   minimal = false,
   suppressEvents = false,
+  suppressEventsOverride,
   isInPip,
 }: Props) {
   void _channelId;
@@ -1845,7 +1864,7 @@ export function V2PlayerContainer({
         reportBufferEvent={reportBufferEvent}
         forceMuted={muted}
         excludeYouTube={minimal || isYouTubeOverride}
-        suppressEvents={minimal || !!suppressEvents}
+        suppressEvents={suppressEventsOverride !== undefined ? suppressEventsOverride : (minimal || !!suppressEvents)}
         fsmIsWaiting={fsmIsWaiting}
         onVideoReady={buffers.A.active ? handleVideoReady : undefined}
       />
@@ -1855,7 +1874,7 @@ export function V2PlayerContainer({
         reportBufferEvent={reportBufferEvent}
         forceMuted={muted}
         excludeYouTube={minimal || isYouTubeOverride}
-        suppressEvents={minimal || !!suppressEvents}
+        suppressEvents={suppressEventsOverride !== undefined ? suppressEventsOverride : (minimal || !!suppressEvents)}
         fsmIsWaiting={fsmIsWaiting}
         onVideoReady={buffers.B.active ? handleVideoReady : undefined}
       />
