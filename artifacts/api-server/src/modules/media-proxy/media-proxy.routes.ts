@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { Readable } from "node:stream";
 import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import { env } from "../../config/env.js";
 import { logger } from "../../infrastructure/logger.js";
 
@@ -98,6 +99,7 @@ export async function mediaProxyRoutes(app: FastifyInstance) {
       config: {
         rateLimit: { max: 400, timeWindow: "1 minute" },
       },
+      schema: { response: { 429: z.object({ error: z.string() }) } },
     },
     async (req, reply) => {
       const { url: rawUrl, sig } = req.query;

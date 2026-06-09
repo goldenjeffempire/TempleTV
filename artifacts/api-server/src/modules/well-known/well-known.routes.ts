@@ -26,6 +26,7 @@
  */
 
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 
 /** Rate-limit for well-known assets: generous ceiling — Google, Apple, and
  *  Android device verifiers hit this endpoint on install/reinstall events. */
@@ -67,7 +68,7 @@ export async function wellKnownRoutes(app: FastifyInstance): Promise<void> {
    */
   app.get(
     "/.well-known/assetlinks.json",
-    { config: wellKnownRateLimit },
+    { config: wellKnownRateLimit, schema: { response: { 429: z.object({ error: z.string() }) } } },
     async (_req, reply) => {
       const payload = [
         {
@@ -107,7 +108,7 @@ export async function wellKnownRoutes(app: FastifyInstance): Promise<void> {
    */
   app.get(
     "/.well-known/apple-app-site-association",
-    { config: wellKnownRateLimit },
+    { config: wellKnownRateLimit, schema: { response: { 429: z.object({ error: z.string() }) } } },
     async (_req, reply) => {
       const teamId = process.env.APPLE_TEAM_ID ?? "";
       const bundleId = "com.templetv.app";

@@ -14,6 +14,7 @@
  * Both endpoints are public (no auth) and rate-limited at 30 req/min.
  */
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import { desc, eq, isNotNull, or } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { cache } from "../../infrastructure/cache.js";
@@ -172,7 +173,7 @@ export async function seoRoutes(app: FastifyInstance) {
    */
   app.get(
     "/sitemap-sermons.xml",
-    { config: seoRateLimit },
+    { config: seoRateLimit, schema: { response: { 429: z.object({ error: z.string() }) } } },
     async (_req, reply) => {
       const cacheKey = "seo:sitemap-xml";
       const c = cache();
@@ -241,7 +242,7 @@ ${urlEntries}
    */
   app.get(
     "/podcast.xml",
-    { config: seoRateLimit },
+    { config: seoRateLimit, schema: { response: { 429: z.object({ error: z.string() }) } } },
     async (_req, reply) => {
       const cacheKey = "seo:podcast-rss";
       const c = cache();
