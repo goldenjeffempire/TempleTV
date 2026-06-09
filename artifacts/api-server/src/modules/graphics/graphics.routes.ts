@@ -178,7 +178,7 @@ export async function graphicsRoutes(app: FastifyInstance) {
         tags: ["graphics"],
         summary: "Activate an on-air graphic overlay",
         body: GraphicBodySchema,
-        response: { 201: GraphicRowSchema },
+        response: { 201: GraphicRowSchema, 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },

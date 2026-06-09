@@ -79,6 +79,7 @@ export async function settingsRoutes(app: FastifyInstance) {
         }),
         response: {
           200: ConfigEntrySchema,
+          429: z.object({ error: z.string() }),
         },
       },
     },
@@ -120,7 +121,7 @@ export async function settingsRoutes(app: FastifyInstance) {
         tags: ["admin"],
         summary: "Delete a system setting by key",
         params: z.object({ key: z.string().min(1) }),
-        response: { 204: z.null() },
+        response: { 204: z.null(), 429: z.object({ error: z.string() }) },
       },
     },
     async (req, reply) => {

@@ -217,6 +217,7 @@ export async function networkRoutes(app: FastifyInstance) {
         response: {
           200: z.object({ ok: z.literal(true), command: z.string(), executedAt: z.string() }),
           423: z.object({ error: z.string(), locked: z.literal(true) }),
+          429: z.object({ error: z.string() }),
         },
       },
     },

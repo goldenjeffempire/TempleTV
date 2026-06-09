@@ -128,7 +128,7 @@ export async function prayersAdminRoutes(app: FastifyInstance) {
         body: z
           .object({ isRead: z.boolean().optional() })
           .optional(),
-        response: { 200: PrayerSchema },
+        response: { 200: PrayerSchema, 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },
@@ -156,7 +156,7 @@ export async function prayersAdminRoutes(app: FastifyInstance) {
         tags: ["admin"],
         summary: "Permanently delete a prayer request",
         params: z.object({ id: z.string().min(1) }),
-        response: { 200: z.object({ ok: z.literal(true), id: z.string() }) },
+        response: { 200: z.object({ ok: z.literal(true), id: z.string() }), 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },

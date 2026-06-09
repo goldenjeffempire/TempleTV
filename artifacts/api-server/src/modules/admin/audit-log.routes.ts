@@ -57,6 +57,7 @@ export async function auditLogRoutes(app: FastifyInstance) {
             entries: z.array(AuditEntrySchema),
             total: z.number(),
           }),
+          429: z.object({ error: z.string() }),
         },
       },
     },

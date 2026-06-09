@@ -135,7 +135,7 @@ export async function emergencyRoutes(app: FastifyInstance) {
         tags: ["emergency"],
         summary: "Broadcast an emergency alert to all connected clients",
         body: AlertBodySchema,
-        response: { 201: AlertCreatedSchema },
+        response: { 201: AlertCreatedSchema, 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },

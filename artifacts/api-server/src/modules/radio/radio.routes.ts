@@ -128,7 +128,7 @@ export async function radioRoutes(app: FastifyInstance) {
           description: z.string().max(400).optional(),
           isActive:    z.boolean().optional(),
         }),
-        response: { 200: RadioConfigSchema },
+        response: { 200: RadioConfigSchema, 429: z.object({ error: z.string() }) },
       },
     },
     async (req) => {

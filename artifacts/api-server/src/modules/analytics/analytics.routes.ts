@@ -41,7 +41,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
           "Increments video viewCount on `started` and upserts into viewer_sessions so " +
           "the admin analytics dashboard shows real-time engagement data.",
         body: WatchEventBodySchema,
-        response: { 204: z.null() },
+        response: { 204: z.null(), 429: z.object({ error: z.string() }) },
       },
     },
     async (req, reply) => {
