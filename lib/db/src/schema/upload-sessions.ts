@@ -6,6 +6,7 @@ import {
   bigint,
   boolean,
   index,
+  uniqueIndex,
   customType,
 } from "drizzle-orm/pg-core";
 
@@ -84,7 +85,12 @@ export const uploadChunksTable = pgTable(
   },
   (t) => [
     index("idx_upload_chunks_session_id").on(t.sessionId),
-    index("idx_upload_chunks_session_chunk").on(t.sessionId, t.chunkIndex),
+    // Unique constraint prevents a TOCTOU race where two concurrent chunk
+    // requests for the same (sessionId, chunkIndex) both pass the application-
+    // level idempotency check and insert duplicate rows. Duplicate chunk rows
+    // corrupt the assembly step: finalizeFromDbFallback expects exactly one
+    // BYTEA row per index; completeMultipartUpload produces a double-sized blob.
+    uniqueIndex("idx_upload_chunks_session_chunk").on(t.sessionId, t.chunkIndex),
   ],
 );
 

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { restRoutes } from "./io/rest.routes.js";
 import { sseRoutes, closeAllSseSessions } from "./io/sse.gateway.js";
-import { wsRoutes } from "./io/ws.gateway.js";
+import { wsRoutes, closeAllBroadcastV2WsSessions } from "./io/ws.gateway.js";
 import { broadcastOrchestrator } from "./engine/broadcast-orchestrator.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { logger } from "../../infrastructure/logger.js";
@@ -358,9 +358,12 @@ export async function stopBroadcastV2(): Promise<void> {
     fanoutRetryTimer = null;
   }
 
-  // 2. Force-close all open SSE streams immediately so the main.ts drain loop
-  //    can complete without waiting for the SHUTDOWN_DRAIN_MS timeout.
+  // 2. Force-close all open SSE and WebSocket streams immediately so the
+  //    main.ts drain loop can complete without waiting for SHUTDOWN_DRAIN_MS.
+  //    SSE clients receive no close frame; WS clients get a clean terminate()
+  //    which sends a Close frame before tearing down the socket.
   closeAllSseSessions();
+  closeAllBroadcastV2WsSessions();
 
   // 3a. Signal the faststart-recovery worker to abort at its next DB-call
   //     checkpoint.  workerSupervisor.stopAll() (below) cancels the pending
