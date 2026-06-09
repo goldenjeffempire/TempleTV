@@ -278,10 +278,20 @@ export async function buildApp(): Promise<FastifyInstance> {
     // X-Admin-CSRF is the custom CSRF-proof header required on all mutating
     // admin requests. Its absence from allowedHeaders is what made CORS
     // preflights for DELETE fail while GET continued to serve cached data.
+    //
+    // X-Chunk-Index and X-Chunk-Checksum are sent by the XHR chunk uploader
+    // (upload-queue.ts). Without them in this explicit list, the CORS preflight
+    // for POST /admin/videos/upload/:sessionId/chunk fails because the browser's
+    // Access-Control-Request-Headers includes these two names and the server's
+    // Access-Control-Allow-Headers response does not — causing the browser to
+    // block the actual upload request and XHR to fire the "error" event
+    // ("Network error during chunk upload") before any bytes reach the server.
     allowedHeaders: [
       "Content-Type",
       "Authorization",
       "X-Admin-CSRF",
+      "X-Chunk-Index",
+      "X-Chunk-Checksum",
       "Range",
     ],
     // Expose pagination / range headers so clients can read them.
