@@ -691,6 +691,39 @@ class DatabaseObjectStorage implements ObjectStorage {
       }
     }
 
+    // ── Post-assembly size assertion ──────────────────────────────────────────
+    // Verify the assembled blob's size_bytes equals the sum of all part
+    // size_bytes BEFORE cleaning up the part rows.  The part rows are still
+    // present at this point so summing them is accurate.  A mismatch means a
+    // part-append UPDATE silently affected 0 rows (part row missing or
+    // statement-timeout despite SET statement_timeout=0, or a concurrent
+    // DELETE swept a part mid-loop). Throwing here surfaces the problem to the
+    // caller so it can mark the video failed and reset the session — much safer
+    // than returning a truncated blob that only fails when the transcoder tries
+    // to decode it after burning through retry budget.
+    {
+      type SizeRow = { assembled: string | number; expected: string | number };
+      const sizeCheck = await client.query<SizeRow>(
+        `SELECT
+           (SELECT size_bytes FROM storage_blobs WHERE key = $1) AS assembled,
+           (SELECT COALESCE(SUM(size_bytes), 0) FROM storage_blobs WHERE starts_with(key, $2)) AS expected`,
+        [key, partPrefix],
+      );
+      const row = sizeCheck.rows[0];
+      const assembledBytes = Number(row?.assembled ?? 0);
+      const expectedBytes  = Number(row?.expected  ?? 0);
+      if (expectedBytes > 0 && assembledBytes !== expectedBytes) {
+        throw Object.assign(
+          new Error(
+            `[storage] completeMultipartUpload size assertion failed for key "${key}": ` +
+            `assembled ${assembledBytes} bytes but parts sum to ${expectedBytes} bytes. ` +
+            `The assembled blob is corrupt — do not proceed to transcoding.`,
+          ),
+          { statusCode: 500 },
+        );
+      }
+    }
+
     // Correct content-type on the assembled row (the seed INSERT already set it,
     // but an idempotent re-finalize may have preserved a stale value).
     await client.query(

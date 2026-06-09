@@ -200,8 +200,9 @@ async function finalizeFromDbFallback(
 
     for (let i = 0; i < totalChunks; i++) {
       // Fetch only this chunk's BYTEA — prior chunks are GC-eligible after this point.
+      // Also fetch the stored checksum so we can re-verify integrity before assembling.
       const chunkRow = await db
-        .select({ fallbackData: chunks.fallbackData })
+        .select({ fallbackData: chunks.fallbackData, checksum: chunks.checksum })
         .from(chunks)
         .where(and(eq(chunks.sessionId, session.sessionId), eq(chunks.chunkIndex, i)))
         .limit(1)
@@ -218,6 +219,22 @@ async function finalizeFromDbFallback(
         const msg = `[finalize-fallback] chunk ${i} has empty fallbackData — cannot assemble video (sessionId: ${session.sessionId}). Re-upload required.`;
         log.error({ sessionId: session.sessionId, chunkIndex: i }, msg);
         throw new Error(msg);
+      }
+
+      // Re-verify SHA-256 integrity against the stored checksum to catch any
+      // silent BYTEA corruption that may have occurred between chunk receipt and
+      // finalize time. If the hash mismatches the stored chunk is corrupt and
+      // assembling it would produce an unplayable file — fail hard here so the
+      // operator gets a clear error and can retry the upload.
+      if (chunkRow?.checksum) {
+        const actualHash = createHash("sha256").update(buf).digest("hex");
+        if (actualHash !== chunkRow.checksum) {
+          const msg =
+            `[finalize-fallback] chunk ${i} SHA-256 mismatch — expected ${chunkRow.checksum}, ` +
+            `got ${actualHash} (sessionId: ${session.sessionId}). DB row appears corrupted; re-upload required.`;
+          log.error({ sessionId: session.sessionId, chunkIndex: i, expected: chunkRow.checksum, actual: actualHash }, msg);
+          throw new Error(msg);
+        }
       }
 
       const { etag } = await storage().uploadPart({
@@ -1307,6 +1324,45 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               parts: partsForAssembly,
             });
 
+            // ── Post-assembly blob integrity check ───────────────────────────
+            // Verify that the assembled blob in storage_blobs actually has the
+            // expected number of bytes before we let faststart or the transcoder
+            // touch it.  A size mismatch means the assembly loop dropped a part
+            // (e.g. a concurrent abortMultipartUpload orphaned a part row, or a
+            // mid-loop Postgres connection failure silently aborted a part-append
+            // UPDATE). Proceeding to transcode a truncated blob wastes the full
+            // ffmpeg retry budget and produces a corrupt output.
+            {
+              const assembledHead = await storage().headObject(objectKey).catch(() => null);
+              const expectedBytes = session.sizeBytes;
+              const actualBytes = assembledHead?.contentLength ?? 0;
+              if (!assembledHead?.exists || actualBytes !== expectedBytes) {
+                capturedLog.error(
+                  { sessionId, videoId, expectedBytes, actualBytes, blobExists: assembledHead?.exists ?? false },
+                  "[finalize:bg] assembled blob size mismatch — marking video failed, resetting session for retry",
+                );
+                await Promise.allSettled([
+                  db
+                    .update(videos)
+                    .set({
+                      transcodingStatus: "failed",
+                      transcodingErrorCode: "CORRUPT_SOURCE",
+                      transcodingErrorMessage:
+                        `Assembly integrity check failed: declared ${expectedBytes} bytes but assembled blob ` +
+                        `is ${actualBytes} bytes. The upload may be incomplete — please retry finalization.`,
+                    })
+                    .where(eq(videos.id, videoId)),
+                  db
+                    .update(sessions)
+                    .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
+                    .where(eq(sessions.sessionId, sessionId)),
+                ]);
+                adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-size-mismatch" });
+                clearTimeout(assemblyWatchdog);
+                return;
+              }
+            }
+
             const assemblyMs = Date.now() - assemblyStartMs;
             capturedLog.info(
               { sessionId, videoId, assemblyMs, parts: partsForAssembly.length },
@@ -1729,6 +1785,41 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         try {
           const result = await finalizeFromDbFallback(sessionForAssembly, allChunks.length, capturedLogB);
           clearTimeout(watchdogB);
+
+          // ── Post-assembly blob integrity check (Path B / db_fallback) ────
+          // Mirror Path A: verify the assembled blob in storage_blobs has the
+          // declared file size before allowing faststart or transcoding to run.
+          // A mismatch here means the db_fallback multipart assembly dropped one
+          // or more chunks — proceeding would produce a truncated video file.
+          {
+            const assembledHeadB = await storage().headObject(result.objectKey).catch(() => null);
+            const expectedBytesB = session.sizeBytes;
+            const actualBytesB = assembledHeadB?.contentLength ?? 0;
+            if (!assembledHeadB?.exists || actualBytesB !== expectedBytesB) {
+              capturedLogB.error(
+                { sessionId, videoId: videoIdB, expectedBytes: expectedBytesB, actualBytes: actualBytesB, blobExists: assembledHeadB?.exists ?? false },
+                "[finalize:db_fallback:bg] assembled blob size mismatch — marking video failed, resetting session for retry",
+              );
+              await Promise.allSettled([
+                db
+                  .update(videos)
+                  .set({
+                    transcodingStatus: "failed",
+                    transcodingErrorCode: "CORRUPT_SOURCE",
+                    transcodingErrorMessage:
+                      `Assembly integrity check failed: declared ${expectedBytesB} bytes but assembled blob ` +
+                      `is ${actualBytesB} bytes. The upload may be incomplete — please retry finalization.`,
+                  })
+                  .where(eq(videos.id, videoIdB)),
+                db
+                  .update(sessions)
+                  .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
+                  .where(eq(sessions.sessionId, sessionId)),
+              ]);
+              adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "assembly-size-mismatch" });
+              return;
+            }
+          }
 
           const assemblyMsB = Date.now() - assemblyStartMsB;
           capturedLogB.info(
