@@ -232,7 +232,7 @@ async function pollFinalizeStatus(
     try {
       const resp = await fetch(
         `${base}/v1/admin/videos/upload/${sessionId}/finalize-status`,
-        { headers: authHeaders() },
+        { headers: authHeaders(), signal },
       );
       if (!resp.ok) continue;
       const body = (await resp.json()) as {

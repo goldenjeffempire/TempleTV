@@ -517,9 +517,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       // enough for the proxy to return 502 before the client even starts chunking.
       try {
         const mpPromise = storage().createMultipartUpload({ key: objectKey, contentType });
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("createMultipartUpload timed out after 5 s")), 5_000),
-        );
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          const t = setTimeout(() => reject(new Error("createMultipartUpload timed out after 5 s")), 5_000);
+          // .unref() so this timer does not prevent Node from exiting on SIGTERM
+          // when the race resolves via mpPromise (the common case).
+          t.unref();
+        });
         const mp = await Promise.race([mpPromise, timeoutPromise]);
         uploadId = mp.uploadId;
         storageBackend = "db";
@@ -753,6 +756,9 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
     "/videos/upload/:sessionId/status",
     {
       preHandler: requireAuth("editor"),
+      // Called once per upload resume attempt: 60/min covers normal use
+      // (3 concurrent files × 10 resume checks) with headroom for retries.
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["uploads"],
         summary: "Return received chunk indices so the client can skip them on resume",
@@ -766,6 +772,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             uploadedChunkIndices: z.array(z.number()),
           }),
           404: z.object({ error: z.string() }),
+          429: z.object({ error: z.string() }),
         },
         security: [{ bearerAuth: [] }],
       },
@@ -1967,6 +1974,9 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
     "/videos/upload/:sessionId/finalize-status",
     {
       preHandler: requireAuth("editor"),
+      // Client polls every 2 s during assembly. 60/min covers 3 concurrent
+      // uploads + generous headroom for tab-restore reconnects and retries.
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["uploads"],
         summary: "Poll the finalization status of an upload session",
@@ -1980,6 +1990,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
              *  (db_fallback mode), or when the storage query fails. */
             assemblyPercent: z.number().nullable(),
           }),
+          429: z.object({ error: z.string() }),
         },
         security: [{ bearerAuth: [] }],
       },
