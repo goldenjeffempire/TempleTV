@@ -13,7 +13,7 @@
  * Offline: shows a banner when navigator.onLine is false (items are auto-paused).
  */
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
   uploadQueue,
@@ -44,6 +44,8 @@ import {
   Ban,
   WifiOff,
   ListPlus,
+  Copy,
+  Check,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -107,6 +109,19 @@ function UploadRow({
   const isPending   = item.status === "pending";
 
   const [queueAction, setQueueAction] = useState<QueueActionState>("idle");
+  const [errorCopied, setErrorCopied] = useState(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => { if (copyTimerRef.current) clearTimeout(copyTimerRef.current); }, []);
+
+  const handleCopyError = useCallback(() => {
+    if (!item.error) return;
+    void navigator.clipboard.writeText(item.error).then(() => {
+      setErrorCopied(true);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setErrorCopied(false), 2000);
+    });
+  }, [item.error]);
 
   const handleAddToQueue = useCallback(async () => {
     if (!item.videoId || queueAction !== "idle") return;
@@ -176,12 +191,30 @@ function UploadRow({
             <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
               <StatusBadge status={item.status} />
               {isFailed && item.error && (
-                <p
-                  className="text-[10px] text-red-500 line-clamp-2 max-w-[200px] cursor-help"
-                  title={item.error}
-                >
-                  {item.error}
-                </p>
+                <span className="flex items-start gap-1 min-w-0">
+                  <p
+                    className="text-[10px] text-red-500 line-clamp-2 max-w-[180px] cursor-help"
+                    title={item.error}
+                  >
+                    {item.error}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleCopyError}
+                    title="Copy full error message"
+                    className={cn(
+                      "flex-shrink-0 mt-px rounded p-0.5 transition-colors",
+                      errorCopied
+                        ? "text-green-500"
+                        : "text-red-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40",
+                    )}
+                  >
+                    {errorCopied
+                      ? <Check size={10} />
+                      : <Copy size={10} />
+                    }
+                  </button>
+                </span>
               )}
               {isCompleted && item.completedAt && item.startedAt && (
                 <span className="text-[10px] text-muted-foreground">
