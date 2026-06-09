@@ -424,6 +424,56 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
     async (req) => {
       const body = req.body;
 
+      // ── File type gate ──────────────────────────────────────────────────────
+      // Reject non-video files immediately — before allocating a multipart
+      // upload slot or inserting a session row.  The admin upload UI already
+      // restricts the file picker to video/* types, but a direct API call could
+      // bypass that and create a session that burns storage quota and then fails
+      // at finalize time (after the full upload has already been transferred).
+      // Belt-and-suspenders: validate on both extension AND MIME type.
+      {
+        const ALLOWED_VIDEO_EXTS = new Set([
+          "mp4", "mov", "mkv", "avi", "webm", "m4v", "flv", "wmv",
+          "ts", "mts", "m2ts",
+        ]);
+        const extFromExt = (body.ext ?? "").replace(/^\./, "").toLowerCase();
+        const extFromFilename = body.originalFilename
+          ? (body.originalFilename.split(".").pop() ?? "").toLowerCase()
+          : "";
+        const effectiveExt = extFromExt || extFromFilename;
+        if (effectiveExt && !ALLOWED_VIDEO_EXTS.has(effectiveExt)) {
+          throw Object.assign(
+            new Error(
+              `Unsupported file extension ".${effectiveExt}". ` +
+              `Only video files are accepted: mp4, mov, mkv, avi, webm, ` +
+              `m4v, flv, wmv, ts, mts, m2ts.`,
+            ),
+            { statusCode: 422 },
+          );
+        }
+        // Reject clearly non-video MIME types. Allow video/*, application/octet-
+        // stream (generic binary — common for video files from some OS/browser
+        // combinations), application/mp4, and application/x-matroska.
+        const mimeTypeLower = (body.mimeType ?? "").toLowerCase();
+        const isDefinitelyNotVideo =
+          mimeTypeLower.startsWith("image/") ||
+          mimeTypeLower.startsWith("text/") ||
+          mimeTypeLower === "application/pdf" ||
+          mimeTypeLower.startsWith("application/msword") ||
+          mimeTypeLower.startsWith("application/vnd.openxmlformats") ||
+          mimeTypeLower.startsWith("application/vnd.ms-");
+        if (isDefinitelyNotVideo) {
+          throw Object.assign(
+            new Error(
+              `File type "${body.mimeType}" is not a video. ` +
+              `Only video files are accepted (video/mp4, video/quicktime, ` +
+              `video/webm, etc.).`,
+            ),
+            { statusCode: 422 },
+          );
+        }
+      }
+
       // Idempotency: return existing session if it's still in-flight
       const existing = await db
         .select()

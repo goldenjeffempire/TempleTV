@@ -432,7 +432,7 @@ services:
       # a token from POST /api/v1/hls/token before each play session.
       # HLS_TOKEN_SECRET: generate with `openssl rand -hex 32`, store in Secrets.
       - key: REQUIRE_HLS_TOKEN
-        value: "false"
+        sync: false
       - key: HLS_TOKEN_SECRET
         sync: false
 
