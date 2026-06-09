@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useRef } from "react";
 import { Pressable, StyleSheet, Text, View, Platform, useColorScheme } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
@@ -24,6 +24,11 @@ export function MiniPlayer() {
     playNext,
   } = usePlayer();
   const { currentTime, duration } = usePlayerProgress();
+  // Guard against rapid double-taps pushing duplicate /player entries onto
+  // the navigation stack. Locks for 600 ms — long enough to cover a
+  // touchscreen bounce or an impatient double-tap, short enough that a
+  // deliberate second tap after the animation settles is still honoured.
+  const navigatingRef = useRef(false);
 
   if (!currentSermon && !isLive && !isBroadcastMode) return null;
 
@@ -51,6 +56,10 @@ export function MiniPlayer() {
   };
 
   const handlePress = () => {
+    if (navigatingRef.current) return;
+    navigatingRef.current = true;
+    setTimeout(() => { navigatingRef.current = false; }, 600);
+
     if (isLive) {
       navigateToPlayer(
         { live: "true", title: "Temple TV Live", preacher: "Temple TV JCTM" },

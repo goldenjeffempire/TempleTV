@@ -484,15 +484,21 @@ export function LocalVideoPlayer({
         if (retryCountRef.current < 2) {
           retryCountRef.current += 1;
           setLoading(true);
+          // Capture videoRef.current NOW (before the 700ms delay) so the
+          // timeout always targets the video element that errored, not
+          // whatever element videoRef.current happens to point at when the
+          // timer fires (the user may have navigated to a different item
+          // during the 700ms window, rebinding the ref to a new element).
+          const capturedVideo = videoRef.current;
           setTimeout(() => {
-            if (!isMountedRef.current || !videoRef.current) return;
+            if (!isMountedRef.current || !capturedVideo) return;
             // Resume from the last known playhead position so a mid-playback
             // network error doesn't jump the viewer back to the beginning of
             // a long sermon.  Fall back to startPositionMs only when no
             // progress has been recorded yet (e.g. error on the first load).
             const retryMs =
               lastProgressMsRef.current > 0 ? lastProgressMsRef.current : startPositionMs;
-            videoRef.current.replayAsync?.({ positionMillis: retryMs })
+            capturedVideo.replayAsync?.({ positionMillis: retryMs })
               .catch(() => onErrorRef.current?.());
           }, 700);
         } else {
@@ -501,7 +507,12 @@ export function LocalVideoPlayer({
         }
       }
     },
-    [loading, onEnd, onError, onPlay, onPause, startPositionMs, transitionOpacity, updatePlayback]
+  // onError is intentionally absent from this dep array — the function body
+  // always calls it via onErrorRef.current, never directly. Including the raw
+  // prop would recreate this callback whenever a parent passes a new inline
+  // lambda (common), causing expo-av to re-subscribe to onPlaybackStatusUpdate
+  // on every render and flushing the `loading` fade-in animation mid-playback.
+    [loading, onEnd, onPlay, onPause, startPositionMs, transitionOpacity, updatePlayback]
   );
 
   // ── Mid-playback stall watchdog effect ────────────────────────────────

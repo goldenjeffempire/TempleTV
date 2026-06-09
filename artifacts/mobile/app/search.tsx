@@ -108,6 +108,15 @@ export default function SearchScreen() {
 
   const { isOnline } = useNetworkStatus();
 
+  // Keep latest query/recent in refs so renderItem can close over them
+  // without being recreated on every keystroke. SermonCard is React.memo'd,
+  // so a stable renderItem reference lets the memo do its job and prevents
+  // all visible cards from re-rendering on every character typed.
+  const queryRef = useRef(query);
+  const recentRef = useRef(recent);
+  queryRef.current = query;
+  recentRef.current = recent;
+
   const { sermons, total, loading, loadingMore, isRefreshing, hasMore, refreshError, loadMoreError, loadMore, refetch } = usePaginatedVideos({
     search: isSearching ? query : "",
     category,
@@ -148,12 +157,13 @@ export default function SearchScreen() {
     <SermonCard
       sermon={item}
       onPress={() => {
-        saveRecent(query, recent).then(setRecent);
+        saveRecent(queryRef.current, recentRef.current).then(setRecent);
         navigateToSermon(item);
       }}
       variant="horizontal"
     />
-  ), [query, recent]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  ), []);
 
   const keyExtractor = useCallback((item: Sermon) => item.id, []);
 

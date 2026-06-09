@@ -86,7 +86,14 @@ function delayWithSignal(ms: number, signal: AbortSignal | null | undefined): Pr
       reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
       return;
     }
-    const id = setTimeout(resolve, ms);
+    const id = setTimeout(() => {
+      // Remove the abort listener before resolving so it doesn't linger on
+      // the signal (e.g. AbortSignal.timeout()) until the signal fires ~15 s
+      // later, keeping the closure and its captured `id`/`reject` alive well
+      // past the point where they are useful.
+      if (signal) signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
     if (signal) {
       const onAbort = () => {
         clearTimeout(id);
