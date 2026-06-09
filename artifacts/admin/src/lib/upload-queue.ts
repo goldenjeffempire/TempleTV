@@ -743,10 +743,10 @@ class UploadQueueEngine {
     this.workerStates.set(id, ws);
 
     const adaptive = getAdaptiveParams();
-    const CHUNK_SIZE = adaptive.chunkSize;
+    let CHUNK_SIZE = adaptive.chunkSize;
     let maxConcurrent = adaptive.maxConcurrent;
     const file = item.file;
-    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+    let totalChunks = Math.ceil(file.size / CHUNK_SIZE);
     const base = apiBase();
     const signal = cancelCtrl.signal;
 
@@ -1137,6 +1137,23 @@ class UploadQueueEngine {
           (errBody.error as string) ||
           `Upload init failed (${initResp.status})`,
         );
+      }
+
+      // The server is the source of truth for totalChunks and chunkSize.
+      // On retries the adaptive CHUNK_SIZE may differ from the original init
+      // (e.g. connection speed changed) which would produce chunk indices
+      // beyond what the server session expects. Overwrite the local values
+      // with whatever the server recorded so all subsequent slice/index math
+      // is guaranteed to be consistent with the session.
+      const initData = (await initResp.json().catch(() => ({}))) as {
+        totalChunks?: number;
+        chunkSize?: number;
+      };
+      if (initData.totalChunks && initData.totalChunks > 0) {
+        totalChunks = initData.totalChunks;
+      }
+      if (initData.chunkSize && initData.chunkSize > 0) {
+        CHUNK_SIZE = initData.chunkSize;
       }
 
       // ── 2. Resume check — skip already-uploaded chunks ────────────────────

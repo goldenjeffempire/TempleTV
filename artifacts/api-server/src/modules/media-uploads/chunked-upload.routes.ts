@@ -413,6 +413,8 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             ok: z.literal(true),
             sessionId: z.string(),
             storageBackend: z.enum(["db", "db_fallback"]),
+            totalChunks: z.number().int().positive(),
+            chunkSize: z.number().int().positive(),
           }),
         },
         security: [{ bearerAuth: [] }],
@@ -440,6 +442,8 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           ok: true as const,
           sessionId: existing.sessionId,
           storageBackend: existing.storageBackend as "db" | "db_fallback",
+          totalChunks: existing.totalChunks,
+          chunkSize: existing.chunkSize,
         };
       }
 
@@ -523,7 +527,13 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         "[chunked-init] session created",
       );
 
-      return { ok: true as const, sessionId: body.sessionId, storageBackend };
+      return {
+        ok: true as const,
+        sessionId: body.sessionId,
+        storageBackend,
+        totalChunks: Number(body.totalChunks),
+        chunkSize,
+      };
     },
   );
 
