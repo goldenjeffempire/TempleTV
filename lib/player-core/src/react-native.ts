@@ -84,6 +84,13 @@ interface NativeSession {
   /** Cleanup returned by machine.subscribe(). */
   machineUnsub: () => void;
   /**
+   * Clears any session-level timers (escapeValveTimer) that live in the
+   * getOrCreateSession closure and are NOT reachable by machine.destroy()
+   * or transport.stop(). Called by the janitor on eviction to prevent
+   * ghost timeouts from keeping the RN event loop alive after teardown.
+   */
+  cleanup: () => void;
+  /**
    * Count of active useV2BroadcastNative hook instances subscribed to this
    * session. The janitor uses this — NOT snapshotListeners.size — to decide
    * whether a session is idle and eligible for eviction.
@@ -146,11 +153,16 @@ function startJanitor(): void {
       }
       if (now - entry.lastIdleAtMs >= SESSION_IDLE_EVICT_MS) {
         try {
-          // destroy() clears internal timers (sourceExpiryTimer,
-          // fatalRecoveryTimer) on the PlayerMachine before we drop all
-          // references. Without this call those timers fire into dead state
-          // and keep the RN event loop alive unnecessarily — same issue as
-          // the web hook janitor that already calls machine.destroy().
+          // Teardown order matters:
+          // 1. cleanup() — clears closure-scoped timers (escapeValveTimer)
+          //    that live outside the machine and transport. Must run FIRST so
+          //    the timer can't fire transport.forceReconnect() after stop().
+          // 2. machine.destroy() — clears internal machine timers
+          //    (fatalRecoveryTimer, sourceExpiryTimer). Fires into dead state
+          //    otherwise and keeps the RN event loop alive.
+          // 3. machineUnsub() — removes the machine→session listener bridge.
+          // 4. transport.stop() — closes the WS socket and cancels reconnects.
+          entry.session.cleanup();
           entry.session.machine.destroy();
           entry.session.machineUnsub();
           entry.session.transport.stop?.();
@@ -259,6 +271,8 @@ function getOrCreateSession(baseUrl: string): NativeSession {
     machineUnsub,
     hookCount: 0,
     forceReconnectDebounce: null,
+    // Placeholder — overwritten below once the escapeValveTimer closure is set up.
+    cleanup: () => {},
   };
 
   // ── Session-level stall reporter (one per session, not per hook call) ────
@@ -289,8 +303,16 @@ function getOrCreateSession(baseUrl: string): NativeSession {
       body: JSON.stringify({ itemId }),
       signal: AbortSignal.timeout(8_000),
     }).catch(() => {
-      // Best-effort — reset guard so the next snapshot cycle can retry.
-      stallLastReportedId = null;
+      // Best-effort — reset guard after a short cooldown so the next
+      // SKIP_PENDING cycle can retry.  Resetting immediately on every
+      // failure (the previous behaviour) broke the "exactly once per item"
+      // guarantee: on poor-signal devices where rapid SKIP_PENDING cycles
+      // occur, each snapshot within the stall burst re-entered the guard
+      // and fired another POST, producing a thundering herd that exhausted
+      // the server's rate limiter and drained the device battery.
+      // The 5 s cooldown means at most one retry per 5 s per stalled item —
+      // enough for one more POST if the first truly failed, without flooding.
+      setTimeout(() => { stallLastReportedId = null; }, 5_000);
     });
   };
 
@@ -318,6 +340,20 @@ function getOrCreateSession(baseUrl: string): NativeSession {
       clearTimeout(escapeValveTimer);
       escapeValveTimer = null;
     }
+  };
+
+  // Expose a cleanup function so the janitor can clear session-level timers
+  // that live in this closure and are NOT reachable via machine.destroy() or
+  // transport.stop().  Without this, evicting a session leaves escapeValveTimer
+  // alive for up to 8 s, keeping the RN event loop busy and calling
+  // transport.forceReconnect() on a dead transport after eviction.
+  session.cleanup = () => {
+    if (escapeValveTimer !== null) {
+      clearTimeout(escapeValveTimer);
+      escapeValveTimer = null;
+    }
+    // stallLastReportedId and stallListener hold only primitive/function refs —
+    // they are garbage-collected with the closure. No explicit clear needed.
   };
 
   sessions.set(baseUrl, { session, lastIdleAtMs: null });

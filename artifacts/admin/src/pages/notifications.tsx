@@ -134,6 +134,9 @@ export default function NotificationsPage() {
       setForm(DEFAULT_FORM);
       void qc.invalidateQueries({ queryKey: ["scheduled-notifications"] });
       void qc.invalidateQueries({ queryKey: ["notifications-stats"] });
+      // Dashboard "Scheduled Notifications" count comes from admin-stats —
+      // refresh so the badge reflects the newly scheduled item immediately.
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to schedule notification"),
   });
@@ -145,6 +148,8 @@ export default function NotificationsPage() {
       void qc.invalidateQueries({ queryKey: ["scheduled-notifications"] });
       void qc.invalidateQueries({ queryKey: ["notifications-history"] });
       void qc.invalidateQueries({ queryKey: ["notifications-stats"] });
+      // Dashboard count decrements when a scheduled notification is cancelled.
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to cancel"),
   });

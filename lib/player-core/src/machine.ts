@@ -735,6 +735,55 @@ export class PlayerMachine {
             }
           }
         }
+      } else if (this.snapshot.state === "FATAL") {
+        // ── FATAL early-exit from server anchor refresh ───────────────────
+        // A machine in FATAL is normally "deaf" to incoming snapshots for the
+        // full backoff period (30 s – 240 s) because none of the other
+        // branches above match.  This means that even when the operator fixes
+        // the stream on the server side and the orchestrator restarts the item
+        // slot with a fresh startsAtMs, every connected client stays frozen in
+        // FATAL until its auto-recovery timer fires.
+        //
+        // Fix: if the server has issued a NEW startsAtMs for the same item
+        // (the slot was restarted, typically because an admin re-queued or
+        // corrected the source), immediately clear the backoff timer and
+        // rebind as if we are recovering from scratch.  The client gets a
+        // full primaryRetries budget on the fresh attempt.
+        //
+        // If startsAtMs is unchanged the slot is the same broken instance —
+        // do nothing and let fatalRecoveryTimer fire on its natural schedule,
+        // respecting the exponential backoff so we don't hammer a permanently
+        // dead source.
+        //
+        // Note: a different item arriving from the server (activeItemId !==
+        // server.current.id) is already handled by the "New item" branch
+        // further up, which calls transition("PREPARING_ACTIVE") and thereby
+        // clears fatalRecoveryTimer via the transition() guard at line ~400.
+        if (
+          prevServerSnapshot?.current?.id === server.current.id &&
+          prevServerSnapshot.current.startsAtMs !== server.current.startsAtMs
+        ) {
+          // Clear the backoff timer — transition() would also do this, but
+          // clearing it explicitly here makes the intent unambiguous.
+          if (this.fatalRecoveryTimer !== null) {
+            clearTimeout(this.fatalRecoveryTimer);
+            this.fatalRecoveryTimer = null;
+          }
+          this.skipPendingCycles = 0;
+          this.skipPendingAnchorMs = null;
+          this.primaryRetries = 0;
+          this.bindActive(server.current);
+          const positionSecs = resolvePositionSecs(
+            server.current,
+            server.current.startsAtMs,
+            this.clockOffsetMs,
+          );
+          this.emit({ type: "play", bufferId: activeId, positionSecs });
+          this.transition("PREPARING_ACTIVE");
+        }
+        // If startsAtMs is unchanged: stay in FATAL, let the backoff timer
+        // fire naturally. This prevents thundering-herd retries on a source
+        // that is still broken.
       }
     }
 
