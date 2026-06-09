@@ -203,12 +203,20 @@ class QueueIntegrityValidatorImpl {
         }
 
         // UNPLAYABLE_CORRUPT_UPLOAD: video transcoding permanently failed AND
-        // the source file is known-unplayable (no moov atom / CORRUPT_SOURCE error
-        // OR faststart was never applied). Without HLS there is no fallback stream.
+        // the source file is known-unplayable: either an explicit error code
+        // (CORRUPT_SOURCE / SOURCE_MISSING / DISK_FULL) OR faststart was
+        // explicitly attempted and failed (faststartApplied === false).
+        // Without HLS there is no fallback stream.
         // These items WILL cause repeated auto-skip cycles every tick — they must
         // be deactivated immediately to stop burning skip budget. The auto-fix
         // below handles the deactivation; the reverse pass re-activates them if
         // HLS ever becomes available (e.g. via remote re-transcode).
+        //
+        // IMPORTANT: noFaststart must use === false, NOT the ! operator.
+        // faststartApplied is a nullable boolean: NULL means faststart was never
+        // attempted (video may still be playable as a raw MP4); false means
+        // faststart was explicitly run and failed (moov at EOF — unplayable).
+        // !null === true would incorrectly flag every never-processed video.
         if (
           row.videoId &&
           row.videoId2 !== null &&
@@ -219,7 +227,7 @@ class QueueIntegrityValidatorImpl {
           const isCorrupt = row.vErrCode === "CORRUPT_SOURCE";
           const isSourceMissing = row.vErrCode === "SOURCE_MISSING";
           const isDiskFull = row.vErrCode === "DISK_FULL";
-          const noFaststart = !row.vFaststart;
+          const noFaststart = row.vFaststart === false;
           if (isCorrupt || isSourceMissing || isDiskFull || noFaststart) {
             issues.push({
               severity: "error",
@@ -615,15 +623,21 @@ class QueueIntegrityValidatorImpl {
       }
 
       // ── Auto-fix: deactivate UNPLAYABLE_CORRUPT_UPLOAD items ─────────────────
-      // Items whose video has permanently failed transcoding AND has no moov at
-      // byte-0 (CORRUPT_SOURCE or faststart_applied=false) AND has no HLS are
-      // structurally unplayable — every orchestrator tick will auto-skip them,
-      // burning the 5-skip budget and eventually triggering dead-air filler.
-      // Deactivating them stops the skip spiral and lets the validator surface a
-      // clear "re-upload required" message in the diagnostics endpoint.
+      // Items whose video has permanently failed transcoding AND is known-
+      // unplayable (explicit error code OR faststartApplied === false) AND has
+      // no HLS are structurally unplayable — every orchestrator tick will
+      // auto-skip them, burning the 5-skip budget and eventually triggering
+      // dead-air filler.  Deactivating them stops the skip spiral and lets the
+      // validator surface a clear "re-upload required" message in diagnostics.
       //
-      // Reverse pass below re-activates when HLS becomes available (e.g. after a
-      // successful remote re-transcode triggered by the operator).
+      // IMPORTANT: use === false for the faststart guard, NOT the ! operator.
+      // faststartApplied is a nullable boolean — NULL means faststart was never
+      // attempted (video may still stream as a raw MP4); false means it was
+      // explicitly run and failed (moov at EOF).  !null === true would incorrectly
+      // deactivate every never-processed failed video.
+      //
+      // Reverse pass below re-activates when HLS becomes available or when
+      // faststart is later confirmed successful (e.g. after remote re-transcode).
       const corruptUploadItemIds = rows
         .filter((r) => {
           if (!r.videoId || r.videoId2 === null) return false;
@@ -633,7 +647,7 @@ class QueueIntegrityValidatorImpl {
             r.vErrCode === "CORRUPT_SOURCE" ||
             r.vErrCode === "SOURCE_MISSING" ||
             r.vErrCode === "DISK_FULL" ||
-            !r.vFaststart
+            r.vFaststart === false           // explicitly failed, NOT null (never attempted)
           );
         })
         .map((r) => r.id);
@@ -665,10 +679,15 @@ class QueueIntegrityValidatorImpl {
         }
       }
 
-      // ── Auto-fix (reverse): re-activate corrupt_upload items that now have HLS ──
-      // When a video that was previously deactivated as corrupt_upload gains an
-      // HLS manifest (operator used the remote re-transcode tool or manually
-      // re-uploaded a fixed source), its queue item must return to rotation.
+      // ── Auto-fix (reverse): re-activate corrupt_upload items that are now playable ──
+      // Re-activates items deactivated as 'corrupt_upload' once any of these
+      // conditions are true:
+      //   1. HLS manifest is now present (successful re-transcode or re-upload).
+      //   2. faststart_applied is now true (faststart worker succeeded since deactivation).
+      //   3. faststart_applied IS NULL AND local_video_url IS NOT NULL — this
+      //      recovers items falsely deactivated by the prior !row.vFaststart bug,
+      //      which treated NULL (never attempted) the same as false (explicitly
+      //      failed). Those items are playable raw MP4s; they must return to air.
       {
         type RevivedRow = { id: string; title: string };
         let revivedCorruptRows: RevivedRow[] = [];
@@ -682,6 +701,7 @@ class QueueIntegrityValidatorImpl {
               AND (
                 mv.hls_master_url IS NOT NULL
                 OR mv.faststart_applied = true
+                OR (mv.faststart_applied IS NULL AND mv.local_video_url IS NOT NULL)
               )
           `);
           revivedCorruptRows = (result.rows as RevivedRow[]) ?? [];
@@ -702,7 +722,8 @@ class QueueIntegrityValidatorImpl {
             logger.warn(
               { count: revivedIds.length, itemIds: revivedIds },
               "[queue-validator] AUTO-FIX (reverse): re-activated corrupt_upload items " +
-              "whose video now has an HLS manifest — items returned to broadcast rotation",
+              "whose video is now playable (HLS available, faststart confirmed, or faststart never attempted) — " +
+              "items returned to broadcast rotation",
             );
             adminEventBus.push("broadcast-queue-updated", {
               reason: "integrity-fix-revived-corrupt-upload",
