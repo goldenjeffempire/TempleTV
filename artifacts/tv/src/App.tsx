@@ -2,6 +2,7 @@ import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react"
 import { pauseAllBroadcastSessions } from "@workspace/player-core/react";
 import type { VideoItem } from "./lib/api";
 import type { SeriesItem } from "./hooks/useSeries";
+import type { Sermon } from "./hooks/useData";
 import { saveProgress, getProgress } from "./lib/watchProgress";
 import { usePlatformInit } from "./hooks/usePlatformInit";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -29,6 +30,7 @@ const SeriesDetail = lazy(() =>
 const Player = lazy(() => import("./pages/Player").then((m) => ({ default: m.Player })));
 const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })));
 const Playlists = lazy(() => import("./pages/Playlists").then((m) => ({ default: m.Playlists })));
+const CategoryPage = lazy(() => import("./pages/CategoryPage").then((m) => ({ default: m.CategoryPage })));
 
 type Screen = "home" | "search" | "history" | "settings" | "playlists";
 
@@ -101,6 +103,7 @@ export default function App() {
     related: VideoItem[];
   } | null>(null);
   const [seriesDetail, setSeriesDetail] = useState<SeriesItem | null>(null);
+  const [categoryDetail, setCategoryDetail] = useState<{ title: string; sermons: Sermon[] } | null>(null);
   const [showAuthGate, setShowAuthGate] = useState(false);
 
   // Snapshot of the player that activated PiP — used by PipIndicator's
@@ -184,6 +187,8 @@ export default function App() {
         flushAndClosePlayer(player);
       } else if (detailsVideo !== null) {
         setDetailsVideo(null);
+      } else if (categoryDetail !== null) {
+        setCategoryDetail(null);
       } else if (seriesDetail !== null) {
         setSeriesDetail(null);
       } else if (screen !== "home") {
@@ -194,7 +199,7 @@ export default function App() {
     };
     window.addEventListener("popstate", handlePop);
     return () => window.removeEventListener("popstate", handlePop);
-  }, [player, detailsVideo, seriesDetail, screen, flushAndClosePlayer]);
+  }, [player, detailsVideo, categoryDetail, seriesDetail, screen, flushAndClosePlayer]);
 
   // ── Navigation helpers ────────────────────────────────────────────────────
 
@@ -288,6 +293,14 @@ export default function App() {
     [pushHistory],
   );
 
+  const openCategory = useCallback(
+    (title: string, sermons: Sermon[]) => {
+      setCategoryDetail({ title, sermons });
+      pushHistory();
+    },
+    [pushHistory],
+  );
+
   // ── Page rendering ────────────────────────────────────────────────────────
   // Each page is wrapped in its own ErrorBoundary so a crash in one page
   // does not tear down the entire app. onReset navigates back via history so
@@ -330,6 +343,23 @@ export default function App() {
           onPlayRelated={(videoId, title, hlsUrl) => {
             setDetailsVideo(null);
             play(videoId, title, hlsUrl);
+          }}
+        />
+      </ErrorBoundary>
+    );
+  } else if (categoryDetail) {
+    content = (
+      <ErrorBoundary onReset={handleBack}>
+        <CategoryPage
+          title={categoryDetail.title}
+          sermons={categoryDetail.sermons}
+          onBack={handleBack}
+          onCardSelect={(sermon) => {
+            const related = categoryDetail.sermons.filter(
+              (s) => s.videoId !== sermon.videoId,
+            );
+            setCategoryDetail(null);
+            openDetails(sermon, related);
           }}
         />
       </ErrorBoundary>
@@ -407,6 +437,7 @@ export default function App() {
           }
           onDetails={(video, related) => openDetails(video, related)}
           onSeriesDetail={(s) => openSeries(s)}
+          onCategoryPage={(title, sermons) => openCategory(title, sermons)}
         />
       </ErrorBoundary>
     );
@@ -419,6 +450,8 @@ export default function App() {
     ? `player-${player.videoId}`
     : detailsVideo
     ? `details-${detailsVideo.video.videoId}`
+    : categoryDetail
+    ? `category-${categoryDetail.title}`
     : seriesDetail
     ? `series-${seriesDetail.id}`
     : screen;

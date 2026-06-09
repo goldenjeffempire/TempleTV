@@ -273,7 +273,9 @@ const CategoryRow = React.memo(function CategoryRow({
     <View style={styles.rowContainer}>
       <SectionHeader
         title={category}
-        onSeeAll={() => router.push({ pathname: "/(tabs)/library" })}
+        onSeeAll={() =>
+          router.push({ pathname: "/(tabs)/library", params: { category } })
+        }
       />
       <FlatList
         horizontal

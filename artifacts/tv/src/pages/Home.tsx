@@ -8,6 +8,7 @@ import { MobileBottomNav } from "../components/MobileBottomNav";
 import { Clock } from "../components/Clock";
 import { useTVNav } from "../hooks/useTVNav";
 import { useSermons } from "../hooks/useData";
+import type { Sermon } from "../hooks/useData";
 import { useUnifiedLive } from "../hooks/useUnifiedLive";
 import { fetchBroadcastCurrent } from "../lib/api";
 import type { VideoItem, BroadcastCurrent } from "../lib/api";
@@ -41,9 +42,10 @@ interface HomeProps {
   onPlay: (videoId: string, title: string, hlsUrl?: string, startPositionSecs?: number, isLive?: boolean) => void;
   onDetails: (video: VideoItem, related: VideoItem[]) => void;
   onSeriesDetail: (series: SeriesItem) => void;
+  onCategoryPage: (title: string, sermons: Sermon[]) => void;
 }
 
-export function Home({ onNavigateSearch, onNavigateHistory, onNavigateSettings, onNavigatePlaylists, onPlay, onDetails, onSeriesDetail }: HomeProps) {
+export function Home({ onNavigateSearch, onNavigateHistory, onNavigateSettings, onNavigatePlaylists, onPlay, onDetails, onSeriesDetail, onCategoryPage }: HomeProps) {
   const { byCategory, sermons, loading, error } = useSermons();
   const { series } = useSeries();
   const { entries: continueWatching, refresh: refreshContinueWatching, remove: removeContinueWatching } = useWatchProgress(5);
@@ -739,6 +741,7 @@ export function Home({ onNavigateSearch, onNavigateHistory, onNavigateSettings, 
                     const related = rowSermons.filter((s) => s.videoId !== sermon.videoId);
                     onDetails(sermon, related);
                   }}
+                  onSeeAll={rowSermons.length > 0 ? () => onCategoryPage(cat, rowSermons) : undefined}
                 />
               );
             })}

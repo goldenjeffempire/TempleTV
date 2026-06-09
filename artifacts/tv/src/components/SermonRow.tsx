@@ -9,6 +9,7 @@ interface SermonRowProps {
   rowFocused: boolean;
   onCardFocus: (index: number) => void;
   onCardSelect: (sermon: Sermon) => void;
+  onSeeAll?: () => void;
 }
 
 // Per-category accent colours matching the CSS variables in index.css.
@@ -39,6 +40,7 @@ export const SermonRow = memo(function SermonRow({
   rowFocused,
   onCardFocus,
   onCardSelect,
+  onSeeAll,
 }: SermonRowProps) {
   if (sermons.length === 0) return null;
 
@@ -98,18 +100,65 @@ export const SermonRow = memo(function SermonRow({
           </span>
         </div>
 
-        {/* "See all" hint — desktop/TV only */}
-        {rowFocused && (
-          <span
+        {/* "See all" button or keyboard hint */}
+        {onSeeAll ? (
+          <button
+            onClick={onSeeAll}
             className="tt-hide-on-touch"
             style={{
+              background: "none",
+              border: "1px solid rgba(255,255,255,0.14)",
+              borderRadius: 8,
+              cursor: "pointer",
+              color: rowFocused ? "rgba(255,255,255,0.75)" : "rgba(255,255,255,0.35)",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "6px 14px",
               fontSize: "clamp(11px, 0.75vw, 13px)",
-              color: "rgba(255,255,255,0.35)",
-              letterSpacing: "0.04em",
+              fontWeight: 600,
+              letterSpacing: "0.03em",
+              transition: "color 0.15s ease, border-color 0.15s ease",
+              flexShrink: 0,
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.color = "#fff";
+              e.currentTarget.style.borderColor = "rgba(255,255,255,0.35)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.color = rowFocused
+                ? "rgba(255,255,255,0.75)"
+                : "rgba(255,255,255,0.35)";
+              e.currentTarget.style.borderColor = "rgba(255,255,255,0.14)";
             }}
           >
-            ← → navigate
-          </span>
+            See All
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M5 12h14M12 5l7 7-7 7" />
+            </svg>
+          </button>
+        ) : (
+          rowFocused && (
+            <span
+              className="tt-hide-on-touch"
+              style={{
+                fontSize: "clamp(11px, 0.75vw, 13px)",
+                color: "rgba(255,255,255,0.35)",
+                letterSpacing: "0.04em",
+              }}
+            >
+              ← → navigate
+            </span>
+          )
         )}
       </div>
 

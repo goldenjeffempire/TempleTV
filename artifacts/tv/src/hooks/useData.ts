@@ -17,7 +17,7 @@ const CATEGORIES = [
 ];
 
 const CATEGORY_KEYWORDS: Record<string, string[]> = {
-  "Live Service": ["sunday service", "live service", "holy spirit sunday", "morning service", "evening service", "church service", "worship service"],
+  "Live Service": ["sunday service", "live service", "holy spirit sunday", "holy spirit sunday service", "holy spirit sunday message", "holy spirit service", "holy spirit live", "morning service", "evening service", "church service", "worship service", "sunday morning service", "sunday morning worship", "sunday morning live", "sunday morning", "sunday night service", "sunday evening service", "sunday message", "live worship service"],
   Deliverance: ["deliverance", "deliver", "freedom", "captive", "bondage", "oppress", "demon", "stronghold"],
   Sermons: ["teaching", "lesson", "study", "message", "sermon", "preach", "doctrine", "truth", "instruction", "faith", "worship", "prophecy"],
   Prayers: ["prayer", "prayer service", "intercession", "intercessory", "fasting", "vigil", "night prayer"],
