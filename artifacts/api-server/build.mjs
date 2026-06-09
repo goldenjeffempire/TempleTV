@@ -69,6 +69,13 @@ const shared = {
     // esbuild cannot resolve through pnpm's virtual store symlinks.
     // Externalise the whole package so it loads from node_modules at runtime.
     "@fastify/compress",
+    // jose v6 uses a web-only export map (dist/webapi/*) that esbuild cannot
+    // resolve on the Node.js platform. Externalise it so Node loads it via its
+    // own CJS/ESM resolver which honours the "node" exports condition.
+    "jose",
+    // nodemailer v8 uses CJS-only internal requires that esbuild cannot
+    // resolve through pnpm's virtual store when bundling. Externalise it.
+    "nodemailer",
   ],
 };
 
