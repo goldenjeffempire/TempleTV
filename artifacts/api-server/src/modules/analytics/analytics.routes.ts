@@ -135,8 +135,14 @@ export async function analyticsRoutes(app: FastifyInstance) {
             .set({
               endedAt: new Date(),
               lastHeartbeatAt: new Date(),
-              watchedSecs,
-              completed: Boolean(isCompleted),
+              // GREATEST prevents a late-arriving completed/abandoned event
+              // from overwriting a higher watchedSecs already written by an
+              // earlier completed or heartbeat event.
+              watchedSecs: sql`GREATEST(${sessions.watchedSecs}, ${watchedSecs})`,
+              // `completed` is sticky once true — never downgrade back to false.
+              // A race between a heartbeat and a completed event could otherwise
+              // flip completed → false if the heartbeat fires last.
+              completed: sql`${sessions.completed} OR ${isCompleted}`,
             })
             .where(
               and(

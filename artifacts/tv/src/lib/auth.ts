@@ -153,6 +153,10 @@ async function performRefresh(): Promise<string | null> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refreshToken, deviceName: "Smart TV" }),
+      // TV devices on poor networks can stall indefinitely without a timeout.
+      // 10 s is generous enough for a slow link yet short enough to unblock
+      // the calling page before the user notices the hang.
+      signal: AbortSignal.timeout(10_000),
     });
 
     if (!res.ok) {
@@ -210,7 +214,12 @@ export async function authFetch(input: RequestInfo | URL, init?: RequestInit): P
 
   const retryHeaders = new Headers(init?.headers);
   retryHeaders.set("Authorization", `Bearer ${newToken}`);
-  return fetch(url, { ...init, headers: retryHeaders });
+  // Preserve any AbortSignal from the original request on the retry, but do
+  // not inherit a timeout that already fired — the browser would throw
+  // immediately. A fresh AbortSignal.timeout(15_000) gives the retry its own
+  // independent 15-second budget.
+  const { signal: _unusedSignal, ...initWithoutSignal } = init ?? {};
+  return fetch(url, { ...initWithoutSignal, headers: retryHeaders, signal: AbortSignal.timeout(15_000) });
 }
 
 // Kick off proactive refresh on module load if already authenticated.

@@ -148,11 +148,12 @@ export async function networkRoutes(app: FastifyInstance) {
     "/status",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["network"],
         summary: "OMEGA NOC: full broadcast network status",
         security: [{ bearerAuth: [] }],
-        response: { 200: NocStatusSchema },
+        response: { 200: NocStatusSchema, 429: z.object({ error: z.string() }) },
       },
     },
     async () => buildNocStatus(),
@@ -164,6 +165,7 @@ export async function networkRoutes(app: FastifyInstance) {
   r.get(
     "/heartbeat",
     {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["network"],
         summary: "OMEGA NOC: live heartbeat — encoder + stream + CDN + player",
@@ -178,6 +180,7 @@ export async function networkRoutes(app: FastifyInstance) {
             }),
             checkedAt: z.string(),
           }),
+          429: z.object({ error: z.string() }),
         },
       },
     },

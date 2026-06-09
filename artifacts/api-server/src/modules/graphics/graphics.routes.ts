@@ -53,6 +53,7 @@ export async function graphicsRoutes(app: FastifyInstance) {
   r.get(
     "/graphics",
     {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["graphics"],
         summary: "Get all active on-air graphics for a channel",
@@ -67,6 +68,7 @@ export async function graphicsRoutes(app: FastifyInstance) {
             durationSecs: z.number().nullable(),
             activatedAt: z.string().nullable(),
           })),
+          429: z.object({ error: z.string() }),
         },
       },
     },
@@ -91,10 +93,12 @@ export async function graphicsRoutes(app: FastifyInstance) {
   r.get(
     "/graphics/events",
     {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["graphics"],
         summary: "SSE stream for on-air graphic activation/deactivation",
         querystring: z.object({ channelId: z.string().optional().default("temple-tv-live") }),
+        response: { 429: z.object({ error: z.string() }) },
       },
     },
     async (req, reply) => {

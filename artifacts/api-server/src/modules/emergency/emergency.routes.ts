@@ -35,10 +35,11 @@ export async function emergencyRoutes(app: FastifyInstance) {
   r.get(
     "/emergency/active",
     {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["emergency"],
         summary: "Get currently active emergency alerts",
-        response: { 200: z.array(AlertSchema) },
+        response: { 200: z.array(AlertSchema), 429: z.object({ error: z.string() }) },
       },
     },
     async () => {
@@ -94,10 +95,11 @@ export async function emergencyRoutes(app: FastifyInstance) {
     "/admin/emergency",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["emergency"],
         summary: "List all emergency alerts (history)",
-        response: { 200: z.array(AlertHistoryItemSchema) },
+        response: { 200: z.array(AlertHistoryItemSchema), 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },

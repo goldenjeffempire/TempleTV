@@ -442,7 +442,7 @@ export async function userRoutes(app: FastifyInstance) {
         tags: ["user"],
         summary: "Clear entire watch history for the authenticated user",
         security: [{ bearerAuth: [] }],
-        response: { 204: z.null() },
+        response: { 204: z.null(), 429: z.object({ error: z.string() }) },
       },
     },
     async (req, reply) => {

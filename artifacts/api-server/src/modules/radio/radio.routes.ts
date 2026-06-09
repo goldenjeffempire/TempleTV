@@ -87,10 +87,11 @@ export async function radioRoutes(app: FastifyInstance) {
   r.get(
     "/radio",
     {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["radio"],
         summary: "Get radio station config (public)",
-        response: { 200: RadioConfigSchema },
+        response: { 200: RadioConfigSchema, 429: z.object({ error: z.string() }) },
       },
     },
     async (_req, reply) => {
@@ -104,10 +105,11 @@ export async function radioRoutes(app: FastifyInstance) {
     "/admin/radio",
     {
       onRequest: [requireAuth("admin")],
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["radio"],
         summary: "Get radio station config (admin)",
-        response: { 200: RadioConfigSchema },
+        response: { 200: RadioConfigSchema, 429: z.object({ error: z.string() }) },
       },
     },
     async () => readConfig(),

@@ -127,10 +127,22 @@ export function consumeBackupCode(
   hashedCodes: string[],
 ): { valid: boolean; remaining: string[] } {
   const normalized = input.toUpperCase().replace(/-/g, "");
-  const hashed = createHash("sha256").update(normalized).digest("hex");
-  const idx = hashedCodes.indexOf(hashed);
-  if (idx === -1) return { valid: false, remaining: hashedCodes };
+  const hashed = Buffer.from(createHash("sha256").update(normalized).digest("hex"));
+  // Use timingSafeEqual for every comparison so the position of a matching
+  // code is not leaked via timing side-channel. Array.indexOf uses === which
+  // exits on the first match — leaking how many codes were checked before a
+  // hit (or miss after all N codes).
+  let matchIdx = -1;
+  for (let i = 0; i < hashedCodes.length; i++) {
+    const stored = Buffer.from(hashedCodes[i]!);
+    if (stored.length === hashed.length && timingSafeEqual(stored, hashed)) {
+      matchIdx = i;
+      // Do NOT break early — always compare all codes to avoid length-based
+      // timing leak (short-circuit exits sooner for late-position matches).
+    }
+  }
+  if (matchIdx === -1) return { valid: false, remaining: hashedCodes };
   const remaining = [...hashedCodes];
-  remaining.splice(idx, 1);
+  remaining.splice(matchIdx, 1);
   return { valid: true, remaining };
 }

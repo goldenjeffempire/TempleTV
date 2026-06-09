@@ -67,6 +67,11 @@ export interface RoomMember {
 const SEND_WINDOW_MS = 10_000;
 const SEND_TOKENS_PER_WINDOW = 5;
 
+// Maximum distinct channel rooms held in memory at once.  Each room is just a
+// small Set of member objects so this is a safety net against adversarial
+// channel-ID flooding rather than a strict operational limit.
+const MAX_ROOMS = 256;
+
 class ChatHub extends EventEmitter {
   private rooms = new Map<string, Set<RoomMember>>();
 
@@ -74,6 +79,12 @@ class ChatHub extends EventEmitter {
   join(channelId: string, member: RoomMember): { viewers: number } {
     let room = this.rooms.get(channelId);
     if (!room) {
+      // Reject new channel creation when the hub is at capacity.  Existing
+      // rooms are unaffected — only the attempt to open a *new* room is
+      // blocked.  Callers should close the socket on rejection.
+      if (this.rooms.size >= MAX_ROOMS) {
+        throw new Error(`ChatHub at capacity (${MAX_ROOMS} rooms)`);
+      }
       room = new Set();
       this.rooms.set(channelId, room);
     }

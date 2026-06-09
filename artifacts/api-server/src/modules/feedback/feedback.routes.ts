@@ -114,11 +114,12 @@ export async function feedbackAdminRoutes(app: FastifyInstance) {
     "/feedback",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "Paginated feedback inbox",
         querystring: ListQuerySchema,
-        response: { 200: ListResponseSchema },
+        response: { 200: ListResponseSchema, 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },

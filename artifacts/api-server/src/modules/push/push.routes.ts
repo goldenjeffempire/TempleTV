@@ -141,12 +141,14 @@ export async function pushRoutes(app: FastifyInstance) {
   r.get(
     "/push/web-vapid-public-key",
     {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["notifications"],
         summary: "Retrieve the VAPID public key for Web Push subscriptions",
         response: {
           200: z.object({ publicKey: z.string() }),
           503: z.object({ error: z.string() }),
+          429: z.object({ error: z.string() }),
         },
       },
     },

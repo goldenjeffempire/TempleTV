@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 
 const UpsertBodySchema = z.object({
@@ -113,6 +113,23 @@ export async function tvHistoryRoutes(app: FastifyInstance) {
         })
         .returning();
 
+      // Probabilistic background trim (~1 % of writes) — keeps each device's
+      // history bounded at MAX_TV_HISTORY_PER_DEVICE rows without the cost of
+      // a DELETE on every single write.  Fire-and-forget; never blocks response.
+      const MAX_TV_HISTORY_PER_DEVICE = 500;
+      if (Math.random() < 0.01) {
+        void db.execute(
+          sql`DELETE FROM ${schema.deviceWatchHistoryTable}
+              WHERE ${schema.deviceWatchHistoryTable.deviceId} = ${deviceId}
+                AND ${schema.deviceWatchHistoryTable.id} NOT IN (
+                  SELECT id FROM ${schema.deviceWatchHistoryTable}
+                  WHERE ${schema.deviceWatchHistoryTable.deviceId} = ${deviceId}
+                  ORDER BY ${schema.deviceWatchHistoryTable.watchedAt} DESC
+                  LIMIT ${MAX_TV_HISTORY_PER_DEVICE}
+                )`,
+        ).catch(() => { /* non-fatal — trim failure never blocks a write */ });
+      }
+
       return reply.send(toDto(row!));
     },
   );
@@ -121,11 +138,12 @@ export async function tvHistoryRoutes(app: FastifyInstance) {
   r.get(
     "/tv/history/:deviceId",
     {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["tv"],
         summary: "Get watch history for a device (newest first, max 100)",
         params: z.object({ deviceId: z.string().min(1) }),
-        response: { 200: z.array(EntrySchema) },
+        response: { 200: z.array(EntrySchema), 429: z.object({ error: z.string() }) },
       },
     },
     async (req, reply) => {

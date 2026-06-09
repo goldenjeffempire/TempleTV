@@ -1498,7 +1498,9 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       schema: {
         tags: ["admin-ops"],
         summary: "v8.getHeapSnapshot() streamed as application/octet-stream",
-        // Binary response — no Zod schema; document via tags only.
+        // Binary streaming response — ZodTypeProvider cannot type-check a
+        // Readable stream body, so no response schema is declared here.
+        // The 429 case is enforced by the rate-limit plugin at the plugin level.
         security: [{ bearerAuth: [] }],
       },
     },

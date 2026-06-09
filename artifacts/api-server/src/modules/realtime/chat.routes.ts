@@ -177,6 +177,7 @@ export async function chatRoutes(app: FastifyInstance) {
   r.get(
     "/:channelId/history",
     {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["chat"],
         summary: "Recent chat messages for a channel",
@@ -186,6 +187,7 @@ export async function chatRoutes(app: FastifyInstance) {
           200: z.object({
             messages: z.array(ChatMessageSchema),
           }),
+          429: z.object({ error: z.string() }),
         },
       },
     },
@@ -326,7 +328,16 @@ export async function chatRoutes(app: FastifyInstance) {
       socket.on("close", cleanup);
       socket.on("error", cleanup);
 
-      const { viewers } = chatHub.join(channelId, member);
+      let viewers: number;
+      try {
+        ({ viewers } = chatHub.join(channelId, member));
+      } catch (err) {
+        // Hub at capacity (MAX_ROOMS exceeded) — close the socket cleanly so
+        // the client gets a clear rejection rather than a silent hang.
+        socket.close(1013 /* Try Again Later */);
+        req.log.warn({ channelId }, "chat ws: hub at capacity, rejecting join");
+        return;
+      }
 
       safeSend(socket, {
         type: "state",

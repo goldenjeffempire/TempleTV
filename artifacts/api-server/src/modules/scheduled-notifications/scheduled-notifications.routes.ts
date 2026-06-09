@@ -74,10 +74,11 @@ export async function scheduledNotificationsRoutes(app: FastifyInstance) {
     "/notifications/scheduled",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "List queued + completed scheduled notifications",
-        response: { 200: ListResponseSchema },
+        response: { 200: ListResponseSchema, 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },
@@ -161,6 +162,7 @@ export async function scheduledNotificationsRoutes(app: FastifyInstance) {
     "/notifications/failed",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "List permanently-failed scheduled notifications (exhausted max_attempts)",
@@ -172,6 +174,7 @@ export async function scheduledNotificationsRoutes(app: FastifyInstance) {
             count: z.number(),
             items: z.array(ScheduledNotifSchema),
           }),
+          429: z.object({ error: z.string() }),
         },
         security: [{ bearerAuth: [] }],
       },
