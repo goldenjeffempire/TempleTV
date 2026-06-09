@@ -65,6 +65,10 @@ const shared = {
     "@opentelemetry/auto-instrumentations-node",
     "@opentelemetry/exporter-prometheus",
     "@opentelemetry/api",
+    // @fastify/compress uses readable-stream which has CJS internals that
+    // esbuild cannot resolve through pnpm's virtual store symlinks.
+    // Externalise the whole package so it loads from node_modules at runtime.
+    "@fastify/compress",
   ],
 };
 
