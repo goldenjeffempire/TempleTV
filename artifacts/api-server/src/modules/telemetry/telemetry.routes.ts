@@ -78,7 +78,10 @@ export async function telemetryRoutes(app: FastifyInstance) {
         tags: ["telemetry"],
         summary: "Ingest a client-side crash report",
         body: ClientErrorSchema,
-        response: { 202: AckSchema },
+        response: {
+          202: AckSchema,
+          429: z.object({ error: z.string() }),
+        },
       },
     },
     async (req, reply) => {

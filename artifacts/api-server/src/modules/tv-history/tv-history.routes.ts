@@ -64,7 +64,7 @@ export async function tvHistoryRoutes(app: FastifyInstance) {
         tags: ["tv"],
         summary: "Upsert a device watch-history entry",
         body: UpsertBodySchema,
-        response: { 200: EntrySchema },
+        response: { 200: EntrySchema, 429: z.object({ error: z.string() }) },
       },
     },
     async (req, reply) => {
@@ -151,7 +151,7 @@ export async function tvHistoryRoutes(app: FastifyInstance) {
         tags: ["tv"],
         summary: "Clear all watch history for a device",
         params: z.object({ deviceId: z.string().min(1) }),
-        response: { 204: z.null() },
+        response: { 204: z.null(), 429: z.object({ error: z.string() }) },
       },
     },
     async (req, reply) => {

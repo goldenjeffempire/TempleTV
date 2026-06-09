@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, isTransientError } from "@/lib/api";
+import { toast } from "sonner";
+import { api, HttpError, isTransientError } from "@/lib/api";
 import { useSSEEvent } from "@/contexts/sse-context";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
@@ -195,9 +196,14 @@ export default function StreamHealthPage() {
         idempotencyKey: crypto.randomUUID(),
       }),
     onSuccess: () => {
+      toast.success("Bad-URL cache cleared");
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
     },
+    onError: (e) =>
+      toast.error("Failed to clear bad-URL cache", {
+        description: e instanceof HttpError ? e.message : "An unexpected error occurred",
+      }),
   });
 
   const analytics = diagnostics?.analytics;

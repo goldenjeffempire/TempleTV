@@ -303,7 +303,7 @@ export async function videosRoutes(app: FastifyInstance) {
         tags: ["videos"],
         summary: "Public video catalogue with server-side search, filter, sort and pagination",
         querystring: ListQuerySchema,
-        response: { 200: ListResponseSchema, 304: z.void() },
+        response: { 200: ListResponseSchema, 304: z.void(), 429: z.object({ error: z.string() }) },
       },
     },
     async (req, reply) => {
@@ -422,7 +422,7 @@ export async function videosRoutes(app: FastifyInstance) {
         querystring: z.object({
           limit: z.coerce.number().int().min(1).max(50).default(12),
         }),
-        response: { 200: z.object({ videos: z.array(PublicVideoSchema) }) },
+        response: { 200: z.object({ videos: z.array(PublicVideoSchema) }), 429: z.object({ error: z.string() }) },
       },
     },
     async (req, reply) => {
@@ -460,6 +460,7 @@ export async function videosRoutes(app: FastifyInstance) {
         response: {
           200: PublicVideoSchema,
           404: z.object({ error: z.string() }),
+          429: z.object({ error: z.string() }),
         },
       },
     },
@@ -501,6 +502,7 @@ export async function videosRoutes(app: FastifyInstance) {
         response: {
           202: z.object({ ok: z.literal(true) }),
           404: z.object({ error: z.string() }),
+          429: z.object({ error: z.string() }),
         },
       },
     },

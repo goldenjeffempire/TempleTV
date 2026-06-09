@@ -144,7 +144,7 @@ export async function mfaRoutes(app: FastifyInstance) {
       schema: {
         tags: ["auth", "mfa"],
         summary: "Generate a new TOTP secret (not yet enabled)",
-        response: { 200: MfaSetupResponseSchema },
+        response: { 200: MfaSetupResponseSchema, 429: z.object({ error: z.string() }) },
       },
     },
     async (req) => {
@@ -193,7 +193,7 @@ export async function mfaRoutes(app: FastifyInstance) {
         tags: ["auth", "mfa"],
         summary: "Activate MFA by verifying first TOTP code",
         body: MfaEnableBodySchema,
-        response: { 200: z.object({ ok: z.boolean(), message: z.string() }) },
+        response: { 200: z.object({ ok: z.boolean(), message: z.string() }), 429: z.object({ error: z.string() }) },
       },
     },
     async (req) => {
@@ -234,7 +234,7 @@ export async function mfaRoutes(app: FastifyInstance) {
         tags: ["auth", "mfa"],
         summary: "Disable MFA (requires TOTP or backup code + password)",
         body: MfaDisableBodySchema,
-        response: { 200: z.object({ ok: z.boolean(), message: z.string() }) },
+        response: { 200: z.object({ ok: z.boolean(), message: z.string() }), 429: z.object({ error: z.string() }) },
       },
     },
     async (req) => {
@@ -300,7 +300,7 @@ export async function mfaRoutes(app: FastifyInstance) {
         tags: ["auth", "mfa"],
         summary: "Complete MFA login — exchange mfaToken + TOTP code for session tokens",
         body: MfaVerifyBodySchema,
-        response: { 200: AuthTokensSchema },
+        response: { 200: AuthTokensSchema, 429: z.object({ error: z.string() }) },
       },
     },
     async (req) => {
@@ -414,6 +414,7 @@ export async function mfaRoutes(app: FastifyInstance) {
         body: MfaEnableBodySchema,
         response: {
           200: z.object({ backupCodes: z.array(z.string()) }),
+          429: z.object({ error: z.string() }),
         },
       },
     },

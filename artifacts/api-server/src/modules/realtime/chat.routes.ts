@@ -234,7 +234,7 @@ export async function chatRoutes(app: FastifyInstance) {
         params: z.object({ channelId: z.string().min(1).max(128) }),
         body: PostChatBodySchema,
         security: [{ bearerAuth: [] }],
-        response: { 201: ChatMessageSchema },
+        response: { 201: ChatMessageSchema, 429: z.object({ error: z.string() }) },
       },
     },
     async (req, reply) => {
